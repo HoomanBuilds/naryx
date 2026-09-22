@@ -48,14 +48,41 @@ This is a foundation checkout. The workspaces below are official generator outpu
 
 ### Dependency direction
 
-Dependencies flow one way:
+Three relations are tracked separately, because a code import, an artifact read, and a network call are not the same edge.
+
+Compile-time imports, where `A -> B` means B imports A:
 
 ```text
-deployments -> packages/protocol-types -> packages/adapter-core
-  -> packages/adapters/{solana,evm,hyperliquid} -> services/* -> apps/web
+packages/protocol-types -> packages/adapter-core
+packages/adapter-core   -> packages/adapters/{solana,evm,hyperliquid}
+packages/adapters/*     -> services/{api,solver,indexer,keeper}
+packages/protocol-types -> packages/sdk
+packages/adapter-core   -> packages/sdk   (types only)
+packages/sdk            -> apps/web
 ```
 
-`packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only, never on an adapter or a service. `apps/web` reaches services over the public API. `tests` depends on everything and nothing depends on it. `contracts/solana` and `contracts/evm` depend on nothing in this repository and publish their identities into `deployments`. An adapter never imports a sibling adapter.
+Artifact publication, where `A -> B` means B reads A as data:
+
+```text
+contracts/solana -> deployments
+contracts/evm    -> deployments
+deployments      -> packages/adapters/*, services/*, apps/web, tests
+```
+
+Runtime calls, where `A -> B` means A calls B over the network:
+
+```text
+apps/web     -> services/api   (public API)
+packages/sdk -> services/api   (public API)
+```
+
+Test consumption, where `A -> B` means B exercises A:
+
+```text
+every workspace -> tests
+```
+
+`packages/protocol-types` depends on nothing in this repository, and neither does `deployments`, which is data only and is consumed rather than imported. `contracts/solana` and `contracts/evm` depend on nothing in this repository and publish their IDLs, ABIs, and identities into `deployments`. `packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only, never on an adapter or a service's internals, and reaches `services/api` over the public API. `apps/web` does the same. An adapter never imports a sibling adapter. `tests` may consume every workspace and nothing depends on it.
 
 Hyperliquid has no Naryx smart contract. Its logic lives in `packages/adapters/hyperliquid` and the execution services that drive it, never in either contract workspace.
 

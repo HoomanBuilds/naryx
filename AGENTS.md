@@ -43,21 +43,48 @@ A reviewed devnet or testnet deployment supplies the program keypair from outsid
 
 ## Boundaries
 
-Dependencies flow one way:
+Three different relations are tracked separately. Mixing them is what produces a wrong graph.
+
+Compile-time imports, where `A -> B` means B imports A:
 
 ```text
-deployments -> packages/protocol-types -> packages/adapter-core
-  -> packages/adapters/{solana,evm,hyperliquid} -> services/* -> apps/web
+packages/protocol-types -> packages/adapter-core
+packages/adapter-core   -> packages/adapters/{solana,evm,hyperliquid}
+packages/adapters/*     -> services/{api,solver,indexer,keeper}
+packages/protocol-types -> packages/sdk
+packages/adapter-core   -> packages/sdk   (types only)
+packages/sdk            -> apps/web
 ```
 
-- `packages/protocol-types` depends on nothing in this repository.
-- `packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only. Never an adapter, never a service, never `apps/web`.
+Artifact publication, where `A -> B` means B reads A as data:
+
+```text
+contracts/solana -> deployments
+contracts/evm    -> deployments
+deployments      -> packages/adapters/*, services/*, apps/web, tests
+```
+
+Runtime calls, where `A -> B` means A calls B over the network:
+
+```text
+apps/web     -> services/api   (public API)
+packages/sdk -> services/api   (public API)
+```
+
+Test consumption, where `A -> B` means B exercises A:
+
+```text
+every workspace -> tests
+```
+
+- `packages/protocol-types` depends on nothing in this repository. It is the bottom of the import graph.
+- `deployments` depends on nothing in this repository. It is data only, contains no executable business logic, and is consumed rather than imported.
+- `contracts/solana` and `contracts/evm` depend on nothing in this repository. They publish IDLs, ABIs, and identities into `deployments`, which is consumed from there.
+- `packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only. Never an adapter, never a service's internals, never `apps/web`. It reaches `services/api` over the public API.
 - An adapter never imports a sibling adapter. Cross-domain behavior is composed by a service.
 - A service never imports another service's internals, `apps/web`, or `packages/sdk`.
 - `apps/web` reaches services over the public API only. It never imports an adapter, a service's internals, or contract source, and it never holds a signing key.
-- `contracts/solana` and `contracts/evm` depend on nothing in this repository. They publish IDLs, ABIs, and identities into `deployments`, which is consumed from there.
-- `deployments` is data only and contains no executable business logic.
-- `tests` depends on everything. Nothing depends on `tests`.
+- `tests` may consume every workspace. Nothing depends on `tests`.
 - A dependency cycle is a defect, not a tradeoff.
 
 Hyperliquid has no Naryx smart contract. All Hyperliquid code, identifiers, addresses, and assumptions live in `packages/adapters/hyperliquid` and the execution services that drive it. Never in `contracts/solana` or `contracts/evm`.
