@@ -1,0 +1,92 @@
+# Local-only working material
+/docs/
+/inspiration/
+/.agents/
+/.codex/
+
+# Secrets and key material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keypair
+*.p12
+*.pfx
+*.jks
+id_*.json
+keypair*.json
+*-keypair.json
+secrets/
+.secrets/
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/
+vendor/
+
+# JavaScript and TypeScript build output
+.next/
+out/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+.eslintcache
+
+# Rust
+target/
+**/*.rs.bk
+
+# Anchor and Solana artifacts
+.anchor/
+test-ledger/
+contracts/solana/target/
+
+# Foundry artifacts
+cache/
+cache_hardhat/
+contracts/evm/out/
+contracts/evm/cache/
+contracts/evm/broadcast/
+broadcast/
+
+# Local deployment records
+deployments/local/
+deployments/**/local/
+deployments/**/*.local.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS and editor
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+*.pid
+*.seed
