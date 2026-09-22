@@ -11,11 +11,6 @@ export const EXPIRY_UNIT = Object.freeze({
 } as const);
 export type ExpiryUnit = keyof typeof EXPIRY_UNIT;
 
-export const PACKAGE_KIND = Object.freeze({
-  CASH_AND_CARRY_V1: 1,
-} as const);
-export type PackageKind = keyof typeof PACKAGE_KIND;
-
 export const DIRECTION = Object.freeze({
   LONG_SPOT_SHORT_PERP: 1,
 } as const);
@@ -45,14 +40,47 @@ export const PARTIAL_FILL_POLICY = Object.freeze({
 } as const);
 export type PartialFillPolicy = keyof typeof PARTIAL_FILL_POLICY;
 
-export const TEMPLATE_REGISTRY_STATE = Object.freeze({
+// Activation state is the same contract for every registry record kind, so one table serves
+// the template record and the domain registry record alike.
+export const REGISTRY_STATE = Object.freeze({
   ACTIVE: 1,
   ENTRY_PAUSED: 2,
   EXIT_ONLY: 3,
   ALL_PAUSED: 4,
   DEPRECATED: 5,
 } as const);
-export type TemplateRegistryState = keyof typeof TEMPLATE_REGISTRY_STATE;
+export type RegistryState = keyof typeof REGISTRY_STATE;
+
+export const REGISTRY_RECORD_KIND = Object.freeze({
+  ASSET: 1,
+  VENUE: 2,
+  MARKET: 3,
+  ADAPTER: 4,
+  PRICE_SOURCE: 5,
+  PACKAGE_TEMPLATE: 6,
+} as const);
+export type RegistryRecordKind = keyof typeof REGISTRY_RECORD_KIND;
+
+export const RISK_LIMIT_KIND = Object.freeze({
+  MAX_PACKAGE_NOTIONAL: 1,
+  MAX_OPEN_NOTIONAL: 2,
+  OUTFLOW_RATE: 3,
+} as const);
+export type RiskLimitKind = keyof typeof RISK_LIMIT_KIND;
+
+export const FEE_CATEGORY = Object.freeze({
+  PROTOCOL: 1,
+  SOLVER: 2,
+  BUILDER: 3,
+} as const);
+export type FeeCategory = keyof typeof FEE_CATEGORY;
+
+export const PASS_THROUGH_COST_CATEGORY = Object.freeze({
+  VENUE: 1,
+  NETWORK: 2,
+  RECOVERY: 3,
+} as const);
+export type PassThroughCostCategory = keyof typeof PASS_THROUGH_COST_CATEGORY;
 
 export function enumDiscriminant<Name extends string>(
   table: EnumTable<Name>,

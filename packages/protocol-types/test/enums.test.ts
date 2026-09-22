@@ -4,26 +4,32 @@ import {
   CanonicalWriter,
   DIRECTION,
   EXPIRY_UNIT,
+  FEE_CATEGORY,
   MalformedInputError,
   PACKAGE_ACTION,
-  PACKAGE_KIND,
   PARTIAL_FILL_POLICY,
+  PASS_THROUGH_COST_CATEGORY,
   QUANTITY_POLICY_CLASS,
+  REGISTRY_RECORD_KIND,
+  REGISTRY_STATE,
+  RISK_LIMIT_KIND,
   SETTLEMENT_CLASS,
-  TEMPLATE_REGISTRY_STATE,
   enumDiscriminant,
   toHex,
 } from '../src/index.js';
 
 const TABLES = {
   EXPIRY_UNIT,
-  PACKAGE_KIND,
   DIRECTION,
   PACKAGE_ACTION,
   SETTLEMENT_CLASS,
   QUANTITY_POLICY_CLASS,
   PARTIAL_FILL_POLICY,
-  TEMPLATE_REGISTRY_STATE,
+  REGISTRY_STATE,
+  REGISTRY_RECORD_KIND,
+  RISK_LIMIT_KIND,
+  FEE_CATEGORY,
+  PASS_THROUGH_COST_CATEGORY,
 };
 
 describe('frozen enum discriminants', () => {
@@ -57,29 +63,61 @@ describe('frozen enum discriminants', () => {
       EXACT_NET: 2,
       BOUNDED_NET: 3,
     });
-    assert.deepEqual(TEMPLATE_REGISTRY_STATE, {
+    assert.deepEqual(REGISTRY_STATE, {
       ACTIVE: 1,
       ENTRY_PAUSED: 2,
       EXIT_ONLY: 3,
       ALL_PAUSED: 4,
       DEPRECATED: 5,
     });
-    assert.deepEqual(PACKAGE_KIND, { CASH_AND_CARRY_V1: 1 });
+    assert.deepEqual(REGISTRY_RECORD_KIND, {
+      ASSET: 1,
+      VENUE: 2,
+      MARKET: 3,
+      ADAPTER: 4,
+      PRICE_SOURCE: 5,
+      PACKAGE_TEMPLATE: 6,
+    });
+    assert.deepEqual(RISK_LIMIT_KIND, {
+      MAX_PACKAGE_NOTIONAL: 1,
+      MAX_OPEN_NOTIONAL: 2,
+      OUTFLOW_RATE: 3,
+    });
+    assert.deepEqual(FEE_CATEGORY, { PROTOCOL: 1, SOLVER: 2, BUILDER: 3 });
+    assert.deepEqual(PASS_THROUGH_COST_CATEGORY, { VENUE: 1, NETWORK: 2, RECOVERY: 3 });
     assert.deepEqual(DIRECTION, { LONG_SPOT_SHORT_PERP: 1 });
     assert.deepEqual(PACKAGE_ACTION, { ENTRY: 1, EXIT: 2 });
     assert.deepEqual(PARTIAL_FILL_POLICY, { EXACT_ALL_LEGS: 1 });
+  });
+
+  test('no closed package-kind discriminant is exported', async () => {
+    const exported = await import('../src/index.js');
+    assert.equal('PACKAGE_KIND' in exported, false);
   });
 });
 
 describe('enum encoding', () => {
   test('writes a single discriminant byte', () => {
     assert.equal(
-      toHex(new CanonicalWriter().writeEnum(TEMPLATE_REGISTRY_STATE, 'DEPRECATED').bytes()),
+      toHex(new CanonicalWriter().writeEnum(REGISTRY_STATE, 'DEPRECATED').bytes()),
       '05',
     );
     assert.equal(
       toHex(new CanonicalWriter().writeEnum(SETTLEMENT_CLASS, 'BATCHED_IOC_WITH_RECOVERY').bytes()),
       '02',
+    );
+    assert.equal(
+      toHex(new CanonicalWriter().writeEnum(REGISTRY_RECORD_KIND, 'PACKAGE_TEMPLATE').bytes()),
+      '06',
+    );
+    assert.equal(
+      toHex(new CanonicalWriter().writeEnum(RISK_LIMIT_KIND, 'OUTFLOW_RATE').bytes()),
+      '03',
+    );
+    assert.equal(toHex(new CanonicalWriter().writeEnum(FEE_CATEGORY, 'BUILDER').bytes()), '03');
+    assert.equal(
+      toHex(new CanonicalWriter().writeEnum(PASS_THROUGH_COST_CATEGORY, 'RECOVERY').bytes()),
+      '03',
     );
   });
 
@@ -89,18 +127,30 @@ describe('enum encoding', () => {
       MalformedInputError,
     );
     assert.throws(
-      () =>
-        new CanonicalWriter().writeEnum(
-          PACKAGE_KIND,
-          'CASH_AND_CARRY_V2' as unknown as 'CASH_AND_CARRY_V1',
-        ),
+      () => enumDiscriminant(REGISTRY_RECORD_KIND, 'ORACLE' as unknown as 'PRICE_SOURCE'),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => enumDiscriminant(RISK_LIMIT_KIND, 'INFLOW_RATE' as unknown as 'OUTFLOW_RATE'),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => enumDiscriminant(FEE_CATEGORY, 'VENUE' as unknown as 'PROTOCOL'),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => enumDiscriminant(PASS_THROUGH_COST_CATEGORY, 'SOLVER' as unknown as 'VENUE'),
       MalformedInputError,
     );
   });
 
   test('rejects an inherited property name', () => {
     assert.throws(
-      () => enumDiscriminant(PACKAGE_KIND, 'toString' as unknown as 'CASH_AND_CARRY_V1'),
+      () => enumDiscriminant(REGISTRY_RECORD_KIND, 'toString' as unknown as 'ASSET'),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => enumDiscriminant(FEE_CATEGORY, 'constructor' as unknown as 'PROTOCOL'),
       MalformedInputError,
     );
   });

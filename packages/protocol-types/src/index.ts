@@ -21,23 +21,29 @@ export { encodeUtf8, encodeAscii } from './text.js';
 
 export {
   EXPIRY_UNIT,
-  PACKAGE_KIND,
   DIRECTION,
   PACKAGE_ACTION,
   SETTLEMENT_CLASS,
   QUANTITY_POLICY_CLASS,
   PARTIAL_FILL_POLICY,
-  TEMPLATE_REGISTRY_STATE,
+  REGISTRY_STATE,
+  REGISTRY_RECORD_KIND,
+  RISK_LIMIT_KIND,
+  FEE_CATEGORY,
+  PASS_THROUGH_COST_CATEGORY,
   enumDiscriminant,
   type EnumTable,
   type ExpiryUnit,
-  type PackageKind,
   type Direction,
   type PackageAction,
   type SettlementClass,
   type QuantityPolicyClass,
   type PartialFillPolicy,
-  type TemplateRegistryState,
+  type RegistryState,
+  type RegistryRecordKind,
+  type RiskLimitKind,
+  type FeeCategory,
+  type PassThroughCostCategory,
 } from './enums.js';
 
 export {
