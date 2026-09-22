@@ -92,13 +92,21 @@ Build order is contract-first: `packages/protocol-types`, then `contracts/solana
 
 Requires Node.js with npm, the Rust toolchain, the Anchor CLI, the Solana CLI, and Foundry.
 
-Every workspace that an official generator can produce was produced by one. Package manifests are never hand-authored. The generators used were:
+Every workspace that an official generator can produce was produced by one. Package manifests are never hand-authored. Run from the repository root, the sequence that reproduces this layout is:
 
 ```bash
-anchor init naryx_core --package-manager npm --template multiple --test-template litesvm --no-git
+mkdir -p contracts
+(cd contracts && anchor init naryx_core --package-manager npm --template multiple --test-template litesvm --no-git)
+mv contracts/naryx_core contracts/solana
+
 forge init contracts/evm --empty --use-parent-git --no-git
+
 npx create-next-app@latest apps/web --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --disable-git
 ```
+
+`anchor init` takes a workspace name, not a path, and uses that name for both the directory and the program. It therefore generates `contracts/naryx_core`, which is renamed to `contracts/solana`. The program keeps the name `naryx_core`, so `Anchor.toml`, `programs/naryx_core`, and `declare_id!` are untouched by the rename. `forge init` and `create-next-app` take the target path directly and need no move.
+
+Each `anchor init` run generates a fresh program keypair and a matching declared ID, so re-running this sequence produces a different ID from the one committed here. See Validation below.
 
 Install dependencies:
 
