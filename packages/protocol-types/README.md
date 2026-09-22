@@ -14,8 +14,10 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 
 ## Implemented so far
 
-Protocol Canonical Encoding v1 foundations and exact arithmetic. The composite
-`PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet.
+Protocol Canonical Encoding v1 foundations, exact arithmetic, and the registry-identity
+primitives those schemas reference. The composite `PackageOrder`, `RoutePayload`, `SolverQuote`,
+and `PackageReceipt` schemas are not encoded yet, and neither are the manifests and registry
+records themselves; only the immutable references to them are.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
   fixed-width two's-complement big-endian, booleans as exactly `0` or `1`, byte strings and
@@ -24,8 +26,38 @@ Protocol Canonical Encoding v1 foundations and exact arithmetic. The composite
   duplicates.
 - `HASH_DOMAIN` and `domainHash`: SHA-256 over raw ASCII domain bytes concatenated directly
   with canonical payload bytes. No JSON, no hidden prefix, no length framing around the domain.
-- `hash32`, `assetId`, `assetAmount`, `expiry`: constructor-validated primitives. An asset
-  amount binds its canonical asset identifier, its decimals, and a signed integer atom amount.
+  The set is closed and rejects an unregistered domain. The asset, venue, market, adapter,
+  price-source, domain-registry-record, and fee-policy domains are reserved; the slices that
+  implement those schemas encode payloads under them.
+- `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
+  `assetRef`, `assetAmount`, `expiry`: constructor-validated primitives.
+- Frozen discriminant tables: `EXPIRY_UNIT`, `DIRECTION`, `PACKAGE_ACTION`, `SETTLEMENT_CLASS`,
+  `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
+  `RISK_LIMIT_KIND`, `FEE_CATEGORY`, and `PASS_THROUGH_COST_CATEGORY`. Discriminant `0` is
+  reserved on every table, so an all-zero payload never decodes to a valid variant.
+
+## Registry identity
+
+There is no closed `PACKAGE_KIND` enum. A package type is identified by template identity plus
+`packageTemplateManifestHash`, so adding a template means publishing a manifest and a delayed
+registry record rather than editing a shared type. `REGISTRY_STATE` carries activation state for
+every registry record kind, not just templates.
+
+A protocol identifier is a nonempty ASCII string of at most `PROTOCOL_ID_MAX_BYTES` (128) encoded
+bytes. It names a registered subject on the wire - a domain, asset, economic asset, venue, market,
+adapter, price source, or template - and is not a user-visible name. Non-ASCII rejects rather than
+being transliterated, and nothing is Unicode-normalized. `DomainId` and `AssetId` are named
+factories over the same rule.
+
+A `ManifestHash` is a `Hash32` that additionally rejects the all-zero digest, so a zeroed account
+or an omitted field cannot pass as a registered manifest. Generic `Hash32` still accepts all-zero,
+because zero is a legitimate digest value elsewhere.
+
+`VersionedManifestRef` binds `subjectId`, a nonzero `u32` `manifestVersion`, and `manifestHash`, in
+that field order. `AssetRef` binds `assetId`, `assetManifestHash`, and `decimals`, in that field
+order. An `AssetAmount` is an `AssetRef` plus signed `i128` atoms, so every amount names the exact
+registered asset version it is denominated in. Atoms stay signed because rebates and deltas are
+negative.
 - `mulDiv`, `scaleDecimals`, `checkedUnsigned`, `checkedSigned`, `absBigInt`, `compareExpiry`,
   `assertU32Length`: exact `BigInt` arithmetic with `FLOOR`, `CEIL`, `TOWARD_ZERO`, and
   `AWAY_FROM_ZERO` named at every call site.
@@ -46,8 +78,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 
 | Code | Raised for |
 |---|---|
-| `RANGE` | an integer outside its fixed width, a collection length above `u32`, decimals outside `u8`, a number outside the safe integer range |
-| `MALFORMED` | malformed hex, a wrong fixed-byte length, ill-formed UTF-16, an optional tag that is neither `0` nor `1`, an unknown enum variant, a non-integer number |
+| `RANGE` | an integer outside its fixed width, a collection length above `u32`, decimals outside `u8`, a protocol identifier above 128 bytes, a number outside the safe integer range |
+| `MALFORMED` | malformed hex, a wrong fixed-byte length, ill-formed UTF-16, a non-ASCII or empty protocol identifier, an all-zero manifest hash, a zero manifest version, an optional tag that is neither `0` nor `1`, an unknown enum variant, a non-integer number |
 | `DUPLICATE` | two set elements with identical canonical bytes |
 | `INCOMPATIBLE_UNIT` | a comparison between two different expiry units |
 | `DIVISION_BY_ZERO` | a zero divisor |
