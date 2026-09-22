@@ -40,12 +40,22 @@ export function manifestHash(value: Uint8Array | string, context = 'manifestHash
   return bytes as ManifestHash;
 }
 
+// The constructors take a hex string for ergonomics, but the wire representation is bytes. A
+// string reaching an encoder means the value never passed a constructor, so it is refused rather
+// than parsed a second time.
+function checkedManifestHash(value: ManifestHash, context: string): ManifestHash {
+  if (!(value instanceof Uint8Array)) {
+    throw new MalformedInputError(context, `expected ${HASH_BYTE_LENGTH} canonical bytes`);
+  }
+  return manifestHash(value, context);
+}
+
 export function encodeManifestHash(
   writer: CanonicalWriter,
   value: ManifestHash,
   context = 'manifestHash',
 ): void {
-  writer.writeFixedBytes(manifestHash(value, context), HASH_BYTE_LENGTH, context);
+  writer.writeFixedBytes(checkedManifestHash(value, context), HASH_BYTE_LENGTH, context);
 }
 
 export const PROTOCOL_ID_MAX_BYTES = 128;
@@ -105,21 +115,39 @@ function checkedManifestVersion(value: number, context: string): number {
   return Number(version);
 }
 
+// A ManifestHash is a Uint8Array, so freezing the reference leaves its bytes writable. The
+// reference keeps the only copy and hands back a fresh one on every read, which is what makes
+// its canonical bytes stable for the lifetime of the value.
+function frozenVersionedManifestRef(
+  subjectId: ProtocolId,
+  manifestVersion: number,
+  captured: ManifestHash,
+): VersionedManifestRef {
+  return Object.freeze({
+    subjectId,
+    manifestVersion,
+    get manifestHash(): ManifestHash {
+      return Uint8Array.from(captured) as ManifestHash;
+    },
+  });
+}
+
 export function versionedManifestRef(
   subjectId: string,
   manifestVersion: number,
   hash: Uint8Array | string,
   context = 'versionedManifestRef',
 ): VersionedManifestRef {
-  return Object.freeze({
-    subjectId: protocolId(subjectId, `${context}.subjectId`),
-    manifestVersion: checkedManifestVersion(manifestVersion, `${context}.manifestVersion`),
-    manifestHash: manifestHash(hash, `${context}.manifestHash`),
-  });
+  return frozenVersionedManifestRef(
+    protocolId(subjectId, `${context}.subjectId`),
+    checkedManifestVersion(manifestVersion, `${context}.manifestVersion`),
+    manifestHash(hash, `${context}.manifestHash`),
+  );
 }
 
 // A runtime value reaching a public encoder is untrusted: it can be a plain object that never
-// passed through the constructor, so every invariant is checked again before a byte is written.
+// passed through the constructor, so every invariant is checked again, under the encoder's
+// stricter hash rule, before a byte is written.
 function checkedVersionedManifestRef(
   value: VersionedManifestRef,
   context: string,
@@ -127,7 +155,11 @@ function checkedVersionedManifestRef(
   if (typeof value !== 'object' || value === null) {
     throw new MalformedInputError(context, 'expected a versioned manifest reference object');
   }
-  return versionedManifestRef(value.subjectId, value.manifestVersion, value.manifestHash, context);
+  return frozenVersionedManifestRef(
+    protocolId(value.subjectId, `${context}.subjectId`),
+    checkedManifestVersion(value.manifestVersion, `${context}.manifestVersion`),
+    checkedManifestHash(value.manifestHash, `${context}.manifestHash`),
+  );
 }
 
 export function encodeVersionedManifestRef(
@@ -146,24 +178,38 @@ export interface AssetRef {
   readonly decimals: number;
 }
 
+function frozenAssetRef(id: AssetId, captured: ManifestHash, decimals: number): AssetRef {
+  return Object.freeze({
+    assetId: id,
+    get assetManifestHash(): ManifestHash {
+      return Uint8Array.from(captured) as ManifestHash;
+    },
+    decimals,
+  });
+}
+
 export function assetRef(
   id: string,
   hash: Uint8Array | string,
   decimals: number,
   context = 'assetRef',
 ): AssetRef {
-  return Object.freeze({
-    assetId: assetId(id, `${context}.assetId`),
-    assetManifestHash: manifestHash(hash, `${context}.assetManifestHash`),
-    decimals: Number(checkedUnsigned(decimals, 8, `${context}.decimals`)),
-  });
+  return frozenAssetRef(
+    assetId(id, `${context}.assetId`),
+    manifestHash(hash, `${context}.assetManifestHash`),
+    Number(checkedUnsigned(decimals, 8, `${context}.decimals`)),
+  );
 }
 
 function checkedAssetRef(value: AssetRef, context: string): AssetRef {
   if (typeof value !== 'object' || value === null) {
     throw new MalformedInputError(context, 'expected an asset reference object');
   }
-  return assetRef(value.assetId, value.assetManifestHash, value.decimals, context);
+  return frozenAssetRef(
+    assetId(value.assetId, `${context}.assetId`),
+    checkedManifestHash(value.assetManifestHash, `${context}.assetManifestHash`),
+    Number(checkedUnsigned(value.decimals, 8, `${context}.decimals`)),
+  );
 }
 
 export function encodeAssetRef(writer: CanonicalWriter, value: AssetRef): void {

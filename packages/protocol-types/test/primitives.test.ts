@@ -116,6 +116,22 @@ describe('manifest hash refuses the all-zero digest', () => {
     );
     assert.equal(writer.bytes().length, 0);
   });
+
+  test('a hex string is constructor input only and never reaches the wire', () => {
+    const forged: unknown[] = [
+      ASSET_MANIFEST,
+      `0x${ASSET_MANIFEST}`,
+      Array.from(manifestHash(ASSET_MANIFEST)),
+    ];
+    for (const value of forged) {
+      const writer = new CanonicalWriter();
+      assert.throws(
+        () => encodeManifestHash(writer, value as ManifestHash),
+        MalformedInputError,
+      );
+      assert.equal(writer.bytes().length, 0);
+    }
+  });
 });
 
 describe('protocol identifiers are bounded ascii', () => {
@@ -218,6 +234,17 @@ describe('versioned manifest reference binds subject, version, and hash', () => 
   test('is frozen once constructed', () => {
     assert.equal(Object.isFrozen(versionedManifestRef(CARRY_V1, 1, TEMPLATE_MANIFEST)), true);
   });
+
+  test('mutating the hash it hands out changes neither its identity nor its encoding', () => {
+    const reference = versionedManifestRef(CARRY_V1, 1, TEMPLATE_MANIFEST);
+    const before = new CanonicalWriter();
+    encodeVersionedManifestRef(before, reference);
+    reference.manifestHash[0] = 0xff;
+    const after = new CanonicalWriter();
+    encodeVersionedManifestRef(after, reference);
+    assert.equal(toHex(reference.manifestHash), TEMPLATE_MANIFEST);
+    assert.equal(toHex(after.bytes()), toHex(before.bytes()));
+  });
 });
 
 describe('asset reference binds identity, manifest hash, and decimals', () => {
@@ -248,6 +275,17 @@ describe('asset reference binds identity, manifest hash, and decimals', () => {
   test('is frozen once constructed', () => {
     assert.equal(Object.isFrozen(usdc()), true);
   });
+
+  test('mutating the hash it hands out changes neither its identity nor its encoding', () => {
+    const reference = usdc();
+    const before = new CanonicalWriter();
+    encodeAssetRef(before, reference);
+    reference.assetManifestHash[0] = 0xff;
+    const after = new CanonicalWriter();
+    encodeAssetRef(after, reference);
+    assert.equal(toHex(reference.assetManifestHash), ASSET_MANIFEST);
+    assert.equal(toHex(after.bytes()), toHex(before.bytes()));
+  });
 });
 
 describe('asset amount binds the exact registered asset version', () => {
@@ -259,8 +297,7 @@ describe('asset amount binds the exact registered asset version', () => {
     assert.equal(amount.atoms, -1500000n);
   });
 
-  test('rejects a floating point or number atom amount', () => {
-    assert.throws(() => assetAmount(usdc(), 1.5 as unknown as bigint), MalformedInputError);
+  test('rejects a number atom amount rather than coercing it', () => {
     assert.throws(() => assetAmount(usdc(), 1500000 as unknown as bigint), MalformedInputError);
   });
 
@@ -283,6 +320,17 @@ describe('asset amount binds the exact registered asset version', () => {
 
   test('is frozen once constructed', () => {
     assert.equal(Object.isFrozen(assetAmount(usdc(), 1n)), true);
+  });
+
+  test('mutation reached through asset cannot change the amount encoding', () => {
+    const amount = assetAmount(usdc(), 1n);
+    const before = new CanonicalWriter();
+    encodeAssetAmount(before, amount);
+    amount.asset.assetManifestHash[0] = 0xff;
+    const after = new CanonicalWriter();
+    encodeAssetAmount(after, amount);
+    assert.equal(toHex(amount.asset.assetManifestHash), ASSET_MANIFEST);
+    assert.equal(toHex(after.bytes()), toHex(before.bytes()));
   });
 });
 
@@ -457,6 +505,25 @@ describe('forged runtime objects are revalidated at the encoder boundary', () =>
       );
       assert.equal(writer.bytes().length, 0);
     }
+  });
+
+  test('a hex string hash on a forged reference writes nothing and fails', () => {
+    const assetWriter = new CanonicalWriter();
+    assert.throws(
+      () => encodeAssetRef(assetWriter, forgedRef({ assetManifestHash: ASSET_MANIFEST })),
+      MalformedInputError,
+    );
+    assert.equal(assetWriter.bytes().length, 0);
+    const manifestWriter = new CanonicalWriter();
+    assert.throws(
+      () =>
+        encodeVersionedManifestRef(
+          manifestWriter,
+          forgedManifestRef({ manifestHash: TEMPLATE_MANIFEST }),
+        ),
+      MalformedInputError,
+    );
+    assert.equal(manifestWriter.bytes().length, 0);
   });
 
   test('an all-zero manifest hash on a reference is rejected at encode time', () => {

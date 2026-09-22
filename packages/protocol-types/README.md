@@ -51,7 +51,14 @@ factories over the same rule.
 
 A `ManifestHash` is a `Hash32` that additionally rejects the all-zero digest, so a zeroed account
 or an omitted field cannot pass as a registered manifest. Generic `Hash32` still accepts all-zero,
-because zero is a legitimate digest value elsewhere.
+because zero is a legitimate digest value elsewhere. A constructor takes a hex string or bytes for
+ergonomics; an encoder takes 32 canonical nonzero bytes only, so a forged string hash is refused
+rather than parsed a second time, and nothing is written when it is refused.
+
+A hash is a `Uint8Array`, and `Object.freeze` does not protect the contents of a typed array. A
+constructed `VersionedManifestRef` or `AssetRef` therefore keeps the only copy of its hash and
+returns a fresh copy on every read, so mutating what a hash property hands back changes neither
+the stored identity nor any later encoding. An `AssetAmount` inherits that through its `AssetRef`.
 
 `VersionedManifestRef` binds `subjectId`, a nonzero `u32` `manifestVersion`, and `manifestHash`, in
 that field order. `AssetRef` binds `assetId`, `assetManifestHash`, and `decimals`, in that field
@@ -79,7 +86,7 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 | Code | Raised for |
 |---|---|
 | `RANGE` | an integer outside its fixed width, a collection length above `u32`, decimals outside `u8`, a protocol identifier above 128 bytes, a number outside the safe integer range |
-| `MALFORMED` | malformed hex, a wrong fixed-byte length, ill-formed UTF-16, a non-ASCII or empty protocol identifier, an all-zero manifest hash, a zero manifest version, an optional tag that is neither `0` nor `1`, an unknown enum variant, a non-integer number |
+| `MALFORMED` | malformed hex, a wrong fixed-byte length, a manifest hash reaching an encoder as anything but 32 bytes, ill-formed UTF-16, a non-ASCII or empty protocol identifier, an all-zero manifest hash, a zero manifest version, an optional tag that is neither `0` nor `1`, an unknown enum variant, a non-integer number |
 | `DUPLICATE` | two set elements with identical canonical bytes |
 | `INCOMPATIBLE_UNIT` | a comparison between two different expiry units |
 | `DIVISION_BY_ZERO` | a zero divisor |
