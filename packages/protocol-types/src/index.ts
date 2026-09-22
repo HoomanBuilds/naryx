@@ -58,7 +58,11 @@ export {
   canonicalBytes,
   OPTIONAL_ABSENT,
   OPTIONAL_PRESENT,
+  UNSIGNED_WIDTHS,
+  SIGNED_WIDTHS,
   type ElementEncoder,
+  type UnsignedWidth,
+  type SignedWidth,
 } from './encoding.js';
 
 export {

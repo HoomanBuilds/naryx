@@ -9,6 +9,21 @@ export type ElementEncoder<T> = (writer: CanonicalWriter, value: T) => void;
 export const OPTIONAL_ABSENT = 0;
 export const OPTIONAL_PRESENT = 1;
 
+export const UNSIGNED_WIDTHS = Object.freeze([8, 16, 32, 64, 128, 256] as const);
+export const SIGNED_WIDTHS = Object.freeze([64, 128, 256] as const);
+
+export type UnsignedWidth = (typeof UNSIGNED_WIDTHS)[number];
+export type SignedWidth = (typeof SIGNED_WIDTHS)[number];
+
+function assertWidth(widths: readonly number[], bits: number, context: string): void {
+  if (!widths.includes(bits)) {
+    throw new MalformedInputError(
+      context,
+      `width ${String(bits)} is not one of ${widths.join(', ')}`,
+    );
+  }
+}
+
 function unsignedBytes(value: bigint, bits: number): Uint8Array {
   const out = new Uint8Array(bits / 8);
   let remaining = value;
@@ -36,11 +51,13 @@ export class CanonicalWriter {
     return this.#push(Uint8Array.from(value));
   }
 
-  writeUnsigned(value: bigint | number, bits: number, context = `u${bits}`): this {
+  writeUnsigned(value: bigint | number, bits: UnsignedWidth, context = `u${bits}`): this {
+    assertWidth(UNSIGNED_WIDTHS, bits, `${context}.bits`);
     return this.#push(unsignedBytes(checkedUnsigned(value, bits, context), bits));
   }
 
-  writeSigned(value: bigint | number, bits: number, context = `i${bits}`): this {
+  writeSigned(value: bigint | number, bits: SignedWidth, context = `i${bits}`): this {
+    assertWidth(SIGNED_WIDTHS, bits, `${context}.bits`);
     const checked = checkedSigned(value, bits, context);
     const encoded = checked < 0n ? checked + (1n << BigInt(bits)) : checked;
     return this.#push(unsignedBytes(encoded, bits));

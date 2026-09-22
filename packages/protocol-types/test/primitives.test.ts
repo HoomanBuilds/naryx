@@ -11,11 +11,14 @@ import {
   assetAmount,
   assetId,
   compareExpiry,
+  encodeAssetAmount,
   encodeExpiry,
   encodeHash32,
   expiry,
   hash32,
   toHex,
+  type AssetAmount,
+  type Expiry,
 } from '../src/index.js';
 
 const DIGEST = '1d235b684fabcd18942b18c62088e969bf7f95c6ba287dc7a6b94dcc1092be0d';
@@ -156,5 +159,130 @@ describe('expiry comparison requires matching unit tags', () => {
     for (const unit of Object.keys(EXPIRY_UNIT) as (keyof typeof EXPIRY_UNIT)[]) {
       assert.equal(compareExpiry(expiry(unit, 5n), expiry(unit, 5n)), 0);
     }
+  });
+});
+
+describe('forged runtime objects are revalidated at the encoder boundary', () => {
+  const forgedAmount = (fields: Record<string, unknown>): AssetAmount =>
+    ({ asset: 'usdc', decimals: 6, atoms: 1n, ...fields }) as unknown as AssetAmount;
+
+  const forgedExpiry = (fields: Record<string, unknown>): Expiry =>
+    ({ unit: 'EVM_UNIX_SECONDS', value: 1n, ...fields }) as unknown as Expiry;
+
+  test('an empty asset identifier writes nothing and fails', () => {
+    const writer = new CanonicalWriter();
+    assert.throws(() => encodeAssetAmount(writer, forgedAmount({ asset: '' })), MalformedInputError);
+    assert.equal(writer.bytes().length, 0);
+  });
+
+  test('an ill-formed or non-string asset identifier is rejected', () => {
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ asset: 'usd\ud83d' })),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ asset: 42 })),
+      MalformedInputError,
+    );
+  });
+
+  test('decimals outside u8 are rejected at encode time', () => {
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ decimals: 256 })),
+      RangeViolationError,
+    );
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ decimals: -1 })),
+      RangeViolationError,
+    );
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ decimals: 1.5 })),
+      MalformedInputError,
+    );
+  });
+
+  test('atoms outside i128 or not a bigint are rejected at encode time', () => {
+    const max = (1n << BigInt(ASSET_ATOM_BITS - 1)) - 1n;
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ atoms: max + 1n })),
+      RangeViolationError,
+    );
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), forgedAmount({ atoms: 1 })),
+      MalformedInputError,
+    );
+  });
+
+  test('a non-object asset amount is rejected', () => {
+    assert.throws(
+      () => encodeAssetAmount(new CanonicalWriter(), null as unknown as AssetAmount),
+      MalformedInputError,
+    );
+  });
+
+  test('an unknown expiry unit writes nothing and fails', () => {
+    const writer = new CanonicalWriter();
+    assert.throws(
+      () => encodeExpiry(writer, forgedExpiry({ unit: 'UNIX_NANOSECONDS' })),
+      MalformedInputError,
+    );
+    assert.equal(writer.bytes().length, 0);
+  });
+
+  test('a non-bigint or out-of-range expiry value is rejected at encode time', () => {
+    assert.throws(
+      () => encodeExpiry(new CanonicalWriter(), forgedExpiry({ value: 1700000000 })),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => encodeExpiry(new CanonicalWriter(), forgedExpiry({ value: 1n << 64n })),
+      RangeViolationError,
+    );
+    assert.throws(
+      () => encodeExpiry(new CanonicalWriter(), forgedExpiry({ value: -1n })),
+      RangeViolationError,
+    );
+  });
+
+  test('comparison rejects a forged unit on either side', () => {
+    const valid = expiry('EVM_UNIX_SECONDS', 1n);
+    assert.throws(
+      () => compareExpiry(forgedExpiry({ unit: 'UNIX_NANOSECONDS' }), valid),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => compareExpiry(valid, forgedExpiry({ unit: 'UNIX_NANOSECONDS' })),
+      MalformedInputError,
+    );
+    assert.throws(
+      () =>
+        compareExpiry(
+          forgedExpiry({ unit: 'UNIX_NANOSECONDS' }),
+          forgedExpiry({ unit: 'UNIX_NANOSECONDS', value: 2n }),
+        ),
+      MalformedInputError,
+    );
+  });
+
+  test('comparison rejects a forged value on either side', () => {
+    const valid = expiry('EVM_UNIX_SECONDS', 1n);
+    assert.throws(() => compareExpiry(forgedExpiry({ value: 1.5 }), valid), MalformedInputError);
+    assert.throws(() => compareExpiry(valid, forgedExpiry({ value: 2 })), MalformedInputError);
+    assert.throws(
+      () => compareExpiry(valid, forgedExpiry({ value: 1n << 64n })),
+      RangeViolationError,
+    );
+  });
+
+  test('a non-object expiry is rejected', () => {
+    const valid = expiry('EVM_UNIX_SECONDS', 1n);
+    assert.throws(
+      () => compareExpiry(null as unknown as Expiry, valid),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => encodeExpiry(new CanonicalWriter(), undefined as unknown as Expiry),
+      MalformedInputError,
+    );
   });
 });

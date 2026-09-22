@@ -5,10 +5,14 @@ import {
   DuplicateElementError,
   MalformedInputError,
   RangeViolationError,
+  SIGNED_WIDTHS,
+  UNSIGNED_WIDTHS,
   assetAmount,
   encodeAssetAmount,
   fromHex,
   toHex,
+  type SignedWidth,
+  type UnsignedWidth,
 } from '../src/index.js';
 import { loadFixture, type EncodingFixture, type EncodingVector } from './fixtures.js';
 
@@ -25,10 +29,10 @@ function encodeVector(vector: EncodingVector): Uint8Array {
       writer.writeFixedBytes(fromHex(vector.valueHex as string), vector.length as number);
       break;
     case 'unsigned':
-      writer.writeUnsigned(BigInt(vector.value as string), vector.bits as number);
+      writer.writeUnsigned(BigInt(vector.value as string), vector.bits as UnsignedWidth);
       break;
     case 'signed':
-      writer.writeSigned(BigInt(vector.value as string), vector.bits as number);
+      writer.writeSigned(BigInt(vector.value as string), vector.bits as SignedWidth);
       break;
     case 'bool':
       writer.writeBool(vector.value as boolean);
@@ -102,6 +106,46 @@ describe('unicode is never normalized before encoding', () => {
       .writeSet([precomposed, decomposed], (target, value) => target.writeString(value))
       .bytes();
     assert.equal(toHex(encoded), '0000000200000002c3a90000000365cc81');
+  });
+});
+
+describe('canonical integer widths are frozen', () => {
+  test('every accepted unsigned width writes exactly that width', () => {
+    for (const bits of UNSIGNED_WIDTHS) {
+      const bytes = new CanonicalWriter().writeUnsigned(1n, bits).bytes();
+      assert.equal(bytes.length, bits / 8);
+      assert.equal(toHex(bytes), `${'00'.repeat(bits / 8 - 1)}01`);
+    }
+  });
+
+  test('every accepted signed width writes exactly that width', () => {
+    for (const bits of SIGNED_WIDTHS) {
+      const bytes = new CanonicalWriter().writeSigned(-1n, bits).bytes();
+      assert.equal(bytes.length, bits / 8);
+      assert.equal(toHex(bytes), 'ff'.repeat(bits / 8));
+    }
+  });
+
+  test('an unsigned width outside the frozen set writes nothing and fails', () => {
+    for (const bits of [0, 7, 9, 24, 255, 257, 512, 1.5, -8, Number.NaN]) {
+      const writer = new CanonicalWriter();
+      assert.throws(() => writer.writeUnsigned(1n, bits as UnsignedWidth), MalformedInputError);
+      assert.equal(writer.bytes().length, 0);
+    }
+  });
+
+  test('a signed width outside the frozen set writes nothing and fails', () => {
+    for (const bits of [0, 7, 8, 9, 16, 24, 32, 257, 512, 1.5, -64]) {
+      const writer = new CanonicalWriter();
+      assert.throws(() => writer.writeSigned(1n, bits as SignedWidth), MalformedInputError);
+      assert.equal(writer.bytes().length, 0);
+    }
+  });
+
+  test('a rejected width leaves earlier fields intact', () => {
+    const writer = new CanonicalWriter().writeU8(1);
+    assert.throws(() => writer.writeUnsigned(1n, 7 as UnsignedWidth), MalformedInputError);
+    assert.equal(toHex(writer.bytes()), '01');
   });
 });
 

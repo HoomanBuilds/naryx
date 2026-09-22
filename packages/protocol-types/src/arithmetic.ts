@@ -75,6 +75,12 @@ export function assertU32Length(value: number, context = 'length'): number {
   return value;
 }
 
+function assertRounding(rounding: Rounding, context: string): void {
+  if (typeof rounding !== 'string' || !Object.prototype.hasOwnProperty.call(ROUNDING, rounding)) {
+    throw new MalformedInputError(context, `unknown rounding mode ${String(rounding)}`);
+  }
+}
+
 function applyRounding(
   quotient: bigint,
   remainder: bigint,
@@ -104,6 +110,7 @@ export function mulDiv(
   rounding: Rounding,
   context = 'mulDiv',
 ): bigint {
+  assertRounding(rounding, context);
   if (typeof left !== 'bigint' || typeof right !== 'bigint' || typeof divisor !== 'bigint') {
     throw new MalformedInputError(context, 'expected bigint operands');
   }
@@ -124,6 +131,7 @@ export function scaleDecimals(
   rounding: Rounding,
   context = 'scaleDecimals',
 ): bigint {
+  assertRounding(rounding, context);
   if (typeof value !== 'bigint') {
     throw new MalformedInputError(context, 'expected a bigint value');
   }

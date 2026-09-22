@@ -61,10 +61,20 @@ export function assetAmount(
   });
 }
 
+// A runtime value reaching a public encoder is untrusted: it can be a plain object that never
+// passed through the constructor, so every invariant is checked again before a byte is written.
+function checkedAssetAmount(value: AssetAmount, context: string): AssetAmount {
+  if (typeof value !== 'object' || value === null) {
+    throw new MalformedInputError(context, 'expected an asset amount object');
+  }
+  return assetAmount(value.asset, value.decimals, value.atoms, context);
+}
+
 export function encodeAssetAmount(writer: CanonicalWriter, value: AssetAmount): void {
-  writer.writeString(value.asset, 'assetAmount.asset');
-  writer.writeU8(value.decimals, 'assetAmount.decimals');
-  writer.writeI128(value.atoms, 'assetAmount.atoms');
+  const checked = checkedAssetAmount(value, 'assetAmount');
+  writer.writeString(checked.asset, 'assetAmount.asset');
+  writer.writeU8(checked.decimals, 'assetAmount.decimals');
+  writer.writeI128(checked.atoms, 'assetAmount.atoms');
 }
 
 export const EXPIRY_VALUE_BITS = 64;
@@ -87,15 +97,28 @@ export function expiry(unit: ExpiryUnit, value: bigint, context = 'expiry'): Exp
   });
 }
 
+function checkedExpiry(value: Expiry, context: string): Expiry {
+  if (typeof value !== 'object' || value === null) {
+    throw new MalformedInputError(context, 'expected an expiry object');
+  }
+  return expiry(value.unit, value.value, context);
+}
+
 export function encodeExpiry(writer: CanonicalWriter, value: Expiry): void {
-  writer.writeEnum(EXPIRY_UNIT, value.unit, 'expiry.unit');
-  writer.writeU64(value.value, 'expiry.value');
+  const checked = checkedExpiry(value, 'expiry');
+  writer.writeEnum(EXPIRY_UNIT, checked.unit, 'expiry.unit');
+  writer.writeU64(checked.value, 'expiry.value');
 }
 
 export function compareExpiry(left: Expiry, right: Expiry, context = 'compareExpiry'): number {
-  if (left.unit !== right.unit) {
-    throw new IncompatibleUnitError(context, `${left.unit} cannot be compared with ${right.unit}`);
+  const first = checkedExpiry(left, `${context}.left`);
+  const second = checkedExpiry(right, `${context}.right`);
+  if (first.unit !== second.unit) {
+    throw new IncompatibleUnitError(
+      context,
+      `${first.unit} cannot be compared with ${second.unit}`,
+    );
   }
-  if (left.value === right.value) return 0;
-  return left.value < right.value ? -1 : 1;
+  if (first.value === second.value) return 0;
+  return first.value < second.value ? -1 : 1;
 }

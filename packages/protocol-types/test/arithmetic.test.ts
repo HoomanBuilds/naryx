@@ -78,6 +78,47 @@ describe('rounding direction is decided, never defaulted', () => {
   });
 });
 
+describe('the rounding mode is validated on every path', () => {
+  const invalid = 'INVALID' as unknown as Rounding;
+
+  test('an exact mulDiv rejects an unknown rounding mode', () => {
+    assert.throws(() => mulDiv(6n, 1n, 2n, invalid), MalformedInputError);
+    assert.throws(() => mulDiv(10n, 2n, 5n, invalid), MalformedInputError);
+  });
+
+  test('a zero-result mulDiv rejects an unknown rounding mode', () => {
+    assert.throws(() => mulDiv(0n, 5n, 3n, invalid), MalformedInputError);
+    assert.throws(() => mulDiv(0n, 0n, 1n, invalid), MalformedInputError);
+  });
+
+  test('equal decimals reject an unknown rounding mode', () => {
+    assert.throws(() => scaleDecimals(1n, 6, 6, invalid), MalformedInputError);
+    assert.throws(() => scaleDecimals(0n, 18, 18, invalid), MalformedInputError);
+  });
+
+  test('scaling up rejects an unknown rounding mode', () => {
+    assert.throws(() => scaleDecimals(1n, 6, 18, invalid), MalformedInputError);
+  });
+
+  test('an exact scale down rejects an unknown rounding mode', () => {
+    assert.throws(() => scaleDecimals(1000000000000n, 18, 6, invalid), MalformedInputError);
+    assert.throws(() => scaleDecimals(1000001n, 18, 6, invalid), MalformedInputError);
+  });
+
+  test('a missing or inherited rounding mode is rejected', () => {
+    assert.throws(() => mulDiv(1n, 1n, 2n, undefined as unknown as Rounding), MalformedInputError);
+    assert.throws(() => mulDiv(1n, 1n, 2n, 'toString' as unknown as Rounding), MalformedInputError);
+    assert.throws(
+      () => scaleDecimals(1n, 6, 18, undefined as unknown as Rounding),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => scaleDecimals(1n, 6, 18, 'constructor' as unknown as Rounding),
+      MalformedInputError,
+    );
+  });
+});
+
 describe('division by zero is its own failure', () => {
   test('a zero divisor is rejected', () => {
     assert.throws(() => mulDiv(1n, 1n, 0n, ROUNDING.FLOOR), DivisionByZeroError);
