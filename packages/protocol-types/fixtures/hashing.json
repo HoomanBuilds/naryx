@@ -1,0 +1,26 @@
+{
+  "algorithm": "sha256",
+  "preimage": "raw ascii domain bytes concatenated directly with canonical payload bytes",
+  "vectors": [
+    { "name": "order-shared-payload", "domain": "CON/v1/order", "payloadHex": "deadbeef", "digestHex": "1d235b684fabcd18942b18c62088e969bf7f95c6ba287dc7a6b94dcc1092be0d" },
+    { "name": "route-shared-payload", "domain": "CON/v1/route", "payloadHex": "deadbeef", "digestHex": "a0911294c4bf93d0e8c5ed4bea9b9598b9f06666680d5a8cafeb352e3033c81a" },
+    { "name": "quote-shared-payload", "domain": "CON/v1/quote", "payloadHex": "deadbeef", "digestHex": "7be88e83e662011756cd5ffe3407ada3a02dc66bc622d65376d2199d10d8f002" },
+    { "name": "solver-signature-shared-payload", "domain": "CON/v1/solver-signature", "payloadHex": "deadbeef", "digestHex": "156eda4289de4e3bf24ce40dbbd9b7dcebbb102f5ee65d27acf7fff68452d9a0" },
+    { "name": "outcome-shared-payload", "domain": "CON/v1/outcome", "payloadHex": "deadbeef", "digestHex": "a2ea937f9c16b1492e87a97c8bbfc03a9bfbf2abd7fa1f0344258f0ef0377ba4" },
+    { "name": "receipt-shared-payload", "domain": "CON/v1/receipt", "payloadHex": "deadbeef", "digestHex": "7792d8afd5f404ffd652b36048df1c43b0add387ab5e3cc5b4d41d4420605452" },
+    { "name": "evidence-manifest-shared-payload", "domain": "CON/v1/evidence-manifest", "payloadHex": "deadbeef", "digestHex": "b83df0176af3fde336e5d89d7ca6e7c36e080fef8f3c2c71b24ade4435ccd56d" },
+    { "name": "benchmark-manifest-shared-payload", "domain": "CON/v1/benchmark-manifest", "payloadHex": "deadbeef", "digestHex": "81393780c5aa9208fe4773b1772c8fd709d753ac996a1cfd326ccd453b893f03" },
+    { "name": "benchmark-arm-shared-payload", "domain": "CON/v1/benchmark-arm", "payloadHex": "deadbeef", "digestHex": "5a710efc1302686691b8339a0390d5923cd6ecd8b68e0785739972f1a5fff356" },
+    { "name": "benchmark-pair-shared-payload", "domain": "CON/v1/benchmark-pair", "payloadHex": "deadbeef", "digestHex": "2785a60546680e7c4394914c754945f755dd30ce30690ad9d5f5bd4bd8706931" },
+    { "name": "package-template-shared-payload", "domain": "CON/v1/package-template", "payloadHex": "deadbeef", "digestHex": "b57707463eee2d587542102f4e80a739643bb032656161d95215bc491d34ab00" },
+    { "name": "package-template-registry-record-shared-payload", "domain": "CON/v1/package-template-registry-record", "payloadHex": "deadbeef", "digestHex": "32859f8b787ef8e64d174aa2ad747da889114bfb061484a5957be67b818ef9bb" },
+    { "name": "solver-capability-shared-payload", "domain": "CON/v1/solver-capability", "payloadHex": "deadbeef", "digestHex": "4229d1483610312fedae9f3a0a2a5c783cfd842c47ddc216f24f664e740fa554" },
+    { "name": "private-rfq-envelope-shared-payload", "domain": "CON/v1/private-rfq-envelope", "payloadHex": "deadbeef", "digestHex": "cf35b1302409e67ab5784c5bf60360fbaec0cd640163ccca24182147d98f0b81" },
+    { "name": "order-empty-payload", "domain": "CON/v1/order", "payloadHex": "", "digestHex": "5a3eb7121f1fbfaafab3ae44e1efb742f9b0cbcb4dba9149079978277179dfda" },
+    { "name": "receipt-empty-payload", "domain": "CON/v1/receipt", "payloadHex": "", "digestHex": "3033128fb059808ccfe0bf45ae48efa1093e2364141daa057de0961a9aef28a4" },
+    { "name": "order-canonical-asset-amount-payload", "domain": "CON/v1/order", "payloadHex": "00000018736f6c616e613a6d61696e6e65742d626574612f7573646306ffffffffffffffffffffffffffe91ca0", "digestHex": "d1a7769775130cc4eabf71f8874ff685146faa5179e96916a60082bdc181a8c7" },
+    { "name": "quote-canonical-asset-amount-payload", "domain": "CON/v1/quote", "payloadHex": "00000018736f6c616e613a6d61696e6e65742d626574612f7573646306ffffffffffffffffffffffffffe91ca0", "digestHex": "8cefc2ee72854520419b6509c4c23eddde06c6688737b5c83ed8aa791c1ed89a" },
+    { "name": "quote-over-order-and-route-hash-prefix", "domain": "CON/v1/quote", "payloadHex": "1d235b684fabcd18942b18c62088e969bf7f95c6ba287dc7a6b94dcc1092be0da0911294c4bf93d0e8c5ed4bea9b9598b9f06666680d5a8cafeb352e3033c81a00000018736f6c616e613a6d61696e6e65742d626574612f7573646306ffffffffffffffffffffffffffe91ca0", "digestHex": "a146a34397f93b3e7f7776a8ef09f1dc9ecda74b992e74aebf6b5f1aa94921bd" }
+  ],
+  "domainSeparationPayloadHex": "deadbeef"
+}

@@ -1,0 +1,29 @@
+{
+  "integerRepresentation": "decimal string",
+  "roundingModes": ["FLOOR", "CEIL", "TOWARD_ZERO", "AWAY_FROM_ZERO"],
+  "mulDiv": [
+    { "name": "positive-half-remainder", "left": "7", "right": "1", "divisor": "2", "expected": { "FLOOR": "3", "CEIL": "4", "TOWARD_ZERO": "3", "AWAY_FROM_ZERO": "4" } },
+    { "name": "negative-left-half-remainder", "left": "-7", "right": "1", "divisor": "2", "expected": { "FLOOR": "-4", "CEIL": "-3", "TOWARD_ZERO": "-3", "AWAY_FROM_ZERO": "-4" } },
+    { "name": "negative-right-half-remainder", "left": "7", "right": "-1", "divisor": "2", "expected": { "FLOOR": "-4", "CEIL": "-3", "TOWARD_ZERO": "-3", "AWAY_FROM_ZERO": "-4" } },
+    { "name": "negative-divisor-half-remainder", "left": "7", "right": "1", "divisor": "-2", "expected": { "FLOOR": "-4", "CEIL": "-3", "TOWARD_ZERO": "-3", "AWAY_FROM_ZERO": "-4" } },
+    { "name": "double-negative-half-remainder", "left": "-7", "right": "1", "divisor": "-2", "expected": { "FLOOR": "3", "CEIL": "4", "TOWARD_ZERO": "3", "AWAY_FROM_ZERO": "4" } },
+    { "name": "positive-exact", "left": "6", "right": "1", "divisor": "2", "expected": { "FLOOR": "3", "CEIL": "3", "TOWARD_ZERO": "3", "AWAY_FROM_ZERO": "3" } },
+    { "name": "negative-exact", "left": "-6", "right": "1", "divisor": "2", "expected": { "FLOOR": "-3", "CEIL": "-3", "TOWARD_ZERO": "-3", "AWAY_FROM_ZERO": "-3" } },
+    { "name": "zero-numerator", "left": "0", "right": "5", "divisor": "3", "expected": { "FLOOR": "0", "CEIL": "0", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "0" } },
+    { "name": "one-unit-positive", "left": "1", "right": "1", "divisor": "3", "expected": { "FLOOR": "0", "CEIL": "1", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "1" } },
+    { "name": "one-unit-negative", "left": "-1", "right": "1", "divisor": "3", "expected": { "FLOOR": "-1", "CEIL": "0", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "-1" } },
+    { "name": "product-exceeds-i128", "left": "170141183460469231731687303715884105727", "right": "2", "divisor": "3", "expected": { "FLOOR": "113427455640312821154458202477256070484", "CEIL": "113427455640312821154458202477256070485", "TOWARD_ZERO": "113427455640312821154458202477256070484", "AWAY_FROM_ZERO": "113427455640312821154458202477256070485" } },
+    { "name": "basis-point-style-rate", "left": "999999", "right": "10000", "divisor": "1000001", "expected": { "FLOOR": "9999", "CEIL": "10000", "TOWARD_ZERO": "9999", "AWAY_FROM_ZERO": "10000" } }
+  ],
+  "scaleDecimals": [
+    { "name": "scale-up-exact", "value": "1234", "fromDecimals": 2, "toDecimals": 6, "expected": { "FLOOR": "12340000", "CEIL": "12340000", "TOWARD_ZERO": "12340000", "AWAY_FROM_ZERO": "12340000" } },
+    { "name": "scale-up-from-zero-decimals", "value": "1", "fromDecimals": 6, "toDecimals": 18, "expected": { "FLOOR": "1000000000000", "CEIL": "1000000000000", "TOWARD_ZERO": "1000000000000", "AWAY_FROM_ZERO": "1000000000000" } },
+    { "name": "scale-equal-decimals", "value": "5", "fromDecimals": 6, "toDecimals": 6, "expected": { "FLOOR": "5", "CEIL": "5", "TOWARD_ZERO": "5", "AWAY_FROM_ZERO": "5" } },
+    { "name": "scale-down-positive-remainder", "value": "1234567", "fromDecimals": 6, "toDecimals": 2, "expected": { "FLOOR": "123", "CEIL": "124", "TOWARD_ZERO": "123", "AWAY_FROM_ZERO": "124" } },
+    { "name": "scale-down-negative-remainder", "value": "-1234567", "fromDecimals": 6, "toDecimals": 2, "expected": { "FLOOR": "-124", "CEIL": "-123", "TOWARD_ZERO": "-123", "AWAY_FROM_ZERO": "-124" } },
+    { "name": "scale-down-exact", "value": "1000000", "fromDecimals": 6, "toDecimals": 2, "expected": { "FLOOR": "100", "CEIL": "100", "TOWARD_ZERO": "100", "AWAY_FROM_ZERO": "100" } },
+    { "name": "scale-down-zero", "value": "0", "fromDecimals": 6, "toDecimals": 2, "expected": { "FLOOR": "0", "CEIL": "0", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "0" } },
+    { "name": "scale-down-one-atom-positive", "value": "1", "fromDecimals": 18, "toDecimals": 6, "expected": { "FLOOR": "0", "CEIL": "1", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "1" } },
+    { "name": "scale-down-one-atom-negative", "value": "-1", "fromDecimals": 18, "toDecimals": 6, "expected": { "FLOOR": "-1", "CEIL": "0", "TOWARD_ZERO": "0", "AWAY_FROM_ZERO": "-1" } }
+  ]
+}
