@@ -8,9 +8,10 @@ import {
   toHex,
   type HashDomain,
 } from '../src/index.js';
-import { loadFixture, type HashingFixture } from './fixtures.js';
+import { loadFixture, type EncodingFixture, type HashingFixture } from './fixtures.js';
 
 const fixture = loadFixture<HashingFixture>('hashing.json');
+const encodingFixture = loadFixture<EncodingFixture>('encoding.json');
 
 describe('domain-separated hashing golden vectors', () => {
   for (const vector of fixture.vectors) {
@@ -20,6 +21,24 @@ describe('domain-separated hashing golden vectors', () => {
       assert.equal(digest.length, 32);
     });
   }
+
+  test('every registered domain carries a committed digest vector', () => {
+    const covered = new Set(fixture.vectors.map((vector) => vector.domain));
+    for (const domain of Object.values(HASH_DOMAIN)) {
+      assert.equal(covered.has(domain), true, `${domain} has no golden vector`);
+    }
+  });
+
+  test('the asset-amount payloads are the committed canonical asset-amount bytes', () => {
+    const assetAmountHex = encodingFixture.vectors.find(
+      (vector) => vector.name === 'asset-amount-negative-atoms',
+    )?.hex;
+    assert.equal(typeof assetAmountHex, 'string');
+    for (const name of ['order-canonical-asset-amount-payload', 'quote-canonical-asset-amount-payload']) {
+      const vector = fixture.vectors.find((candidate) => candidate.name === name);
+      assert.equal(vector?.payloadHex, assetAmountHex, `${name} payload is stale`);
+    }
+  });
 });
 
 describe('every frozen v1 domain is separated', () => {
@@ -52,6 +71,13 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/benchmark-pair',
         'CON/v1/package-template',
         'CON/v1/package-template-registry-record',
+        'CON/v1/asset-manifest',
+        'CON/v1/venue-manifest',
+        'CON/v1/market-manifest',
+        'CON/v1/adapter-manifest',
+        'CON/v1/price-source-manifest',
+        'CON/v1/domain-registry-record',
+        'CON/v1/fee-policy',
         'CON/v1/solver-capability',
         'CON/v1/private-rfq-envelope',
       ],

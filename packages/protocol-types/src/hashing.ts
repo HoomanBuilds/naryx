@@ -17,6 +17,13 @@ export const HASH_DOMAIN = Object.freeze({
   BENCHMARK_PAIR: 'CON/v1/benchmark-pair',
   PACKAGE_TEMPLATE: 'CON/v1/package-template',
   PACKAGE_TEMPLATE_REGISTRY_RECORD: 'CON/v1/package-template-registry-record',
+  ASSET_MANIFEST: 'CON/v1/asset-manifest',
+  VENUE_MANIFEST: 'CON/v1/venue-manifest',
+  MARKET_MANIFEST: 'CON/v1/market-manifest',
+  ADAPTER_MANIFEST: 'CON/v1/adapter-manifest',
+  PRICE_SOURCE_MANIFEST: 'CON/v1/price-source-manifest',
+  DOMAIN_REGISTRY_RECORD: 'CON/v1/domain-registry-record',
+  FEE_POLICY: 'CON/v1/fee-policy',
   SOLVER_CAPABILITY: 'CON/v1/solver-capability',
   PRIVATE_RFQ_ENVELOPE: 'CON/v1/private-rfq-envelope',
 } as const);
