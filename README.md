@@ -85,11 +85,15 @@ npm install --prefix apps/web
 Solana program:
 
 ```bash
-cd contracts/solana && anchor build
+cd contracts/solana && anchor build --ignore-keys
 cd contracts/solana && cargo test
 ```
 
-`cargo test` is the test command declared by the scaffold in `Anchor.toml`. The LiteSVM tests run in process and need no local validator.
+`cargo test` is the test command declared by the scaffold in `Anchor.toml`. The LiteSVM tests run in process and need no local validator; they load the built program at the declared ID, so they do not depend on the deploy keypair.
+
+Program keypairs are never committed. The one under `contracts/solana/target/deploy` is ignored build output and is regenerated per checkout, so a fresh clone's keypair never matches the ID declared in `Anchor.toml` and `programs/naryx_core/src/lib.rs`. That declared ID is a scaffold-only local identity, not a deployed program, so pre-deployment validation skips the keypair check with `--ignore-keys`.
+
+A reviewed devnet or testnet deployment is what ends that state. It supplies an externally managed program keypair into ignored build output, runs `anchor keys sync`, commits only the resulting public ID change, and then verifies an ordinary `anchor build` without `--ignore-keys` against that injected keypair. No deployment has happened and none is authorized yet.
 
 EVM contracts:
 

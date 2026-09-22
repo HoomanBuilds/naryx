@@ -26,6 +26,21 @@ Workspaces with no official generator (`services/*`, `packages/*`, `deployments`
 
 Keep generator-authored files as generated, with one carve-out: where a rule in this file requires a narrow correction to generated output, the rule wins and the correction is named in the slice. Today that is the text rule and the secret-ignore rule. If generated output produces a warning, report it rather than hand-editing the starter.
 
+## Program identity
+
+No program keypair is committed. Every keypair under `contracts/solana/target/deploy` is ignored build output, regenerated per checkout, so a fresh clone's keypair never matches the ID declared in `Anchor.toml` and `programs/naryx_core/src/lib.rs`.
+
+That declared ID is a scaffold-only local identity. It is not a deployed program and carries no authority until a reviewed network deployment provisions an externally managed keypair.
+
+Pre-deployment validation therefore skips the keypair check:
+
+```bash
+cd contracts/solana && anchor build --ignore-keys
+cd contracts/solana && cargo test
+```
+
+A reviewed devnet or testnet deployment supplies the program keypair from outside the repository into ignored build output, runs `anchor keys sync`, commits only the resulting public ID change, and then verifies an ordinary `anchor build` without `--ignore-keys` against that injected keypair. No deployment is authorized before that review.
+
 ## Boundaries
 
 Dependencies flow one way:
