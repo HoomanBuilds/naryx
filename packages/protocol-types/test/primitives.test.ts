@@ -44,6 +44,13 @@ const CARRY_V1 = 'solana:mainnet-beta:sol-carry-v1';
 
 const usdc = (): AssetRef => assetRef(USDC, ASSET_MANIFEST, 6);
 
+// Spelled as code units so this file stays ascii and the intended input is unambiguous.
+const codeUnits = (...units: number[]): string => String.fromCharCode(...units);
+const E_ACUTE = codeUnits(0x00e9);
+const COMBINING_ACUTE = codeUnits(0x0301);
+const ROCKET = codeUnits(0xd83d, 0xde80);
+const LONE_HIGH_SURROGATE = codeUnits(0xd83d);
+
 describe('32-byte hash primitive', () => {
   test('accepts hex with and without a prefix', () => {
     assert.equal(toHex(hash32(DIGEST)), DIGEST);
@@ -124,13 +131,13 @@ describe('protocol identifiers are bounded ascii', () => {
   });
 
   test('rejects non-ascii rather than truncating or normalizing it', () => {
-    assert.throws(() => protocolId('usdcé'), MalformedInputError);
-    assert.throws(() => protocolId('usdć'), MalformedInputError);
-    assert.throws(() => protocolId('usdc🚀'), MalformedInputError);
+    assert.throws(() => protocolId(`usdc${E_ACUTE}`), MalformedInputError);
+    assert.throws(() => protocolId(`usdc${COMBINING_ACUTE}`), MalformedInputError);
+    assert.throws(() => protocolId(`usdc${ROCKET}`), MalformedInputError);
   });
 
   test('a short non-ascii identifier fails on the character, not on its byte length', () => {
-    assert.throws(() => protocolId('é'.repeat(2)), MalformedInputError);
+    assert.throws(() => protocolId(E_ACUTE.repeat(2)), MalformedInputError);
   });
 
   test('rejects a non-string', () => {
@@ -145,7 +152,7 @@ describe('protocol identifiers are bounded ascii', () => {
   });
 
   test('a forged identifier writes nothing and fails at the encoder', () => {
-    const forged: unknown[] = ['', 'a'.repeat(PROTOCOL_ID_MAX_BYTES + 1), 'é', 42];
+    const forged: unknown[] = ['', 'a'.repeat(PROTOCOL_ID_MAX_BYTES + 1), E_ACUTE, 42];
     for (const value of forged) {
       const writer = new CanonicalWriter();
       assert.throws(() => encodeProtocolId(writer, value as ProtocolId));
@@ -167,7 +174,7 @@ describe('named identifier factories share the protocol identifier rules', () =>
   test('reject empty, oversized, and ill-formed input', () => {
     assert.throws(() => domainId(''), MalformedInputError);
     assert.throws(() => assetId(''), MalformedInputError);
-    assert.throws(() => assetId('usd\ud83dc'), MalformedInputError);
+    assert.throws(() => assetId(`usd${LONE_HIGH_SURROGATE}c`), MalformedInputError);
     assert.throws(() => domainId('a'.repeat(PROTOCOL_ID_MAX_BYTES + 1)), RangeViolationError);
   });
 });
@@ -364,7 +371,13 @@ describe('forged runtime objects are revalidated at the encoder boundary', () =>
   });
 
   test('an ill-formed, non-ascii, oversized, or non-string asset identifier is rejected', () => {
-    for (const forged of ['usd\ud83d', 'usdcé', 'a'.repeat(PROTOCOL_ID_MAX_BYTES + 1), 42]) {
+    const identifiers: unknown[] = [
+      `usd${LONE_HIGH_SURROGATE}`,
+      `usdc${E_ACUTE}`,
+      'a'.repeat(PROTOCOL_ID_MAX_BYTES + 1),
+      42,
+    ];
+    for (const forged of identifiers) {
       assert.throws(() =>
         encodeAssetRef(new CanonicalWriter(), forgedRef({ assetId: forged })),
       );
