@@ -24,7 +24,7 @@ Suppress the generator's own Git init: `anchor init --no-git`, `forge init --use
 
 Workspaces with no official generator (`services/*`, `packages/*`, `deployments`, `tests`) stay as a directory and a boundary `README.md` until a slice has a real reason to add a manifest. Never commit a placeholder package, a fake implementation, or a speculative dependency.
 
-Keep generator-authored files as generated. If generated output produces a warning, report it rather than hand-editing the starter.
+Keep generator-authored files as generated, with one carve-out: where a rule in this file requires a narrow correction to generated output, the rule wins and the correction is named in the slice. Today that is the text rule and the secret-ignore rule. If generated output produces a warning, report it rather than hand-editing the starter.
 
 ## Boundaries
 
@@ -93,9 +93,9 @@ A guarantee must name the component that enforces it. Never label a batched or s
 
 ## Text rules
 
-No Unicode em dash and no Unicode arrow anywhere: code, docs, commits, comments, or UI copy. Use `-`, `>`, or `->`.
+No Unicode em dash and no Unicode arrow anywhere: code, docs, commits, comments, or UI copy. Use `-`, `>`, or `->`. There is no exception.
 
-One scoped exception: `apps/web/AGENTS.md` carries a block that `next dev` rewrites on every run. Leave it as generated. Editing it only re-creates an uncommitted change.
+A framework command can regenerate a prohibited character. `next dev` rewrites `apps/web/AGENTS.md` on every run and reintroduces Unicode em dashes. When a generated instruction file comes back with prohibited Unicode, the implementation agent normalizes it to ASCII punctuation before committing. The text rule outranks the generated form of the file.
 
 No personal names, reference-repository names, or private provenance in any committed file.
 
