@@ -145,7 +145,7 @@ Generated program keypairs stay in ignored build output and are never promoted t
 
 ## Tests
 
-New logic ships with tests in the workspace's configured framework. Depth is proportional to risk, not uniform.
+New logic ships with tests in the workspace's configured framework. Depth is proportional to risk, not uniform. Test count and coverage percentage are not goals.
 
 Critical logic gets deep coverage: boundary values, zero and empty input, overflow, rounding direction, expiry, replay, negative and error paths, cross-language vectors, and property, fuzz, or invariant tests. Critical means consensus, security, or money: canonical encoding and hashing, signatures and replay protection, fee arithmetic and rounding, access control and authority, state transitions, settlement postconditions, recovery, and accounting conservation.
 
@@ -153,15 +153,25 @@ Ordinary adapters, plumbing, and wiring get focused contract tests for their own
 
 UI presentation gets no combinatorial or duplicated tests unless the behavior carries money, authorization, or state.
 
-Each invariant has one primary test at the lowest layer that can enforce it. A higher layer tests the boundary it owns rather than repeating every lower-layer permutation.
+Each invariant has one primary test at the lowest layer that can enforce it. A higher layer tests the boundary it owns rather than repeating every lower-layer permutation. Critical money and security behavior gets the minimum representative set that proves it: happy path, the closest meaningful boundary, and the applicable failure, replay, or overflow case. Prefer one property or invariant test over many permutations that prove the same thing.
 
-Never weaken a critical test to save time, and never add a duplicate, cosmetic, or framework-only test.
+Never weaken a critical test to save time, and never add a duplicate, cosmetic, or framework-only test. Do not restate framework, library, fixture, or lower-layer behavior in a higher layer. Do not test getters, generated boilerplate, or static wiring unless they enforce a protocol guarantee.
 
 Workspace-local unit tests stay in their workspace (`contracts/solana/programs/naryx_core/tests`, `contracts/evm/test`, each package's own test directory). `tests/` is only for what crosses a workspace boundary.
 
 Do not add a test framework to a workspace that has none. It arrives through its official generator in a slice that says so.
 
+While implementing, run the focused tests for the code being changed. Run the full relevant workspace suite once at slice exit, not again after every edit.
+
 Report failing tests as failing, with their output. Never claim a command passed without having run it.
+
+## Libraries and dependencies
+
+Use official or established maintained libraries and official SDKs for standard cryptography, signing, hashing primitives, token standards, serialization, ABI and Borsh support, RPC, wallet integration, and venue APIs. Never hand-roll standard cryptography or a standard protocol codec.
+
+Custom implementation is justified only for Naryx-specific semantics or where no suitable safe library exists. The slice names that reason and protects only the novel invariant with focused vectors and tests.
+
+Pin every dependency and review its license, maintenance, release integrity, and security posture before adopting it.
 
 ## Code style
 
