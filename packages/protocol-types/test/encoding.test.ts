@@ -8,9 +8,14 @@ import {
   SIGNED_WIDTHS,
   UNSIGNED_WIDTHS,
   assetAmount,
+  assetRef,
   encodeAssetAmount,
+  encodeAssetRef,
+  encodeVersionedManifestRef,
   fromHex,
   toHex,
+  versionedManifestRef,
+  type AssetRef,
   type SignedWidth,
   type UnsignedWidth,
 } from '../src/index.js';
@@ -20,6 +25,14 @@ const fixture = loadFixture<EncodingFixture>('encoding.json');
 
 function stringFromCodeUnits(codeUnits: string[]): string {
   return codeUnits.map((unit) => String.fromCharCode(Number.parseInt(unit, 16))).join('');
+}
+
+function vectorAssetRef(vector: EncodingVector): AssetRef {
+  return assetRef(
+    vector.assetId as string,
+    vector.assetManifestHash as string,
+    vector.decimals as number,
+  );
 }
 
 function encodeVector(vector: EncodingVector): Uint8Array {
@@ -58,11 +71,21 @@ function encodeVector(vector: EncodingVector): Uint8Array {
     case 'setString':
       writer.writeSet(vector.values as string[], (target, value) => target.writeString(value));
       break;
-    case 'assetAmount':
-      encodeAssetAmount(
+    case 'versionedManifestRef':
+      encodeVersionedManifestRef(
         writer,
-        assetAmount(vector.asset as string, vector.decimals as number, BigInt(vector.atoms as string)),
+        versionedManifestRef(
+          vector.subjectId as string,
+          Number(vector.manifestVersion),
+          vector.manifestHash as string,
+        ),
       );
+      break;
+    case 'assetRef':
+      encodeAssetRef(writer, vectorAssetRef(vector));
+      break;
+    case 'assetAmount':
+      encodeAssetAmount(writer, assetAmount(vectorAssetRef(vector), BigInt(vector.atoms as string)));
       break;
     default:
       throw new Error(`unknown fixture kind ${vector.kind}`);

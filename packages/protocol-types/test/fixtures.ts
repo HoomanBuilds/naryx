@@ -27,7 +27,11 @@ export interface EncodingVector {
   valueHex?: string;
   valueCodeUnits?: string[];
   values?: string[];
-  asset?: string;
+  subjectId?: string;
+  manifestVersion?: string;
+  manifestHash?: string;
+  assetId?: string;
+  assetManifestHash?: string;
   decimals?: number;
   atoms?: string;
   hex: string;
