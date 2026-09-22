@@ -143,6 +143,14 @@ Never stage `docs/`, `inspiration/`, `.agents/`, `.codex/`, `node_modules/`, bui
 
 Generated program keypairs stay in ignored build output and are never promoted to a network with real value.
 
+## Generated artifact hygiene
+
+Ignored generated output grows without bound. Rust `target/`, Next.js `.next/`, Foundry `out/` and `cache/`, `dist/`, `build/`, and similar generated directories are periodically size-checked and removed to reclaim disk. Every one of them is recreated by the next build, so removal loses no work and is never a substitute for a fix.
+
+- Cleanup removes only exact in-repository paths, each verified to exist and to be ignored generated output before it is removed. No wildcard sweep, no path outside this checkout, no path resolved from a variable that was not checked.
+- Cleanup never targets source, dependency directories such as `node_modules/`, lockfiles, repository metadata such as `.git/`, or user data. A path that is not clearly regenerable build output is left alone.
+- A removal that would change what a build produces, rather than only where it is cached, is a code change and goes through review instead.
+
 ## Tests
 
 New logic ships with tests in the workspace's configured framework. Depth is proportional to risk, not uniform. Test count and coverage percentage are not goals.
