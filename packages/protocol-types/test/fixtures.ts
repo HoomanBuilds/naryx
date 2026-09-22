@@ -30,6 +30,9 @@ export interface EncodingVector {
   subjectId?: string;
   manifestVersion?: string;
   manifestHash?: string;
+  domainId?: string;
+  domainManifestVersion?: string;
+  domainManifestHash?: string;
   assetId?: string;
   assetManifestHash?: string;
   decimals?: number;

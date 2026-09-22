@@ -172,6 +172,61 @@ export function encodeVersionedManifestRef(
   encodeManifestHash(writer, checked.manifestHash, 'versionedManifestRef.manifestHash');
 }
 
+// A domain is a chain deployment plus the executable semantics its runtime class implements.
+// Binding the exact domain manifest version and hash into a signed object is what stops a later
+// domain registration from reinterpreting an order, quote, route, or receipt signed under an
+// earlier one. The domain identifier alone would not, because it outlives its manifest versions.
+export interface DomainRef {
+  readonly domainId: DomainId;
+  readonly domainManifestVersion: number;
+  readonly domainManifestHash: ManifestHash;
+}
+
+function frozenDomainRef(
+  id: DomainId,
+  domainManifestVersion: number,
+  captured: ManifestHash,
+): DomainRef {
+  return Object.freeze({
+    domainId: id,
+    domainManifestVersion,
+    get domainManifestHash(): ManifestHash {
+      return Uint8Array.from(captured) as ManifestHash;
+    },
+  });
+}
+
+export function domainRef(
+  id: string,
+  domainManifestVersion: number,
+  hash: Uint8Array | string,
+  context = 'domainRef',
+): DomainRef {
+  return frozenDomainRef(
+    domainId(id, `${context}.domainId`),
+    checkedManifestVersion(domainManifestVersion, `${context}.domainManifestVersion`),
+    manifestHash(hash, `${context}.domainManifestHash`),
+  );
+}
+
+function checkedDomainRef(value: DomainRef, context: string): DomainRef {
+  if (typeof value !== 'object' || value === null) {
+    throw new MalformedInputError(context, 'expected a domain reference object');
+  }
+  return frozenDomainRef(
+    domainId(value.domainId, `${context}.domainId`),
+    checkedManifestVersion(value.domainManifestVersion, `${context}.domainManifestVersion`),
+    checkedManifestHash(value.domainManifestHash, `${context}.domainManifestHash`),
+  );
+}
+
+export function encodeDomainRef(writer: CanonicalWriter, value: DomainRef): void {
+  const checked = checkedDomainRef(value, 'domainRef');
+  encodeProtocolId(writer, checked.domainId, 'domainRef.domainId');
+  writer.writeU32(checked.domainManifestVersion, 'domainRef.domainManifestVersion');
+  encodeManifestHash(writer, checked.domainManifestHash, 'domainRef.domainManifestHash');
+}
+
 export interface AssetRef {
   readonly assetId: AssetId;
   readonly assetManifestHash: ManifestHash;

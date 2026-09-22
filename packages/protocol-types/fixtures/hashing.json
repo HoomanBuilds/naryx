@@ -14,6 +14,7 @@
     { "name": "benchmark-pair-shared-payload", "domain": "CON/v1/benchmark-pair", "payloadHex": "deadbeef", "digestHex": "2785a60546680e7c4394914c754945f755dd30ce30690ad9d5f5bd4bd8706931" },
     { "name": "package-template-shared-payload", "domain": "CON/v1/package-template", "payloadHex": "deadbeef", "digestHex": "b57707463eee2d587542102f4e80a739643bb032656161d95215bc491d34ab00" },
     { "name": "package-template-registry-record-shared-payload", "domain": "CON/v1/package-template-registry-record", "payloadHex": "deadbeef", "digestHex": "32859f8b787ef8e64d174aa2ad747da889114bfb061484a5957be67b818ef9bb" },
+    { "name": "domain-manifest-shared-payload", "domain": "CON/v1/domain-manifest", "payloadHex": "deadbeef", "digestHex": "23477888042591d383f277a7771e672974da63b843c66e5127e2fd8c1fc598ac" },
     { "name": "asset-manifest-shared-payload", "domain": "CON/v1/asset-manifest", "payloadHex": "deadbeef", "digestHex": "cb7e8e521f0a62e0c01861b1275ee2a0935784f6041f8dffa7e0791a5de872bb" },
     { "name": "venue-manifest-shared-payload", "domain": "CON/v1/venue-manifest", "payloadHex": "deadbeef", "digestHex": "3464a202d30d2dee54291942f968b2ecca0204404564477925e569bf35befc10" },
     { "name": "market-manifest-shared-payload", "domain": "CON/v1/market-manifest", "payloadHex": "deadbeef", "digestHex": "4830ca5ccb014a77ff02617acdd1ab85cbd22a55f79bce55076f354a947ad82a" },

@@ -26,11 +26,11 @@ records themselves; only the immutable references to them are.
   duplicates.
 - `HASH_DOMAIN` and `domainHash`: SHA-256 over raw ASCII domain bytes concatenated directly
   with canonical payload bytes. No JSON, no hidden prefix, no length framing around the domain.
-  The set is closed and rejects an unregistered domain. The asset, venue, market, adapter,
-  price-source, domain-registry-record, and fee-policy domains are reserved; the slices that
-  implement those schemas encode payloads under them.
+  The set is closed and rejects an unregistered domain. The domain-manifest, asset, venue,
+  market, adapter, price-source, domain-registry-record, and fee-policy domains are reserved;
+  the slices that implement those schemas encode payloads under them.
 - `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
-  `assetRef`, `assetAmount`, `expiry`: constructor-validated primitives.
+  `domainRef`, `assetRef`, `assetAmount`, `expiry`: constructor-validated primitives.
 - Frozen discriminant tables: `EXPIRY_UNIT`, `DIRECTION`, `PACKAGE_ACTION`, `SETTLEMENT_CLASS`,
   `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
   `RISK_LIMIT_KIND`, `FEE_CATEGORY`, and `PASS_THROUGH_COST_CATEGORY`. Discriminant `0` is
@@ -61,8 +61,9 @@ returns a fresh copy on every read, so mutating what a hash property hands back 
 the stored identity nor any later encoding. An `AssetAmount` inherits that through its `AssetRef`.
 
 `VersionedManifestRef` binds `subjectId`, a nonzero `u32` `manifestVersion`, and `manifestHash`, in
-that field order. `AssetRef` binds `assetId`, `assetManifestHash`, and `decimals`, in that field
-order. An `AssetAmount` is an `AssetRef` plus signed `i128` atoms, so every amount names the exact
+that field order. `DomainRef` binds `domainId`, a nonzero `u32` `domainManifestVersion`, and
+`domainManifestHash`, in that field order. `AssetRef` binds `assetId`, `assetManifestHash`, and
+`decimals`, in that field order. An `AssetAmount` is an `AssetRef` plus signed `i128` atoms, so every amount names the exact
 registered asset version it is denominated in. Atoms stay signed because rebates and deltas are
 negative.
 - `mulDiv`, `scaleDecimals`, `checkedUnsigned`, `checkedSigned`, `absBigInt`, `compareExpiry`,
@@ -78,6 +79,26 @@ different bytes and therefore hash differently.
 
 Expiry is a tagged integer. `compareExpiry` rejects a comparison between two different
 expiry units rather than converting between them.
+
+## Domain identity
+
+A chain is data, not a shared type. There is no `CHAIN` enum, no `RUNTIME_CLASS` enum, no
+chain-specific product union, and no flattened chain by venue by asset discriminant in this
+package. A domain is a bounded `DomainId` plus the hash of the immutable `DomainManifest` that
+states which implemented runtime class, execution verifier, clock model, address codec, and
+settlement classes that chain deployment actually runs.
+
+`DomainRef` is what a signed object carries. The identifier alone would be too weak, because one
+domain outlives its manifest versions, so binding `domainManifestVersion` and `domainManifestHash`
+is what keeps a later domain registration from reinterpreting an order, quote, route, receipt, or
+manifest hash signed under an earlier one.
+
+Adding a chain instance under a runtime class that is already implemented is therefore a new
+manifest plus deployment and registry records, never an edit here. A genuinely new runtime family
+is executable semantics rather than data, and needs reviewed verifier and adapter code before any
+manifest registers an instance of it. Section 5.1 of the v1 specification defines the manifest
+fields and the fail-closed rules. This package implements `DomainRef` and reserves the
+`DOMAIN_MANIFEST` hash domain; it does not encode the manifest itself yet.
 
 ## Failure modes
 

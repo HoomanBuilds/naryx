@@ -17,6 +17,7 @@ export const HASH_DOMAIN = Object.freeze({
   BENCHMARK_PAIR: 'CON/v1/benchmark-pair',
   PACKAGE_TEMPLATE: 'CON/v1/package-template',
   PACKAGE_TEMPLATE_REGISTRY_RECORD: 'CON/v1/package-template-registry-record',
+  DOMAIN_MANIFEST: 'CON/v1/domain-manifest',
   ASSET_MANIFEST: 'CON/v1/asset-manifest',
   VENUE_MANIFEST: 'CON/v1/venue-manifest',
   MARKET_MANIFEST: 'CON/v1/market-manifest',

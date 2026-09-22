@@ -9,8 +9,10 @@ import {
   UNSIGNED_WIDTHS,
   assetAmount,
   assetRef,
+  domainRef,
   encodeAssetAmount,
   encodeAssetRef,
+  encodeDomainRef,
   encodeVersionedManifestRef,
   fromHex,
   toHex,
@@ -78,6 +80,16 @@ function encodeVector(vector: EncodingVector): Uint8Array {
           vector.subjectId as string,
           Number(vector.manifestVersion),
           vector.manifestHash as string,
+        ),
+      );
+      break;
+    case 'domainRef':
+      encodeDomainRef(
+        writer,
+        domainRef(
+          vector.domainId as string,
+          Number(vector.domainManifestVersion),
+          vector.domainManifestHash as string,
         ),
       );
       break;

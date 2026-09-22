@@ -14,8 +14,10 @@ import {
   assetRef,
   compareExpiry,
   domainId,
+  domainRef,
   encodeAssetAmount,
   encodeAssetRef,
+  encodeDomainRef,
   encodeExpiry,
   encodeHash32,
   encodeManifestHash,
@@ -29,6 +31,7 @@ import {
   versionedManifestRef,
   type AssetAmount,
   type AssetRef,
+  type DomainRef,
   type Expiry,
   type ManifestHash,
   type ProtocolId,
@@ -39,8 +42,10 @@ const DIGEST = '1d235b684fabcd18942b18c62088e969bf7f95c6ba287dc7a6b94dcc1092be0d
 const ZERO_DIGEST = '00'.repeat(HASH_BYTE_LENGTH);
 const ASSET_MANIFEST = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f';
 const TEMPLATE_MANIFEST = '202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f';
+const DOMAIN_MANIFEST = '404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f';
 const USDC = 'solana:mainnet-beta/usdc';
 const CARRY_V1 = 'solana:mainnet-beta:sol-carry-v1';
+const BASE_DOMAIN = 'eip155:8453:eth-carry-v1';
 
 const usdc = (): AssetRef => assetRef(USDC, ASSET_MANIFEST, 6);
 
@@ -247,6 +252,57 @@ describe('versioned manifest reference binds subject, version, and hash', () => 
   });
 });
 
+describe('domain reference binds chain identity to immutable domain semantics', () => {
+  test('encodes domain id, version, and hash in exactly that order', () => {
+    const writer = new CanonicalWriter();
+    encodeDomainRef(writer, domainRef('naryx', 2, DOMAIN_MANIFEST));
+    assert.equal(toHex(writer.bytes()), `000000056e6172797800000002${DOMAIN_MANIFEST}`);
+  });
+
+  test('accepts version one and the u32 maximum', () => {
+    assert.equal(domainRef(BASE_DOMAIN, 1, DOMAIN_MANIFEST).domainManifestVersion, 1);
+    assert.equal(
+      domainRef(BASE_DOMAIN, 0xffffffff, DOMAIN_MANIFEST).domainManifestVersion,
+      0xffffffff,
+    );
+  });
+
+  test('rejects a zero, out-of-range, or non-integer version', () => {
+    assert.throws(() => domainRef(BASE_DOMAIN, 0, DOMAIN_MANIFEST), MalformedInputError);
+    assert.throws(() => domainRef(BASE_DOMAIN, 0x100000000, DOMAIN_MANIFEST), RangeViolationError);
+    assert.throws(() => domainRef(BASE_DOMAIN, -1, DOMAIN_MANIFEST), RangeViolationError);
+    assert.throws(() => domainRef(BASE_DOMAIN, 1.5, DOMAIN_MANIFEST), MalformedInputError);
+  });
+
+  test('rejects an empty, oversized, or non-ascii domain identifier', () => {
+    assert.throws(() => domainRef('', 1, DOMAIN_MANIFEST), MalformedInputError);
+    assert.throws(
+      () => domainRef('a'.repeat(PROTOCOL_ID_MAX_BYTES + 1), 1, DOMAIN_MANIFEST),
+      RangeViolationError,
+    );
+    assert.throws(
+      () => domainRef(`eip155:8453:${E_ACUTE}`, 1, DOMAIN_MANIFEST),
+      MalformedInputError,
+    );
+  });
+
+  test('rejects an all-zero domain manifest hash', () => {
+    assert.throws(() => domainRef(BASE_DOMAIN, 1, ZERO_DIGEST), MalformedInputError);
+  });
+
+  test('mutating the hash it hands out changes neither its identity nor its encoding', () => {
+    const reference = domainRef(BASE_DOMAIN, 1, DOMAIN_MANIFEST);
+    const before = new CanonicalWriter();
+    encodeDomainRef(before, reference);
+    reference.domainManifestHash[0] = 0xff;
+    const after = new CanonicalWriter();
+    encodeDomainRef(after, reference);
+    assert.equal(Object.isFrozen(reference), true);
+    assert.equal(toHex(reference.domainManifestHash), DOMAIN_MANIFEST);
+    assert.equal(toHex(after.bytes()), toHex(before.bytes()));
+  });
+});
+
 describe('asset reference binds identity, manifest hash, and decimals', () => {
   test('encodes asset id, manifest hash, and decimals in exactly that order', () => {
     const writer = new CanonicalWriter();
@@ -406,6 +462,14 @@ describe('forged runtime objects are revalidated at the encoder boundary', () =>
       ...fields,
     }) as unknown as VersionedManifestRef;
 
+  const forgedDomainRef = (fields: Record<string, unknown>): DomainRef =>
+    ({
+      domainId: BASE_DOMAIN,
+      domainManifestVersion: 1,
+      domainManifestHash: hash32(DOMAIN_MANIFEST),
+      ...fields,
+    }) as unknown as DomainRef;
+
   const forgedExpiry = (fields: Record<string, unknown>): Expiry =>
     ({ unit: 'EVM_UNIX_SECONDS', value: 1n, ...fields }) as unknown as Expiry;
 
@@ -554,6 +618,45 @@ describe('forged runtime objects are revalidated at the encoder boundary', () =>
       () => encodeVersionedManifestRef(new CanonicalWriter(), null as unknown as VersionedManifestRef),
       MalformedInputError,
     );
+  });
+
+  test('a hex string, all-zero, or wrong-length domain manifest hash writes nothing and fails', () => {
+    for (const forged of [
+      DOMAIN_MANIFEST,
+      new Uint8Array(HASH_BYTE_LENGTH),
+      new Uint8Array(HASH_BYTE_LENGTH - 1),
+    ]) {
+      const writer = new CanonicalWriter();
+      assert.throws(
+        () => encodeDomainRef(writer, forgedDomainRef({ domainManifestHash: forged })),
+        MalformedInputError,
+      );
+      assert.equal(writer.bytes().length, 0);
+    }
+  });
+
+  test('a zero or out-of-range domain manifest version writes nothing and fails', () => {
+    for (const version of [0, 0x100000000, -1, 1.5]) {
+      const writer = new CanonicalWriter();
+      assert.throws(() =>
+        encodeDomainRef(writer, forgedDomainRef({ domainManifestVersion: version })),
+      );
+      assert.equal(writer.bytes().length, 0);
+    }
+  });
+
+  test('a forged domain identifier or non-object domain reference writes nothing and fails', () => {
+    for (const id of ['', 'a'.repeat(PROTOCOL_ID_MAX_BYTES + 1), ROCKET, 7]) {
+      const writer = new CanonicalWriter();
+      assert.throws(() => encodeDomainRef(writer, forgedDomainRef({ domainId: id })));
+      assert.equal(writer.bytes().length, 0);
+    }
+    const writer = new CanonicalWriter();
+    assert.throws(
+      () => encodeDomainRef(writer, null as unknown as DomainRef),
+      MalformedInputError,
+    );
+    assert.equal(writer.bytes().length, 0);
   });
 
   test('an unknown expiry unit writes nothing and fails', () => {

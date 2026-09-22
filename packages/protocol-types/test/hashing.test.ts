@@ -71,6 +71,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/benchmark-pair',
         'CON/v1/package-template',
         'CON/v1/package-template-registry-record',
+        'CON/v1/domain-manifest',
         'CON/v1/asset-manifest',
         'CON/v1/venue-manifest',
         'CON/v1/market-manifest',
