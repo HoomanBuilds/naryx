@@ -1,0 +1,62 @@
+use anchor_lang::prelude::*;
+use solana_sha256_hasher::hashv;
+
+use crate::error::ErrorCode;
+
+pub const PROTOCOL_ID_MAX_BYTES: usize = 128;
+pub const HASH_BYTE_LENGTH: usize = 32;
+
+const DOMAIN_MANIFEST_HASH_DOMAIN: &[u8] = b"CON/v1/domain-manifest";
+
+#[derive(Debug)]
+pub struct DomainRef {
+    domain_id: String,
+    domain_manifest_version: u32,
+    domain_manifest_hash: [u8; HASH_BYTE_LENGTH],
+}
+
+impl DomainRef {
+    pub fn new(
+        domain_id: &str,
+        domain_manifest_version: u32,
+        domain_manifest_hash: [u8; HASH_BYTE_LENGTH],
+    ) -> Result<Self> {
+        require!(domain_id.is_ascii(), ErrorCode::DomainIdNotAscii);
+        require!(!domain_id.is_empty(), ErrorCode::DomainIdEmpty);
+        require!(
+            domain_id.len() <= PROTOCOL_ID_MAX_BYTES,
+            ErrorCode::DomainIdTooLong
+        );
+        require!(
+            domain_manifest_version != 0,
+            ErrorCode::DomainManifestVersionZero
+        );
+        require!(
+            domain_manifest_hash != [0u8; HASH_BYTE_LENGTH],
+            ErrorCode::DomainManifestHashZero
+        );
+
+        Ok(Self {
+            domain_id: domain_id.to_string(),
+            domain_manifest_version,
+            domain_manifest_hash,
+        })
+    }
+
+    // These bytes go into a signed preimage that TypeScript and Solidity rebuild independently,
+    // so the layout is pinned to big-endian lengths and integers over raw hash bytes. Borsh
+    // writes little-endian and ABI pads every field to 32 bytes, so neither codec emits it.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let id = self.domain_id.as_bytes();
+        let mut out = Vec::with_capacity(4 + id.len() + 4 + HASH_BYTE_LENGTH);
+        out.extend_from_slice(&(id.len() as u32).to_be_bytes());
+        out.extend_from_slice(id);
+        out.extend_from_slice(&self.domain_manifest_version.to_be_bytes());
+        out.extend_from_slice(&self.domain_manifest_hash);
+        out
+    }
+}
+
+pub fn domain_manifest_hash(payload: &[u8]) -> [u8; HASH_BYTE_LENGTH] {
+    hashv(&[DOMAIN_MANIFEST_HASH_DOMAIN, payload]).to_bytes()
+}
