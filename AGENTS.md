@@ -95,14 +95,19 @@ Splitting a workspace into finer packages is a reviewed change to the repository
 
 ## Extensibility
 
-A new asset, venue, adapter, price source, package template, or settlement class is added by publishing an immutable versioned manifest plus a delayed domain registry record. It is never added by editing a shared type.
+Extension has two shapes and they are not interchangeable.
 
-- Adapter identity is data. `packages/protocol-types` never grows a flattened venue by asset by oracle enum. Where a discriminant must exist onchain it is separate axes, never their product.
+Routine additions are data registration. A new asset, a new venue instance, a new market, a new adapter instance of an adapter class that already exists, and a new price source are added by publishing an immutable versioned manifest plus a delayed domain registry record. They are never added by editing a shared type.
+
+A genuinely new adapter class, package template schema, or settlement class is not data. It carries new executable semantics, so it requires reviewed code or schema support first, and only then its own immutable manifest and delayed registry activation. Publishing a manifest is not the extension mechanism for new semantics.
+
+- A manifest can activate only behavior that is already implemented and explicitly recognized by the verifier. A manifest never manufactures new semantics, and an unrecognized class, schema, or combination fails closed rather than being interpreted.
+- Adapter instance identity is data. `packages/protocol-types` never grows a flattened venue by asset by oracle product enum. Where a discriminant must exist onchain it is separate axes, never their product.
 - A new specialized adapter class arrives through its own reviewed registration path. Widening a generic path to admit it is a defect.
 - Unknown, unregistered, mismatched, inactive, and unsupported records fail closed. There is no permissive default.
 - Adding a record never reinterprets an existing signed order, quote, route, receipt, or manifest hash. A new version is a new identity and a new hash, and the meaning of an active manifest is never mutated in place.
 - A mutable registry record carries only activation state and bounded current risk and economic configuration. Its lifecycle is `ACTIVE`, `ENTRY_PAUSED`, `EXIT_ONLY`, `ALL_PAUSED`, `DEPRECATED`, and exits are preserved wherever the underlying dependency is still safe to call.
-- Registration is security-gated on exact domain identity, token or market identity, decimals, lot, tick and minimum sizes, code or manifest hash, allowed templates and settlement classes, risk limits, and an activation delay. Extensible never means arbitrary calldata or arbitrary contract execution.
+- Registration is security-gated on exact domain identity, token identity, venue and market identity, decimals, lot, tick and minimum sizes, code or manifest hash, allowed templates and settlement classes, risk limits, and an activation delay. Extensible never means arbitrary calldata or arbitrary contract execution.
 
 ## No mainnet writes
 
