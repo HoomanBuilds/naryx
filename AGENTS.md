@@ -81,7 +81,8 @@ every workspace -> tests
 - `deployments` depends on nothing in this repository. It is data only, contains no executable business logic, and is consumed rather than imported.
 - `contracts/solana` and `contracts/evm` depend on nothing in this repository. They publish IDLs, ABIs, and identities into `deployments`, which is consumed from there.
 - `packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only. Never an adapter, never a service's internals, never `apps/web`. It reaches `services/api` over the public API.
-- An adapter never imports a sibling adapter. Cross-domain behavior is composed by a service.
+- An adapter never imports a sibling adapter, including one runtime adapter importing another runtime family's adapter. Cross-domain behavior is composed by a service.
+- A contract verifies its own domain reference and the semantics it implements. It never carries a list of every present or future chain.
 - A service never imports another service's internals, `apps/web`, or `packages/sdk`.
 - `apps/web` reaches services over the public API only. It never imports an adapter, a service's internals, or contract source, and it never holds a signing key.
 - `tests` may consume every workspace. Nothing depends on `tests`.
@@ -108,6 +109,19 @@ A genuinely new adapter class, package template schema, or settlement class is n
 - Adding a record never reinterprets an existing signed order, quote, route, receipt, or manifest hash. A new version is a new identity and a new hash, and the meaning of an active manifest is never mutated in place.
 - A mutable registry record carries only activation state and bounded current risk and economic configuration. Its lifecycle is `ACTIVE`, `ENTRY_PAUSED`, `EXIT_ONLY`, `ALL_PAUSED`, `DEPRECATED`, and exits are preserved wherever the underlying dependency is still safe to call.
 - Registration is security-gated on exact domain identity, token identity, venue and market identity, decimals, lot, tick and minimum sizes, code or manifest hash, allowed templates and settlement classes, risk limits, and an activation delay. Extensible never means arbitrary calldata or arbitrary contract execution.
+
+### Chains
+
+A chain follows the same split, and the split runs between a runtime family and an instance of it.
+
+An immutable `DomainManifest` is the boundary. It binds manifest version, environment, domain ID, runtime class ID and version, chain namespace and reference, execution verifier ID and code hash, clock model ID, finality policy hash, address codec ID, and supported settlement classes. `runtimeClassId` names executable semantics that are already implemented, such as an EVM, SVM, or HyperCore controller family. It is not a promise that an arbitrary runtime class works.
+
+- A new chain instance under an implemented runtime class is a new `DomainManifest` plus deployment records, delayed registry records, and adapter instances. It is never an edit to a shared order, quote, route, receipt, or expiry type.
+- A genuinely new runtime family is executable semantics. It requires isolated reviewed verifier and adapter code with its own tests before any manifest registers an instance of it. Widening an existing runtime class to admit it is a defect.
+- `packages/protocol-types` never grows a closed chain enum, a chain-specific product union, or a flattened chain by venue by asset discriminant. Chain identity is a bounded `DomainId` plus a manifest hash.
+- Every signed order, quote, route, solver capability, receipt, outcome, evidence manifest, registry record, and manifest field that names a domain carries a `DomainRef` of `domainId`, a nonzero `domainManifestVersion`, and a nonzero `domainManifestHash`, in that field order. Registering a domain therefore never reinterprets bytes already signed under an earlier one.
+- An unknown or unrecognized runtime class or version, execution verifier, clock model, address codec, settlement class, or combination of them fails closed.
+- Chain activation is gated separately by domain, environment, adapter, template, settlement class, and size cohort. A manifest being publishable is not support for a chain, and support is never claimed before the gates pass.
 
 ## No mainnet writes
 
