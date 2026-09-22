@@ -35,6 +35,7 @@ build/
 coverage/
 .turbo/
 *.tsbuildinfo
+.test-build/
 .eslintcache
 
 # Rust

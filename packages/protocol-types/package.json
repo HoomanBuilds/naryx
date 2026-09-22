@@ -1,0 +1,37 @@
+{
+  "name": "@naryx/protocol-types",
+  "version": "0.1.0",
+  "description": "The protocol kernel and the bottom of the dependency graph.",
+  "scripts": {
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "@noble/hashes": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fixtures/*.json": "./fixtures/*.json"
+  },
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "fixtures"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}
