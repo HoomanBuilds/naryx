@@ -46,4 +46,28 @@ pub enum ErrorCode {
     ProtocolIdEmpty,
     #[msg("Protocol identifier is above the protocol identifier byte limit")]
     ProtocolIdTooLong,
+    #[msg("Wire integer has the wrong byte width")]
+    WireIntegerWidth,
+    #[msg("Wire manifest hash is all zero")]
+    WireManifestHashZero,
+    #[msg("Wire commitment hash is all zero")]
+    WireCommitmentHashZero,
+    #[msg("Wire version is zero")]
+    WireVersionZero,
+    #[msg("Wire positive value is zero")]
+    WirePositiveValueZero,
+    #[msg("Wire fraction is not in lowest terms")]
+    WireFractionNotReduced,
+    #[msg("Wire enum discriminant is unknown")]
+    WireEnumUnknown,
+    #[msg("Wire collection is empty")]
+    WireCollectionEmpty,
+    #[msg("Wire collection contains a duplicate key")]
+    WireCollectionDuplicate,
+    #[msg("Wire collection is not canonically ordered")]
+    WireCollectionNotCanonical,
+    #[msg("Wire collection length exceeds u32")]
+    WireCollectionTooLong,
+    #[msg("Wire recovery window is zero")]
+    WireRecoveryWindowZero,
 }
