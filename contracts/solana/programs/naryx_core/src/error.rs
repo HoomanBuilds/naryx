@@ -74,7 +74,7 @@ pub enum ErrorCode {
     WireVersionMismatch,
     #[msg("Wire nonce is zero")]
     WireNonceZero,
-    #[msg("Wire asset does not match the package asset")]
+    #[msg("Wire asset relationship is invalid")]
     WireAssetMismatch,
     #[msg("Wire fee arrays have different asset-key sets")]
     WireFeeKeyMismatch,
@@ -100,4 +100,28 @@ pub enum ErrorCode {
     WireReservationRule,
     #[msg("Wire firm quote does not have an atomic entry outcome")]
     WireFirmQuoteShape,
+    #[msg("Wire version is unsupported")]
+    WireVersionUnsupported,
+    #[msg("Wire optional fields have an inconsistent shape")]
+    WireOptionalShape,
+    #[msg("Wire ordered sequence is invalid")]
+    WireSequenceInvalid,
+    #[msg("Wire route plan shape is invalid")]
+    WireRoutePlanShape,
+    #[msg("Wire route clock does not match its execution plan")]
+    WireRouteClockMismatch,
+    #[msg("Wire route reference is unknown")]
+    WireRouteReferenceUnknown,
+    #[msg("Wire route binding is unused")]
+    WireRouteBindingUnused,
+    #[msg("Wire route leg shape is invalid")]
+    WireRouteLegShape,
+    #[msg("Wire payload range is invalid")]
+    WirePayloadRangeInvalid,
+    #[msg("Wire payload ranges overlap")]
+    WirePayloadRangeOverlap,
+    #[msg("Wire recovery shape is invalid")]
+    WireRecoveryShape,
+    #[msg("Wire recovery timing is invalid")]
+    WireRecoveryTimingInvalid,
 }

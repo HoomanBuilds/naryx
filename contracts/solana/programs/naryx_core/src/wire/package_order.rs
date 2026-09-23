@@ -15,7 +15,7 @@ macro_rules! wire_enum {
         }
 
         impl $name {
-            pub(super) fn discriminant(self) -> u8 {
+            pub(crate) fn discriminant(self) -> u8 {
                 self as u8
             }
         }
@@ -177,13 +177,13 @@ impl AssetRef {
         self.decimals
     }
 
-    pub(super) fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.asset_id.canonical_bytes());
         out.extend_from_slice(&self.asset_manifest_hash.0);
         out.push(self.decimals);
     }
 
-    pub(super) fn canonical_bytes(&self) -> Vec<u8> {
+    pub(crate) fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.encode(&mut out);
         out
@@ -209,7 +209,7 @@ impl AssetAmount {
         self.atoms
     }
 
-    pub(super) fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.asset.encode(out);
         out.extend_from_slice(&self.atoms.to_be_bytes());
     }
@@ -247,7 +247,15 @@ impl ExactPrice {
         })
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub fn base_asset(&self) -> &AssetRef {
+        &self.base_asset
+    }
+
+    pub fn quote_asset(&self) -> &AssetRef {
+        &self.quote_asset
+    }
+
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.base_asset.encode(out);
         self.quote_asset.encode(out);
         out.extend_from_slice(&self.quote_atoms.to_be_bytes());
@@ -327,12 +335,12 @@ impl FeeCap {
         self.max_atoms
     }
 
-    pub(super) fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         self.asset.encode(out);
         out.extend_from_slice(&self.max_atoms.to_be_bytes());
     }
 
-    pub(super) fn key(&self) -> Vec<u8> {
+    pub(crate) fn key(&self) -> Vec<u8> {
         self.asset.canonical_bytes()
     }
 }
@@ -358,13 +366,13 @@ impl AdapterRef {
         })
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.adapter_id.canonical_bytes());
         out.extend_from_slice(&self.adapter_manifest_version.to_be_bytes());
         out.extend_from_slice(&self.adapter_manifest_hash.0);
     }
 
-    fn key(&self) -> Vec<u8> {
+    pub(crate) fn key(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.encode(&mut out);
         out
