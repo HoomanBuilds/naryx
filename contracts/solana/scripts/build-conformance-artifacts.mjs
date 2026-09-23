@@ -9,14 +9,14 @@ const outputDir = resolve(contractsDir, "../../deployments/solana/conformance/id
 const temporaryDir = mkdtempSync(join(tmpdir(), "naryx-conformance-idls-"));
 
 function buildIdl(program, output, cargoArgs) {
-  const result = spawnSync(
-    "anchor",
-    ["idl", "build", "-p", program, "-o", output, "--", ...cargoArgs],
-    { cwd: contractsDir, stdio: "inherit" },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`${program} IDL build failed`);
+  runAnchor(["idl", "build", "-p", program, "-o", output, "--", ...cargoArgs]);
   return JSON.parse(readFileSync(output, "utf8"));
+}
+
+function runAnchor(args) {
+  const result = spawnSync("anchor", args, { cwd: contractsDir, stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`anchor ${args.join(" ")} failed`);
 }
 
 function requireNames(items, names, kind) {
@@ -27,6 +27,9 @@ function requireNames(items, names, kind) {
 }
 
 try {
+  runAnchor(["build", "-p", "naryx_conformance_venue", "--ignore-keys", "--no-idl"]);
+  runAnchor(["build", "-p", "naryx_core", "--ignore-keys", "--no-idl", "--", "--features", "conformance"]);
+
   const corePath = join(temporaryDir, "naryx_core.json");
   const venuePath = join(temporaryDir, "naryx_conformance_venue.json");
   const core = buildIdl("naryx_core", corePath, ["--features", "conformance", "--lib"]);
