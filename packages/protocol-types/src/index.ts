@@ -109,3 +109,13 @@ export {
 } from './primitives.js';
 
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
+
+export {
+  domainManifest,
+  encodeDomainManifest,
+  domainManifestBytes,
+  domainManifestHash,
+  domainRefFromManifest,
+  type DomainManifestInput,
+  type DomainManifest,
+} from './domain-manifest.js';

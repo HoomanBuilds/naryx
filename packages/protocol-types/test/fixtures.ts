@@ -58,6 +58,24 @@ export interface HashingFixture {
   domainSeparationPayloadHex: string;
 }
 
+export interface DomainManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  domainId: string;
+  runtimeClassId: string;
+  runtimeClassVersion: string;
+  chainNamespace: string;
+  chainReference: string;
+  executionVerifierId: string;
+  executionVerifierCodeHash: string;
+  clockModelId: string;
+  finalityPolicyHash: string;
+  addressCodecId: string;
+  supportedSettlementClasses: string[];
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;
