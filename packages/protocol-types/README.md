@@ -224,8 +224,11 @@ constructor defensively copies hashes and nested values, and the encoder revalid
 before writing.
 
 This layer validates canonical shape, fixed widths, nonzero versions, enum membership, and collection
-ordering only. Action-specific fields, asset relationships, atomic and Hyperliquid profiles, and
-initial activation policy remain separate verifier work and are not implied by a successful encoding.
+ordering only. `validatePackageOrderProfile` is the separate semantic gate for ENTRY and EXIT shapes,
+exact asset relationships, the activated atomic Solana and EVM profile, and the Hyperliquid batched
+IOC recovery profile. It enforces the initial marketable-limit activation policy plus exact-net and
+bounded-net quantity rules without changing generic canonical bytes. Registry activity, venue state,
+and live domain configuration remain verifier work and are not implied by successful validation.
 
 ## Failure modes
 
@@ -247,7 +250,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`,
 `fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
-`fixtures/package-order-atomic.json`, and `fixtures/solver-quote.json` hold
+`fixtures/package-order-atomic.json`, `fixtures/package-order-hyperliquid-exit.json`, and
+`fixtures/solver-quote.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

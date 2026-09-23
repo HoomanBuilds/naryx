@@ -413,6 +413,18 @@ export interface FixtureExactSignedRate {
   roundingDirection: string;
 }
 
+export interface FixtureExactPrice {
+  baseAssetId: string;
+  baseAssetManifestHash: string;
+  baseDecimals: number;
+  quoteAssetId: string;
+  quoteAssetManifestHash: string;
+  quoteDecimals: number;
+  quoteAtoms: string;
+  baseAtoms: string;
+  roundingDirection: string;
+}
+
 export interface FixtureFeeCap {
   assetId: string;
   assetManifestHash: string;
@@ -485,6 +497,70 @@ export interface SolverQuoteFixture {
   canonicalHex: string;
   quoteHashHex: string;
   solverSignatureDigestHex: string;
+}
+
+export interface HyperliquidExitPackageOrderFixture {
+  version: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  templateId: string;
+  templateVersion: string;
+  packageTemplateManifestHash: string;
+  owner: string;
+  settlementAccount: string;
+  nonce: string;
+  expiryUnit: string;
+  expiryValue: string;
+  direction: string;
+  action: string;
+  packageOrderType: string;
+  packageTimeInForce: string;
+  partialFillPolicy: string;
+  quantity: FixtureAssetAmount;
+  hyperliquidQuantityPolicy: string;
+  hyperliquidGrossSpotQuantity: FixtureAssetAmount;
+  hyperliquidMinNetSpotDelta: FixtureAssetAmount;
+  hyperliquidMaxNetSpotDelta: FixtureAssetAmount;
+  hyperliquidMaxTerminalResidualBaseQuantity: FixtureAssetAmount;
+  hyperliquidResidualValuationSchemaVersion: string;
+  hyperliquidResidualValuationReferencePrice: FixtureExactPrice;
+  hyperliquidMaxTerminalResidualQuoteValue: FixtureAssetAmount;
+  expectedPreStrategySpotQuantity: FixtureAssetAmount;
+  hyperliquidRecoveryExpiryUnit: string;
+  hyperliquidMaxRecoveryActionExpiryValue: string;
+  hyperliquidRecoveryDeadlineValue: string;
+  hyperliquidMinRecoveryWindowMs: string;
+  exitOutcomeSchemaVersion: string;
+  entryReceiptHash: string;
+  expectedPrePositionSize: FixtureAssetAmount;
+  expectedPrePositionEntryNotional: FixtureAssetAmount;
+  minExitQuoteOutcome: FixtureAssetAmount;
+  minSpotQuoteOut: FixtureAssetAmount;
+  hyperliquidMaxPerpBuyPrice: FixtureExactPrice;
+  maxMarginAdded: FixtureAssetAmount;
+  minVenueReserveReturned: FixtureAssetAmount;
+  minWalletQuoteBalanceDelta: FixtureAssetAmount;
+  maxVenueFeeAtomsByAsset: FixtureFeeCap[];
+  maxProtocolFee: FixtureAssetAmount;
+  maxSolverFee: FixtureAssetAmount;
+  maxPriorityFee: FixtureAssetAmount;
+  maxRecoveryCostAtomsByAsset: FixtureFeeCap[];
+  permittedSpotAdapters: FixtureAdapterRef[];
+  permittedPerpAdapters: FixtureAdapterRef[];
+  settlementClass: string;
+  maxRecoverySpotBuyPrice: FixtureExactPrice;
+  minRecoverySpotSellPrice: FixtureExactPrice;
+  minRecoveryPerpSellPrice: FixtureExactPrice;
+  maxRecoveryPerpBuyPrice: FixtureExactPrice;
+  maxAggregateRecoveryLossQuote: FixtureAssetAmount;
+  maxResidualBaseQuantity: FixtureAssetAmount;
+  allowedRecoveryActions: string[];
+  canonicalHex: string;
+  digestHex: string;
 }
 
 export interface RoundingExpectation {

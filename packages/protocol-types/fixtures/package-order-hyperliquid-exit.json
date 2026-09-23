@@ -1,0 +1,256 @@
+{
+  "version": "1",
+  "environment": "testnet",
+  "domain": {
+    "domainId": "hypercore:testnet",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "templateId": "cash-and-carry-v1",
+  "templateVersion": "1",
+  "packageTemplateManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "owner": "hyperliquid-master-1",
+  "settlementAccount": "hyperliquid-vault-1",
+  "nonce": "84",
+  "expiryUnit": "HYPERLIQUID_UNIX_MILLISECONDS",
+  "expiryValue": "1780000000000",
+  "direction": "LONG_SPOT_SHORT_PERP",
+  "action": "EXIT",
+  "packageOrderType": "MARKETABLE_LIMIT",
+  "packageTimeInForce": "IOC",
+  "partialFillPolicy": "EXACT_ALL_LEGS",
+  "quantity": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "10000"
+  },
+  "hyperliquidQuantityPolicy": "BOUNDED_NET",
+  "hyperliquidGrossSpotQuantity": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "10000"
+  },
+  "hyperliquidMinNetSpotDelta": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "-10000"
+  },
+  "hyperliquidMaxNetSpotDelta": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "-9900"
+  },
+  "hyperliquidMaxTerminalResidualBaseQuantity": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "100"
+  },
+  "hyperliquidResidualValuationSchemaVersion": "1",
+  "hyperliquidResidualValuationReferencePrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "600",
+    "baseAtoms": "1",
+    "roundingDirection": "CEIL"
+  },
+  "hyperliquidMaxTerminalResidualQuoteValue": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "60000"
+  },
+  "expectedPreStrategySpotQuantity": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "9900"
+  },
+  "hyperliquidRecoveryExpiryUnit": "HYPERLIQUID_UNIX_MILLISECONDS",
+  "hyperliquidMaxRecoveryActionExpiryValue": "1780000050000",
+  "hyperliquidRecoveryDeadlineValue": "1780000100000",
+  "hyperliquidMinRecoveryWindowMs": "100000",
+  "exitOutcomeSchemaVersion": "1",
+  "entryReceiptHash": "1212121212121212121212121212121212121212121212121212121212121212",
+  "expectedPrePositionSize": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "-10000"
+  },
+  "expectedPrePositionEntryNotional": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "6000000"
+  },
+  "minExitQuoteOutcome": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "5500000"
+  },
+  "minSpotQuoteOut": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "5500000"
+  },
+  "hyperliquidMaxPerpBuyPrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "610",
+    "baseAtoms": "1",
+    "roundingDirection": "CEIL"
+  },
+  "maxMarginAdded": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "500000"
+  },
+  "minVenueReserveReturned": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "0"
+  },
+  "minWalletQuoteBalanceDelta": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "5000000"
+  },
+  "maxVenueFeeAtomsByAsset": [
+    {
+      "assetId": "hypercore:testnet:btc",
+      "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "decimals": 8,
+      "maxAtoms": "100"
+    },
+    {
+      "assetId": "hypercore:testnet:usdc",
+      "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "decimals": 6,
+      "maxAtoms": "50000"
+    }
+  ],
+  "maxProtocolFee": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "10000"
+  },
+  "maxSolverFee": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "20000"
+  },
+  "maxPriorityFee": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "10000"
+  },
+  "maxRecoveryCostAtomsByAsset": [
+    {
+      "assetId": "hypercore:testnet:usdc",
+      "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "decimals": 6,
+      "maxAtoms": "100000"
+    }
+  ],
+  "permittedSpotAdapters": [
+    {
+      "adapterId": "hypercore-spot-adapter-v1",
+      "adapterManifestVersion": "1",
+      "adapterManifestHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  ],
+  "permittedPerpAdapters": [
+    {
+      "adapterId": "hypercore-perp-adapter-v1",
+      "adapterManifestVersion": "1",
+      "adapterManifestHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "settlementClass": "BATCHED_IOC_WITH_RECOVERY",
+  "maxRecoverySpotBuyPrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "620",
+    "baseAtoms": "1",
+    "roundingDirection": "CEIL"
+  },
+  "minRecoverySpotSellPrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "580",
+    "baseAtoms": "1",
+    "roundingDirection": "FLOOR"
+  },
+  "minRecoveryPerpSellPrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "580",
+    "baseAtoms": "1",
+    "roundingDirection": "FLOOR"
+  },
+  "maxRecoveryPerpBuyPrice": {
+    "baseAssetId": "hypercore:testnet:btc",
+    "baseAssetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "baseDecimals": 8,
+    "quoteAssetId": "hypercore:testnet:usdc",
+    "quoteAssetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "quoteDecimals": 6,
+    "quoteAtoms": "620",
+    "baseAtoms": "1",
+    "roundingDirection": "CEIL"
+  },
+  "maxAggregateRecoveryLossQuote": {
+    "assetId": "hypercore:testnet:usdc",
+    "assetManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "decimals": 6,
+    "atoms": "1000000"
+  },
+  "maxResidualBaseQuantity": {
+    "assetId": "hypercore:testnet:btc",
+    "assetManifestHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "decimals": 8,
+    "atoms": "10000"
+  },
+  "allowedRecoveryActions": [
+    "CANCEL_OPEN_ORDERS",
+    "COMPLETE_SPOT",
+    "COMPLETE_PERP",
+    "ROLLBACK_SPOT",
+    "ROLLBACK_PERP"
+  ],
+  "canonicalHex": "0000000100000007746573746e6574000000116879706572636f72653a746573746e657400000001aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00000011636173682d616e642d63617272792d763100000001bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000001468797065726c69717569642d6d61737465722d310000001368797065726c69717569642d7661756c742d310000000000000000000000000000000000000000000000000000000000000054030000019e7044880001020201010000000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0800000000000000000000000000002710010301000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc080000000000000000000000000000271001000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08ffffffffffffffffffffffffffffd8f001000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08ffffffffffffffffffffffffffffd95401000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0800000000000000000000000000000064010000000101000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000000258000000000000000000000000000000010201000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000000ea6001000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000000000000000000000000026ac0103010000019e70454b50010000019e70460ea00100000000000186a000000001011212121212121212121212121212121212121212121212121212121212121212000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08ffffffffffffffffffffffffffffd8f0000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd06000000000000000000000000005b8d800001000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000053ec600001000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000053ec600001000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd06000000000000000000000000000002620000000000000000000000000000000102000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000007a120000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000000000000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd06000000000000000000000000004c4b4000000002000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0800000000000000000000000000000064000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000000c350000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000002710000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000004e20000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000000271000000001000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd06000000000000000000000000000186a000000001000000196879706572636f72652d73706f742d616461707465722d763100000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee00000001000000196879706572636f72652d706572702d616461707465722d763100000001ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0201000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000000026c000000000000000000000000000000010201000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000000244000000000000000000000000000000010101000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0600000000000000000000000000000244000000000000000000000000000000010101000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc08000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd060000000000000000000000000000026c0000000000000000000000000000000102000000166879706572636f72653a746573746e65743a75736463dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd06000000000000000000000000000f4240000000156879706572636f72653a746573746e65743a627463cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0800000000000000000000000000002710000000050102030405",
+  "digestHex": "e8226e0eb1352fce24ef7ea474e17b6d34d436c06dfc3bc3c342e1d59283ae97"
+}

@@ -195,6 +195,8 @@ export {
   type PackageOrder,
 } from './package-order.js';
 
+export { validatePackageOrderProfile } from './package-order-profile.js';
+
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 
 export {
