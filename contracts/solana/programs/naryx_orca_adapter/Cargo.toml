@@ -1,0 +1,38 @@
+[package]
+name = "naryx_orca_adapter"
+version = "0.1.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "naryx_orca_adapter"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+
+[dependencies]
+anchor-lang = "=1.2.0"
+anchor-spl = { version = "=1.2.0", features = ["token"] }
+
+[dev-dependencies]
+litesvm = { version = "=0.10.0", features = ["precompiles"] }
+orca_whirlpools_client = { version = "=2.0.0", default-features = false }
+solana-account = "=3.4.0"
+solana-keypair = "=3.1.2"
+solana-message = "=3.1.0"
+solana-signer = "=3.0.1"
+solana-transaction = "=3.1.0"
+
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
