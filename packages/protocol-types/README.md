@@ -17,7 +17,7 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
-`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, and fee-policy rule primitives. The composite
+`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, and `FeePolicyManifest` kernels. The composite
 `PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
 and neither are the remaining resource manifests.
 
@@ -193,7 +193,10 @@ is either a signed `i128` rate over matched package notional or a signed fixed-a
 both. Fixed rules use the version 1 scale and rounding sentinels. Pass-through rules are separate
 unsigned `u128` caps for actual venue, network, or recovery cost and always refund unused prepaid
 atoms to the owner. Both rule lists must arrive in canonical `(category, assetId)` order and reject
-duplicate keys even when another field differs. `FeePolicyManifest` remains a later slice.
+duplicate keys even when another field differs. `FeePolicyManifest` binds these arrays to one exact
+domain, activation interval, direction, and optional promotion cohort. Unscoped manifests are
+zero-fee fallbacks only, and optional expiry is same-unit, half-open, and strictly after activation.
+This identity kernel does not select a policy or settle a charge.
 
 ## Failure modes
 
@@ -214,7 +217,7 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
 `fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`, and
-`fixtures/domain-registry-record.json` hold
+`fixtures/domain-registry-record.json`, and `fixtures/fee-policy-manifest.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1",
+  "manifestVersion": "1",
+  "environment": "testnet",
+  "domain": {
+    "domainId": "svm:test-domain-1",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a"
+  },
+  "scopeDirection": "LONG_SPOT_SHORT_PERP",
+  "scopeQuantityPolicyClass": "EXACT_ATOMIC",
+  "scopeSettlementClass": "ATOMIC_POSTCONDITION",
+  "scopeAccountModeClass": "user-owned-v1",
+  "feePolicyVersion": "1",
+  "activationUnit": "SOLANA_SLOT",
+  "activationValue": "1000",
+  "serviceFeeRules": [
+    {
+      "feeCategory": "PROTOCOL",
+      "feeAssetId": "svm:test-domain-1:usdc",
+      "feeAssetManifestHash": "7c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35",
+      "feeAssetDecimals": 6,
+      "rateBase": "MATCHED_PACKAGE_NOTIONAL",
+      "rateScale": "10000",
+      "rateValue": "5",
+      "roundingDirection": "FLOOR",
+      "hardMaximumReference": "protocol-fee-hard-max-v1",
+      "recipientIdentity": "protocol-treasury",
+      "collectionAuthority": "solana-fee-controller"
+    }
+  ],
+  "passThroughCostRules": [
+    {
+      "costCategory": "NETWORK",
+      "costAssetId": "svm:test-domain-1:usdc",
+      "costAssetManifestHash": "7c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35",
+      "costAssetDecimals": 6,
+      "maxAtoms": "500000",
+      "roundingDirection": "TOWARD_ZERO",
+      "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+    }
+  ],
+  "refundPolicyVersion": "1",
+  "expiryUnit": "SOLANA_SLOT",
+  "expiryValue": "2000",
+  "canonicalHex": "000000010000000100000007746573746e65740000001173766d3a746573742d646f6d61696e2d3100000001393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a0101010101010000000d757365722d6f776e65642d7631000000010100000000000003e800000001010000001673766d3a746573742d646f6d61696e2d313a757364637c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35060100000000000000000000000000002710010000000000000000000000000000000500010000001870726f746f636f6c2d6665652d686172642d6d61782d76310000001170726f746f636f6c2d747265617375727900000015736f6c616e612d6665652d636f6e74726f6c6c657200000001020000001673766d3a746573742d646f6d61696e2d313a757364637c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35060000000000000000000000000007a12003010000000101010100000000000007d0",
+  "digestHex": "2b87c82adb73150456d7b7dae55798f975038f9614fc790328aaff4a9ab6af62"
+}

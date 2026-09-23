@@ -76,6 +76,15 @@ export {
 } from './fee-policy-primitives.js';
 
 export {
+  feePolicyManifest,
+  encodeFeePolicyManifest,
+  feePolicyManifestBytes,
+  feePolicyManifestHash,
+  type FeePolicyManifestInput,
+  type FeePolicyManifest,
+} from './fee-policy-manifest.js';
+
+export {
   ROUNDING,
   U32_MAX,
   toBigInt,

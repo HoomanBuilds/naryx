@@ -303,6 +303,52 @@ export interface DomainRegistryRecordFixture {
   digestHex: string;
 }
 
+export interface FeePolicyManifestFixture {
+  schemaVersion: string;
+  manifestVersion: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  scopeDirection: string;
+  scopeQuantityPolicyClass: string;
+  scopeSettlementClass: string;
+  scopeAccountModeClass: string;
+  feePolicyVersion: string;
+  activationUnit: string;
+  activationValue: string;
+  serviceFeeRules: {
+    feeCategory: string;
+    feeAssetId: string;
+    feeAssetManifestHash: string;
+    feeAssetDecimals: number;
+    rateBase: string;
+    rateScale: string;
+    rateValue?: string;
+    fixedAtoms?: string;
+    roundingDirection: string;
+    hardMaximumReference: string;
+    recipientIdentity: string;
+    collectionAuthority: string;
+  }[];
+  passThroughCostRules: {
+    costCategory: string;
+    costAssetId: string;
+    costAssetManifestHash: string;
+    costAssetDecimals: number;
+    maxAtoms: string;
+    roundingDirection: string;
+    refundRule: string;
+  }[];
+  refundPolicyVersion: string;
+  expiryUnit: string;
+  expiryValue: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;
