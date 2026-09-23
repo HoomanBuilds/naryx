@@ -138,3 +138,22 @@ export {
   type VenueManifestInput,
   type VenueManifest,
 } from './venue-manifest.js';
+
+export {
+  marketManifest,
+  encodeMarketManifest,
+  marketManifestBytes,
+  marketManifestHash,
+  type BaseLotSizeInput,
+  type BaseLotSize,
+  type PriceTickInput,
+  type PriceTick,
+  type MinimumNotionalInput,
+  type MinimumNotional,
+  type ContractMultiplierInput,
+  type ContractMultiplier,
+  type PermittedPriceSourceInput,
+  type PermittedPriceSource,
+  type MarketManifestInput,
+  type MarketManifest,
+} from './market-manifest.js';

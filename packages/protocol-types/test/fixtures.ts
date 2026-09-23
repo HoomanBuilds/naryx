@@ -112,6 +112,55 @@ export interface VenueManifestFixture {
   digestHex: string;
 }
 
+export interface MarketManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  marketId: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  venueId: string;
+  venueManifestHash: string;
+  marketIdentity: string;
+  instrumentKind: string;
+  baseAssetId: string;
+  baseAssetManifestHash: string;
+  quoteAssetId: string;
+  quoteAssetManifestHash: string;
+  baseLotSize: {
+    baseAssetId: string;
+    baseAssetManifestHash: string;
+    baseDecimals: number;
+    atoms: string;
+  };
+  priceTick: {
+    quoteAssetId: string;
+    quoteAssetManifestHash: string;
+    quoteDecimals: number;
+    quoteAtoms: string;
+    baseLotCount: string;
+  };
+  minimumNotional: {
+    quoteAssetId: string;
+    quoteAssetManifestHash: string;
+    quoteDecimals: number;
+    atoms: string;
+  };
+  contractMultiplier: {
+    numerator: string;
+    denominator: string;
+    unitConvention: string;
+  };
+  permittedPriceSources: {
+    priceSourceId: string;
+    priceSourceManifestHash: string;
+  }[];
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;
