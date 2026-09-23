@@ -32,6 +32,9 @@ export {
   RISK_LIMIT_KIND,
   FEE_CATEGORY,
   PASS_THROUGH_COST_CATEGORY,
+  ADAPTER_IDENTITY_SOURCE,
+  ADAPTER_ACCESS_MODE,
+  ADAPTER_SIGNER_MODE,
   enumDiscriminant,
   type EnumTable,
   type ExpiryUnit,
@@ -46,6 +49,9 @@ export {
   type RiskLimitKind,
   type FeeCategory,
   type PassThroughCostCategory,
+  type AdapterIdentitySource,
+  type AdapterAccessMode,
+  type AdapterSignerMode,
 } from './enums.js';
 
 export {
@@ -209,3 +215,30 @@ export {
   type RiskLimitInput,
   type RiskLimit,
 } from './registry-primitives.js';
+
+export {
+  encodeAdapterMarketRef,
+  encodeAdapterAssetRef,
+  identityConstraint,
+  encodeIdentityConstraint,
+  signerRule,
+  encodeSignerRule,
+  accountAndAuthorityBinding,
+  encodeAccountAndAuthorityBinding,
+  adapterManifest,
+  encodeAdapterManifest,
+  adapterManifestBytes,
+  adapterManifestHash,
+  type AdapterMarketRefInput,
+  type AdapterMarketRef,
+  type AdapterAssetRefInput,
+  type AdapterAssetRef,
+  type IdentityConstraintInput,
+  type IdentityConstraint,
+  type SignerRuleInput,
+  type SignerRule,
+  type AccountAndAuthorityBindingInput,
+  type AccountAndAuthorityBinding,
+  type AdapterManifestInput,
+  type AdapterManifest,
+} from './adapter-manifest.js';

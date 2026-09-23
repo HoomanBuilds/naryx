@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  ADAPTER_ACCESS_MODE,
+  ADAPTER_IDENTITY_SOURCE,
+  ADAPTER_SIGNER_MODE,
   CanonicalWriter,
   DIRECTION,
   EXPIRY_UNIT,
@@ -19,6 +22,9 @@ import {
 } from '../src/index.js';
 
 const TABLES = {
+  ADAPTER_IDENTITY_SOURCE,
+  ADAPTER_ACCESS_MODE,
+  ADAPTER_SIGNER_MODE,
   EXPIRY_UNIT,
   DIRECTION,
   PACKAGE_ACTION,
@@ -85,6 +91,26 @@ describe('frozen enum discriminants', () => {
     });
     assert.deepEqual(FEE_CATEGORY, { PROTOCOL: 1, SOLVER: 2, BUILDER: 3 });
     assert.deepEqual(PASS_THROUGH_COST_CATEGORY, { VENUE: 1, NETWORK: 2, RECOVERY: 3 });
+    assert.deepEqual(ADAPTER_IDENTITY_SOURCE, {
+      EXACT: 1,
+      DOMAIN_CONFIGURATION: 2,
+      SIGNED_ORDER: 3,
+      SIGNED_ROUTE: 4,
+      CLASS_DERIVED: 5,
+    });
+    assert.deepEqual(ADAPTER_ACCESS_MODE, {
+      OBSERVE: 1,
+      MUTATE: 2,
+      INVOKE: 3,
+      ASSET_DEBIT: 4,
+      ASSET_CREDIT: 5,
+    });
+    assert.deepEqual(ADAPTER_SIGNER_MODE, {
+      NONE: 1,
+      RUNTIME_SIGNATURE: 2,
+      VERIFIED_AUTHORIZATION: 3,
+      PROGRAM_DERIVED: 4,
+    });
     assert.deepEqual(DIRECTION, { LONG_SPOT_SHORT_PERP: 1 });
     assert.deepEqual(PACKAGE_ACTION, { ENTRY: 1, EXIT: 2 });
     assert.deepEqual(PARTIAL_FILL_POLICY, { EXACT_ALL_LEGS: 1 });

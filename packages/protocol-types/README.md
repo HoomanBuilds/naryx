@@ -155,6 +155,15 @@ rule. `no-fallback-v1` names the absence of a fallback rather than leaving it op
 The manifest defines immutable identity only; it neither activates a source nor proves a live
 observation is fresh.
 
+## Adapter identity
+
+`AdapterManifest` binds one recognized adapter class and version to an exact domain, venue,
+code identity, supported market, asset, leg, settlement and template upper bounds, accounting
+schema, and a canonical account and authority map. Each binding states how an account and its
+authority are resolved, which access modes are allowed, and which signer rule applies. The map
+cannot authorize arbitrary calls or account lists; executable instruction, selector and action
+semantics remain in the pinned adapter class and fail closed when a binding is missing or extra.
+
 ## Package template registry
 
 `PackageTemplateRegistryRecord` binds one template manifest to an exact domain, environment,

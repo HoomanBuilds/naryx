@@ -229,6 +229,45 @@ export interface PackageTemplateRegistryRecordFixture {
   digestHex: string;
 }
 
+export interface AdapterManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  adapterId: string;
+  adapterClass: string;
+  adapterClassVersion: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  venueId: string;
+  venueManifestHash: string;
+  codeIdentity: string;
+  supportedMarkets: { marketId: string; marketManifestHash: string }[];
+  supportedAssets: { assetId: string; assetManifestHash: string }[];
+  supportedLegTypes: string[];
+  supportedSettlementClasses: string[];
+  supportedTemplates: {
+    templateId: string;
+    templateVersion: string;
+    packageTemplateManifestHash: string;
+  }[];
+  accountAndAuthorityMap: {
+    bindingId: string;
+    accountRole: string;
+    accountIdentity: { source: string; exactIdentity?: string; ruleId?: string; ruleVersion?: string };
+    codeIdentity?: { source: string; exactIdentity?: string; ruleId?: string; ruleVersion?: string };
+    ownerIdentity?: { source: string; exactIdentity?: string; ruleId?: string; ruleVersion?: string };
+    accessModes: string[];
+    authorityRole: string;
+    authorityIdentity: { source: string; exactIdentity?: string; ruleId?: string; ruleVersion?: string };
+    signerRule: { mode: string; schemeId?: string };
+  }[];
+  accountingSchemaHash: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

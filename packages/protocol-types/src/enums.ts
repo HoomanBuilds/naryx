@@ -87,6 +87,32 @@ export const PASS_THROUGH_COST_CATEGORY = Object.freeze({
 } as const);
 export type PassThroughCostCategory = keyof typeof PASS_THROUGH_COST_CATEGORY;
 
+export const ADAPTER_IDENTITY_SOURCE = Object.freeze({
+  EXACT: 1,
+  DOMAIN_CONFIGURATION: 2,
+  SIGNED_ORDER: 3,
+  SIGNED_ROUTE: 4,
+  CLASS_DERIVED: 5,
+} as const);
+export type AdapterIdentitySource = keyof typeof ADAPTER_IDENTITY_SOURCE;
+
+export const ADAPTER_ACCESS_MODE = Object.freeze({
+  OBSERVE: 1,
+  MUTATE: 2,
+  INVOKE: 3,
+  ASSET_DEBIT: 4,
+  ASSET_CREDIT: 5,
+} as const);
+export type AdapterAccessMode = keyof typeof ADAPTER_ACCESS_MODE;
+
+export const ADAPTER_SIGNER_MODE = Object.freeze({
+  NONE: 1,
+  RUNTIME_SIGNATURE: 2,
+  VERIFIED_AUTHORIZATION: 3,
+  PROGRAM_DERIVED: 4,
+} as const);
+export type AdapterSignerMode = keyof typeof ADAPTER_SIGNER_MODE;
+
 export function enumDiscriminant<Name extends string>(
   table: EnumTable<Name>,
   name: Name,
