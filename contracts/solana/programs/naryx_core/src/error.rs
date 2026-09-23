@@ -150,4 +150,90 @@ pub enum ErrorCode {
     ConformanceSignatureInstructionInvalid,
     #[msg("Conformance solver signature does not bind this execution")]
     ConformanceSignatureMismatch,
+    #[msg("Resource subject identifier is all zero")]
+    ResourceSubjectZero,
+    #[msg("Resource manifest version is zero")]
+    ResourceManifestVersionZero,
+    #[msg("Resource manifest hash is all zero")]
+    ResourceManifestHashZero,
+    #[msg("Resource descriptor version is zero")]
+    ResourceDescriptorVersionZero,
+    #[msg("Resource descriptor hash is all zero")]
+    ResourceDescriptorHashZero,
+    #[msg("Resource descriptor is not a supported semantic version")]
+    ResourceDescriptorUnsupported,
+    #[msg("Resource settlement class is not supported")]
+    ResourceSettlementUnsupported,
+    #[msg("Resource quote limit is missing")]
+    ResourceQuoteLimitMissing,
+    #[msg("Resource quote limit is not allowed for this resource kind")]
+    ResourceQuoteLimitUnexpected,
+    #[msg("Resource quote limit does not bind the exact quote asset and decimals")]
+    ResourceQuoteLimitMismatch,
+    #[msg("Resource maximum notional is zero")]
+    ResourceMaximumNotionalZero,
+    #[msg("Resource market unit is zero")]
+    ResourceMarketUnitZero,
+    #[msg("Resource market multiplier is not in lowest terms")]
+    ResourceMarketMultiplierNotReduced,
+    #[msg("Resource reference shape is invalid")]
+    ResourceReferenceShape,
+    #[msg("Resource address is the default Pubkey")]
+    ResourceAddressZero,
+    #[msg("Resource account identity is invalid")]
+    ResourceAccountMismatch,
+    #[msg("Resource program is not recognized")]
+    ResourceProgramUnsupported,
+    #[msg("Resource program or code identity changed")]
+    ResourceCodeIdentityMismatch,
+    #[msg("Resource decimals do not match the mint")]
+    ResourceDecimalsMismatch,
+    #[msg("Resource role is invalid for this kind")]
+    ResourceRoleMismatch,
+    #[msg("Resource manifest domain does not match the active domain")]
+    ResourceDomainMismatch,
+    #[msg("Resource index does not match the proposed record")]
+    ResourceIndexMismatch,
+    #[msg("A resource registration proposal is already pending")]
+    ResourceRegistrationExists,
+    #[msg("No resource registration proposal is pending")]
+    ResourceRegistrationMissing,
+    #[msg("Resource registration is before its activation slot")]
+    ResourceRegistrationNotReady,
+    #[msg("Resource manifest version is not newer than the last proposed version")]
+    ResourceManifestVersionNotIncreasing,
+    #[msg("Resource is already active")]
+    ResourceAlreadyActive,
+    #[msg("Resource is not the active record for its subject")]
+    ResourceNotActive,
+    #[msg("A resource control proposal is already pending")]
+    ResourceControlProposalExists,
+    #[msg("No resource control proposal is pending")]
+    ResourceControlProposalMissing,
+    #[msg("Resource control proposal is before its activation slot")]
+    ResourceControlProposalNotReady,
+    #[msg("Deprecated resource control is terminal")]
+    ResourceDeprecatedTerminal,
+    #[msg("Immediate resource control update would widen permissions or risk")]
+    ResourceUnsafeImmediateControl,
+    #[msg("Resource does not permit this action")]
+    ResourceActionNotAllowed,
+    #[msg("Resource package notional exceeds an exact quote-asset limit")]
+    ResourceMaximumNotionalExceeded,
+    #[msg("Resource leg quantity or limit price is zero")]
+    ResourceLegValueZero,
+    #[msg("Resource leg quantity is not aligned to the market base lot")]
+    ResourceBaseLotMismatch,
+    #[msg("Resource leg limit price is not aligned to the market quote tick")]
+    ResourceQuoteTickMismatch,
+    #[msg("Resource leg quote notional is below the market minimum")]
+    ResourceMinimumNotionalNotMet,
+    #[msg("Resource leg notional arithmetic overflowed")]
+    ResourceNotionalOverflow,
+    #[msg("Cash-and-carry legs do not carry equal multiplier-adjusted base quantity")]
+    ResourceEconomicQuantityMismatch,
+    #[msg("Resource package notional does not equal the larger exact leg notional")]
+    ResourcePackageNotionalMismatch,
+    #[msg("Cash-and-carry resources are not distinct where required")]
+    ResourceInstancesNotDistinct,
 }

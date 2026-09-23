@@ -7,7 +7,7 @@ pub mod wire;
 
 use anchor_lang::prelude::*;
 
-pub use {constants::*, instructions::*, wire::*};
+pub use {constants::*, instructions::*, state::ResourceControl, wire::*};
 
 declare_id!("8qmA9VuQwAAqQ3F93CAfLNFB3P8M8ygXgvn9xCnZXa2i");
 
@@ -67,6 +67,56 @@ pub mod naryx_core {
     pub fn activate_unpause(ctx: Context<ActivateUnpause>) -> Result<()> {
         instructions::activate_unpause::handler(ctx)
     }
+
+    pub fn propose_asset(ctx: Context<ProposeAsset>, args: ProposeAssetArgs) -> Result<()> {
+        instructions::resource_registry::propose_asset(ctx, args)
+    }
+
+    pub fn propose_venue(ctx: Context<ProposeVenue>, args: ProposeVenueArgs) -> Result<()> {
+        instructions::resource_registry::propose_venue(ctx, args)
+    }
+
+    pub fn propose_market(ctx: Context<ProposeMarket>, args: ProposeMarketArgs) -> Result<()> {
+        instructions::resource_registry::propose_market(ctx, args)
+    }
+
+    pub fn propose_adapter(ctx: Context<ProposeAdapter>, args: ProposeAdapterArgs) -> Result<()> {
+        instructions::resource_registry::propose_adapter(ctx, args)
+    }
+
+    pub fn activate_initial_resource(ctx: Context<ActivateInitialResource>) -> Result<()> {
+        instructions::resource_registry::activate_initial_resource(ctx)
+    }
+
+    pub fn activate_resource_version(ctx: Context<ActivateResourceVersion>) -> Result<()> {
+        instructions::resource_registry::activate_resource_version(ctx)
+    }
+
+    pub fn cancel_resource_registration(ctx: Context<CancelResourceRegistration>) -> Result<()> {
+        instructions::resource_registry::cancel_resource_registration(ctx)
+    }
+
+    pub fn propose_resource_control(
+        ctx: Context<ProposeResourceControl>,
+        control: ResourceControl,
+    ) -> Result<()> {
+        instructions::resource_registry::propose_resource_control(ctx, control)
+    }
+
+    pub fn cancel_resource_control(ctx: Context<CancelResourceControl>) -> Result<()> {
+        instructions::resource_registry::cancel_resource_control(ctx)
+    }
+
+    pub fn activate_resource_control(ctx: Context<ActivateResourceControl>) -> Result<()> {
+        instructions::resource_registry::activate_resource_control(ctx)
+    }
+
+    pub fn tighten_resource_control(
+        ctx: Context<TightenResourceControl>,
+        control: ResourceControl,
+    ) -> Result<()> {
+        instructions::resource_registry::tighten_resource_control(ctx, control)
+    }
 }
 
 #[cfg(feature = "conformance")]
@@ -124,6 +174,56 @@ pub mod naryx_core {
 
     pub fn activate_unpause(ctx: Context<ActivateUnpause>) -> Result<()> {
         instructions::activate_unpause::handler(ctx)
+    }
+
+    pub fn propose_asset(ctx: Context<ProposeAsset>, args: ProposeAssetArgs) -> Result<()> {
+        instructions::resource_registry::propose_asset(ctx, args)
+    }
+
+    pub fn propose_venue(ctx: Context<ProposeVenue>, args: ProposeVenueArgs) -> Result<()> {
+        instructions::resource_registry::propose_venue(ctx, args)
+    }
+
+    pub fn propose_market(ctx: Context<ProposeMarket>, args: ProposeMarketArgs) -> Result<()> {
+        instructions::resource_registry::propose_market(ctx, args)
+    }
+
+    pub fn propose_adapter(ctx: Context<ProposeAdapter>, args: ProposeAdapterArgs) -> Result<()> {
+        instructions::resource_registry::propose_adapter(ctx, args)
+    }
+
+    pub fn activate_initial_resource(ctx: Context<ActivateInitialResource>) -> Result<()> {
+        instructions::resource_registry::activate_initial_resource(ctx)
+    }
+
+    pub fn activate_resource_version(ctx: Context<ActivateResourceVersion>) -> Result<()> {
+        instructions::resource_registry::activate_resource_version(ctx)
+    }
+
+    pub fn cancel_resource_registration(ctx: Context<CancelResourceRegistration>) -> Result<()> {
+        instructions::resource_registry::cancel_resource_registration(ctx)
+    }
+
+    pub fn propose_resource_control(
+        ctx: Context<ProposeResourceControl>,
+        control: ResourceControl,
+    ) -> Result<()> {
+        instructions::resource_registry::propose_resource_control(ctx, control)
+    }
+
+    pub fn cancel_resource_control(ctx: Context<CancelResourceControl>) -> Result<()> {
+        instructions::resource_registry::cancel_resource_control(ctx)
+    }
+
+    pub fn activate_resource_control(ctx: Context<ActivateResourceControl>) -> Result<()> {
+        instructions::resource_registry::activate_resource_control(ctx)
+    }
+
+    pub fn tighten_resource_control(
+        ctx: Context<TightenResourceControl>,
+        control: ResourceControl,
+    ) -> Result<()> {
+        instructions::resource_registry::tighten_resource_control(ctx, control)
     }
 
     pub fn execute_conformance_atomic(

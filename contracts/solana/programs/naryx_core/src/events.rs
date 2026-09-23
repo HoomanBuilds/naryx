@@ -1,6 +1,9 @@
 use anchor_lang::prelude::*;
 
-use crate::wire::{DomainRef, ProtocolId};
+use crate::{
+    state::{Lifecycle, ResourceKind},
+    wire::{DomainRef, ProtocolId, HASH_BYTE_LENGTH},
+};
 
 #[event]
 pub struct ProtocolConfigInitialized {
@@ -63,6 +66,69 @@ pub struct UnpauseCancelled {
 pub struct EntryUnpaused {
     pub config: Pubkey,
     pub executor: Pubkey,
+}
+
+#[event]
+pub struct ResourceRegistrationProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub kind: ResourceKind,
+    pub subject_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct ResourceRegistrationCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub kind: ResourceKind,
+    pub subject_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+}
+
+#[event]
+pub struct ResourceActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub previous_record: Pubkey,
+    pub kind: ResourceKind,
+    pub subject_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub lifecycle: Lifecycle,
+}
+
+#[event]
+pub struct ResourceControlProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct ResourceControlCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+}
+
+#[event]
+pub struct ResourceControlActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+}
+
+#[event]
+pub struct ResourceControlTightened {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+    pub registration_cancelled: bool,
+    pub control_cancelled: bool,
 }
 
 #[cfg(feature = "conformance")]

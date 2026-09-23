@@ -2,6 +2,9 @@ use anchor_lang::prelude::*;
 
 use crate::wire::{DomainRef, ProtocolId};
 
+pub mod resource_registry;
+pub use resource_registry::*;
+
 pub const PROTOCOL_CONFIG_VERSION: u16 = 2;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
