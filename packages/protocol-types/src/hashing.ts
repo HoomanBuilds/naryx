@@ -7,6 +7,7 @@ import { encodeAscii } from './text.js';
 export const HASH_DOMAIN = Object.freeze({
   ORDER: 'CON/v1/order',
   ROUTE: 'CON/v1/route',
+  ROUTE_ACCOUNTS: 'CON/v1/route-accounts',
   QUOTE: 'CON/v1/quote',
   SOLVER_SIGNATURE: 'CON/v1/solver-signature',
   OUTCOME: 'CON/v1/outcome',

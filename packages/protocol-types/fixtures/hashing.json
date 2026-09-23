@@ -4,6 +4,7 @@
   "vectors": [
     { "name": "order-shared-payload", "domain": "CON/v1/order", "payloadHex": "deadbeef", "digestHex": "1d235b684fabcd18942b18c62088e969bf7f95c6ba287dc7a6b94dcc1092be0d" },
     { "name": "route-shared-payload", "domain": "CON/v1/route", "payloadHex": "deadbeef", "digestHex": "a0911294c4bf93d0e8c5ed4bea9b9598b9f06666680d5a8cafeb352e3033c81a" },
+    { "name": "route-accounts-shared-payload", "domain": "CON/v1/route-accounts", "payloadHex": "deadbeef", "digestHex": "2347d7c99c3bdc4d176c9242558dd5677b7449410f870f1999c54326c9129ab4" },
     { "name": "quote-shared-payload", "domain": "CON/v1/quote", "payloadHex": "deadbeef", "digestHex": "7be88e83e662011756cd5ffe3407ada3a02dc66bc622d65376d2199d10d8f002" },
     { "name": "solver-signature-shared-payload", "domain": "CON/v1/solver-signature", "payloadHex": "deadbeef", "digestHex": "156eda4289de4e3bf24ce40dbbd9b7dcebbb102f5ee65d27acf7fff68452d9a0" },
     { "name": "outcome-shared-payload", "domain": "CON/v1/outcome", "payloadHex": "deadbeef", "digestHex": "a2ea937f9c16b1492e87a97c8bbfc03a9bfbf2abd7fa1f0344258f0ef0377ba4" },

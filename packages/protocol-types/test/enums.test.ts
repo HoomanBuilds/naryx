@@ -6,8 +6,12 @@ import {
   ADAPTER_SIGNER_MODE,
   CanonicalWriter,
   DIRECTION,
+  COMPARATOR,
+  EXECUTION_PLAN_KIND,
   EXPIRY_UNIT,
   FEE_CATEGORY,
+  LATE_BOUND_FIELD_KIND,
+  LEG_ROLE,
   MalformedInputError,
   PACKAGE_ACTION,
   PACKAGE_ORDER_TYPE,
@@ -23,6 +27,8 @@ import {
   RISK_LIMIT_KIND,
   SETTLEMENT_CLASS,
   SOLVER_SIGNATURE_SCHEME,
+  STATE_VALUE_KIND,
+  TRADE_SIDE,
   enumDiscriminant,
   toHex,
 } from '../src/index.js';
@@ -33,6 +39,12 @@ const TABLES = {
   ADAPTER_SIGNER_MODE,
   EXPIRY_UNIT,
   DIRECTION,
+  EXECUTION_PLAN_KIND,
+  LEG_ROLE,
+  TRADE_SIDE,
+  LATE_BOUND_FIELD_KIND,
+  COMPARATOR,
+  STATE_VALUE_KIND,
   PACKAGE_ACTION,
   PACKAGE_ORDER_TYPE,
   PACKAGE_TIME_IN_FORCE,
@@ -161,6 +173,27 @@ describe('frozen enum discriminants', () => {
       ROLLBACK_PERP: 5,
     });
     assert.deepEqual(PARTIAL_FILL_POLICY, { EXACT_ALL_LEGS: 1 });
+    assert.deepEqual(EXECUTION_PLAN_KIND, {
+      SVM_ATOMIC_CPI: 1,
+      EVM_ATOMIC_BATCH: 2,
+      HYPERCORE_BATCHED_IOC: 3,
+    });
+    assert.deepEqual(LEG_ROLE, { SPOT: 1, PERPETUAL: 2 });
+    assert.deepEqual(TRADE_SIDE, { BUY: 1, SELL: 2 });
+    assert.deepEqual(LATE_BOUND_FIELD_KIND, {
+      ROUTE_HASH: 1,
+      QUOTE_HASH: 2,
+      SOLVER_SIGNATURE: 3,
+      OWNER_AUTHORIZATION: 4,
+    });
+    assert.deepEqual(COMPARATOR, { EQ: 1, LTE: 2, GTE: 3 });
+    assert.deepEqual(STATE_VALUE_KIND, {
+      SIGNED_ASSET_AMOUNT: 1,
+      UNSIGNED_U256: 2,
+      COMMITMENT_HASH: 3,
+      PROTOCOL_ID: 4,
+      BOOLEAN: 5,
+    });
   });
 
   test('no closed package-kind discriminant is exported', async () => {

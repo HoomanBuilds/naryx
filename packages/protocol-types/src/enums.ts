@@ -72,6 +72,49 @@ export const PARTIAL_FILL_POLICY = Object.freeze({
 } as const);
 export type PartialFillPolicy = keyof typeof PARTIAL_FILL_POLICY;
 
+export const EXECUTION_PLAN_KIND = Object.freeze({
+  SVM_ATOMIC_CPI: 1,
+  EVM_ATOMIC_BATCH: 2,
+  HYPERCORE_BATCHED_IOC: 3,
+} as const);
+export type ExecutionPlanKind = keyof typeof EXECUTION_PLAN_KIND;
+
+export const LEG_ROLE = Object.freeze({
+  SPOT: 1,
+  PERPETUAL: 2,
+} as const);
+export type LegRole = keyof typeof LEG_ROLE;
+
+export const TRADE_SIDE = Object.freeze({
+  BUY: 1,
+  SELL: 2,
+} as const);
+export type TradeSide = keyof typeof TRADE_SIDE;
+
+export const LATE_BOUND_FIELD_KIND = Object.freeze({
+  ROUTE_HASH: 1,
+  QUOTE_HASH: 2,
+  SOLVER_SIGNATURE: 3,
+  OWNER_AUTHORIZATION: 4,
+} as const);
+export type LateBoundFieldKind = keyof typeof LATE_BOUND_FIELD_KIND;
+
+export const COMPARATOR = Object.freeze({
+  EQ: 1,
+  LTE: 2,
+  GTE: 3,
+} as const);
+export type Comparator = keyof typeof COMPARATOR;
+
+export const STATE_VALUE_KIND = Object.freeze({
+  SIGNED_ASSET_AMOUNT: 1,
+  UNSIGNED_U256: 2,
+  COMMITMENT_HASH: 3,
+  PROTOCOL_ID: 4,
+  BOOLEAN: 5,
+} as const);
+export type StateValueKind = keyof typeof STATE_VALUE_KIND;
+
 // Activation state is the same contract for every registry record kind, so one table serves
 // the template record and the domain registry record alike.
 export const REGISTRY_STATE = Object.freeze({

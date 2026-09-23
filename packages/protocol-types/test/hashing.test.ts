@@ -61,6 +61,7 @@ describe('every frozen v1 domain is separated', () => {
       [
         'CON/v1/order',
         'CON/v1/route',
+        'CON/v1/route-accounts',
         'CON/v1/quote',
         'CON/v1/solver-signature',
         'CON/v1/outcome',
