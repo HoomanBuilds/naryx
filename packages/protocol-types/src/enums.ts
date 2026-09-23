@@ -27,6 +27,33 @@ export const PACKAGE_ACTION = Object.freeze({
 } as const);
 export type PackageAction = keyof typeof PACKAGE_ACTION;
 
+export const PACKAGE_ORDER_TYPE = Object.freeze({
+  LIMIT: 1,
+  MARKETABLE_LIMIT: 2,
+  POST_ONLY: 3,
+  CONDITIONAL: 4,
+  SCHEDULED: 5,
+  PACKAGE_TWAP: 6,
+} as const);
+export type PackageOrderType = keyof typeof PACKAGE_ORDER_TYPE;
+
+export const PACKAGE_TIME_IN_FORCE = Object.freeze({
+  IOC: 1,
+  FOK: 2,
+  GTC: 3,
+  GTD: 4,
+} as const);
+export type PackageTimeInForce = keyof typeof PACKAGE_TIME_IN_FORCE;
+
+export const RECOVERY_ACTION = Object.freeze({
+  CANCEL_OPEN_ORDERS: 1,
+  COMPLETE_SPOT: 2,
+  COMPLETE_PERP: 3,
+  ROLLBACK_SPOT: 4,
+  ROLLBACK_PERP: 5,
+} as const);
+export type RecoveryAction = keyof typeof RECOVERY_ACTION;
+
 export const SETTLEMENT_CLASS = Object.freeze({
   ATOMIC_POSTCONDITION: 1,
   BATCHED_IOC_WITH_RECOVERY: 2,

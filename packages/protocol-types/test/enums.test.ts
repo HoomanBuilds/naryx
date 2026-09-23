@@ -10,9 +10,12 @@ import {
   FEE_CATEGORY,
   MalformedInputError,
   PACKAGE_ACTION,
+  PACKAGE_ORDER_TYPE,
+  PACKAGE_TIME_IN_FORCE,
   PARTIAL_FILL_POLICY,
   PASS_THROUGH_COST_CATEGORY,
   QUANTITY_POLICY_CLASS,
+  RECOVERY_ACTION,
   REGISTRY_RECORD_KIND,
   REGISTRY_STATE,
   RISK_LIMIT_KIND,
@@ -28,6 +31,9 @@ const TABLES = {
   EXPIRY_UNIT,
   DIRECTION,
   PACKAGE_ACTION,
+  PACKAGE_ORDER_TYPE,
+  PACKAGE_TIME_IN_FORCE,
+  RECOVERY_ACTION,
   SETTLEMENT_CLASS,
   QUANTITY_POLICY_CLASS,
   PARTIAL_FILL_POLICY,
@@ -113,6 +119,27 @@ describe('frozen enum discriminants', () => {
     });
     assert.deepEqual(DIRECTION, { LONG_SPOT_SHORT_PERP: 1 });
     assert.deepEqual(PACKAGE_ACTION, { ENTRY: 1, EXIT: 2 });
+    assert.deepEqual(PACKAGE_ORDER_TYPE, {
+      LIMIT: 1,
+      MARKETABLE_LIMIT: 2,
+      POST_ONLY: 3,
+      CONDITIONAL: 4,
+      SCHEDULED: 5,
+      PACKAGE_TWAP: 6,
+    });
+    assert.deepEqual(PACKAGE_TIME_IN_FORCE, {
+      IOC: 1,
+      FOK: 2,
+      GTC: 3,
+      GTD: 4,
+    });
+    assert.deepEqual(RECOVERY_ACTION, {
+      CANCEL_OPEN_ORDERS: 1,
+      COMPLETE_SPOT: 2,
+      COMPLETE_PERP: 3,
+      ROLLBACK_SPOT: 4,
+      ROLLBACK_PERP: 5,
+    });
     assert.deepEqual(PARTIAL_FILL_POLICY, { EXACT_ALL_LEGS: 1 });
   });
 

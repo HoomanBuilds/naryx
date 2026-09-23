@@ -24,6 +24,9 @@ export {
   DURATION_UNIT,
   DIRECTION,
   PACKAGE_ACTION,
+  PACKAGE_ORDER_TYPE,
+  PACKAGE_TIME_IN_FORCE,
+  RECOVERY_ACTION,
   SETTLEMENT_CLASS,
   QUANTITY_POLICY_CLASS,
   PARTIAL_FILL_POLICY,
@@ -44,6 +47,9 @@ export {
   type DurationUnit,
   type Direction,
   type PackageAction,
+  type PackageOrderType,
+  type PackageTimeInForce,
+  type RecoveryAction,
   type SettlementClass,
   type QuantityPolicyClass,
   type PartialFillPolicy,
@@ -149,6 +155,30 @@ export {
   type Expiry,
   type Duration,
 } from './primitives.js';
+
+export {
+  commitmentHash,
+  encodeCommitmentHash,
+  exactPrice,
+  encodeExactPrice,
+  exactSignedRate,
+  encodeExactSignedRate,
+  adapterRef,
+  encodeAdapterRef,
+  feeCap,
+  encodeFeeCap,
+  canonicalFeeCaps,
+  canonicalAdapterRefs,
+  type CommitmentHash,
+  type ExactPriceInput,
+  type ExactPrice,
+  type ExactSignedRateInput,
+  type ExactSignedRate,
+  type AdapterRefInput,
+  type AdapterRef,
+  type FeeCapInput,
+  type FeeCap,
+} from './package-order-primitives.js';
 
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 

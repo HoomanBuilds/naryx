@@ -19,7 +19,8 @@ those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `V
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
 `PackageTemplateRegistryRecord`, `DomainRegistryRecord`, and `FeePolicyManifest` kernels. The composite
 `PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
-and neither are the remaining resource manifests.
+and neither are the remaining resource manifests. Reusable signed-order primitives now cover
+commitment hashes, exact prices and signed rates, versioned adapter references, and fee caps.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
   fixed-width two's-complement big-endian, booleans as exactly `0` or `1`, byte strings and
@@ -34,7 +35,7 @@ and neither are the remaining resource manifests.
 - `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
   `domainRef`, `assetRef`, `assetAmount`, `expiry`, `duration`: constructor-validated primitives.
 - Frozen discriminant tables: `EXPIRY_UNIT`, `DURATION_UNIT`, `DIRECTION`, `PACKAGE_ACTION`,
-  `SETTLEMENT_CLASS`,
+  `PACKAGE_ORDER_TYPE`, `PACKAGE_TIME_IN_FORCE`, `RECOVERY_ACTION`, `SETTLEMENT_CLASS`,
   `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
   `RISK_LIMIT_KIND`, `FEE_CATEGORY`, `PASS_THROUGH_COST_CATEGORY`,
   `SERVICE_FEE_RATE_BASE`, `ROUNDING_DIRECTION`, and `REFUND_RULE`. Discriminant `0` is
