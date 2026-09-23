@@ -17,7 +17,7 @@ use {
         error::ErrorCode,
         instructions::GovernanceRoles,
         state::{PendingDomain, ProtocolConfig, PROTOCOL_CONFIG_VERSION},
-        wire::{DomainRef, HASH_BYTE_LENGTH},
+        wire::{DomainRef, ProtocolId, HASH_BYTE_LENGTH},
     },
     solana_keypair::Keypair,
     solana_message::{Message, VersionedMessage},
@@ -26,6 +26,7 @@ use {
 };
 
 const DOMAIN_ID: &str = "solana:devnet:naryx-core-v1";
+const ENVIRONMENT: &str = "devnet";
 
 const MANIFEST_HASH: [u8; HASH_BYTE_LENGTH] = [0x11; HASH_BYTE_LENGTH];
 const NEXT_MANIFEST_HASH: [u8; HASH_BYTE_LENGTH] = [0x22; HASH_BYTE_LENGTH];
@@ -142,6 +143,7 @@ fn build_ix<A: ToAccountMetas, D: InstructionData>(accounts: A, data: D) -> Inst
 fn initialize_ix(
     env: &Env,
     initializer: Pubkey,
+    environment: &str,
     domain_id: &str,
     version: u32,
     hash: [u8; HASH_BYTE_LENGTH],
@@ -158,6 +160,7 @@ fn initialize_ix(
             system_program: anchor_lang::system_program::ID,
         },
         naryx_core::instruction::Initialize {
+            environment: environment.to_string(),
             domain_id: domain_id.to_string(),
             domain_manifest_version: version,
             domain_manifest_hash: hash,
@@ -245,6 +248,7 @@ fn initialize(env: &mut Env) {
     let ix = initialize_ix(
         env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         1,
         MANIFEST_HASH,
@@ -270,6 +274,7 @@ fn initialize_is_fail_closed_and_creates_the_singleton_config_pda() {
 
     let config = read_config(&env.svm, &env.config);
     assert_eq!(config.config_version, PROTOCOL_CONFIG_VERSION);
+    assert_eq!(config.environment, ProtocolId::new(ENVIRONMENT).unwrap());
     assert_eq!(config.domain, initial_domain());
     assert_eq!(config.pending_domain, None);
     assert_eq!(config.proposer, env.proposer.pubkey());
@@ -291,6 +296,7 @@ fn initialize_is_fail_closed_and_creates_the_singleton_config_pda() {
     let ix = initialize_ix(
         &env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         9,
         OTHER_MANIFEST_HASH,
@@ -309,6 +315,7 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     let ix = initialize_ix(
         &env,
         env.outsider.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         1,
         MANIFEST_HASH,
@@ -324,6 +331,7 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     let ix = initialize_ix(
         &env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         1,
         MANIFEST_HASH,
@@ -339,6 +347,7 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     let ix = initialize_ix(
         &env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         1,
         MANIFEST_HASH,
@@ -357,6 +366,7 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     let ix = initialize_ix(
         &env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         1,
         MANIFEST_HASH,
@@ -375,6 +385,7 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     let ix = initialize_ix(
         &env,
         env.initializer.pubkey(),
+        ENVIRONMENT,
         DOMAIN_ID,
         0,
         MANIFEST_HASH,
@@ -384,6 +395,22 @@ fn initialize_rejects_unrelated_signer_and_invalid_governance_inputs() {
     assert_custom_error(
         send(&mut env.svm, &env.payer, &[&env.initializer], ix),
         ErrorCode::DomainManifestVersionZero,
+    );
+    assert!(env.svm.get_account(&env.config).is_none());
+
+    let ix = initialize_ix(
+        &env,
+        env.initializer.pubkey(),
+        "",
+        DOMAIN_ID,
+        1,
+        MANIFEST_HASH,
+        CONFIG_DELAY_SLOTS,
+        roles,
+    );
+    assert_custom_error(
+        send(&mut env.svm, &env.payer, &[&env.initializer], ix),
+        ErrorCode::ProtocolIdEmpty,
     );
     assert!(env.svm.get_account(&env.config).is_none());
 }
@@ -463,6 +490,7 @@ fn domain_id_is_immutable_role_gated_cancellable_and_exactly_delayed() {
     let config = read_config(&env.svm, &env.config);
     assert_eq!(config.domain, proposed.domain);
     assert_eq!(config.domain.domain_id(), DOMAIN_ID);
+    assert_eq!(config.environment.as_str(), ENVIRONMENT);
     assert_eq!(config.pending_domain, None);
 
     let ix = propose_domain_ix(env.config, env.proposer.pubkey(), 2, OTHER_MANIFEST_HASH);

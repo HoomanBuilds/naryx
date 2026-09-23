@@ -1,11 +1,12 @@
 use anchor_lang::prelude::*;
 
-use crate::wire::DomainRef;
+use crate::wire::{DomainRef, ProtocolId};
 
 #[event]
 pub struct ProtocolConfigInitialized {
     pub config: Pubkey,
     pub initializer: Pubkey,
+    pub environment: ProtocolId,
     pub domain: DomainRef,
     pub config_delay_slots: u64,
     pub proposer: Pubkey,

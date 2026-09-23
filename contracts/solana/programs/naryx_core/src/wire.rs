@@ -9,6 +9,39 @@ pub const HASH_BYTE_LENGTH: usize = 32;
 const DOMAIN_MANIFEST_HASH_DOMAIN: &[u8] = b"CON/v1/domain-manifest";
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
+pub struct ProtocolId {
+    #[max_len(PROTOCOL_ID_MAX_BYTES)]
+    value: String,
+}
+
+impl ProtocolId {
+    pub fn new(value: &str) -> Result<Self> {
+        require!(value.is_ascii(), ErrorCode::ProtocolIdNotAscii);
+        require!(!value.is_empty(), ErrorCode::ProtocolIdEmpty);
+        require!(
+            value.len() <= PROTOCOL_ID_MAX_BYTES,
+            ErrorCode::ProtocolIdTooLong
+        );
+
+        Ok(Self {
+            value: value.to_string(),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let value = self.value.as_bytes();
+        let mut out = Vec::with_capacity(4 + value.len());
+        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        out.extend_from_slice(value);
+        out
+    }
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
 pub struct DomainRef {
     #[max_len(PROTOCOL_ID_MAX_BYTES)]
     domain_id: String,
@@ -28,6 +61,7 @@ impl DomainRef {
             domain_id.len() <= PROTOCOL_ID_MAX_BYTES,
             ErrorCode::DomainIdTooLong
         );
+        let domain_id = ProtocolId::new(domain_id)?;
         require!(
             domain_manifest_version != 0,
             ErrorCode::DomainManifestVersionZero
@@ -38,7 +72,7 @@ impl DomainRef {
         );
 
         Ok(Self {
-            domain_id: domain_id.to_string(),
+            domain_id: domain_id.value,
             domain_manifest_version,
             domain_manifest_hash,
         })

@@ -40,4 +40,10 @@ pub enum ErrorCode {
     UnpauseNotScheduled,
     #[msg("Scheduled unpause is before its activation slot")]
     UnpauseNotReady,
+    #[msg("Protocol identifier is not ASCII")]
+    ProtocolIdNotAscii,
+    #[msg("Protocol identifier is empty")]
+    ProtocolIdEmpty,
+    #[msg("Protocol identifier is above the protocol identifier byte limit")]
+    ProtocolIdTooLong,
 }

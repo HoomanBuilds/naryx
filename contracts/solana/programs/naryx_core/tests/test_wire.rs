@@ -2,7 +2,9 @@ use {
     anchor_lang::error::Error,
     naryx_core::{
         error::ErrorCode,
-        wire::{domain_manifest_hash, DomainRef, HASH_BYTE_LENGTH, PROTOCOL_ID_MAX_BYTES},
+        wire::{
+            domain_manifest_hash, DomainRef, ProtocolId, HASH_BYTE_LENGTH, PROTOCOL_ID_MAX_BYTES,
+        },
     },
 };
 
@@ -15,6 +17,34 @@ const DOMAIN_MANIFEST_HASH: [u8; HASH_BYTE_LENGTH] = [
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn protocol_id_canonical_bytes_match_golden_vector() {
+    let environment = ProtocolId::new("devnet").unwrap();
+
+    assert_eq!(environment.as_str(), "devnet");
+    assert_eq!(hex(&environment.canonical_bytes()), "000000066465766e6574");
+}
+
+#[test]
+fn protocol_id_rejects_invalid_values() {
+    let at_limit = "n".repeat(PROTOCOL_ID_MAX_BYTES);
+    let above_limit = "n".repeat(PROTOCOL_ID_MAX_BYTES + 1);
+
+    assert_eq!(
+        ProtocolId::new("devn\u{e9}t").unwrap_err(),
+        Error::from(ErrorCode::ProtocolIdNotAscii)
+    );
+    assert_eq!(
+        ProtocolId::new("").unwrap_err(),
+        Error::from(ErrorCode::ProtocolIdEmpty)
+    );
+    assert_eq!(
+        ProtocolId::new(&above_limit).unwrap_err(),
+        Error::from(ErrorCode::ProtocolIdTooLong)
+    );
+    assert!(ProtocolId::new(&at_limit).is_ok());
 }
 
 #[test]

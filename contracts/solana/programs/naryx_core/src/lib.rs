@@ -17,6 +17,7 @@ pub mod naryx_core {
 
     pub fn initialize(
         ctx: Context<Initialize>,
+        environment: String,
         domain_id: String,
         domain_manifest_version: u32,
         domain_manifest_hash: [u8; HASH_BYTE_LENGTH],
@@ -25,6 +26,7 @@ pub mod naryx_core {
     ) -> Result<()> {
         instructions::initialize::handler(
             ctx,
+            environment,
             domain_id,
             domain_manifest_version,
             domain_manifest_hash,

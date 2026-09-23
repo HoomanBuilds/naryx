@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
 
-use crate::wire::DomainRef;
+use crate::wire::{DomainRef, ProtocolId};
 
-pub const PROTOCOL_CONFIG_VERSION: u16 = 1;
+pub const PROTOCOL_CONFIG_VERSION: u16 = 2;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
 pub struct PendingDomain {
@@ -14,6 +14,7 @@ pub struct PendingDomain {
 #[derive(InitSpace)]
 pub struct ProtocolConfig {
     pub config_version: u16,
+    pub environment: ProtocolId,
     pub domain: DomainRef,
     pub pending_domain: Option<PendingDomain>,
     pub proposer: Pubkey,
