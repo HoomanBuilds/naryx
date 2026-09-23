@@ -16,9 +16,10 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
-`MarketManifest`, `PriceSourceManifest`, and `PackageTemplateManifest` kernels. The composite
-`PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
-and neither are the remaining resource manifests and registry records.
+`MarketManifest`, `PriceSourceManifest`, `PackageTemplateManifest`, and
+`PackageTemplateRegistryRecord` kernels. The composite `PackageOrder`, `RoutePayload`,
+`SolverQuote`, and `PackageReceipt` schemas are not encoded yet, and neither are the remaining
+resource manifests and general domain registry records.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
   fixed-width two's-complement big-endian, booleans as exactly `0` or `1`, byte strings and
@@ -154,6 +155,13 @@ rule. `no-fallback-v1` names the absence of a fallback rather than leaving it op
 The manifest defines immutable identity only; it neither activates a source nor proves a live
 observation is fresh.
 
+## Package template registry
+
+`PackageTemplateRegistryRecord` binds one template manifest to an exact domain, environment,
+activation point, registry state, and governance reference. Its activation unit and unsigned
+`u64` value use the expiry tag rules, but this identity layer does not interpret the domain clock,
+check current time, or activate the template. The enforcing controller owns those policies.
+
 ## Failure modes
 
 Every public failure is a typed `ProtocolError` with a stable `code`:
@@ -171,8 +179,9 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/encoding.json`, `fixtures/hashing.json`, `fixtures/arithmetic.json`,
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
-`fixtures/package-template-manifest.json`, and `fixtures/price-source-manifest.json` hold
-language-neutral inputs and fixed expected outputs
+`fixtures/package-template-manifest.json`, `fixtures/price-source-manifest.json`, and
+`fixtures/package-template-registry-record.json` hold language-neutral inputs and fixed expected
+outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.
 Expected hex and digest values are committed constants, not values

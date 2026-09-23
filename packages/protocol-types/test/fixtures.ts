@@ -210,6 +210,25 @@ export interface PackageTemplateManifestFixture {
   digestHex: string;
 }
 
+export interface PackageTemplateRegistryRecordFixture {
+  recordVersion: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  templateId: string;
+  templateVersion: string;
+  packageTemplateManifestHash: string;
+  registryState: string;
+  activationUnit: string;
+  activationValue: string;
+  governanceReference: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

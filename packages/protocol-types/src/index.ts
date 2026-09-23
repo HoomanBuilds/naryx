@@ -181,3 +181,12 @@ export {
   type PriceSourceManifestInput,
   type PriceSourceManifest,
 } from './price-source-manifest.js';
+
+export {
+  packageTemplateRegistryRecord,
+  encodePackageTemplateRegistryRecord,
+  packageTemplateRegistryRecordBytes,
+  packageTemplateRegistryRecordHash,
+  type PackageTemplateRegistryRecordInput,
+  type PackageTemplateRegistryRecord,
+} from './package-template-registry-record.js';
