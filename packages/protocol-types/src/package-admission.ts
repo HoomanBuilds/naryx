@@ -392,17 +392,13 @@ function validateActiveAssets(
     domainRegistryRecord(record, `packageAdmission.activeRegistryRecords[${index}]`));
   const assets = distinctAssets([
     ...route.legs.flatMap((leg) => [leg.baseAsset, leg.quoteAsset]),
-    ...route.serviceCharges.filter((charge) => charge.atoms !== 0n).map((charge) => charge.asset),
-    ...quote.expectedNormalizedVenueFeesByAsset
-      .filter((fee) => fee.atoms !== 0n)
-      .map((fee) => fee.asset),
-    ...(quote.expectedPriorityFee.atoms === 0n ? [] : [quote.expectedPriorityFee.asset]),
-    ...quote.maxRecoveryCostAtomsByAsset
-      .filter((cap) => cap.maxAtoms !== 0n)
-      .map((cap) => cap.asset),
-    ...feePolicy.passThroughCostRules
-      .filter((rule) => rule.maxAtoms !== 0n)
-      .map((rule) => assetRef(
+    ...route.serviceCharges.map((charge) => charge.asset),
+    ...quote.expectedNormalizedVenueFeesByAsset.map((fee) => fee.asset),
+    quote.protocolFee.asset,
+    quote.solverFee.asset,
+    quote.expectedPriorityFee.asset,
+    ...quote.maxRecoveryCostAtomsByAsset.map((cap) => cap.asset),
+    ...feePolicy.passThroughCostRules.map((rule) => assetRef(
         rule.costAssetId,
         rule.costAssetManifestHash,
         rule.costAssetDecimals,
