@@ -5,8 +5,10 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
+import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {SolverRegistry} from "./SolverRegistry.sol";
 import {LocalCashCarryVenue} from "./LocalCashCarryVenue.sol";
 
 contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
@@ -14,8 +16,6 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
 
     uint8 public constant ENTRY = 1;
     uint8 public constant EXIT = 2;
-    uint256 public constant LOCAL_CHAIN_ID = 31337;
-    uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
 
     bytes32 private constant TRADER_PERMIT_TYPEHASH = keccak256(
         "TraderPermit(bytes32 packageHash,bytes32 accountsHash,bytes32 limitsHash,uint256 nonce,uint256 deadline)"
@@ -72,6 +72,8 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         uint8 action;
         address trader;
         address recipient;
+        address solver;
+        bool recovery;
         uint256 quantity;
         uint256 quoteAmount;
         uint256 collateral;
@@ -81,9 +83,9 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         Snapshot post;
     }
 
-    error UnsupportedChain();
     error InvalidConfiguration();
     error InvalidExecution();
+    error InvalidRecoveryExit();
     error DomainMismatch();
     error EntryPaused();
     error Expired();
@@ -95,35 +97,44 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
     error PostconditionFailed();
 
     event PackageExecuted(
-        bytes32 indexed receiptHash, address indexed trader, uint8 indexed action, uint256 quantity, uint256 quoteAmount
+        bytes32 indexed receiptHash,
+        address indexed trader,
+        uint8 indexed action,
+        address solver,
+        bool recovery,
+        uint256 quantity,
+        uint256 quoteAmount
     );
 
     ProtocolConfig public immutable config;
+    SolverRegistry public immutable solverRegistry;
     LocalCashCarryVenue public immutable venue;
     IERC20 public immutable baseToken;
     IERC20 public immutable quoteToken;
-    address public immutable solver;
     uint256 public immutable deploymentChainId;
+    bytes32 public immutable deploymentDomainIdHash;
     bytes32 public immutable venueCodeHash;
 
     mapping(address => uint256) public nextNonce;
     mapping(address => Position) public positions;
     mapping(bytes32 => Receipt) private _receipts;
 
-    constructor(ProtocolConfig config_, LocalCashCarryVenue venue_, address solver_)
+    constructor(ProtocolConfig config_, SolverRegistry solverRegistry_, LocalCashCarryVenue venue_)
         EIP712("Naryx Atomic Package", "1")
     {
-        if (block.chainid != LOCAL_CHAIN_ID && block.chainid != BASE_SEPOLIA_CHAIN_ID) revert UnsupportedChain();
         if (
-            address(config_).code.length == 0 || address(venue_).code.length == 0 || solver_ == address(0)
+            address(config_).code.length == 0 || address(solverRegistry_).code.length == 0
+                || address(venue_).code.length == 0 || address(solverRegistry_.config()) != address(config_)
                 || venue_.executor() != address(this)
         ) revert InvalidConfiguration();
+        (string memory domainId,,) = config_.domain();
         config = config_;
+        solverRegistry = solverRegistry_;
         venue = venue_;
         baseToken = venue_.baseToken();
         quoteToken = venue_.quoteToken();
-        solver = solver_;
         deploymentChainId = block.chainid;
+        deploymentDomainIdHash = keccak256(bytes(domainId));
         venueCodeHash = address(venue_).codehash;
     }
 
@@ -144,7 +155,24 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         nonReentrant
         returns (bytes32 receiptHash)
     {
-        _validate(execution, traderSignature, solverSignature);
+        _validateCommon(execution, traderSignature);
+        _validateSolver(execution, solverSignature);
+        return _executeValidated(execution, false);
+    }
+
+    function executeRecoveryExit(Execution calldata execution, bytes calldata traderSignature)
+        external
+        nonReentrant
+        returns (bytes32 receiptHash)
+    {
+        if (execution.action != EXIT || execution.solver != address(0) || msg.sender != execution.trader) {
+            revert InvalidRecoveryExit();
+        }
+        _validateCommon(execution, traderSignature);
+        return _executeValidated(execution, true);
+    }
+
+    function _executeValidated(Execution calldata execution, bool recovery) private returns (bytes32 receiptHash) {
         Snapshot memory pre = _snapshot(execution.trader);
         nextNonce[execution.trader] = execution.nonce + 1;
 
@@ -157,7 +185,7 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
 
         Snapshot memory post = _snapshot(execution.trader);
         receiptHash = keccak256(
-            abi.encode(_hashTypedDataV4(_executionHash(RECEIPT_TYPEHASH, execution)), quoteAmount, pre, post)
+            abi.encode(_hashTypedDataV4(_executionHash(RECEIPT_TYPEHASH, execution)), recovery, quoteAmount, pre, post)
         );
         _receipts[receiptHash] = Receipt({
             domainIdHash: execution.domainIdHash,
@@ -169,6 +197,8 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
             action: execution.action,
             trader: execution.trader,
             recipient: execution.recipient,
+            solver: execution.solver,
+            recovery: recovery,
             quantity: execution.quantity,
             quoteAmount: quoteAmount,
             collateral: execution.collateral,
@@ -180,37 +210,43 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         if (execution.action == ENTRY) {
             positions[execution.trader].entryReceiptHash = receiptHash;
         }
-        emit PackageExecuted(receiptHash, execution.trader, execution.action, execution.quantity, quoteAmount);
+        emit PackageExecuted(
+            receiptHash, execution.trader, execution.action, execution.solver, recovery, execution.quantity, quoteAmount
+        );
     }
 
-    function _validate(Execution calldata execution, bytes calldata traderSignature, bytes calldata solverSignature)
-        private
-        view
-    {
+    function _validateCommon(Execution calldata execution, bytes calldata traderSignature) private view {
         if (block.chainid != deploymentChainId || address(venue).codehash != venueCodeHash) {
             revert InvalidConfiguration();
         }
         if (
             execution.trader == address(0) || execution.trader == address(this) || execution.recipient == address(0)
-                || execution.recipient == address(this) || execution.solver != solver
-                || execution.venue != address(venue) || execution.executor != address(this)
-                || execution.chainId != block.chainid || execution.quantity == 0 || execution.collateral == 0
-                || execution.orderHash == bytes32(0) || execution.quoteHash == bytes32(0)
+                || execution.recipient == address(this) || execution.venue != address(venue)
+                || execution.executor != address(this) || execution.chainId != block.chainid || execution.quantity == 0
+                || execution.collateral == 0 || execution.orderHash == bytes32(0) || execution.quoteHash == bytes32(0)
                 || execution.routeHash == bytes32(0) || (execution.action != ENTRY && execution.action != EXIT)
         ) revert InvalidExecution();
         if (block.timestamp >= execution.deadline) revert Expired();
         if (execution.nonce != nextNonce[execution.trader]) revert InvalidNonce();
-        (string memory domainId, uint32 version, bytes32 manifestHash) = config.domain();
+        (string memory activeDomainId, uint32 activeVersion, bytes32 activeManifestHash) = config.domain();
         if (
-            execution.domainIdHash != keccak256(bytes(domainId)) || execution.domainManifestVersion != version
-                || execution.domainManifestHash != manifestHash
+            keccak256(bytes(activeDomainId)) != deploymentDomainIdHash
+                || execution.domainIdHash != deploymentDomainIdHash || execution.domainManifestVersion != activeVersion
+                || execution.domainManifestHash != activeManifestHash
         ) revert DomainMismatch();
         if (execution.action == ENTRY && config.entryPaused()) revert EntryPaused();
 
         bytes32 traderDigest = _hashTypedDataV4(_executionHash(TRADER_PERMIT_TYPEHASH, execution));
-        if (ECDSA.recover(traderDigest, traderSignature) != execution.trader) revert InvalidTraderSignature();
+        if (!SignatureChecker.isValidSignatureNow(execution.trader, traderDigest, traderSignature)) {
+            revert InvalidTraderSignature();
+        }
+    }
+
+    function _validateSolver(Execution calldata execution, bytes calldata solverSignature) private view {
+        address activeSolver = solverRegistry.activeSolver();
+        if (execution.solver == address(0) || execution.solver != activeSolver) revert InvalidExecution();
         bytes32 solverDigest = _hashTypedDataV4(_executionHash(SOLVER_AUTH_TYPEHASH, execution));
-        if (ECDSA.recover(solverDigest, solverSignature) != solver) revert InvalidSolverSignature();
+        if (ECDSA.recover(solverDigest, solverSignature) != activeSolver) revert InvalidSolverSignature();
     }
 
     function _enter(Execution calldata execution) private returns (uint256 quoteSpent) {

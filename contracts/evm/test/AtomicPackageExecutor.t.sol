@@ -4,7 +4,10 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {stdError} from "forge-std/StdError.sol";
 import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
+import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
+import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {LocalCashCarryVenue} from "../src/LocalCashCarryVenue.sol";
 import {AtomicPackageExecutor} from "../src/AtomicPackageExecutor.sol";
 
@@ -13,6 +16,18 @@ contract LocalToken is ERC20 {
 
     function mint(address recipient, uint256 quantity) external {
         _mint(recipient, quantity);
+    }
+}
+
+contract Local1271Wallet is IERC1271 {
+    address private immutable owner;
+
+    constructor(address owner_) {
+        owner = owner_;
+    }
+
+    function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4) {
+        return ECDSA.recover(hash, signature) == owner ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
     }
 }
 
@@ -27,27 +42,32 @@ contract AtomicPackageExecutorTest is Test {
 
     uint256 private traderKey = 0xA11CE;
     uint256 private solverKey = 0xB0B;
+    uint256 private nextSolverKey = 0xC0C;
     address private trader;
     address private solver;
+    address private nextSolver;
     address private recipient = address(0x555);
 
     LocalToken private base;
     LocalToken private quote;
     ProtocolConfig private config;
+    SolverRegistry private solverRegistry;
     LocalCashCarryVenue private venue;
     AtomicPackageExecutor private executor;
 
     function setUp() public {
         trader = vm.addr(traderKey);
         solver = vm.addr(solverKey);
+        nextSolver = vm.addr(nextSolverKey);
         base = new LocalToken("Base", "BASE");
         quote = new LocalToken("Quote", "QUOTE");
         config =
             new ProtocolConfig("eip155:31337", 1, MANIFEST_HASH, 1, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER);
+        solverRegistry = new SolverRegistry(config, solver);
 
         address predictedExecutor = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
         venue = new LocalCashCarryVenue(base, quote, predictedExecutor, 3, 2);
-        executor = new AtomicPackageExecutor(config, venue, solver);
+        executor = new AtomicPackageExecutor(config, solverRegistry, venue);
         assertEq(address(executor), predictedExecutor);
 
         base.mint(address(venue), 1_000);
@@ -74,6 +94,8 @@ contract AtomicPackageExecutorTest is Test {
         assertEq(entryReceiptHash, receiptHash);
         AtomicPackageExecutor.Receipt memory receipt_ = executor.receipt(receiptHash);
         assertEq(receipt_.quoteAmount, 8);
+        assertEq(receipt_.solver, solver);
+        assertFalse(receipt_.recovery);
         assertEq(receipt_.nonce, 0);
         assertEq(receipt_.pre.executorBaseBalance, 0);
         assertEq(receipt_.post.executorBaseBalance, 5);
@@ -140,6 +162,28 @@ contract AtomicPackageExecutorTest is Test {
         assertEq(executor.nextNonce(trader), 0);
     }
 
+    function testErc1271TraderAcceptsOwnerSignatureAndRejectsWrongSignature() public {
+        uint256 walletOwnerKey = 0x1271;
+        Local1271Wallet wallet = new Local1271Wallet(vm.addr(walletOwnerKey));
+        quote.mint(address(wallet), 100);
+        vm.prank(address(wallet));
+        quote.approve(address(executor), 100);
+
+        AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
+        entry.trader = address(wallet);
+        bytes memory solverSignature = _signature(solverKey, executor.solverAuthorizationDigest(entry));
+
+        bytes memory invalidTraderSignature = _signature(0xBAD, executor.traderPermitDigest(entry));
+        vm.expectRevert(AtomicPackageExecutor.InvalidTraderSignature.selector);
+        executor.execute(entry, invalidTraderSignature, solverSignature);
+
+        bytes memory traderSignature = _signature(walletOwnerKey, executor.traderPermitDigest(entry));
+        executor.execute(entry, traderSignature, solverSignature);
+        (uint256 quantity, uint256 collateral,) = executor.positions(address(wallet));
+        assertEq(quantity, 5);
+        assertEq(collateral, 4);
+    }
+
     function testFieldAndAccountSubstitutionReverts() public {
         AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
         (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry);
@@ -155,7 +199,7 @@ contract AtomicPackageExecutorTest is Test {
 
         entry.recipient = recipient;
         entry.solver = address(0x999);
-        vm.expectRevert(AtomicPackageExecutor.InvalidExecution.selector);
+        vm.expectRevert(AtomicPackageExecutor.InvalidTraderSignature.selector);
         executor.execute(entry, traderSignature, solverSignature);
 
         entry.solver = solver;
@@ -165,6 +209,7 @@ contract AtomicPackageExecutorTest is Test {
 
         entry.routeHash = keccak256("route");
         entry.chainId = 84532;
+        (traderSignature, solverSignature) = _sign(entry);
         vm.expectRevert(AtomicPackageExecutor.InvalidExecution.selector);
         executor.execute(entry, traderSignature, solverSignature);
     }
@@ -276,24 +321,127 @@ contract AtomicPackageExecutorTest is Test {
         assertEq(shortQuantity, 5);
     }
 
+    function testSolverRotationChangesNormalAuthorizationAfterDelay() public {
+        vm.prank(PROPOSER);
+        solverRegistry.proposeSolver(nextSolver);
+
+        bytes32 entryReceiptHash = _execute(_execution(ENTRY, 5, 9, 4));
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        solverRegistry.activateSolver();
+
+        AtomicPackageExecutor.Execution memory exit = _execution(EXIT, 5, 7, 4);
+        exit.nonce = 1;
+        exit.entryReceiptHash = entryReceiptHash;
+        (bytes memory traderSignature, bytes memory oldSolverSignature) = _sign(exit);
+        vm.expectRevert(AtomicPackageExecutor.InvalidExecution.selector);
+        executor.execute(exit, traderSignature, oldSolverSignature);
+
+        exit.solver = nextSolver;
+        traderSignature = _signature(traderKey, executor.traderPermitDigest(exit));
+        bytes memory nextSolverSignature = _signature(nextSolverKey, executor.solverAuthorizationDigest(exit));
+        executor.execute(exit, traderSignature, nextSolverSignature);
+        assertEq(quote.balanceOf(recipient), 11);
+    }
+
+    function testTraderCanRecoverExitWithoutSolverAndAuthorizationRemainsBound() public {
+        bytes32 entryReceiptHash = _execute(_execution(ENTRY, 5, 9, 4));
+        AtomicPackageExecutor.Execution memory exit = _execution(EXIT, 5, 7, 4);
+        exit.nonce = 1;
+        exit.solver = address(0);
+        exit.entryReceiptHash = entryReceiptHash;
+        bytes memory traderSignature = _signature(traderKey, executor.traderPermitDigest(exit));
+
+        vm.expectRevert(AtomicPackageExecutor.InvalidRecoveryExit.selector);
+        executor.executeRecoveryExit(exit, traderSignature);
+
+        AtomicPackageExecutor.Execution memory entryAttempt = _execution(ENTRY, 1, 2, 1);
+        entryAttempt.nonce = 1;
+        entryAttempt.solver = address(0);
+        bytes memory entrySignature = _signature(traderKey, executor.traderPermitDigest(entryAttempt));
+        vm.prank(trader);
+        vm.expectRevert(AtomicPackageExecutor.InvalidRecoveryExit.selector);
+        executor.executeRecoveryExit(entryAttempt, entrySignature);
+
+        exit.recipient = address(0x777);
+        vm.prank(trader);
+        vm.expectRevert(AtomicPackageExecutor.InvalidTraderSignature.selector);
+        executor.executeRecoveryExit(exit, traderSignature);
+
+        exit.recipient = recipient;
+        exit.limitQuote = 8;
+        vm.prank(trader);
+        vm.expectRevert(AtomicPackageExecutor.InvalidTraderSignature.selector);
+        executor.executeRecoveryExit(exit, traderSignature);
+
+        exit.limitQuote = 7;
+        vm.prank(trader);
+        bytes32 recoveryReceiptHash = executor.executeRecoveryExit(exit, traderSignature);
+        assertEq(quote.balanceOf(recipient), 11);
+        AtomicPackageExecutor.Receipt memory recoveryReceipt = executor.receipt(recoveryReceiptHash);
+        assertEq(recoveryReceipt.solver, address(0));
+        assertTrue(recoveryReceipt.recovery);
+
+        vm.prank(trader);
+        vm.expectRevert(AtomicPackageExecutor.InvalidNonce.selector);
+        executor.executeRecoveryExit(exit, traderSignature);
+    }
+
+    function testDomainActivationInvalidatesOldSignatureButRecoveryUsesNewDomain() public {
+        bytes32 entryReceiptHash = _execute(_execution(ENTRY, 5, 9, 4));
+        AtomicPackageExecutor.Execution memory exit = _execution(EXIT, 5, 7, 4);
+        exit.nonce = 1;
+        exit.solver = address(0);
+        exit.entryReceiptHash = entryReceiptHash;
+        bytes memory oldDomainSignature = _signature(traderKey, executor.traderPermitDigest(exit));
+
+        bytes32 nextManifestHash = keccak256("local-domain-manifest-2");
+        vm.prank(PROPOSER);
+        config.proposeDomain(2, nextManifestHash);
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateDomain();
+
+        vm.prank(trader);
+        vm.expectRevert(AtomicPackageExecutor.DomainMismatch.selector);
+        executor.executeRecoveryExit(exit, oldDomainSignature);
+
+        exit.domainManifestVersion = 2;
+        exit.domainManifestHash = nextManifestHash;
+        bytes memory activeDomainSignature = _signature(traderKey, executor.traderPermitDigest(exit));
+        vm.prank(trader);
+        executor.executeRecoveryExit(exit, activeDomainSignature);
+        assertEq(quote.balanceOf(recipient), 11);
+    }
+
     function testChainIdentityAndVenueCodeAreFixed() public {
         AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
         (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry);
         vm.chainId(8453);
         vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
         executor.execute(entry, traderSignature, solverSignature);
-        vm.expectRevert(AtomicPackageExecutor.UnsupportedChain.selector);
-        new AtomicPackageExecutor(config, venue, solver);
+
+        LocalToken otherBase = new LocalToken("Other Base", "OBASE");
+        LocalToken otherQuote = new LocalToken("Other Quote", "OQUOTE");
+        ProtocolConfig otherConfig = new ProtocolConfig(
+            "eip155:8453", 7, keccak256("base-domain"), 1, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER
+        );
+        SolverRegistry otherRegistry = new SolverRegistry(otherConfig, solver);
+        address predictedExecutor = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 1);
+        LocalCashCarryVenue otherVenue = new LocalCashCarryVenue(otherBase, otherQuote, predictedExecutor, 3, 2);
+        AtomicPackageExecutor otherExecutor = new AtomicPackageExecutor(otherConfig, otherRegistry, otherVenue);
+        assertEq(otherExecutor.deploymentChainId(), 8453);
+        assertEq(otherExecutor.deploymentDomainIdHash(), keccak256(bytes("eip155:8453")));
         vm.chainId(31337);
 
         vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
-        new AtomicPackageExecutor(ProtocolConfig(address(0xBEEF)), venue, solver);
+        new AtomicPackageExecutor(ProtocolConfig(address(0xBEEF)), solverRegistry, venue);
 
         vm.etch(address(venue), hex"");
         vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
         executor.execute(entry, traderSignature, solverSignature);
         vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
-        new AtomicPackageExecutor(config, venue, solver);
+        new AtomicPackageExecutor(config, solverRegistry, venue);
     }
 
     function testFuzzAdverseSpotRounding(uint8 rawQuantity) public {
