@@ -95,6 +95,23 @@ export interface AssetManifestFixture {
   digestHex: string;
 }
 
+export interface VenueManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  venueId: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  venueKind: string;
+  protocolIdentity: string;
+  codeIdentity: string;
+  authorityIdentity: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

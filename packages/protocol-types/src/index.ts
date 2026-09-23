@@ -129,3 +129,12 @@ export {
   type AssetManifestInput,
   type AssetManifest,
 } from './asset-manifest.js';
+
+export {
+  venueManifest,
+  encodeVenueManifest,
+  venueManifestBytes,
+  venueManifestHash,
+  type VenueManifestInput,
+  type VenueManifest,
+} from './venue-manifest.js';

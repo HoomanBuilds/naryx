@@ -1,0 +1,16 @@
+{
+  "manifestVersion": "1",
+  "environment": "testnet",
+  "venueId": "svm:test-domain-1:venue-1",
+  "domain": {
+    "domainId": "svm:test-domain-1",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a"
+  },
+  "venueKind": "central-limit-order-book",
+  "protocolIdentity": "protocol-v1",
+  "codeIdentity": "program-code-v1",
+  "authorityIdentity": "governance-authority-v1",
+  "canonicalHex": "0000000100000007746573746e65740000001973766d3a746573742d646f6d61696e2d313a76656e75652d310000001173766d3a746573742d646f6d61696e2d3100000001393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a0000001863656e7472616c2d6c696d69742d6f726465722d626f6f6b0000000b70726f746f636f6c2d76310000000f70726f6772616d2d636f64652d763100000017676f7665726e616e63652d617574686f726974792d7631",
+  "digestHex": "82e29215d03aca204bb56b33717d0dcad57d8ff1d19eeb24e22427a4d661dab2"
+}
