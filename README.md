@@ -24,7 +24,9 @@ Environment promotion order:
 
 Promotion is one way and is granted per domain, adapter, template, settlement class, quote mode, and size cohort.
 
-This is a foundation checkout. The workspaces below are official generator output plus boundary definitions. No protocol business logic is implemented yet.
+The canonical protocol identity and registry kernel is implemented, together with delayed domain
+configuration on Solana and EVM. Package execution, venue adapters, settlement, recovery, and
+product surfaces are not implemented yet.
 
 ## Component map
 
