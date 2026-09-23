@@ -1,9 +1,7 @@
-# packages/adapters/solana
+# Solana conformance adapter
 
-Solana venue adapters. Spot and perpetual routes, instruction construction, account resolution, address-lookup-table planning, return-data decoding, resource-plan emission, and `naryx_core` client bindings generated from the published IDL.
+This package compiles an admitted atomic cash-and-carry package into one unsigned `execute_conformance_atomic` instruction. It resolves account addresses from named route bindings, derives the config and trader-bound receipt PDAs, and uses the published Anchor IDLs in `deployments/solana/conformance/idl` for instruction and receipt encoding.
 
-May depend on `packages/adapter-core`, `packages/protocol-types`, and `deployments`.
+`simulate` verifies the RPC genesis hash and submits only an unsigned simulation. `readEvidence` reads a receipt PDA and verifies the program owner, order hashes, trader, and action. This package has no signing or broadcast path.
 
-Must not depend on `packages/adapters/evm`, `packages/adapters/hyperliquid`, a service, `apps/web`, `packages/sdk`, or `contracts/solana` source.
-
-Every compilation emits a resource plan covering serialized size, resolved accounts, compute estimate, CPI depth, loaded account data, and lookup-table dependencies. A route that exceeds the envelope is rejected or demoted to an honestly weaker settlement class.
+The caller must pass the result of `validatePackageAdmission`. The conformance program currently enforces exact spot and short quantity changes plus the stated spot and collateral limits. It does not verify package signatures, quote signatures, route hashes, package spread, or fee collection onchain. This adapter is for local and test networks until those checks exist in a production verifier.

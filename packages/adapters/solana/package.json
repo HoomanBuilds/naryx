@@ -1,0 +1,35 @@
+{
+  "name": "@naryx/adapter-solana",
+  "version": "0.1.0",
+  "description": "Unsigned Solana conformance execution adapter.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": ["dist"],
+  "engines": {"node": ">=20.19.0"},
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@naryx/adapter-core": "file:../../adapter-core",
+    "@naryx/protocol-types": "file:../../protocol-types",
+    "@solana/web3.js": "1.99.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2"
+  }
+}
