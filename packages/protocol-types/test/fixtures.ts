@@ -268,6 +268,41 @@ export interface AdapterManifestFixture {
   digestHex: string;
 }
 
+export interface DomainRegistryRecordFixture {
+  recordVersion: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  recordKind: string;
+  subjectId: string;
+  subjectManifestVersion: string;
+  subjectManifestHash: string;
+  registryState: string;
+  riskLimits: {
+    limitKind: string;
+    assetId: string;
+    assetManifestHash: string;
+    decimals: number;
+    maxAtoms: string;
+    windowUnit?: string;
+    windowValue?: string;
+  }[];
+  allowedTemplates: {
+    templateId: string;
+    templateVersion: string;
+    packageTemplateManifestHash: string;
+  }[];
+  allowedSettlementClasses: string[];
+  activationUnit: string;
+  activationValue: string;
+  governanceReference: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

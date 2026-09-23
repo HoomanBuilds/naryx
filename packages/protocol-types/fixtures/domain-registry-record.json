@@ -1,0 +1,48 @@
+{
+  "recordVersion": "1",
+  "environment": "testnet",
+  "domain": {
+    "domainId": "svm:test-domain-1",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a"
+  },
+  "recordKind": "MARKET",
+  "subjectId": "svm:test-domain-1:venue-1:sol-usdc-perp",
+  "subjectManifestVersion": "1",
+  "subjectManifestHash": "c85203dde94308bc4f95996e89765edf5547993fb55255a1431cfcea8faaa721",
+  "registryState": "ACTIVE",
+  "riskLimits": [
+    {
+      "limitKind": "MAX_PACKAGE_NOTIONAL",
+      "assetId": "svm:test-domain-1:usdc",
+      "assetManifestHash": "7c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35",
+      "decimals": 6,
+      "maxAtoms": "100000000000"
+    },
+    {
+      "limitKind": "OUTFLOW_RATE",
+      "assetId": "svm:test-domain-1:usdc",
+      "assetManifestHash": "7c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35",
+      "decimals": 6,
+      "maxAtoms": "25000000000",
+      "windowUnit": "MILLISECONDS",
+      "windowValue": "3600000"
+    }
+  ],
+  "allowedTemplates": [
+    {
+      "templateId": "cash-and-carry-v1",
+      "templateVersion": "1",
+      "packageTemplateManifestHash": "56614d5b925139a5eb8b355532899ec32e6cc8593095d756c1d720eabe4d122f"
+    }
+  ],
+  "allowedSettlementClasses": [
+    "ATOMIC_POSTCONDITION",
+    "BATCHED_IOC_WITH_RECOVERY"
+  ],
+  "activationUnit": "SOLANA_LAST_VALID_BLOCK_HEIGHT",
+  "activationValue": "0",
+  "governanceReference": "governance:testnet:v1",
+  "canonicalHex": "0000000100000007746573746e65740000001173766d3a746573742d646f6d61696e2d3100000001393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a030000002773766d3a746573742d646f6d61696e2d313a76656e75652d313a736f6c2d757364632d7065727000000001c85203dde94308bc4f95996e89765edf5547993fb55255a1431cfcea8faaa7210100000002010000001673766d3a746573742d646f6d61696e2d313a757364637c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35060000000000000000000000174876e8000000030000001673766d3a746573742d646f6d61696e2d313a757364637c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa3506000000000000000000000005d21dba00010101000000000036ee800000000100000011636173682d616e642d63617272792d76310000000156614d5b925139a5eb8b355532899ec32e6cc8593095d756c1d720eabe4d122f00000002010201000000000000000000000015676f7665726e616e63653a746573746e65743a7631",
+  "digestHex": "25aec49c94493d97e906a506149cf50bb1598eca796a79bf8ce7a444d8491374"
+}

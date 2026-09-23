@@ -17,9 +17,9 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `PriceSourceManifest`, `PackageTemplateManifest`, and
-`PackageTemplateRegistryRecord` kernels. The composite `PackageOrder`, `RoutePayload`,
-`SolverQuote`, and `PackageReceipt` schemas are not encoded yet, and neither are the remaining
-resource manifests and general domain registry records.
+`PackageTemplateRegistryRecord`, and `DomainRegistryRecord` kernels. The composite
+`PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
+and neither are the remaining resource manifests.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
   fixed-width two's-complement big-endian, booleans as exactly `0` or `1`, byte strings and
@@ -177,6 +177,14 @@ rational throughput with checked `u128` cross-products; an overflow or identity 
 relaxation, never an immediate tightening. Registry lists are accepted only in canonical order
 and reject duplicate keys rather than sorting governance input silently.
 
+`DomainRegistryRecord` binds one asset, venue, market, adapter, or price-source manifest to its
+exact domain, environment, activation point, state, risk limits, permitted templates, settlement
+classes, and governance reference. Empty policy lists are explicit fail-closed inputs rather than
+implicit permission. The `PACKAGE_TEMPLATE` kind remains reserved but rejects here because
+`PackageTemplateRegistryRecord` is the sole version 1 activation authority for templates. This
+identity kernel validates and hashes the record; the domain controller separately enforces clock,
+delay, active-reference, and lifecycle policy.
+
 ## Failure modes
 
 Every public failure is a typed `ProtocolError` with a stable `code`:
@@ -195,8 +203,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
 `fixtures/package-template-manifest.json`, `fixtures/price-source-manifest.json`, and
-`fixtures/package-template-registry-record.json` hold language-neutral inputs and fixed expected
-outputs
+`fixtures/package-template-registry-record.json`, and `fixtures/domain-registry-record.json` hold
+language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.
 Expected hex and digest values are committed constants, not values

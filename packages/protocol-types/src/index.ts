@@ -242,3 +242,12 @@ export {
   type AdapterManifestInput,
   type AdapterManifest,
 } from './adapter-manifest.js';
+
+export {
+  domainRegistryRecord,
+  encodeDomainRegistryRecord,
+  domainRegistryRecordBytes,
+  domainRegistryRecordHash,
+  type DomainRegistryRecordInput,
+  type DomainRegistryRecord,
+} from './domain-registry-record.js';
