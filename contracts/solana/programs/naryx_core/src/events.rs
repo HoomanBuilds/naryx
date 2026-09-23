@@ -64,3 +64,24 @@ pub struct EntryUnpaused {
     pub config: Pubkey,
     pub executor: Pubkey,
 }
+
+#[cfg(feature = "conformance")]
+#[event]
+pub struct ConformanceExecutionRecorded {
+    pub receipt: Pubkey,
+    pub order_hash: [u8; 32],
+    pub quote_hash: [u8; 32],
+    pub route_hash: [u8; 32],
+    pub trader: Pubkey,
+    pub action: u8,
+    pub base_quantity_atoms: u64,
+    pub pre_base_balance: u64,
+    pub post_base_balance: u64,
+    pub pre_quote_balance: u64,
+    pub post_quote_balance: u64,
+    pub pre_short_base_atoms: u64,
+    pub post_short_base_atoms: u64,
+    pub pre_collateral_quote_atoms: u64,
+    pub post_collateral_quote_atoms: u64,
+    pub execution_slot: u64,
+}

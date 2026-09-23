@@ -15,6 +15,12 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 idl-build = ["anchor-lang/idl-build"]
+conformance = [
+    "dep:anchor-spl",
+    "dep:naryx_conformance_venue",
+    "anchor-spl/idl-build",
+    "naryx_conformance_venue/idl-build",
+]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
@@ -22,6 +28,8 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "=1.2.0"
+anchor-spl = { version = "=1.2.0", features = ["token"], optional = true }
+naryx_conformance_venue = { path = "../naryx_conformance_venue", features = ["cpi"], optional = true }
 solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 
 [dev-dependencies]

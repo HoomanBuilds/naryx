@@ -124,4 +124,16 @@ pub enum ErrorCode {
     WireRecoveryShape,
     #[msg("Wire recovery timing is invalid")]
     WireRecoveryTimingInvalid,
+    #[msg("Conformance execution hash is all zero")]
+    ConformanceHashZero,
+    #[msg("Conformance execution quantity is zero")]
+    ConformanceQuantityZero,
+    #[msg("Conformance order is expired")]
+    ConformanceOrderExpired,
+    #[msg("Conformance entry execution is paused")]
+    ConformanceEntryPaused,
+    #[msg("Conformance execution arithmetic overflowed")]
+    ConformanceArithmeticOverflow,
+    #[msg("Conformance execution postcondition failed")]
+    ConformancePostconditionFailed,
 }

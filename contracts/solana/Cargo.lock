@@ -1786,7 +1786,9 @@ name = "naryx_core"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "litesvm",
+ "naryx_conformance_venue",
  "solana-keypair",
  "solana-message",
  "solana-sha256-hasher",
