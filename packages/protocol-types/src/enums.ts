@@ -87,6 +87,24 @@ export const PASS_THROUGH_COST_CATEGORY = Object.freeze({
 } as const);
 export type PassThroughCostCategory = keyof typeof PASS_THROUGH_COST_CATEGORY;
 
+export const SERVICE_FEE_RATE_BASE = Object.freeze({
+  MATCHED_PACKAGE_NOTIONAL: 1,
+} as const);
+export type ServiceFeeRateBase = keyof typeof SERVICE_FEE_RATE_BASE;
+
+export const ROUNDING_DIRECTION = Object.freeze({
+  FLOOR: 1,
+  CEIL: 2,
+  TOWARD_ZERO: 3,
+  AWAY_FROM_ZERO: 4,
+} as const);
+export type RoundingDirection = keyof typeof ROUNDING_DIRECTION;
+
+export const REFUND_RULE = Object.freeze({
+  REFUND_UNUSED_PREPAID_TO_OWNER: 1,
+} as const);
+export type RefundRule = keyof typeof REFUND_RULE;
+
 export const ADAPTER_IDENTITY_SOURCE = Object.freeze({
   EXACT: 1,
   DOMAIN_CONFIGURATION: 2,

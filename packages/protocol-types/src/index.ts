@@ -32,6 +32,9 @@ export {
   RISK_LIMIT_KIND,
   FEE_CATEGORY,
   PASS_THROUGH_COST_CATEGORY,
+  SERVICE_FEE_RATE_BASE,
+  ROUNDING_DIRECTION,
+  REFUND_RULE,
   ADAPTER_IDENTITY_SOURCE,
   ADAPTER_ACCESS_MODE,
   ADAPTER_SIGNER_MODE,
@@ -49,10 +52,28 @@ export {
   type RiskLimitKind,
   type FeeCategory,
   type PassThroughCostCategory,
+  type ServiceFeeRateBase,
+  type RoundingDirection,
+  type RefundRule,
   type AdapterIdentitySource,
   type AdapterAccessMode,
   type AdapterSignerMode,
 } from './enums.js';
+
+export {
+  serviceFeeRule,
+  encodeServiceFeeRule,
+  serviceFeeRuleKeyBytes,
+  canonicalServiceFeeRules,
+  passThroughCostRule,
+  encodePassThroughCostRule,
+  passThroughCostRuleKeyBytes,
+  canonicalPassThroughCostRules,
+  type ServiceFeeRuleInput,
+  type ServiceFeeRule,
+  type PassThroughCostRuleInput,
+  type PassThroughCostRule,
+} from './fee-policy-primitives.js';
 
 export {
   ROUNDING,

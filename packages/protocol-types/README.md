@@ -17,7 +17,7 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
-`PackageTemplateRegistryRecord`, and `DomainRegistryRecord` kernels. The composite
+`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, and fee-policy rule primitives. The composite
 `PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
 and neither are the remaining resource manifests.
 
@@ -36,7 +36,8 @@ and neither are the remaining resource manifests.
 - Frozen discriminant tables: `EXPIRY_UNIT`, `DURATION_UNIT`, `DIRECTION`, `PACKAGE_ACTION`,
   `SETTLEMENT_CLASS`,
   `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
-  `RISK_LIMIT_KIND`, `FEE_CATEGORY`, and `PASS_THROUGH_COST_CATEGORY`. Discriminant `0` is
+  `RISK_LIMIT_KIND`, `FEE_CATEGORY`, `PASS_THROUGH_COST_CATEGORY`,
+  `SERVICE_FEE_RATE_BASE`, `ROUNDING_DIRECTION`, and `REFUND_RULE`. Discriminant `0` is
   reserved on every table, so an all-zero payload never decodes to a valid variant.
 
 ## Registry identity
@@ -184,6 +185,15 @@ implicit permission. The `PACKAGE_TEMPLATE` kind remains reserved but rejects he
 `PackageTemplateRegistryRecord` is the sole version 1 activation authority for templates. This
 identity kernel validates and hashes the record; the domain controller separately enforces clock,
 delay, active-reference, and lifecycle policy.
+
+## Fee policy rules
+
+Service fee rules bind one protocol, solver, or builder charge to an exact asset manifest. A rule
+is either a signed `i128` rate over matched package notional or a signed fixed-atom amount, never
+both. Fixed rules use the version 1 scale and rounding sentinels. Pass-through rules are separate
+unsigned `u128` caps for actual venue, network, or recovery cost and always refund unused prepaid
+atoms to the owner. Both rule lists must arrive in canonical `(category, assetId)` order and reject
+duplicate keys even when another field differs. `FeePolicyManifest` remains a later slice.
 
 ## Failure modes
 
