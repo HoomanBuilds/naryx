@@ -1,0 +1,698 @@
+{
+  "address": "ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y",
+  "metadata": {
+    "name": "naryx_conformance_venue",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "close_short_exact",
+      "discriminator": [
+        159,
+        196,
+        189,
+        87,
+        126,
+        156,
+        63,
+        28
+      ],
+      "accounts": [
+        {
+          "name": "trader",
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "trader_quote",
+          "writable": true
+        },
+        {
+          "name": "perp_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "base_atoms",
+          "type": "u64"
+        },
+        {
+          "name": "min_collateral_return_atoms",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_market",
+      "discriminator": [
+        35,
+        35,
+        189,
+        193,
+        155,
+        48,
+        170,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "base_mint"
+        },
+        {
+          "name": "quote_mint"
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "admin"
+              },
+              {
+                "kind": "account",
+                "path": "base_mint"
+              },
+              {
+                "kind": "account",
+                "path": "quote_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_base_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  45,
+                  98,
+                  97,
+                  115,
+                  101,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_quote_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  45,
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "perp_quote_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "price_quote_atoms",
+          "type": "u64"
+        },
+        {
+          "name": "price_base_atoms",
+          "type": "u64"
+        },
+        {
+          "name": "spot_fee_bps",
+          "type": "u16"
+        },
+        {
+          "name": "initial_margin_bps",
+          "type": "u16"
+        },
+        {
+          "name": "max_spot_base_atoms",
+          "type": "u64"
+        },
+        {
+          "name": "max_perp_base_atoms",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_position",
+      "discriminator": [
+        219,
+        192,
+        234,
+        71,
+        190,
+        191,
+        102,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "trader",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "trader"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "open_short_exact",
+      "discriminator": [
+        120,
+        25,
+        230,
+        128,
+        160,
+        252,
+        255,
+        130
+      ],
+      "accounts": [
+        {
+          "name": "trader",
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "trader_quote",
+          "writable": true
+        },
+        {
+          "name": "perp_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "base_atoms",
+          "type": "u64"
+        },
+        {
+          "name": "max_collateral_quote_atoms",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_paused",
+      "discriminator": [
+        91,
+        60,
+        125,
+        192,
+        176,
+        225,
+        166,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "spot_buy_exact_output",
+      "discriminator": [
+        9,
+        147,
+        253,
+        72,
+        163,
+        160,
+        93,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "trader",
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "trader_base",
+          "writable": true
+        },
+        {
+          "name": "trader_quote",
+          "writable": true
+        },
+        {
+          "name": "spot_base_vault",
+          "writable": true
+        },
+        {
+          "name": "spot_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "base_atoms_out",
+          "type": "u64"
+        },
+        {
+          "name": "max_quote_atoms_in",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "spot_sell_exact_input",
+      "discriminator": [
+        58,
+        0,
+        200,
+        122,
+        252,
+        140,
+        237,
+        27
+      ],
+      "accounts": [
+        {
+          "name": "trader",
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "trader_base",
+          "writable": true
+        },
+        {
+          "name": "trader_quote",
+          "writable": true
+        },
+        {
+          "name": "spot_base_vault",
+          "writable": true
+        },
+        {
+          "name": "spot_quote_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "base_atoms_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_quote_atoms_out",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MarketConfig",
+      "discriminator": [
+        119,
+        255,
+        200,
+        88,
+        252,
+        82,
+        128,
+        24
+      ]
+    },
+    {
+      "name": "PerpPosition",
+      "discriminator": [
+        49,
+        27,
+        181,
+        207,
+        128,
+        154,
+        176,
+        45
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidPrice",
+      "msg": "Price components must be nonzero"
+    },
+    {
+      "code": 6001,
+      "name": "PriceNotReduced",
+      "msg": "Price ratio must be reduced"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidFeeBps",
+      "msg": "Spot fee is above the basis-point denominator"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidMarginBps",
+      "msg": "Initial margin must be between one and ten thousand basis points"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidCap",
+      "msg": "Market caps must be nonzero"
+    },
+    {
+      "code": 6005,
+      "name": "MarketPaused",
+      "msg": "Market is paused"
+    },
+    {
+      "code": 6006,
+      "name": "TradeAmountZero",
+      "msg": "Trade amount is zero"
+    },
+    {
+      "code": 6007,
+      "name": "AmountCapExceeded",
+      "msg": "Trade amount exceeds the configured cap"
+    },
+    {
+      "code": 6008,
+      "name": "ArithmeticOverflow",
+      "msg": "Checked arithmetic overflowed"
+    },
+    {
+      "code": 6009,
+      "name": "SlippageExceeded",
+      "msg": "Execution exceeds the caller's limit"
+    },
+    {
+      "code": 6010,
+      "name": "InsufficientQuoteOutput",
+      "msg": "Spot sell would return no quote asset"
+    },
+    {
+      "code": 6011,
+      "name": "UnauthorizedAdmin",
+      "msg": "Signer is not the market administrator"
+    },
+    {
+      "code": 6012,
+      "name": "MarketMismatch",
+      "msg": "Account belongs to a different market"
+    },
+    {
+      "code": 6013,
+      "name": "VaultMismatch",
+      "msg": "Vault does not match market configuration"
+    },
+    {
+      "code": 6014,
+      "name": "MintMismatch",
+      "msg": "Token mint does not match market configuration"
+    },
+    {
+      "code": 6015,
+      "name": "PositionOwnerMismatch",
+      "msg": "Position belongs to a different trader"
+    },
+    {
+      "code": 6016,
+      "name": "ReduceOnlyViolation",
+      "msg": "Close quantity would increase or reverse the short"
+    }
+  ],
+  "types": [
+    {
+      "name": "MarketConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "spot_base_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "spot_quote_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "perp_quote_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "price_quote_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "price_base_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "spot_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "initial_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "max_spot_base_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "max_perp_base_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PerpPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "trader",
+            "type": "pubkey"
+          },
+          {
+            "name": "short_base_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "collateral_quote_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
