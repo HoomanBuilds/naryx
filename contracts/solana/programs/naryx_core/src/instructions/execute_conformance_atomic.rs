@@ -4,14 +4,22 @@ use naryx_conformance_venue::{
     program::NaryxConformanceVenue,
     state::{MarketConfig, PerpPosition},
 };
+use solana_instructions_sysvar::{load_current_index_checked, load_instruction_at_checked};
+use solana_sdk_ids::ed25519_program;
 
 use crate::{
-    constants::{CONFORMANCE_RECEIPT_SEED, PROTOCOL_CONFIG_SEED},
+    constants::{
+        CONFORMANCE_NONCE_SEED, CONFORMANCE_RECEIPT_SEED, PROTOCOL_CONFIG_SEED,
+        SOLVER_REGISTRY_SEED,
+    },
     error::ErrorCode,
     events::ConformanceExecutionRecorded,
-    state::{ConformanceExecutionReceipt, ProtocolConfig},
+    state::{ConformanceExecutionReceipt, ConformanceNonce, ProtocolConfig, SolverRegistry},
     wire::HASH_BYTE_LENGTH,
 };
+use solana_sha256_hasher::hashv;
+
+const EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/conformance-execution/v1";
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConformanceAction {
@@ -35,10 +43,11 @@ pub struct ConformanceExecutionArgs {
     pub spot_quote_limit_atoms: u64,
     pub collateral_quote_limit_atoms: u64,
     pub expiry_slot: u64,
+    pub nonce: u64,
 }
 
 #[derive(Accounts)]
-#[instruction(order_hash: [u8; HASH_BYTE_LENGTH])]
+#[instruction(order_hash: [u8; HASH_BYTE_LENGTH], quote_hash: [u8; HASH_BYTE_LENGTH], route_hash: [u8; HASH_BYTE_LENGTH], args: ConformanceExecutionArgs)]
 pub struct ExecuteConformanceAtomic<'info> {
     #[account(mut)]
     pub trader: Signer<'info>,
@@ -47,6 +56,8 @@ pub struct ExecuteConformanceAtomic<'info> {
         bump = config.bump
     )]
     pub config: Box<Account<'info, ProtocolConfig>>,
+    #[account(seeds = [SOLVER_REGISTRY_SEED], bump = solver_registry.bump)]
+    pub solver_registry: Account<'info, SolverRegistry>,
     #[account(
         init,
         payer = trader,
@@ -55,6 +66,14 @@ pub struct ExecuteConformanceAtomic<'info> {
         bump
     )]
     pub receipt: Box<Account<'info, ConformanceExecutionReceipt>>,
+    #[account(
+        init,
+        payer = trader,
+        space = 8 + ConformanceNonce::INIT_SPACE,
+        seeds = [CONFORMANCE_NONCE_SEED, trader.key().as_ref(), args.nonce.to_be_bytes().as_ref()],
+        bump
+    )]
+    pub nonce_marker: Account<'info, ConformanceNonce>,
     pub market: Box<Account<'info, MarketConfig>>,
     #[account(mut)]
     pub position: Box<Account<'info, PerpPosition>>,
@@ -71,6 +90,79 @@ pub struct ExecuteConformanceAtomic<'info> {
     pub conformance_program: Program<'info, NaryxConformanceVenue>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    #[account(address = solana_instructions_sysvar::id())]
+    pub instructions_sysvar: UncheckedAccount<'info>,
+}
+
+pub fn execution_digest(
+    domain: &crate::wire::DomainRef,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: ConformanceExecutionArgs,
+    account_keys: &[Pubkey; 18],
+) -> [u8; 32] {
+    let mut data = Vec::with_capacity(32 * 18 + 128);
+    data.extend_from_slice(&domain.canonical_bytes());
+    data.extend_from_slice(&order_hash);
+    data.extend_from_slice(&quote_hash);
+    data.extend_from_slice(&route_hash);
+    data.push(args.action.discriminant());
+    data.extend_from_slice(&args.base_quantity_atoms.to_be_bytes());
+    data.extend_from_slice(&args.spot_quote_limit_atoms.to_be_bytes());
+    data.extend_from_slice(&args.collateral_quote_limit_atoms.to_be_bytes());
+    data.extend_from_slice(&args.expiry_slot.to_be_bytes());
+    data.extend_from_slice(&args.nonce.to_be_bytes());
+    for key in account_keys {
+        data.extend_from_slice(key.as_ref());
+    }
+    hashv(&[EXECUTION_DIGEST_DOMAIN, &data]).to_bytes()
+}
+
+fn require_solver_signature(
+    instructions_sysvar: &AccountInfo,
+    solver: &Pubkey,
+    digest: &[u8; 32],
+) -> Result<()> {
+    let index = load_current_index_checked(instructions_sysvar)
+        .map_err(|_| error!(ErrorCode::ConformanceSignatureInstructionInvalid))?;
+    require!(index > 0, ErrorCode::ConformanceSignatureInstructionInvalid);
+    let instruction = load_instruction_at_checked((index - 1) as usize, instructions_sysvar)
+        .map_err(|_| error!(ErrorCode::ConformanceSignatureInstructionInvalid))?;
+    require_keys_eq!(
+        instruction.program_id,
+        ed25519_program::id(),
+        ErrorCode::ConformanceSignatureInstructionInvalid
+    );
+    require!(
+        instruction.accounts.is_empty(),
+        ErrorCode::ConformanceSignatureInstructionInvalid
+    );
+    let data = instruction.data;
+    require!(
+        data.len() == 144,
+        ErrorCode::ConformanceSignatureInstructionInvalid
+    );
+    require!(
+        data[0] == 1 && data[1] == 0,
+        ErrorCode::ConformanceSignatureInstructionInvalid
+    );
+    let field = |offset: usize| u16::from_le_bytes([data[offset], data[offset + 1]]);
+    require!(
+        field(2) == 48
+            && field(4) == u16::MAX
+            && field(6) == 16
+            && field(8) == u16::MAX
+            && field(10) == 112
+            && field(12) == 32
+            && field(14) == u16::MAX,
+        ErrorCode::ConformanceSignatureInstructionInvalid
+    );
+    require!(
+        &data[16..48] == solver.as_ref() && &data[112..144] == digest,
+        ErrorCode::ConformanceSignatureMismatch
+    );
+    Ok(())
 }
 
 pub(crate) fn handler(
@@ -90,6 +182,7 @@ pub(crate) fn handler(
         args.base_quantity_atoms != 0,
         ErrorCode::ConformanceQuantityZero
     );
+    require!(args.nonce != 0, ErrorCode::ConformanceNonceZero);
     let execution_slot = Clock::get()?.slot;
     require!(
         execution_slot < args.expiry_slot,
@@ -101,6 +194,41 @@ pub(crate) fn handler(
             ErrorCode::ConformanceEntryPaused
         );
     }
+    let solver = ctx.accounts.solver_registry.active;
+    require_keys_neq!(
+        solver,
+        Pubkey::default(),
+        ErrorCode::ConformanceSolverInvalid
+    );
+    let account_keys = [
+        crate::id(),
+        ctx.accounts.trader.key(),
+        ctx.accounts.config.key(),
+        ctx.accounts.solver_registry.key(),
+        solver,
+        ctx.accounts.receipt.key(),
+        ctx.accounts.nonce_marker.key(),
+        ctx.accounts.market.key(),
+        ctx.accounts.position.key(),
+        ctx.accounts.trader_base.key(),
+        ctx.accounts.trader_quote.key(),
+        ctx.accounts.spot_base_vault.key(),
+        ctx.accounts.spot_quote_vault.key(),
+        ctx.accounts.perp_quote_vault.key(),
+        ctx.accounts.conformance_program.key(),
+        ctx.accounts.token_program.key(),
+        ctx.accounts.system_program.key(),
+        ctx.accounts.instructions_sysvar.key(),
+    ];
+    let digest = execution_digest(
+        &ctx.accounts.config.domain,
+        order_hash,
+        quote_hash,
+        route_hash,
+        args,
+        &account_keys,
+    );
+    require_solver_signature(&ctx.accounts.instructions_sysvar, &solver, &digest)?;
 
     let pre_base_balance = ctx.accounts.trader_base.amount;
     let pre_quote_balance = ctx.accounts.trader_quote.amount;
@@ -134,10 +262,14 @@ pub(crate) fn handler(
     )?;
 
     let receipt = ConformanceExecutionReceipt {
+        domain: ctx.accounts.config.domain.clone(),
         order_hash,
         quote_hash,
         route_hash,
         trader: ctx.accounts.trader.key(),
+        solver,
+        nonce: args.nonce,
+        execution_digest: digest,
         action: args.action.discriminant(),
         base_quantity_atoms: args.base_quantity_atoms,
         pre_base_balance,
@@ -152,13 +284,22 @@ pub(crate) fn handler(
         bump: ctx.bumps.receipt,
     };
     ctx.accounts.receipt.set_inner(receipt);
+    ctx.accounts.nonce_marker.set_inner(ConformanceNonce {
+        order_hash,
+        execution_digest: digest,
+        bump: ctx.bumps.nonce_marker,
+    });
 
     emit!(ConformanceExecutionRecorded {
         receipt: ctx.accounts.receipt.key(),
+        domain: ctx.accounts.config.domain.clone(),
         order_hash,
         quote_hash,
         route_hash,
         trader: ctx.accounts.trader.key(),
+        solver,
+        nonce: args.nonce,
+        execution_digest: digest,
         action: args.action.discriminant(),
         base_quantity_atoms: args.base_quantity_atoms,
         pre_base_balance,

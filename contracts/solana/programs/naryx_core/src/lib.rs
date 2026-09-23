@@ -137,4 +137,16 @@ pub mod naryx_core {
             ctx, order_hash, quote_hash, route_hash, args,
         )
     }
+
+    pub fn propose_solver(ctx: Context<ProposeSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::propose(ctx, key)
+    }
+
+    pub fn activate_solver(ctx: Context<ActivateSolver>) -> Result<()> {
+        instructions::solver_registry::activate(ctx)
+    }
+
+    pub fn cancel_solver(ctx: Context<CancelSolver>) -> Result<()> {
+        instructions::solver_registry::cancel(ctx)
+    }
 }

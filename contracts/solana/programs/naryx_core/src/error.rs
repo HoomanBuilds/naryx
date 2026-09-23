@@ -136,4 +136,18 @@ pub enum ErrorCode {
     ConformanceArithmeticOverflow,
     #[msg("Conformance execution postcondition failed")]
     ConformancePostconditionFailed,
+    #[msg("Conformance nonce is zero")]
+    ConformanceNonceZero,
+    #[msg("Conformance solver key is invalid")]
+    ConformanceSolverInvalid,
+    #[msg("Conformance solver proposal already exists")]
+    ConformanceSolverProposalExists,
+    #[msg("Conformance solver proposal is missing")]
+    ConformanceSolverProposalMissing,
+    #[msg("Conformance solver proposal is not ready")]
+    ConformanceSolverProposalNotReady,
+    #[msg("Conformance solver signature instruction is invalid")]
+    ConformanceSignatureInstructionInvalid,
+    #[msg("Conformance solver signature does not bind this execution")]
+    ConformanceSignatureMismatch,
 }

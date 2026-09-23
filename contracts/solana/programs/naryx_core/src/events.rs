@@ -69,10 +69,14 @@ pub struct EntryUnpaused {
 #[event]
 pub struct ConformanceExecutionRecorded {
     pub receipt: Pubkey,
+    pub domain: DomainRef,
     pub order_hash: [u8; 32],
     pub quote_hash: [u8; 32],
     pub route_hash: [u8; 32],
     pub trader: Pubkey,
+    pub solver: Pubkey,
+    pub nonce: u64,
+    pub execution_digest: [u8; 32],
     pub action: u8,
     pub base_quantity_atoms: u64,
     pub pre_base_balance: u64,

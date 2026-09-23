@@ -31,10 +31,14 @@ pub struct ProtocolConfig {
 #[account]
 #[derive(InitSpace)]
 pub struct ConformanceExecutionReceipt {
+    pub domain: DomainRef,
     pub order_hash: [u8; 32],
     pub quote_hash: [u8; 32],
     pub route_hash: [u8; 32],
     pub trader: Pubkey,
+    pub solver: Pubkey,
+    pub nonce: u64,
+    pub execution_digest: [u8; 32],
     pub action: u8,
     pub base_quantity_atoms: u64,
     pub pre_base_balance: u64,
@@ -46,5 +50,30 @@ pub struct ConformanceExecutionReceipt {
     pub pre_collateral_quote_atoms: u64,
     pub post_collateral_quote_atoms: u64,
     pub execution_slot: u64,
+    pub bump: u8,
+}
+
+#[cfg(feature = "conformance")]
+#[account]
+#[derive(InitSpace)]
+pub struct ConformanceNonce {
+    pub order_hash: [u8; 32],
+    pub execution_digest: [u8; 32],
+    pub bump: u8,
+}
+
+#[cfg(feature = "conformance")]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
+pub struct PendingSolver {
+    pub key: Pubkey,
+    pub activation_slot: u64,
+}
+
+#[cfg(feature = "conformance")]
+#[account]
+#[derive(InitSpace)]
+pub struct SolverRegistry {
+    pub active: Pubkey,
+    pub pending: Option<PendingSolver>,
     pub bump: u8,
 }

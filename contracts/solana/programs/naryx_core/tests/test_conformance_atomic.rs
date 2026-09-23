@@ -29,7 +29,9 @@ use {
     naryx_core::{
         constants::{CONFORMANCE_RECEIPT_SEED, PROTOCOL_CONFIG_SEED},
         error::ErrorCode,
-        instructions::{ConformanceAction, ConformanceExecutionArgs, GovernanceRoles},
+        instructions::{
+            execution_digest, ConformanceAction, ConformanceExecutionArgs, GovernanceRoles,
+        },
         state::{ConformanceExecutionReceipt, ProtocolConfig},
         wire::HASH_BYTE_LENGTH,
     },
@@ -50,8 +52,11 @@ struct Env {
     trader: Keypair,
     proposer: Keypair,
     executor: Keypair,
+    solver: Keypair,
     pauser: Keypair,
     config: Pubkey,
+    solver_registry: Pubkey,
+    base_mint: Pubkey,
     market: Pubkey,
     position: Pubkey,
     trader_base: Pubkey,
@@ -197,6 +202,7 @@ fn setup(unpause_entry: bool) -> Env {
     let proposer = Keypair::new();
     let canceller = Keypair::new();
     let executor = Keypair::new();
+    let solver = Keypair::new();
     let pauser = Keypair::new();
     for signer in [&payer, &trader, &proposer, &canceller, &executor, &pauser] {
         svm.airdrop(&signer.pubkey(), 2_000_000_000).unwrap();
@@ -213,6 +219,10 @@ fn setup(unpause_entry: bool) -> Env {
     svm.set_account(program_data, program_data_account).unwrap();
 
     let (config, _) = Pubkey::find_program_address(&[PROTOCOL_CONFIG_SEED], &naryx_core::id());
+    let (solver_registry, _) = Pubkey::find_program_address(
+        &[naryx_core::constants::SOLVER_REGISTRY_SEED],
+        &naryx_core::id(),
+    );
     let initialize_core = core_ix(
         naryx_core::accounts::Initialize {
             payer: payer.pubkey(),
@@ -311,8 +321,11 @@ fn setup(unpause_entry: bool) -> Env {
         trader,
         proposer,
         executor,
+        solver,
         pauser,
         config,
+        solver_registry,
+        base_mint,
         market,
         position,
         trader_base,
@@ -321,6 +334,7 @@ fn setup(unpause_entry: bool) -> Env {
         spot_quote_vault,
         perp_quote_vault,
     };
+    env.register_solver();
     if unpause_entry {
         env.unpause_entry();
     }
@@ -328,6 +342,32 @@ fn setup(unpause_entry: bool) -> Env {
 }
 
 impl Env {
+    fn register_solver(&mut self) {
+        self.svm.warp_to_slot(50);
+        let propose = core_ix(
+            naryx_core::accounts::ProposeSolver {
+                proposer: self.proposer.pubkey(),
+                config: self.config,
+                registry: self.solver_registry,
+                system_program: anchor_lang::system_program::ID,
+            },
+            naryx_core::instruction::ProposeSolver {
+                key: self.solver.pubkey(),
+            },
+        );
+        send(&mut self.svm, &self.payer, &[&self.proposer], &[propose]).unwrap();
+        self.svm.warp_to_slot(50 + CONFIG_DELAY_SLOTS);
+        let activate = core_ix(
+            naryx_core::accounts::ActivateSolver {
+                executor: self.executor.pubkey(),
+                config: self.config,
+                registry: self.solver_registry,
+            },
+            naryx_core::instruction::ActivateSolver {},
+        );
+        send(&mut self.svm, &self.payer, &[&self.executor], &[activate]).unwrap();
+    }
+
     fn unpause_entry(&mut self) {
         self.svm.warp_to_slot(100);
         let schedule = core_ix(
@@ -368,36 +408,109 @@ impl Env {
         spot_quote_limit_atoms: u64,
         collateral_quote_limit_atoms: u64,
         expiry_slot: u64,
-    ) -> Instruction {
-        core_ix(
-            naryx_core::accounts::ExecuteConformanceAtomic {
-                trader: self.trader.pubkey(),
-                config: self.config,
-                receipt: receipt_address(self.trader.pubkey(), order_hash),
-                market: self.market,
-                position: self.position,
-                trader_base: self.trader_base,
-                trader_quote: self.trader_quote,
-                spot_base_vault: self.spot_base_vault,
-                spot_quote_vault: self.spot_quote_vault,
-                perp_quote_vault: self.perp_quote_vault,
-                conformance_program: naryx_conformance_venue::id(),
-                token_program: TOKEN_PROGRAM_ID,
-                system_program: anchor_lang::system_program::ID,
-            },
+    ) -> Vec<Instruction> {
+        self.execution_ix_with(
+            order_hash,
+            action,
+            2,
+            spot_quote_limit_atoms,
+            collateral_quote_limit_atoms,
+            expiry_slot,
+            u64::from(order_hash[0]),
+        )
+    }
+
+    fn execution_ix_with(
+        &self,
+        order_hash: [u8; 32],
+        action: ConformanceAction,
+        base_quantity_atoms: u64,
+        spot_quote_limit_atoms: u64,
+        collateral_quote_limit_atoms: u64,
+        expiry_slot: u64,
+        nonce: u64,
+    ) -> Vec<Instruction> {
+        let receipt = receipt_address(self.trader.pubkey(), order_hash);
+        let nonce_marker = Pubkey::find_program_address(
+            &[
+                naryx_core::constants::CONFORMANCE_NONCE_SEED,
+                self.trader.pubkey().as_ref(),
+                nonce.to_be_bytes().as_ref(),
+            ],
+            &naryx_core::id(),
+        )
+        .0;
+        let accounts = naryx_core::accounts::ExecuteConformanceAtomic {
+            trader: self.trader.pubkey(),
+            config: self.config,
+            solver_registry: self.solver_registry,
+            receipt,
+            nonce_marker,
+            market: self.market,
+            position: self.position,
+            trader_base: self.trader_base,
+            trader_quote: self.trader_quote,
+            spot_base_vault: self.spot_base_vault,
+            spot_quote_vault: self.spot_quote_vault,
+            perp_quote_vault: self.perp_quote_vault,
+            conformance_program: naryx_conformance_venue::id(),
+            token_program: TOKEN_PROGRAM_ID,
+            system_program: anchor_lang::system_program::ID,
+            instructions_sysvar: solana_instructions_sysvar::id(),
+        };
+        let args = ConformanceExecutionArgs {
+            action,
+            base_quantity_atoms,
+            spot_quote_limit_atoms,
+            collateral_quote_limit_atoms,
+            expiry_slot,
+            nonce,
+        };
+        let quote_hash = [0x22; 32];
+        let route_hash = [0x33; 32];
+        let digest = execution_digest(
+            &read_config(&self.svm, self.config).domain,
+            order_hash,
+            quote_hash,
+            route_hash,
+            args,
+            &[
+                naryx_core::id(),
+                self.trader.pubkey(),
+                self.config,
+                self.solver_registry,
+                self.solver.pubkey(),
+                receipt,
+                nonce_marker,
+                self.market,
+                self.position,
+                self.trader_base,
+                self.trader_quote,
+                self.spot_base_vault,
+                self.spot_quote_vault,
+                self.perp_quote_vault,
+                naryx_conformance_venue::id(),
+                TOKEN_PROGRAM_ID,
+                anchor_lang::system_program::ID,
+                solana_instructions_sysvar::id(),
+            ],
+        );
+        let signature = self.solver.sign_message(&digest);
+        let verification = solana_ed25519_program::new_ed25519_instruction_with_signature(
+            &digest,
+            signature.as_ref().try_into().unwrap(),
+            self.solver.pubkey().as_ref().try_into().unwrap(),
+        );
+        let execution = core_ix(
+            accounts,
             naryx_core::instruction::ExecuteConformanceAtomic {
                 order_hash,
-                quote_hash: [0x22; 32],
-                route_hash: [0x33; 32],
-                args: ConformanceExecutionArgs {
-                    action,
-                    base_quantity_atoms: 2,
-                    spot_quote_limit_atoms,
-                    collateral_quote_limit_atoms,
-                    expiry_slot,
-                },
+                quote_hash,
+                route_hash,
+                args,
             },
-        )
+        );
+        vec![verification, execution]
     }
 
     fn current_slot(&self) -> u64 {
@@ -417,8 +530,8 @@ impl Env {
         )
     }
 
-    fn execute(&mut self, instruction: Instruction) -> TransactionResult {
-        send(&mut self.svm, &self.payer, &[&self.trader], &[instruction])
+    fn execute(&mut self, instructions: Vec<Instruction>) -> TransactionResult {
+        send(&mut self.svm, &self.payer, &[&self.trader], &instructions)
     }
 }
 
@@ -432,10 +545,14 @@ fn successful_entry_records_authoritative_pre_and_post_state() {
 
     assert_eq!(env.snapshot(), (12, 95, 98, 104, 1, 2, 1));
     let receipt = read_receipt(&env.svm, receipt_address(env.trader.pubkey(), order_hash));
+    assert_eq!(receipt.domain, read_config(&env.svm, env.config).domain);
     assert_eq!(receipt.order_hash, order_hash);
     assert_eq!(receipt.quote_hash, [0x22; 32]);
     assert_eq!(receipt.route_hash, [0x33; 32]);
     assert_eq!(receipt.trader, env.trader.pubkey());
+    assert_eq!(receipt.solver, env.solver.pubkey());
+    assert_eq!(receipt.nonce, 0x11);
+    assert_ne!(receipt.execution_digest, [0; 32]);
     assert_eq!(receipt.action, 1);
     assert_eq!(receipt.base_quantity_atoms, 2);
     assert_eq!(receipt.pre_base_balance, 10);
@@ -504,6 +621,258 @@ fn successful_order_cannot_replay() {
 }
 
 #[test]
+fn nonce_cannot_be_reused_for_another_order() {
+    let mut env = setup(true);
+    let expiry = env.current_slot() + 2;
+    let first = env.execution_ix_with([0x71; 32], ConformanceAction::Entry, 2, 4, 1, expiry, 9);
+    env.execute(first).unwrap();
+    let before = env.snapshot();
+    let second = env.execution_ix_with([0x72; 32], ConformanceAction::Entry, 2, 4, 1, expiry, 9);
+    assert!(env.execute(second).is_err());
+    assert_eq!(env.snapshot(), before);
+    assert!(env
+        .svm
+        .get_account(&receipt_address(env.trader.pubkey(), [0x72; 32]))
+        .is_none());
+}
+
+#[test]
+fn solver_signature_must_match_registered_key_and_exact_digest() {
+    let mut env = setup(true);
+    let before = env.snapshot();
+    let mut wrong_key = env.execution_ix(
+        [0x81; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
+    );
+    let stranger = Keypair::new();
+    let digest = wrong_key[0].data[112..144].to_vec();
+    wrong_key[0].data[48..112].copy_from_slice(stranger.sign_message(&digest).as_ref());
+    wrong_key[0].data[16..48].copy_from_slice(stranger.pubkey().as_ref());
+    let failure = env.execute(wrong_key).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+
+    let mut wrong_digest = env.execution_ix(
+        [0x82; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
+    );
+    wrong_digest[0].data[112] ^= 1;
+    let altered_digest = wrong_digest[0].data[112..144].to_vec();
+    wrong_digest[0].data[48..112]
+        .copy_from_slice(env.solver.sign_message(&altered_digest).as_ref());
+    let failure = env.execute(wrong_digest).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+    assert_eq!(env.snapshot(), before);
+}
+
+#[test]
+fn signature_binds_accounts_and_quantity() {
+    let mut env = setup(true);
+    let before = env.snapshot();
+    let mut wrong_account = env.execution_ix(
+        [0x83; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
+    );
+    let base_index = wrong_account[1]
+        .accounts
+        .iter()
+        .position(|meta| meta.pubkey == env.trader_base)
+        .unwrap();
+    let substitute_base =
+        create_token_account(&mut env.svm, &env.payer, env.base_mint, env.trader.pubkey());
+    wrong_account[1].accounts[base_index].pubkey = substitute_base;
+    let failure = env.execute(wrong_account).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+
+    let mut wrong_quantity = env.execution_ix(
+        [0x84; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
+    );
+    wrong_quantity[1].data[105] = 3;
+    let failure = env.execute(wrong_quantity).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+
+    let mut wrong_expiry = env.execution_ix(
+        [0x87; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 3,
+    );
+    wrong_expiry[1].data[129] ^= 1;
+    let failure = env.execute(wrong_expiry).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+    assert_eq!(env.snapshot(), before);
+}
+
+#[test]
+fn signature_instruction_must_use_canonical_local_offsets() {
+    let mut env = setup(true);
+    let mut instructions = env.execution_ix(
+        [0x85; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
+    );
+    instructions[0].data.insert(16, 0);
+    for (offset, value) in [(2, 49u16), (6, 17), (10, 113)] {
+        instructions[0].data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    let failure = env.execute(instructions).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureInstructionInvalid))
+        )
+    );
+}
+
+#[test]
+fn solver_rotation_requires_proposer_and_delay() {
+    let mut env = setup(true);
+    let next_solver = Keypair::new();
+    let proposal = core_ix(
+        naryx_core::accounts::ProposeSolver {
+            proposer: env.proposer.pubkey(),
+            config: env.config,
+            registry: env.solver_registry,
+            system_program: anchor_lang::system_program::ID,
+        },
+        naryx_core::instruction::ProposeSolver {
+            key: next_solver.pubkey(),
+        },
+    );
+    let mut unauthorized = proposal.clone();
+    unauthorized.accounts[0].pubkey = env.pauser.pubkey();
+    assert!(send(&mut env.svm, &env.payer, &[&env.pauser], &[unauthorized]).is_err());
+    send(&mut env.svm, &env.payer, &[&env.proposer], &[proposal]).unwrap();
+    let activate = core_ix(
+        naryx_core::accounts::ActivateSolver {
+            executor: env.executor.pubkey(),
+            config: env.config,
+            registry: env.solver_registry,
+        },
+        naryx_core::instruction::ActivateSolver {},
+    );
+    let failure = send(
+        &mut env.svm,
+        &env.payer,
+        &[&env.executor],
+        &[activate.clone()],
+    )
+    .unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            0,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSolverProposalNotReady))
+        )
+    );
+    env.svm
+        .warp_to_slot(env.current_slot() + CONFIG_DELAY_SLOTS);
+    send(&mut env.svm, &env.payer, &[&env.executor], &[activate]).unwrap();
+    let stale = env.execution_ix(
+        [0x86; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 1,
+    );
+    let failure = env.execute(stale).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+}
+
+#[test]
+fn signature_binds_active_domain_reference() {
+    let mut env = setup(true);
+    let signed = env.execution_ix(
+        [0x88; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 10,
+    );
+    let propose = core_ix(
+        naryx_core::accounts::ProposeDomain {
+            proposer: env.proposer.pubkey(),
+            config: env.config,
+        },
+        naryx_core::instruction::ProposeDomain {
+            domain_manifest_version: 2,
+            domain_manifest_hash: [0x55; 32],
+        },
+    );
+    send(&mut env.svm, &env.payer, &[&env.proposer], &[propose]).unwrap();
+    env.svm
+        .warp_to_slot(env.current_slot() + CONFIG_DELAY_SLOTS);
+    let activate = core_ix(
+        naryx_core::accounts::ActivateDomain {
+            executor: env.executor.pubkey(),
+            config: env.config,
+        },
+        naryx_core::instruction::ActivateDomain {},
+    );
+    send(&mut env.svm, &env.payer, &[&env.executor], &[activate]).unwrap();
+    let failure = env.execute(signed).unwrap_err();
+    assert_eq!(
+        failure.err,
+        TransactionError::InstructionError(
+            1,
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+        )
+    );
+}
+
+#[test]
 fn half_open_expiry_rejects_the_current_slot_without_state() {
     let mut env = setup(true);
     let order_hash = [0x14; 32];
@@ -519,7 +888,7 @@ fn half_open_expiry_rejects_the_current_slot_without_state() {
     assert_eq!(
         failure.err,
         TransactionError::InstructionError(
-            0,
+            1,
             InstructionError::Custom(u32::from(ErrorCode::ConformanceOrderExpired))
         )
     );
@@ -546,7 +915,7 @@ fn entry_pause_rejects_entry_without_blocking_exit_semantics() {
     assert_eq!(
         failure.err,
         TransactionError::InstructionError(
-            0,
+            1,
             InstructionError::Custom(u32::from(ErrorCode::ConformanceEntryPaused))
         )
     );
