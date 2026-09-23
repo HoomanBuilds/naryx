@@ -4,7 +4,9 @@ use solana_sha256_hasher::hashv;
 use crate::error::ErrorCode;
 
 pub mod package_order;
+pub mod solver_quote;
 pub use package_order::*;
+pub use solver_quote::*;
 
 pub const PROTOCOL_ID_MAX_BYTES: usize = 128;
 pub const HASH_BYTE_LENGTH: usize = 32;

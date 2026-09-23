@@ -15,7 +15,7 @@ macro_rules! wire_enum {
         }
 
         impl $name {
-            fn discriminant(self) -> u8 {
+            pub(super) fn discriminant(self) -> u8 {
                 self as u8
             }
         }
@@ -177,13 +177,13 @@ impl AssetRef {
         self.decimals
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub(super) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.asset_id.canonical_bytes());
         out.extend_from_slice(&self.asset_manifest_hash.0);
         out.push(self.decimals);
     }
 
-    fn canonical_bytes(&self) -> Vec<u8> {
+    pub(super) fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.encode(&mut out);
         out
@@ -209,7 +209,7 @@ impl AssetAmount {
         self.atoms
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub(super) fn encode(&self, out: &mut Vec<u8>) {
         self.asset.encode(out);
         out.extend_from_slice(&self.atoms.to_be_bytes());
     }
@@ -291,7 +291,15 @@ impl ExactSignedRate {
         })
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub fn base_asset(&self) -> &AssetRef {
+        &self.base_asset
+    }
+
+    pub fn quote_asset(&self) -> &AssetRef {
+        &self.quote_asset
+    }
+
+    pub(super) fn encode(&self, out: &mut Vec<u8>) {
         self.base_asset.encode(out);
         self.quote_asset.encode(out);
         out.extend_from_slice(&self.quote_atoms.to_be_bytes());
@@ -311,12 +319,20 @@ impl FeeCap {
         Self { asset, max_atoms }
     }
 
-    fn encode(&self, out: &mut Vec<u8>) {
+    pub fn asset(&self) -> &AssetRef {
+        &self.asset
+    }
+
+    pub fn max_atoms(&self) -> i128 {
+        self.max_atoms
+    }
+
+    pub(super) fn encode(&self, out: &mut Vec<u8>) {
         self.asset.encode(out);
         out.extend_from_slice(&self.max_atoms.to_be_bytes());
     }
 
-    fn key(&self) -> Vec<u8> {
+    pub(super) fn key(&self) -> Vec<u8> {
         self.asset.canonical_bytes()
     }
 }

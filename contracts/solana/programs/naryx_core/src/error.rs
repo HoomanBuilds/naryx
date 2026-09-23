@@ -70,4 +70,34 @@ pub enum ErrorCode {
     WireCollectionTooLong,
     #[msg("Wire recovery window is zero")]
     WireRecoveryWindowZero,
+    #[msg("Wire version does not match the supported version")]
+    WireVersionMismatch,
+    #[msg("Wire nonce is zero")]
+    WireNonceZero,
+    #[msg("Wire asset does not match the package asset")]
+    WireAssetMismatch,
+    #[msg("Wire fee arrays have different asset-key sets")]
+    WireFeeKeyMismatch,
+    #[msg("Wire fee arithmetic overflowed")]
+    WireFeeArithmeticOverflow,
+    #[msg("Wire raw fee does not equal normalized fee plus builder fee")]
+    WireFeeConservation,
+    #[msg("Wire base-asset fee does not match its raw fee entry")]
+    WireBaseFeeMismatch,
+    #[msg("Wire signature material has an invalid shape")]
+    WireSignatureShape,
+    #[msg("Wire secp256k1 scalar is outside its valid range")]
+    WireSecpScalarInvalid,
+    #[msg("Wire secp256k1 signature is not low-s")]
+    WireSecpHighS,
+    #[msg("Wire secp256k1 recovery identifier is invalid")]
+    WireSecpRecoveryId,
+    #[msg("Wire terminal residual structure is invalid")]
+    WireResidualShape,
+    #[msg("Wire recovery cost cap is negative")]
+    WireRecoveryCapNegative,
+    #[msg("Wire reservation does not match quote mode")]
+    WireReservationRule,
+    #[msg("Wire firm quote does not have an atomic entry outcome")]
+    WireFirmQuoteShape,
 }
