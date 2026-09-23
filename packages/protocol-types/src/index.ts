@@ -157,3 +157,12 @@ export {
   type MarketManifestInput,
   type MarketManifest,
 } from './market-manifest.js';
+
+export {
+  packageTemplateManifest,
+  encodePackageTemplateManifest,
+  packageTemplateManifestBytes,
+  packageTemplateManifestHash,
+  type PackageTemplateManifestInput,
+  type PackageTemplateManifest,
+} from './package-template-manifest.js';

@@ -161,6 +161,33 @@ export interface MarketManifestFixture {
   digestHex: string;
 }
 
+export interface PackageTemplateManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  templateId: string;
+  templateVersion: string;
+  supportedDomains: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  }[];
+  orderSchemaHash: string;
+  quoteSchemaHash: string;
+  routeSchemaHash: string;
+  receiptSchemaHash: string;
+  entryCompilerVersion: string;
+  exitCompilerVersion: string;
+  legCount: string;
+  legTypes: string[];
+  supportedDirections: string[];
+  supportedSettlementClasses: string[];
+  allowedSpotAdapterIds: string[];
+  allowedPerpAdapterIds: string[];
+  riskPolicyHash: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;
