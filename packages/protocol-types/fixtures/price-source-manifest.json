@@ -1,0 +1,21 @@
+{
+  "manifestVersion": "1",
+  "environment": "testnet",
+  "priceSourceId": "svm:test-domain-1:price-source-1",
+  "domain": {
+    "domainId": "svm:test-domain-1",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a"
+  },
+  "sourceKind": "oracle-feed",
+  "feedIdentity": "feed-account-v1",
+  "priceDecimals": 8,
+  "priceConvention": "quote-atoms-per-base-unit-v1",
+  "maxStaleness": {
+    "unit": "MILLISECONDS",
+    "value": "1500"
+  },
+  "fallbackRule": "no-fallback-v1",
+  "canonicalHex": "0000000100000007746573746e65740000002073766d3a746573742d646f6d61696e2d313a70726963652d736f757263652d310000001173766d3a746573742d646f6d61696e2d3100000001393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a0000000b6f7261636c652d666565640000000f666565642d6163636f756e742d7631080000001c71756f74652d61746f6d732d7065722d626173652d756e69742d76310100000000000005dc0000000e6e6f2d66616c6c6261636b2d7631",
+  "digestHex": "d011e5a36b589df2158c253a2c5173d9e615fc58e8f3e4301b96fa3c7870a7cf"
+}

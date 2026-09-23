@@ -16,10 +16,9 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
-`MarketManifest`, and `PackageTemplateManifest` kernels. The composite `PackageOrder`,
-`RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet, and neither are
-the remaining resource manifests
-and registry records.
+`MarketManifest`, `PriceSourceManifest`, and `PackageTemplateManifest` kernels. The composite
+`PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
+and neither are the remaining resource manifests and registry records.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
   fixed-width two's-complement big-endian, booleans as exactly `0` or `1`, byte strings and
@@ -29,11 +28,12 @@ and registry records.
 - `HASH_DOMAIN` and `domainHash`: SHA-256 over raw ASCII domain bytes concatenated directly
   with canonical payload bytes. No JSON, no hidden prefix, no length framing around the domain.
   The set is closed and rejects an unregistered domain. Implemented manifests use their assigned
-  domains; adapter, price-source, domain-registry-record, and fee-policy domains remain
+  domains; adapter, domain-registry-record, and fee-policy domains remain
   reserved for the slices that implement those schemas.
 - `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
-  `domainRef`, `assetRef`, `assetAmount`, `expiry`: constructor-validated primitives.
-- Frozen discriminant tables: `EXPIRY_UNIT`, `DIRECTION`, `PACKAGE_ACTION`, `SETTLEMENT_CLASS`,
+  `domainRef`, `assetRef`, `assetAmount`, `expiry`, `duration`: constructor-validated primitives.
+- Frozen discriminant tables: `EXPIRY_UNIT`, `DURATION_UNIT`, `DIRECTION`, `PACKAGE_ACTION`,
+  `SETTLEMENT_CLASS`,
   `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
   `RISK_LIMIT_KIND`, `FEE_CATEGORY`, and `PASS_THROUGH_COST_CATEGORY`. Discriminant `0` is
   reserved on every table, so an all-zero payload never decodes to a valid variant.
@@ -81,6 +81,10 @@ different bytes and therefore hash differently.
 
 Expiry is a tagged integer. `compareExpiry` rejects a comparison between two different
 expiry units rather than converting between them.
+
+Duration is a positive tagged `u64` elapsed-time bound and is distinct from an absolute expiry.
+Version 1 has one canonical unit, milliseconds, so equivalent durations cannot have multiple
+wire encodings. Adding another unit requires a reviewed wire-version change.
 
 ## Domain identity
 
@@ -142,6 +146,14 @@ and adapter sets. Leg order remains significant while every set is sorted by com
 element bytes and rejects duplicates. Constructing or hashing a template does not activate it or
 claim that an unknown template, leg type, or compiler is implemented.
 
+## Price source identity
+
+`PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
+price decimals and convention, a positive millisecond freshness bound, and an explicit fallback
+rule. `no-fallback-v1` names the absence of a fallback rather than leaving it optional or inferred.
+The manifest defines immutable identity only; it neither activates a source nor proves a live
+observation is fresh.
+
 ## Failure modes
 
 Every public failure is a typed `ProtocolError` with a stable `code`:
@@ -159,7 +171,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/encoding.json`, `fixtures/hashing.json`, `fixtures/arithmetic.json`,
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
-`fixtures/package-template-manifest.json` hold language-neutral inputs and fixed expected outputs
+`fixtures/package-template-manifest.json`, and `fixtures/price-source-manifest.json` hold
+language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.
 Expected hex and digest values are committed constants, not values

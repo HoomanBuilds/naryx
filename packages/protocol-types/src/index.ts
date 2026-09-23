@@ -21,6 +21,7 @@ export { encodeUtf8, encodeAscii } from './text.js';
 
 export {
   EXPIRY_UNIT,
+  DURATION_UNIT,
   DIRECTION,
   PACKAGE_ACTION,
   SETTLEMENT_CLASS,
@@ -34,6 +35,7 @@ export {
   enumDiscriminant,
   type EnumTable,
   type ExpiryUnit,
+  type DurationUnit,
   type Direction,
   type PackageAction,
   type SettlementClass,
@@ -77,6 +79,7 @@ export {
   MANIFEST_VERSION_BITS,
   ASSET_ATOM_BITS,
   EXPIRY_VALUE_BITS,
+  DURATION_VALUE_BITS,
   hash32,
   encodeHash32,
   manifestHash,
@@ -96,6 +99,8 @@ export {
   expiry,
   encodeExpiry,
   compareExpiry,
+  duration,
+  encodeDuration,
   type Hash32,
   type ManifestHash,
   type ProtocolId,
@@ -106,6 +111,7 @@ export {
   type AssetRef,
   type AssetAmount,
   type Expiry,
+  type Duration,
 } from './primitives.js';
 
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
@@ -166,3 +172,12 @@ export {
   type PackageTemplateManifestInput,
   type PackageTemplateManifest,
 } from './package-template-manifest.js';
+
+export {
+  priceSourceManifest,
+  encodePriceSourceManifest,
+  priceSourceManifestBytes,
+  priceSourceManifestHash,
+  type PriceSourceManifestInput,
+  type PriceSourceManifest,
+} from './price-source-manifest.js';

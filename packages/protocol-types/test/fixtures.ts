@@ -112,6 +112,28 @@ export interface VenueManifestFixture {
   digestHex: string;
 }
 
+export interface PriceSourceManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  priceSourceId: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  sourceKind: string;
+  feedIdentity: string;
+  priceDecimals: number;
+  priceConvention: string;
+  maxStaleness: {
+    unit: string;
+    value: string;
+  };
+  fallbackRule: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface MarketManifestFixture {
   manifestVersion: string;
   environment: string;

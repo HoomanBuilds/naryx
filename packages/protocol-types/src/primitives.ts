@@ -1,7 +1,12 @@
 import { checkedSigned, checkedUnsigned } from './arithmetic.js';
 import { fromHex } from './bytes.js';
 import { CanonicalWriter } from './encoding.js';
-import { EXPIRY_UNIT, type ExpiryUnit } from './enums.js';
+import {
+  DURATION_UNIT,
+  EXPIRY_UNIT,
+  type DurationUnit,
+  type ExpiryUnit,
+} from './enums.js';
 import { IncompatibleUnitError, MalformedInputError, RangeViolationError } from './errors.js';
 import { encodeAscii } from './text.js';
 
@@ -352,4 +357,38 @@ export function compareExpiry(left: Expiry, right: Expiry, context = 'compareExp
   }
   if (first.value === second.value) return 0;
   return first.value < second.value ? -1 : 1;
+}
+
+export const DURATION_VALUE_BITS = 64;
+
+export interface Duration {
+  readonly unit: DurationUnit;
+  readonly value: bigint;
+}
+
+export function duration(unit: DurationUnit, value: bigint, context = 'duration'): Duration {
+  if (typeof value !== 'bigint') {
+    throw new MalformedInputError(`${context}.value`, 'expected a bigint duration value');
+  }
+  if (!Object.prototype.hasOwnProperty.call(DURATION_UNIT, unit)) {
+    throw new MalformedInputError(`${context}.unit`, `unknown duration unit ${String(unit)}`);
+  }
+  const checked = checkedUnsigned(value, DURATION_VALUE_BITS, `${context}.value`);
+  if (checked === 0n) {
+    throw new MalformedInputError(`${context}.value`, 'duration is zero');
+  }
+  return Object.freeze({ unit, value: checked });
+}
+
+function checkedDuration(value: Duration, context: string): Duration {
+  if (typeof value !== 'object' || value === null) {
+    throw new MalformedInputError(context, 'expected a duration object');
+  }
+  return duration(value.unit, value.value, context);
+}
+
+export function encodeDuration(writer: CanonicalWriter, value: Duration): void {
+  const checked = checkedDuration(value, 'duration');
+  writer.writeEnum(DURATION_UNIT, checked.unit, 'duration.unit');
+  writer.writeU64(checked.value, 'duration.value');
 }

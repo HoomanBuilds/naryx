@@ -11,6 +11,11 @@ export const EXPIRY_UNIT = Object.freeze({
 } as const);
 export type ExpiryUnit = keyof typeof EXPIRY_UNIT;
 
+export const DURATION_UNIT = Object.freeze({
+  MILLISECONDS: 1,
+} as const);
+export type DurationUnit = keyof typeof DURATION_UNIT;
+
 export const DIRECTION = Object.freeze({
   LONG_SPOT_SHORT_PERP: 1,
 } as const);
