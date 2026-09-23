@@ -1,0 +1,18 @@
+{
+  "manifestVersion": "1",
+  "environment": "testnet",
+  "assetId": "svm:test-domain-1:usdc",
+  "economicAssetId": "usd-coin",
+  "domain": {
+    "domainId": "svm:test-domain-1",
+    "domainManifestVersion": "1",
+    "domainManifestHash": "393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a"
+  },
+  "tokenIdentity": "test-usdc-token-1",
+  "decimals": 6,
+  "atomUnitName": "micro-usdc",
+  "minimumTransferAtoms": "1",
+  "transferSemantics": "spl-token-v1:exact-net-transfer",
+  "canonicalHex": "0000000100000007746573746e65740000001673766d3a746573742d646f6d61696e2d313a75736463000000087573642d636f696e0000001173766d3a746573742d646f6d61696e2d3100000001393d2ec28a1982bb59631c748c9f27e0e72d1db2f3142166cecdff66a3fe516a00000011746573742d757364632d746f6b656e2d31060000000a6d6963726f2d75736463000000000000000000000000000000010000001f73706c2d746f6b656e2d76313a65786163742d6e65742d7472616e73666572",
+  "digestHex": "7c8a862ab80e98e278a89ffa09cee240c5ebaff17b40aa38c0486e05e0f7fa35"
+}

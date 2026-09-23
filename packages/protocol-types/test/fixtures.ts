@@ -76,6 +76,25 @@ export interface DomainManifestFixture {
   digestHex: string;
 }
 
+export interface AssetManifestFixture {
+  manifestVersion: string;
+  environment: string;
+  assetId: string;
+  economicAssetId: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  tokenIdentity: string;
+  decimals: number;
+  atomUnitName: string;
+  minimumTransferAtoms: string;
+  transferSemantics: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

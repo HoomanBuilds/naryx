@@ -119,3 +119,13 @@ export {
   type DomainManifestInput,
   type DomainManifest,
 } from './domain-manifest.js';
+
+export {
+  assetManifest,
+  encodeAssetManifest,
+  assetManifestBytes,
+  assetManifestHash,
+  assetRefFromManifest,
+  type AssetManifestInput,
+  type AssetManifest,
+} from './asset-manifest.js';
