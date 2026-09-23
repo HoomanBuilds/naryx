@@ -56,7 +56,7 @@ describe('frozen enum discriminants', () => {
 
   test('the v1 discriminants are unchanged', () => {
     assert.deepEqual(EXPIRY_UNIT, {
-      SOLANA_LAST_VALID_BLOCK_HEIGHT: 1,
+      SOLANA_SLOT: 1,
       EVM_UNIX_SECONDS: 2,
       HYPERLIQUID_UNIX_MILLISECONDS: 3,
     });

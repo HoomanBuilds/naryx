@@ -5,7 +5,7 @@ export type EnumTable<Name extends string> = Readonly<Record<Name, number>>;
 // Discriminant 0 is reserved on every table so an all-zero payload can never decode
 // to a valid variant.
 export const EXPIRY_UNIT = Object.freeze({
-  SOLANA_LAST_VALID_BLOCK_HEIGHT: 1,
+  SOLANA_SLOT: 1,
   EVM_UNIX_SECONDS: 2,
   HYPERLIQUID_UNIX_MILLISECONDS: 3,
 } as const);

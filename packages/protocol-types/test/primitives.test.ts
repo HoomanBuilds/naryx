@@ -427,12 +427,12 @@ describe('expiry comparison requires matching unit tags', () => {
   });
 
   test('rejects a comparison across units', () => {
-    const blockHeight = expiry('SOLANA_LAST_VALID_BLOCK_HEIGHT', 1000n);
+    const slot = expiry('SOLANA_SLOT', 1000n);
     const seconds = expiry('EVM_UNIX_SECONDS', 1000n);
     const milliseconds = expiry('HYPERLIQUID_UNIX_MILLISECONDS', 1000n);
-    assert.throws(() => compareExpiry(blockHeight, seconds), IncompatibleUnitError);
+    assert.throws(() => compareExpiry(slot, seconds), IncompatibleUnitError);
     assert.throws(() => compareExpiry(seconds, milliseconds), IncompatibleUnitError);
-    assert.throws(() => compareExpiry(milliseconds, blockHeight), IncompatibleUnitError);
+    assert.throws(() => compareExpiry(milliseconds, slot), IncompatibleUnitError);
   });
 
   test('every declared unit is comparable with itself only', () => {
