@@ -90,6 +90,7 @@ pub struct ExecuteConformanceAtomic<'info> {
     pub conformance_program: Program<'info, NaryxConformanceVenue>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    /// CHECK: The address constraint pins this account to the instructions sysvar.
     #[account(address = solana_instructions_sysvar::id())]
     pub instructions_sysvar: UncheckedAccount<'info>,
 }
