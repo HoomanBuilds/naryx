@@ -17,9 +17,9 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
-`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, and `FeePolicyManifest` kernels. The composite
-`PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
-and neither are the remaining resource manifests. Reusable signed-order primitives now cover
+`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, `FeePolicyManifest`, and `PackageOrder`
+kernels. The composite `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded
+yet, and neither are the remaining resource manifests. Reusable signed-order primitives now cover
 commitment hashes, exact prices and signed rates, versioned adapter references, and fee caps.
 
 - `CanonicalWriter`: fixed-length raw bytes, `u8` through `u256`, `i64`/`i128`/`i256` as
@@ -29,9 +29,8 @@ commitment hashes, exact prices and signed rates, versioned adapter references, 
   duplicates.
 - `HASH_DOMAIN` and `domainHash`: SHA-256 over raw ASCII domain bytes concatenated directly
   with canonical payload bytes. No JSON, no hidden prefix, no length framing around the domain.
-  The set is closed and rejects an unregistered domain. Implemented manifests use their assigned
-  domains; adapter, domain-registry-record, and fee-policy domains remain
-  reserved for the slices that implement those schemas.
+  The set is closed and rejects an unregistered domain. Implemented objects use their assigned
+  domains; remaining registered domains stay reserved until their schemas land.
 - `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
   `domainRef`, `assetRef`, `assetAmount`, `expiry`, `duration`: constructor-validated primitives.
 - Frozen discriminant tables: `EXPIRY_UNIT`, `DURATION_UNIT`, `DIRECTION`, `PACKAGE_ACTION`,
@@ -199,6 +198,19 @@ domain, activation interval, direction, and optional promotion cohort. Unscoped 
 zero-fee fallbacks only, and optional expiry is same-unit, half-open, and strictly after activation.
 This identity kernel does not select a policy or settle a charge.
 
+## Package order wire
+
+`PackageOrder` binds the exact template, owner, settlement account, nonce, expiry, package behavior,
+typed quantities and limits, fee caps, permitted adapters, settlement class, and ordered recovery
+authorization into canonical bytes under `CON/v1/order`. Fee-cap and adapter collections must arrive
+in canonical order, while recovery actions preserve signed sequence order and may repeat. The
+constructor defensively copies hashes and nested values, and the encoder revalidates runtime objects
+before writing.
+
+This layer validates canonical shape, fixed widths, nonzero versions, enum membership, and collection
+ordering only. Action-specific fields, asset relationships, atomic and Hyperliquid profiles, and
+initial activation policy remain separate verifier work and are not implied by a successful encoding.
+
 ## Failure modes
 
 Every public failure is a typed `ProtocolError` with a stable `code`:
@@ -218,7 +230,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
 `fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`, and
-`fixtures/domain-registry-record.json`, and `fixtures/fee-policy-manifest.json` hold
+`fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
+`fixtures/package-order-atomic.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

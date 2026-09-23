@@ -180,6 +180,15 @@ export {
   type FeeCap,
 } from './package-order-primitives.js';
 
+export {
+  packageOrder,
+  encodePackageOrder,
+  packageOrderBytes,
+  packageOrderHash,
+  type PackageOrderInput,
+  type PackageOrder,
+} from './package-order.js';
+
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 
 export {

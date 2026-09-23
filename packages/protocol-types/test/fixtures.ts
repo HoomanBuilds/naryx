@@ -349,6 +349,83 @@ export interface FeePolicyManifestFixture {
   digestHex: string;
 }
 
+export interface PackageOrderFixture {
+  version: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  templateId: string;
+  templateVersion: string;
+  packageTemplateManifestHash: string;
+  owner: string;
+  settlementAccount: string;
+  nonce: string;
+  expiryUnit: string;
+  expiryValue: string;
+  direction: string;
+  action: string;
+  packageOrderType: string;
+  packageTimeInForce: string;
+  partialFillPolicy: string;
+  quantity: FixtureAssetAmount;
+  exitOutcomeSchemaVersion: string;
+  expectedPrePositionSize: FixtureAssetAmount;
+  expectedPrePositionEntryNotional: FixtureAssetAmount;
+  maxEntrySpread: FixtureExactSignedRate;
+  maxSpotQuoteIn: FixtureAssetAmount;
+  maxMarginAdded: FixtureAssetAmount;
+  minVenueReserveReturned: FixtureAssetAmount;
+  minWalletQuoteBalanceDelta: FixtureAssetAmount;
+  maxVenueFeeAtomsByAsset: FixtureFeeCap[];
+  maxProtocolFee: FixtureAssetAmount;
+  maxSolverFee: FixtureAssetAmount;
+  maxPriorityFee: FixtureAssetAmount;
+  maxRecoveryCostAtomsByAsset: FixtureFeeCap[];
+  permittedSpotAdapters: FixtureAdapterRef[];
+  permittedPerpAdapters: FixtureAdapterRef[];
+  settlementClass: string;
+  maxAggregateRecoveryLossQuote: FixtureAssetAmount;
+  maxResidualBaseQuantity: FixtureAssetAmount;
+  allowedRecoveryActions: string[];
+  canonicalHex: string;
+  digestHex: string;
+}
+
+export interface FixtureAssetAmount {
+  assetId: string;
+  assetManifestHash: string;
+  decimals: number;
+  atoms: string;
+}
+
+export interface FixtureExactSignedRate {
+  baseAssetId: string;
+  baseAssetManifestHash: string;
+  baseDecimals: number;
+  quoteAssetId: string;
+  quoteAssetManifestHash: string;
+  quoteDecimals: number;
+  quoteAtoms: string;
+  baseAtoms: string;
+  roundingDirection: string;
+}
+
+export interface FixtureFeeCap {
+  assetId: string;
+  assetManifestHash: string;
+  decimals: number;
+  maxAtoms: string;
+}
+
+export interface FixtureAdapterRef {
+  adapterId: string;
+  adapterManifestVersion: string;
+  adapterManifestHash: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;
