@@ -162,6 +162,12 @@ activation point, registry state, and governance reference. Its activation unit 
 `u64` value use the expiry tag rules, but this identity layer does not interpret the domain clock,
 check current time, or activate the template. The enforcing controller owns those policies.
 
+Registry risk limits bind an exact asset manifest and unsigned `u128` atom capacity. Outflow
+limits additionally bind a positive millisecond window. Change classification compares exact
+rational throughput with checked `u128` cross-products; an overflow or identity mismatch is a
+relaxation, never an immediate tightening. Registry lists are accepted only in canonical order
+and reject duplicate keys rather than sorting governance input silently.
+
 ## Failure modes
 
 Every public failure is a typed `ProtocolError` with a stable `code`:

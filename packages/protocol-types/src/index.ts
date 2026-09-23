@@ -190,3 +190,22 @@ export {
   type PackageTemplateRegistryRecordInput,
   type PackageTemplateRegistryRecord,
 } from './package-template-registry-record.js';
+
+export {
+  RISK_LIMIT_COMPARISON_BITS,
+  REGISTRY_CHANGE_CLASS,
+  packageTemplateRef,
+  encodePackageTemplateRef,
+  packageTemplateRefKeyBytes,
+  riskLimit,
+  encodeRiskLimit,
+  riskLimitKeyBytes,
+  canonicalRiskLimits,
+  canonicalPackageTemplateRefs,
+  classifyRiskLimitChange,
+  type RegistryChangeClass,
+  type PackageTemplateRefInput,
+  type PackageTemplateRef,
+  type RiskLimitInput,
+  type RiskLimit,
+} from './registry-primitives.js';
