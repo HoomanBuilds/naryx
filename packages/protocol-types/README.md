@@ -16,7 +16,7 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
-`MarketManifest`, `PriceSourceManifest`, `PackageTemplateManifest`, and
+`MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
 `PackageTemplateRegistryRecord`, and `DomainRegistryRecord` kernels. The composite
 `PackageOrder`, `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded yet,
 and neither are the remaining resource manifests.
@@ -202,8 +202,9 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/encoding.json`, `fixtures/hashing.json`, `fixtures/arithmetic.json`,
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
-`fixtures/package-template-manifest.json`, `fixtures/price-source-manifest.json`, and
-`fixtures/package-template-registry-record.json`, and `fixtures/domain-registry-record.json` hold
+`fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
+`fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`, and
+`fixtures/domain-registry-record.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.
