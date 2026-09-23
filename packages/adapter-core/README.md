@@ -1,17 +1,5 @@
-# packages/adapter-core
+# @naryx/adapter-core
 
-The adapter contract every domain implements. Contains no venue-specific code.
+Shared interfaces for domain adapters. A concrete adapter compiles an admitted package, simulates its payload, and reads the resulting execution receipt. This package does not encode a transaction, sign it, broadcast it, or verify chain-specific receipt data.
 
-- adapter interface and versioning;
-- supported and unsupported operation declarations;
-- dependency identity and code-hash binding;
-- evidence grades;
-- `PackageResourcePlan`;
-- settlement-class capability declarations;
-- normalized fill, fee, and state-delta shapes.
-
-May depend on `packages/protocol-types`.
-
-Must not depend on a concrete adapter, a service, `apps/web`, or `tests`.
-
-A package cannot claim a settlement class until an adapter proves the concrete transaction or action fits its domain's resource envelope.
+The payload and receipt remain adapter-specific type parameters. Domain identity and package hashes use `@naryx/protocol-types`; there is no chain enum or adapter registry here.
