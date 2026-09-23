@@ -8,8 +8,9 @@ pub const HASH_BYTE_LENGTH: usize = 32;
 
 const DOMAIN_MANIFEST_HASH_DOMAIN: &[u8] = b"CON/v1/domain-manifest";
 
-#[derive(Debug)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
 pub struct DomainRef {
+    #[max_len(PROTOCOL_ID_MAX_BYTES)]
     domain_id: String,
     domain_manifest_version: u32,
     domain_manifest_hash: [u8; HASH_BYTE_LENGTH],
@@ -41,6 +42,18 @@ impl DomainRef {
             domain_manifest_version,
             domain_manifest_hash,
         })
+    }
+
+    pub fn domain_id(&self) -> &str {
+        &self.domain_id
+    }
+
+    pub fn domain_manifest_version(&self) -> u32 {
+        self.domain_manifest_version
+    }
+
+    pub fn domain_manifest_hash(&self) -> [u8; HASH_BYTE_LENGTH] {
+        self.domain_manifest_hash
     }
 
     // These bytes go into a signed preimage that TypeScript and Solidity rebuild independently,

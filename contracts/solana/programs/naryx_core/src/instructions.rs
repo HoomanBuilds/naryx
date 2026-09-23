@@ -1,3 +1,13 @@
+pub mod activate_domain;
+pub mod activate_unpause;
+pub mod cancel_domain_proposal;
+pub mod cancel_unpause;
 pub mod initialize;
+pub mod pause_entry;
+pub mod propose_domain;
+pub mod schedule_unpause;
 
-pub use initialize::*;
+pub use {
+    activate_domain::*, activate_unpause::*, cancel_domain_proposal::*, cancel_unpause::*,
+    initialize::*, pause_entry::*, propose_domain::*, schedule_unpause::*,
+};
