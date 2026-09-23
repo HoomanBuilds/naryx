@@ -158,6 +158,26 @@ export const ADAPTER_SIGNER_MODE = Object.freeze({
 } as const);
 export type AdapterSignerMode = keyof typeof ADAPTER_SIGNER_MODE;
 
+export const SOLVER_SIGNATURE_SCHEME = Object.freeze({
+  ED25519: 1,
+  SECP256K1_RECOVERABLE: 2,
+} as const);
+export type SolverSignatureScheme = keyof typeof SOLVER_SIGNATURE_SCHEME;
+
+export const QUOTE_MODE = Object.freeze({
+  IMPLIED: 1,
+  EXECUTION_COMMITMENT: 2,
+  FIRM_SIMULATED: 3,
+  FIRM_ONCHAIN: 4,
+} as const);
+export type QuoteMode = keyof typeof QUOTE_MODE;
+
+export const QUOTED_OUTCOME_KIND = Object.freeze({
+  ENTRY_SPREAD: 1,
+  EXIT_QUOTE_OUTCOME: 2,
+} as const);
+export type QuotedOutcomeKind = keyof typeof QUOTED_OUTCOME_KIND;
+
 export function enumDiscriminant<Name extends string>(
   table: EnumTable<Name>,
   name: Name,

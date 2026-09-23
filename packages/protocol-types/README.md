@@ -17,8 +17,8 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
-`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, `FeePolicyManifest`, and `PackageOrder`
-kernels. The composite `RoutePayload`, `SolverQuote`, and `PackageReceipt` schemas are not encoded
+`PackageTemplateRegistryRecord`, `DomainRegistryRecord`, `FeePolicyManifest`, `PackageOrder`, and
+`SolverQuote` kernels. The composite `RoutePayload` and `PackageReceipt` schemas are not encoded
 yet, and neither are the remaining resource manifests. Reusable signed-order primitives now cover
 commitment hashes, exact prices and signed rates, versioned adapter references, and fee caps.
 
@@ -29,16 +29,32 @@ commitment hashes, exact prices and signed rates, versioned adapter references, 
   duplicates.
 - `HASH_DOMAIN` and `domainHash`: SHA-256 over raw ASCII domain bytes concatenated directly
   with canonical payload bytes. No JSON, no hidden prefix, no length framing around the domain.
-  The set is closed and rejects an unregistered domain. Implemented objects use their assigned
-  domains; remaining registered domains stay reserved until their schemas land.
+  The set is closed and rejects an unregistered domain. Implemented wire objects use their
+  assigned domains, while the remaining entries reserve identities for later schema slices.
 - `hash32`, `manifestHash`, `protocolId`, `domainId`, `assetId`, `versionedManifestRef`,
   `domainRef`, `assetRef`, `assetAmount`, `expiry`, `duration`: constructor-validated primitives.
 - Frozen discriminant tables: `EXPIRY_UNIT`, `DURATION_UNIT`, `DIRECTION`, `PACKAGE_ACTION`,
   `PACKAGE_ORDER_TYPE`, `PACKAGE_TIME_IN_FORCE`, `RECOVERY_ACTION`, `SETTLEMENT_CLASS`,
   `QUANTITY_POLICY_CLASS`, `PARTIAL_FILL_POLICY`, `REGISTRY_STATE`, `REGISTRY_RECORD_KIND`,
   `RISK_LIMIT_KIND`, `FEE_CATEGORY`, `PASS_THROUGH_COST_CATEGORY`,
-  `SERVICE_FEE_RATE_BASE`, `ROUNDING_DIRECTION`, and `REFUND_RULE`. Discriminant `0` is
-  reserved on every table, so an all-zero payload never decodes to a valid variant.
+  `SERVICE_FEE_RATE_BASE`, `ROUNDING_DIRECTION`, `REFUND_RULE`, `SOLVER_SIGNATURE_SCHEME`,
+  `QUOTE_MODE`, and `QUOTED_OUTCOME_KIND`. Discriminant `0` is reserved on every table, so an
+  all-zero payload never decodes to a valid variant.
+
+## Solver quote wire object
+
+`SolverQuote` canonically binds one order and route commitment to a solver identity, capability
+manifest, verification key, typed entry or exit outcome, expected quantities and costs, exact fee
+policy, validity, optional firm reservation, and nonzero quote nonce. Ed25519 and recoverable
+secp256k1 signature shapes are validated structurally, including recovery ID and low-s rules. This
+package does not perform cryptographic signature verification or admission against a live order,
+route, capability, policy, registry, or clock.
+
+Fee vectors are keyed by complete `AssetRef` bytes, arrive in canonical order, share the same
+explicit key set, and prove `raw = normalized venue + builder` with checked signed arithmetic.
+Atomic quote shape excludes terminal residuals and recovery caps. Residual quote shape requires
+both residual values and nonempty recovery caps. The quote hash deliberately prefixes `orderHash`
+and `routeHash` before the unsigned quote even though both commitments also occur inside it.
 
 ## Registry identity
 
@@ -229,9 +245,9 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
 `fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
-`fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`, and
+`fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`,
 `fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
-`fixtures/package-order-atomic.json` hold
+`fixtures/package-order-atomic.json`, and `fixtures/solver-quote.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

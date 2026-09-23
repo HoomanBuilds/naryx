@@ -426,6 +426,67 @@ export interface FixtureAdapterRef {
   adapterManifestHash: string;
 }
 
+export interface SolverQuoteAssetFixture {
+  assetId: string;
+  assetManifestHash: string;
+  decimals: number;
+}
+
+export interface SolverQuoteAmountFixture {
+  asset: SolverQuoteAssetFixture;
+  atoms: string;
+}
+
+export interface SolverQuoteFixture {
+  version: string;
+  environment: string;
+  domain: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  };
+  orderHash: string;
+  solverId: string;
+  solverCapabilityManifestHash: string;
+  solverSignatureScheme: string;
+  solverVerificationKey: string;
+  quoteMode: string;
+  routeHash: string;
+  quotedOutcome: {
+    kind: string;
+    entrySpread: {
+      baseAsset: SolverQuoteAssetFixture;
+      quoteAsset: SolverQuoteAssetFixture;
+      quoteAtoms: string;
+      baseAtoms: string;
+      roundingDirection: string;
+    };
+  };
+  expectedSpotNotional: SolverQuoteAmountFixture;
+  expectedPerpNotional: SolverQuoteAmountFixture;
+  expectedGrossSpotQuantity: SolverQuoteAmountFixture;
+  expectedNetSpotQuantity: SolverQuoteAmountFixture;
+  expectedBaseAssetFee: SolverQuoteAmountFixture;
+  expectedMarginDelta: SolverQuoteAmountFixture;
+  expectedRawFillFeesByAsset: SolverQuoteAmountFixture[];
+  expectedBuilderFeesByAsset: SolverQuoteAmountFixture[];
+  expectedNormalizedVenueFeesByAsset: SolverQuoteAmountFixture[];
+  solverFee: SolverQuoteAmountFixture;
+  protocolFee: SolverQuoteAmountFixture;
+  expectedPriorityFee: SolverQuoteAmountFixture;
+  maxRecoveryCostAtomsByAsset: { asset: SolverQuoteAssetFixture; maxAtoms: string }[];
+  feePolicyVersion: string;
+  feePolicyManifestHash: string;
+  validUntilUnit: string;
+  validUntilValue: string;
+  quoteNonce: string;
+  signature: string;
+  unsignedCanonicalHex: string;
+  canonicalHex: string;
+  quoteHashHex: string;
+  solverSignatureDigestHex: string;
+}
+
 export interface RoundingExpectation {
   FLOOR: string;
   CEIL: string;

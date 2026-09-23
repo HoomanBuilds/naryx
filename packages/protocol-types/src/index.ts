@@ -41,6 +41,9 @@ export {
   ADAPTER_IDENTITY_SOURCE,
   ADAPTER_ACCESS_MODE,
   ADAPTER_SIGNER_MODE,
+  SOLVER_SIGNATURE_SCHEME,
+  QUOTE_MODE,
+  QUOTED_OUTCOME_KIND,
   enumDiscriminant,
   type EnumTable,
   type ExpiryUnit,
@@ -64,6 +67,9 @@ export {
   type AdapterIdentitySource,
   type AdapterAccessMode,
   type AdapterSignerMode,
+  type SolverSignatureScheme,
+  type QuoteMode,
+  type QuotedOutcomeKind,
 } from './enums.js';
 
 export {
@@ -190,6 +196,22 @@ export {
 } from './package-order.js';
 
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
+
+export {
+  quotedOutcome,
+  encodeQuotedOutcome,
+  solverQuote,
+  encodeUnsignedSolverQuote,
+  encodeSolverQuote,
+  unsignedSolverQuoteBytes,
+  solverQuoteBytes,
+  quoteHash,
+  solverSignatureDigest,
+  type QuotedOutcomeInput,
+  type QuotedOutcome,
+  type SolverQuoteInput,
+  type SolverQuote,
+} from './solver-quote.js';
 
 export {
   domainManifest,

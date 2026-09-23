@@ -15,11 +15,14 @@ import {
   PARTIAL_FILL_POLICY,
   PASS_THROUGH_COST_CATEGORY,
   QUANTITY_POLICY_CLASS,
+  QUOTED_OUTCOME_KIND,
+  QUOTE_MODE,
   RECOVERY_ACTION,
   REGISTRY_RECORD_KIND,
   REGISTRY_STATE,
   RISK_LIMIT_KIND,
   SETTLEMENT_CLASS,
+  SOLVER_SIGNATURE_SCHEME,
   enumDiscriminant,
   toHex,
 } from '../src/index.js';
@@ -42,6 +45,9 @@ const TABLES = {
   RISK_LIMIT_KIND,
   FEE_CATEGORY,
   PASS_THROUGH_COST_CATEGORY,
+  SOLVER_SIGNATURE_SCHEME,
+  QUOTE_MODE,
+  QUOTED_OUTCOME_KIND,
 };
 
 describe('frozen enum discriminants', () => {
@@ -116,6 +122,20 @@ describe('frozen enum discriminants', () => {
       RUNTIME_SIGNATURE: 2,
       VERIFIED_AUTHORIZATION: 3,
       PROGRAM_DERIVED: 4,
+    });
+    assert.deepEqual(SOLVER_SIGNATURE_SCHEME, {
+      ED25519: 1,
+      SECP256K1_RECOVERABLE: 2,
+    });
+    assert.deepEqual(QUOTE_MODE, {
+      IMPLIED: 1,
+      EXECUTION_COMMITMENT: 2,
+      FIRM_SIMULATED: 3,
+      FIRM_ONCHAIN: 4,
+    });
+    assert.deepEqual(QUOTED_OUTCOME_KIND, {
+      ENTRY_SPREAD: 1,
+      EXIT_QUOTE_OUTCOME: 2,
     });
     assert.deepEqual(DIRECTION, { LONG_SPOT_SHORT_PERP: 1 });
     assert.deepEqual(PACKAGE_ACTION, { ENTRY: 1, EXIT: 2 });
