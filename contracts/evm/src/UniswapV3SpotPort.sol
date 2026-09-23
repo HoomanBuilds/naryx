@@ -6,6 +6,7 @@ import {IERC20Metadata} from "openzeppelin-contracts/token/ERC20/extensions/IERC
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
+import {ISpotFillRecorder} from "./interfaces/ISpotFillRecorder.sol";
 
 interface IUniswapV3Factory {
     function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
@@ -28,6 +29,9 @@ interface IUniswapV3Pool {
 contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    uint8 public constant ENTRY = 1;
+    uint8 public constant EXIT = 2;
+
     uint160 private constant MIN_SQRT_RATIO_PLUS_ONE = 4_295_128_740;
     uint160 private constant MAX_SQRT_RATIO_MINUS_ONE =
         1_461_446_703_485_210_103_287_273_052_203_988_822_378_723_970_341;
@@ -47,14 +51,14 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         bytes32 quoteTokenCodeHash;
     }
 
-    error UnauthorizedExecutor();
     error InvalidConfiguration();
     error InvalidQuantity();
     error DeploymentChanged();
     error InvalidCallback();
     error PostconditionFailed();
 
-    address public immutable executor;
+    address public immutable verifier;
+    bytes32 public immutable verifierCodeHash;
     uint256 public immutable deploymentChainId;
     address public immutable factory;
     address public immutable pool;
@@ -71,24 +75,20 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
 
     bytes32 private _callbackCommitment;
 
-    modifier onlyExecutor() {
-        if (msg.sender != executor) revert UnauthorizedExecutor();
-        _;
-    }
-
-    constructor(address executor_, Deployment memory deployment) {
+    constructor(address verifier_, Deployment memory deployment) {
         if (
-            executor_ == address(0) || deployment.chainId == 0 || deployment.factory == address(0)
+            verifier_.code.length == 0 || deployment.chainId == 0 || deployment.factory == address(0)
                 || deployment.pool == address(0) || address(deployment.baseToken) == address(0)
                 || address(deployment.quoteToken) == address(0)
                 || address(deployment.baseToken) == address(deployment.quoteToken) || deployment.poolFee == 0
-                || executor_ == deployment.factory || executor_ == deployment.pool
-                || executor_ == address(deployment.baseToken) || executor_ == address(deployment.quoteToken)
+                || verifier_ == deployment.factory || verifier_ == deployment.pool
+                || verifier_ == address(deployment.baseToken) || verifier_ == address(deployment.quoteToken)
                 || deployment.factoryCodeHash == bytes32(0) || deployment.poolCodeHash == bytes32(0)
                 || deployment.baseTokenCodeHash == bytes32(0) || deployment.quoteTokenCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
 
-        executor = executor_;
+        verifier = verifier_;
+        verifierCodeHash = verifier_.codehash;
         deploymentChainId = deployment.chainId;
         factory = deployment.factory;
         pool = deployment.pool;
@@ -106,9 +106,8 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         quoteIsToken0 = IUniswapV3Pool(deployment.pool).token0() == address(deployment.quoteToken);
     }
 
-    function buyExactOutput(uint256 quantity, uint256 maxQuote)
+    function buyExactOutput(uint256 packageNonce, uint256 quantity, uint256 maxQuote)
         external
-        onlyExecutor
         nonReentrant
         returns (uint256 quoteIn)
     {
@@ -119,17 +118,18 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
 
         uint256 portBaseBefore = baseToken.balanceOf(address(this));
         uint256 portQuoteBefore = quoteToken.balanceOf(address(this));
-        uint256 executorBaseBefore = baseToken.balanceOf(executor);
+        uint256 strategyBaseBefore = baseToken.balanceOf(msg.sender);
+        uint256 strategyQuoteBefore = quoteToken.balanceOf(msg.sender);
 
-        quoteToken.safeTransferFrom(executor, address(this), maxQuote);
+        quoteToken.safeTransferFrom(msg.sender, address(this), maxQuote);
         if (quoteToken.balanceOf(address(this)) != portQuoteBefore + maxQuote) revert PostconditionFailed();
 
-        bytes memory callbackData = abi.encode(true, maxQuote);
+        bytes memory callbackData = abi.encode(msg.sender, packageNonce, true, maxQuote);
         _callbackCommitment = keccak256(callbackData);
         bool zeroForOne = quoteIsToken0;
         (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
             .swap(
-                executor,
+                msg.sender,
                 zeroForOne,
                 -int256(quantity),
                 zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
@@ -143,17 +143,18 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         quoteIn = uint256(quoteDelta);
         if (quoteIn > maxQuote) revert PostconditionFailed();
 
-        quoteToken.safeTransfer(executor, maxQuote - quoteIn);
+        quoteToken.safeTransfer(msg.sender, maxQuote - quoteIn);
         if (
             baseToken.balanceOf(address(this)) != portBaseBefore
                 || quoteToken.balanceOf(address(this)) != portQuoteBefore
-                || baseToken.balanceOf(executor) != executorBaseBefore + quantity
+                || baseToken.balanceOf(msg.sender) != strategyBaseBefore + quantity
+                || quoteToken.balanceOf(msg.sender) != strategyQuoteBefore - quoteIn
         ) revert PostconditionFailed();
+        _recordSpotFill(packageNonce, ENTRY, quantity, quoteIn);
     }
 
-    function sellExactInput(uint256 quantity, uint256 minQuote)
+    function sellExactInput(uint256 packageNonce, uint256 quantity, uint256 minQuote)
         external
-        onlyExecutor
         nonReentrant
         returns (uint256 quoteOut)
     {
@@ -164,17 +165,18 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
 
         uint256 portBaseBefore = baseToken.balanceOf(address(this));
         uint256 portQuoteBefore = quoteToken.balanceOf(address(this));
-        uint256 executorQuoteBefore = quoteToken.balanceOf(executor);
+        uint256 strategyBaseBefore = baseToken.balanceOf(msg.sender);
+        uint256 strategyQuoteBefore = quoteToken.balanceOf(msg.sender);
 
-        baseToken.safeTransferFrom(executor, address(this), quantity);
+        baseToken.safeTransferFrom(msg.sender, address(this), quantity);
         if (baseToken.balanceOf(address(this)) != portBaseBefore + quantity) revert PostconditionFailed();
 
-        bytes memory callbackData = abi.encode(false, quantity);
+        bytes memory callbackData = abi.encode(msg.sender, packageNonce, false, quantity);
         _callbackCommitment = keccak256(callbackData);
         bool zeroForOne = !quoteIsToken0;
         (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
             .swap(
-                executor,
+                msg.sender,
                 zeroForOne,
                 int256(quantity),
                 zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
@@ -193,8 +195,10 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         if (
             baseToken.balanceOf(address(this)) != portBaseBefore
                 || quoteToken.balanceOf(address(this)) != portQuoteBefore
-                || quoteToken.balanceOf(executor) != executorQuoteBefore + quoteOut
+                || baseToken.balanceOf(msg.sender) != strategyBaseBefore - quantity
+                || quoteToken.balanceOf(msg.sender) != strategyQuoteBefore + quoteOut
         ) revert PostconditionFailed();
+        _recordSpotFill(packageNonce, EXIT, quantity, quoteOut);
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
@@ -204,7 +208,7 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         }
         _callbackCommitment = bytes32(0);
 
-        (bool quoteOwed, uint256 maxOwed) = abi.decode(data, (bool, uint256));
+        (,, bool quoteOwed, uint256 maxOwed) = abi.decode(data, (address, uint256, bool, uint256));
         int256 owedDelta = quoteOwed == quoteIsToken0 ? amount0Delta : amount1Delta;
         int256 outputDelta = quoteOwed == quoteIsToken0 ? amount1Delta : amount0Delta;
         if (owedDelta <= 0 || outputDelta >= 0 || uint256(owedDelta) > maxOwed) revert InvalidCallback();
@@ -217,9 +221,17 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         _assertDeployment();
     }
 
+    function _recordSpotFill(uint256 packageNonce, uint8 action, uint256 baseAtoms, uint256 quoteAtoms) private {
+        ISpotFillRecorder(verifier)
+            .recordSpotFill(
+                msg.sender, packageNonce, action, address(baseToken), address(quoteToken), baseAtoms, quoteAtoms
+            );
+    }
+
     function _assertDeployment() private view {
         if (
-            block.chainid != deploymentChainId || factory.codehash != factoryCodeHash || pool.codehash != poolCodeHash
+            block.chainid != deploymentChainId || verifier.codehash != verifierCodeHash
+                || factory.codehash != factoryCodeHash || pool.codehash != poolCodeHash
                 || address(baseToken).codehash != baseTokenCodeHash
                 || address(quoteToken).codehash != quoteTokenCodeHash
                 || IERC20Metadata(address(baseToken)).decimals() != baseTokenDecimals

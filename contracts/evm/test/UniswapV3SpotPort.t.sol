@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
+import {ISpotFillRecorder} from "../src/interfaces/ISpotFillRecorder.sol";
 
 contract MockToken is ERC20 {
     uint8 private immutable _tokenDecimals;
@@ -90,6 +91,40 @@ contract MockV3Pool {
     }
 }
 
+contract LocalSpotFillRecorder is ISpotFillRecorder {
+    struct Fill {
+        address strategyAccount;
+        uint256 packageNonce;
+        uint8 action;
+        address baseToken;
+        address quoteToken;
+        uint256 baseAtoms;
+        uint256 quoteAtoms;
+    }
+
+    bool public reject;
+    uint256 public fillCount;
+    Fill public lastFill;
+
+    function setReject(bool reject_) external {
+        reject = reject_;
+    }
+
+    function recordSpotFill(
+        address strategyAccount,
+        uint256 packageNonce,
+        uint8 action,
+        address baseToken,
+        address quoteToken,
+        uint256 baseAtoms,
+        uint256 quoteAtoms
+    ) external {
+        require(!reject, "inactive verifier context");
+        fillCount += 1;
+        lastFill = Fill(strategyAccount, packageNonce, action, baseToken, quoteToken, baseAtoms, quoteAtoms);
+    }
+}
+
 contract UniswapV3SpotPortTest is Test {
     uint24 private constant POOL_FEE = 3000;
     uint256 private constant QUANTITY = 1 ether;
@@ -98,6 +133,7 @@ contract UniswapV3SpotPortTest is Test {
     MockToken private quote;
     MockV3Factory private factory;
     MockV3Pool private pool;
+    LocalSpotFillRecorder private recorder;
     UniswapV3SpotPort private port;
 
     function setUp() public {
@@ -107,7 +143,8 @@ contract UniswapV3SpotPortTest is Test {
         pool = new MockV3Pool(address(factory), address(base), address(quote), POOL_FEE);
         factory.setPool(address(base), address(quote), POOL_FEE, address(pool));
 
-        port = new UniswapV3SpotPort(address(this), _deployment(18, 18));
+        recorder = new LocalSpotFillRecorder();
+        port = new UniswapV3SpotPort(address(recorder), _deployment(18, 18));
         base.mint(address(pool), 100 ether);
         quote.mint(address(pool), 200 ether);
         base.mint(address(this), 10 ether);
@@ -119,12 +156,28 @@ contract UniswapV3SpotPortTest is Test {
     function testReversedTokenOrderingBuysAndSellsWithoutPoolAllowance() public {
         uint256 quoteBefore = quote.balanceOf(address(this));
 
-        uint256 quoteIn = port.buyExactOutput(QUANTITY, 3 ether);
+        uint256 quoteIn = port.buyExactOutput(7, QUANTITY, 3 ether);
         assertEq(quoteIn, 2 ether);
         assertEq(base.balanceOf(address(this)), 11 ether);
         assertEq(quote.balanceOf(address(this)), quoteBefore - quoteIn);
+        (
+            address strategyAccount,
+            uint256 packageNonce,
+            uint8 action,
+            address recordedBase,
+            address recordedQuote,
+            uint256 baseAtoms,
+            uint256 quoteAtoms
+        ) = recorder.lastFill();
+        assertEq(strategyAccount, address(this));
+        assertEq(packageNonce, 7);
+        assertEq(action, port.ENTRY());
+        assertEq(recordedBase, address(base));
+        assertEq(recordedQuote, address(quote));
+        assertEq(baseAtoms, QUANTITY);
+        assertEq(quoteAtoms, quoteIn);
 
-        uint256 quoteOut = port.sellExactInput(QUANTITY, 2 ether);
+        uint256 quoteOut = port.sellExactInput(8, QUANTITY, 2 ether);
         assertEq(quoteOut, 2 ether);
         assertEq(base.balanceOf(address(this)), 10 ether);
         assertEq(quote.balanceOf(address(this)), quoteBefore);
@@ -132,29 +185,52 @@ contract UniswapV3SpotPortTest is Test {
         assertEq(quote.allowance(address(port), address(pool)), 0);
         assertEq(base.balanceOf(address(port)), 0);
         assertEq(quote.balanceOf(address(port)), 0);
+        (strategyAccount, packageNonce, action,,, baseAtoms, quoteAtoms) = recorder.lastFill();
+        assertEq(strategyAccount, address(this));
+        assertEq(packageNonce, 8);
+        assertEq(action, port.EXIT());
+        assertEq(baseAtoms, QUANTITY);
+        assertEq(quoteAtoms, quoteOut);
     }
 
     function testWrongCallbackDataRevertsAndAFollowingSwapSucceeds() public {
         pool.setCallbackMode(MockV3Pool.CallbackMode.WRONG_DATA);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
-        port.buyExactOutput(QUANTITY, 3 ether);
+        port.buyExactOutput(1, QUANTITY, 3 ether);
 
         pool.setCallbackMode(MockV3Pool.CallbackMode.VALID);
-        assertEq(port.buyExactOutput(QUANTITY, 3 ether), 2 ether);
+        assertEq(port.buyExactOutput(1, QUANTITY, 3 ether), 2 ether);
     }
 
     function testDuplicateCallbackRevertsAndAFollowingSwapSucceeds() public {
         pool.setCallbackMode(MockV3Pool.CallbackMode.DUPLICATE);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
-        port.sellExactInput(QUANTITY, 1);
+        port.sellExactInput(1, QUANTITY, 1);
 
         pool.setCallbackMode(MockV3Pool.CallbackMode.VALID);
-        assertEq(port.sellExactInput(QUANTITY, 2 ether), 2 ether);
+        assertEq(port.sellExactInput(1, QUANTITY, 2 ether), 2 ether);
+    }
+
+    function testRecorderRejectionRollsBackTheSwap() public {
+        uint256 baseBefore = base.balanceOf(address(this));
+        uint256 quoteBefore = quote.balanceOf(address(this));
+        uint256 poolBaseBefore = base.balanceOf(address(pool));
+        uint256 poolQuoteBefore = quote.balanceOf(address(pool));
+        recorder.setReject(true);
+
+        vm.expectRevert(bytes("inactive verifier context"));
+        port.buyExactOutput(9, QUANTITY, 3 ether);
+
+        assertEq(base.balanceOf(address(this)), baseBefore);
+        assertEq(quote.balanceOf(address(this)), quoteBefore);
+        assertEq(base.balanceOf(address(pool)), poolBaseBefore);
+        assertEq(quote.balanceOf(address(pool)), poolQuoteBefore);
+        assertEq(recorder.fillCount(), 0);
     }
 
     function testConstructorRejectsWrongDecimalsAndExecutorIdentity() public {
         vm.expectRevert(UniswapV3SpotPort.DeploymentChanged.selector);
-        new UniswapV3SpotPort(address(this), _deployment(18, 6));
+        new UniswapV3SpotPort(address(recorder), _deployment(18, 6));
 
         vm.expectRevert(UniswapV3SpotPort.InvalidConfiguration.selector);
         new UniswapV3SpotPort(address(pool), _deployment(18, 18));

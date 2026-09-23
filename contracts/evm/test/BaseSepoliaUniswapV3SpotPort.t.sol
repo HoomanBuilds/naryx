@@ -4,6 +4,37 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
+import {ISpotFillRecorder} from "../src/interfaces/ISpotFillRecorder.sol";
+
+contract ForkSpotFillRecorder is ISpotFillRecorder {
+    bool public reject;
+    address public strategyAccount;
+    uint256 public packageNonce;
+    uint8 public action;
+    uint256 public baseAtoms;
+    uint256 public quoteAtoms;
+
+    function setReject(bool reject_) external {
+        reject = reject_;
+    }
+
+    function recordSpotFill(
+        address strategyAccount_,
+        uint256 packageNonce_,
+        uint8 action_,
+        address,
+        address,
+        uint256 baseAtoms_,
+        uint256 quoteAtoms_
+    ) external {
+        require(!reject, "inactive verifier context");
+        strategyAccount = strategyAccount_;
+        packageNonce = packageNonce_;
+        action = action_;
+        baseAtoms = baseAtoms_;
+        quoteAtoms = quoteAtoms_;
+    }
+}
 
 contract BaseSepoliaUniswapV3SpotPortTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
@@ -20,13 +51,15 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
     bytes32 private constant QUOTE_TOKEN_CODE_HASH = 0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c;
 
     UniswapV3SpotPort private port;
+    ForkSpotFillRecorder private recorder;
     IERC20 private base;
     IERC20 private quote;
 
     function setUp() public {
         vm.createSelectFork("https://sepolia.base.org", FORK_BLOCK);
+        recorder = new ForkSpotFillRecorder();
         port = new UniswapV3SpotPort(
-            address(this),
+            address(recorder),
             UniswapV3SpotPort.Deployment({
                 chainId: 84532,
                 factory: FACTORY,
@@ -52,7 +85,7 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         uint256 quoteBefore = quote.balanceOf(address(this));
 
         quote.approve(address(port), MAX_QUOTE);
-        uint256 quoteIn = port.buyExactOutput(QUANTITY, MAX_QUOTE);
+        uint256 quoteIn = port.buyExactOutput(11, QUANTITY, MAX_QUOTE);
 
         assertGt(quoteIn, 0);
         assertLe(quoteIn, MAX_QUOTE);
@@ -60,15 +93,24 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         assertEq(quote.balanceOf(address(this)), quoteBefore - quoteIn);
         assertEq(base.balanceOf(address(port)), 0);
         assertEq(quote.balanceOf(address(port)), 0);
+        assertEq(recorder.strategyAccount(), address(this));
+        assertEq(recorder.packageNonce(), 11);
+        assertEq(recorder.action(), port.ENTRY());
+        assertEq(recorder.baseAtoms(), QUANTITY);
+        assertEq(recorder.quoteAtoms(), quoteIn);
 
         base.approve(address(port), QUANTITY);
-        uint256 quoteOut = port.sellExactInput(QUANTITY, 1);
+        uint256 quoteOut = port.sellExactInput(12, QUANTITY, 1);
 
         assertGt(quoteOut, 0);
         assertEq(base.balanceOf(address(this)), baseBefore);
         assertEq(quote.balanceOf(address(this)), quoteBefore - quoteIn + quoteOut);
         assertEq(base.balanceOf(address(port)), 0);
         assertEq(quote.balanceOf(address(port)), 0);
+        assertEq(recorder.packageNonce(), 12);
+        assertEq(recorder.action(), port.EXIT());
+        assertEq(recorder.baseAtoms(), QUANTITY);
+        assertEq(recorder.quoteAtoms(), quoteOut);
     }
 
     function testBoundsAndAuthorizationFailClosedWithoutMovingFunds() public {
@@ -76,21 +118,24 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         quote.approve(address(port), MAX_QUOTE);
 
         vm.expectRevert();
-        port.buyExactOutput(QUANTITY, 1);
+        port.buyExactOutput(1, QUANTITY, 1);
         assertEq(quote.balanceOf(address(this)), quoteBefore);
         assertEq(quote.balanceOf(address(port)), 0);
 
-        uint256 quoteIn = port.buyExactOutput(QUANTITY, MAX_QUOTE);
+        uint256 quoteIn = port.buyExactOutput(1, QUANTITY, MAX_QUOTE);
         assertGt(quoteIn, 0);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
         port.uniswapV3SwapCallback(1, -1, abi.encode(true, uint256(1)));
 
-        vm.prank(address(0xBEEF));
-        vm.expectRevert(UniswapV3SpotPort.UnauthorizedExecutor.selector);
-        port.buyExactOutput(QUANTITY, MAX_QUOTE);
+        uint256 baseBefore = base.balanceOf(address(this));
+        recorder.setReject(true);
+        base.approve(address(port), QUANTITY);
+        vm.expectRevert(bytes("inactive verifier context"));
+        port.sellExactInput(2, QUANTITY, 1);
+        assertEq(base.balanceOf(address(this)), baseBefore);
 
         vm.expectRevert(UniswapV3SpotPort.InvalidQuantity.selector);
-        port.sellExactInput(QUANTITY, 0);
+        port.sellExactInput(2, QUANTITY, 0);
     }
 
     function testDeploymentIdentityAndChainAreCheckedAtExecution() public {
