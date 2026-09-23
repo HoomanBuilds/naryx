@@ -23,6 +23,9 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
     bytes32 private constant SOLVER_AUTH_TYPEHASH = keccak256(
         "SolverAuthorization(bytes32 packageHash,bytes32 accountsHash,bytes32 limitsHash,uint256 nonce,uint256 deadline)"
     );
+    bytes32 private constant RECEIPT_TYPEHASH = keccak256(
+        "PackageReceiptCommitment(bytes32 packageHash,bytes32 accountsHash,bytes32 limitsHash,uint256 nonce,uint256 deadline)"
+    );
 
     struct Execution {
         bytes32 domainIdHash;
@@ -52,6 +55,13 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         bytes32 entryReceiptHash;
     }
 
+    struct Snapshot {
+        uint256 executorBaseBalance;
+        uint256 executorQuoteBalance;
+        uint256 shortQuantity;
+        uint256 shortCollateral;
+    }
+
     struct Receipt {
         bytes32 domainIdHash;
         uint32 domainManifestVersion;
@@ -66,6 +76,9 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         uint256 quoteAmount;
         uint256 collateral;
         bytes32 entryReceiptHash;
+        uint256 nonce;
+        Snapshot pre;
+        Snapshot post;
     }
 
     error UnsupportedChain();
@@ -102,7 +115,7 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
     {
         if (block.chainid != LOCAL_CHAIN_ID && block.chainid != BASE_SEPOLIA_CHAIN_ID) revert UnsupportedChain();
         if (
-            address(config_) == address(0) || address(venue_) == address(0) || solver_ == address(0)
+            address(config_).code.length == 0 || address(venue_).code.length == 0 || solver_ == address(0)
                 || venue_.executor() != address(this)
         ) revert InvalidConfiguration();
         config = config_;
@@ -132,6 +145,7 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         returns (bytes32 receiptHash)
     {
         _validate(execution, traderSignature, solverSignature);
+        Snapshot memory pre = _snapshot(execution.trader);
         nextNonce[execution.trader] = execution.nonce + 1;
 
         uint256 quoteAmount;
@@ -141,15 +155,9 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
             quoteAmount = _exit(execution);
         }
 
+        Snapshot memory post = _snapshot(execution.trader);
         receiptHash = keccak256(
-            abi.encode(
-                address(this),
-                block.chainid,
-                execution.trader,
-                execution.nonce,
-                execution.domainManifestHash,
-                execution.orderHash
-            )
+            abi.encode(_hashTypedDataV4(_executionHash(RECEIPT_TYPEHASH, execution)), quoteAmount, pre, post)
         );
         _receipts[receiptHash] = Receipt({
             domainIdHash: execution.domainIdHash,
@@ -164,7 +172,10 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
             quantity: execution.quantity,
             quoteAmount: quoteAmount,
             collateral: execution.collateral,
-            entryReceiptHash: execution.entryReceiptHash
+            entryReceiptHash: execution.entryReceiptHash,
+            nonce: execution.nonce,
+            pre: pre,
+            post: post
         });
         if (execution.action == ENTRY) {
             positions[execution.trader].entryReceiptHash = receiptHash;
@@ -187,7 +198,7 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
                 || execution.orderHash == bytes32(0) || execution.quoteHash == bytes32(0)
                 || execution.routeHash == bytes32(0) || (execution.action != ENTRY && execution.action != EXIT)
         ) revert InvalidExecution();
-        if (block.timestamp > execution.deadline) revert Expired();
+        if (block.timestamp >= execution.deadline) revert Expired();
         if (execution.nonce != nextNonce[execution.trader]) revert InvalidNonce();
         (string memory domainId, uint32 version, bytes32 manifestHash) = config.domain();
         if (
@@ -301,5 +312,11 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         bytes32 limitsHash = keccak256(abi.encode(execution.limitQuote, execution.collateral));
         return
             keccak256(abi.encode(typeHash, packageHash, accountsHash, limitsHash, execution.nonce, execution.deadline));
+    }
+
+    function _snapshot(address trader) private view returns (Snapshot memory state) {
+        state.executorBaseBalance = baseToken.balanceOf(address(this));
+        state.executorQuoteBalance = quoteToken.balanceOf(address(this));
+        (state.shortQuantity, state.shortCollateral) = venue.shortPositions(trader);
     }
 }

@@ -72,7 +72,17 @@ contract AtomicPackageExecutorTest is Test {
         assertEq(heldQuantity, 5);
         assertEq(heldCollateral, 4);
         assertEq(entryReceiptHash, receiptHash);
-        assertEq(executor.receipt(receiptHash).quoteAmount, 8);
+        AtomicPackageExecutor.Receipt memory receipt_ = executor.receipt(receiptHash);
+        assertEq(receipt_.quoteAmount, 8);
+        assertEq(receipt_.nonce, 0);
+        assertEq(receipt_.pre.executorBaseBalance, 0);
+        assertEq(receipt_.post.executorBaseBalance, 5);
+        assertEq(receipt_.pre.executorQuoteBalance, 0);
+        assertEq(receipt_.post.executorQuoteBalance, 0);
+        assertEq(receipt_.pre.shortQuantity, 0);
+        assertEq(receipt_.post.shortQuantity, 5);
+        assertEq(receipt_.pre.shortCollateral, 0);
+        assertEq(receipt_.post.shortCollateral, 4);
         assertEq(executor.nextNonce(trader), 1);
     }
 
@@ -103,6 +113,15 @@ contract AtomicPackageExecutorTest is Test {
         AtomicPackageExecutor.Receipt memory receipt_ = executor.receipt(exitReceiptHash);
         assertEq(receipt_.quoteAmount, 7);
         assertEq(receipt_.entryReceiptHash, entryReceiptHash);
+        assertEq(receipt_.nonce, 1);
+        assertEq(receipt_.pre.executorBaseBalance, 5);
+        assertEq(receipt_.post.executorBaseBalance, 0);
+        assertEq(receipt_.pre.executorQuoteBalance, 0);
+        assertEq(receipt_.post.executorQuoteBalance, 0);
+        assertEq(receipt_.pre.shortQuantity, 5);
+        assertEq(receipt_.post.shortQuantity, 0);
+        assertEq(receipt_.pre.shortCollateral, 4);
+        assertEq(receipt_.post.shortCollateral, 0);
     }
 
     function testWrongTraderAndSolverSignaturesRevert() public {
@@ -189,7 +208,6 @@ contract AtomicPackageExecutorTest is Test {
         AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
         entry.deadline = block.timestamp;
         (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry);
-        vm.warp(block.timestamp + 1);
         vm.expectRevert(AtomicPackageExecutor.Expired.selector);
         executor.execute(entry, traderSignature, solverSignature);
 
@@ -268,9 +286,14 @@ contract AtomicPackageExecutorTest is Test {
         new AtomicPackageExecutor(config, venue, solver);
         vm.chainId(31337);
 
-        vm.etch(address(venue), hex"00");
+        vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
+        new AtomicPackageExecutor(ProtocolConfig(address(0xBEEF)), venue, solver);
+
+        vm.etch(address(venue), hex"");
         vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
         executor.execute(entry, traderSignature, solverSignature);
+        vm.expectRevert(AtomicPackageExecutor.InvalidConfiguration.selector);
+        new AtomicPackageExecutor(config, venue, solver);
     }
 
     function testFuzzAdverseSpotRounding(uint8 rawQuantity) public {
