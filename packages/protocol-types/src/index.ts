@@ -209,6 +209,12 @@ export {
 
 export { validatePackageOrderProfile } from './package-order-profile.js';
 
+export {
+  validatePackageAdmission,
+  type PackageAdmissionInput,
+  type PackageAdmission,
+} from './package-admission.js';
+
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 
 export {
