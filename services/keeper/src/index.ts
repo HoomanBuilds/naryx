@@ -16,6 +16,8 @@ import {
   type ManifestHash,
 } from '@naryx/protocol-types';
 
+export * from './hyperliquid-submission-journal.js';
+
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const CLIENT_ORDER_ID_PATTERN = /^0x[0-9a-fA-F]{32}$/;
 
