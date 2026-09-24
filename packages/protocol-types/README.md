@@ -17,6 +17,7 @@ Arithmetic is exact and integer-based. Rounding direction, overflow, zero quanti
 Protocol Canonical Encoding v1 foundations, exact arithmetic, the registry-identity primitives
 those schemas reference, and the immutable `DomainManifest`, `AssetManifest`, `VenueManifest`,
 `MarketManifest`, `AdapterManifest`, `PriceSourceManifest`, `PackageTemplateManifest`,
+`EconomicStrategySeries`, `SeriesExecutionClass`,
 `PackageTemplateRegistryRecord`, `DomainRegistryRecord`, `FeePolicyManifest`, `PackageOrder`, and
 `SolverQuote` kernels. The composite `RoutePayload` and `PackageReceipt` schemas are not encoded
 yet, and neither are the remaining resource manifests. Reusable signed-order primitives now cover
@@ -164,6 +165,20 @@ and adapter sets. Leg order remains significant while every set is sorted by com
 element bytes and rejects duplicates. Constructing or hashing a template does not activate it or
 claim that an unknown template, leg type, or compiler is implemented.
 
+## Strategy series and execution classes
+
+`EconomicStrategySeries` binds one domain-independent payoff to an exact template manifest,
+ordered economic underlyings, reduced signed `i128/u128` leg ratios, an accounting asset, a
+positive evaluation window, and explicitly supported versioned quote, risk, and lifecycle
+semantics. Its leg arrays are bounded and remain ordered because repeated underlyings and leg
+position are economically meaningful.
+
+`SeriesExecutionClass` binds one series manifest to complete domain references, recognized venue
+classes, collateral mode, settlement class, firmness class, and immutable delivery, recovery, and
+matching policies. Domain and venue-class sets are sorted by canonical bytes and reject duplicates.
+Qualification and activation state are intentionally absent because they are mutable registry
+concerns. Constructing or hashing either schema does not activate a market.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
@@ -248,6 +263,7 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/domain-manifest.json`, `fixtures/asset-manifest.json`, and
 `fixtures/venue-manifest.json`, `fixtures/market-manifest.json`, and
 `fixtures/adapter-manifest.json`, `fixtures/package-template-manifest.json`,
+`fixtures/economic-strategy-series.json`, `fixtures/series-execution-class.json`,
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`,
 `fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
 `fixtures/package-order-atomic.json`, `fixtures/package-order-hyperliquid-exit.json`, and

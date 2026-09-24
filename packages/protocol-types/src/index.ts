@@ -365,6 +365,31 @@ export {
 } from './package-template-manifest.js';
 
 export {
+  ECONOMIC_STRATEGY_SERIES_MAX_LEGS,
+  SERIES_EXECUTION_CLASS_MAX_DOMAINS,
+  SERIES_EXECUTION_CLASS_MAX_VENUE_CLASSES,
+  STRATEGY_SERIES_MAX_SUPPORTED_SEMANTICS,
+  exactSignedRatio,
+  encodeExactSignedRatio,
+  economicStrategySeries,
+  encodeEconomicStrategySeries,
+  economicStrategySeriesBytes,
+  economicStrategySeriesHash,
+  seriesExecutionClass,
+  encodeSeriesExecutionClass,
+  seriesExecutionClassBytes,
+  seriesExecutionClassHash,
+  type ExactSignedRatioInput,
+  type ExactSignedRatio,
+  type EconomicStrategySeriesSupportInput,
+  type EconomicStrategySeriesInput,
+  type EconomicStrategySeries,
+  type SeriesExecutionClassSupportInput,
+  type SeriesExecutionClassInput,
+  type SeriesExecutionClass,
+} from './strategy-series.js';
+
+export {
   priceSourceManifest,
   encodePriceSourceManifest,
   priceSourceManifestBytes,

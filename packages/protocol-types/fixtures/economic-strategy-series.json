@@ -1,0 +1,31 @@
+{
+  "seriesVersion": "1",
+  "seriesId": "sol-cash-carry-30d-usdc-v1",
+  "templateId": "cash-and-carry-v1",
+  "templateVersion": "1",
+  "templateManifestHash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "underlyingRefs": [
+    "sol",
+    "sol"
+  ],
+  "quoteAsset": "usd",
+  "economicLegRatios": [
+    {
+      "numerator": "1",
+      "denominator": "1"
+    },
+    {
+      "numerator": "-1",
+      "denominator": "1"
+    }
+  ],
+  "maturityOrEvaluationWindow": {
+    "unit": "MILLISECONDS",
+    "value": "2592000000"
+  },
+  "quoteConvention": "annualized-net-yield-v1",
+  "riskClass": "delta-neutral-basis-v1",
+  "lifecycleConvention": "rolling-evaluation-window-v1",
+  "canonicalHex": "000000010000001a736f6c2d636173682d63617272792d3330642d757364632d763100000011636173682d616e642d63617272792d76310000000111111111111111111111111111111111111111111111111111111111111111110000000200000003736f6c00000003736f6c00000003757364000000020000000000000000000000000000000100000000000000000000000000000001ffffffffffffffffffffffffffffffff0000000000000000000000000000000101000000009a7ec80000000017616e6e75616c697a65642d6e65742d7969656c642d76310000001664656c74612d6e65757472616c2d62617369732d76310000001c726f6c6c696e672d6576616c756174696f6e2d77696e646f772d7631",
+  "digestHex": "f25438e661be65fc99a0b98581d48b76c6f2af2861f6f2e64abcb590be342ca8"
+}

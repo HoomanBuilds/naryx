@@ -210,6 +210,51 @@ export interface PackageTemplateManifestFixture {
   digestHex: string;
 }
 
+export interface EconomicStrategySeriesFixture {
+  seriesVersion: string;
+  seriesId: string;
+  templateId: string;
+  templateVersion: string;
+  templateManifestHash: string;
+  underlyingRefs: string[];
+  quoteAsset: string;
+  economicLegRatios: {
+    numerator: string;
+    denominator: string;
+  }[];
+  maturityOrEvaluationWindow: {
+    unit: string;
+    value: string;
+  };
+  quoteConvention: string;
+  riskClass: string;
+  lifecycleConvention: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
+export interface SeriesExecutionClassFixture {
+  executionClassVersion: string;
+  executionClassId: string;
+  seriesId: string;
+  seriesVersion: string;
+  seriesManifestHash: string;
+  domains: {
+    domainId: string;
+    domainManifestVersion: string;
+    domainManifestHash: string;
+  }[];
+  venueClasses: string[];
+  collateralMode: string;
+  settlementClass: string;
+  firmnessClass: string;
+  deliveryPolicyHash: string;
+  recoveryPolicyHash: string;
+  matchingPolicyHash: string;
+  canonicalHex: string;
+  digestHex: string;
+}
+
 export interface PackageTemplateRegistryRecordFixture {
   recordVersion: string;
   environment: string;
