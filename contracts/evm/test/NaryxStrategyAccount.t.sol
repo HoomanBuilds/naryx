@@ -6,7 +6,9 @@ import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
+import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
+import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
@@ -146,6 +148,13 @@ contract NaryxStrategyAccountTest is Test {
     uint256 private constant MARGIN = 4 ether;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("domain-manifest");
     bytes32 private constant ROUTE_HASH = keccak256("route");
+    bytes32 private constant SERIES_MANIFEST_HASH = keccak256("series-manifest");
+    bytes32 private constant EXECUTION_CLASS_MANIFEST_HASH = keccak256("execution-class-manifest");
+    bytes32 private constant SHARD_MANIFEST_HASH = keccak256("shard-manifest");
+    bytes32 private constant LEVEL_ID = keccak256("package-level");
+    bytes32 private constant REFERENCE_HASH = keccak256("package-reference");
+    bytes32 private constant SETTLEMENT_CLASS_HASH = keccak256("atomic-settlement");
+    bytes32 private constant RESERVATION_POLICY_HASH = keccak256("reservation-policy");
     address private constant PROPOSER = address(0x101);
     address private constant CANCELLER = address(0x102);
     address private constant GOVERNANCE_EXECUTOR = address(0x103);
@@ -163,6 +172,9 @@ contract NaryxStrategyAccountTest is Test {
     SolverRegistry private solverRegistry;
     StrategyAccountAdmissionRegistry private admissionRegistry;
     PackageVerifier private verifier;
+    PackageQuoteShardRegistry private packageQuoteShardRegistry;
+    PackageQuoteShard private packageQuoteShard;
+    PackageQuoteShardRegistry.ShardReference private shardReference;
     StrategyAccountSpotPort private spotPort;
     NaryxStrategyAccount private account;
 
@@ -177,7 +189,24 @@ contract NaryxStrategyAccountTest is Test {
         );
         solverRegistry = new SolverRegistry(config, solver);
         admissionRegistry = new StrategyAccountAdmissionRegistry(config);
-        verifier = new PackageVerifier(config, solverRegistry, ResourceRegistry(address(admissionRegistry)));
+        packageQuoteShardRegistry = new PackageQuoteShardRegistry(config);
+        verifier = new PackageVerifier(
+            config, solverRegistry, ResourceRegistry(address(admissionRegistry)), packageQuoteShardRegistry
+        );
+        packageQuoteShard = new PackageQuoteShard(
+            PackageQuoteShard.Deployment({
+                chainId: block.chainid,
+                config: address(config),
+                configCodeHash: address(config).codehash,
+                solver: solver,
+                consumer: address(verifier),
+                consumerCodeHash: address(verifier).codehash,
+                seriesManifestHash: SERIES_MANIFEST_HASH,
+                executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH
+            }),
+            PackageQuoteShard.Limits({maxHeartbeatSeconds: 1 hours, maxBatchSize: 8, maxLevelCount: 32})
+        );
+        _activateQuoteShard();
         spotPort = new StrategyAccountSpotPort(address(verifier), IERC20(address(base)), IERC20(address(quote)));
         account = new NaryxStrategyAccount(owner, verifier);
 
@@ -296,6 +325,235 @@ contract NaryxStrategyAccountTest is Test {
         account.withdrawIdleToken(IERC20(address(quote)), address(0xBEEF), 1 ether);
     }
 
+    function testQuotedPackageConsumesCapacityAndBindsReceipt() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        bytes32 receiptHash = account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+
+        PackageVerifier.Receipt memory receipt_ = verifier.receipt(receiptHash);
+        assertEq(receipt_.packageQuoteIntentHash, execution.packageQuoteIntentHash);
+        assertTrue(receipt_.packageQuoteFillCommitment != bytes32(0));
+        assertEq(receipt_.packageSizeUnits, uint128(QUANTITY));
+        assertEq(packageQuoteShard.quoteLevel(LEVEL_ID).remainingCapacityUnits, uint128(9 * QUANTITY));
+    }
+
+    function testFirmQuoteRequiresReservationMatchingSpotFill() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.FIRM_ONCHAIN(), 0, keccak256("wrong-reservation"));
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+        assertEq(packageQuoteShard.quoteLevel(LEVEL_ID).remainingCapacityUnits, uint128(10 * QUANTITY));
+    }
+
+    function testQuotedPackageRejectsStaleRegistryReference() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        intent.shardReference.manifestHash = keccak256("stale-manifest");
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+    }
+
+    function testQuotedPackageRejectsChangedSequenceAndModifiedIntent() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        intent.consumeRequest.expectedShardSequence = 1;
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+
+        intent.consumeRequest.expectedShardSequence = 2;
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        (traderSignature, solverSignature) = _sign(execution, admission);
+        intent.consumeRequest.expectedPackagePrice += 1;
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+        assertEq(packageQuoteShard.quoteLevel(LEVEL_ID).remainingCapacityUnits, uint128(10 * QUANTITY));
+    }
+
+    function testQuotedPackageRejectsNonzeroFeeUntilAccountingExists() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 1, bytes32(0));
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+    }
+
+    function testQuotedCapacityRollsBackWhenDownstreamExecutionFails() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.PostconditionFailed.selector);
+        account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(2 ether)), int128(int256(MARGIN)))
+        );
+        assertEq(packageQuoteShard.quoteLevel(LEVEL_ID).remainingCapacityUnits, uint128(10 * QUANTITY));
+        assertEq(packageQuoteShard.shardSequence(), 2);
+    }
+
+    function _activateQuoteShard() private {
+        PackageQuoteShardRegistry.ShardIdentity memory identity = PackageQuoteShardRegistry.ShardIdentity({
+            seriesManifestHash: SERIES_MANIFEST_HASH,
+            executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH,
+            solver: solver
+        });
+        bytes32 identityKey = packageQuoteShardRegistry.identityKey(identity);
+        vm.prank(PROPOSER);
+        packageQuoteShardRegistry.proposeRegistration(
+            identity,
+            1,
+            SHARD_MANIFEST_HASH,
+            address(packageQuoteShard),
+            address(packageQuoteShard).codehash,
+            address(verifier),
+            address(verifier).codehash
+        );
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        packageQuoteShardRegistry.activateRegistration(identityKey);
+        shardReference = PackageQuoteShardRegistry.ShardReference({
+            identityKey: identityKey,
+            manifestVersion: 1,
+            manifestHash: SHARD_MANIFEST_HASH,
+            shard: address(packageQuoteShard),
+            shardCodeHash: address(packageQuoteShard).codehash,
+            consumer: address(verifier),
+            consumerCodeHash: address(verifier).codehash
+        });
+    }
+
+    function _quotedEntry(uint8 quoteMode, uint128 feeAtoms, bytes32 reservationId)
+        private
+        returns (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        )
+    {
+        _configureQuote(quoteMode, feeAtoms);
+        (execution, admission) = _entry();
+        intent.shardReference = shardReference;
+        intent.consumeRequest = PackageQuoteShard.ConsumeRequest({
+            levelId: LEVEL_ID,
+            expectedEpoch: 1,
+            expectedLevelSequence: 2,
+            expectedReferenceSequence: 1,
+            expectedShardSequence: 2,
+            expectedExpiry: uint64(block.timestamp + 10 minutes),
+            sizeUnits: uint128(QUANTITY),
+            feeAtoms: feeAtoms,
+            expectedPackagePrice: 105,
+            orderHash: execution.orderHash,
+            quoteHash: execution.quoteHash,
+            routeHash: execution.routeHash,
+            reservationId: reservationId
+        });
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+    }
+
+    function _configureQuote(uint8 quoteMode, uint128 maxFeeAtoms) private {
+        uint64 expiresAt = uint64(block.timestamp + 10 minutes);
+        vm.prank(solver);
+        packageQuoteShard.updateReference(100, REFERENCE_HASH, 1, expiresAt, 0);
+        PackageQuoteShard.QuoteLevelInput[] memory levels = new PackageQuoteShard.QuoteLevelInput[](1);
+        levels[0] = PackageQuoteShard.QuoteLevelInput({
+            levelId: LEVEL_ID,
+            direction: PackageQuoteShard.Direction.ASK,
+            minSizeUnits: uint128(QUANTITY),
+            maxSizeUnits: uint128(QUANTITY),
+            referenceOffset: 5,
+            maxFeeAtoms: maxFeeAtoms,
+            settlementClassIdentityHash: SETTLEMENT_CLASS_HASH,
+            quoteMode: quoteMode,
+            reservationPolicyHash: quoteMode == packageQuoteShard.FIRM_ONCHAIN() ? RESERVATION_POLICY_HASH : bytes32(0),
+            expiresAt: expiresAt,
+            capacityUnits: uint128(10 * QUANTITY)
+        });
+        vm.prank(solver);
+        packageQuoteShard.upsertQuoteLevels(levels, 1);
+    }
+
     function _enter() private returns (bytes32 receiptHash) {
         (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
         _admit(admission);
@@ -351,6 +609,7 @@ contract NaryxStrategyAccountTest is Test {
         execution.quoteHash = keccak256("entry-quote");
         execution.routeHash = ROUTE_HASH;
         execution.spotFillCommitment = keccak256("entry-spot-fill");
+        execution.packageQuoteIntentHash = bytes32(0);
         execution.action = action;
         execution.strategyAccount = address(account);
         execution.solver = executionSolver;
@@ -364,6 +623,7 @@ contract NaryxStrategyAccountTest is Test {
         execution.perpQuantityWad = QUANTITY;
         execution.spotQuoteBoundAtoms = 3 ether;
         execution.packageNotionalQuoteAtoms = 2 ether;
+        execution.packageSizeUnits = uint128(QUANTITY);
         execution.nonce = nonce;
         execution.deadline = block.timestamp + 1 hours;
     }

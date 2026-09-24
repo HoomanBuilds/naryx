@@ -61,6 +61,20 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
         return verifier.finalize(execution, admission, false);
     }
 
+    function executeQuotedPackage(
+        PackageVerifier.Execution calldata execution,
+        ResourceRegistry.CashCarryAdmission calldata admission,
+        PackageVerifier.QuoteIntent calldata quoteIntent,
+        bytes calldata traderSignature,
+        bytes calldata solverSignature,
+        bytes32[2] calldata perpArgs
+    ) external nonReentrant returns (bytes32 receiptHash) {
+        _validateExecution(execution);
+        verifier.beginFromQuoteShard(execution, admission, quoteIntent, traderSignature, solverSignature);
+        _execute(execution, perpArgs);
+        return verifier.finalize(execution, admission, false);
+    }
+
     function executeRecoveryExit(
         PackageVerifier.Execution calldata execution,
         ResourceRegistry.CashCarryAdmission calldata admission,

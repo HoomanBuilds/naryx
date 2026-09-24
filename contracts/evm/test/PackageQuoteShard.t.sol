@@ -205,7 +205,7 @@ contract PackageQuoteShardTest is Test {
             maxFeeAtoms: 5,
             settlementClassIdentityHash: SETTLEMENT_CLASS_HASH,
             quoteMode: quoteMode,
-            reservationPolicyHash: RESERVATION_POLICY_HASH,
+            reservationPolicyHash: quoteMode == FIRM_ONCHAIN ? RESERVATION_POLICY_HASH : bytes32(0),
             expiresAt: uint64(block.timestamp + 120),
             capacityUnits: capacity
         });

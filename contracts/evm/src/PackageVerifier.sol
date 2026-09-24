@@ -7,6 +7,8 @@ import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
 import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {TransientSlot} from "openzeppelin-contracts/utils/TransientSlot.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {PackageQuoteShard} from "./PackageQuoteShard.sol";
+import {PackageQuoteShardRegistry} from "./PackageQuoteShardRegistry.sol";
 import {ResourceRegistry} from "./ResourceRegistry.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
@@ -42,6 +44,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     bytes32 private constant PERP_ENTRY_NOTIONAL_BEFORE_FIELD = keccak256("perp-entry-notional-before");
     bytes32 private constant SPOT_FILL_SEEN_FIELD = keccak256("spot-fill-seen");
     bytes32 private constant SPOT_QUOTE_FIELD = keccak256("spot-quote");
+    bytes32 private constant PACKAGE_QUOTE_INTENT_FIELD = keccak256("package-quote-intent");
+    bytes32 private constant PACKAGE_QUOTE_FILL_FIELD = keccak256("package-quote-fill");
+    bytes32 private constant PACKAGE_QUOTE_INTENT_PREFIX = keccak256("NARYX_PACKAGE_QUOTE_INTENT_V1");
 
     struct Execution {
         bytes32 domainIdHash;
@@ -51,6 +56,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 quoteHash;
         bytes32 routeHash;
         bytes32 spotFillCommitment;
+        bytes32 packageQuoteIntentHash;
         uint8 action;
         address strategyAccount;
         address solver;
@@ -64,6 +70,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         uint256 perpQuantityWad;
         uint256 spotQuoteBoundAtoms;
         uint256 packageNotionalQuoteAtoms;
+        uint128 packageSizeUnits;
         int128 expectedPrePerpBalanceWad;
         int128 expectedPrePerpSizeWad;
         uint128 expectedPrePerpEntryNotionalWad;
@@ -74,6 +81,11 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 entryReceiptHash;
         uint256 nonce;
         uint256 deadline;
+    }
+
+    struct QuoteIntent {
+        PackageQuoteShardRegistry.ShardReference shardReference;
+        PackageQuoteShard.ConsumeRequest consumeRequest;
     }
 
     struct OpenPackage {
@@ -98,12 +110,15 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 quoteHash;
         bytes32 routeHash;
         bytes32 spotFillCommitment;
+        bytes32 packageQuoteIntentHash;
+        bytes32 packageQuoteFillCommitment;
         uint8 action;
         address strategyAccount;
         address solver;
         bool recovery;
         uint256 baseQuantityAtoms;
         uint256 spotQuoteAtoms;
+        uint128 packageSizeUnits;
         int128 prePerpBalanceWad;
         int128 prePerpSizeWad;
         uint128 prePerpEntryNotionalWad;
@@ -124,6 +139,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     error InvalidTraderSignature();
     error InvalidSolverSignature();
     error ResourceAdmissionFailed();
+    error InvalidPackageQuote();
     error ContextAlreadyActive();
     error ContextNotActive();
     error InvalidSpotFill();
@@ -138,39 +154,50 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         address solver,
         bool recovery,
         uint256 baseQuantityAtoms,
-        uint256 spotQuoteAtoms
+        uint256 spotQuoteAtoms,
+        bytes32 packageQuoteIntentHash,
+        bytes32 packageQuoteFillCommitment
     );
 
     ProtocolConfig public immutable config;
     SolverRegistry public immutable solverRegistry;
     ResourceRegistry public immutable resourceRegistry;
+    PackageQuoteShardRegistry public immutable packageQuoteShardRegistry;
     uint256 public immutable deploymentChainId;
     bytes32 public immutable deploymentDomainIdHash;
     bytes32 public immutable configCodeHash;
     bytes32 public immutable solverRegistryCodeHash;
     bytes32 public immutable resourceRegistryCodeHash;
+    bytes32 public immutable packageQuoteShardRegistryCodeHash;
 
     mapping(address strategyAccount => uint256 nonce) public nextNonce;
     mapping(address strategyAccount => OpenPackage packageState) public openPackages;
     mapping(bytes32 receiptHash => Receipt receiptData) private _receipts;
 
-    constructor(ProtocolConfig config_, SolverRegistry solverRegistry_, ResourceRegistry resourceRegistry_)
-        EIP712("Naryx Package Verifier", "1")
-    {
+    constructor(
+        ProtocolConfig config_,
+        SolverRegistry solverRegistry_,
+        ResourceRegistry resourceRegistry_,
+        PackageQuoteShardRegistry packageQuoteShardRegistry_
+    ) EIP712("Naryx Package Verifier", "1") {
         if (
             address(config_).code.length == 0 || address(solverRegistry_).code.length == 0
-                || address(resourceRegistry_).code.length == 0 || address(solverRegistry_.config()) != address(config_)
+                || address(resourceRegistry_).code.length == 0 || address(packageQuoteShardRegistry_).code.length == 0
+                || address(solverRegistry_.config()) != address(config_)
                 || address(resourceRegistry_.config()) != address(config_)
+                || address(packageQuoteShardRegistry_.config()) != address(config_)
         ) revert InvalidConfiguration();
         (string memory domainId,,) = config_.domain();
         config = config_;
         solverRegistry = solverRegistry_;
         resourceRegistry = resourceRegistry_;
+        packageQuoteShardRegistry = packageQuoteShardRegistry_;
         deploymentChainId = block.chainid;
         deploymentDomainIdHash = keccak256(bytes(domainId));
         configCodeHash = address(config_).codehash;
         solverRegistryCodeHash = address(solverRegistry_).codehash;
         resourceRegistryCodeHash = address(resourceRegistry_).codehash;
+        packageQuoteShardRegistryCodeHash = address(packageQuoteShardRegistry_).codehash;
     }
 
     function traderPermitDigest(Execution calldata execution, ResourceRegistry.CashCarryAdmission calldata admission)
@@ -188,6 +215,10 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         return _hashTypedDataV4(_executionHash(SOLVER_AUTH_TYPEHASH, execution, _admissionHash(admission)));
     }
 
+    function packageQuoteIntentHash(QuoteIntent calldata intent) external view returns (bytes32) {
+        return _packageQuoteIntentHash(intent);
+    }
+
     function receipt(bytes32 receiptHash) external view returns (Receipt memory) {
         return _receipts[receiptHash];
     }
@@ -202,9 +233,28 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes calldata traderSignature,
         bytes calldata solverSignature
     ) external returns (bytes32 contextHash) {
+        if (execution.packageQuoteIntentHash != bytes32(0)) {
+            revert InvalidPackageQuote();
+        }
         _validateCommon(execution, admission, traderSignature);
         _validateSolver(execution, admission, solverSignature);
-        return _openContext(execution, admission, false);
+        return _openContext(execution, admission, false, bytes32(0));
+    }
+
+    function beginFromQuoteShard(
+        Execution calldata execution,
+        ResourceRegistry.CashCarryAdmission calldata admission,
+        QuoteIntent calldata intent,
+        bytes calldata traderSignature,
+        bytes calldata solverSignature
+    ) external returns (bytes32 contextHash) {
+        if (execution.action != ENTRY || execution.packageQuoteIntentHash == bytes32(0)) {
+            revert InvalidPackageQuote();
+        }
+        _validateCommon(execution, admission, traderSignature);
+        _validateSolver(execution, admission, solverSignature);
+        bytes32 fillCommitment = _consumeQuote(execution, intent);
+        return _openContext(execution, admission, false, fillCommitment);
     }
 
     function beginRecoveryExit(
@@ -215,8 +265,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         if (execution.action != EXIT || execution.solver != address(0)) {
             revert InvalidRecoveryExit();
         }
+        if (execution.packageQuoteIntentHash != bytes32(0)) revert InvalidRecoveryExit();
         _validateCommon(execution, admission, traderSignature);
-        return _openContext(execution, admission, true);
+        return _openContext(execution, admission, true, bytes32(0));
     }
 
     function recordSpotFill(
@@ -271,6 +322,13 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         if (_contextCommitment(execution, admissionHash, recovery) != _activeCommitment(contextKey)) {
             revert ContextNotActive();
         }
+        bytes32 quoteIntentHash = _transientBytes32(contextKey, PACKAGE_QUOTE_INTENT_FIELD);
+        bytes32 quoteFillCommitment = _transientBytes32(contextKey, PACKAGE_QUOTE_FILL_FIELD);
+        if (
+            quoteIntentHash != execution.packageQuoteIntentHash
+                || (quoteIntentHash == bytes32(0) && quoteFillCommitment != bytes32(0))
+                || (quoteIntentHash != bytes32(0) && quoteFillCommitment == bytes32(0))
+        ) revert ContextNotActive();
 
         uint256 spotQuoteAtoms = _transientUint(contextKey, SPOT_QUOTE_FIELD);
         _validateSpotBound(execution.action, spotQuoteAtoms, execution.spotQuoteBoundAtoms);
@@ -286,6 +344,16 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
 
         receiptHash = _commitReceipt(execution, admissionHash, recovery, spotQuoteAtoms, contextKey, post);
         _clearContext(contextKey);
+        _emitPackageVerified(execution, receiptHash, recovery, spotQuoteAtoms, quoteFillCommitment);
+    }
+
+    function _emitPackageVerified(
+        Execution calldata execution,
+        bytes32 receiptHash,
+        bool recovery,
+        uint256 spotQuoteAtoms,
+        bytes32 quoteFillCommitment
+    ) private {
         emit PackageVerified(
             receiptHash,
             execution.strategyAccount,
@@ -293,7 +361,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
             execution.solver,
             recovery,
             execution.baseQuantityAtoms,
-            spotQuoteAtoms
+            spotQuoteAtoms,
+            execution.packageQuoteIntentHash,
+            quoteFillCommitment
         );
     }
 
@@ -308,6 +378,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         int128 preBalance = int128(_transientInt(contextKey, PERP_BALANCE_BEFORE_FIELD));
         int128 preSize = int128(_transientInt(contextKey, PERP_SIZE_BEFORE_FIELD));
         uint128 preEntryNotional = uint128(_transientUint(contextKey, PERP_ENTRY_NOTIONAL_BEFORE_FIELD));
+        bytes32 quoteFillCommitment = _transientBytes32(contextKey, PACKAGE_QUOTE_FILL_FIELD);
         nextNonce[execution.strategyAccount] = execution.nonce + 1;
 
         bytes32 receiptCommitment = _hashTypedDataV4(_executionHash(RECEIPT_TYPEHASH, execution, admissionHash));
@@ -315,6 +386,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
             abi.encode(
                 receiptCommitment,
                 recovery,
+                quoteFillCommitment,
                 spotQuoteAtoms,
                 preBalance,
                 preSize,
@@ -332,12 +404,15 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         receiptData.quoteHash = execution.quoteHash;
         receiptData.routeHash = execution.routeHash;
         receiptData.spotFillCommitment = execution.spotFillCommitment;
+        receiptData.packageQuoteIntentHash = execution.packageQuoteIntentHash;
+        receiptData.packageQuoteFillCommitment = quoteFillCommitment;
         receiptData.action = execution.action;
         receiptData.strategyAccount = execution.strategyAccount;
         receiptData.solver = execution.solver;
         receiptData.recovery = recovery;
         receiptData.baseQuantityAtoms = execution.baseQuantityAtoms;
         receiptData.spotQuoteAtoms = spotQuoteAtoms;
+        receiptData.packageSizeUnits = execution.packageSizeUnits;
         receiptData.prePerpBalanceWad = preBalance;
         receiptData.prePerpSizeWad = preSize;
         receiptData.prePerpEntryNotionalWad = preEntryNotional;
@@ -348,23 +423,27 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         receiptData.nonce = execution.nonce;
         _receipts[receiptHash] = receiptData;
 
-        if (execution.action == ENTRY) {
-            OpenPackage memory packageState;
-            packageState.entryReceiptHash = receiptHash;
-            packageState.routeHash = execution.routeHash;
-            packageState.spotPort = execution.spotPort;
-            packageState.perpObserver = execution.perpObserver;
-            packageState.perpInstrument = execution.perpInstrument;
-            packageState.perpExpiry = execution.perpExpiry;
-            packageState.baseToken = execution.baseToken;
-            packageState.quoteToken = execution.quoteToken;
-            packageState.baseQuantityAtoms = execution.baseQuantityAtoms;
-            packageState.perpQuantityWad = execution.perpQuantityWad;
-            packageState.entryPerpNotionalWad = post.entryNotional;
-            openPackages[execution.strategyAccount] = packageState;
-        } else {
+        _updateOpenPackage(execution, receiptHash, post.entryNotional);
+    }
+
+    function _updateOpenPackage(Execution calldata execution, bytes32 receiptHash, uint128 entryNotional) private {
+        if (execution.action != ENTRY) {
             delete openPackages[execution.strategyAccount];
+            return;
         }
+        OpenPackage memory packageState;
+        packageState.entryReceiptHash = receiptHash;
+        packageState.routeHash = execution.routeHash;
+        packageState.spotPort = execution.spotPort;
+        packageState.perpObserver = execution.perpObserver;
+        packageState.perpInstrument = execution.perpInstrument;
+        packageState.perpExpiry = execution.perpExpiry;
+        packageState.baseToken = execution.baseToken;
+        packageState.quoteToken = execution.quoteToken;
+        packageState.baseQuantityAtoms = execution.baseQuantityAtoms;
+        packageState.perpQuantityWad = execution.perpQuantityWad;
+        packageState.entryPerpNotionalWad = entryNotional;
+        openPackages[execution.strategyAccount] = packageState;
     }
 
     function _validateCommon(
@@ -376,6 +455,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
             block.chainid != deploymentChainId || address(config).codehash != configCodeHash
                 || address(solverRegistry).codehash != solverRegistryCodeHash
                 || address(resourceRegistry).codehash != resourceRegistryCodeHash
+                || address(packageQuoteShardRegistry).codehash != packageQuoteShardRegistryCodeHash
         ) revert InvalidConfiguration();
         if (
             msg.sender != execution.strategyAccount || execution.strategyAccount.code.length == 0
@@ -384,9 +464,10 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 || execution.quoteToken.code.length == 0 || execution.baseToken == execution.quoteToken
                 || execution.baseQuantityAtoms == 0 || execution.perpQuantityWad == 0
                 || execution.perpQuantityWad > uint256(uint128(type(int128).max)) || execution.spotQuoteBoundAtoms == 0
-                || execution.packageNotionalQuoteAtoms == 0 || execution.orderHash == bytes32(0)
-                || execution.quoteHash == bytes32(0) || execution.routeHash == bytes32(0)
-                || execution.spotFillCommitment == bytes32(0) || (execution.action != ENTRY && execution.action != EXIT)
+                || execution.packageNotionalQuoteAtoms == 0 || execution.packageSizeUnits == 0
+                || execution.orderHash == bytes32(0) || execution.quoteHash == bytes32(0)
+                || execution.routeHash == bytes32(0) || execution.spotFillCommitment == bytes32(0)
+                || (execution.action != ENTRY && execution.action != EXIT)
                 || execution.minimumPostPerpBalanceWad > execution.maximumPostPerpBalanceWad
         ) revert InvalidExecution();
         if (block.timestamp >= execution.deadline) revert Expired();
@@ -478,7 +559,8 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     function _openContext(
         Execution calldata execution,
         ResourceRegistry.CashCarryAdmission calldata admission,
-        bool recovery
+        bool recovery,
+        bytes32 packageQuoteFillCommitment
     ) private returns (bytes32 contextHash) {
         bytes32 contextKey = _contextKey(execution.strategyAccount, execution.nonce);
         if (_transientBytes32(contextKey, CONTEXT_HASH_FIELD) != bytes32(0)) revert ContextAlreadyActive();
@@ -503,6 +585,61 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         _storeTransientInt(contextKey, PERP_BALANCE_BEFORE_FIELD, pre.balance);
         _storeTransientInt(contextKey, PERP_SIZE_BEFORE_FIELD, pre.size);
         _storeTransientUint(contextKey, PERP_ENTRY_NOTIONAL_BEFORE_FIELD, pre.entryNotional);
+        _storeTransientBytes32(contextKey, PACKAGE_QUOTE_INTENT_FIELD, execution.packageQuoteIntentHash);
+        _storeTransientBytes32(contextKey, PACKAGE_QUOTE_FILL_FIELD, packageQuoteFillCommitment);
+    }
+
+    function _consumeQuote(Execution calldata execution, QuoteIntent calldata intent)
+        private
+        returns (bytes32 fillCommitment)
+    {
+        if (intent.consumeRequest.feeAtoms != 0) revert InvalidPackageQuote();
+        PackageQuoteShardRegistry.ShardBinding memory binding;
+        try packageQuoteShardRegistry.validateEntry(intent.shardReference) returns (
+            PackageQuoteShardRegistry.ShardBinding memory validatedBinding
+        ) {
+            binding = validatedBinding;
+        } catch {
+            revert InvalidPackageQuote();
+        }
+
+        bytes32 verifierCodeHash = address(this).codehash;
+        if (
+            binding.consumer != address(this) || binding.consumerCodeHash != verifierCodeHash
+                || binding.solver != execution.solver || intent.shardReference.consumer != address(this)
+                || intent.shardReference.consumerCodeHash != verifierCodeHash
+                || intent.consumeRequest.orderHash != execution.orderHash
+                || intent.consumeRequest.quoteHash != execution.quoteHash
+                || intent.consumeRequest.routeHash != execution.routeHash
+                || intent.consumeRequest.sizeUnits != execution.packageSizeUnits
+                || _packageQuoteIntentHash(intent) != execution.packageQuoteIntentHash
+        ) revert InvalidPackageQuote();
+
+        PackageQuoteShard shard = PackageQuoteShard(binding.shard);
+        if (shard.config() != address(config)) revert InvalidPackageQuote();
+        PackageQuoteShard.ExecutableQuote memory quote;
+        try shard.getExecutableQuote(intent.consumeRequest.levelId, intent.consumeRequest.sizeUnits) returns (
+            PackageQuoteShard.ExecutableQuote memory executableQuote
+        ) {
+            quote = executableQuote;
+        } catch {
+            revert InvalidPackageQuote();
+        }
+
+        if (
+            (quote.quoteMode == shard.EXECUTION_COMMITMENT() && intent.consumeRequest.reservationId != bytes32(0))
+                || (quote.quoteMode == shard.FIRM_ONCHAIN()
+                    && (intent.consumeRequest.reservationId == bytes32(0)
+                        || intent.consumeRequest.reservationId != execution.spotFillCommitment))
+                || (quote.quoteMode != shard.EXECUTION_COMMITMENT() && quote.quoteMode != shard.FIRM_ONCHAIN())
+        ) revert InvalidPackageQuote();
+
+        try shard.consumeCapacity(intent.consumeRequest) returns (bytes32 consumedFillCommitment) {
+            fillCommitment = consumedFillCommitment;
+        } catch {
+            revert InvalidPackageQuote();
+        }
+        if (fillCommitment == bytes32(0)) revert InvalidPackageQuote();
     }
 
     function _validateTokenPostconditions(Execution calldata execution, bytes32 contextKey, uint256 spotQuoteAtoms)
@@ -547,7 +684,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         view
         returns (bytes32)
     {
-        bytes32 packageHash = keccak256(
+        bytes32 packageIdentityHash = keccak256(
             abi.encode(
                 execution.domainIdHash,
                 execution.domainManifestVersion,
@@ -556,13 +693,20 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 execution.quoteHash,
                 execution.routeHash,
                 execution.spotFillCommitment,
+                execution.packageQuoteIntentHash,
                 admissionHash,
-                execution.action,
+                execution.action
+            )
+        );
+        bytes32 packageEconomicsHash = keccak256(
+            abi.encode(
                 execution.baseQuantityAtoms,
                 execution.perpQuantityWad,
+                execution.packageSizeUnits,
                 execution.entryReceiptHash
             )
         );
+        bytes32 packageHash = keccak256(abi.encode(packageIdentityHash, packageEconomicsHash));
         bytes32 accountsHash = keccak256(
             abi.encode(
                 execution.strategyAccount,
@@ -595,6 +739,18 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
 
     function _admissionHash(ResourceRegistry.CashCarryAdmission calldata admission) private pure returns (bytes32) {
         return keccak256(abi.encode(admission));
+    }
+
+    function _packageQuoteIntentHash(QuoteIntent calldata intent) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                PACKAGE_QUOTE_INTENT_PREFIX,
+                address(packageQuoteShardRegistry),
+                packageQuoteShardRegistryCodeHash,
+                intent.shardReference,
+                intent.consumeRequest
+            )
+        );
     }
 
     function _routeContextHash(Execution calldata execution) private pure returns (bytes32) {
@@ -670,5 +826,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         _storeTransientBytes32(contextKey, bytes32(0), bytes32(0));
         _storeTransientBool(contextKey, SPOT_FILL_SEEN_FIELD, false);
         _storeTransientUint(contextKey, SPOT_QUOTE_FIELD, 0);
+        _storeTransientBytes32(contextKey, PACKAGE_QUOTE_INTENT_FIELD, bytes32(0));
+        _storeTransientBytes32(contextKey, PACKAGE_QUOTE_FILL_FIELD, bytes32(0));
     }
 }

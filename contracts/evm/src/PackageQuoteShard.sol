@@ -443,9 +443,10 @@ contract PackageQuoteShard {
         if (
             input.levelId == bytes32(0) || input.direction == Direction.NONE || input.minSizeUnits == 0
                 || input.maxSizeUnits < input.minSizeUnits || input.capacityUnits < input.maxSizeUnits
-                || input.settlementClassIdentityHash == bytes32(0) || input.reservationPolicyHash == bytes32(0)
-                || input.expiresAt <= block.timestamp
+                || input.settlementClassIdentityHash == bytes32(0) || input.expiresAt <= block.timestamp
                 || (input.quoteMode != EXECUTION_COMMITMENT && input.quoteMode != FIRM_ONCHAIN)
+                || (input.quoteMode == EXECUTION_COMMITMENT && input.reservationPolicyHash != bytes32(0))
+                || (input.quoteMode == FIRM_ONCHAIN && input.reservationPolicyHash == bytes32(0))
         ) revert InvalidLevel();
     }
 

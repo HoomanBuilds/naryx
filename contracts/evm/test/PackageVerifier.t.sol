@@ -7,6 +7,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
+import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
@@ -186,6 +187,7 @@ contract PackageVerifierTest is Test {
     SolverRegistry private solverRegistry;
     VerifierAdmissionRegistry private admissionRegistry;
     PackageVerifier private verifier;
+    PackageQuoteShardRegistry private packageQuoteShardRegistry;
     UniswapV3SpotPort private spotPort;
     VerifierStrategyAccount private strategy;
 
@@ -202,7 +204,10 @@ contract PackageVerifierTest is Test {
         );
         solverRegistry = new SolverRegistry(config, solver);
         admissionRegistry = new VerifierAdmissionRegistry(config);
-        verifier = new PackageVerifier(config, solverRegistry, ResourceRegistry(address(admissionRegistry)));
+        packageQuoteShardRegistry = new PackageQuoteShardRegistry(config);
+        verifier = new PackageVerifier(
+            config, solverRegistry, ResourceRegistry(address(admissionRegistry)), packageQuoteShardRegistry
+        );
         spotPort = new UniswapV3SpotPort(address(verifier), _spotDeployment());
         strategy = new VerifierStrategyAccount(vm.addr(ownerKey));
 
@@ -293,6 +298,7 @@ contract PackageVerifierTest is Test {
             quoteHash: keccak256("quote"),
             routeHash: keccak256("route"),
             spotFillCommitment: keccak256("spot-fill"),
+            packageQuoteIntentHash: bytes32(0),
             action: verifier.ENTRY(),
             strategyAccount: address(strategy),
             solver: solver,
@@ -306,6 +312,7 @@ contract PackageVerifierTest is Test {
             perpQuantityWad: QUANTITY,
             spotQuoteBoundAtoms: 3 ether,
             packageNotionalQuoteAtoms: 2 ether,
+            packageSizeUnits: uint128(QUANTITY),
             expectedPrePerpBalanceWad: 0,
             expectedPrePerpSizeWad: 0,
             expectedPrePerpEntryNotionalWad: 0,
