@@ -184,6 +184,8 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     bytes32 public immutable resourceRegistryCodeHash;
     bytes32 public immutable cashCarrySeriesRegistryCodeHash;
     bytes32 public immutable packageQuoteShardRegistryCodeHash;
+    PackageVerifierValidation public immutable validationHelper;
+    bytes32 public immutable validationHelperCodeHash;
 
     mapping(address strategyAccount => uint256 nonce) public nextNonce;
     mapping(address strategyAccount => OpenPackage packageState) private _openPackages;
@@ -219,6 +221,8 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         resourceRegistryCodeHash = address(resourceRegistry_).codehash;
         cashCarrySeriesRegistryCodeHash = address(cashCarrySeriesRegistry_).codehash;
         packageQuoteShardRegistryCodeHash = address(packageQuoteShardRegistry_).codehash;
+        validationHelper = new PackageVerifierValidation(address(this), resourceRegistry_, cashCarrySeriesRegistry_);
+        validationHelperCodeHash = address(validationHelper).codehash;
     }
 
     function traderPermitDigest(Execution calldata execution, ResourceRegistry.CashCarryAdmission calldata admission)
@@ -490,6 +494,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 || address(resourceRegistry).codehash != resourceRegistryCodeHash
                 || address(cashCarrySeriesRegistry).codehash != cashCarrySeriesRegistryCodeHash
                 || address(packageQuoteShardRegistry).codehash != packageQuoteShardRegistryCodeHash
+                || address(validationHelper).codehash != validationHelperCodeHash
         ) revert InvalidConfiguration();
         if (
             msg.sender != execution.strategyAccount || execution.strategyAccount.code.length == 0
@@ -510,8 +515,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         _validateDomain(execution);
         if (execution.action == ENTRY && config.entryPaused()) revert EntryPaused();
         _validatePositionShape(execution);
-        _validateAdmission(execution, admission);
-        seriesBinding = _validateSeriesBinding(execution, admission);
+        seriesBinding = validationHelper.validate(execution, admission);
 
         bytes32 digest = _hashTypedDataV4(_executionHash(TRADER_PERMIT_TYPEHASH, execution, _admissionHash(admission)));
         if (!SignatureChecker.isValidSignatureNow(execution.strategyAccount, digest, traderSignature)) {
@@ -565,98 +569,6 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 || execution.expectedPrePerpSizeWad != shortSize || execution.expectedPostPerpSizeWad != 0
                 || execution.maximumPostPerpEntryNotionalWad != 0
         ) revert PositionMismatch();
-    }
-
-    function _validateAdmission(Execution calldata execution, ResourceRegistry.CashCarryAdmission calldata admission)
-        private
-        view
-    {
-        try resourceRegistry.validateCashCarry(admission) returns (uint256) {}
-        catch {
-            revert ResourceAdmissionFailed();
-        }
-        if (
-            admission.domain.domainIdHash != execution.domainIdHash
-                || admission.domain.manifestVersion != execution.domainManifestVersion
-                || admission.domain.manifestHash != execution.domainManifestHash || admission.action != execution.action
-                || admission.packageNotionalQuoteAtoms != execution.packageNotionalQuoteAtoms
-                || admission.spot.adapter.localAddress != execution.spotPort
-                || admission.perpetual.adapter.localAddress != address(this)
-                || admission.perpetual.market.localAddress != execution.perpInstrument
-                || admission.perpetual.venue.localAddress != execution.perpObserver
-                || admission.baseAsset.localAddress != execution.baseToken
-                || admission.quoteAsset.localAddress != execution.quoteToken
-                || admission.spot.quantityAtoms != execution.baseQuantityAtoms
-                || admission.perpetual.quantityAtoms != execution.perpQuantityWad
-        ) revert ResourceAdmissionFailed();
-        IExactSpotPort spotPort = IExactSpotPort(execution.spotPort);
-        if (
-            spotPort.verifier() != address(this) || address(spotPort.baseToken()) != execution.baseToken
-                || address(spotPort.quoteToken()) != execution.quoteToken
-        ) revert ResourceAdmissionFailed();
-    }
-
-    function _validateSeriesBinding(
-        Execution calldata execution,
-        ResourceRegistry.CashCarryAdmission calldata admission
-    ) private view returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding) {
-        CashCarrySeriesRegistry.BindingReference memory exactRef = CashCarrySeriesRegistry.BindingReference({
-            identityKey: execution.seriesIdentityKey,
-            bindingVersion: execution.seriesBindingVersion,
-            bindingHash: execution.seriesBindingHash
-        });
-
-        if (execution.action == ENTRY) {
-            try cashCarrySeriesRegistry.validateEntry(exactRef) returns (
-                CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory activeBinding
-            ) {
-                binding = activeBinding;
-            } catch {
-                revert InvalidSeriesBinding();
-            }
-        } else {
-            try cashCarrySeriesRegistry.bindingRecord(exactRef.identityKey, exactRef.bindingVersion) returns (
-                CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory historicalBinding,
-                bytes32 historicalHash,
-                CashCarrySeriesRegistry.Lifecycle,
-                bool
-            ) {
-                if (historicalHash != exactRef.bindingHash) revert InvalidSeriesBinding();
-                binding = historicalBinding;
-            } catch {
-                revert InvalidSeriesBinding();
-            }
-        }
-
-        if (
-            binding.baseAsset.subjectIdentity != admission.baseAsset.manifest.subjectId
-                || binding.quoteAsset.subjectIdentity != admission.quoteAsset.manifest.subjectId
-        ) revert InvalidSeriesBinding();
-        if (
-            execution.action == ENTRY
-                && (binding.baseAsset.manifestVersion != admission.baseAsset.manifest.manifestVersion
-                    || binding.baseAsset.manifestHash != admission.baseAsset.manifest.manifestHash
-                    || binding.quoteAsset.manifestVersion != admission.quoteAsset.manifest.manifestVersion
-                    || binding.quoteAsset.manifestHash != admission.quoteAsset.manifest.manifestHash)
-        ) revert InvalidSeriesBinding();
-
-        _validatePackageUnits(execution, binding);
-    }
-
-    function _validatePackageUnits(
-        Execution calldata execution,
-        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding
-    ) private pure {
-        if (
-            execution.baseQuantityAtoms % binding.spotBaseAtomsPerPackageUnit != 0
-                || execution.perpQuantityWad % binding.perpQuantityAtomsPerPackageUnit != 0
-        ) revert InvalidPackageUnits();
-        uint256 spotUnits = execution.baseQuantityAtoms / binding.spotBaseAtomsPerPackageUnit;
-        uint256 perpUnits = execution.perpQuantityWad / binding.perpQuantityAtomsPerPackageUnit;
-        if (
-            spotUnits == 0 || spotUnits != perpUnits || spotUnits > type(uint128).max
-                || uint256(execution.packageSizeUnits) != spotUnits
-        ) revert InvalidPackageUnits();
     }
 
     function _openContext(
@@ -943,5 +855,142 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         _storeTransientUint(contextKey, SPOT_QUOTE_FIELD, 0);
         _storeTransientBytes32(contextKey, PACKAGE_QUOTE_INTENT_FIELD, bytes32(0));
         _storeTransientBytes32(contextKey, PACKAGE_QUOTE_FILL_FIELD, bytes32(0));
+    }
+}
+
+contract PackageVerifierValidation {
+    uint8 private constant ENTRY = 1;
+
+    address public immutable verifier;
+    ResourceRegistry public immutable resourceRegistry;
+    CashCarrySeriesRegistry public immutable cashCarrySeriesRegistry;
+    bytes32 private immutable resourceRegistryCodeHash;
+    bytes32 private immutable cashCarrySeriesRegistryCodeHash;
+
+    error InvalidConfiguration();
+    error UnauthorizedCaller();
+    error ResourceAdmissionFailed();
+    error InvalidSeriesBinding();
+    error InvalidPackageUnits();
+
+    constructor(
+        address verifier_,
+        ResourceRegistry resourceRegistry_,
+        CashCarrySeriesRegistry cashCarrySeriesRegistry_
+    ) {
+        if (
+            verifier_ == address(0) || address(resourceRegistry_).code.length == 0
+                || address(cashCarrySeriesRegistry_).code.length == 0
+        ) revert InvalidConfiguration();
+        verifier = verifier_;
+        resourceRegistry = resourceRegistry_;
+        cashCarrySeriesRegistry = cashCarrySeriesRegistry_;
+        resourceRegistryCodeHash = address(resourceRegistry_).codehash;
+        cashCarrySeriesRegistryCodeHash = address(cashCarrySeriesRegistry_).codehash;
+    }
+
+    function validate(
+        PackageVerifier.Execution calldata execution,
+        ResourceRegistry.CashCarryAdmission calldata admission
+    ) external view returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding) {
+        if (msg.sender != verifier) revert UnauthorizedCaller();
+        if (
+            address(resourceRegistry).codehash != resourceRegistryCodeHash
+                || address(cashCarrySeriesRegistry).codehash != cashCarrySeriesRegistryCodeHash
+        ) revert InvalidConfiguration();
+        _validateAdmission(execution, admission);
+        binding = _validateSeriesBinding(execution, admission);
+    }
+
+    function _validateAdmission(
+        PackageVerifier.Execution calldata execution,
+        ResourceRegistry.CashCarryAdmission calldata admission
+    ) private view {
+        try resourceRegistry.validateCashCarry(admission) returns (uint256) {}
+        catch {
+            revert ResourceAdmissionFailed();
+        }
+        if (
+            admission.domain.domainIdHash != execution.domainIdHash
+                || admission.domain.manifestVersion != execution.domainManifestVersion
+                || admission.domain.manifestHash != execution.domainManifestHash || admission.action != execution.action
+                || admission.packageNotionalQuoteAtoms != execution.packageNotionalQuoteAtoms
+                || admission.spot.adapter.localAddress != execution.spotPort
+                || admission.perpetual.adapter.localAddress != verifier
+                || admission.perpetual.market.localAddress != execution.perpInstrument
+                || admission.perpetual.venue.localAddress != execution.perpObserver
+                || admission.baseAsset.localAddress != execution.baseToken
+                || admission.quoteAsset.localAddress != execution.quoteToken
+                || admission.spot.quantityAtoms != execution.baseQuantityAtoms
+                || admission.perpetual.quantityAtoms != execution.perpQuantityWad
+        ) revert ResourceAdmissionFailed();
+        IExactSpotPort spotPort = IExactSpotPort(execution.spotPort);
+        if (
+            spotPort.verifier() != verifier || address(spotPort.baseToken()) != execution.baseToken
+                || address(spotPort.quoteToken()) != execution.quoteToken
+        ) revert ResourceAdmissionFailed();
+    }
+
+    function _validateSeriesBinding(
+        PackageVerifier.Execution calldata execution,
+        ResourceRegistry.CashCarryAdmission calldata admission
+    ) private view returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding) {
+        CashCarrySeriesRegistry.BindingReference memory exactRef = CashCarrySeriesRegistry.BindingReference({
+            identityKey: execution.seriesIdentityKey,
+            bindingVersion: execution.seriesBindingVersion,
+            bindingHash: execution.seriesBindingHash
+        });
+
+        if (execution.action == ENTRY) {
+            try cashCarrySeriesRegistry.validateEntry(exactRef) returns (
+                CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory activeBinding
+            ) {
+                binding = activeBinding;
+            } catch {
+                revert InvalidSeriesBinding();
+            }
+        } else {
+            try cashCarrySeriesRegistry.bindingRecord(exactRef.identityKey, exactRef.bindingVersion) returns (
+                CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory historicalBinding,
+                bytes32 historicalHash,
+                CashCarrySeriesRegistry.Lifecycle,
+                bool
+            ) {
+                if (historicalHash != exactRef.bindingHash) revert InvalidSeriesBinding();
+                binding = historicalBinding;
+            } catch {
+                revert InvalidSeriesBinding();
+            }
+        }
+
+        if (
+            binding.baseAsset.subjectIdentity != admission.baseAsset.manifest.subjectId
+                || binding.quoteAsset.subjectIdentity != admission.quoteAsset.manifest.subjectId
+        ) revert InvalidSeriesBinding();
+        if (
+            execution.action == ENTRY
+                && (binding.baseAsset.manifestVersion != admission.baseAsset.manifest.manifestVersion
+                    || binding.baseAsset.manifestHash != admission.baseAsset.manifest.manifestHash
+                    || binding.quoteAsset.manifestVersion != admission.quoteAsset.manifest.manifestVersion
+                    || binding.quoteAsset.manifestHash != admission.quoteAsset.manifest.manifestHash)
+        ) revert InvalidSeriesBinding();
+
+        _validatePackageUnits(execution, binding);
+    }
+
+    function _validatePackageUnits(
+        PackageVerifier.Execution calldata execution,
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding
+    ) private pure {
+        if (
+            execution.baseQuantityAtoms % binding.spotBaseAtomsPerPackageUnit != 0
+                || execution.perpQuantityWad % binding.perpQuantityAtomsPerPackageUnit != 0
+        ) revert InvalidPackageUnits();
+        uint256 spotUnits = execution.baseQuantityAtoms / binding.spotBaseAtomsPerPackageUnit;
+        uint256 perpUnits = execution.perpQuantityWad / binding.perpQuantityAtomsPerPackageUnit;
+        if (
+            spotUnits == 0 || spotUnits != perpUnits || spotUnits > type(uint128).max
+                || uint256(execution.packageSizeUnits) != spotUnits
+        ) revert InvalidPackageUnits();
     }
 }

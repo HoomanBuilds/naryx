@@ -349,6 +349,19 @@ contract PackageVerifierTest is Test {
         assertEq(verifier.nextNonce(address(strategy)), 0);
     }
 
+    function testValidationHelperCodeChangeFailsClosed() public {
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
+        admissionRegistry.setExpectedAdmissionHash(keccak256(abi.encode(admission)));
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        vm.etch(address(verifier.validationHelper()), hex"00");
+
+        vm.expectRevert(PackageVerifier.InvalidConfiguration.selector);
+        strategy.executeEntry(
+            verifier, execution, admission, traderSignature, solverSignature, _tradeArgs(-int128(int256(QUANTITY)))
+        );
+        assertEq(verifier.nextNonce(address(strategy)), 0);
+    }
+
     function _entry()
         private
         view

@@ -16,6 +16,7 @@ readonly -a ARTIFACTS=(
     "src/FirmInventoryReservationBook.sol:FirmInventoryReservationBook|FirmInventoryReservationBook.abi.json"
     "src/DirectInventorySpotPort.sol:DirectInventorySpotPort|DirectInventorySpotPort.abi.json"
     "src/PackageVerifier.sol:PackageVerifier|PackageVerifier.abi.json"
+    "src/PackageVerifier.sol:PackageVerifierValidation|PackageVerifierValidation.abi.json"
     "src/NaryxStrategyAccount.sol:NaryxStrategyAccount|NaryxStrategyAccount.abi.json"
     "src/PackageQuoteShard.sol:PackageQuoteShard|PackageQuoteShard.abi.json"
     "src/PackageQuoteShardRegistry.sol:PackageQuoteShardRegistry|PackageQuoteShardRegistry.abi.json"
