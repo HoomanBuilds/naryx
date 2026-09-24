@@ -1,6 +1,9 @@
 import type { CompiledExecution } from '@naryx/adapter-core';
 import {
   bytesEqual,
+  cashCarrySeriesBindingV1,
+  cashCarrySeriesBindingV1Hash,
+  cashCarrySeriesIdentityKey,
   domainRefFromManifest,
   enumDiscriminant,
   PACKAGE_ACTION,
@@ -8,6 +11,8 @@ import {
   scaleDecimals,
   type AdapterRef,
   type AssetRef,
+  type CashCarrySeriesBindingV1,
+  type CashCarrySeriesBindingV1Input,
   type DomainManifest,
   type DomainRef,
   type Hash32,
@@ -89,7 +94,6 @@ export interface EvmAtomicExecutionBounds {
   readonly currentUnixSeconds: bigint;
   readonly traderSignature: Hex;
   readonly spotFillCommitment: Hash32;
-  readonly packageSizeUnits: bigint;
   readonly expectedPrePerpBalanceWad: bigint;
   readonly minimumPostPerpBalanceWad: bigint;
   readonly maximumPostPerpBalanceWad: bigint;
@@ -137,6 +141,66 @@ function sameAsset(left: AssetRef, right: EvmAssetDeploymentIdentity): boolean {
   return left.assetId === right.subjectId
     && left.decimals === right.decimals
     && sameHash(left.assetManifestHash, right.manifestHash);
+}
+
+function sameSeriesSubject(subjectIdentity: Hash32, resource: EvmManifestResourceIdentity): boolean {
+  return nonzeroHash(subjectIdentity, `${resource.subjectId}.subjectIdentity`) === identityHash(resource.subjectId);
+}
+
+function validateSeriesBinding(
+  input: CashCarrySeriesBindingV1Input,
+  action: 'ENTRY' | 'EXIT',
+  domain: DomainRef,
+  deployment: EvmDeploymentIdentity,
+  templateId: string,
+  templateVersion: number,
+  templateManifestHash: Hash32,
+): CashCarrySeriesBindingV1 {
+  const binding = cashCarrySeriesBindingV1(input, 'seriesBinding');
+  requireCondition(binding.domain.domainId === domain.domainId, 'series binding domain identity mismatch');
+  requireCondition(sameSeriesSubject(binding.baseAsset.subjectIdentity, deployment.baseAsset), 'series binding base asset identity mismatch');
+  requireCondition(sameSeriesSubject(binding.quoteAsset.subjectIdentity, deployment.quoteAsset), 'series binding quote asset identity mismatch');
+  requireCondition(binding.templateId === templateId, 'series binding template mismatch');
+  requireCondition(binding.templateVersion === templateVersion, 'series binding template version mismatch');
+  requireCondition(sameHash(binding.templateManifestHash, templateManifestHash), 'series binding template manifest mismatch');
+  requireCondition(binding.settlementClass === 'ATOMIC_POSTCONDITION', 'series binding settlement class mismatch');
+  requireCondition(binding.settlementClassVersion === deployment.settlementClass.classVersion, 'series binding settlement class version mismatch');
+
+  if (action === 'ENTRY') {
+    requireCondition(sameDomain(binding.domain, domain), 'entry series binding domain mismatch');
+    requireCondition(
+      binding.baseAsset.manifestVersion === deployment.baseAsset.manifestVersion
+        && sameHash(binding.baseAsset.manifestHash, deployment.baseAsset.manifestHash),
+      'entry series binding base asset manifest mismatch',
+    );
+    requireCondition(
+      binding.quoteAsset.manifestVersion === deployment.quoteAsset.manifestVersion
+        && sameHash(binding.quoteAsset.manifestHash, deployment.quoteAsset.manifestHash),
+      'entry series binding quote asset manifest mismatch',
+    );
+  }
+
+  return binding;
+}
+
+function derivePackageSizeUnits(
+  baseQuantityAtoms: bigint,
+  perpQuantityWad: bigint,
+  binding: CashCarrySeriesBindingV1,
+): bigint {
+  requireCondition(
+    baseQuantityAtoms % binding.spotBaseAtomsPerPackageUnit === 0n,
+    'base quantity is not divisible by the series spot unit',
+  );
+  requireCondition(
+    perpQuantityWad % binding.perpQuantityAtomsPerPackageUnit === 0n,
+    'perpetual quantity is not divisible by the series perpetual unit',
+  );
+  const spotUnits = baseQuantityAtoms / binding.spotBaseAtomsPerPackageUnit;
+  const perpetualUnits = perpQuantityWad / binding.perpQuantityAtomsPerPackageUnit;
+  requireCondition(spotUnits !== 0n, 'package size units must be nonzero');
+  requireCondition(spotUnits === perpetualUnits, 'spot and perpetual package units differ');
+  return positiveUint(spotUnits, UINT128_MAX, 'packageSizeUnits');
 }
 
 function nonzeroHash(value: Uint8Array, name: string): Hex {
@@ -269,6 +333,7 @@ function hexBytes(value: unknown, name: string): Uint8Array {
 export function compileEvmAtomicPackage(
   admission: PackageAdmission,
   deployment: EvmDeploymentIdentity,
+  seriesBindingInput: CashCarrySeriesBindingV1Input,
   bounds: EvmAtomicExecutionBounds,
 ): CompiledEvmAtomicPackage {
   const { order, quote, route } = admission;
@@ -351,6 +416,18 @@ export function compileEvmAtomicPackage(
   requireCondition(spotQuoteBound !== undefined && sameAsset(spotQuoteBound.asset, deployment.quoteAsset), 'spot quote bound is missing or uses the wrong asset');
   const packageNotionalQuoteAtoms = uint(quote.expectedSpotNotional.atoms, UINT256_MAX, 'packageNotionalQuoteAtoms');
   const action = enumDiscriminant(PACKAGE_ACTION, order.action, 'order.action');
+  const seriesBinding = validateSeriesBinding(
+    seriesBindingInput,
+    order.action,
+    domain,
+    deployment,
+    order.templateId,
+    order.templateVersion,
+    order.packageTemplateManifestHash,
+  );
+  const packageSizeUnits = derivePackageSizeUnits(baseQuantityAtoms, perpQuantityWad, seriesBinding);
+  const seriesIdentityKey = cashCarrySeriesIdentityKey(seriesBinding);
+  const seriesBindingHash = cashCarrySeriesBindingV1Hash(seriesBinding);
   const spotLimit = mulDiv(spotLeg.limitPrice.quoteAtoms, positiveUint(deployment.spot.baseLotAtoms, UINT256_MAX, 'spot.baseLotAtoms'), spotLeg.limitPrice.baseAtoms, spotLeg.limitPrice.roundingDirection, 'spot.limitQuoteAtomsPerBaseLot');
   const perpLimit = mulDiv(perpLeg.limitPrice.quoteAtoms, positiveUint(deployment.perpetual.baseLotAtoms, UINT256_MAX, 'perpetual.baseLotAtoms'), perpLeg.limitPrice.baseAtoms, perpLeg.limitPrice.roundingDirection, 'perpetual.limitQuoteAtomsPerBaseLot');
 
@@ -363,6 +440,9 @@ export function compileEvmAtomicPackage(
     routeHash: nonzeroHash(admission.routeHash, 'routeHash'),
     spotFillCommitment: nonzeroHash(bounds.spotFillCommitment, 'spotFillCommitment'),
     packageQuoteIntentHash: zeroHash,
+    seriesIdentityKey: nonzeroHash(seriesIdentityKey, 'seriesIdentityKey'),
+    seriesBindingVersion: seriesBinding.bindingVersion,
+    seriesBindingHash: nonzeroHash(seriesBindingHash, 'seriesBindingHash'),
     action,
     strategyAccount,
     solver,
@@ -376,7 +456,7 @@ export function compileEvmAtomicPackage(
     perpQuantityWad,
     spotQuoteBoundAtoms: uint(spotQuoteBound.atoms, UINT256_MAX, 'spotQuoteBoundAtoms'),
     packageNotionalQuoteAtoms,
-    packageSizeUnits: positiveUint(bounds.packageSizeUnits, UINT128_MAX, 'packageSizeUnits'),
+    packageSizeUnits,
     expectedPrePerpBalanceWad: int128(bounds.expectedPrePerpBalanceWad, 'expectedPrePerpBalanceWad'),
     expectedPrePerpSizeWad,
     expectedPrePerpEntryNotionalWad,

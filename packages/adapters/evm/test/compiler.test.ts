@@ -4,9 +4,13 @@ import { test } from 'node:test';
 import {
   adapterRef,
   assetRef,
+  cashCarrySeriesBindingV1Hash,
+  cashCarrySeriesIdentityKey,
   domainManifest,
   domainRefFromManifest,
+  toHex,
   versionedManifestRef,
+  type CashCarrySeriesBindingV1Input,
   type DomainManifest,
   type Hash32,
   type PackageAdmission,
@@ -39,6 +43,7 @@ const address = (byte: number): Address => `0x${byte.toString(16).padStart(2, '0
 const atomicSettlementClassId = Uint8Array.from(
   Buffer.from(keccak256(stringToHex('ATOMIC_POSTCONDITION')).slice(2), 'hex'),
 ) as Hash32;
+const hashHexBytes = (value: Hex): Hash32 => Uint8Array.from(Buffer.from(value.slice(2), 'hex')) as Hash32;
 
 const strategyAccount = address(1);
 const spotPort = address(2);
@@ -66,9 +71,9 @@ const perpMarket = versionedManifestRef('eth-usdc-perp', 1, hash(25));
 const spotVenue = versionedManifestRef('uniswap-v3', 1, hash(26));
 const perpVenue = versionedManifestRef('synfutures', 1, hash(27));
 
-function manifest(domainId: string, chainReference: bigint): DomainManifest {
+function manifest(domainId: string, chainReference: bigint, manifestVersion = 1): DomainManifest {
   return domainManifest({
-    manifestVersion: 1,
+    manifestVersion,
     environment: 'testnet',
     domainId,
     runtimeClassId: EVM_RUNTIME_IDENTITY.runtimeClassId,
@@ -82,6 +87,48 @@ function manifest(domainId: string, chainReference: bigint): DomainManifest {
     addressCodecId: EVM_RUNTIME_IDENTITY.addressCodecId,
     supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
   });
+}
+
+function exitAdmission(
+  domainManifest: DomainManifest,
+  currentBaseAsset: typeof baseAsset,
+  currentQuoteAsset: typeof quoteAsset,
+): PackageAdmission {
+  const value = admission(domainManifest);
+  const quantity = value.order.quantity.atoms;
+  return {
+    ...value,
+    order: {
+      ...value.order,
+      action: 'EXIT',
+      entryReceiptHash: hash(91),
+      quantity: { asset: currentBaseAsset, atoms: quantity },
+      expectedPrePositionSize: { asset: currentBaseAsset, atoms: -quantity },
+      expectedPrePositionEntryNotional: { asset: currentQuoteAsset, atoms: 5_000_000_000n },
+      maxSpotQuoteIn: undefined,
+      minSpotQuoteOut: { asset: currentQuoteAsset, atoms: 5_500_000_000n },
+    },
+    quote: {
+      ...value.quote,
+      expectedSpotNotional: { asset: currentQuoteAsset, atoms: 6_000_000_000n },
+    },
+    route: {
+      ...value.route,
+      action: 'EXIT',
+      legs: value.route.legs.map((leg) => ({
+        ...leg,
+        baseAsset: currentBaseAsset,
+        quoteAsset: currentQuoteAsset,
+        side: leg.legRole === 'SPOT' ? 'SELL' : 'BUY',
+        quantity: { asset: currentBaseAsset, atoms: quantity },
+        limitPrice: {
+          ...leg.limitPrice,
+          baseAsset: currentBaseAsset,
+          quoteAsset: currentQuoteAsset,
+        },
+      })),
+    },
+  } as unknown as PackageAdmission;
 }
 
 function resource(
@@ -132,6 +179,39 @@ function deployment(domainManifest: DomainManifest, chainReference: bigint): Evm
       ...resource(quoteAsset.assetId, 1, quoteAsset.assetManifestHash, quoteToken, 50),
       decimals: quoteAsset.decimals,
     },
+  };
+}
+
+function seriesBinding(
+  domainManifest: DomainManifest,
+  overrides: Partial<CashCarrySeriesBindingV1Input> = {},
+): CashCarrySeriesBindingV1Input {
+  return {
+    schemaVersion: 1,
+    bindingVersion: 1,
+    domain: domainRefFromManifest(domainManifest),
+    seriesManifestHash: hash(81),
+    executionClassManifestHash: hash(82),
+    templateId: 'cash-and-carry-v1',
+    templateVersion: 1,
+    templateManifestHash: hash(54),
+    settlementClass: 'ATOMIC_POSTCONDITION',
+    settlementClassVersion: 1,
+    baseAsset: {
+      subjectIdentity: hashHexBytes(keccak256(stringToHex(baseAsset.assetId))),
+      manifestVersion: 1,
+      manifestHash: baseAsset.assetManifestHash,
+    },
+    quoteAsset: {
+      subjectIdentity: hashHexBytes(keccak256(stringToHex(quoteAsset.assetId))),
+      manifestVersion: 1,
+      manifestHash: quoteAsset.assetManifestHash,
+    },
+    quoteConvention: 'annualized-net-yield-v1',
+    entrySide: 'ASK',
+    spotBaseAtomsPerPackageUnit: 1_000_000_000_000_000_000n,
+    perpQuantityAtomsPerPackageUnit: 1_000_000_000_000_000_000n,
+    ...overrides,
   };
 }
 
@@ -245,7 +325,6 @@ const bounds: EvmAtomicExecutionBounds = {
   currentUnixSeconds: 1_000n,
   traderSignature: signatureHex(9),
   spotFillCommitment: hash(55),
-  packageSizeUnits: 2n,
   expectedPrePerpBalanceWad: 10n,
   minimumPostPerpBalanceWad: 0n,
   maximumPostPerpBalanceWad: 100n,
@@ -277,8 +356,9 @@ for (const network of [
   test(`compiles deterministic unsigned atomic calldata for ${network.name}`, () => {
     const domainManifest = manifest(network.domainId, network.chainReference);
     const admitted = admission(domainManifest);
-    const compiled = compileEvmAtomicPackage(admitted, deployment(domainManifest, network.chainReference), bounds);
-    const repeated = compileEvmAtomicPackage(admitted, deployment(domainManifest, network.chainReference), bounds);
+    const binding = seriesBinding(domainManifest);
+    const compiled = compileEvmAtomicPackage(admitted, deployment(domainManifest, network.chainReference), binding, bounds);
+    const repeated = compileEvmAtomicPackage(admitted, deployment(domainManifest, network.chainReference), binding, bounds);
 
     assert.equal(compiled.payload.chainReference, network.chainReference);
     assert.equal(compiled.payload.to.toLowerCase(), strategyAccount);
@@ -293,6 +373,10 @@ for (const network of [
     assert.equal(execution.orderHash, hashHex(51));
     assert.equal(execution.quoteHash, hashHex(53));
     assert.equal(execution.routeHash, hashHex(52));
+    assert.equal(execution.seriesIdentityKey, `0x${toHex(cashCarrySeriesIdentityKey(binding))}`);
+    assert.equal(execution.seriesBindingVersion, 1);
+    assert.equal(execution.seriesBindingHash, `0x${toHex(cashCarrySeriesBindingV1Hash(binding))}`);
+    assert.equal(execution.packageSizeUnits, 2n);
     assert.equal(execution.strategyAccount, strategyAccount);
     assert.equal(execution.solver, solver);
     assert.equal(execution.deadline, 2_000n);
@@ -303,11 +387,11 @@ test('rejects non-EVM and non-atomic routes', () => {
   const domainManifest = manifest('evm:base-sepolia', 84_532n);
   const admitted = admission(domainManifest);
   assert.throws(
-    () => compileEvmAtomicPackage({ ...admitted, route: { ...admitted.route, executionPlanKind: 'HYPERCORE_BATCHED_IOC' } }, deployment(domainManifest, 84_532n), bounds),
+    () => compileEvmAtomicPackage({ ...admitted, route: { ...admitted.route, executionPlanKind: 'HYPERCORE_BATCHED_IOC' } }, deployment(domainManifest, 84_532n), seriesBinding(domainManifest), bounds),
     /execution plan is unsupported/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage({ ...admitted, order: { ...admitted.order, settlementClass: 'BATCHED_IOC_WITH_RECOVERY' } }, deployment(domainManifest, 84_532n), bounds),
+    () => compileEvmAtomicPackage({ ...admitted, order: { ...admitted.order, settlementClass: 'BATCHED_IOC_WITH_RECOVERY' } }, deployment(domainManifest, 84_532n), seriesBinding(domainManifest), bounds),
     /settlement class is unsupported/,
   );
 });
@@ -317,11 +401,11 @@ test('rejects an unrecognized atomic settlement identity or version', () => {
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classId: hash(41) } }, bounds),
+    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classId: hash(41) } }, seriesBinding(domainManifest), bounds),
     /settlement class identity is unsupported/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classVersion: 2 } }, bounds),
+    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classVersion: 2 } }, seriesBinding(domainManifest), bounds),
     /settlement class version is unsupported/,
   );
 });
@@ -331,11 +415,11 @@ test('rejects non-65-byte ECDSA signatures', () => {
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, identity, { ...bounds, traderSignature: '0x1234' }),
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest), { ...bounds, traderSignature: '0x1234' }),
     /trader signature must be exactly 65 bytes/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage({ ...admitted, quote: { ...admitted.quote, signature: new Uint8Array(64).fill(1) } }, identity, bounds),
+    () => compileEvmAtomicPackage({ ...admitted, quote: { ...admitted.quote, signature: new Uint8Array(64).fill(1) } }, identity, seriesBinding(domainManifest), bounds),
     /solver quote signature must be exactly 65 bytes/,
   );
 });
@@ -344,11 +428,11 @@ test('rejects domain and deployment chain mismatches', () => {
   const baseManifest = manifest('evm:base-sepolia', 84_532n);
   const arbitrumManifest = manifest('evm:arbitrum-sepolia', 421_614n);
   assert.throws(
-    () => compileEvmAtomicPackage(admission(arbitrumManifest), deployment(baseManifest, 84_532n), bounds),
+    () => compileEvmAtomicPackage(admission(arbitrumManifest), deployment(baseManifest, 84_532n), seriesBinding(baseManifest), bounds),
     /order domain does not match deployment/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage(admission(baseManifest), deployment(baseManifest, 421_614n), bounds),
+    () => compileEvmAtomicPackage(admission(baseManifest), deployment(baseManifest, 421_614n), seriesBinding(baseManifest), bounds),
     /deployment chain reference mismatch/,
   );
 });
@@ -358,11 +442,11 @@ test('rejects missing and zero deployment addresses', () => {
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, { ...identity, strategyAccount: { ...identity.strategyAccount, address: zeroAddress } }, bounds),
+    () => compileEvmAtomicPackage(admitted, { ...identity, strategyAccount: { ...identity.strategyAccount, address: zeroAddress } }, seriesBinding(domainManifest), bounds),
     /strategyAccount.address must be nonzero/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, { ...identity, perpetualObserver: { ...identity.perpetualObserver, address: undefined as unknown as Address } }, bounds),
+    () => compileEvmAtomicPackage(admitted, { ...identity, perpetualObserver: { ...identity.perpetualObserver, address: undefined as unknown as Address } }, seriesBinding(domainManifest), bounds),
     /perpetualObserver.address must be an EVM address/,
   );
 });
@@ -370,7 +454,96 @@ test('rejects missing and zero deployment addresses', () => {
 test('rejects an expired route at its exact boundary', () => {
   const domainManifest = manifest('evm:arbitrum-sepolia', 421_614n);
   assert.throws(
-    () => compileEvmAtomicPackage(admission(domainManifest), deployment(domainManifest, 421_614n), { ...bounds, currentUnixSeconds: 2_000n }),
+    () => compileEvmAtomicPackage(admission(domainManifest), deployment(domainManifest, 421_614n), seriesBinding(domainManifest), { ...bounds, currentUnixSeconds: 2_000n }),
     /route is expired/,
   );
+});
+
+test('derives package units and rejects nondivisible or unequal leg ratios', () => {
+  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const admitted = admission(domainManifest);
+  const identity = deployment(domainManifest, 84_532n);
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest, {
+      spotBaseAtomsPerPackageUnit: 3_000_000_000_000_000_000n,
+    }), bounds),
+    /base quantity is not divisible by the series spot unit/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest, {
+      perpQuantityAtomsPerPackageUnit: 3_000_000_000_000_000_000n,
+    }), bounds),
+    /perpetual quantity is not divisible by the series perpetual unit/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest, {
+      perpQuantityAtomsPerPackageUnit: 2_000_000_000_000_000_000n,
+    }), bounds),
+    /spot and perpetual package units differ/,
+  );
+});
+
+test('requires an entry binding for the exact active domain and asset manifests', () => {
+  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const admitted = admission(domainManifest);
+  const identity = deployment(domainManifest, 84_532n);
+  assert.throws(
+    () => compileEvmAtomicPackage(
+      admitted,
+      identity,
+      seriesBinding(manifest('evm:base-sepolia', 84_532n, 2)),
+      bounds,
+    ),
+    /entry series binding domain mismatch/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest, {
+      baseAsset: {
+        subjectIdentity: hashHexBytes(keccak256(stringToHex(baseAsset.assetId))),
+        manifestVersion: 2,
+        manifestHash: hash(92),
+      },
+    }), bounds),
+    /entry series binding base asset manifest mismatch/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest, {
+      quoteAsset: {
+        subjectIdentity: hash(93),
+        manifestVersion: 1,
+        manifestHash: quoteAsset.assetManifestHash,
+      },
+    }), bounds),
+    /series binding quote asset identity mismatch/,
+  );
+});
+
+test('accepts an exact historical exit binding across current domain and asset rotation', () => {
+  const historicalDomain = manifest('evm:arbitrum-sepolia', 421_614n);
+  const currentDomain = manifest('evm:arbitrum-sepolia', 421_614n, 2);
+  const currentBaseAsset = assetRef(baseAsset.assetId, hash(94), baseAsset.decimals);
+  const currentQuoteAsset = assetRef(quoteAsset.assetId, hash(95), quoteAsset.decimals);
+  const identity = deployment(currentDomain, 421_614n);
+  const rotatedIdentity: EvmDeploymentIdentity = {
+    ...identity,
+    baseAsset: {
+      ...identity.baseAsset,
+      manifestVersion: 2,
+      manifestHash: currentBaseAsset.assetManifestHash,
+    },
+    quoteAsset: {
+      ...identity.quoteAsset,
+      manifestVersion: 2,
+      manifestHash: currentQuoteAsset.assetManifestHash,
+    },
+  };
+  const compiled = compileEvmAtomicPackage(
+    exitAdmission(currentDomain, currentBaseAsset, currentQuoteAsset),
+    rotatedIdentity,
+    seriesBinding(historicalDomain),
+    { ...bounds, maximumPostPerpEntryNotionalWad: 0n },
+  );
+  const execution = decodedExecution(compiled.payload.data);
+  assert.equal(execution.seriesBindingVersion, 1);
+  assert.equal(execution.packageSizeUnits, 2n);
 });
