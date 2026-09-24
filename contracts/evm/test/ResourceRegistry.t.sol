@@ -196,6 +196,8 @@ contract ResourceRegistryTest is Test {
         assertEq(registry.validateCashCarry(admission), PERP_ADAPTER_LIMIT);
 
         admission.packageNotionalQuoteAtoms = PERP_ADAPTER_LIMIT + 1;
+        admission.spot.limitQuoteAtomsPerBaseLot = PERP_ADAPTER_LIMIT + 1;
+        admission.perpetual.limitQuoteAtomsPerBaseLot = PERP_ADAPTER_LIMIT + 1;
         vm.expectRevert(
             abi.encodeWithSelector(
                 ResourceRegistry.PackageNotionalExceeded.selector, PERP_ADAPTER_LIMIT, PERP_ADAPTER_LIMIT + 1
@@ -389,6 +391,13 @@ contract ResourceRegistryTest is Test {
         ResourceRegistry.CashCarryAdmission memory admission = _admission(1, registry.ENTRY());
         admission.spot.quantityAtoms = 1 ether - 1;
         vm.expectRevert(ResourceRegistry.InvalidAdmission.selector);
+        registry.validateCashCarry(admission);
+
+        admission = _admission(1, registry.ENTRY());
+        admission.packageNotionalQuoteAtoms = 2;
+        vm.expectRevert(
+            abi.encodeWithSelector(ResourceRegistry.PackageNotionalMismatch.selector, uint256(1), uint256(2))
+        );
         registry.validateCashCarry(admission);
 
         admission = _admission(1, registry.ENTRY());

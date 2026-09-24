@@ -167,6 +167,7 @@ contract ResourceRegistry {
     error UnsafeImmediateControlChange();
     error ActionNotAllowed(ResourceKind kind, bytes32 subjectId, Lifecycle state);
     error InvalidAdmission();
+    error PackageNotionalMismatch(uint256 expectedQuoteAtoms, uint256 providedQuoteAtoms);
     error PackageNotionalExceeded(uint256 maximumQuoteAtoms, uint256 requestedQuoteAtoms);
 
     event RegistrationProposed(
@@ -443,11 +444,15 @@ contract ResourceRegistry {
         _validateAction(ResourceKind.ASSET, baseAsset.identity.subjectId, baseControl.state, admission.action);
         _validateAction(ResourceKind.ASSET, quoteAsset.identity.subjectId, quoteControl.state, admission.action);
 
-        (uint256 spotMaximum, uint256 spotEconomicQuantity) =
+        (uint256 spotMaximum, uint256 spotEconomicQuantity, uint256 spotNotional) =
             _validateLeg(admission.spot, admission, LegRole.SPOT, BASE_SPOT_ADAPTER_CLASS);
-        (uint256 perpMaximum, uint256 perpEconomicQuantity) =
+        (uint256 perpMaximum, uint256 perpEconomicQuantity, uint256 perpNotional) =
             _validateLeg(admission.perpetual, admission, LegRole.PERPETUAL, BASE_PERP_PORT_CLASS);
         if (spotEconomicQuantity != perpEconomicQuantity) revert InvalidAdmission();
+        uint256 expectedPackageNotional = spotNotional > perpNotional ? spotNotional : perpNotional;
+        if (admission.packageNotionalQuoteAtoms != expectedPackageNotional) {
+            revert PackageNotionalMismatch(expectedPackageNotional, admission.packageNotionalQuoteAtoms);
+        }
 
         maximumPackageNotionalQuoteAtoms = _minimum(
             baseControl.maximumPackageNotionalQuoteAtoms,
@@ -465,7 +470,15 @@ contract ResourceRegistry {
         CashCarryAdmission calldata admission,
         LegRole role,
         bytes32 adapterClassId
-    ) private view returns (uint256 maximumPackageNotionalQuoteAtoms, uint256 economicQuantityAtoms) {
+    )
+        private
+        view
+        returns (
+            uint256 maximumPackageNotionalQuoteAtoms,
+            uint256 economicQuantityAtoms,
+            uint256 legLimitNotionalQuoteAtoms
+        )
+    {
         if (leg.adapterClassId != adapterClassId || leg.adapterClassVersion != ADAPTER_CLASS_VERSION) {
             revert InvalidAdmission();
         }
@@ -495,12 +508,8 @@ contract ResourceRegistry {
         _validateAction(ResourceKind.ADAPTER, adapter.identity.subjectId, adapterControl.state, admission.action);
         _validateAction(ResourceKind.MARKET, market.identity.subjectId, marketControl.state, admission.action);
         _validateAction(ResourceKind.VENUE, venue.identity.subjectId, venueControl.state, admission.action);
-        economicQuantityAtoms = _validateMarketSizing(
-            market.marketParameters,
-            leg.quantityAtoms,
-            leg.limitQuoteAtomsPerBaseLot,
-            admission.packageNotionalQuoteAtoms
-        );
+        (economicQuantityAtoms, legLimitNotionalQuoteAtoms) =
+            _validateMarketSizing(market.marketParameters, leg.quantityAtoms, leg.limitQuoteAtomsPerBaseLot);
 
         maximumPackageNotionalQuoteAtoms = _minimum(
             adapterControl.maximumPackageNotionalQuoteAtoms,
@@ -702,17 +711,16 @@ contract ResourceRegistry {
     function _validateMarketSizing(
         MarketParameters memory parameters,
         uint256 quantityAtoms,
-        uint256 limitQuoteAtomsPerBaseLot,
-        uint256 packageNotionalQuoteAtoms
-    ) private pure returns (uint256 economicQuantityAtoms) {
+        uint256 limitQuoteAtomsPerBaseLot
+    ) private pure returns (uint256 economicQuantityAtoms, uint256 legLimitNotionalQuoteAtoms) {
         if (
             quantityAtoms == 0 || quantityAtoms % parameters.baseLotAtoms != 0 || limitQuoteAtomsPerBaseLot == 0
                 || limitQuoteAtomsPerBaseLot % parameters.quoteTickAtomsPerBaseLot != 0
         ) revert InvalidAdmission();
         uint256 lotCount = quantityAtoms / parameters.baseLotAtoms;
         if (lotCount > type(uint256).max / limitQuoteAtomsPerBaseLot) revert InvalidAdmission();
-        uint256 legLimitNotional = lotCount * limitQuoteAtomsPerBaseLot;
-        if (legLimitNotional < parameters.minimumQuoteNotionalAtoms || packageNotionalQuoteAtoms < legLimitNotional) {
+        legLimitNotionalQuoteAtoms = lotCount * limitQuoteAtomsPerBaseLot;
+        if (legLimitNotionalQuoteAtoms < parameters.minimumQuoteNotionalAtoms) {
             revert InvalidAdmission();
         }
         if (
