@@ -78,6 +78,11 @@ interface AdmissionOptions {
   readonly quantityPolicy?: 'EXACT_NET' | 'BOUNDED_NET';
   readonly grossSpotAtoms?: bigint;
   readonly quantityAtoms?: bigint;
+  readonly minNetSpotAtoms?: bigint;
+  readonly maxNetSpotAtoms?: bigint;
+  readonly terminalBaseCapAtoms?: bigint;
+  readonly terminalQuoteCapAtoms?: bigint;
+  readonly residualValuationPrice?: ReturnType<typeof price>;
   readonly quoteIdentity?: Uint8Array;
   readonly perpetualLimit?: ReturnType<typeof price>;
 }
@@ -92,12 +97,12 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
   const expectedNetSpot = action === 'ENTRY' ? grossSpotAtoms : -grossSpotAtoms;
   const minNetSpot = quantityPolicy === 'EXACT_NET'
     ? expectedNetSpot
-    : expectedNetSpot;
+    : options.minNetSpotAtoms ?? expectedNetSpot;
   const maxNetSpot = quantityPolicy === 'EXACT_NET'
     ? expectedNetSpot
-    : expectedNetSpot + 100n;
-  const terminalBaseCap = quantityPolicy === 'EXACT_NET' ? 0n : 100n;
-  const terminalQuoteCap = quantityPolicy === 'EXACT_NET' ? 0n : 60_000n;
+    : options.maxNetSpotAtoms ?? expectedNetSpot + 100n;
+  const terminalBaseCap = quantityPolicy === 'EXACT_NET' ? 0n : options.terminalBaseCapAtoms ?? 100n;
+  const terminalQuoteCap = quantityPolicy === 'EXACT_NET' ? 0n : options.terminalQuoteCapAtoms ?? 60_000n;
   const prePosition = action === 'ENTRY' ? 0n : -20_000n;
   const recoveryDeadline = 1_100n;
   const quoteIdentity = options.quoteIdentity ?? quoteHash;
@@ -171,7 +176,7 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
       ...(quantityPolicy === 'BOUNDED_NET'
         ? {
             hyperliquidResidualValuationSchemaVersion: 1,
-            hyperliquidResidualValuationReferencePrice: price(600n),
+            hyperliquidResidualValuationReferencePrice: options.residualValuationPrice ?? price(600n),
           }
         : {}),
       hyperliquidMaxTerminalResidualQuoteValue: assetAmount(quoteAsset, terminalQuoteCap),
@@ -266,6 +271,8 @@ test('keeps gross spot size independent and exposes bounded terminal residuals',
     quantityPolicy: 'BOUNDED_NET',
     grossSpotAtoms: 9_000n,
     quantityAtoms: 10_000n,
+    terminalBaseCapAtoms: 1_100n,
+    terminalQuoteCapAtoms: 660_000n,
   }));
 
   assert.equal(plan.grossSpotQuantityAtoms, 9_000n);
@@ -279,11 +286,52 @@ test('keeps gross spot size independent and exposes bounded terminal residuals',
     kind: 'BOUNDED_NET',
     minNetSpotDeltaAtoms: -9_000n,
     maxNetSpotDeltaAtoms: -8_900n,
-    maxTerminalResidualBaseAtoms: 100n,
+    maxTerminalResidualBaseAtoms: 1_100n,
     residualValuationSchemaVersion: 1,
     residualValuationReferencePrice: price(600n),
-    maxTerminalResidualQuoteAtoms: 60_000n,
+    maxTerminalResidualQuoteAtoms: 660_000n,
   });
+});
+
+test('rejects either bounded endpoint above the signed residual base cap', () => {
+  for (const [endpoint, options] of [
+    ['min', { minNetSpotAtoms: 9_899n }],
+    ['max', { maxNetSpotAtoms: 10_101n }],
+  ] as const) {
+    assert.throws(
+      () => planner().compile(admission({ quantityPolicy: 'BOUNDED_NET', ...options })),
+      new RegExp(`BOUNDED_NET ${endpoint} endpoint exceeds residual base cap`),
+    );
+  }
+});
+
+test('values bounded residuals at the exact price and rounds quote exposure upward', () => {
+  const fractionalPrice = exactPrice({
+    baseAsset,
+    quoteAsset,
+    quoteAtoms: 601n,
+    baseAtoms: 2n,
+    roundingDirection: 'FLOOR',
+  });
+  for (const [endpoint, interval] of [
+    ['min', { minNetSpotAtoms: 9_901n, maxNetSpotAtoms: 10_000n }],
+    ['max', { minNetSpotAtoms: 10_000n, maxNetSpotAtoms: 10_099n }],
+  ] as const) {
+    const bounded = {
+      quantityPolicy: 'BOUNDED_NET' as const,
+      residualValuationPrice: fractionalPrice,
+      ...interval,
+    };
+    assert.equal(
+      planner().compile(admission({ ...bounded, terminalQuoteCapAtoms: 29_750n }))
+        .terminalResidualPolicy.maxTerminalResidualQuoteAtoms,
+      29_750n,
+    );
+    assert.throws(
+      () => planner().compile(admission({ ...bounded, terminalQuoteCapAtoms: 29_749n })),
+      new RegExp(`BOUNDED_NET ${endpoint} endpoint exceeds residual quote cap`),
+    );
+  }
 });
 
 test('binds client order IDs to the exact quote commitment', () => {

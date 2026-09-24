@@ -8,6 +8,7 @@ import {
   manifestHash,
   versionedManifestRef,
   type AdapterRef,
+  type AssetRef,
   type CashCarrySeriesIdentityInput,
   type DomainRef,
   type ExactPrice,
@@ -198,6 +199,12 @@ function samePrice(left: ExactPrice, right: ExactPrice): boolean {
     && left.roundingDirection === right.roundingDirection;
 }
 
+function sameAsset(left: AssetRef, right: AssetRef): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
 function checkedHash(value: Hash32, name: string): Hash32 {
   requireCondition(value instanceof Uint8Array && value.length === 32, `${name} must be 32 bytes`);
   return Uint8Array.from(value) as Hash32;
@@ -346,7 +353,10 @@ function compareWirePriceToExact(wire: FormattedPrice, exact: ExactPrice): numbe
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function terminalResidualPolicy(admission: PackageAdmission): HyperliquidTerminalResidualPolicy {
+function terminalResidualPolicy(
+  admission: PackageAdmission,
+  signedPerpDeltaAtoms: bigint,
+): HyperliquidTerminalResidualPolicy {
   const { order, quote, route } = admission;
   const recovery = route.recoveryPlan;
   requireCondition(recovery !== undefined, 'HyperCore route requires a recovery plan');
@@ -379,6 +389,23 @@ function terminalResidualPolicy(admission: PackageAdmission): HyperliquidTermina
   const valuationPrice = order.hyperliquidResidualValuationReferencePrice;
   requireCondition(valuationVersion !== undefined && valuationPrice !== undefined, 'BOUNDED_NET valuation is missing');
   requireCondition(min.atoms <= max.atoms, 'BOUNDED_NET interval is descending');
+  requireCondition(valuationVersion === 1, 'BOUNDED_NET valuation schema is unsupported');
+  requireCondition(
+    sameAsset(valuationPrice.baseAsset, baseCap.asset)
+      && sameAsset(valuationPrice.quoteAsset, quoteCap.asset),
+    'BOUNDED_NET valuation assets mismatch residual caps',
+  );
+  requireCondition(valuationPrice.quoteAtoms > 0n && valuationPrice.baseAtoms > 0n, 'BOUNDED_NET valuation price must be positive');
+  for (const [endpoint, netSpotDeltaAtoms] of [['min', min.atoms], ['max', max.atoms]] as const) {
+    const residual = netSpotDeltaAtoms + signedPerpDeltaAtoms;
+    const absoluteResidual = residual < 0n ? -residual : residual;
+    requireCondition(absoluteResidual <= baseCap.atoms, `BOUNDED_NET ${endpoint} endpoint exceeds residual base cap`);
+    const numerator = absoluteResidual * valuationPrice.quoteAtoms;
+    // A residual cap rounds exposure upward regardless of the price's execution rounding direction.
+    const quoteValue = numerator / valuationPrice.baseAtoms
+      + (numerator % valuationPrice.baseAtoms === 0n ? 0n : 1n);
+    requireCondition(quoteValue <= quoteCap.atoms, `BOUNDED_NET ${endpoint} endpoint exceeds residual quote cap`);
+  }
   return Object.freeze({
     kind: 'BOUNDED_NET',
     minNetSpotDeltaAtoms: min.atoms,
@@ -618,7 +645,7 @@ export class HyperliquidExecutionPlanner {
       prePerpPositionAtoms: order.expectedPrePositionSize.atoms,
       signedPerpDeltaAtoms,
       signedPerpTargetAtoms,
-      terminalResidualPolicy: terminalResidualPolicy(admission),
+      terminalResidualPolicy: terminalResidualPolicy(admission, signedPerpDeltaAtoms),
       recoveryDeadlineMs: recovery.deadlineValue,
     });
   }
