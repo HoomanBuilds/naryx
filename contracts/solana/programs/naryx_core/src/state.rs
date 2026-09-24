@@ -122,6 +122,21 @@ pub struct CashCarryNonce {
 
 #[account]
 #[derive(InitSpace)]
+pub struct CashCarryStrategyAuthority {
+    pub version: u8,
+    pub domain: DomainRef,
+    pub domain_identity: [u8; 32],
+    pub trader: Pubkey,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub rise_strategy: Pubkey,
+    pub base_token_account: Pubkey,
+    pub quote_token_account: Pubkey,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
 pub struct OpenCashCarryPackage {
     pub version: u8,
     pub domain: DomainRef,
@@ -130,8 +145,9 @@ pub struct OpenCashCarryPackage {
     pub entry_route_hash: [u8; 32],
     pub quote_intent_commitment: [u8; 32],
     pub package_fill_commitment: [u8; 32],
-    pub resource_admission_commitment: [u8; 32],
+    pub entry_resource_admission_commitment: [u8; 32],
     pub entry_route_accounts_commitment: [u8; 32],
+    pub economic_package_commitment: [u8; 32],
     pub package_accounts_commitment: [u8; 32],
     pub spot_quantity_atoms: u64,
     pub perp_quantity_atoms: u64,

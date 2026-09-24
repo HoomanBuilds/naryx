@@ -286,4 +286,6 @@ pub enum ErrorCode {
     CashCarryQuoteCodeIdentityMismatch,
     #[msg("Cash-and-carry package-book return data is invalid")]
     CashCarryQuoteReturnDataInvalid,
+    #[msg("Cash-and-carry strategy authority identity is invalid")]
+    CashCarryStrategyAuthorityInvalid,
 }

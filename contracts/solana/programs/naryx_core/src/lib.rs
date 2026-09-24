@@ -130,6 +130,10 @@ pub mod naryx_core {
         instructions::solver_registry::cancel(ctx)
     }
 
+    pub fn initialize_cash_carry_strategy(ctx: Context<InitializeCashCarryStrategy>) -> Result<()> {
+        instructions::cash_carry_strategy::initialize_handler(ctx)
+    }
+
     pub fn execute_cash_and_carry<'info>(
         ctx: Context<'info, ExecuteCashAndCarry<'info>>,
         order_hash: [u8; HASH_BYTE_LENGTH],

@@ -30,14 +30,16 @@ use crate::{
         CashCarryAdmission, CashCarryResources, ResourceAction,
     },
     state::{
-        CashCarryExecutionReceipt, CashCarryNonce, ManifestRef, OpenCashCarryPackage,
-        ProtocolConfig, ResourceIndex, ResourceRecord, SettlementClass, SolverRegistry,
+        CashCarryExecutionReceipt, CashCarryNonce, CashCarryStrategyAuthority, ManifestRef,
+        OpenCashCarryPackage, ProtocolConfig, ResourceIndex, ResourceRecord, SettlementClass,
+        SolverRegistry,
     },
     wire::{DomainRef, HASH_BYTE_LENGTH},
 };
 
 const EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/cash-carry-execution/v1";
 const RESOURCE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-resources/v1";
+const ECONOMIC_PACKAGE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-economic-package/v1";
 const ROUTE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-route-accounts/v1";
 const PACKAGE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-package-accounts/v1";
 const QUOTE_INTENT_DOMAIN: &[u8] = b"NARYX/cash-carry-quote-intent/v1";
@@ -47,7 +49,7 @@ const PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR: [u8; 8] =
     [0x93, 0x38, 0x6b, 0x07, 0x4f, 0x8a, 0xcd, 0xb0];
 const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
 const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
-const OPEN_PACKAGE_VERSION: u8 = 1;
+const OPEN_PACKAGE_VERSION: u8 = 2;
 pub const RISE_COLLATERAL_MUST_BE_PREFUNDED: bool = true;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,12 +172,13 @@ pub struct ExecuteCashAndCarry<'info> {
     pub open_package: Box<Account<'info, OpenCashCarryPackage>>,
     /// CHECK: Entry uses the system program sentinel. Exit validates the stored receipt exactly.
     pub entry_receipt: UncheckedAccount<'info>,
-    /// CHECK: This exact PDA is the only controller accepted by the Rise strategy.
     #[account(
         seeds = [CASH_CARRY_EXECUTOR_SEED, trader.key().as_ref(), rise_strategy.key().as_ref()],
-        bump
+        bump = executor_authority.bump,
+        has_one = trader @ ErrorCode::CashCarryStrategyAuthorityInvalid,
+        has_one = rise_strategy @ ErrorCode::CashCarryStrategyAuthorityInvalid
     )]
-    pub executor_authority: UncheckedAccount<'info>,
+    pub executor_authority: Box<Account<'info, CashCarryStrategyAuthority>>,
 
     pub resources: CashCarryResourceAccounts<'info>,
     pub programs: CashCarryProgramAccounts<'info>,
@@ -504,15 +507,18 @@ fn execute<'info>(
         quote_asset: &ctx.accounts.resources.quote_asset_record,
     };
     let admission = reconstruct_admission(&ctx.accounts, &args, execution_domain.clone())?;
+    validate_execution_authority(&ctx.accounts, &execution_domain)?;
     let resource_admission_commitment =
         resource_admission_commitment(&admission, &resource_record_keys(&ctx.accounts));
+    let economic_package_commitment =
+        economic_package_commitment(&admission, &economic_resource_record_keys(&ctx.accounts));
     let route_accounts_commitment =
         route_accounts_commitment(&ctx.accounts, ctx.remaining_accounts);
-    let package_accounts_commitment = package_accounts_commitment(&ctx.accounts);
+    let package_accounts_commitment = package_accounts_commitment(&ctx.accounts)?;
     validate_package_lifecycle(
         &ctx.accounts,
         &args,
-        resource_admission_commitment,
+        economic_package_commitment,
         package_accounts_commitment,
     )?;
     match args.action {
@@ -724,8 +730,9 @@ fn execute<'info>(
             entry_route_hash: route_hash,
             quote_intent_commitment: quote_evidence.intent_commitment,
             package_fill_commitment: quote_evidence.fill_commitment,
-            resource_admission_commitment,
+            entry_resource_admission_commitment: resource_admission_commitment,
             entry_route_accounts_commitment: route_accounts_commitment,
+            economic_package_commitment,
             package_accounts_commitment,
             spot_quantity_atoms: args.spot_quantity_atoms,
             perp_quantity_atoms: args.perp_quantity_atoms,
@@ -1368,10 +1375,29 @@ fn validate_live_resource_accounts(accounts: &ExecuteCashAndCarry) -> Result<()>
     Ok(())
 }
 
+fn validate_execution_authority(accounts: &ExecuteCashAndCarry, domain: &DomainRef) -> Result<()> {
+    crate::instructions::cash_carry_strategy::validate_strategy_authority(
+        &accounts.executor_authority,
+        domain,
+        accounts.trader.key(),
+        accounts
+            .resources
+            .base_asset_record
+            .manifest
+            .subject_address,
+        accounts
+            .resources
+            .quote_asset_record
+            .manifest
+            .subject_address,
+        accounts.rise_strategy.key(),
+    )
+}
+
 fn validate_package_lifecycle(
     accounts: &ExecuteCashAndCarry,
     args: &CashCarryExecutionArgs,
-    resource_commitment: [u8; 32],
+    economic_package_commitment: [u8; 32],
     package_accounts_commitment: [u8; 32],
 ) -> Result<()> {
     match args.action {
@@ -1392,14 +1418,14 @@ fn validate_package_lifecycle(
                 open.version == OPEN_PACKAGE_VERSION,
                 ErrorCode::CashCarryPackageNotOpen
             );
-            require!(
-                open.trader == accounts.trader.key()
-                    && open.resource_admission_commitment == resource_commitment
-                    && open.package_accounts_commitment == package_accounts_commitment
-                    && open.spot_quantity_atoms == args.spot_quantity_atoms
-                    && open.perp_quantity_atoms == args.perp_quantity_atoms,
-                ErrorCode::CashCarryOpenPackageMismatch
-            );
+            validate_open_package_identity(
+                open,
+                accounts.trader.key(),
+                economic_package_commitment,
+                package_accounts_commitment,
+                args.spot_quantity_atoms,
+                args.perp_quantity_atoms,
+            )?;
             require_keys_eq!(
                 accounts.entry_receipt.key(),
                 open.entry_receipt,
@@ -1421,7 +1447,8 @@ fn validate_package_lifecycle(
                     && entry.route_hash == open.entry_route_hash
                     && entry.quote_intent_commitment == open.quote_intent_commitment
                     && entry.package_fill_commitment == open.package_fill_commitment
-                    && entry.resource_admission_commitment == resource_commitment
+                    && entry.resource_admission_commitment
+                        == open.entry_resource_admission_commitment
                     && entry.route_accounts_commitment == open.entry_route_accounts_commitment
                     && entry.spot_quantity_atoms == args.spot_quantity_atoms
                     && entry.perp_quantity_atoms == args.perp_quantity_atoms,
@@ -1429,6 +1456,25 @@ fn validate_package_lifecycle(
             );
         }
     }
+    Ok(())
+}
+
+fn validate_open_package_identity(
+    open: &OpenCashCarryPackage,
+    trader: Pubkey,
+    economic_package_commitment: [u8; 32],
+    package_accounts_commitment: [u8; 32],
+    spot_quantity_atoms: u64,
+    perp_quantity_atoms: u64,
+) -> Result<()> {
+    require!(
+        open.trader == trader
+            && open.economic_package_commitment == economic_package_commitment
+            && open.package_accounts_commitment == package_accounts_commitment
+            && open.spot_quantity_atoms == spot_quantity_atoms
+            && open.perp_quantity_atoms == perp_quantity_atoms,
+        ErrorCode::CashCarryOpenPackageMismatch
+    );
     Ok(())
 }
 
@@ -1613,7 +1659,7 @@ fn execute_rise<'info>(
         orderbook: ctx.accounts.rise.rise_orderbook.to_account_info(),
         spline_collection: ctx.accounts.rise.rise_spline_collection.to_account_info(),
     };
-    let bump = [ctx.bumps.executor_authority];
+    let bump = [ctx.accounts.executor_authority.bump];
     let signer_seeds: &[&[u8]] = &[
         CASH_CARRY_EXECUTOR_SEED,
         ctx.accounts.trader.key.as_ref(),
@@ -1744,6 +1790,16 @@ fn resource_record_keys(accounts: &ExecuteCashAndCarry) -> [Pubkey; 8] {
     ]
 }
 
+fn economic_resource_record_keys(accounts: &ExecuteCashAndCarry) -> [Pubkey; 5] {
+    [
+        accounts.resources.perp_adapter_record.key(),
+        accounts.resources.perp_market_record.key(),
+        accounts.resources.perp_venue_record.key(),
+        accounts.resources.base_asset_record.key(),
+        accounts.resources.quote_asset_record.key(),
+    ]
+}
+
 fn resource_admission_commitment(
     admission: &CashCarryAdmission,
     record_keys: &[Pubkey; 8],
@@ -1774,6 +1830,35 @@ fn resource_admission_commitment(
         data.extend_from_slice(key.as_ref());
     }
     hashv(&[RESOURCE_COMMITMENT_DOMAIN, &data]).to_bytes()
+}
+
+fn economic_package_commitment(
+    admission: &CashCarryAdmission,
+    record_keys: &[Pubkey; 5],
+) -> [u8; 32] {
+    let mut data = admission.domain.canonical_bytes();
+    for identity in [
+        &admission.perp_adapter,
+        &admission.perp_market,
+        &admission.perp_venue,
+        &admission.base_asset,
+        &admission.quote_asset,
+    ] {
+        append_manifest_ref(&mut data, identity);
+    }
+    append_string(&mut data, admission.template.id.as_str());
+    data.extend_from_slice(&admission.template.version.to_be_bytes());
+    data.extend_from_slice(&admission.template.manifest_hash);
+    data.push(match admission.settlement.class {
+        SettlementClass::AtomicPostcondition => 1,
+    });
+    data.extend_from_slice(&admission.settlement.version.to_be_bytes());
+    data.extend_from_slice(&admission.settlement.manifest_hash);
+    data.push(admission.quote_decimals);
+    for key in record_keys {
+        data.extend_from_slice(key.as_ref());
+    }
+    hashv(&[ECONOMIC_PACKAGE_COMMITMENT_DOMAIN, &data]).to_bytes()
 }
 
 fn append_manifest_ref(data: &mut Vec<u8>, identity: &ManifestRef) {
@@ -1815,15 +1900,46 @@ fn route_accounts_commitment(
     hash_pubkeys(ROUTE_ACCOUNTS_DOMAIN, &keys)
 }
 
-fn package_accounts_commitment(accounts: &ExecuteCashAndCarry) -> [u8; 32] {
-    hash_pubkeys(
+fn package_accounts_commitment(accounts: &ExecuteCashAndCarry) -> Result<[u8; 32]> {
+    let base_mint = accounts
+        .resources
+        .base_asset_record
+        .manifest
+        .subject_address;
+    let quote_mint = accounts
+        .resources
+        .quote_asset_record
+        .manifest
+        .subject_address;
+    let (base_account, quote_account) = canonical_trader_token_accounts(
+        accounts.spot.trader_token_a.key(),
+        accounts.spot.trader_token_a.mint,
+        accounts.spot.trader_token_b.key(),
+        accounts.spot.trader_token_b.mint,
+        base_mint,
+        quote_mint,
+    )?;
+    Ok(hash_pubkeys(
         PACKAGE_ACCOUNTS_DOMAIN,
-        &[
-            accounts.spot.trader_token_a.key(),
-            accounts.spot.trader_token_b.key(),
-            accounts.rise_strategy.key(),
-        ],
-    )
+        &[base_account, quote_account, accounts.rise_strategy.key()],
+    ))
+}
+
+fn canonical_trader_token_accounts(
+    token_a: Pubkey,
+    mint_a: Pubkey,
+    token_b: Pubkey,
+    mint_b: Pubkey,
+    base_mint: Pubkey,
+    quote_mint: Pubkey,
+) -> Result<(Pubkey, Pubkey)> {
+    if mint_a == base_mint && mint_b == quote_mint {
+        Ok((token_a, token_b))
+    } else if mint_b == base_mint && mint_a == quote_mint {
+        Ok((token_b, token_a))
+    } else {
+        err!(ErrorCode::CashCarryTokenAccountMismatch)
+    }
 }
 
 fn execution_account_keys(
@@ -2259,5 +2375,97 @@ mod tests {
         );
         assert!(execution_solver(CashCarryAction::Entry, true, active_solver).is_err());
         assert!(execution_solver(CashCarryAction::Exit, false, Pubkey::default()).is_err());
+    }
+
+    #[test]
+    fn lifecycle_exit_can_change_spot_route_but_not_economic_package() {
+        let entry = admission();
+        let economic_keys = [
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        ];
+        let commitment = economic_package_commitment(&entry, &economic_keys);
+
+        let mut fresh_exit = entry.clone();
+        fresh_exit.action = ResourceAction::Exit;
+        fresh_exit.spot_adapter = manifest(31);
+        fresh_exit.spot_market = manifest(32);
+        fresh_exit.spot_venue = manifest(33);
+        fresh_exit.spot_limit_quote_atoms_per_base_lot += 1;
+        assert_eq!(
+            commitment,
+            economic_package_commitment(&fresh_exit, &economic_keys)
+        );
+
+        fresh_exit.perp_market = manifest(34);
+        assert_ne!(
+            commitment,
+            economic_package_commitment(&fresh_exit, &economic_keys)
+        );
+
+        let trader = Pubkey::new_unique();
+        let package_accounts = [41; 32];
+        let open = OpenCashCarryPackage {
+            version: OPEN_PACKAGE_VERSION,
+            domain: entry.domain,
+            trader,
+            entry_receipt: Pubkey::new_unique(),
+            entry_route_hash: [42; 32],
+            quote_intent_commitment: [43; 32],
+            package_fill_commitment: [44; 32],
+            entry_resource_admission_commitment: [45; 32],
+            entry_route_accounts_commitment: [46; 32],
+            economic_package_commitment: commitment,
+            package_accounts_commitment: package_accounts,
+            spot_quantity_atoms: entry.spot_quantity_atoms,
+            perp_quantity_atoms: entry.perp_quantity_atoms,
+            bump: 1,
+        };
+        assert!(validate_open_package_identity(
+            &open,
+            trader,
+            commitment,
+            package_accounts,
+            entry.spot_quantity_atoms,
+            entry.perp_quantity_atoms,
+        )
+        .is_ok());
+        assert!(validate_open_package_identity(
+            &open,
+            trader,
+            [47; 32],
+            package_accounts,
+            entry.spot_quantity_atoms,
+            entry.perp_quantity_atoms,
+        )
+        .is_err());
+
+        let base_account = Pubkey::new_unique();
+        let quote_account = Pubkey::new_unique();
+        let base_mint = Pubkey::new_unique();
+        let quote_mint = Pubkey::new_unique();
+        assert_eq!(
+            canonical_trader_token_accounts(
+                base_account,
+                base_mint,
+                quote_account,
+                quote_mint,
+                base_mint,
+                quote_mint,
+            )
+            .unwrap(),
+            canonical_trader_token_accounts(
+                quote_account,
+                quote_mint,
+                base_account,
+                base_mint,
+                base_mint,
+                quote_mint,
+            )
+            .unwrap()
+        );
     }
 }

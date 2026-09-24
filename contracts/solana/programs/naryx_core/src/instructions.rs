@@ -2,6 +2,7 @@ pub mod activate_domain;
 pub mod activate_unpause;
 pub mod cancel_domain_proposal;
 pub mod cancel_unpause;
+pub mod cash_carry_strategy;
 pub mod execute_cash_and_carry;
 #[cfg(feature = "conformance")]
 pub mod execute_conformance_atomic;
@@ -17,6 +18,7 @@ pub use {
     initialize::*, pause_entry::*, propose_domain::*, schedule_unpause::*,
 };
 
+pub use cash_carry_strategy::*;
 pub use execute_cash_and_carry::*;
 pub use resource_registry::*;
 

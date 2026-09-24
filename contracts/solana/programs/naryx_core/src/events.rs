@@ -187,3 +187,15 @@ pub struct CashCarryExecutionRecorded {
     pub route_accounts_commitment: [u8; 32],
     pub entry_receipt: Pubkey,
 }
+
+#[event]
+pub struct CashCarryStrategyAuthorityInitialized {
+    pub strategy_authority: Pubkey,
+    pub domain: DomainRef,
+    pub trader: Pubkey,
+    pub base_mint: Pubkey,
+    pub quote_mint: Pubkey,
+    pub rise_strategy: Pubkey,
+    pub base_token_account: Pubkey,
+    pub quote_token_account: Pubkey,
+}
