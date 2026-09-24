@@ -99,6 +99,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         address quoteToken;
         uint256 baseQuantityAtoms;
         uint256 perpQuantityWad;
+        uint128 packageSizeUnits;
         uint128 entryPerpNotionalWad;
     }
 
@@ -442,6 +443,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         packageState.quoteToken = execution.quoteToken;
         packageState.baseQuantityAtoms = execution.baseQuantityAtoms;
         packageState.perpQuantityWad = execution.perpQuantityWad;
+        packageState.packageSizeUnits = execution.packageSizeUnits;
         packageState.entryPerpNotionalWad = entryNotional;
         openPackages[execution.strategyAccount] = packageState;
     }
@@ -516,14 +518,15 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
             return;
         }
         if (
-            open.entryReceiptHash == bytes32(0)
-                || (execution.entryReceiptHash != bytes32(0) && open.entryReceiptHash != execution.entryReceiptHash)
-                || open.routeHash != execution.routeHash || open.spotPort != execution.spotPort
+            open.entryReceiptHash == bytes32(0) || execution.entryReceiptHash != open.entryReceiptHash
                 || open.perpObserver != execution.perpObserver || open.perpInstrument != execution.perpInstrument
                 || open.perpExpiry != execution.perpExpiry || open.baseToken != execution.baseToken
                 || open.quoteToken != execution.quoteToken || open.baseQuantityAtoms != execution.baseQuantityAtoms
-                || open.perpQuantityWad != execution.perpQuantityWad || execution.expectedPrePerpSizeWad != shortSize
-                || execution.expectedPostPerpSizeWad != 0 || execution.maximumPostPerpEntryNotionalWad != 0
+                || open.perpQuantityWad != execution.perpQuantityWad
+                || open.packageSizeUnits != execution.packageSizeUnits
+                || open.entryPerpNotionalWad != execution.expectedPrePerpEntryNotionalWad
+                || execution.expectedPrePerpSizeWad != shortSize || execution.expectedPostPerpSizeWad != 0
+                || execution.maximumPostPerpEntryNotionalWad != 0
         ) revert PositionMismatch();
     }
 

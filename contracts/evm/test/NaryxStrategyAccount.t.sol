@@ -5,6 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
+import {DirectInventorySpotPort} from "../src/DirectInventorySpotPort.sol";
+import {FirmInventoryReservationBook} from "../src/FirmInventoryReservationBook.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
@@ -148,6 +150,8 @@ contract NaryxStrategyAccountTest is Test {
     uint256 private constant MARGIN = 4 ether;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("domain-manifest");
     bytes32 private constant ROUTE_HASH = keccak256("route");
+    bytes32 private constant DIRECT_ROUTE_HASH = keccak256("direct-inventory-route");
+    bytes32 private constant EXIT_ROUTE_HASH = keccak256("public-exit-route");
     bytes32 private constant SERIES_MANIFEST_HASH = keccak256("series-manifest");
     bytes32 private constant EXECUTION_CLASS_MANIFEST_HASH = keccak256("execution-class-manifest");
     bytes32 private constant SHARD_MANIFEST_HASH = keccak256("shard-manifest");
@@ -176,6 +180,8 @@ contract NaryxStrategyAccountTest is Test {
     PackageQuoteShard private packageQuoteShard;
     PackageQuoteShardRegistry.ShardReference private shardReference;
     StrategyAccountSpotPort private spotPort;
+    FirmInventoryReservationBook private reservationBook;
+    DirectInventorySpotPort private directInventorySpotPort;
     NaryxStrategyAccount private account;
 
     function setUp() public {
@@ -209,9 +215,29 @@ contract NaryxStrategyAccountTest is Test {
         _activateQuoteShard();
         spotPort = new StrategyAccountSpotPort(address(verifier), IERC20(address(base)), IERC20(address(quote)));
         account = new NaryxStrategyAccount(owner, verifier);
+        reservationBook = new FirmInventoryReservationBook(config, base, quote, 1 hours, 10 ether, 20 ether);
+        directInventorySpotPort = new DirectInventorySpotPort(
+            DirectInventorySpotPort.Deployment({
+                chainId: block.chainid,
+                config: config,
+                verifier: address(verifier),
+                reservationBook: reservationBook,
+                baseToken: base,
+                quoteToken: quote,
+                domainIdHash: keccak256("eip155:31337"),
+                domainManifestVersion: 1,
+                domainManifestHash: DOMAIN_MANIFEST_HASH,
+                configCodeHash: address(config).codehash,
+                verifierCodeHash: address(verifier).codehash,
+                reservationBookCodeHash: address(reservationBook).codehash,
+                baseTokenCodeHash: address(base).codehash,
+                quoteTokenCodeHash: address(quote).codehash
+            })
+        );
 
         base.mint(address(spotPort), 100 ether);
         quote.mint(address(spotPort), 200 ether);
+        base.mint(solver, 10 ether);
         quote.mint(address(account), 20 ether);
         vm.prank(PROPOSER);
         config.scheduleUnpause();
@@ -258,6 +284,106 @@ contract NaryxStrategyAccountTest is Test {
         PackageVerifier.Receipt memory receipt_ = verifier.receipt(receiptHash);
         assertTrue(receipt_.recovery);
         assertEq(receipt_.postPerpSizeWad, 0);
+    }
+
+    function testFirmDirectInventoryEntryExitsThroughFreshPublicRoute() public {
+        (
+            PackageVerifier.Execution memory entry,
+            ResourceRegistry.CashCarryAdmission memory entryAdmission,
+            PackageVerifier.QuoteIntent memory intent,
+            bytes32 reservationId
+        ) = _firmDirectEntry();
+        _admit(entryAdmission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry, entryAdmission);
+
+        bytes32 entryReceiptHash = account.executeQuotedPackage(
+            entry,
+            entryAdmission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+
+        assertEq(
+            uint8(reservationBook.reservation(reservationId).state),
+            uint8(FirmInventoryReservationBook.ReservationState.CONSUMED)
+        );
+        assertEq(base.balanceOf(address(account)), QUANTITY);
+        assertEq(quote.balanceOf(address(account)), 18 ether);
+        assertEq(quote.allowance(address(account), address(reservationBook)), 0);
+        PackageVerifier.Receipt memory entryReceipt = verifier.receipt(entryReceiptHash);
+        assertEq(entryReceipt.routeHash, DIRECT_ROUTE_HASH);
+
+        (PackageVerifier.Execution memory exit, ResourceRegistry.CashCarryAdmission memory exitAdmission) =
+            _exit(entryReceiptHash, solver);
+        _admit(exitAdmission);
+        (traderSignature, solverSignature) = _sign(exit, exitAdmission);
+        bytes32 exitReceiptHash = account.executePackage(
+            exit,
+            exitAdmission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+
+        assertEq(verifier.receipt(exitReceiptHash).routeHash, EXIT_ROUTE_HASH);
+        assertEq(base.balanceOf(address(account)), 0);
+        assertEq(quote.balanceOf(address(account)), 20 ether);
+        assertEq(perp.getPosition(address(perp), PERP_EXPIRY, address(account)).size, 0);
+        assertFalse(verifier.hasOpenPackage(address(account)));
+    }
+
+    function testExitRejectsZeroEntryReceipt() public {
+        _enter();
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(bytes32(0), solver);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.PositionMismatch.selector);
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+    }
+
+    function testExitRejectsWrongEntryReceipt() public {
+        _enter();
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(keccak256("wrong-entry-receipt"), solver);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.PositionMismatch.selector);
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+    }
+
+    function testExitRejectsMismatchedPackageSize() public {
+        bytes32 entryReceiptHash = _enter();
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(entryReceiptHash, solver);
+        execution.packageSizeUnits += 1;
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        vm.expectRevert(PackageVerifier.PositionMismatch.selector);
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
     }
 
     function testFinalizeFailureRollsBackSpotPerpAllowanceAndNonce() public {
@@ -532,6 +658,71 @@ contract NaryxStrategyAccountTest is Test {
         execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
     }
 
+    function _firmDirectEntry()
+        private
+        returns (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent,
+            bytes32 reservationId
+        )
+    {
+        execution = _execution(verifier.ENTRY(), solver, 0);
+        execution.routeHash = DIRECT_ROUTE_HASH;
+        execution.spotPort = address(directInventorySpotPort);
+        execution.spotQuoteBoundAtoms = 2 ether;
+        execution.expectedPostPerpSizeWad = -int128(int256(QUANTITY));
+        execution.minimumPostPerpBalanceWad = int128(int256(MARGIN));
+        execution.maximumPostPerpBalanceWad = int128(int256(MARGIN));
+        execution.maximumPostPerpEntryNotionalWad = uint128(3 ether);
+
+        FirmInventoryReservationBook.ReservationTerms memory terms = FirmInventoryReservationBook.ReservationTerms({
+            domain: FirmInventoryReservationBook.DomainRef({
+                domainIdHash: execution.domainIdHash,
+                manifestVersion: execution.domainManifestVersion,
+                manifestHash: execution.domainManifestHash
+            }),
+            solverId: "solver:base:test",
+            solver: solver,
+            reclaimOwner: solver,
+            strategyAccount: address(account),
+            packageNonce: execution.nonce,
+            orderHash: execution.orderHash,
+            reservationNonce: 1,
+            baseAtoms: execution.baseQuantityAtoms,
+            quoteAtoms: execution.spotQuoteBoundAtoms,
+            expiry: uint64(block.timestamp + 30 minutes),
+            consumer: address(directInventorySpotPort),
+            consumerCodeHash: address(directInventorySpotPort).codehash
+        });
+        vm.startPrank(solver);
+        base.approve(address(reservationBook), execution.baseQuantityAtoms);
+        reservationId = reservationBook.reserve(terms);
+        reservationBook.finalizeReservation(reservationId, execution.quoteHash, execution.routeHash);
+        vm.stopPrank();
+        execution.spotFillCommitment = reservationId;
+
+        _configureQuote(packageQuoteShard.FIRM_ONCHAIN(), 0);
+        intent.shardReference = shardReference;
+        intent.consumeRequest = PackageQuoteShard.ConsumeRequest({
+            levelId: LEVEL_ID,
+            expectedEpoch: 1,
+            expectedLevelSequence: 2,
+            expectedReferenceSequence: 1,
+            expectedShardSequence: 2,
+            expectedExpiry: uint64(block.timestamp + 10 minutes),
+            sizeUnits: execution.packageSizeUnits,
+            feeAtoms: 0,
+            expectedPackagePrice: 105,
+            orderHash: execution.orderHash,
+            quoteHash: execution.quoteHash,
+            routeHash: execution.routeHash,
+            reservationId: reservationId
+        });
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        admission = _admission(execution);
+    }
+
     function _configureQuote(uint8 quoteMode, uint128 maxFeeAtoms) private {
         uint64 expiresAt = uint64(block.timestamp + 10 minutes);
         vm.prank(solver);
@@ -585,6 +776,7 @@ contract NaryxStrategyAccountTest is Test {
         execution.spotFillCommitment = keccak256("exit-spot-fill");
         execution.orderHash = keccak256("exit-order");
         execution.quoteHash = keccak256("exit-quote");
+        execution.routeHash = EXIT_ROUTE_HASH;
         execution.spotQuoteBoundAtoms = 2 ether;
         execution.expectedPrePerpBalanceWad = int128(int256(MARGIN));
         execution.expectedPrePerpSizeWad = -int128(int256(QUANTITY));
@@ -640,7 +832,7 @@ contract NaryxStrategyAccountTest is Test {
         });
         admission.action = execution.action;
         admission.packageNotionalQuoteAtoms = execution.packageNotionalQuoteAtoms;
-        admission.spot.adapter.localAddress = address(spotPort);
+        admission.spot.adapter.localAddress = execution.spotPort;
         admission.perpetual.adapter.localAddress = address(verifier);
         admission.perpetual.venue.localAddress = address(perp);
         admission.perpetual.market.localAddress = address(perp);

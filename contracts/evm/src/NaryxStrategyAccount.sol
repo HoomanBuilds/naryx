@@ -11,6 +11,10 @@ import {ResourceRegistry} from "./ResourceRegistry.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
 import {ISynFuturesInstrument} from "./interfaces/ISynFuturesInstrument.sol";
 
+interface IFirmInventorySpotPort {
+    function reservationBook() external view returns (address);
+}
+
 contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -130,7 +134,12 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
 
     function _entry(PackageVerifier.Execution calldata execution, bytes32[2] calldata perpArgs) private {
         IERC20 quoteToken = IERC20(execution.quoteToken);
-        quoteToken.forceApprove(execution.spotPort, execution.spotQuoteBoundAtoms);
+        address quoteSpender = execution.spotPort;
+        try IFirmInventorySpotPort(execution.spotPort).reservationBook() returns (address reservationBook) {
+            if (reservationBook.code.length == 0) revert InvalidExecution();
+            quoteSpender = reservationBook;
+        } catch {}
+        quoteToken.forceApprove(quoteSpender, execution.spotQuoteBoundAtoms);
         IExactSpotPort(execution.spotPort)
             .buyExactOutput(
                 execution.nonce,
@@ -141,7 +150,7 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
                 execution.baseQuantityAtoms,
                 execution.spotQuoteBoundAtoms
             );
-        quoteToken.forceApprove(execution.spotPort, 0);
+        quoteToken.forceApprove(quoteSpender, 0);
         ISynFuturesInstrument(execution.perpInstrument).trade(perpArgs);
     }
 
