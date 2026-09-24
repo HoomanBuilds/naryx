@@ -11,6 +11,7 @@ pub mod pause_entry;
 pub mod propose_domain;
 pub mod resource_registry;
 pub mod schedule_unpause;
+pub mod series_registry;
 pub mod solver_registry;
 
 pub use {
@@ -21,6 +22,7 @@ pub use {
 pub use cash_carry_strategy::*;
 pub use execute_cash_and_carry::*;
 pub use resource_registry::*;
+pub use series_registry::*;
 
 #[cfg(feature = "conformance")]
 pub use execute_conformance_atomic::*;

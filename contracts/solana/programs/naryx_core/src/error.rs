@@ -236,6 +236,58 @@ pub enum ErrorCode {
     ResourcePackageNotionalMismatch,
     #[msg("Cash-and-carry resources are not distinct where required")]
     ResourceInstancesNotDistinct,
+    #[msg("Cash-and-carry series binding schema is unsupported")]
+    SeriesBindingSchemaUnsupported,
+    #[msg("Cash-and-carry series binding version is zero")]
+    SeriesBindingVersionZero,
+    #[msg("Cash-and-carry series binding hash is all zero")]
+    SeriesBindingHashZero,
+    #[msg("Cash-and-carry series binding domain does not match")]
+    SeriesBindingDomainMismatch,
+    #[msg("Cash-and-carry series binding template is unsupported")]
+    SeriesBindingTemplateUnsupported,
+    #[msg("Cash-and-carry series binding settlement class is unsupported")]
+    SeriesBindingSettlementUnsupported,
+    #[msg("Cash-and-carry series binding quote convention is unsupported")]
+    SeriesBindingQuoteConventionUnsupported,
+    #[msg("Cash-and-carry series binding entry side is unsupported")]
+    SeriesBindingEntrySideUnsupported,
+    #[msg("Cash-and-carry series binding unit is zero")]
+    SeriesBindingUnitZero,
+    #[msg("Cash-and-carry series binding asset does not match an active registered asset")]
+    SeriesBindingAssetMismatch,
+    #[msg("Cash-and-carry series identity key does not match canonical fields")]
+    SeriesBindingIdentityMismatch,
+    #[msg("Cash-and-carry series binding hash does not match canonical fields")]
+    SeriesBindingHashMismatch,
+    #[msg("Cash-and-carry series binding index is inconsistent")]
+    SeriesBindingIndexMismatch,
+    #[msg("A cash-and-carry series binding registration is already pending")]
+    SeriesBindingRegistrationExists,
+    #[msg("No cash-and-carry series binding registration is pending")]
+    SeriesBindingRegistrationMissing,
+    #[msg("Cash-and-carry series binding registration is before its activation slot")]
+    SeriesBindingRegistrationNotReady,
+    #[msg("Cash-and-carry series binding version is not increasing")]
+    SeriesBindingVersionNotIncreasing,
+    #[msg("Cash-and-carry series binding is already active")]
+    SeriesBindingAlreadyActive,
+    #[msg("Cash-and-carry series binding is not active")]
+    SeriesBindingNotActive,
+    #[msg("Cash-and-carry series binding changes immutable economic semantics")]
+    SeriesBindingSemanticMutation,
+    #[msg("Cash-and-carry series binding lifecycle is unsupported")]
+    SeriesBindingLifecycleUnsupported,
+    #[msg("Cash-and-carry series binding control proposal already exists")]
+    SeriesBindingControlProposalExists,
+    #[msg("Cash-and-carry series binding control proposal is missing")]
+    SeriesBindingControlProposalMissing,
+    #[msg("Cash-and-carry series binding control proposal is before its activation slot")]
+    SeriesBindingControlProposalNotReady,
+    #[msg("Deprecated cash-and-carry series binding is terminal")]
+    SeriesBindingDeprecatedTerminal,
+    #[msg("Immediate cash-and-carry series binding control would widen permissions")]
+    SeriesBindingUnsafeImmediateControl,
     #[msg("Cash-and-carry execution hash is all zero")]
     CashCarryHashZero,
     #[msg("Cash-and-carry execution nonce is zero")]

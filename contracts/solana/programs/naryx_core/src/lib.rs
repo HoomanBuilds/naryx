@@ -7,7 +7,12 @@ pub mod wire;
 
 use anchor_lang::prelude::*;
 
-pub use {constants::*, instructions::*, state::ResourceControl, wire::*};
+pub use {
+    constants::*,
+    instructions::*,
+    state::{Lifecycle, ResourceControl},
+    wire::*,
+};
 
 declare_id!("8qmA9VuQwAAqQ3F93CAfLNFB3P8M8ygXgvn9xCnZXa2i");
 
@@ -116,6 +121,64 @@ pub mod naryx_core {
         control: ResourceControl,
     ) -> Result<()> {
         instructions::resource_registry::tighten_resource_control(ctx, control)
+    }
+
+    pub fn propose_initial_cash_carry_series_binding(
+        ctx: Context<ProposeInitialCashCarrySeriesBinding>,
+        args: ProposeCashCarrySeriesBindingArgs,
+    ) -> Result<()> {
+        instructions::series_registry::propose_initial(ctx, args)
+    }
+
+    pub fn propose_cash_carry_series_binding_version(
+        ctx: Context<ProposeCashCarrySeriesBindingVersion>,
+        args: ProposeCashCarrySeriesBindingArgs,
+    ) -> Result<()> {
+        instructions::series_registry::propose_version(ctx, args)
+    }
+
+    pub fn activate_initial_cash_carry_series_binding(
+        ctx: Context<ActivateInitialCashCarrySeriesBinding>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_initial(ctx)
+    }
+
+    pub fn activate_cash_carry_series_binding_version(
+        ctx: Context<ActivateCashCarrySeriesBindingVersion>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_version(ctx)
+    }
+
+    pub fn cancel_cash_carry_series_binding_registration(
+        ctx: Context<CancelCashCarrySeriesBindingRegistration>,
+    ) -> Result<()> {
+        instructions::series_registry::cancel_registration(ctx)
+    }
+
+    pub fn propose_cash_carry_series_binding_control(
+        ctx: Context<ProposeCashCarrySeriesBindingControl>,
+        lifecycle: Lifecycle,
+    ) -> Result<()> {
+        instructions::series_registry::propose_control(ctx, lifecycle)
+    }
+
+    pub fn cancel_cash_carry_series_binding_control(
+        ctx: Context<CancelCashCarrySeriesBindingControl>,
+    ) -> Result<()> {
+        instructions::series_registry::cancel_control(ctx)
+    }
+
+    pub fn activate_cash_carry_series_binding_control(
+        ctx: Context<ActivateCashCarrySeriesBindingControl>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_control(ctx)
+    }
+
+    pub fn tighten_cash_carry_series_binding(
+        ctx: Context<TightenCashCarrySeriesBinding>,
+        lifecycle: Lifecycle,
+    ) -> Result<()> {
+        instructions::series_registry::tighten(ctx, lifecycle)
     }
 
     pub fn propose_solver(ctx: Context<ProposeSolver>, key: Pubkey) -> Result<()> {
@@ -263,6 +326,64 @@ pub mod naryx_core {
         control: ResourceControl,
     ) -> Result<()> {
         instructions::resource_registry::tighten_resource_control(ctx, control)
+    }
+
+    pub fn propose_initial_cash_carry_series_binding(
+        ctx: Context<ProposeInitialCashCarrySeriesBinding>,
+        args: ProposeCashCarrySeriesBindingArgs,
+    ) -> Result<()> {
+        instructions::series_registry::propose_initial(ctx, args)
+    }
+
+    pub fn propose_cash_carry_series_binding_version(
+        ctx: Context<ProposeCashCarrySeriesBindingVersion>,
+        args: ProposeCashCarrySeriesBindingArgs,
+    ) -> Result<()> {
+        instructions::series_registry::propose_version(ctx, args)
+    }
+
+    pub fn activate_initial_cash_carry_series_binding(
+        ctx: Context<ActivateInitialCashCarrySeriesBinding>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_initial(ctx)
+    }
+
+    pub fn activate_cash_carry_series_binding_version(
+        ctx: Context<ActivateCashCarrySeriesBindingVersion>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_version(ctx)
+    }
+
+    pub fn cancel_cash_carry_series_binding_registration(
+        ctx: Context<CancelCashCarrySeriesBindingRegistration>,
+    ) -> Result<()> {
+        instructions::series_registry::cancel_registration(ctx)
+    }
+
+    pub fn propose_cash_carry_series_binding_control(
+        ctx: Context<ProposeCashCarrySeriesBindingControl>,
+        lifecycle: Lifecycle,
+    ) -> Result<()> {
+        instructions::series_registry::propose_control(ctx, lifecycle)
+    }
+
+    pub fn cancel_cash_carry_series_binding_control(
+        ctx: Context<CancelCashCarrySeriesBindingControl>,
+    ) -> Result<()> {
+        instructions::series_registry::cancel_control(ctx)
+    }
+
+    pub fn activate_cash_carry_series_binding_control(
+        ctx: Context<ActivateCashCarrySeriesBindingControl>,
+    ) -> Result<()> {
+        instructions::series_registry::activate_control(ctx)
+    }
+
+    pub fn tighten_cash_carry_series_binding(
+        ctx: Context<TightenCashCarrySeriesBinding>,
+        lifecycle: Lifecycle,
+    ) -> Result<()> {
+        instructions::series_registry::tighten(ctx, lifecycle)
     }
 
     pub fn execute_conformance_atomic(

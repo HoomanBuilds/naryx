@@ -3,7 +3,9 @@ use anchor_lang::prelude::*;
 use crate::wire::{DomainRef, ProtocolId};
 
 pub mod resource_registry;
+pub mod series_registry;
 pub use resource_registry::*;
+pub use series_registry::*;
 
 pub const PROTOCOL_CONFIG_VERSION: u16 = 2;
 

@@ -131,6 +131,66 @@ pub struct ResourceControlTightened {
     pub control_cancelled: bool,
 }
 
+#[event]
+pub struct CashCarrySeriesBindingRegistrationProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub identity_key: [u8; HASH_BYTE_LENGTH],
+    pub binding_version: u32,
+    pub binding_hash: [u8; HASH_BYTE_LENGTH],
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct CashCarrySeriesBindingRegistrationCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub identity_key: [u8; HASH_BYTE_LENGTH],
+    pub binding_version: u32,
+    pub binding_hash: [u8; HASH_BYTE_LENGTH],
+}
+
+#[event]
+pub struct CashCarrySeriesBindingActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub previous_record: Pubkey,
+    pub identity_key: [u8; HASH_BYTE_LENGTH],
+    pub binding_version: u32,
+    pub binding_hash: [u8; HASH_BYTE_LENGTH],
+    pub lifecycle: Lifecycle,
+}
+
+#[event]
+pub struct CashCarrySeriesBindingControlProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct CashCarrySeriesBindingControlCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+}
+
+#[event]
+pub struct CashCarrySeriesBindingControlActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+}
+
+#[event]
+pub struct CashCarrySeriesBindingTightened {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub lifecycle: Lifecycle,
+    pub registration_cancelled: bool,
+    pub control_cancelled: bool,
+}
+
 #[cfg(feature = "conformance")]
 #[event]
 pub struct ConformanceExecutionRecorded {
