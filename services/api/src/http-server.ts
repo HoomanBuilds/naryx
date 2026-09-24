@@ -1,4 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  ExecutionValidationError,
+  parseExecutionObservationRequest,
+  parseExecutionPreparationRequest,
+  validateExecutionObservation,
+  validateUnsignedSolanaDevnetMaterialization,
+  type PrivateTerminalExecutionPorts,
+} from "./terminal-execution.js";
 import { createTerminalPreview, parsePreviewRequest, PreviewValidationError } from "./terminal-preview.js";
 import { createTerminalSnapshot } from "./terminal-snapshot.js";
 import { isDomainId } from "./terminal-types.js";
@@ -107,7 +115,10 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-export function createPrivateTerminalRequestHandler(config: PrivateTerminalServerConfig) {
+export function createPrivateTerminalRequestHandler(
+  config: PrivateTerminalServerConfig,
+  executionPorts: PrivateTerminalExecutionPorts = {},
+) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
     const url = new URL(request.url ?? "/", "http://private-terminal.local");
@@ -125,9 +136,10 @@ export function createPrivateTerminalRequestHandler(config: PrivateTerminalServe
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
       sendJson(response, 200, {
         status: "ready",
-        scope: "private_terminal_preview",
+        scope: "private_terminal",
         environment: "LOCAL_CONFORMANCE",
-        executionAvailable: false,
+        executionPreparationAvailable: executionPorts.preparation !== undefined,
+        executionObservationAvailable: executionPorts.observation !== undefined,
       });
       return;
     }
@@ -167,12 +179,79 @@ export function createPrivateTerminalRequestHandler(config: PrivateTerminalServe
       return;
     }
 
+    if (url.pathname === "/internal/terminal/execution/prepare") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (executionPorts.preparation === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "Devnet execution preparation is unavailable.");
+        return;
+      }
+      try {
+        const preparationRequest = parseExecutionPreparationRequest(await readJson(request));
+        const prepared = validateUnsignedSolanaDevnetMaterialization(
+          await executionPorts.preparation.prepare(preparationRequest),
+          preparationRequest,
+        );
+        sendJson(response, 200, {
+          status: "DEVNET_UNSIGNED_REVIEW_REQUIRED",
+          environment: "DEVNET",
+          idempotencyKey: preparationRequest.idempotencyKey,
+          ...prepared,
+        });
+      } catch (error) {
+        if (error instanceof ExecutionValidationError || error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EXECUTION_PREPARATION_FAILED", "Devnet preparation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/execution/observe") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (executionPorts.observation === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "Devnet execution observation is unavailable.");
+        return;
+      }
+      try {
+        const observationRequest = parseExecutionObservationRequest(await readJson(request));
+        const observation = validateExecutionObservation(
+          await executionPorts.observation.observe(observationRequest),
+          observationRequest,
+        );
+        sendJson(response, 200, {
+          environment: "DEVNET",
+          domain: "svm:devnet",
+          idempotencyKey: observationRequest.idempotencyKey,
+          ...observation,
+        });
+      } catch (error) {
+        if (error instanceof ExecutionValidationError || error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EXECUTION_OBSERVATION_FAILED", "Devnet observation failed closed.");
+      }
+      return;
+    }
+
     reject(response, 404, "NOT_FOUND", "Route not found.");
   };
 }
 
-export function createPrivateTerminalServer(config: PrivateTerminalServerConfig) {
-  const handler = createPrivateTerminalRequestHandler(config);
+export function createPrivateTerminalServer(
+  config: PrivateTerminalServerConfig,
+  executionPorts: PrivateTerminalExecutionPorts = {},
+) {
+  const handler = createPrivateTerminalRequestHandler(config, executionPorts);
   return createServer((request, response) => {
     handler(request, response).catch(() => {
       if (!response.headersSent) {

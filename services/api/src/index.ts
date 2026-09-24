@@ -6,6 +6,24 @@ export {
 } from "./http-server.js";
 export { PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 } from "./private-terminal-manifest.js";
 export {
+  ExecutionValidationError,
+  parseExecutionObservationRequest,
+  parseExecutionPreparationRequest,
+  SOLANA_DEVNET_GENESIS_HASH,
+  validateExecutionObservation,
+  validateUnsignedSolanaDevnetMaterialization,
+  type NormalizedCashCarryExecutionRequest,
+  type PrivateTerminalExecutionObservation,
+  type PrivateTerminalExecutionObservationPort,
+  type PrivateTerminalExecutionObservationRequest,
+  type PrivateTerminalExecutionPorts,
+  type PrivateTerminalExecutionPreparationPort,
+  type SolanaDevnetPlanKind,
+  type SolanaLookupCommitmentDto,
+  type SolanaMaterializationEvidenceDto,
+  type UnsignedSolanaDevnetMaterializationDto,
+} from "./terminal-execution.js";
+export {
   createTerminalPreview,
   parsePreviewRequest,
   PreviewValidationError,

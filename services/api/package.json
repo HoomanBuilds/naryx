@@ -1,7 +1,7 @@
 {
   "name": "@naryx/api",
   "version": "0.1.0",
-  "description": "Private read-only terminal backend-for-frontend.",
+  "description": "Private terminal backend-for-frontend.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
@@ -21,8 +21,18 @@
   },
   "types": "./dist/index.d.ts",
   "sideEffects": false,
-  "files": ["dist"],
-  "engines": {"node": ">=22.12.0"},
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@solana/addresses": "8.3.0",
+    "@solana/transaction-messages": "8.3.0",
+    "@solana/transactions": "8.3.0",
+    "bs58": "6.0.0"
+  },
   "devDependencies": {
     "@types/node": "26.6.2",
     "typescript": "7.0.2"
