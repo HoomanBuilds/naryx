@@ -219,6 +219,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         address strategyAccount,
         uint256 packageNonce,
         bytes32 spotFillCommitment,
+        bytes32 orderHash,
+        bytes32 quoteHash,
+        bytes32 routeHash,
         uint8 action,
         address baseToken,
         address quoteToken,
@@ -229,8 +232,19 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 contextHash = _transientBytes32(contextKey, CONTEXT_HASH_FIELD);
         if (contextHash == bytes32(0)) revert ContextNotActive();
         if (_transientBool(contextKey, SPOT_FILL_SEEN_FIELD)) revert InvalidSpotFill();
-        bytes32 fillHash =
-            keccak256(abi.encode(msg.sender, spotFillCommitment, action, baseToken, quoteToken, baseAtoms));
+        bytes32 fillHash = keccak256(
+            abi.encode(
+                msg.sender,
+                spotFillCommitment,
+                orderHash,
+                quoteHash,
+                routeHash,
+                action,
+                baseToken,
+                quoteToken,
+                baseAtoms
+            )
+        );
         if (fillHash != contextHash) revert InvalidSpotFill();
         _storeTransientBool(contextKey, SPOT_FILL_SEEN_FIELD, true);
         _storeTransientUint(contextKey, SPOT_QUOTE_FIELD, quoteAtoms);
@@ -584,6 +598,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
             abi.encode(
                 execution.spotPort,
                 execution.spotFillCommitment,
+                execution.orderHash,
+                execution.quoteHash,
+                execution.routeHash,
                 execution.action,
                 execution.baseToken,
                 execution.quoteToken,

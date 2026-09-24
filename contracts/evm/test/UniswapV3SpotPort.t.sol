@@ -115,6 +115,9 @@ contract LocalSpotFillRecorder is ISpotFillRecorder {
         address strategyAccount,
         uint256 packageNonce,
         bytes32 spotFillCommitment,
+        bytes32,
+        bytes32,
+        bytes32,
         uint8 action,
         address baseToken,
         address quoteToken,
@@ -133,6 +136,9 @@ contract UniswapV3SpotPortTest is Test {
     uint24 private constant POOL_FEE = 3000;
     uint256 private constant QUANTITY = 1 ether;
     bytes32 private constant FILL_COMMITMENT = keccak256("spot-fill");
+    bytes32 private constant ORDER_HASH = keccak256("order");
+    bytes32 private constant QUOTE_HASH = keccak256("quote");
+    bytes32 private constant ROUTE_HASH = keccak256("route");
 
     MockToken private base;
     MockToken private quote;
@@ -161,7 +167,7 @@ contract UniswapV3SpotPortTest is Test {
     function testReversedTokenOrderingBuysAndSellsWithoutPoolAllowance() public {
         uint256 quoteBefore = quote.balanceOf(address(this));
 
-        uint256 quoteIn = port.buyExactOutput(7, FILL_COMMITMENT, QUANTITY, 3 ether);
+        uint256 quoteIn = port.buyExactOutput(7, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 3 ether);
         assertEq(quoteIn, 2 ether);
         assertEq(base.balanceOf(address(this)), 11 ether);
         assertEq(quote.balanceOf(address(this)), quoteBefore - quoteIn);
@@ -184,7 +190,8 @@ contract UniswapV3SpotPortTest is Test {
         assertEq(baseAtoms, QUANTITY);
         assertEq(quoteAtoms, quoteIn);
 
-        uint256 quoteOut = port.sellExactInput(8, FILL_COMMITMENT, QUANTITY, 2 ether);
+        uint256 quoteOut =
+            port.sellExactInput(8, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 2 ether);
         assertEq(quoteOut, 2 ether);
         assertEq(base.balanceOf(address(this)), 10 ether);
         assertEq(quote.balanceOf(address(this)), quoteBefore);
@@ -204,19 +211,23 @@ contract UniswapV3SpotPortTest is Test {
     function testWrongCallbackDataRevertsAndAFollowingSwapSucceeds() public {
         pool.setCallbackMode(MockV3Pool.CallbackMode.WRONG_DATA);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
-        port.buyExactOutput(1, FILL_COMMITMENT, QUANTITY, 3 ether);
+        port.buyExactOutput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 3 ether);
 
         pool.setCallbackMode(MockV3Pool.CallbackMode.VALID);
-        assertEq(port.buyExactOutput(1, FILL_COMMITMENT, QUANTITY, 3 ether), 2 ether);
+        assertEq(
+            port.buyExactOutput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 3 ether), 2 ether
+        );
     }
 
     function testDuplicateCallbackRevertsAndAFollowingSwapSucceeds() public {
         pool.setCallbackMode(MockV3Pool.CallbackMode.DUPLICATE);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
-        port.sellExactInput(1, FILL_COMMITMENT, QUANTITY, 1);
+        port.sellExactInput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 1);
 
         pool.setCallbackMode(MockV3Pool.CallbackMode.VALID);
-        assertEq(port.sellExactInput(1, FILL_COMMITMENT, QUANTITY, 2 ether), 2 ether);
+        assertEq(
+            port.sellExactInput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 2 ether), 2 ether
+        );
     }
 
     function testRecorderRejectionRollsBackTheSwap() public {
@@ -227,7 +238,7 @@ contract UniswapV3SpotPortTest is Test {
         recorder.setReject(true);
 
         vm.expectRevert(bytes("inactive verifier context"));
-        port.buyExactOutput(9, FILL_COMMITMENT, QUANTITY, 3 ether);
+        port.buyExactOutput(9, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 3 ether);
 
         assertEq(base.balanceOf(address(this)), baseBefore);
         assertEq(quote.balanceOf(address(this)), quoteBefore);

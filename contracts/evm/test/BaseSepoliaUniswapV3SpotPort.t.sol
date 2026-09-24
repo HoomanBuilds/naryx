@@ -23,6 +23,9 @@ contract ForkSpotFillRecorder is ISpotFillRecorder {
         address strategyAccount_,
         uint256 packageNonce_,
         bytes32 spotFillCommitment_,
+        bytes32,
+        bytes32,
+        bytes32,
         uint8 action_,
         address,
         address,
@@ -44,6 +47,9 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
     uint256 private constant QUANTITY = 0.0001 ether;
     uint256 private constant MAX_QUOTE = 1e6;
     bytes32 private constant FILL_COMMITMENT = keccak256("fork-spot-fill");
+    bytes32 private constant ORDER_HASH = keccak256("order");
+    bytes32 private constant QUOTE_HASH = keccak256("quote");
+    bytes32 private constant ROUTE_HASH = keccak256("route");
 
     address private constant FACTORY = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address private constant POOL = 0x46880b404CD35c165EDdefF7421019F8dD25F4Ad;
@@ -89,7 +95,8 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         uint256 quoteBefore = quote.balanceOf(address(this));
 
         quote.approve(address(port), MAX_QUOTE);
-        uint256 quoteIn = port.buyExactOutput(11, FILL_COMMITMENT, QUANTITY, MAX_QUOTE);
+        uint256 quoteIn =
+            port.buyExactOutput(11, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, MAX_QUOTE);
 
         assertGt(quoteIn, 0);
         assertLe(quoteIn, MAX_QUOTE);
@@ -105,7 +112,7 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         assertEq(recorder.quoteAtoms(), quoteIn);
 
         base.approve(address(port), QUANTITY);
-        uint256 quoteOut = port.sellExactInput(12, FILL_COMMITMENT, QUANTITY, 1);
+        uint256 quoteOut = port.sellExactInput(12, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 1);
 
         assertGt(quoteOut, 0);
         assertEq(base.balanceOf(address(this)), baseBefore);
@@ -123,11 +130,12 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         quote.approve(address(port), MAX_QUOTE);
 
         vm.expectRevert();
-        port.buyExactOutput(1, FILL_COMMITMENT, QUANTITY, 1);
+        port.buyExactOutput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 1);
         assertEq(quote.balanceOf(address(this)), quoteBefore);
         assertEq(quote.balanceOf(address(port)), 0);
 
-        uint256 quoteIn = port.buyExactOutput(1, FILL_COMMITMENT, QUANTITY, MAX_QUOTE);
+        uint256 quoteIn =
+            port.buyExactOutput(1, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, MAX_QUOTE);
         assertGt(quoteIn, 0);
         vm.expectRevert(UniswapV3SpotPort.InvalidCallback.selector);
         port.uniswapV3SwapCallback(1, -1, abi.encode(true, uint256(1)));
@@ -136,11 +144,11 @@ contract BaseSepoliaUniswapV3SpotPortTest is Test {
         recorder.setReject(true);
         base.approve(address(port), QUANTITY);
         vm.expectRevert(bytes("inactive verifier context"));
-        port.sellExactInput(2, FILL_COMMITMENT, QUANTITY, 1);
+        port.sellExactInput(2, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 1);
         assertEq(base.balanceOf(address(this)), baseBefore);
 
         vm.expectRevert(UniswapV3SpotPort.InvalidQuantity.selector);
-        port.sellExactInput(2, FILL_COMMITMENT, QUANTITY, 0);
+        port.sellExactInput(2, FILL_COMMITMENT, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, QUANTITY, 0);
     }
 
     function testDeploymentIdentityAndChainAreCheckedAtExecution() public {

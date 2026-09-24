@@ -130,6 +130,9 @@ contract VerifierStrategyAccount is IERC1271 {
             .buyExactOutput(
                 execution.nonce,
                 execution.spotFillCommitment,
+                execution.orderHash,
+                execution.quoteHash,
+                execution.routeHash,
                 execution.baseQuantityAtoms,
                 execution.spotQuoteBoundAtoms
             );
@@ -150,6 +153,9 @@ contract VerifierStrategyAccount is IERC1271 {
             .buyExactOutput(
                 execution.nonce,
                 keccak256("wrong-spot-fill"),
+                execution.orderHash,
+                execution.quoteHash,
+                execution.routeHash,
                 execution.baseQuantityAtoms,
                 execution.spotQuoteBoundAtoms
             );
