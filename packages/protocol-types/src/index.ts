@@ -218,6 +218,15 @@ export {
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 
 export {
+  firmReservationIdentity,
+  encodeFirmReservationIdentity,
+  firmReservationIdentityBytes,
+  firmReservationId,
+  type FirmReservationIdentityInput,
+  type FirmReservationIdentity,
+} from './firm-reservation.js';
+
+export {
   quotedOutcome,
   encodeQuotedOutcome,
   solverQuote,

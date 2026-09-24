@@ -9,6 +9,7 @@ export const HASH_DOMAIN = Object.freeze({
   ROUTE: 'CON/v1/route',
   ROUTE_ACCOUNTS: 'CON/v1/route-accounts',
   QUOTE: 'CON/v1/quote',
+  RESERVATION_ID: 'CON/v1/reservation-id',
   SOLVER_SIGNATURE: 'CON/v1/solver-signature',
   OUTCOME: 'CON/v1/outcome',
   RECEIPT: 'CON/v1/receipt',
