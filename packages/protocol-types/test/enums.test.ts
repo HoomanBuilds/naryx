@@ -4,6 +4,7 @@ import {
   ADAPTER_ACCESS_MODE,
   ADAPTER_IDENTITY_SOURCE,
   ADAPTER_SIGNER_MODE,
+  ASYNC_BONDED_STATE,
   CanonicalWriter,
   DIRECTION,
   COMPARATOR,
@@ -60,6 +61,7 @@ const TABLES = {
   SOLVER_SIGNATURE_SCHEME,
   QUOTE_MODE,
   QUOTED_OUTCOME_KIND,
+  ASYNC_BONDED_STATE,
 };
 
 describe('frozen enum discriminants', () => {
@@ -87,6 +89,7 @@ describe('frozen enum discriminants', () => {
     assert.deepEqual(SETTLEMENT_CLASS, {
       ATOMIC_POSTCONDITION: 1,
       BATCHED_IOC_WITH_RECOVERY: 2,
+      ASYNC_BONDED_SOLVER: 3,
     });
     assert.deepEqual(QUANTITY_POLICY_CLASS, {
       EXACT_ATOMIC: 1,
@@ -177,6 +180,19 @@ describe('frozen enum discriminants', () => {
       SVM_ATOMIC_CPI: 1,
       EVM_ATOMIC_BATCH: 2,
       HYPERCORE_BATCHED_IOC: 3,
+      EVM_ASYNC_REQUEST: 4,
+    });
+    assert.deepEqual(ASYNC_BONDED_STATE, {
+      RESERVED: 1,
+      REQUEST_SUBMITTED: 2,
+      VENUE_PENDING: 3,
+      EXECUTED: 4,
+      CANCELLED: 5,
+      FROZEN: 6,
+      RECOVERY_PENDING: 7,
+      RECOVERED: 8,
+      MANUAL_INTERVENTION: 9,
+      CLOSED: 10,
     });
     assert.deepEqual(LEG_ROLE, { SPOT: 1, PERPETUAL: 2 });
     assert.deepEqual(TRADE_SIDE, { BUY: 1, SELL: 2 });

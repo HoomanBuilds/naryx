@@ -300,6 +300,55 @@ describe('route payload validation', () => {
       })),
       MalformedInputError,
     );
+
+    const asyncRecovery = {
+      policyVersion: 1,
+      controllerId: 'arbitrum-async-coordinator',
+      controllerCodeHash: hash('1'),
+      authorityModeId: 'bonded-solver',
+      recoveryExpiryUnit: 'EVM_UNIX_SECONDS' as const,
+      maxActionExpiryValue: 700n,
+      deadlineValue: 1_000n,
+      minRecoveryWindowMs: 60_000n,
+      maxRecoveryCostCaps: [feeCap({ asset: input.legs[0]!.quoteAsset, maxAtoms: 1_000n })],
+      maxAggregateRecoveryLoss: { asset: input.legs[0]!.quoteAsset, atoms: 10_000n },
+      maxIntermediateResidual: { asset: input.legs[0]!.baseAsset, atoms: 1_000n },
+      maxTerminalResidual: { asset: input.legs[0]!.baseAsset, atoms: 10n },
+      reconciledStateSchemaHash: hash('2'),
+      actionBuilderCodeHash: hash('3'),
+      actionSlots: [{
+        sequence: 0,
+        action: 'CANCEL_OPEN_ORDERS' as const,
+        targetLeg: 1,
+        adapter: input.legs[1]!.adapter,
+        markets: [input.legs[1]!.market],
+      }],
+    };
+    const asynchronous = routePayload(atomicInput({
+      environment: 'testnet',
+      domain: domainRef('arbitrum-sepolia', 1, hash('4')),
+      quantityPolicyClass: 'EXACT_NET',
+      settlementClass: 'ASYNC_BONDED_SOLVER',
+      executionPlanKind: 'EVM_ASYNC_REQUEST',
+      routeExpiryUnit: 'EVM_UNIX_SECONDS',
+      routeExpiryValue: 500n,
+      recoveryPlan: asyncRecovery,
+    }));
+    assert.equal(asynchronous.settlementClass, 'ASYNC_BONDED_SOLVER');
+    assert.throws(
+      () => routePayload(atomicInput({
+        quantityPolicyClass: 'EXACT_NET',
+        settlementClass: 'ASYNC_BONDED_SOLVER',
+        executionPlanKind: 'EVM_ASYNC_REQUEST',
+        routeExpiryUnit: 'EVM_UNIX_SECONDS',
+        routeExpiryValue: 500n,
+        recoveryPlan: {
+          ...asyncRecovery,
+          recoveryExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+        },
+      })),
+      MalformedInputError,
+    );
   });
 
   test('captured bytes and arrays cannot be changed by caller mutation', () => {
@@ -404,6 +453,21 @@ describe('route payload validation', () => {
       () => recoveryPlan({
         ...valid,
         actionSlots: [{ ...valid.actionSlots[1]!, sequence: 0, timeInForce: 'FOK' }],
+      }),
+      MalformedInputError,
+    );
+    assert.equal(recoveryPlan({
+      ...valid,
+      recoveryExpiryUnit: 'EVM_UNIX_SECONDS',
+      maxActionExpiryValue: 2_000n,
+      deadlineValue: 3_000n,
+      minRecoveryWindowMs: 500_000n,
+    }).recoveryExpiryUnit, 'EVM_UNIX_SECONDS');
+    assert.throws(
+      () => recoveryPlan({
+        ...valid,
+        recoveryExpiryUnit: 'EVM_UNIX_SECONDS',
+        minRecoveryWindowMs: 500_001n,
       }),
       MalformedInputError,
     );

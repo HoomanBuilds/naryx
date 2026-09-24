@@ -31,6 +31,7 @@ export {
   QUANTITY_POLICY_CLASS,
   PARTIAL_FILL_POLICY,
   EXECUTION_PLAN_KIND,
+  ASYNC_BONDED_STATE,
   LEG_ROLE,
   TRADE_SIDE,
   LATE_BOUND_FIELD_KIND,
@@ -63,6 +64,7 @@ export {
   type QuantityPolicyClass,
   type PartialFillPolicy,
   type ExecutionPlanKind,
+  type AsyncBondedState,
   type LegRole,
   type TradeSide,
   type LateBoundFieldKind,
@@ -251,6 +253,23 @@ export {
   type FirmReservationIdentityInput,
   type FirmReservationIdentity,
 } from './firm-reservation.js';
+
+export {
+  asyncBondedAuthorization,
+  encodeAsyncBondedAuthorization,
+  asyncBondedAuthorizationBytes,
+  asyncBondedAuthorizationHash,
+  asyncBondedTransition,
+  encodeAsyncBondedTransition,
+  asyncBondedTransitionBytes,
+  asyncBondedTransitionHash,
+  type AsyncBoundedAmountInput,
+  type AsyncBoundedAmount,
+  type AsyncBondedAuthorizationInput,
+  type AsyncBondedAuthorization,
+  type AsyncBondedTransitionInput,
+  type AsyncBondedTransition,
+} from './async-bonded-execution.js';
 
 export {
   quotedOutcome,

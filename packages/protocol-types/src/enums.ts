@@ -57,6 +57,7 @@ export type RecoveryAction = keyof typeof RECOVERY_ACTION;
 export const SETTLEMENT_CLASS = Object.freeze({
   ATOMIC_POSTCONDITION: 1,
   BATCHED_IOC_WITH_RECOVERY: 2,
+  ASYNC_BONDED_SOLVER: 3,
 } as const);
 export type SettlementClass = keyof typeof SETTLEMENT_CLASS;
 
@@ -76,8 +77,23 @@ export const EXECUTION_PLAN_KIND = Object.freeze({
   SVM_ATOMIC_CPI: 1,
   EVM_ATOMIC_BATCH: 2,
   HYPERCORE_BATCHED_IOC: 3,
+  EVM_ASYNC_REQUEST: 4,
 } as const);
 export type ExecutionPlanKind = keyof typeof EXECUTION_PLAN_KIND;
+
+export const ASYNC_BONDED_STATE = Object.freeze({
+  RESERVED: 1,
+  REQUEST_SUBMITTED: 2,
+  VENUE_PENDING: 3,
+  EXECUTED: 4,
+  CANCELLED: 5,
+  FROZEN: 6,
+  RECOVERY_PENDING: 7,
+  RECOVERED: 8,
+  MANUAL_INTERVENTION: 9,
+  CLOSED: 10,
+} as const);
+export type AsyncBondedState = keyof typeof ASYNC_BONDED_STATE;
 
 export const LEG_ROLE = Object.freeze({
   SPOT: 1,

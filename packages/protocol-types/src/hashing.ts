@@ -36,6 +36,8 @@ export const HASH_DOMAIN = Object.freeze({
   SETTLEMENT_CLASS_IDENTITY: 'CON/v1/settlement-class-identity',
   CASH_CARRY_SERIES_IDENTITY: 'CON/v1/cash-carry-series-identity',
   CASH_CARRY_SERIES_BINDING: 'CON/v1/cash-carry-series-binding',
+  ASYNC_BONDED_AUTHORIZATION: 'CON/v1/async-bonded-authorization',
+  ASYNC_BONDED_TRANSITION: 'CON/v1/async-bonded-transition',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

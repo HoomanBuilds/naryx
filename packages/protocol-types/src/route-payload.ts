@@ -1051,7 +1051,11 @@ export function recoveryPlan(input: RecoveryPlanInput, context = 'recoveryPlan')
   const deadlineValue = bigintValue(input.deadlineValue, U64_BITS, `${context}.deadlineValue`);
   const minRecoveryWindowMs = bigintValue(input.minRecoveryWindowMs, U64_BITS, `${context}.minRecoveryWindowMs`);
   if (minRecoveryWindowMs === 0n) throw new MalformedInputError(`${context}.minRecoveryWindowMs`, 'value is zero');
-  if (maxActionExpiryValue >= deadlineValue || deadlineValue - maxActionExpiryValue < minRecoveryWindowMs) {
+  const minRecoveryWindow = recoveryWindowInExpiryUnits(
+    input.recoveryExpiryUnit,
+    minRecoveryWindowMs,
+  );
+  if (maxActionExpiryValue >= deadlineValue || deadlineValue - maxActionExpiryValue < minRecoveryWindow) {
     throw new MalformedInputError(context, 'recovery timing window is too short');
   }
   if (!Array.isArray(input.actionSlots) || input.actionSlots.length === 0) {
@@ -1131,7 +1135,7 @@ function orderedActions(values: readonly ActionCommitmentInput[], context: strin
 function validatePlanShape(input: RoutePayloadInput, context: string): void {
   const expectedClock = input.executionPlanKind === 'SVM_ATOMIC_CPI'
     ? 'SOLANA_SLOT'
-    : input.executionPlanKind === 'EVM_ATOMIC_BATCH'
+    : input.executionPlanKind === 'EVM_ATOMIC_BATCH' || input.executionPlanKind === 'EVM_ASYNC_REQUEST'
       ? 'EVM_UNIX_SECONDS'
       : 'HYPERLIQUID_UNIX_MILLISECONDS';
   if (input.routeExpiryUnit !== expectedClock) {
@@ -1140,15 +1144,63 @@ function validatePlanShape(input: RoutePayloadInput, context: string): void {
       `execution plan requires ${expectedClock}`,
     );
   }
-  const atomic = input.executionPlanKind !== 'HYPERCORE_BATCHED_IOC';
-  if (atomic) {
+  if (input.executionPlanKind === 'SVM_ATOMIC_CPI' || input.executionPlanKind === 'EVM_ATOMIC_BATCH') {
     if (input.settlementClass !== 'ATOMIC_POSTCONDITION' || input.quantityPolicyClass !== 'EXACT_ATOMIC' || input.recoveryPlan !== undefined) {
       throw new MalformedInputError(context, 'atomic plan shape is inconsistent');
     }
     return;
   }
-  if (input.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY' || input.quantityPolicyClass === 'EXACT_ATOMIC' || input.recoveryPlan === undefined) {
-    throw new MalformedInputError(context, 'HyperCore plan shape is inconsistent');
+  if (input.executionPlanKind === 'HYPERCORE_BATCHED_IOC') {
+    if (input.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY' || input.quantityPolicyClass === 'EXACT_ATOMIC' || input.recoveryPlan === undefined) {
+      throw new MalformedInputError(context, 'HyperCore plan shape is inconsistent');
+    }
+    return;
+  }
+  if (input.settlementClass !== 'ASYNC_BONDED_SOLVER' || input.quantityPolicyClass === 'EXACT_ATOMIC' || input.recoveryPlan === undefined) {
+    throw new MalformedInputError(context, 'EVM asynchronous plan shape is inconsistent');
+  }
+}
+
+function recoveryWindowInExpiryUnits(
+  recoveryExpiryUnit: ExpiryUnit,
+  minRecoveryWindowMs: bigint,
+): bigint {
+  if (recoveryExpiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS') return minRecoveryWindowMs;
+  if (recoveryExpiryUnit === 'EVM_UNIX_SECONDS') {
+    if (minRecoveryWindowMs % 1_000n !== 0n) {
+      throw new MalformedInputError(
+        'routePayload.recoveryPlan.minRecoveryWindowMs',
+        'EVM recovery window must be an exact number of seconds',
+      );
+    }
+    return minRecoveryWindowMs / 1_000n;
+  }
+  throw new MalformedInputError(
+    'routePayload.recoveryPlan.recoveryExpiryUnit',
+    'unsupported recovery expiry unit',
+  );
+}
+
+function validateRecoveryClock(route: RoutePayload): void {
+  if (route.recoveryPlan === undefined) return;
+  const expectedUnit = route.executionPlanKind === 'EVM_ASYNC_REQUEST'
+    ? 'EVM_UNIX_SECONDS'
+    : 'HYPERLIQUID_UNIX_MILLISECONDS';
+  if (route.recoveryPlan.recoveryExpiryUnit !== expectedUnit) {
+    throw new MalformedInputError(
+      'routePayload.recoveryPlan.recoveryExpiryUnit',
+      `execution plan requires ${expectedUnit}`,
+    );
+  }
+  const recoveryWindow = recoveryWindowInExpiryUnits(
+    route.recoveryPlan.recoveryExpiryUnit,
+    route.recoveryPlan.minRecoveryWindowMs,
+  );
+  if (route.routeExpiryValue + recoveryWindow > route.recoveryPlan.deadlineValue) {
+    throw new MalformedInputError(
+      'routePayload.recoveryPlan',
+      'route expiry leaves insufficient recovery window',
+    );
   }
 }
 
@@ -1177,12 +1229,7 @@ function validateReferences(route: RoutePayload): void {
     if (charge.collectionActionSequence !== undefined && charge.collectionActionSequence >= route.actions.length) throw new MalformedInputError('routePayload.serviceCharges.collectionActionSequence', 'unknown action sequence');
   }
   if (route.recoveryPlan !== undefined) {
-    if (route.recoveryPlan.recoveryExpiryUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS') {
-      throw new MalformedInputError('routePayload.recoveryPlan.recoveryExpiryUnit', 'HyperCore recovery uses millisecond expiry');
-    }
-    if (route.routeExpiryValue + route.recoveryPlan.minRecoveryWindowMs > route.recoveryPlan.deadlineValue) {
-      throw new MalformedInputError('routePayload.recoveryPlan', 'route expiry leaves insufficient recovery window');
-    }
+    validateRecoveryClock(route);
     for (const slot of route.recoveryPlan.actionSlots) {
       if (slot.targetLeg >= route.legs.length) throw new MalformedInputError('routePayload.recoveryPlan.actionSlots.targetLeg', 'unknown leg index');
       const target = route.legs[slot.targetLeg] as LegExecution;
