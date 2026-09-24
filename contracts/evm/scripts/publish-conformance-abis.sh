@@ -17,6 +17,7 @@ readonly -a ARTIFACTS=(
     "src/PackageVerifier.sol:PackageVerifier|PackageVerifier.abi.json"
     "src/NaryxStrategyAccount.sol:NaryxStrategyAccount|NaryxStrategyAccount.abi.json"
     "src/PackageQuoteShard.sol:PackageQuoteShard|PackageQuoteShard.abi.json"
+    "src/PackageQuoteShardRegistry.sol:PackageQuoteShardRegistry|PackageQuoteShardRegistry.abi.json"
     "src/interfaces/IExactSpotPort.sol:IExactSpotPort|IExactSpotPort.abi.json"
     "src/interfaces/ISpotFillRecorder.sol:ISpotFillRecorder|ISpotFillRecorder.abi.json"
     "src/interfaces/ISynFuturesInstrument.sol:ISynFuturesInstrument|ISynFuturesInstrument.abi.json"
