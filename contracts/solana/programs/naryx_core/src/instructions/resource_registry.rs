@@ -1238,11 +1238,11 @@ pub fn validate_cash_carry_admission(
     admission: &CashCarryAdmission,
     resources: &CashCarryResources,
 ) -> Result<u64> {
-    validate_cash_carry_admission_inner(config, admission, resources, true)
+    validate_cash_carry_admission_inner(&config.domain, admission, resources, true)
 }
 
 pub(crate) fn validate_cash_carry_exit_admission(
-    config: &ProtocolConfig,
+    historical_domain: &DomainRef,
     admission: &CashCarryAdmission,
     resources: &CashCarryResources,
 ) -> Result<u64> {
@@ -1250,17 +1250,17 @@ pub(crate) fn validate_cash_carry_exit_admission(
         admission.action == ResourceAction::Exit,
         ErrorCode::ResourceActionNotAllowed
     );
-    validate_cash_carry_admission_inner(config, admission, resources, false)
+    validate_cash_carry_admission_inner(historical_domain, admission, resources, false)
 }
 
 fn validate_cash_carry_admission_inner(
-    config: &ProtocolConfig,
+    expected_domain: &DomainRef,
     admission: &CashCarryAdmission,
     resources: &CashCarryResources,
     require_active: bool,
 ) -> Result<u64> {
     require!(
-        admission.domain == config.domain,
+        admission.domain == *expected_domain,
         ErrorCode::ResourceDomainMismatch
     );
     require!(
@@ -1329,9 +1329,9 @@ fn validate_cash_carry_admission_inner(
     ];
     for (record, kind, role, identity) in checks {
         if require_active {
-            require_resource_ref(record, &config.domain, kind, role, identity)?;
+            require_resource_ref(record, expected_domain, kind, role, identity)?;
         } else {
-            require_historical_resource_ref(record, &config.domain, kind, role, identity)?;
+            require_historical_resource_ref(record, expected_domain, kind, role, identity)?;
         }
         require_action(record.control.lifecycle, admission.action)?;
     }

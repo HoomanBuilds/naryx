@@ -59,6 +59,7 @@ impl CashCarryAction {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct CashCarryExecutionArgs {
     pub action: CashCarryAction,
+    pub recovery: bool,
     pub spot_quantity_atoms: u64,
     pub perp_quantity_atoms: u64,
     pub spot_limit_quote_atoms_per_base_lot: u64,
@@ -249,6 +250,7 @@ pub fn execution_digest(
     data.extend_from_slice(&quote_hash);
     data.extend_from_slice(&route_hash);
     data.push(args.action.discriminant());
+    data.push(u8::from(args.recovery));
     data.extend_from_slice(&args.spot_quantity_atoms.to_be_bytes());
     data.extend_from_slice(&args.perp_quantity_atoms.to_be_bytes());
     data.extend_from_slice(&args.spot_limit_quote_atoms_per_base_lot.to_be_bytes());
@@ -283,6 +285,14 @@ pub(crate) fn handler<'info>(
             ErrorCode::CashCarryEntryPaused
         );
     }
+    let execution_domain = select_execution_domain(
+        args.action,
+        &ctx.accounts.config.domain,
+        ctx.accounts.open_package.version,
+        ctx.accounts.open_package.trader,
+        ctx.accounts.trader.key(),
+        &ctx.accounts.open_package.domain,
+    )?;
     let resources = CashCarryResources {
         spot_adapter: &ctx.accounts.resources.spot_adapter_record,
         perp_adapter: &ctx.accounts.resources.perp_adapter_record,
@@ -293,7 +303,7 @@ pub(crate) fn handler<'info>(
         base_asset: &ctx.accounts.resources.base_asset_record,
         quote_asset: &ctx.accounts.resources.quote_asset_record,
     };
-    let admission = reconstruct_admission(&ctx.accounts, &args)?;
+    let admission = reconstruct_admission(&ctx.accounts, &args, execution_domain.clone())?;
     let resource_admission_commitment =
         resource_admission_commitment(&admission, &resource_record_keys(&ctx.accounts));
     let route_accounts_commitment =
@@ -311,17 +321,20 @@ pub(crate) fn handler<'info>(
             validate_resource_indices(&ctx.accounts, true)?;
         }
         CashCarryAction::Exit => {
-            validate_cash_carry_exit_admission(&ctx.accounts.config, &admission, &resources)?;
+            validate_cash_carry_exit_admission(&execution_domain, &admission, &resources)?;
             validate_resource_indices(&ctx.accounts, false)?;
         }
     }
     validate_live_resource_accounts(&ctx.accounts)?;
 
-    let solver = ctx.accounts.solver_registry.active;
-    require_keys_neq!(solver, Pubkey::default(), ErrorCode::CashCarrySolverInvalid);
+    let solver = execution_solver(
+        args.action,
+        args.recovery,
+        ctx.accounts.solver_registry.active,
+    )?;
     let account_keys = execution_account_keys(&ctx.accounts, ctx.remaining_accounts, solver);
     let digest = execution_digest(
-        &ctx.accounts.config.domain,
+        &execution_domain,
         order_hash,
         quote_hash,
         route_hash,
@@ -329,7 +342,9 @@ pub(crate) fn handler<'info>(
         resource_admission_commitment,
         &account_keys,
     );
-    require_solver_signature(&ctx.accounts.runtime.instructions_sysvar, &solver, &digest)?;
+    if !args.recovery {
+        require_solver_signature(&ctx.accounts.runtime.instructions_sysvar, &solver, &digest)?;
+    }
 
     let (base_is_a, pre_base_balance, pre_quote_balance) = token_route_and_balances(&ctx.accounts)?;
     let (pre_rise_base_lots, pre_rise_collateral_quote_lots) = read_position_and_collateral(
@@ -415,7 +430,7 @@ pub(crate) fn handler<'info>(
         CashCarryAction::Exit => ctx.accounts.open_package.entry_receipt,
     };
     ctx.accounts.receipt.set_inner(CashCarryExecutionReceipt {
-        domain: ctx.accounts.config.domain.clone(),
+        domain: execution_domain.clone(),
         order_hash,
         quote_hash,
         route_hash,
@@ -424,6 +439,7 @@ pub(crate) fn handler<'info>(
         nonce: args.nonce,
         execution_digest: digest,
         action: args.action.discriminant(),
+        recovery: args.recovery,
         spot_quantity_atoms: args.spot_quantity_atoms,
         perp_quantity_atoms: args.perp_quantity_atoms,
         spot_quote_delta_atoms,
@@ -450,7 +466,7 @@ pub(crate) fn handler<'info>(
     if args.action == CashCarryAction::Entry {
         ctx.accounts.open_package.set_inner(OpenCashCarryPackage {
             version: OPEN_PACKAGE_VERSION,
-            domain: ctx.accounts.config.domain.clone(),
+            domain: execution_domain.clone(),
             trader: ctx.accounts.trader.key(),
             entry_receipt,
             entry_route_hash: route_hash,
@@ -465,7 +481,7 @@ pub(crate) fn handler<'info>(
 
     emit!(CashCarryExecutionRecorded {
         receipt: ctx.accounts.receipt.key(),
-        domain: ctx.accounts.config.domain.clone(),
+        domain: execution_domain,
         order_hash,
         quote_hash,
         route_hash,
@@ -474,6 +490,7 @@ pub(crate) fn handler<'info>(
         nonce: args.nonce,
         execution_digest: digest,
         action: args.action.discriminant(),
+        recovery: args.recovery,
         spot_quantity_atoms: args.spot_quantity_atoms,
         perp_quantity_atoms: args.perp_quantity_atoms,
         spot_quote_delta_atoms,
@@ -510,6 +527,10 @@ fn validate_basic_inputs(
     }
     require!(args.nonce != 0, ErrorCode::CashCarryNonceZero);
     require!(
+        !args.recovery || args.action == CashCarryAction::Exit,
+        ErrorCode::CashCarryRecoveryInvalid
+    );
+    require!(
         args.spot_sqrt_price_limit != 0,
         ErrorCode::CashCarryRouteDirectionInvalid
     );
@@ -519,6 +540,47 @@ fn validate_basic_inputs(
 fn validate_expiry(current_slot: u64, expiry_slot: u64) -> Result<()> {
     require!(current_slot < expiry_slot, ErrorCode::CashCarryOrderExpired);
     Ok(())
+}
+
+fn select_execution_domain(
+    action: CashCarryAction,
+    active_domain: &DomainRef,
+    open_version: u8,
+    open_trader: Pubkey,
+    trader: Pubkey,
+    open_domain: &DomainRef,
+) -> Result<DomainRef> {
+    match action {
+        CashCarryAction::Entry => Ok(active_domain.clone()),
+        CashCarryAction::Exit => {
+            require!(
+                open_version == OPEN_PACKAGE_VERSION && open_trader == trader,
+                ErrorCode::CashCarryPackageNotOpen
+            );
+            Ok(open_domain.clone())
+        }
+    }
+}
+
+fn execution_solver(
+    action: CashCarryAction,
+    recovery: bool,
+    active_solver: Pubkey,
+) -> Result<Pubkey> {
+    if recovery {
+        require!(
+            action == CashCarryAction::Exit,
+            ErrorCode::CashCarryRecoveryInvalid
+        );
+        Ok(Pubkey::default())
+    } else {
+        require_keys_neq!(
+            active_solver,
+            Pubkey::default(),
+            ErrorCode::CashCarrySolverInvalid
+        );
+        Ok(active_solver)
+    }
 }
 
 fn validate_resource_indices(
@@ -594,6 +656,7 @@ fn validate_resource_indices(
 fn reconstruct_admission(
     accounts: &ExecuteCashAndCarry,
     args: &CashCarryExecutionArgs,
+    domain: DomainRef,
 ) -> Result<CashCarryAdmission> {
     let template = accounts
         .resources
@@ -610,7 +673,7 @@ fn reconstruct_admission(
         .clone()
         .ok_or_else(|| error!(ErrorCode::CashCarryResourceAccountMismatch))?;
     Ok(CashCarryAdmission {
-        domain: accounts.config.domain.clone(),
+        domain,
         spot_adapter: accounts
             .resources
             .spot_adapter_record
@@ -814,8 +877,7 @@ fn validate_package_lifecycle(
                 ErrorCode::CashCarryPackageNotOpen
             );
             require!(
-                open.domain == accounts.config.domain
-                    && open.trader == accounts.trader.key()
+                open.trader == accounts.trader.key()
                     && open.resource_admission_commitment == resource_commitment
                     && open.package_accounts_commitment == package_accounts_commitment
                     && open.spot_quantity_atoms == args.spot_quantity_atoms
@@ -837,6 +899,8 @@ fn validate_package_lifecycle(
                 .map_err(|_| error!(ErrorCode::CashCarryEntryReceiptInvalid))?;
             require!(
                 entry.action == CashCarryAction::Entry.discriminant()
+                    && !entry.recovery
+                    && entry.domain == open.domain
                     && entry.trader == accounts.trader.key()
                     && entry.route_hash == open.entry_route_hash
                     && entry.resource_admission_commitment == resource_commitment
@@ -1358,6 +1422,7 @@ mod tests {
         let admission = admission();
         let args = CashCarryExecutionArgs {
             action: CashCarryAction::Entry,
+            recovery: false,
             spot_quantity_atoms: admission.spot_quantity_atoms,
             perp_quantity_atoms: admission.perp_quantity_atoms,
             spot_limit_quote_atoms_per_base_lot: admission.spot_limit_quote_atoms_per_base_lot,
@@ -1406,12 +1471,37 @@ mod tests {
                 &[keys[1], keys[0]],
             )
         );
+        let mut normal_exit = args;
+        normal_exit.action = CashCarryAction::Exit;
+        let mut recovery = normal_exit.clone();
+        recovery.recovery = true;
+        assert_ne!(
+            execution_digest(
+                &admission.domain,
+                [18; 32],
+                [19; 32],
+                [20; 32],
+                &normal_exit,
+                resource,
+                &keys,
+            ),
+            execution_digest(
+                &admission.domain,
+                [18; 32],
+                [19; 32],
+                [20; 32],
+                &recovery,
+                resource,
+                &keys,
+            )
+        );
     }
 
     #[test]
     fn postconditions_enforce_exact_spot_and_rise_deltas() {
         let args = CashCarryExecutionArgs {
             action: CashCarryAction::Entry,
+            recovery: false,
             spot_quantity_atoms: 100,
             perp_quantity_atoms: 10,
             spot_limit_quote_atoms_per_base_lot: 200,
@@ -1440,5 +1530,60 @@ mod tests {
     fn expiry_is_strict() {
         assert!(validate_expiry(9, 10).is_ok());
         assert!(validate_expiry(10, 10).is_err());
+    }
+
+    #[test]
+    fn exit_uses_entry_domain_after_active_domain_rotation() {
+        let active = DomainRef::new("solana:test", 2, [2; 32]).unwrap();
+        let historical = DomainRef::new("solana:test", 1, [1; 32]).unwrap();
+        let trader = Pubkey::new_unique();
+        assert_eq!(
+            select_execution_domain(
+                CashCarryAction::Entry,
+                &active,
+                0,
+                Pubkey::default(),
+                trader,
+                &historical,
+            )
+            .unwrap(),
+            active
+        );
+        assert_eq!(
+            select_execution_domain(
+                CashCarryAction::Exit,
+                &active,
+                OPEN_PACKAGE_VERSION,
+                trader,
+                trader,
+                &historical,
+            )
+            .unwrap(),
+            historical
+        );
+        assert!(select_execution_domain(
+            CashCarryAction::Exit,
+            &active,
+            OPEN_PACKAGE_VERSION,
+            Pubkey::new_unique(),
+            trader,
+            &historical,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_authorization_is_exit_only_and_solverless() {
+        let active_solver = Pubkey::new_unique();
+        assert_eq!(
+            execution_solver(CashCarryAction::Entry, false, active_solver).unwrap(),
+            active_solver
+        );
+        assert_eq!(
+            execution_solver(CashCarryAction::Exit, true, Pubkey::default()).unwrap(),
+            Pubkey::default()
+        );
+        assert!(execution_solver(CashCarryAction::Entry, true, active_solver).is_err());
+        assert!(execution_solver(CashCarryAction::Exit, false, Pubkey::default()).is_err());
     }
 }

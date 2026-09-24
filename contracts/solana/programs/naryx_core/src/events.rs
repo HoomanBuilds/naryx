@@ -168,6 +168,7 @@ pub struct CashCarryExecutionRecorded {
     pub nonce: u64,
     pub execution_digest: [u8; 32],
     pub action: u8,
+    pub recovery: bool,
     pub spot_quantity_atoms: u64,
     pub perp_quantity_atoms: u64,
     pub spot_quote_delta_atoms: u64,

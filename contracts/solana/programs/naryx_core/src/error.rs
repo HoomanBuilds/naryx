@@ -274,4 +274,6 @@ pub enum ErrorCode {
     CashCarryOpenPackageMismatch,
     #[msg("Cash-and-carry entry receipt is invalid")]
     CashCarryEntryReceiptInvalid,
+    #[msg("Cash-and-carry recovery mode is only valid for exit")]
+    CashCarryRecoveryInvalid,
 }
