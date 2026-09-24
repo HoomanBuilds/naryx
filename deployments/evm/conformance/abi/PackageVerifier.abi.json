@@ -2950,6 +2950,11 @@
         "internalType": "uint256"
       },
       {
+        "name": "packageSizeUnits",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
         "name": "entryPerpNotionalWad",
         "type": "uint128",
         "internalType": "uint128"
