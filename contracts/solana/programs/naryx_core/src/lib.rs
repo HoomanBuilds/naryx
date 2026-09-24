@@ -139,6 +139,19 @@ pub mod naryx_core {
     ) -> Result<()> {
         instructions::execute_cash_and_carry::handler(ctx, order_hash, quote_hash, route_hash, args)
     }
+
+    pub fn execute_quoted_cash_and_carry<'info>(
+        ctx: Context<'info, ExecuteCashAndCarry<'info>>,
+        order_hash: [u8; HASH_BYTE_LENGTH],
+        quote_hash: [u8; HASH_BYTE_LENGTH],
+        route_hash: [u8; HASH_BYTE_LENGTH],
+        args: CashCarryExecutionArgs,
+        quote_args: CashCarryQuoteArgs,
+    ) -> Result<()> {
+        instructions::execute_cash_and_carry::quoted_handler(
+            ctx, order_hash, quote_hash, route_hash, args, quote_args,
+        )
+    }
 }
 
 #[cfg(feature = "conformance")]

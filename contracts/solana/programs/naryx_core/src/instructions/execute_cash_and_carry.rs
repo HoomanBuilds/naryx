@@ -1,4 +1,11 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{
+    prelude::*,
+    solana_program::{
+        bpf_loader_upgradeable::get_program_data_address,
+        instruction::{AccountMeta, Instruction},
+        program::{get_return_data, invoke_signed},
+    },
+};
 use anchor_spl::token::{Token, TokenAccount};
 use naryx_orca_adapter::{program::NaryxOrcaAdapter, ORCA_WHIRLPOOL_PROGRAM_ID};
 use naryx_rise_adapter::{
@@ -6,13 +13,15 @@ use naryx_rise_adapter::{
     RISE_GLOBAL_CONFIG, RISE_LOG_AUTHORITY, RISE_PROGRAM_ID,
 };
 use solana_instructions_sysvar::{load_current_index_checked, load_instruction_at_checked};
-use solana_sdk_ids::ed25519_program;
+use solana_sdk_ids::{bpf_loader_upgradeable, ed25519_program};
 use solana_sha256_hasher::hashv;
 
 use crate::{
     constants::{
         CASH_CARRY_EXECUTOR_SEED, CASH_CARRY_NONCE_SEED, CASH_CARRY_OPEN_SEED,
-        CASH_CARRY_RECEIPT_SEED, PROTOCOL_CONFIG_SEED, SOLVER_REGISTRY_SEED,
+        CASH_CARRY_RECEIPT_SEED, PACKAGE_BOOK_CLASS_SEED, PACKAGE_BOOK_PROGRAM_ID,
+        PACKAGE_QUOTE_LEVEL_PAGE_SEED, PACKAGE_QUOTE_SHARD_SEED, PROTOCOL_CONFIG_SEED,
+        SOLVER_REGISTRY_SEED,
     },
     error::ErrorCode,
     events::CashCarryExecutionRecorded,
@@ -31,6 +40,13 @@ const EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/cash-carry-execution/v1";
 const RESOURCE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-resources/v1";
 const ROUTE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-route-accounts/v1";
 const PACKAGE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-package-accounts/v1";
+const QUOTE_INTENT_DOMAIN: &[u8] = b"NARYX/cash-carry-quote-intent/v1";
+const QUOTED_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/quoted-cash-carry-execution/v1";
+const PACKAGE_BOOK_DOMAIN_REF_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-identity";
+const PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR: [u8; 8] =
+    [0x93, 0x38, 0x6b, 0x07, 0x4f, 0x8a, 0xcd, 0xb0];
+const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
+const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
 const OPEN_PACKAGE_VERSION: u8 = 1;
 pub const RISE_COLLATERAL_MUST_BE_PREFUNDED: bool = true;
 
@@ -70,6 +86,53 @@ pub struct CashCarryExecutionArgs {
     pub client_order_id: u128,
     pub expiry_slot: u64,
     pub nonce: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CashCarryQuoteArgs {
+    pub package_book_code_identity: [u8; 32],
+    pub series_manifest_hash: [u8; 32],
+    pub execution_class_manifest_hash: [u8; 32],
+    pub expected_reference_sequence: u64,
+    pub expected_shard_sequence: u64,
+    pub slot_index: u8,
+    pub level_id: u64,
+    pub expected_level_sequence: u64,
+    pub package_size_units: u64,
+    pub expected_package_price: i128,
+    pub expected_max_fee_atoms: u64,
+    pub expected_expiry_slot: u64,
+    pub expected_settlement_class_identity_hash: [u8; 32],
+    pub expected_quote_mode: u8,
+    pub expected_reservation_policy_hash: [u8; 32],
+    pub reservation_id: [u8; 32],
+    pub expected_fill_commitment: [u8; 32],
+}
+
+#[derive(AnchorSerialize, Clone, Copy)]
+struct PackageBookConsumeCapacityArgs {
+    expected_reference_sequence: u64,
+    expected_shard_sequence: u64,
+    slot_index: u8,
+    level_id: u64,
+    expected_level_sequence: u64,
+    package_size_units: u64,
+    expected_package_price: i128,
+    expected_max_fee_atoms: u64,
+    expected_expiry_slot: u64,
+    expected_settlement_class_identity_hash: [u8; 32],
+    expected_quote_mode: u8,
+    expected_reservation_policy_hash: [u8; 32],
+    reservation_id: [u8; 32],
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+}
+
+#[derive(Clone, Copy)]
+struct QuoteEvidence {
+    intent_commitment: [u8; 32],
+    fill_commitment: [u8; 32],
 }
 
 #[derive(Accounts)]
@@ -269,6 +332,107 @@ pub fn execution_digest(
     hashv(&[EXECUTION_DIGEST_DOMAIN, &data]).to_bytes()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn quoted_execution_digest(
+    domain: &DomainRef,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: &CashCarryExecutionArgs,
+    resource_admission_commitment: [u8; 32],
+    account_keys: &[Pubkey],
+    quote_evidence: QuoteEvidence,
+) -> [u8; 32] {
+    let base = execution_digest(
+        domain,
+        order_hash,
+        quote_hash,
+        route_hash,
+        args,
+        resource_admission_commitment,
+        account_keys,
+    );
+    hashv(&[
+        QUOTED_EXECUTION_DIGEST_DOMAIN,
+        &base,
+        &quote_evidence.intent_commitment,
+        &quote_evidence.fill_commitment,
+    ])
+    .to_bytes()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quote_intent_commitment(
+    domain: &DomainRef,
+    solver: &Pubkey,
+    consumer_authority: &Pubkey,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: &CashCarryQuoteArgs,
+    quote_account_keys: &[Pubkey],
+) -> [u8; 32] {
+    let mut data = Vec::with_capacity(512);
+    data.extend_from_slice(&domain.canonical_bytes());
+    data.extend_from_slice(solver.as_ref());
+    data.extend_from_slice(consumer_authority.as_ref());
+    data.extend_from_slice(&order_hash);
+    data.extend_from_slice(&quote_hash);
+    data.extend_from_slice(&route_hash);
+    data.extend_from_slice(&args.package_book_code_identity);
+    data.extend_from_slice(&args.series_manifest_hash);
+    data.extend_from_slice(&args.execution_class_manifest_hash);
+    data.extend_from_slice(&args.expected_reference_sequence.to_be_bytes());
+    data.extend_from_slice(&args.expected_shard_sequence.to_be_bytes());
+    data.push(args.slot_index);
+    data.extend_from_slice(&args.level_id.to_be_bytes());
+    data.extend_from_slice(&args.expected_level_sequence.to_be_bytes());
+    data.extend_from_slice(&args.package_size_units.to_be_bytes());
+    data.extend_from_slice(&args.expected_package_price.to_be_bytes());
+    data.extend_from_slice(&args.expected_max_fee_atoms.to_be_bytes());
+    data.extend_from_slice(&args.expected_expiry_slot.to_be_bytes());
+    data.extend_from_slice(&args.expected_settlement_class_identity_hash);
+    data.push(args.expected_quote_mode);
+    data.extend_from_slice(&args.expected_reservation_policy_hash);
+    data.extend_from_slice(&args.reservation_id);
+    data.extend_from_slice(&args.expected_fill_commitment);
+    data.extend_from_slice(&(quote_account_keys.len() as u32).to_be_bytes());
+    for key in quote_account_keys {
+        data.extend_from_slice(key.as_ref());
+    }
+    hashv(&[QUOTE_INTENT_DOMAIN, &data]).to_bytes()
+}
+
+fn encode_consume_capacity_instruction(
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: &CashCarryQuoteArgs,
+) -> Result<Vec<u8>> {
+    let wire = PackageBookConsumeCapacityArgs {
+        expected_reference_sequence: args.expected_reference_sequence,
+        expected_shard_sequence: args.expected_shard_sequence,
+        slot_index: args.slot_index,
+        level_id: args.level_id,
+        expected_level_sequence: args.expected_level_sequence,
+        package_size_units: args.package_size_units,
+        expected_package_price: args.expected_package_price,
+        expected_max_fee_atoms: args.expected_max_fee_atoms,
+        expected_expiry_slot: args.expected_expiry_slot,
+        expected_settlement_class_identity_hash: args.expected_settlement_class_identity_hash,
+        expected_quote_mode: args.expected_quote_mode,
+        expected_reservation_policy_hash: args.expected_reservation_policy_hash,
+        reservation_id: args.reservation_id,
+        order_hash,
+        quote_hash,
+        route_hash,
+    };
+    let mut data = Vec::with_capacity(305);
+    data.extend_from_slice(&PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR);
+    wire.serialize(&mut data)?;
+    Ok(data)
+}
+
 pub(crate) fn handler<'info>(
     ctx: Context<'info, ExecuteCashAndCarry<'info>>,
     order_hash: [u8; HASH_BYTE_LENGTH],
@@ -276,7 +440,43 @@ pub(crate) fn handler<'info>(
     route_hash: [u8; HASH_BYTE_LENGTH],
     args: CashCarryExecutionArgs,
 ) -> Result<()> {
+    execute(ctx, order_hash, quote_hash, route_hash, args, None)
+}
+
+pub(crate) fn quoted_handler<'info>(
+    ctx: Context<'info, ExecuteCashAndCarry<'info>>,
+    order_hash: [u8; HASH_BYTE_LENGTH],
+    quote_hash: [u8; HASH_BYTE_LENGTH],
+    route_hash: [u8; HASH_BYTE_LENGTH],
+    args: CashCarryExecutionArgs,
+    quote_args: CashCarryQuoteArgs,
+) -> Result<()> {
+    execute(
+        ctx,
+        order_hash,
+        quote_hash,
+        route_hash,
+        args,
+        Some(quote_args),
+    )
+}
+
+fn execute<'info>(
+    ctx: Context<'info, ExecuteCashAndCarry<'info>>,
+    order_hash: [u8; HASH_BYTE_LENGTH],
+    quote_hash: [u8; HASH_BYTE_LENGTH],
+    route_hash: [u8; HASH_BYTE_LENGTH],
+    args: CashCarryExecutionArgs,
+    quote_args: Option<CashCarryQuoteArgs>,
+) -> Result<()> {
     validate_basic_inputs(order_hash, quote_hash, route_hash, &args)?;
+    if let Some(quote) = &quote_args {
+        validate_quote_parameters(&args, quote)?;
+        require!(
+            ctx.remaining_accounts.len() >= PACKAGE_BOOK_ACCOUNT_COUNT,
+            ErrorCode::CashCarryQuoteAccountMismatch
+        );
+    }
     let execution_slot = Clock::get()?.slot;
     validate_expiry(execution_slot, args.expiry_slot)?;
     if args.action == CashCarryAction::Entry {
@@ -332,16 +532,46 @@ pub(crate) fn handler<'info>(
         args.recovery,
         ctx.accounts.solver_registry.active,
     )?;
+    let quote_evidence = if let Some(quote) = &quote_args {
+        prepare_quote_evidence(
+            &ctx.accounts,
+            ctx.remaining_accounts,
+            &execution_domain,
+            solver,
+            order_hash,
+            quote_hash,
+            route_hash,
+            quote,
+        )?
+    } else {
+        QuoteEvidence {
+            intent_commitment: [0u8; 32],
+            fill_commitment: [0u8; 32],
+        }
+    };
     let account_keys = execution_account_keys(&ctx.accounts, ctx.remaining_accounts, solver);
-    let digest = execution_digest(
-        &execution_domain,
-        order_hash,
-        quote_hash,
-        route_hash,
-        &args,
-        resource_admission_commitment,
-        &account_keys,
-    );
+    let digest = if quote_args.is_some() {
+        quoted_execution_digest(
+            &execution_domain,
+            order_hash,
+            quote_hash,
+            route_hash,
+            &args,
+            resource_admission_commitment,
+            &account_keys,
+            quote_evidence,
+        )
+    } else {
+        execution_digest(
+            &execution_domain,
+            order_hash,
+            quote_hash,
+            route_hash,
+            &args,
+            resource_admission_commitment,
+            &account_keys,
+        )
+    };
     if !args.recovery {
         require_solver_signature(&ctx.accounts.runtime.instructions_sysvar, &solver, &digest)?;
     }
@@ -359,6 +589,24 @@ pub(crate) fn handler<'info>(
         pre_rise_collateral_quote_lots,
         perp_base_lots,
     )?;
+
+    if let Some(quote) = &quote_args {
+        consume_package_quote(
+            &ctx.accounts,
+            ctx.remaining_accounts,
+            ctx.bumps.receipt,
+            order_hash,
+            quote_hash,
+            route_hash,
+            quote,
+        )?;
+    }
+
+    let rise_remaining_start = if quote_args.is_some() {
+        PACKAGE_BOOK_ACCOUNT_COUNT
+    } else {
+        0
+    };
 
     match args.action {
         CashCarryAction::Entry => {
@@ -380,6 +628,7 @@ pub(crate) fn handler<'info>(
                     client_order_id: args.client_order_id,
                 },
                 true,
+                &ctx.remaining_accounts[rise_remaining_start..],
             )?;
         }
         CashCarryAction::Exit => {
@@ -393,6 +642,7 @@ pub(crate) fn handler<'info>(
                     client_order_id: args.client_order_id,
                 },
                 false,
+                &ctx.remaining_accounts[rise_remaining_start..],
             )?;
             execute_spot(
                 &ctx,
@@ -438,6 +688,8 @@ pub(crate) fn handler<'info>(
         solver,
         nonce: args.nonce,
         execution_digest: digest,
+        quote_intent_commitment: quote_evidence.intent_commitment,
+        package_fill_commitment: quote_evidence.fill_commitment,
         action: args.action.discriminant(),
         recovery: args.recovery,
         spot_quantity_atoms: args.spot_quantity_atoms,
@@ -470,6 +722,8 @@ pub(crate) fn handler<'info>(
             trader: ctx.accounts.trader.key(),
             entry_receipt,
             entry_route_hash: route_hash,
+            quote_intent_commitment: quote_evidence.intent_commitment,
+            package_fill_commitment: quote_evidence.fill_commitment,
             resource_admission_commitment,
             entry_route_accounts_commitment: route_accounts_commitment,
             package_accounts_commitment,
@@ -489,6 +743,8 @@ pub(crate) fn handler<'info>(
         solver,
         nonce: args.nonce,
         execution_digest: digest,
+        quote_intent_commitment: quote_evidence.intent_commitment,
+        package_fill_commitment: quote_evidence.fill_commitment,
         action: args.action.discriminant(),
         recovery: args.recovery,
         spot_quantity_atoms: args.spot_quantity_atoms,
@@ -513,6 +769,266 @@ pub(crate) fn handler<'info>(
             .open_package
             .close(ctx.accounts.trader.to_account_info())?;
     }
+    Ok(())
+}
+
+fn validate_quote_parameters(
+    execution: &CashCarryExecutionArgs,
+    quote: &CashCarryQuoteArgs,
+) -> Result<()> {
+    require!(
+        execution.action == CashCarryAction::Entry && !execution.recovery,
+        ErrorCode::CashCarryQuoteActionInvalid
+    );
+    require!(
+        quote.package_book_code_identity != [0u8; 32]
+            && quote.series_manifest_hash != [0u8; 32]
+            && quote.execution_class_manifest_hash != [0u8; 32]
+            && quote.expected_settlement_class_identity_hash != [0u8; 32]
+            && quote.expected_fill_commitment != [0u8; 32]
+            && quote.expected_reference_sequence != 0
+            && quote.expected_shard_sequence != 0
+            && quote.level_id != 0
+            && quote.expected_level_sequence != 0
+            && quote.package_size_units != 0
+            && quote.expected_expiry_slot != 0
+            && quote.expected_expiry_slot <= execution.expiry_slot
+            && quote.expected_quote_mode == PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT
+            && quote.expected_max_fee_atoms == 0
+            && quote.expected_reservation_policy_hash == [0u8; 32]
+            && quote.reservation_id == [0u8; 32],
+        ErrorCode::CashCarryQuoteParameterInvalid
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_quote_evidence(
+    accounts: &ExecuteCashAndCarry,
+    remaining: &[AccountInfo],
+    domain: &DomainRef,
+    solver: Pubkey,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    quote: &CashCarryQuoteArgs,
+) -> Result<QuoteEvidence> {
+    let quote_accounts = &remaining[..PACKAGE_BOOK_ACCOUNT_COUNT];
+    validate_package_book_accounts(accounts, quote_accounts, domain, solver, quote)?;
+    let keys = quote_accounts
+        .iter()
+        .map(AccountInfo::key)
+        .collect::<Vec<_>>();
+    Ok(QuoteEvidence {
+        intent_commitment: quote_intent_commitment(
+            domain,
+            &solver,
+            &accounts.receipt.key(),
+            order_hash,
+            quote_hash,
+            route_hash,
+            quote,
+            &keys,
+        ),
+        fill_commitment: quote.expected_fill_commitment,
+    })
+}
+
+fn validate_package_book_accounts(
+    accounts: &ExecuteCashAndCarry,
+    quote_accounts: &[AccountInfo],
+    domain: &DomainRef,
+    solver: Pubkey,
+    quote: &CashCarryQuoteArgs,
+) -> Result<()> {
+    let package_book_program = &quote_accounts[0];
+    let package_book_program_data = &quote_accounts[1];
+    let core_program = &quote_accounts[2];
+    let core_program_data = &quote_accounts[3];
+    let package_book_class = &quote_accounts[4];
+    let shard = &quote_accounts[5];
+    let level_page = &quote_accounts[6];
+
+    require_keys_eq!(
+        package_book_program.key(),
+        PACKAGE_BOOK_PROGRAM_ID,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require!(
+        live_program_code_identity(package_book_program, package_book_program_data)?
+            == quote.package_book_code_identity,
+        ErrorCode::CashCarryQuoteCodeIdentityMismatch
+    );
+    require_keys_eq!(
+        core_program.key(),
+        crate::id(),
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    live_program_code_identity(core_program, core_program_data)?;
+
+    let (expected_class, expected_shard, expected_page) = expected_package_book_addresses(
+        domain,
+        solver,
+        quote.series_manifest_hash,
+        quote.execution_class_manifest_hash,
+    );
+    require_keys_eq!(
+        package_book_class.key(),
+        expected_class,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require_keys_eq!(
+        shard.key(),
+        expected_shard,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require_keys_eq!(
+        level_page.key(),
+        expected_page,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require!(
+        &accounts.config.domain == domain,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    Ok(())
+}
+
+fn expected_package_book_addresses(
+    domain: &DomainRef,
+    solver: Pubkey,
+    series_manifest_hash: [u8; 32],
+    execution_class_manifest_hash: [u8; 32],
+) -> (Pubkey, Pubkey, Pubkey) {
+    let domain_identity = hashv(&[
+        PACKAGE_BOOK_DOMAIN_REF_IDENTITY_DOMAIN,
+        &domain.canonical_bytes(),
+    ])
+    .to_bytes();
+    let version = domain.domain_manifest_version().to_le_bytes();
+    let manifest_hash = domain.domain_manifest_hash();
+    let class = Pubkey::find_program_address(
+        &[
+            PACKAGE_BOOK_CLASS_SEED,
+            domain_identity.as_ref(),
+            version.as_ref(),
+            manifest_hash.as_ref(),
+        ],
+        &PACKAGE_BOOK_PROGRAM_ID,
+    )
+    .0;
+    let shard = Pubkey::find_program_address(
+        &[
+            PACKAGE_QUOTE_SHARD_SEED,
+            class.as_ref(),
+            solver.as_ref(),
+            series_manifest_hash.as_ref(),
+            execution_class_manifest_hash.as_ref(),
+        ],
+        &PACKAGE_BOOK_PROGRAM_ID,
+    )
+    .0;
+    let page = Pubkey::find_program_address(
+        &[PACKAGE_QUOTE_LEVEL_PAGE_SEED, shard.as_ref()],
+        &PACKAGE_BOOK_PROGRAM_ID,
+    )
+    .0;
+    (class, shard, page)
+}
+
+fn live_program_code_identity(
+    program: &AccountInfo,
+    program_data: &AccountInfo,
+) -> Result<[u8; 32]> {
+    require!(
+        program.executable && program.owner == &bpf_loader_upgradeable::id(),
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require_keys_eq!(
+        program_data.key(),
+        get_program_data_address(program.key),
+        ErrorCode::CashCarryQuoteCodeIdentityMismatch
+    );
+    require_keys_eq!(
+        *program_data.owner,
+        bpf_loader_upgradeable::id(),
+        ErrorCode::CashCarryQuoteCodeIdentityMismatch
+    );
+    let data = program_data.try_borrow_data()?;
+    require!(
+        !data.is_empty(),
+        ErrorCode::CashCarryQuoteCodeIdentityMismatch
+    );
+    Ok(hashv(&[data.as_ref()]).to_bytes())
+}
+
+fn consume_package_quote<'info>(
+    accounts: &ExecuteCashAndCarry<'info>,
+    remaining: &[AccountInfo<'info>],
+    receipt_bump: u8,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    quote: &CashCarryQuoteArgs,
+) -> Result<()> {
+    let quote_accounts = &remaining[..PACKAGE_BOOK_ACCOUNT_COUNT];
+    let package_book_program = &quote_accounts[0];
+    let core_program = &quote_accounts[2];
+    let core_program_data = &quote_accounts[3];
+    let package_book_class = &quote_accounts[4];
+    let shard = &quote_accounts[5];
+    let level_page = &quote_accounts[6];
+    let instruction = Instruction {
+        program_id: PACKAGE_BOOK_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new_readonly(accounts.receipt.key(), true),
+            AccountMeta::new_readonly(core_program.key(), false),
+            AccountMeta::new_readonly(core_program_data.key(), false),
+            AccountMeta::new_readonly(accounts.config.key(), false),
+            AccountMeta::new_readonly(core_program.key(), false),
+            AccountMeta::new_readonly(core_program_data.key(), false),
+            AccountMeta::new_readonly(package_book_class.key(), false),
+            AccountMeta::new(shard.key(), false),
+            AccountMeta::new(level_page.key(), false),
+        ],
+        data: encode_consume_capacity_instruction(order_hash, quote_hash, route_hash, quote)?,
+    };
+    let trader = accounts.trader.key();
+    let bump = [receipt_bump];
+    let signer: &[&[u8]] = &[
+        CASH_CARRY_RECEIPT_SEED,
+        trader.as_ref(),
+        order_hash.as_ref(),
+        bump.as_ref(),
+    ];
+    invoke_signed(
+        &instruction,
+        &[
+            accounts.receipt.to_account_info(),
+            core_program.clone(),
+            core_program_data.clone(),
+            accounts.config.to_account_info(),
+            core_program.clone(),
+            core_program_data.clone(),
+            package_book_class.clone(),
+            shard.clone(),
+            level_page.clone(),
+            package_book_program.clone(),
+        ],
+        &[signer],
+    )?;
+    let (return_program, return_bytes) =
+        get_return_data().ok_or_else(|| error!(ErrorCode::CashCarryQuoteReturnDataInvalid))?;
+    require_keys_eq!(
+        return_program,
+        PACKAGE_BOOK_PROGRAM_ID,
+        ErrorCode::CashCarryQuoteReturnDataInvalid
+    );
+    require!(
+        return_bytes.len() == 32
+            && return_bytes.as_slice() == quote.expected_fill_commitment.as_ref(),
+        ErrorCode::CashCarryQuoteReturnDataInvalid
+    );
     Ok(())
 }
 
@@ -903,6 +1419,8 @@ fn validate_package_lifecycle(
                     && entry.domain == open.domain
                     && entry.trader == accounts.trader.key()
                     && entry.route_hash == open.entry_route_hash
+                    && entry.quote_intent_commitment == open.quote_intent_commitment
+                    && entry.package_fill_commitment == open.package_fill_commitment
                     && entry.resource_admission_commitment == resource_commitment
                     && entry.route_accounts_commitment == open.entry_route_accounts_commitment
                     && entry.spot_quantity_atoms == args.spot_quantity_atoms
@@ -1071,6 +1589,7 @@ fn execute_rise<'info>(
     ctx: &Context<'info, ExecuteCashAndCarry<'info>>,
     args: RiseMarketOrderArgs,
     entry: bool,
+    remaining_accounts: &[AccountInfo<'info>],
 ) -> Result<()> {
     let cpi_accounts = naryx_rise_adapter::cpi::accounts::ExecuteRiseOrder {
         strategy: ctx.accounts.rise_strategy.to_account_info(),
@@ -1107,7 +1626,7 @@ fn execute_rise<'info>(
         cpi_accounts,
         &signer_seed_groups,
     )
-    .with_remaining_accounts(ctx.remaining_accounts.to_vec());
+    .with_remaining_accounts(remaining_accounts.to_vec());
     if entry {
         naryx_rise_adapter::cpi::rise_enter_short(cpi, args)
     } else {
@@ -1415,6 +1934,161 @@ mod tests {
             perp_limit_quote_atoms_per_base_lot: 300,
             package_notional_atoms: 3_000,
         }
+    }
+
+    fn quote_args() -> CashCarryQuoteArgs {
+        CashCarryQuoteArgs {
+            package_book_code_identity: [21; 32],
+            series_manifest_hash: [22; 32],
+            execution_class_manifest_hash: [23; 32],
+            expected_reference_sequence: 24,
+            expected_shard_sequence: 25,
+            slot_index: 3,
+            level_id: 26,
+            expected_level_sequence: 27,
+            package_size_units: 28,
+            expected_package_price: -29,
+            expected_max_fee_atoms: 0,
+            expected_expiry_slot: 30,
+            expected_settlement_class_identity_hash: [31; 32],
+            expected_quote_mode: PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT,
+            expected_reservation_policy_hash: [0; 32],
+            reservation_id: [0; 32],
+            expected_fill_commitment: [32; 32],
+        }
+    }
+
+    fn execution_args() -> CashCarryExecutionArgs {
+        CashCarryExecutionArgs {
+            action: CashCarryAction::Entry,
+            recovery: false,
+            spot_quantity_atoms: 100,
+            perp_quantity_atoms: 10,
+            spot_limit_quote_atoms_per_base_lot: 200,
+            perp_limit_quote_atoms_per_base_lot: 300,
+            package_notional_atoms: 3_000,
+            spot_sqrt_price_limit: 12,
+            minimum_rise_collateral_quote_lots: 13,
+            client_order_id: 14,
+            expiry_slot: 40,
+            nonce: 16,
+        }
+    }
+
+    #[test]
+    fn package_book_consume_codec_has_exact_discriminator_and_field_order() {
+        let quote = quote_args();
+        let encoded =
+            encode_consume_capacity_instruction([41; 32], [42; 32], [43; 32], &quote).unwrap();
+        let mut expected = PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR.to_vec();
+        expected.extend_from_slice(&quote.expected_reference_sequence.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_shard_sequence.to_le_bytes());
+        expected.push(quote.slot_index);
+        expected.extend_from_slice(&quote.level_id.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_level_sequence.to_le_bytes());
+        expected.extend_from_slice(&quote.package_size_units.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_package_price.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_max_fee_atoms.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_expiry_slot.to_le_bytes());
+        expected.extend_from_slice(&quote.expected_settlement_class_identity_hash);
+        expected.push(quote.expected_quote_mode);
+        expected.extend_from_slice(&quote.expected_reservation_policy_hash);
+        expected.extend_from_slice(&quote.reservation_id);
+        expected.extend_from_slice(&[41; 32]);
+        expected.extend_from_slice(&[42; 32]);
+        expected.extend_from_slice(&[43; 32]);
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn quoted_digest_binds_fill_and_intent_commitments() {
+        let domain = DomainRef::new("solana:test", 1, [1; 32]).unwrap();
+        let args = execution_args();
+        let keys = [Pubkey::new_unique()];
+        let evidence = QuoteEvidence {
+            intent_commitment: [2; 32],
+            fill_commitment: [3; 32],
+        };
+        let digest = quoted_execution_digest(
+            &domain, [4; 32], [5; 32], [6; 32], &args, [7; 32], &keys, evidence,
+        );
+        let changed_fill = QuoteEvidence {
+            fill_commitment: [8; 32],
+            ..evidence
+        };
+        let changed_intent = QuoteEvidence {
+            intent_commitment: [9; 32],
+            ..evidence
+        };
+        assert_ne!(
+            digest,
+            quoted_execution_digest(
+                &domain,
+                [4; 32],
+                [5; 32],
+                [6; 32],
+                &args,
+                [7; 32],
+                &keys,
+                changed_fill,
+            )
+        );
+        assert_ne!(
+            digest,
+            quoted_execution_digest(
+                &domain,
+                [4; 32],
+                [5; 32],
+                [6; 32],
+                &args,
+                [7; 32],
+                &keys,
+                changed_intent,
+            )
+        );
+    }
+
+    #[test]
+    fn quoted_entry_rejects_firm_reservations_and_fees() {
+        let execution = execution_args();
+        let quote = quote_args();
+        assert!(validate_quote_parameters(&execution, &quote).is_ok());
+        let mut wrong = quote.clone();
+        wrong.expected_quote_mode = 2;
+        assert!(validate_quote_parameters(&execution, &wrong).is_err());
+        wrong = quote.clone();
+        wrong.reservation_id = [1; 32];
+        assert!(validate_quote_parameters(&execution, &wrong).is_err());
+        wrong = quote.clone();
+        wrong.expected_reservation_policy_hash = [1; 32];
+        assert!(validate_quote_parameters(&execution, &wrong).is_err());
+        wrong = quote;
+        wrong.expected_max_fee_atoms = 1;
+        assert!(validate_quote_parameters(&execution, &wrong).is_err());
+    }
+
+    #[test]
+    fn package_book_addresses_bind_domain_solver_and_manifest_hashes() {
+        let domain = DomainRef::new("solana:test", 1, [1; 32]).unwrap();
+        let solver = Pubkey::new_unique();
+        let addresses = expected_package_book_addresses(&domain, solver, [2; 32], [3; 32]);
+        let changed_domain = DomainRef::new("solana:test", 2, [4; 32]).unwrap();
+        assert_ne!(
+            addresses,
+            expected_package_book_addresses(&changed_domain, solver, [2; 32], [3; 32])
+        );
+        assert_ne!(
+            addresses,
+            expected_package_book_addresses(&domain, Pubkey::new_unique(), [2; 32], [3; 32])
+        );
+        assert_ne!(
+            addresses,
+            expected_package_book_addresses(&domain, solver, [5; 32], [3; 32])
+        );
+        assert_ne!(
+            addresses,
+            expected_package_book_addresses(&domain, solver, [2; 32], [6; 32])
+        );
     }
 
     #[test]

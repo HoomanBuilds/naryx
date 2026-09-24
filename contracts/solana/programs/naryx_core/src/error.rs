@@ -276,4 +276,14 @@ pub enum ErrorCode {
     CashCarryEntryReceiptInvalid,
     #[msg("Cash-and-carry recovery mode is only valid for exit")]
     CashCarryRecoveryInvalid,
+    #[msg("Cash-and-carry quoted execution is only valid for a normal entry")]
+    CashCarryQuoteActionInvalid,
+    #[msg("Cash-and-carry package quote parameters are invalid")]
+    CashCarryQuoteParameterInvalid,
+    #[msg("Cash-and-carry package-book account binding is invalid")]
+    CashCarryQuoteAccountMismatch,
+    #[msg("Cash-and-carry package-book code identity changed")]
+    CashCarryQuoteCodeIdentityMismatch,
+    #[msg("Cash-and-carry package-book return data is invalid")]
+    CashCarryQuoteReturnDataInvalid,
 }

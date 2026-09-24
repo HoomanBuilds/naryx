@@ -1,11 +1,13 @@
-use anchor_lang::prelude::Pubkey;
+use anchor_lang::{prelude::Pubkey, AnchorSerialize};
 use naryx_core::{DomainRef, ProtocolId};
 use naryx_package_book::{
     constants::{
         MAX_QUOTE_LEVELS, PACKAGE_BOOK_VERSION, QUOTE_MODE_EXECUTION_COMMITMENT,
         QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_BID,
     },
-    instructions::consume_capacity::fill_commitment,
+    instructions::consume_capacity::{
+        fill_commitment, validate_level_expectations, ConsumeCapacityArgs,
+    },
     state::{
         domain_ref_identity, PackageBookClass, PackageQuoteShard, QuoteLevel, QuoteLevelUpdate,
     },
@@ -165,6 +167,61 @@ fn quote_shard_lifecycle_is_sequence_safe_and_capacity_bounded() {
             0x2f, 0xed, 0x43, 0x7a,
         ]
     );
+
+    let consume = ConsumeCapacityArgs {
+        expected_reference_sequence: shard.reference_sequence,
+        expected_shard_sequence: shard.shard_sequence,
+        slot_index: 0,
+        level_id: consumed.level_id,
+        expected_level_sequence: consumed.level_sequence,
+        package_size_units: 5,
+        expected_package_price: 102,
+        expected_max_fee_atoms: consumed.max_fee_atoms,
+        expected_expiry_slot: consumed.expiry_slot,
+        expected_settlement_class_identity_hash: consumed.settlement_class_identity_hash,
+        expected_quote_mode: consumed.quote_mode,
+        expected_reservation_policy_hash: consumed.reservation_policy_hash,
+        reservation_id: [0; 32],
+        order_hash: [18; 32],
+        quote_hash: [19; 32],
+        route_hash: [20; 32],
+    };
+    let mut serialized = Vec::new();
+    consume.serialize(&mut serialized).unwrap();
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&consume.expected_reference_sequence.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_shard_sequence.to_le_bytes());
+    expected.push(consume.slot_index);
+    expected.extend_from_slice(&consume.level_id.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_level_sequence.to_le_bytes());
+    expected.extend_from_slice(&consume.package_size_units.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_package_price.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_max_fee_atoms.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_expiry_slot.to_le_bytes());
+    expected.extend_from_slice(&consume.expected_settlement_class_identity_hash);
+    expected.push(consume.expected_quote_mode);
+    expected.extend_from_slice(&consume.expected_reservation_policy_hash);
+    expected.extend_from_slice(&consume.reservation_id);
+    expected.extend_from_slice(&consume.order_hash);
+    expected.extend_from_slice(&consume.quote_hash);
+    expected.extend_from_slice(&consume.route_hash);
+    assert_eq!(serialized, expected);
+    assert!(validate_level_expectations(&consumed, &consume, 102, false).is_ok());
+    let mut wrong = consume;
+    wrong.expected_package_price += 1;
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
+    wrong = consume;
+    wrong.expected_level_sequence += 1;
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
+    wrong = consume;
+    wrong.expected_quote_mode = QUOTE_MODE_FIRM_ONCHAIN;
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
+    wrong = consume;
+    wrong.reservation_id = [21; 32];
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
+    wrong = consume;
+    wrong.expected_max_fee_atoms += 1;
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
 
     let next_sequence = shard.next_shard_sequence(4).unwrap();
     shard.cancel_level(&mut levels, 0, 17, 1).unwrap();

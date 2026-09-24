@@ -167,6 +167,8 @@ pub struct CashCarryExecutionRecorded {
     pub solver: Pubkey,
     pub nonce: u64,
     pub execution_digest: [u8; 32],
+    pub quote_intent_commitment: [u8; 32],
+    pub package_fill_commitment: [u8; 32],
     pub action: u8,
     pub recovery: bool,
     pub spot_quantity_atoms: u64,

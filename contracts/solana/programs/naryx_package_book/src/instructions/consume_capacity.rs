@@ -1,4 +1,4 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{prelude::*, solana_program::program::set_return_data};
 use naryx_core::{
     constants::PROTOCOL_CONFIG_SEED, program::NaryxCore, state::ProtocolConfig, DomainRef,
     ProtocolId,
@@ -27,6 +27,10 @@ pub struct ConsumeCapacityArgs {
     pub package_size_units: u64,
     pub expected_package_price: i128,
     pub expected_max_fee_atoms: u64,
+    pub expected_expiry_slot: u64,
+    pub expected_settlement_class_identity_hash: [u8; 32],
+    pub expected_quote_mode: u8,
+    pub expected_reservation_policy_hash: [u8; 32],
     pub reservation_id: [u8; 32],
     pub order_hash: [u8; 32],
     pub quote_hash: [u8; 32],
@@ -139,6 +143,39 @@ pub fn fill_commitment(
     hashv(&[bytes.as_ref()]).to_bytes()
 }
 
+pub fn validate_level_expectations(
+    level: &QuoteLevel,
+    args: &ConsumeCapacityArgs,
+    package_price: i128,
+    firm_onchain_enabled: bool,
+) -> Result<()> {
+    require!(
+        level.level_sequence == args.expected_level_sequence
+            && level.expiry_slot == args.expected_expiry_slot
+            && level.settlement_class_identity_hash == args.expected_settlement_class_identity_hash
+            && level.quote_mode == args.expected_quote_mode
+            && level.reservation_policy_hash == args.expected_reservation_policy_hash
+            && package_price == args.expected_package_price
+            && level.max_fee_atoms == args.expected_max_fee_atoms,
+        ErrorCode::AccountBindingMismatch
+    );
+    match level.quote_mode {
+        QUOTE_MODE_EXECUTION_COMMITMENT => require!(
+            args.reservation_id == [0u8; 32],
+            ErrorCode::ReservationIdInvalid
+        ),
+        QUOTE_MODE_FIRM_ONCHAIN => {
+            require!(firm_onchain_enabled, ErrorCode::FirmOnchainDisabled);
+            require!(
+                args.reservation_id != [0u8; 32],
+                ErrorCode::ReservationIdInvalid
+            );
+        }
+        _ => return err!(ErrorCode::QuoteModeUnsupported),
+    }
+    Ok(())
+}
+
 pub fn handler(ctx: Context<ConsumeCapacity>, args: ConsumeCapacityArgs) -> Result<()> {
     let class = &ctx.accounts.package_book_class;
     let shard = &mut ctx.accounts.shard;
@@ -200,29 +237,11 @@ pub fn handler(ctx: Context<ConsumeCapacity>, args: ConsumeCapacityArgs) -> Resu
             && level.level_sequence == args.expected_level_sequence,
         ErrorCode::LevelInactive
     );
-    match level.quote_mode {
-        QUOTE_MODE_EXECUTION_COMMITMENT => require!(
-            args.reservation_id == [0u8; 32],
-            ErrorCode::ReservationIdInvalid
-        ),
-        QUOTE_MODE_FIRM_ONCHAIN => {
-            require!(class.firm_onchain_enabled, ErrorCode::FirmOnchainDisabled);
-            require!(
-                args.reservation_id != [0u8; 32],
-                ErrorCode::ReservationIdInvalid
-            );
-        }
-        _ => return err!(ErrorCode::QuoteModeUnsupported),
-    }
     let package_price = shard
         .reference_package_price
         .checked_add(level.reference_offset)
         .ok_or_else(|| error!(ErrorCode::ArithmeticFailure))?;
-    require!(
-        package_price == args.expected_package_price
-            && level.max_fee_atoms == args.expected_max_fee_atoms,
-        ErrorCode::AccountBindingMismatch
-    );
+    validate_level_expectations(&level, &args, package_price, class.firm_onchain_enabled)?;
     let next_shard_sequence = shard.next_shard_sequence(args.expected_shard_sequence)?;
     let consumed_level = shard.consume_level(
         &mut level_page.levels,
@@ -277,5 +296,6 @@ pub fn handler(ctx: Context<ConsumeCapacity>, args: ConsumeCapacityArgs) -> Resu
         quote_hash: args.quote_hash,
         route_hash: args.route_hash,
     });
+    set_return_data(&commitment);
     Ok(())
 }
