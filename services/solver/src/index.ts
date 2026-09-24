@@ -621,3 +621,8 @@ export class HyperliquidTestnetPackageSubmissionService {
     }
   }
 }
+
+export {
+  HyperliquidSqliteDurableJournal,
+  type HyperliquidSqliteJournalOptions,
+} from './hyperliquid-sqlite-journal.js';
