@@ -2051,6 +2051,25 @@
   },
   {
     "type": "function",
+    "name": "hasOpenPackage",
+    "inputs": [
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "nextNonce",
     "inputs": [
       {

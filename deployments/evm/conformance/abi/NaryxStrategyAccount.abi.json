@@ -1367,6 +1367,54 @@
     "stateMutability": "view"
   },
   {
+    "type": "function",
+    "name": "withdrawIdleToken",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "IdleTokenWithdrawn",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "InvalidConfiguration",
     "inputs": []
@@ -1379,6 +1427,16 @@
   {
     "type": "error",
     "name": "InvalidRecoveryExit",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidWithdrawal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OpenPackageExists",
     "inputs": []
   },
   {
@@ -1396,5 +1454,15 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedWithdrawal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WithdrawalPostconditionFailed",
+    "inputs": []
   }
 ]
