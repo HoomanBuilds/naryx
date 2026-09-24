@@ -10,6 +10,7 @@ naryx_conformance_venue = "ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y"
 naryx_core = "8qmA9VuQwAAqQ3F93CAfLNFB3P8M8ygXgvn9xCnZXa2i"
 naryx_inventory_reservation = "93BUScJ5mAGt8uHozCaAyDVuydqxC6zmKcrBDKjiqtgo"
 naryx_orca_adapter = "J3kJZ6SP1dGW2TLNYfGJrujmecsfkGkeUzcGbR6EJs5w"
+naryx_package_book = "8MgGrVCrAN2AhQ6hHPLqRXkUvwQ2WKHcbSXtXpEWpsFR"
 naryx_rise_adapter = "7USHejoffnm7UgDhSJeF6mjT2gpEAwqRjyVmYXWx1TzP"
 
 [provider]

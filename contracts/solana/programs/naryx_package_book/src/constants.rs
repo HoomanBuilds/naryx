@@ -1,0 +1,13 @@
+pub const PACKAGE_BOOK_CLASS_SEED: &[u8] = b"package-book-class";
+pub const PACKAGE_QUOTE_SHARD_SEED: &[u8] = b"package-quote-shard";
+pub const QUOTE_LEVEL_PAGE_SEED: &[u8] = b"quote-level-page";
+pub const PACKAGE_BOOK_VERSION: u16 = 1;
+pub const MAX_QUOTE_LEVELS: usize = 32;
+pub const MAX_BATCH_LEVEL_UPDATES: usize = 16;
+pub const QUOTE_SIDE_BID: u8 = 1;
+pub const QUOTE_SIDE_ASK: u8 = 2;
+pub const QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
+pub const QUOTE_MODE_FIRM_ONCHAIN: u8 = 2;
+pub const FILL_COMMITMENT_DOMAIN: &[u8] = b"CON/v1/package-fill-commitment";
+pub const LEVEL_ACTIVE: u8 = 1;
+pub const LEVEL_INACTIVE: u8 = 0;

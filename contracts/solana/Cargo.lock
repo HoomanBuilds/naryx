@@ -2061,6 +2061,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "naryx_package_book"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "naryx_core",
+ "solana-sha256-hasher 3.1.0",
+]
+
+[[package]]
 name = "naryx_rise_adapter"
 version = "0.1.0"
 dependencies = [
