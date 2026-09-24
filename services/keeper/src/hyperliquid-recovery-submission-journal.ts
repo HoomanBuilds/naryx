@@ -1,0 +1,609 @@
+import { createHash } from 'node:crypto';
+import { manifestHash, protocolId } from '@naryx/protocol-types';
+import type { HyperliquidPackageAttempt } from './index.js';
+import type {
+  HypercoreRecoveryOrderAction,
+  HyperliquidRecoveryExecutionPlan,
+} from './hyperliquid-recovery-compiler.js';
+import type { HyperliquidRecoveryAttempt } from './hyperliquid-recovery-reconciliation.js';
+import {
+  validateHyperliquidRecoveryExecutionPlan,
+  type HyperliquidRecoveryVerifierIdentity,
+} from './hyperliquid-recovery-validation.js';
+
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
+const TWO_DAYS_MS = 172_800n * 1_000n;
+const ONE_DAY_MS = 86_400n * 1_000n;
+
+export const NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME =
+  'NARYX_CANONICAL_HYPERCORE_RECOVERY_ACTION_SHA256_V1';
+export const HYPERLIQUID_RECOVERY_NONCE_POLICY =
+  'STRICTLY_INCREASING_PER_RECOVERY_AGENT_WALLET';
+export const HYPERLIQUID_RECOVERY_SEQUENCE_POLICY =
+  'STRICTLY_INCREASING_PER_RECOVERY_AGENT_WALLET';
+
+export type HyperliquidRecoverySubmissionStatus =
+  | 'PREPARED'
+  | 'DURABLE_RECORD_CONFIRMED'
+  | 'SUBMITTED_UNKNOWN'
+  | 'ACKNOWLEDGED'
+  | 'REJECTED'
+  | 'RECONCILING'
+  | 'FENCED';
+
+export interface HyperliquidRecoverySubmissionRecord {
+  readonly recoveryAttemptId: string;
+  readonly recoveryLineageKey: `0x${string}`;
+  readonly recoveryKey: `0x${string}`;
+  readonly status: HyperliquidRecoverySubmissionStatus;
+  readonly account: HyperliquidRecoveryExecutionPlan['account'];
+  readonly agentWallet: `0x${string}`;
+  readonly signerLeaseId: string;
+  readonly nonce: bigint;
+  readonly recoverySequence: number;
+  readonly expiresAfterMs: bigint;
+  readonly vaultAddress: `0x${string}` | null;
+  readonly action: HypercoreRecoveryOrderAction;
+  readonly actionCommitmentScheme: typeof NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME;
+  readonly actionHash: `0x${string}`;
+  readonly recordHash: `0x${string}`;
+  readonly verifierIdentityHash: `0x${string}`;
+  readonly clientOrderIds: readonly `0x${string}`[];
+  readonly sourceAttempt: HyperliquidPackageAttempt;
+  readonly plan: HyperliquidRecoveryExecutionPlan;
+  readonly durableRevision: string | null;
+  readonly acknowledgementId: string | null;
+  readonly rejectionId: string | null;
+}
+
+export interface HyperliquidRecoveryAgentJournal {
+  readonly agentWallet: `0x${string}`;
+  readonly signerLeaseId: string;
+  readonly status: 'ACTIVE' | 'FENCED' | 'RETIRED';
+  readonly highestReservedNonce: bigint | null;
+  readonly recoveryLineages: readonly Readonly<{
+    recoveryLineageKey: `0x${string}`;
+    highestReservedRecoverySequence: number;
+  }>[];
+  readonly attempts: readonly HyperliquidRecoverySubmissionRecord[];
+}
+
+interface NormalizedVerifierIdentity {
+  readonly environment: 'testnet';
+  readonly controllerId: string;
+  readonly controllerCodeHash: Uint8Array;
+  readonly authorityModeId: string;
+  readonly actionBuilderCodeHash: Uint8Array;
+}
+
+export interface HyperliquidRecoverySubmissionJournal {
+  readonly version: bigint;
+  readonly verifierIdentity: NormalizedVerifierIdentity;
+  readonly verifierIdentityHash: `0x${string}`;
+  readonly agents: readonly HyperliquidRecoveryAgentJournal[];
+}
+
+export interface HyperliquidRecoveryPrepareInput {
+  readonly expectedVersion: bigint;
+  readonly recoveryAttemptId: string;
+  readonly agentWallet: `0x${string}`;
+  readonly signerLeaseId: string;
+  readonly sourceAttempt: HyperliquidPackageAttempt;
+  readonly plan: HyperliquidRecoveryExecutionPlan;
+  readonly nonce: bigint;
+  readonly nowMs: bigint;
+  readonly vaultAddress: `0x${string}` | null;
+}
+
+export interface HyperliquidRecoveryReconciliationHandoff {
+  readonly recoveryAttemptId: string;
+  readonly recoveryKey: `0x${string}`;
+  readonly agentWallet: `0x${string}`;
+  readonly account: HyperliquidRecoveryExecutionPlan['account'];
+  readonly nonce: bigint;
+  readonly recoverySequence: number;
+  readonly expiresAfterMs: bigint;
+  readonly vaultAddress: `0x${string}` | null;
+  readonly actionHash: `0x${string}`;
+  readonly actionCommitmentScheme: typeof NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME;
+  readonly clientOrderIds: readonly `0x${string}`[];
+  readonly attempt: HyperliquidRecoveryAttempt;
+}
+
+function requireCondition(condition: boolean, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+function identifier(value: string, name: string): string {
+  requireCondition(IDENTIFIER.test(value), `${name} is invalid`);
+  return value;
+}
+
+function address(value: string, name: string): `0x${string}` {
+  requireCondition(ADDRESS.test(value), `${name} must be a 20-byte address`);
+  return value.toLowerCase() as `0x${string}`;
+}
+
+function stableValue(value: unknown): unknown {
+  if (typeof value === 'bigint') return { bigint: value.toString() };
+  if (value instanceof Uint8Array) return { bytes: Buffer.from(value).toString('hex') };
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, stableValue(item)]));
+  }
+  return value;
+}
+
+function sha256(value: unknown): `0x${string}` {
+  return `0x${createHash('sha256').update(JSON.stringify(stableValue(value))).digest('hex')}`;
+}
+
+function normalizedIdentity(
+  input: HyperliquidRecoveryVerifierIdentity,
+): NormalizedVerifierIdentity {
+  requireCondition(input.environment === 'testnet', 'only HyperCore testnet recovery is enabled');
+  return Object.freeze({
+    environment: 'testnet',
+    controllerId: protocolId(input.controllerId, 'controllerId'),
+    controllerCodeHash: manifestHash(input.controllerCodeHash, 'controllerCodeHash'),
+    authorityModeId: protocolId(input.authorityModeId, 'authorityModeId'),
+    actionBuilderCodeHash: manifestHash(input.actionBuilderCodeHash, 'actionBuilderCodeHash'),
+  });
+}
+
+function actionHash(action: HypercoreRecoveryOrderAction): `0x${string}` {
+  return sha256([NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME, action]);
+}
+
+function recoveryKey(plan: HyperliquidRecoveryExecutionPlan): `0x${string}` {
+  return sha256([
+    'naryx/hypercore/recovery-key/v1',
+    plan.domain,
+    plan.commitments,
+    plan.account,
+    plan.sourceEvidenceVersion,
+    plan.recoverySequence,
+    plan.orders.map((order) => order.clientOrderId.toLowerCase()),
+  ]);
+}
+
+function recoveryLineageKey(plan: HyperliquidRecoveryExecutionPlan): `0x${string}` {
+  return sha256([
+    'naryx/hypercore/recovery-lineage/v1',
+    plan.domain,
+    plan.commitments,
+    plan.account,
+  ]);
+}
+
+type RecordCore = Omit<HyperliquidRecoverySubmissionRecord,
+  'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'>;
+
+function immutableRecord(
+  record: RecordCore | HyperliquidRecoverySubmissionRecord,
+): RecordCore {
+  return {
+    recoveryAttemptId: record.recoveryAttemptId,
+    recoveryLineageKey: record.recoveryLineageKey,
+    recoveryKey: record.recoveryKey,
+    account: record.account,
+    agentWallet: record.agentWallet,
+    signerLeaseId: record.signerLeaseId,
+    nonce: record.nonce,
+    recoverySequence: record.recoverySequence,
+    expiresAfterMs: record.expiresAfterMs,
+    vaultAddress: record.vaultAddress,
+    action: record.action,
+    actionCommitmentScheme: record.actionCommitmentScheme,
+    actionHash: record.actionHash,
+    verifierIdentityHash: record.verifierIdentityHash,
+    clientOrderIds: record.clientOrderIds,
+    sourceAttempt: record.sourceAttempt,
+    plan: record.plan,
+  };
+}
+
+function recordHash(record: RecordCore | HyperliquidRecoverySubmissionRecord): `0x${string}` {
+  return sha256(['naryx/hypercore/recovery-submission-record/v1', immutableRecord(record)]);
+}
+
+function agentAt(journal: HyperliquidRecoverySubmissionJournal, agentWallet: string): number {
+  return journal.agents.findIndex((agent) => agent.agentWallet === agentWallet);
+}
+
+function locate(
+  journal: HyperliquidRecoverySubmissionJournal,
+  recoveryAttemptId: string,
+): Readonly<{
+  agentIndex: number;
+  recordIndex: number;
+  agent: HyperliquidRecoveryAgentJournal;
+  record: HyperliquidRecoverySubmissionRecord;
+}> {
+  requireCondition(journal.verifierIdentityHash
+    === sha256(['naryx/hypercore/recovery-verifier-identity/v1', journal.verifierIdentity]),
+  'journal verifier identity was modified');
+  for (const [agentIndex, agent] of journal.agents.entries()) {
+    const recordIndex = agent.attempts.findIndex(
+      (record) => record.recoveryAttemptId === recoveryAttemptId,
+    );
+    if (recordIndex < 0) continue;
+    const record = agent.attempts[recordIndex]!;
+    requireCondition(record.verifierIdentityHash === journal.verifierIdentityHash,
+      'journal verifier identity was modified');
+    requireCondition(record.actionCommitmentScheme
+      === NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME,
+    'journal recovery action commitment scheme is unsupported');
+    requireCondition(record.actionHash === actionHash(record.action),
+      'journal recovery action was modified');
+    requireCondition(record.recoveryKey === recoveryKey(record.plan),
+      'journal recovery key was modified');
+    requireCondition(record.recoveryLineageKey === recoveryLineageKey(record.plan),
+      'journal recovery lineage was modified');
+    requireCondition(record.recordHash === recordHash(record),
+      'journal recovery record was modified');
+    return Object.freeze({ agentIndex, recordIndex, agent, record });
+  }
+  throw new Error('recovery attempt ID is unknown');
+}
+
+function checkVersion(journal: HyperliquidRecoverySubmissionJournal, expectedVersion: bigint): void {
+  requireCondition(journal.verifierIdentityHash
+    === sha256(['naryx/hypercore/recovery-verifier-identity/v1', journal.verifierIdentity]),
+  'journal verifier identity was modified');
+  requireCondition(journal.version === expectedVersion,
+    'recovery journal compare-and-set version mismatch');
+}
+
+function replaceAgent(
+  journal: HyperliquidRecoverySubmissionJournal,
+  index: number,
+  agent: HyperliquidRecoveryAgentJournal,
+): HyperliquidRecoverySubmissionJournal {
+  const agents = [...journal.agents];
+  agents[index] = Object.freeze(agent);
+  return Object.freeze({
+    ...journal,
+    version: journal.version + 1n,
+    agents: Object.freeze(agents),
+  });
+}
+
+function replaceRecord(
+  journal: HyperliquidRecoverySubmissionJournal,
+  agentIndex: number,
+  recordIndex: number,
+  record: HyperliquidRecoverySubmissionRecord,
+): HyperliquidRecoverySubmissionJournal {
+  const agent = journal.agents[agentIndex]!;
+  const attempts = [...agent.attempts];
+  attempts[recordIndex] = Object.freeze(record);
+  return replaceAgent(journal, agentIndex, { ...agent, attempts: Object.freeze(attempts) });
+}
+
+export function createHyperliquidRecoverySubmissionJournal(
+  identity: HyperliquidRecoveryVerifierIdentity,
+): HyperliquidRecoverySubmissionJournal {
+  const verifierIdentity = normalizedIdentity(identity);
+  return Object.freeze({
+    version: 0n,
+    verifierIdentity,
+    verifierIdentityHash: sha256(['naryx/hypercore/recovery-verifier-identity/v1', verifierIdentity]),
+    agents: Object.freeze([]),
+  });
+}
+
+export function registerHyperliquidRecoveryAgent(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    agentWallet: `0x${string}`;
+    signerLeaseId: string;
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  const agentWallet = address(input.agentWallet, 'agentWallet');
+  const signerLeaseId = identifier(input.signerLeaseId, 'signerLeaseId');
+  requireCondition(agentAt(journal, agentWallet) < 0,
+    'recovery agent wallet is already registered, fenced, or retired');
+  requireCondition(journal.agents.every((agent) => agent.signerLeaseId !== signerLeaseId),
+    'recovery signer lease is already assigned');
+  checkVersion(journal, input.expectedVersion);
+  return Object.freeze({
+    ...journal,
+    version: journal.version + 1n,
+    agents: Object.freeze([...journal.agents, Object.freeze({
+      agentWallet,
+      signerLeaseId,
+      status: 'ACTIVE' as const,
+      highestReservedNonce: null,
+      recoveryLineages: Object.freeze([]),
+      attempts: Object.freeze([]),
+    })]),
+  });
+}
+
+export function prepareHyperliquidRecoverySubmission(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: HyperliquidRecoveryPrepareInput,
+): HyperliquidRecoverySubmissionJournal {
+  const recoveryAttemptId = identifier(input.recoveryAttemptId, 'recoveryAttemptId');
+  const agentWallet = address(input.agentWallet, 'agentWallet');
+  const signerLeaseId = identifier(input.signerLeaseId, 'signerLeaseId');
+  requireCondition(journal.verifierIdentityHash
+    === sha256(['naryx/hypercore/recovery-verifier-identity/v1', journal.verifierIdentity]),
+  'journal verifier identity was modified');
+  const agentIndex = agentAt(journal, agentWallet);
+  requireCondition(agentIndex >= 0, 'recovery agent wallet is not registered');
+  const agent = journal.agents[agentIndex]!;
+  requireCondition(agent.signerLeaseId === signerLeaseId, 'recovery signer lease mismatch');
+  validateHyperliquidRecoveryExecutionPlan(
+    input.sourceAttempt,
+    input.plan,
+    journal.verifierIdentity,
+    input.nowMs,
+  );
+  requireCondition(input.nowMs > 0n && input.nonce > 0n,
+    'recovery clock and nonce must be positive');
+  requireCondition(input.nonce >= input.nowMs - TWO_DAYS_MS
+    && input.nonce <= input.nowMs + ONE_DAY_MS,
+  'recovery nonce is outside the HyperCore time window');
+  requireCondition(input.plan.actionExpiryMs > input.nowMs
+    && input.plan.actionExpiryMs > input.nonce,
+  'recovery expiresAfter is stale');
+  requireCondition(agentWallet !== input.plan.account.masterAccount
+    && agentWallet !== input.plan.account.tradingAccount,
+  'recovery agent wallet must be distinct from the account query identity');
+  const vaultAddress = input.vaultAddress === null
+    ? null
+    : address(input.vaultAddress, 'vaultAddress');
+  requireCondition(input.plan.account.accountKind === 'MASTER'
+    ? vaultAddress === null
+    : vaultAddress === input.plan.account.tradingAccount,
+  'recovery vault context must match the trading account identity');
+  const plan = structuredClone(input.plan);
+  const sourceAttempt = structuredClone(input.sourceAttempt);
+  const action = structuredClone(plan.unsignedRequestFields.action);
+  const key = recoveryKey(plan);
+  const lineageKey = recoveryLineageKey(plan);
+  const core: RecordCore = {
+    recoveryAttemptId,
+    recoveryLineageKey: lineageKey,
+    recoveryKey: key,
+    account: plan.account,
+    agentWallet,
+    signerLeaseId,
+    nonce: input.nonce,
+    recoverySequence: plan.recoverySequence,
+    expiresAfterMs: plan.actionExpiryMs,
+    vaultAddress,
+    action,
+    actionCommitmentScheme: NARYX_HYPERCORE_RECOVERY_ACTION_COMMITMENT_SCHEME,
+    actionHash: actionHash(action),
+    verifierIdentityHash: journal.verifierIdentityHash,
+    clientOrderIds: Object.freeze(plan.orders.map(
+      (order) => order.clientOrderId.toLowerCase() as `0x${string}`,
+    )),
+    sourceAttempt,
+    plan,
+  };
+  const commitment = recordHash(core);
+  const existing = journal.agents.flatMap((entry) => entry.attempts)
+    .find((record) => record.recoveryAttemptId === recoveryAttemptId);
+  if (existing !== undefined) {
+    requireCondition(existing.recordHash === recordHash(existing),
+      'journal recovery record was modified');
+    requireCondition(existing.recordHash === commitment,
+      'recovery attempt replay changed its binding');
+    return journal;
+  }
+  requireCondition(!journal.agents.flatMap((entry) => entry.attempts)
+    .some((record) => record.recoveryKey === key),
+  'recovery sequence or client order IDs are already reserved');
+  requireCondition(agent.status === 'ACTIVE', 'recovery agent wallet is fenced or retired');
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(agent.highestReservedNonce === null || input.nonce > agent.highestReservedNonce,
+    'recovery nonce must strictly increase for the agent wallet');
+  const lineage = agent.recoveryLineages.find(
+    (entry) => entry.recoveryLineageKey === lineageKey,
+  );
+  requireCondition(lineage === undefined
+    || plan.recoverySequence > lineage.highestReservedRecoverySequence,
+  'recovery sequence must strictly increase for the package lineage');
+  const record: HyperliquidRecoverySubmissionRecord = Object.freeze({
+    ...core,
+    recordHash: commitment,
+    status: 'PREPARED',
+    durableRevision: null,
+    acknowledgementId: null,
+    rejectionId: null,
+  });
+  return replaceAgent(journal, agentIndex, {
+    ...agent,
+    highestReservedNonce: input.nonce,
+    recoveryLineages: Object.freeze([
+      ...agent.recoveryLineages.filter((entry) => entry.recoveryLineageKey !== lineageKey),
+      Object.freeze({
+        recoveryLineageKey: lineageKey,
+        highestReservedRecoverySequence: plan.recoverySequence,
+      }),
+    ]),
+    attempts: Object.freeze([...agent.attempts, record]),
+  });
+}
+
+export function confirmHyperliquidRecoveryDurableRecord(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    recoveryAttemptId: string;
+    recordHash: `0x${string}`;
+    durableRevision: string;
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  const located = locate(journal, input.recoveryAttemptId);
+  const durableRevision = identifier(input.durableRevision, 'durableRevision');
+  requireCondition(input.recordHash === located.record.recordHash,
+    'durable recovery record hash mismatch');
+  if (located.record.status !== 'PREPARED'
+    && located.record.durableRevision === durableRevision) return journal;
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.record.status === 'PREPARED',
+    'durable recovery confirmation requires PREPARED');
+  return replaceRecord(journal, located.agentIndex, located.recordIndex, {
+    ...located.record,
+    status: 'DURABLE_RECORD_CONFIRMED',
+    durableRevision,
+  });
+}
+
+function transition(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{ expectedVersion: bigint; recoveryAttemptId: string }>,
+  from: readonly HyperliquidRecoverySubmissionStatus[],
+  to: HyperliquidRecoverySubmissionStatus,
+): HyperliquidRecoverySubmissionJournal {
+  const located = locate(journal, input.recoveryAttemptId);
+  if (located.record.status === to) return journal;
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.agent.status === 'ACTIVE',
+    'recovery agent wallet is fenced or retired');
+  requireCondition(from.includes(located.record.status),
+    `${to} cannot follow ${located.record.status}`);
+  return replaceRecord(journal, located.agentIndex, located.recordIndex,
+    { ...located.record, status: to });
+}
+
+export function markHyperliquidRecoverySubmittedUnknown(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{ expectedVersion: bigint; recoveryAttemptId: string; nowMs: bigint }>,
+): HyperliquidRecoverySubmissionJournal {
+  const { record } = locate(journal, input.recoveryAttemptId);
+  if (record.status !== 'SUBMITTED_UNKNOWN') {
+    requireCondition(input.nowMs > 0n && input.nowMs < record.expiresAfterMs,
+      'recovery expiresAfter is stale before submission');
+    requireCondition(record.nonce >= input.nowMs - TWO_DAYS_MS
+      && record.nonce <= input.nowMs + ONE_DAY_MS,
+    'recovery nonce is outside the HyperCore time window before submission');
+  }
+  return transition(journal, input, ['DURABLE_RECORD_CONFIRMED'], 'SUBMITTED_UNKNOWN');
+}
+
+export function acknowledgeHyperliquidRecoverySubmission(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    recoveryAttemptId: string;
+    acknowledgementId: string;
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  const located = locate(journal, input.recoveryAttemptId);
+  const acknowledgementId = identifier(input.acknowledgementId, 'acknowledgementId');
+  if (located.record.acknowledgementId === acknowledgementId) return journal;
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.agent.status === 'ACTIVE'
+    && located.record.status === 'SUBMITTED_UNKNOWN',
+  'recovery acknowledgement requires submitted-unknown state');
+  return replaceRecord(journal, located.agentIndex, located.recordIndex, {
+    ...located.record,
+    status: 'ACKNOWLEDGED',
+    acknowledgementId,
+  });
+}
+
+export function rejectHyperliquidRecoverySubmission(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    recoveryAttemptId: string;
+    rejectionId: string;
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  const located = locate(journal, input.recoveryAttemptId);
+  const rejectionId = identifier(input.rejectionId, 'rejectionId');
+  if (located.record.rejectionId === rejectionId) return journal;
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.agent.status === 'ACTIVE'
+    && located.record.status === 'SUBMITTED_UNKNOWN',
+  'recovery rejection requires submitted-unknown state');
+  return replaceRecord(journal, located.agentIndex, located.recordIndex, {
+    ...located.record,
+    status: 'REJECTED',
+    rejectionId,
+  });
+}
+
+export function beginHyperliquidRecoverySubmissionReconciliation(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{ expectedVersion: bigint; recoveryAttemptId: string }>,
+): HyperliquidRecoverySubmissionJournal {
+  return transition(journal, input,
+    ['DURABLE_RECORD_CONFIRMED', 'SUBMITTED_UNKNOWN', 'ACKNOWLEDGED', 'REJECTED'],
+    'RECONCILING');
+}
+
+export function fenceHyperliquidRecoveryAgent(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    agentWallet: `0x${string}`;
+    signerLeaseId: string;
+    disposition: 'FENCED' | 'RETIRED';
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  requireCondition(input.disposition === 'FENCED' || input.disposition === 'RETIRED',
+    'recovery agent disposition is unsupported');
+  const agentIndex = agentAt(journal, address(input.agentWallet, 'agentWallet'));
+  requireCondition(agentIndex >= 0, 'recovery agent wallet is not registered');
+  const agent = journal.agents[agentIndex]!;
+  requireCondition(agent.signerLeaseId === input.signerLeaseId,
+    'recovery signer lease mismatch');
+  if (agent.status === input.disposition) return journal;
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(agent.status === 'ACTIVE',
+    'fenced or retired recovery agent cannot be reactivated');
+  return replaceAgent(journal, agentIndex, {
+    ...agent,
+    status: input.disposition,
+    attempts: Object.freeze(agent.attempts.map((record) => Object.freeze({
+      ...record,
+      status: record.status === 'PREPARED' || record.status === 'DURABLE_RECORD_CONFIRMED'
+        ? 'FENCED' as const
+        : record.status,
+    }))),
+  });
+}
+
+export function hyperliquidRecoveryReconciliationHandoff(
+  journal: HyperliquidRecoverySubmissionJournal,
+  recoveryAttemptId: string,
+): HyperliquidRecoveryReconciliationHandoff {
+  const { record } = locate(journal, recoveryAttemptId);
+  requireCondition(record.durableRevision !== null,
+    'unconfirmed recovery record cannot be reconciled');
+  return Object.freeze({
+    recoveryAttemptId: record.recoveryAttemptId,
+    recoveryKey: record.recoveryKey,
+    agentWallet: record.agentWallet,
+    account: record.account,
+    nonce: record.nonce,
+    recoverySequence: record.recoverySequence,
+    expiresAfterMs: record.expiresAfterMs,
+    vaultAddress: record.vaultAddress,
+    actionHash: record.actionHash,
+    actionCommitmentScheme: record.actionCommitmentScheme,
+    clientOrderIds: Object.freeze([...record.clientOrderIds]),
+    attempt: Object.freeze({
+      version: 1,
+      status: 'RECONCILING',
+      sourceAttempt: structuredClone(record.sourceAttempt),
+      plan: structuredClone(record.plan),
+      reasons: Object.freeze([]),
+      acceptedEvidence: null,
+      lockEvidence: null,
+      nextRecoveryObligation: null,
+    }),
+  });
+}
