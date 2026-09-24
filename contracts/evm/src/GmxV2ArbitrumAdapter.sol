@@ -38,6 +38,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     struct Funding {
         bytes32 requestPayloadHash;
         uint256 collateralAtoms;
+        uint256 spotQuoteAtoms;
         uint256 executionFeeWei;
         uint64 submissionDeadline;
         bool consumed;
@@ -64,7 +65,13 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     error DeadlinePassed();
     error InvalidOutcome();
 
-    event RequestFunded(bytes32 indexed packageId, bytes32 requestPayloadHash, uint256 collateralAtoms, uint256 feeWei);
+    event RequestFunded(
+        bytes32 indexed packageId,
+        bytes32 requestPayloadHash,
+        uint256 collateralAtoms,
+        uint256 spotQuoteAtoms,
+        uint256 feeWei
+    );
     event RequestCreated(bytes32 indexed packageId, bytes32 indexed requestKey, bytes32 requestPayloadHash);
     event OutcomeRecorded(bytes32 indexed requestKey, Status status, uint64 revision, bytes32 evidenceHash);
     event EvidenceRelayed(bytes32 indexed requestKey, bytes32 indexed packageId, uint64 revision);
@@ -115,6 +122,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         bytes32 marketCodeHash_,
         IERC20 collateralToken_,
         bytes32 collateralTokenCodeHash_,
+        GmxV2IsolatedAccount isolatedAccount_,
         IGmxV2OrderVerifier orderVerifier_,
         bytes32 orderVerifierCodeHash_,
         GmxV2.Deployment memory deployment
@@ -127,6 +135,10 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
                 || address(orderVerifier_).codehash != orderVerifierCodeHash_ || marketCodeHash_ == bytes32(0)
                 || collateralTokenCodeHash_ == bytes32(0) || orderVerifierCodeHash_ == bytes32(0)
                 || address(coordinator_.bondToken()) != address(collateralToken_)
+                || address(isolatedAccount_).code.length == 0 || isolatedAccount_.owner() != beneficiary_
+                || isolatedAccount_.fundingAuthority() != fundingAuthority_ || isolatedAccount_.market() != market_
+                || address(isolatedAccount_.collateralToken()) != address(collateralToken_)
+                || isolatedAccount_.deploymentHash() != keccak256(abi.encode(deployment))
         ) revert InvalidConfiguration();
         _validateDeployment(deployment);
         coordinator = coordinator_;
@@ -153,10 +165,8 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         orderVaultCodeHash = deployment.orderVaultCodeHash;
         orderHandlerCodeHash = deployment.orderHandlerCodeHash;
         roleStoreCodeHash = deployment.roleStoreCodeHash;
-        isolatedAccount = new GmxV2IsolatedAccount(
-            address(this), beneficiary_, fundingAuthority_, market_, collateralToken_, deployment
-        );
-        isolatedAccountCodeHash = address(isolatedAccount).codehash;
+        isolatedAccount = isolatedAccount_;
+        isolatedAccountCodeHash = address(isolatedAccount_).codehash;
     }
 
     function requestEvidence(bytes32 requestKey)
@@ -193,16 +203,24 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         funding[packageId] = Funding({
             requestPayloadHash: requestPayloadHash,
             collateralAtoms: venueRequest.collateralAtoms,
+            spotQuoteAtoms: venueRequest.spot.maxQuoteAtoms,
             executionFeeWei: venueRequest.executionFeeWei,
             submissionDeadline: venueRequest.submissionDeadline,
             consumed: false
         });
+        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
         uint256 beforeBalance = collateralToken.balanceOf(address(this));
-        collateralToken.safeTransferFrom(msg.sender, address(this), venueRequest.collateralAtoms);
-        if (collateralToken.balanceOf(address(this)) - beforeBalance != venueRequest.collateralAtoms) {
+        collateralToken.safeTransferFrom(msg.sender, address(this), totalFunding);
+        if (collateralToken.balanceOf(address(this)) - beforeBalance != totalFunding) {
             revert FundingMismatch();
         }
-        emit RequestFunded(packageId, requestPayloadHash, venueRequest.collateralAtoms, venueRequest.executionFeeWei);
+        emit RequestFunded(
+            packageId,
+            requestPayloadHash,
+            venueRequest.collateralAtoms,
+            venueRequest.spot.maxQuoteAtoms,
+            venueRequest.executionFeeWei
+        );
     }
 
     function reclaimExpiredFunding(bytes32 packageId) external nonReentrant {
@@ -213,7 +231,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (block.timestamp < reserved.submissionDeadline) revert DeadlinePassed();
         delete funding[packageId];
         activePackageId = bytes32(0);
-        _transferExactCollateral(fundingAuthority, reserved.collateralAtoms);
+        _transferExactCollateral(fundingAuthority, reserved.collateralAtoms + reserved.spotQuoteAtoms);
         (bool sent,) = payable(fundingAuthority).call{value: reserved.executionFeeWei}("");
         if (!sent) revert FundingMismatch();
         emit ExpiredFundingReclaimed(packageId);
@@ -233,6 +251,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (
             activePackageId != packageId || reserved.requestPayloadHash != requestPayloadHash || reserved.consumed
                 || reserved.collateralAtoms != venueRequest.collateralAtoms
+                || reserved.spotQuoteAtoms != venueRequest.spot.maxQuoteAtoms
                 || reserved.executionFeeWei != venueRequest.executionFeeWei
         ) revert FundingMismatch();
         if (block.timestamp >= venueRequest.submissionDeadline) revert DeadlinePassed();
@@ -255,12 +274,15 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             venueDeadline: venueRequest.venueDeadline,
             recoveryDeadline: venueRequest.recoveryDeadline
         });
+        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
         uint256 beforeBalance = collateralToken.balanceOf(address(isolatedAccount));
-        collateralToken.safeTransfer(address(isolatedAccount), venueRequest.collateralAtoms);
-        if (collateralToken.balanceOf(address(isolatedAccount)) - beforeBalance != venueRequest.collateralAtoms) {
+        collateralToken.safeTransfer(address(isolatedAccount), totalFunding);
+        if (collateralToken.balanceOf(address(isolatedAccount)) - beforeBalance != totalFunding) {
             revert FundingMismatch();
         }
-        requestKey = isolatedAccount.createIncrease{value: venueRequest.executionFeeWei}(registration);
+        requestKey = isolatedAccount.createPackageEntry{value: venueRequest.executionFeeWei}(
+            packageId, requestPayloadHash, venueRequest
+        );
         if (
             requestKey == bytes32(0) || _requests[requestKey].status != Status.NONE
                 || _packageRequestKey[packageId] != bytes32(0)
@@ -357,6 +379,8 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
                 || _positionSize(stored.registration.isLong) != stored.positionSizeBefore
         ) revert InvalidOutcome();
+        isolatedAccount.rollbackSpot(stored.registration.packageId, requestKey);
+        isolatedAccount.assertSpotCleared();
         uint256 collateralBalance = collateralToken.balanceOf(address(this));
         if (collateralBalance != 0) _transferExactCollateral(fundingAuthority, collateralBalance);
         bytes32 packageId = stored.registration.packageId;
@@ -387,7 +411,9 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             activePackageId != packageId || activeRequestKey != entryRequestKey
                 || stored.registration.packageId != packageId || stored.status != Status.EXECUTED
                 || isolatedAccount.positionSize(false) != 0 || isolatedAccount.positionSize(true) != 0
+                || isolatedAccount.hasActiveSpotInventory()
         ) revert InvalidOutcome();
+        isolatedAccount.assertSpotCleared();
         delete funding[packageId];
         activePackageId = bytes32(0);
         activeRequestKey = bytes32(0);
@@ -407,6 +433,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (
             currentSize < stored.positionSizeBefore
                 || currentSize - stored.positionSizeBefore != stored.registration.sizeDeltaUsd
+                || !isolatedAccount.hasActiveSpotInventory()
         ) {
             _record(stored, requestKey, Status.CONFLICT, callbackDataHash, currentSize);
             return;
@@ -473,6 +500,9 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             (stored.status == Status.EXECUTED || stored.status == Status.CANCELLED || stored.status == Status.RECOVERED)
                 && terminalResidualAtoms != 0
         ) revert InvalidOutcome();
+        if (stored.status == Status.CANCELLED || stored.status == Status.RECOVERED) {
+            isolatedAccount.assertSpotCleared();
+        }
         coordinator.recordVenueEvidence(
             stored.registration.packageId,
             expectedVersion,
@@ -515,7 +545,10 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         );
         if (stored.status == status && stored.evidenceHash == evidenceHash) return;
         bool authoritativeProgression = status == Status.EXECUTED
-            && (stored.status == Status.PENDING || stored.status == Status.CANCELLED || stored.status == Status.FROZEN);
+            && (stored.status == Status.PENDING
+                || stored.status == Status.CANCELLED
+                || stored.status == Status.FROZEN
+                || stored.status == Status.RECOVERED);
         bool recoveryProgression = status == Status.RECOVERED
             && (stored.status == Status.PENDING || stored.status == Status.CANCELLED || stored.status == Status.FROZEN);
         bool normalProgression = stored.status == Status.PENDING
@@ -539,7 +572,10 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
                 || venueRequest.collateralToken != address(collateralToken) || venueRequest.sizeDelta >= 0
                 || venueRequest.sizeDelta == type(int256).min || venueRequest.collateralAtoms == 0
                 || venueRequest.acceptablePrice == 0 || venueRequest.executionFeeWei == 0
-                || venueRequest.callbackGasLimit == 0 || block.timestamp >= venueRequest.submissionDeadline
+                || venueRequest.callbackGasLimit == 0 || venueRequest.orderHash == bytes32(0)
+                || venueRequest.quoteHash == bytes32(0) || venueRequest.routeHash == bytes32(0)
+                || venueRequest.spot.fundingOwner != fundingAuthority || venueRequest.spot.maxQuoteAtoms == 0
+                || block.timestamp >= venueRequest.submissionDeadline
                 || venueRequest.submissionDeadline >= venueRequest.venueDeadline
                 || venueRequest.venueDeadline >= venueRequest.recoveryDeadline
                 || cancellationDelay > type(uint64).max - block.timestamp
@@ -557,7 +593,10 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             terms.adapter != address(this) || terms.handler != address(this) || terms.solver != fundingAuthority
                 || terms.owner != beneficiary || terms.adapterCodeHash != address(this).codehash
                 || terms.handlerCodeHash != address(this).codehash || terms.requestPayloadHash != requestPayloadHash
-                || terms.lossAsset != address(collateralToken) || terms.residualAsset != address(collateralToken)
+                || terms.orderHash != venueRequest.orderHash || terms.quoteHash != venueRequest.quoteHash
+                || terms.routeHash != venueRequest.routeHash || terms.nonce != venueRequest.packageNonce
+                || venueRequest.spot.fundingOwner != terms.solver || terms.lossAsset != address(collateralToken)
+                || terms.residualAsset != address(collateralToken)
                 || terms.submissionDeadline != venueRequest.submissionDeadline
                 || terms.venueDeadline != venueRequest.venueDeadline
                 || terms.recoveryDeadline != venueRequest.recoveryDeadline

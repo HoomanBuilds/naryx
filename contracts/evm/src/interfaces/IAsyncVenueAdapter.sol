@@ -2,6 +2,19 @@
 pragma solidity 0.8.37;
 
 interface IAsyncVenueAdapter {
+    struct SpotEntry {
+        address fundingOwner;
+        address port;
+        bytes32 portCodeHash;
+        address baseToken;
+        address quoteToken;
+        uint256 baseAtoms;
+        uint256 maxQuoteAtoms;
+        uint256 rollbackMinQuoteAtoms;
+        bytes32 entryFillCommitment;
+        bytes32 rollbackFillCommitment;
+    }
+
     struct VenueRequest {
         bytes32 marketId;
         address collateralToken;
@@ -10,6 +23,11 @@ interface IAsyncVenueAdapter {
         uint256 acceptablePrice;
         uint256 executionFeeWei;
         uint256 callbackGasLimit;
+        uint256 packageNonce;
+        bytes32 orderHash;
+        bytes32 quoteHash;
+        bytes32 routeHash;
+        SpotEntry spot;
         uint64 submissionDeadline;
         uint64 venueDeadline;
         uint64 recoveryDeadline;

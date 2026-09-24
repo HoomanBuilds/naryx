@@ -103,6 +103,8 @@ contract StrategyAccountSpotPort is IExactSpotPort {
                 quoteOut
             );
     }
+
+    function assertDeployment() external view {}
 }
 
 contract StrategyAccountPerp is ISynFuturesInstrument, ISynFuturesPositionObserver {

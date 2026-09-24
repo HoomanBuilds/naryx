@@ -1,6 +1,13 @@
 [
   {
     "type": "function",
+    "name": "assertDeployment",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "baseToken",
     "inputs": [],
     "outputs": [

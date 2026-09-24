@@ -11,6 +11,7 @@ import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
 import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
 import {GmxV2ExitOrderVerifier} from "../src/GmxV2ExitOrderVerifier.sol";
 import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
+import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
 import {GmxV2, IGmxV2ExchangeRouter, IGmxV2OrderCallbackReceiver} from "../src/interfaces/IGmxV2.sol";
 
@@ -23,6 +24,57 @@ contract GmxTestToken is ERC20 {
 }
 
 contract GmxTestCode {}
+
+contract GmxSpotFactory {
+    address public tokenA;
+    address public tokenB;
+    uint24 public poolFee;
+    address public pool;
+
+    function setPool(address tokenA_, address tokenB_, uint24 poolFee_, address pool_) external {
+        tokenA = tokenA_;
+        tokenB = tokenB_;
+        poolFee = poolFee_;
+        pool = pool_;
+    }
+
+    function getPool(address tokenA_, address tokenB_, uint24 poolFee_) external view returns (address) {
+        bool matches = (tokenA_ == tokenA && tokenB_ == tokenB) || (tokenA_ == tokenB && tokenB_ == tokenA);
+        return matches && poolFee_ == poolFee ? pool : address(0);
+    }
+}
+
+contract GmxSpotPool {
+    address public immutable factory;
+    address public immutable token0;
+    address public immutable token1;
+    uint24 public immutable fee;
+
+    constructor(address factory_, address token0_, address token1_, uint24 fee_) {
+        factory = factory_;
+        token0 = token0_;
+        token1 = token1_;
+        fee = fee_;
+    }
+
+    function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160, bytes calldata data)
+        external
+        returns (int256 amount0, int256 amount1)
+    {
+        if (zeroForOne) {
+            require(amountSpecified > 0);
+            amount0 = amountSpecified;
+            amount1 = -2 * amountSpecified;
+            require(IERC20(token1).transfer(recipient, uint256(-amount1)));
+        } else {
+            require(amountSpecified < 0);
+            amount0 = amountSpecified;
+            amount1 = -2 * amountSpecified;
+            require(IERC20(token0).transfer(recipient, uint256(-amount0)));
+        }
+        UniswapV3SpotPort(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
+    }
+}
 
 contract GmxTestOrderVault {
     function refund(IERC20 token, address recipient, uint256 amount) external {
@@ -284,8 +336,16 @@ contract GmxV2ArbitrumAdapterTest is Test {
     uint256 private constant ACCEPTABLE_PRICE = 2_500e30;
     uint256 private constant EXECUTION_FEE = 0.002 ether;
     uint256 private constant CALLBACK_GAS = 2_000_000;
+    uint256 private constant SPOT_BASE = 1_000_000;
+    uint256 private constant MAX_SPOT_QUOTE = 3_000_000;
+    uint256 private constant MIN_ROLLBACK_QUOTE = 1_000_000;
+    uint24 private constant POOL_FEE = 3000;
 
     GmxTestToken private token;
+    GmxTestToken private baseToken;
+    GmxSpotFactory private spotFactory;
+    GmxSpotPool private spotPool;
+    UniswapV3SpotPort private spotPort;
     GmxTestDataStore private dataStore;
     GmxTestRoleStore private roleStore;
     GmxTestRouter private router;
@@ -296,6 +356,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
     GmxTestCode private market;
     GmxV2OrderVerifier private orderVerifier;
     AsyncBondedPackageCoordinator private coordinator;
+    GmxV2IsolatedAccount private account;
     GmxV2ArbitrumAdapter private adapter;
     GmxV2.Deployment private deployment;
 
@@ -345,6 +406,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
             roleStoreCodeHash: address(roleStore).codehash
         });
 
+        account = new GmxV2IsolatedAccount(address(0xBEEF), address(this), address(market), token, deployment);
         adapter = new GmxV2ArbitrumAdapter(
             coordinator,
             address(coordinator).codehash,
@@ -354,11 +416,39 @@ contract GmxV2ArbitrumAdapterTest is Test {
             address(market).codehash,
             token,
             address(token).codehash,
+            account,
             orderVerifier,
             address(orderVerifier).codehash,
             deployment
         );
-        token.mint(address(this), COLLATERAL * 10);
+        vm.prank(address(0xBEEF));
+        account.configureEntryController(address(adapter), address(adapter).codehash);
+        baseToken = new GmxTestToken();
+        spotFactory = new GmxSpotFactory();
+        spotPool = new GmxSpotPool(address(spotFactory), address(baseToken), address(token), POOL_FEE);
+        spotFactory.setPool(address(baseToken), address(token), POOL_FEE, address(spotPool));
+        spotPort = new UniswapV3SpotPort(
+            address(account),
+            UniswapV3SpotPort.Deployment({
+                chainId: block.chainid,
+                factory: address(spotFactory),
+                pool: address(spotPool),
+                baseToken: baseToken,
+                quoteToken: token,
+                baseTokenDecimals: 18,
+                quoteTokenDecimals: 18,
+                poolFee: POOL_FEE,
+                factoryCodeHash: address(spotFactory).codehash,
+                poolCodeHash: address(spotPool).codehash,
+                baseTokenCodeHash: address(baseToken).codehash,
+                quoteTokenCodeHash: address(token).codehash
+            })
+        );
+        vm.prank(address(0xBEEF));
+        account.configureSpotPort(spotPort, address(spotPort).codehash);
+        baseToken.mint(address(spotPool), SPOT_BASE * 100);
+        token.mint(address(spotPool), MAX_SPOT_QUOTE * 100);
+        token.mint(address(this), (COLLATERAL + MAX_SPOT_QUOTE) * 10);
         token.approve(address(adapter), type(uint256).max);
         _mockPackage(_request(), address(0xBEEF));
     }
@@ -387,6 +477,15 @@ contract GmxV2ArbitrumAdapterTest is Test {
         assertEq(exchangeRouter.swapPathLength(), 0);
         assertEq(exchangeRouter.dataList(0), PACKAGE_ID);
         assertEq(exchangeRouter.dataList(1), requestHash);
+        assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
+        assertEq(token.balanceOf(address(account)), 0);
+        assertTrue(account.hasActiveSpotInventory());
+        GmxV2.SpotEntryRegistration memory spotRegistration = account.activeSpotRegistration();
+        assertEq(spotRegistration.fundingOwner, address(this));
+        assertEq(spotRegistration.orderHash, request.orderHash);
+        assertEq(spotRegistration.quoteHash, request.quoteHash);
+        assertEq(spotRegistration.routeHash, request.routeHash);
+        assertEq(spotRegistration.packageNonce, request.packageNonce);
 
         assertNotEq(adapter.requestRegistrationHash(key), bytes32(0));
         assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.PENDING));
@@ -424,7 +523,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
         vm.prank(address(coordinator));
         vm.expectRevert(GmxV2ArbitrumAdapter.InvalidRequest.selector);
         adapter.createRequest(PACKAGE_ID, request);
-        assertEq(token.balanceOf(address(adapter)), COLLATERAL);
+        assertEq(token.balanceOf(address(adapter)), COLLATERAL + MAX_SPOT_QUOTE);
         assertEq(token.balanceOf(address(orderVault)), 0);
     }
 
@@ -453,6 +552,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
             address(market).codehash,
             otherToken,
             address(otherToken).codehash,
+            account,
             orderVerifier,
             address(orderVerifier).codehash,
             deployment
@@ -506,6 +606,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
             address(market).codehash,
             token,
             address(token).codehash,
+            account,
             orderVerifier,
             address(orderVerifier).codehash,
             invalid
@@ -529,25 +630,70 @@ contract GmxV2ArbitrumAdapterTest is Test {
         assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.RECOVERED));
         assertFalse(dataStore.containsBytes32(adapter.ORDER_LIST(), key));
         assertEq(token.balanceOf(address(0xBEEF)), 0);
-        assertEq(token.balanceOf(address(this)), COLLATERAL * 10);
+        assertEq(token.balanceOf(address(this)), (COLLATERAL + MAX_SPOT_QUOTE) * 10 - 2 * SPOT_BASE);
         adapter.finalizeUnfilledRequest(key);
+        assertEq(token.balanceOf(address(this)), (COLLATERAL + MAX_SPOT_QUOTE) * 10);
         assertEq(adapter.activePackageId(), bytes32(0));
         assertEq(adapter.activeRequestKey(), bytes32(0));
+    }
+
+    function testAuthenticatedLateExecutionPreventsSpotRollback() public {
+        bytes32 key = _fundAndCreate(_request());
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.CANCELLED));
+
+        exchangeRouter.executeOrder(key, SIZE);
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.EXECUTED));
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidOutcome.selector);
+        adapter.finalizeUnfilledRequest(key);
+        assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
+        assertTrue(account.hasActiveSpotInventory());
+    }
+
+    function testSpotPortCodeChangeBlocksRollback() public {
+        bytes32 key = _fundAndCreate(_request());
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
+        vm.etch(address(spotPort), hex"00");
+
+        vm.expectRevert(GmxV2IsolatedAccount.DeploymentChanged.selector);
+        adapter.finalizeUnfilledRequest(key);
+        assertTrue(account.hasActiveSpotInventory());
+    }
+
+    function testUnexpectedSpotResidueBlocksRecoveryCompletion() public {
+        bytes32 key = _fundAndCreate(_request());
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
+        baseToken.mint(address(account), 1);
+
+        vm.expectRevert(GmxV2IsolatedAccount.InvalidRequest.selector);
+        adapter.finalizeUnfilledRequest(key);
+        assertTrue(account.hasActiveSpotInventory());
+        assertEq(adapter.activePackageId(), PACKAGE_ID);
     }
 
     function testCreateFailureRollsBackCustodyAndFundingState() public {
         IAsyncVenueAdapter.VenueRequest memory request = _request();
         adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+        uint256 poolBaseBefore = baseToken.balanceOf(address(spotPool));
+        uint256 poolQuoteBefore = token.balanceOf(address(spotPool));
         exchangeRouter.setFailCreate(true);
         vm.prank(address(coordinator));
         vm.expectRevert(bytes("CREATE_FAILED"));
         adapter.createRequest(PACKAGE_ID, request);
 
-        assertEq(token.balanceOf(address(adapter)), COLLATERAL);
+        assertEq(token.balanceOf(address(adapter)), COLLATERAL + MAX_SPOT_QUOTE);
         assertEq(address(adapter).balance, EXECUTION_FEE);
         assertEq(token.balanceOf(address(orderVault)), 0);
         assertEq(token.allowance(address(adapter), address(router)), 0);
-        (,,,, bool consumed) = adapter.funding(PACKAGE_ID);
+        assertEq(baseToken.balanceOf(address(account)), 0);
+        assertEq(token.balanceOf(address(account)), 0);
+        assertEq(baseToken.balanceOf(address(spotPool)), poolBaseBefore);
+        assertEq(token.balanceOf(address(spotPool)), poolQuoteBefore);
+        assertFalse(account.hasActiveSpotInventory());
+        (,,,,, bool consumed) = adapter.funding(PACKAGE_ID);
         assertFalse(consumed);
     }
 
@@ -567,6 +713,22 @@ contract GmxV2ArbitrumAdapterTest is Test {
             acceptablePrice: ACCEPTABLE_PRICE,
             executionFeeWei: EXECUTION_FEE,
             callbackGasLimit: CALLBACK_GAS,
+            packageNonce: 7,
+            orderHash: keccak256("order"),
+            quoteHash: keccak256("quote"),
+            routeHash: keccak256("route"),
+            spot: IAsyncVenueAdapter.SpotEntry({
+                fundingOwner: address(this),
+                port: address(spotPort),
+                portCodeHash: address(spotPort).codehash,
+                baseToken: address(baseToken),
+                quoteToken: address(token),
+                baseAtoms: SPOT_BASE,
+                maxQuoteAtoms: MAX_SPOT_QUOTE,
+                rollbackMinQuoteAtoms: MIN_ROLLBACK_QUOTE,
+                entryFillCommitment: keccak256("entry-fill"),
+                rollbackFillCommitment: keccak256("rollback-fill")
+            }),
             submissionDeadline: uint64(block.timestamp + 100),
             venueDeadline: uint64(block.timestamp + 200),
             recoveryDeadline: uint64(block.timestamp + 300)
@@ -582,6 +744,10 @@ contract GmxV2ArbitrumAdapterTest is Test {
         packageData.terms.adapterCodeHash = address(adapter).codehash;
         packageData.terms.handlerCodeHash = address(adapter).codehash;
         packageData.terms.requestPayloadHash = keccak256(abi.encode(request));
+        packageData.terms.orderHash = request.orderHash;
+        packageData.terms.quoteHash = request.quoteHash;
+        packageData.terms.routeHash = request.routeHash;
+        packageData.terms.nonce = request.packageNonce;
         packageData.terms.lossAsset = address(token);
         packageData.terms.residualAsset = address(token);
         packageData.terms.submissionDeadline = request.submissionDeadline;
@@ -603,6 +769,242 @@ contract GmxV2ArbitrumAdapterTest is Test {
     }
 }
 
+contract GmxV2CoordinatedSpotEntryTest is Test {
+    uint256 private constant OWNER_KEY = 0xB0B;
+    uint256 private constant COLLATERAL = 5_000_000;
+    uint256 private constant SPOT_BASE = 1_000_000;
+    uint256 private constant MAX_SPOT_QUOTE = 3_000_000;
+    uint256 private constant EXECUTION_FEE = 0.002 ether;
+    uint24 private constant POOL_FEE = 3000;
+
+    GmxTestToken private token;
+    GmxTestToken private baseToken;
+    GmxTestDataStore private dataStore;
+    GmxTestRoleStore private roleStore;
+    GmxTestRouter private router;
+    GmxTestOrderHandler private orderHandler;
+    GmxTestExchangeRouter private exchangeRouter;
+    GmxTestCode private eventEmitter;
+    GmxTestOrderVault private orderVault;
+    GmxTestCode private market;
+    GmxV2OrderVerifier private orderVerifier;
+    ProtocolConfig private config;
+    AsyncBondedPackageCoordinator private coordinator;
+    GmxV2IsolatedAccount private account;
+    GmxV2ArbitrumAdapter private adapter;
+    UniswapV3SpotPort private spotPort;
+    GmxV2.Deployment private deployment;
+    address private owner;
+
+    function setUp() public {
+        vm.warp(20_000);
+        vm.deal(address(this), 10 ether);
+        owner = vm.addr(OWNER_KEY);
+        token = new GmxTestToken();
+        baseToken = new GmxTestToken();
+        dataStore = new GmxTestDataStore();
+        roleStore = new GmxTestRoleStore();
+        router = new GmxTestRouter();
+        orderHandler = new GmxTestOrderHandler();
+        eventEmitter = new GmxTestCode();
+        orderVault = new GmxTestOrderVault();
+        market = new GmxTestCode();
+        orderVerifier = new GmxV2OrderVerifier();
+        exchangeRouter = new GmxTestExchangeRouter(
+            address(dataStore),
+            address(eventEmitter),
+            address(router),
+            address(orderHandler),
+            address(roleStore),
+            address(orderVault)
+        );
+        roleStore.setRole(address(orderHandler), keccak256(abi.encode("CONTROLLER")), true);
+        dataStore.setUint(keccak256(abi.encode("REQUEST_EXPIRATION_TIME")), 50);
+        config = new ProtocolConfig(
+            "eip155:421614", 1, keccak256("manifest"), 1, address(0xA1), address(0xA2), address(0xA3), address(0xA4)
+        );
+        coordinator = new AsyncBondedPackageCoordinator(config, token, keccak256("execution-class"));
+        deployment = _deployment();
+        account = new GmxV2IsolatedAccount(owner, address(this), address(market), token, deployment);
+        adapter = new GmxV2ArbitrumAdapter(
+            coordinator,
+            address(coordinator).codehash,
+            address(this),
+            owner,
+            address(market),
+            address(market).codehash,
+            token,
+            address(token).codehash,
+            account,
+            orderVerifier,
+            address(orderVerifier).codehash,
+            deployment
+        );
+        vm.prank(owner);
+        account.configureEntryController(address(adapter), address(adapter).codehash);
+
+        GmxSpotFactory factory = new GmxSpotFactory();
+        GmxSpotPool pool = new GmxSpotPool(address(factory), address(baseToken), address(token), POOL_FEE);
+        factory.setPool(address(baseToken), address(token), POOL_FEE, address(pool));
+        spotPort = new UniswapV3SpotPort(
+            address(account),
+            UniswapV3SpotPort.Deployment({
+                chainId: block.chainid,
+                factory: address(factory),
+                pool: address(pool),
+                baseToken: baseToken,
+                quoteToken: token,
+                baseTokenDecimals: 18,
+                quoteTokenDecimals: 18,
+                poolFee: POOL_FEE,
+                factoryCodeHash: address(factory).codehash,
+                poolCodeHash: address(pool).codehash,
+                baseTokenCodeHash: address(baseToken).codehash,
+                quoteTokenCodeHash: address(token).codehash
+            })
+        );
+        vm.prank(owner);
+        account.configureSpotPort(spotPort, address(spotPort).codehash);
+        baseToken.mint(address(pool), SPOT_BASE * 100);
+        token.mint(address(pool), MAX_SPOT_QUOTE * 100);
+
+        vm.prank(address(0xA1));
+        coordinator.proposeAdmission(
+            address(adapter), address(adapter), address(adapter).codehash, address(adapter).codehash
+        );
+        vm.warp(block.timestamp + 1);
+        vm.prank(address(0xA3));
+        coordinator.activateAdmission(address(adapter));
+        vm.prank(address(0xA1));
+        config.scheduleUnpause();
+        vm.warp(block.timestamp + 1);
+        vm.prank(address(0xA3));
+        config.activateUnpause();
+    }
+
+    function testOwnerSignedTermsCoordinateSpotBuyAndGmxSubmission() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(request);
+        bytes32 id = coordinator.packageId(terms);
+        bytes memory signature = _signature(coordinator.reserveDigest(terms));
+
+        token.mint(address(this), COLLATERAL + MAX_SPOT_QUOTE + terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.approve(address(coordinator), terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.approve(address(adapter), COLLATERAL + MAX_SPOT_QUOTE);
+        assertEq(coordinator.reserve(terms, signature), id);
+        adapter.fundRequest{value: EXECUTION_FEE}(id, request);
+        bytes32 requestKey = coordinator.submitRequest(id, 1, request);
+
+        assertNotEq(requestKey, bytes32(0));
+        assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
+        assertEq(token.balanceOf(address(account)), 0);
+        assertTrue(account.hasActiveSpotInventory());
+        assertEq(account.activeSpotRegistration().fundingOwner, address(this));
+        assertEq(exchangeRouter.lastAccount(), address(account));
+        assertEq(exchangeRouter.dataList(0), id);
+        assertEq(exchangeRouter.dataList(1), keccak256(abi.encode(request)));
+        assertEq(
+            uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.REQUEST_SUBMITTED)
+        );
+    }
+
+    function _request() private view returns (IAsyncVenueAdapter.VenueRequest memory) {
+        return IAsyncVenueAdapter.VenueRequest({
+            marketId: bytes32(uint256(uint160(address(market)))),
+            collateralToken: address(token),
+            sizeDelta: -int256(4_000e30),
+            collateralAtoms: COLLATERAL,
+            acceptablePrice: 2_500e30,
+            executionFeeWei: EXECUTION_FEE,
+            callbackGasLimit: 2_000_000,
+            packageNonce: 0,
+            orderHash: keccak256("coordinated-order"),
+            quoteHash: keccak256("coordinated-quote"),
+            routeHash: keccak256("coordinated-route"),
+            spot: IAsyncVenueAdapter.SpotEntry({
+                fundingOwner: address(this),
+                port: address(spotPort),
+                portCodeHash: address(spotPort).codehash,
+                baseToken: address(baseToken),
+                quoteToken: address(token),
+                baseAtoms: SPOT_BASE,
+                maxQuoteAtoms: MAX_SPOT_QUOTE,
+                rollbackMinQuoteAtoms: SPOT_BASE,
+                entryFillCommitment: keccak256("coordinated-entry-fill"),
+                rollbackFillCommitment: keccak256("coordinated-rollback-fill")
+            }),
+            submissionDeadline: uint64(block.timestamp + 100),
+            venueDeadline: uint64(block.timestamp + 200),
+            recoveryDeadline: uint64(block.timestamp + 300)
+        });
+    }
+
+    function _terms(IAsyncVenueAdapter.VenueRequest memory request)
+        private
+        view
+        returns (AsyncBondedPackageCoordinator.Terms memory terms)
+    {
+        terms.domain = AsyncBondedPackageCoordinator.DomainRef(keccak256("eip155:421614"), 1, keccak256("manifest"));
+        terms.owner = owner;
+        terms.solver = address(this);
+        terms.adapter = address(adapter);
+        terms.handler = address(adapter);
+        terms.adapterCodeHash = address(adapter).codehash;
+        terms.handlerCodeHash = address(adapter).codehash;
+        terms.orderHash = request.orderHash;
+        terms.quoteHash = request.quoteHash;
+        terms.routeHash = request.routeHash;
+        terms.seriesIdentityKey = keccak256("series");
+        terms.seriesBindingVersion = 1;
+        terms.seriesBindingHash = keccak256("series-binding");
+        terms.executionClassIdentityHash = coordinator.EXECUTION_CLASS_ID();
+        terms.executionClassManifestHash = keccak256("execution-class");
+        terms.requestPayloadHash = keccak256(abi.encode(request));
+        terms.evidenceSchemaHash = coordinator.EVIDENCE_SCHEMA_ID();
+        terms.bondRecipient = address(0xB1);
+        terms.recoveryReserveRecipient = address(0xB2);
+        terms.slashRecipient = address(0xB3);
+        terms.lossAsset = address(token);
+        terms.residualAsset = address(token);
+        terms.bondAtoms = 100;
+        terms.recoveryReserveAtoms = 25;
+        terms.maxAggregateLossAtoms = 25;
+        terms.maxIntermediateResidualAtoms = COLLATERAL;
+        terms.maxTerminalResidualAtoms = 1;
+        terms.nonce = request.packageNonce;
+        terms.submissionDeadline = request.submissionDeadline;
+        terms.venueDeadline = request.venueDeadline;
+        terms.recoveryDeadline = request.recoveryDeadline;
+        terms.bondHash = coordinator.bondCommitment(terms);
+        terms.reservationHash = coordinator.reservationCommitment(terms);
+        terms.recoveryPolicyHash = coordinator.recoveryPolicyCommitment(terms);
+    }
+
+    function _deployment() private view returns (GmxV2.Deployment memory) {
+        return GmxV2.Deployment({
+            dataStore: address(dataStore),
+            eventEmitter: address(eventEmitter),
+            exchangeRouter: address(exchangeRouter),
+            router: address(router),
+            orderVault: address(orderVault),
+            orderHandler: address(orderHandler),
+            roleStore: address(roleStore),
+            dataStoreCodeHash: address(dataStore).codehash,
+            eventEmitterCodeHash: address(eventEmitter).codehash,
+            exchangeRouterCodeHash: address(exchangeRouter).codehash,
+            routerCodeHash: address(router).codehash,
+            orderVaultCodeHash: address(orderVault).codehash,
+            orderHandlerCodeHash: address(orderHandler).codehash,
+            roleStoreCodeHash: address(roleStore).codehash
+        });
+    }
+
+    function _signature(bytes32 digest) private pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, digest);
+        return abi.encodePacked(r, s, v);
+    }
+}
+
 contract GmxV2ExitControllerTest is Test {
     bytes32 private constant PACKAGE_ID = keccak256("exit-package");
     bytes32 private constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
@@ -613,8 +1015,16 @@ contract GmxV2ExitControllerTest is Test {
     uint256 private constant EXIT_PRICE = 2_400e30;
     uint256 private constant EXECUTION_FEE = 0.002 ether;
     uint256 private constant CALLBACK_GAS = 2_000_000;
+    uint256 private constant SPOT_BASE = 1_000_000;
+    uint256 private constant MAX_SPOT_QUOTE = 3_000_000;
+    uint256 private constant MIN_ROLLBACK_QUOTE = 1_000_000;
+    uint24 private constant POOL_FEE = 3000;
 
     GmxTestToken private token;
+    GmxTestToken private baseToken;
+    GmxSpotFactory private spotFactory;
+    GmxSpotPool private spotPool;
+    UniswapV3SpotPort private spotPort;
     GmxTestDataStore private dataStore;
     GmxTestRoleStore private roleStore;
     GmxTestRouter private router;
@@ -682,6 +1092,7 @@ contract GmxV2ExitControllerTest is Test {
             orderHandlerCodeHash: address(orderHandler).codehash,
             roleStoreCodeHash: address(roleStore).codehash
         });
+        account = new GmxV2IsolatedAccount(owner, address(this), address(market), token, deployment);
         adapter = new GmxV2ArbitrumAdapter(
             coordinator,
             address(coordinator).codehash,
@@ -691,11 +1102,13 @@ contract GmxV2ExitControllerTest is Test {
             address(market).codehash,
             token,
             address(token).codehash,
+            account,
             entryVerifier,
             address(entryVerifier).codehash,
             deployment
         );
-        account = adapter.isolatedAccount();
+        vm.prank(owner);
+        account.configureEntryController(address(adapter), address(adapter).codehash);
         exitController = new GmxV2ExitController(
             adapter,
             address(adapter).codehash,
@@ -708,8 +1121,34 @@ contract GmxV2ExitControllerTest is Test {
         vm.prank(owner);
         account.configureExitController(address(exitController), address(exitController).codehash);
 
-        token.mint(address(this), COLLATERAL);
-        token.approve(address(adapter), COLLATERAL);
+        baseToken = new GmxTestToken();
+        spotFactory = new GmxSpotFactory();
+        spotPool = new GmxSpotPool(address(spotFactory), address(baseToken), address(token), POOL_FEE);
+        spotFactory.setPool(address(baseToken), address(token), POOL_FEE, address(spotPool));
+        spotPort = new UniswapV3SpotPort(
+            address(account),
+            UniswapV3SpotPort.Deployment({
+                chainId: block.chainid,
+                factory: address(spotFactory),
+                pool: address(spotPool),
+                baseToken: baseToken,
+                quoteToken: token,
+                baseTokenDecimals: 18,
+                quoteTokenDecimals: 18,
+                poolFee: POOL_FEE,
+                factoryCodeHash: address(spotFactory).codehash,
+                poolCodeHash: address(spotPool).codehash,
+                baseTokenCodeHash: address(baseToken).codehash,
+                quoteTokenCodeHash: address(token).codehash
+            })
+        );
+        vm.prank(owner);
+        account.configureSpotPort(spotPort, address(spotPort).codehash);
+        baseToken.mint(address(spotPool), SPOT_BASE * 100);
+        token.mint(address(spotPool), MAX_SPOT_QUOTE * 100);
+
+        token.mint(address(this), COLLATERAL + MAX_SPOT_QUOTE);
+        token.approve(address(adapter), COLLATERAL + MAX_SPOT_QUOTE);
         IAsyncVenueAdapter.VenueRequest memory request = _entryRequest();
         _mockPackage(request);
         adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
@@ -719,7 +1158,7 @@ contract GmxV2ExitControllerTest is Test {
         assertEq(account.positionSize(false), SIZE);
     }
 
-    function testSignedFullClosePaysOnlyOwnerAndReleasesAccount() public {
+    function testSignedFullClosePaysOnlyOwnerAndKeepsSpotInventoryLocked() public {
         GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
         bytes32 exitRequestKey = _submit(authorization);
 
@@ -737,12 +1176,13 @@ contract GmxV2ExitControllerTest is Test {
 
         (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
         assertEq(uint8(status), uint8(GmxV2ExitController.Status.EXECUTED));
-        assertTrue(released);
+        assertFalse(released);
         assertEq(token.balanceOf(owner), COLLATERAL);
         assertEq(token.balanceOf(feePayer), 0);
         assertEq(token.balanceOf(feeRefundRecipient), 0);
-        assertEq(adapter.activePackageId(), bytes32(0));
-        assertEq(adapter.activeRequestKey(), bytes32(0));
+        assertEq(adapter.activePackageId(), PACKAGE_ID);
+        assertEq(adapter.activeRequestKey(), entryRequestKey);
+        assertTrue(account.hasActiveSpotInventory());
     }
 
     function testRejectsExpiredAuthorizationAndReplay() public {
@@ -781,7 +1221,7 @@ contract GmxV2ExitControllerTest is Test {
         exchangeRouter.executeOrder(exitRequestKey, 0);
         (GmxV2ExitController.Status finalStatus,,,, bool released) = exitController.exitEvidence(exitRequestKey);
         assertEq(uint8(finalStatus), uint8(GmxV2ExitController.Status.EXECUTED));
-        assertTrue(released);
+        assertFalse(released);
     }
 
     function testAuthenticatesCallbackAndRejectsUnexpectedShrink() public {
@@ -879,6 +1319,22 @@ contract GmxV2ExitControllerTest is Test {
             acceptablePrice: ENTRY_PRICE,
             executionFeeWei: EXECUTION_FEE,
             callbackGasLimit: CALLBACK_GAS,
+            packageNonce: 9,
+            orderHash: keccak256("exit-order"),
+            quoteHash: keccak256("exit-quote"),
+            routeHash: keccak256("exit-route"),
+            spot: IAsyncVenueAdapter.SpotEntry({
+                fundingOwner: address(this),
+                port: address(spotPort),
+                portCodeHash: address(spotPort).codehash,
+                baseToken: address(baseToken),
+                quoteToken: address(token),
+                baseAtoms: SPOT_BASE,
+                maxQuoteAtoms: MAX_SPOT_QUOTE,
+                rollbackMinQuoteAtoms: MIN_ROLLBACK_QUOTE,
+                entryFillCommitment: keccak256("exit-entry-fill"),
+                rollbackFillCommitment: keccak256("exit-rollback-fill")
+            }),
             submissionDeadline: uint64(block.timestamp + 100),
             venueDeadline: uint64(block.timestamp + 200),
             recoveryDeadline: uint64(block.timestamp + 300)
@@ -894,6 +1350,10 @@ contract GmxV2ExitControllerTest is Test {
         packageData.terms.adapterCodeHash = address(adapter).codehash;
         packageData.terms.handlerCodeHash = address(adapter).codehash;
         packageData.terms.requestPayloadHash = keccak256(abi.encode(request));
+        packageData.terms.orderHash = request.orderHash;
+        packageData.terms.quoteHash = request.quoteHash;
+        packageData.terms.routeHash = request.routeHash;
+        packageData.terms.nonce = request.packageNonce;
         packageData.terms.lossAsset = address(token);
         packageData.terms.residualAsset = address(token);
         packageData.terms.submissionDeadline = request.submissionDeadline;

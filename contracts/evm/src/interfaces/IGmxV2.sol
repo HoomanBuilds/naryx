@@ -203,6 +203,25 @@ library GmxV2 {
         uint64 recoveryDeadline;
     }
 
+    struct SpotEntryRegistration {
+        bytes32 packageId;
+        bytes32 requestPayloadHash;
+        address fundingOwner;
+        address port;
+        bytes32 portCodeHash;
+        address baseToken;
+        address quoteToken;
+        uint256 packageNonce;
+        bytes32 orderHash;
+        bytes32 quoteHash;
+        bytes32 routeHash;
+        bytes32 entryFillCommitment;
+        bytes32 rollbackFillCommitment;
+        uint256 baseAtoms;
+        uint256 maxQuoteAtoms;
+        uint256 rollbackMinQuoteAtoms;
+    }
+
     struct ExitRegistration {
         bytes32 packageId;
         bytes32 entryRequestKey;

@@ -49,6 +49,83 @@
             "internalType": "uint256"
           },
           {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spot",
+            "type": "tuple",
+            "internalType": "struct IAsyncVenueAdapter.SpotEntry",
+            "components": [
+              {
+                "name": "fundingOwner",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "port",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "portCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "baseToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "quoteToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "baseAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "rollbackMinQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "entryFillCommitment",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "rollbackFillCommitment",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
             "name": "submissionDeadline",
             "type": "uint64",
             "internalType": "uint64"

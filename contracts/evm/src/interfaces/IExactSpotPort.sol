@@ -8,6 +8,7 @@ interface IExactSpotPort {
     function verifierCodeHash() external view returns (bytes32);
     function baseToken() external view returns (IERC20);
     function quoteToken() external view returns (IERC20);
+    function assertDeployment() external view;
     function buyExactOutput(
         uint256 packageNonce,
         bytes32 spotFillCommitment,

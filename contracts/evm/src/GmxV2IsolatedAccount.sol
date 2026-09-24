@@ -4,12 +4,16 @@ pragma solidity 0.8.37;
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
+import {IAsyncVenueAdapter} from "./interfaces/IAsyncVenueAdapter.sol";
+import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
 import {GmxV2, IGmxV2DataStore, IGmxV2ExchangeRouter} from "./interfaces/IGmxV2.sol";
+import {ISpotFillRecorder} from "./interfaces/ISpotFillRecorder.sol";
 
-contract GmxV2IsolatedAccount is ReentrancyGuard {
+contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant SIZE_IN_USD = keccak256(abi.encode("SIZE_IN_USD"));
+    bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
 
     error InvalidConfiguration();
     error DeploymentChanged();
@@ -18,8 +22,36 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
     error FundingMismatch();
 
     event ExitControllerConfigured(address indexed controller, bytes32 codeHash);
+    event EntryControllerConfigured(address indexed controller, bytes32 codeHash);
+    event SpotPortConfigured(address indexed port, bytes32 codeHash, address indexed baseToken, address quoteToken);
+    event SpotInventoryOpened(
+        bytes32 indexed packageId,
+        bytes32 indexed requestKey,
+        address indexed fundingOwner,
+        uint256 baseAtoms,
+        uint256 quoteAtoms
+    );
+    event SpotInventoryRolledBack(
+        bytes32 indexed packageId,
+        bytes32 indexed requestKey,
+        address indexed fundingOwner,
+        uint256 baseAtoms,
+        uint256 quoteAtoms
+    );
 
-    address public immutable entryController;
+    struct SpotFillContext {
+        uint8 action;
+        uint256 packageNonce;
+        bytes32 fillCommitment;
+        bytes32 orderHash;
+        bytes32 quoteHash;
+        bytes32 routeHash;
+        uint256 baseAtoms;
+        uint256 quoteBound;
+    }
+
+    address public entryController;
+    bytes32 public entryControllerCodeHash;
     address public immutable owner;
     address public immutable fundingAuthority;
     address public immutable market;
@@ -43,9 +75,19 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
 
     address public exitController;
     bytes32 public exitControllerCodeHash;
+    IExactSpotPort public spotPort;
+    bytes32 public spotPortCodeHash;
+    IERC20 public spotBaseToken;
+    bytes32 public spotBaseTokenCodeHash;
+
+    GmxV2.SpotEntryRegistration private _spotRegistration;
+    bytes32 public activeSpotRequestKey;
+    uint256 public activeSpotQuoteAtoms;
+    bool public hasActiveSpotInventory;
+    SpotFillContext private _spotFillContext;
+    uint256 private _recordedSpotQuoteAtoms;
 
     constructor(
-        address entryController_,
         address owner_,
         address fundingAuthority_,
         address market_,
@@ -53,11 +95,10 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
         GmxV2.Deployment memory deployment
     ) {
         if (
-            entryController_ == address(0) || owner_ == address(0) || fundingAuthority_ == address(0)
-                || market_ == address(0) || address(collateralToken_) == address(0)
+            owner_ == address(0) || fundingAuthority_ == address(0) || market_ == address(0)
+                || address(collateralToken_) == address(0)
         ) revert InvalidConfiguration();
         _validateDeployment(deployment);
-        entryController = entryController_;
         owner = owner_;
         fundingAuthority = fundingAuthority_;
         market = market_;
@@ -79,6 +120,17 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
         deploymentHash = keccak256(abi.encode(deployment));
     }
 
+    function configureEntryController(address controller, bytes32 codeHash) external {
+        if (msg.sender != owner) revert UnauthorizedCaller();
+        if (
+            entryController != address(0) || controller == address(0) || codeHash == bytes32(0)
+                || controller.codehash != codeHash
+        ) revert InvalidConfiguration();
+        entryController = controller;
+        entryControllerCodeHash = codeHash;
+        emit EntryControllerConfigured(controller, codeHash);
+    }
+
     function configureExitController(address controller, bytes32 codeHash) external {
         if (msg.sender != owner) revert UnauthorizedCaller();
         if (
@@ -90,14 +142,32 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
         emit ExitControllerConfigured(controller, codeHash);
     }
 
-    function createIncrease(GmxV2.RequestRegistration calldata registration)
-        external
-        payable
-        nonReentrant
-        returns (bytes32 requestKey)
-    {
-        _assertDeployment();
-        if (msg.sender != entryController) revert UnauthorizedCaller();
+    function configureSpotPort(IExactSpotPort port, bytes32 codeHash) external {
+        if (msg.sender != owner) revert UnauthorizedCaller();
+        if (
+            address(spotPort) != address(0) || address(port) == address(0) || codeHash == bytes32(0)
+                || address(port).codehash != codeHash || port.verifier() != address(this)
+                || port.verifierCodeHash() != address(this).codehash
+                || address(port.quoteToken()) != address(collateralToken) || address(port.baseToken()) == address(0)
+                || address(port.baseToken()) == address(collateralToken)
+        ) revert InvalidConfiguration();
+        port.assertDeployment();
+        spotPort = port;
+        spotPortCodeHash = codeHash;
+        spotBaseToken = port.baseToken();
+        spotBaseTokenCodeHash = address(port.baseToken()).codehash;
+        emit SpotPortConfigured(address(port), codeHash, address(port.baseToken()), address(port.quoteToken()));
+    }
+
+    function createPackageEntry(
+        bytes32 packageId,
+        bytes32 requestPayloadHash,
+        IAsyncVenueAdapter.VenueRequest calldata venueRequest
+    ) external payable nonReentrant returns (bytes32 requestKey) {
+        _assertEntryController();
+        _assertSpotDeployment();
+        _validateSpotRequest(packageId, requestPayloadHash, venueRequest);
+        GmxV2.RequestRegistration memory registration = _entryRegistration(packageId, requestPayloadHash, venueRequest);
         if (
             registration.packageId == bytes32(0) || registration.requestPayloadHash == bytes32(0)
                 || registration.beneficiary != owner || registration.refundRecipient != fundingAuthority
@@ -106,10 +176,179 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
                 || registration.acceptablePrice == 0 || registration.executionFeeWei != msg.value
                 || registration.callbackGasLimit == 0
         ) revert InvalidRequest();
+        IAsyncVenueAdapter.SpotEntry calldata spotEntry = venueRequest.spot;
+        if (
+            hasActiveSpotInventory || activeSpotRequestKey != bytes32(0) || spotBaseToken.balanceOf(address(this)) != 0
+                || collateralToken.balanceOf(address(this)) != registration.collateralAtoms + spotEntry.maxQuoteAtoms
+                || address(this).balance != msg.value || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
+
+        _armSpotFill(
+            1,
+            venueRequest.packageNonce,
+            spotEntry.entryFillCommitment,
+            venueRequest.orderHash,
+            venueRequest.quoteHash,
+            venueRequest.routeHash,
+            spotEntry.baseAtoms,
+            spotEntry.maxQuoteAtoms
+        );
+        collateralToken.forceApprove(address(spotPort), spotEntry.maxQuoteAtoms);
+        uint256 quoteIn = spotPort.buyExactOutput(
+            venueRequest.packageNonce,
+            spotEntry.entryFillCommitment,
+            venueRequest.orderHash,
+            venueRequest.quoteHash,
+            venueRequest.routeHash,
+            spotEntry.baseAtoms,
+            spotEntry.maxQuoteAtoms
+        );
+        collateralToken.forceApprove(address(spotPort), 0);
+        if (_spotFillContext.action != 0 || quoteIn == 0 || quoteIn != _recordedSpotQuoteAtoms) {
+            revert FundingMismatch();
+        }
+        _recordedSpotQuoteAtoms = 0;
+
+        uint256 unusedQuote = spotEntry.maxQuoteAtoms - quoteIn;
+        if (unusedQuote != 0) _transferExactToken(collateralToken, spotEntry.fundingOwner, unusedQuote);
+        if (
+            spotBaseToken.balanceOf(address(this)) != spotEntry.baseAtoms
+                || collateralToken.balanceOf(address(this)) != registration.collateralAtoms
+        ) revert FundingMismatch();
+
         _sendCollateral(registration.collateralAtoms);
         _sendExecutionFee(registration.executionFeeWei);
         requestKey = IGmxV2ExchangeRouter(exchangeRouter).createOrder(_increaseParams(registration));
         if (requestKey == bytes32(0)) revert InvalidRequest();
+        if (
+            spotBaseToken.balanceOf(address(this)) != spotEntry.baseAtoms
+                || collateralToken.balanceOf(address(this)) != 0 || address(this).balance != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
+        _spotRegistration = GmxV2.SpotEntryRegistration({
+            packageId: packageId,
+            requestPayloadHash: requestPayloadHash,
+            fundingOwner: spotEntry.fundingOwner,
+            port: spotEntry.port,
+            portCodeHash: spotEntry.portCodeHash,
+            baseToken: spotEntry.baseToken,
+            quoteToken: spotEntry.quoteToken,
+            packageNonce: venueRequest.packageNonce,
+            orderHash: venueRequest.orderHash,
+            quoteHash: venueRequest.quoteHash,
+            routeHash: venueRequest.routeHash,
+            entryFillCommitment: spotEntry.entryFillCommitment,
+            rollbackFillCommitment: spotEntry.rollbackFillCommitment,
+            baseAtoms: spotEntry.baseAtoms,
+            maxQuoteAtoms: spotEntry.maxQuoteAtoms,
+            rollbackMinQuoteAtoms: spotEntry.rollbackMinQuoteAtoms
+        });
+        activeSpotRequestKey = requestKey;
+        activeSpotQuoteAtoms = quoteIn;
+        hasActiveSpotInventory = true;
+        emit SpotInventoryOpened(packageId, requestKey, spotEntry.fundingOwner, spotEntry.baseAtoms, quoteIn);
+    }
+
+    function rollbackSpot(bytes32 packageId, bytes32 requestKey) external nonReentrant returns (uint256 quoteOut) {
+        _assertEntryController();
+        _assertSpotDeployment();
+        GmxV2.SpotEntryRegistration memory registration = _spotRegistration;
+        if (
+            !hasActiveSpotInventory || packageId == bytes32(0) || packageId != registration.packageId
+                || requestKey == bytes32(0) || requestKey != activeSpotRequestKey
+                || IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey) || positionSize(false) != 0
+                || positionSize(true) != 0 || spotBaseToken.balanceOf(address(this)) != registration.baseAtoms
+                || collateralToken.balanceOf(address(this)) != 0 || address(this).balance != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert InvalidRequest();
+
+        _armSpotFill(
+            2,
+            registration.packageNonce,
+            registration.rollbackFillCommitment,
+            registration.orderHash,
+            registration.quoteHash,
+            registration.routeHash,
+            registration.baseAtoms,
+            registration.rollbackMinQuoteAtoms
+        );
+        spotBaseToken.forceApprove(address(spotPort), registration.baseAtoms);
+        quoteOut = spotPort.sellExactInput(
+            registration.packageNonce,
+            registration.rollbackFillCommitment,
+            registration.orderHash,
+            registration.quoteHash,
+            registration.routeHash,
+            registration.baseAtoms,
+            registration.rollbackMinQuoteAtoms
+        );
+        spotBaseToken.forceApprove(address(spotPort), 0);
+        if (_spotFillContext.action != 0 || quoteOut == 0 || quoteOut != _recordedSpotQuoteAtoms) {
+            revert FundingMismatch();
+        }
+        _recordedSpotQuoteAtoms = 0;
+        if (
+            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != quoteOut
+                || address(this).balance != 0 || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
+
+        address fundingOwner = registration.fundingOwner;
+        uint256 baseAtoms = registration.baseAtoms;
+        delete _spotRegistration;
+        activeSpotRequestKey = bytes32(0);
+        activeSpotQuoteAtoms = 0;
+        hasActiveSpotInventory = false;
+        _transferExactToken(collateralToken, fundingOwner, quoteOut);
+        if (spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != 0) {
+            revert FundingMismatch();
+        }
+        emit SpotInventoryRolledBack(packageId, requestKey, fundingOwner, baseAtoms, quoteOut);
+    }
+
+    function activeSpotRegistration() external view returns (GmxV2.SpotEntryRegistration memory) {
+        return _spotRegistration;
+    }
+
+    function assertSpotCleared() external view {
+        _assertSpotDeployment();
+        if (
+            hasActiveSpotInventory || activeSpotRequestKey != bytes32(0) || spotBaseToken.balanceOf(address(this)) != 0
+                || collateralToken.balanceOf(address(this)) != 0 || address(this).balance != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
+    }
+
+    function recordSpotFill(
+        address strategyAccount,
+        uint256 packageNonce,
+        bytes32 spotFillCommitment,
+        bytes32 orderHash,
+        bytes32 quoteHash,
+        bytes32 routeHash,
+        uint8 action,
+        address baseToken,
+        address quoteToken,
+        uint256 baseAtoms,
+        uint256 quoteAtoms
+    ) external {
+        SpotFillContext memory expected = _spotFillContext;
+        if (
+            msg.sender != address(spotPort) || msg.sender.codehash != spotPortCodeHash || expected.action == 0
+                || strategyAccount != address(this) || packageNonce != expected.packageNonce
+                || spotFillCommitment != expected.fillCommitment || orderHash != expected.orderHash
+                || quoteHash != expected.quoteHash || routeHash != expected.routeHash || action != expected.action
+                || baseToken != address(spotBaseToken) || quoteToken != address(collateralToken)
+                || baseAtoms != expected.baseAtoms || quoteAtoms == 0
+                || (action == 1 && quoteAtoms > expected.quoteBound)
+                || (action == 2 && quoteAtoms < expected.quoteBound) || (action != 1 && action != 2)
+        ) revert InvalidRequest();
+        delete _spotFillContext;
+        _recordedSpotQuoteAtoms = quoteAtoms;
     }
 
     function createFullClose(GmxV2.ExitRegistration calldata registration)
@@ -140,8 +379,7 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
     }
 
     function cancelEntry(bytes32 requestKey) external nonReentrant {
-        _assertDeployment();
-        if (msg.sender != entryController) revert UnauthorizedCaller();
+        _assertEntryController();
         if (requestKey == bytes32(0)) revert InvalidRequest();
         IGmxV2ExchangeRouter(exchangeRouter).cancelOrder(requestKey);
     }
@@ -153,6 +391,74 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
 
     function assertDeployment() external view {
         _assertDeployment();
+    }
+
+    function _validateSpotRequest(
+        bytes32 packageId,
+        bytes32 requestPayloadHash,
+        IAsyncVenueAdapter.VenueRequest calldata venueRequest
+    ) private view {
+        IAsyncVenueAdapter.SpotEntry calldata spotEntry = venueRequest.spot;
+        if (
+            packageId == bytes32(0) || requestPayloadHash == bytes32(0) || spotEntry.fundingOwner != fundingAuthority
+                || spotEntry.port != address(spotPort) || venueRequest.marketId != bytes32(uint256(uint160(market)))
+                || venueRequest.collateralToken != address(collateralToken) || venueRequest.sizeDelta >= 0
+                || venueRequest.sizeDelta == type(int256).min || venueRequest.collateralAtoms == 0
+                || venueRequest.acceptablePrice == 0 || venueRequest.executionFeeWei == 0
+                || venueRequest.callbackGasLimit == 0 || spotEntry.portCodeHash != spotPortCodeHash
+                || spotEntry.baseToken != address(spotBaseToken) || spotEntry.quoteToken != address(collateralToken)
+                || venueRequest.orderHash == bytes32(0) || venueRequest.quoteHash == bytes32(0)
+                || venueRequest.routeHash == bytes32(0) || spotEntry.entryFillCommitment == bytes32(0)
+                || spotEntry.rollbackFillCommitment == bytes32(0) || spotEntry.baseAtoms == 0
+                || spotEntry.maxQuoteAtoms == 0 || spotEntry.rollbackMinQuoteAtoms == 0
+        ) revert InvalidRequest();
+    }
+
+    function _entryRegistration(
+        bytes32 packageId,
+        bytes32 requestPayloadHash,
+        IAsyncVenueAdapter.VenueRequest calldata venueRequest
+    ) private view returns (GmxV2.RequestRegistration memory registration) {
+        registration = GmxV2.RequestRegistration({
+            packageId: packageId,
+            requestPayloadHash: requestPayloadHash,
+            beneficiary: owner,
+            refundRecipient: fundingAuthority,
+            market: market,
+            collateralToken: address(collateralToken),
+            sizeDeltaUsd: uint256(-venueRequest.sizeDelta),
+            isLong: false,
+            collateralAtoms: venueRequest.collateralAtoms,
+            acceptablePrice: venueRequest.acceptablePrice,
+            executionFeeWei: venueRequest.executionFeeWei,
+            callbackGasLimit: venueRequest.callbackGasLimit,
+            submissionDeadline: venueRequest.submissionDeadline,
+            venueDeadline: venueRequest.venueDeadline,
+            recoveryDeadline: venueRequest.recoveryDeadline
+        });
+    }
+
+    function _armSpotFill(
+        uint8 action,
+        uint256 packageNonce,
+        bytes32 fillCommitment,
+        bytes32 orderHash,
+        bytes32 quoteHash,
+        bytes32 routeHash,
+        uint256 baseAtoms,
+        uint256 quoteBound
+    ) private {
+        if (_spotFillContext.action != 0 || _recordedSpotQuoteAtoms != 0) revert InvalidRequest();
+        _spotFillContext = SpotFillContext({
+            action: action,
+            packageNonce: packageNonce,
+            fillCommitment: fillCommitment,
+            orderHash: orderHash,
+            quoteHash: quoteHash,
+            routeHash: routeHash,
+            baseAtoms: baseAtoms,
+            quoteBound: quoteBound
+        });
     }
 
     function _sendCollateral(uint256 amount) private {
@@ -175,7 +481,13 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
         if (beforeBalance - address(this).balance != amount) revert FundingMismatch();
     }
 
-    function _increaseParams(GmxV2.RequestRegistration calldata registration)
+    function _transferExactToken(IERC20 token, address recipient, uint256 amount) private {
+        uint256 beforeBalance = token.balanceOf(recipient);
+        token.safeTransfer(recipient, amount);
+        if (token.balanceOf(recipient) - beforeBalance != amount) revert FundingMismatch();
+    }
+
+    function _increaseParams(GmxV2.RequestRegistration memory registration)
         private
         view
         returns (GmxV2.CreateOrderParams memory params)
@@ -269,6 +581,25 @@ contract GmxV2IsolatedAccount is ReentrancyGuard {
             msg.sender != exitController || msg.sender.codehash != exitControllerCodeHash
                 || exitController == address(0)
         ) revert UnauthorizedCaller();
+    }
+
+    function _assertEntryController() private view {
+        _assertDeployment();
+        if (
+            msg.sender != entryController || msg.sender.codehash != entryControllerCodeHash
+                || entryController == address(0)
+        ) revert UnauthorizedCaller();
+    }
+
+    function _assertSpotDeployment() private view {
+        if (
+            address(spotPort) == address(0) || address(spotPort).codehash != spotPortCodeHash
+                || address(spotBaseToken).codehash != spotBaseTokenCodeHash || spotPort.verifier() != address(this)
+                || spotPort.verifierCodeHash() != address(this).codehash
+                || address(spotPort.baseToken()) != address(spotBaseToken)
+                || address(spotPort.quoteToken()) != address(collateralToken)
+        ) revert DeploymentChanged();
+        spotPort.assertDeployment();
     }
 
     function _assertDeployment() private view {

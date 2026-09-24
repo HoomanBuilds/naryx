@@ -344,6 +344,22 @@ contract AsyncBondedPackageCoordinatorTest is Test {
             acceptablePrice: 2000,
             executionFeeWei: 1,
             callbackGasLimit: 200_000,
+            packageNonce: 0,
+            orderHash: keccak256("order"),
+            quoteHash: keccak256("quote"),
+            routeHash: keccak256("route"),
+            spot: IAsyncVenueAdapter.SpotEntry({
+                fundingOwner: address(0),
+                port: address(0),
+                portCodeHash: bytes32(0),
+                baseToken: address(0),
+                quoteToken: address(0),
+                baseAtoms: 0,
+                maxQuoteAtoms: 0,
+                rollbackMinQuoteAtoms: 0,
+                entryFillCommitment: bytes32(0),
+                rollbackFillCommitment: bytes32(0)
+            }),
             submissionDeadline: uint64(block.timestamp + 10),
             venueDeadline: uint64(block.timestamp + 20),
             recoveryDeadline: uint64(block.timestamp + 30)
