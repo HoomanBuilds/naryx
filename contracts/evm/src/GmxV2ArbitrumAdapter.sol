@@ -5,6 +5,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {AsyncBondedPackageCoordinator} from "./AsyncBondedPackageCoordinator.sol";
+import {GmxV2IsolatedAccount} from "./GmxV2IsolatedAccount.sol";
 import {IAsyncVenueAdapter} from "./interfaces/IAsyncVenueAdapter.sol";
 import {
     GmxV2,
@@ -70,6 +71,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     event RecoveryRequested(bytes32 indexed packageId, bytes32 indexed requestKey);
     event ExpiredFundingReclaimed(bytes32 indexed packageId);
     event UnfilledRequestReleased(bytes32 indexed packageId, bytes32 indexed requestKey, Status status);
+    event ExitedPositionReleased(bytes32 indexed packageId, bytes32 indexed requestKey);
 
     AsyncBondedPackageCoordinator private immutable coordinator;
     address private immutable fundingAuthority;
@@ -95,6 +97,8 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     bytes32 private immutable orderHandlerCodeHash;
     bytes32 private immutable roleStoreCodeHash;
     bytes32 private immutable orderVerifierCodeHash;
+    GmxV2IsolatedAccount public immutable isolatedAccount;
+    bytes32 private immutable isolatedAccountCodeHash;
 
     bytes32 public activePackageId;
     bytes32 public activeRequestKey;
@@ -149,6 +153,10 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         orderVaultCodeHash = deployment.orderVaultCodeHash;
         orderHandlerCodeHash = deployment.orderHandlerCodeHash;
         roleStoreCodeHash = deployment.roleStoreCodeHash;
+        isolatedAccount = new GmxV2IsolatedAccount(
+            address(this), beneficiary_, fundingAuthority_, market_, collateralToken_, deployment
+        );
+        isolatedAccountCodeHash = address(isolatedAccount).codehash;
     }
 
     function requestEvidence(bytes32 requestKey)
@@ -230,24 +238,29 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (block.timestamp >= venueRequest.submissionDeadline) revert DeadlinePassed();
         reserved.consumed = true;
 
-        uint256 collateralBefore = collateralToken.balanceOf(address(this));
-        uint256 nativeBefore = address(this).balance;
-        if (collateralToken.allowance(address(this), router) != 0) revert FundingMismatch();
-        collateralToken.forceApprove(router, venueRequest.collateralAtoms);
-        IGmxV2ExchangeRouter(exchangeRouter)
-            .sendTokens(address(collateralToken), orderVault, venueRequest.collateralAtoms);
-        collateralToken.forceApprove(router, 0);
-        if (
-            collateralToken.allowance(address(this), router) != 0
-                || collateralBefore - collateralToken.balanceOf(address(this)) != venueRequest.collateralAtoms
-        ) revert FundingMismatch();
-        IGmxV2ExchangeRouter(exchangeRouter).sendWnt{value: venueRequest.executionFeeWei}(
-            orderVault, venueRequest.executionFeeWei
-        );
-        if (nativeBefore - address(this).balance != venueRequest.executionFeeWei) revert FundingMismatch();
-
-        requestKey = IGmxV2ExchangeRouter(exchangeRouter)
-            .createOrder(_createOrderParams(packageId, requestPayloadHash, venueRequest));
+        GmxV2.RequestRegistration memory registration = GmxV2.RequestRegistration({
+            packageId: packageId,
+            requestPayloadHash: requestPayloadHash,
+            beneficiary: beneficiary,
+            refundRecipient: fundingAuthority,
+            market: market,
+            collateralToken: address(collateralToken),
+            sizeDeltaUsd: _absoluteSize(venueRequest.sizeDelta),
+            isLong: false,
+            collateralAtoms: venueRequest.collateralAtoms,
+            acceptablePrice: venueRequest.acceptablePrice,
+            executionFeeWei: venueRequest.executionFeeWei,
+            callbackGasLimit: venueRequest.callbackGasLimit,
+            submissionDeadline: venueRequest.submissionDeadline,
+            venueDeadline: venueRequest.venueDeadline,
+            recoveryDeadline: venueRequest.recoveryDeadline
+        });
+        uint256 beforeBalance = collateralToken.balanceOf(address(isolatedAccount));
+        collateralToken.safeTransfer(address(isolatedAccount), venueRequest.collateralAtoms);
+        if (collateralToken.balanceOf(address(isolatedAccount)) - beforeBalance != venueRequest.collateralAtoms) {
+            revert FundingMismatch();
+        }
+        requestKey = isolatedAccount.createIncrease{value: venueRequest.executionFeeWei}(registration);
         if (
             requestKey == bytes32(0) || _requests[requestKey].status != Status.NONE
                 || _packageRequestKey[packageId] != bytes32(0)
@@ -255,23 +268,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         uint256 positionSizeBefore = _positionSize(venueRequest.sizeDelta > 0);
         if (positionSizeBefore != 0) revert InvalidRequest();
         _requests[requestKey] = RequestRecord({
-            registration: GmxV2.RequestRegistration({
-                packageId: packageId,
-                requestPayloadHash: requestPayloadHash,
-                beneficiary: beneficiary,
-                refundRecipient: fundingAuthority,
-                market: market,
-                collateralToken: address(collateralToken),
-                sizeDeltaUsd: _absoluteSize(venueRequest.sizeDelta),
-                isLong: venueRequest.sizeDelta > 0,
-                collateralAtoms: venueRequest.collateralAtoms,
-                acceptablePrice: venueRequest.acceptablePrice,
-                executionFeeWei: venueRequest.executionFeeWei,
-                callbackGasLimit: venueRequest.callbackGasLimit,
-                submissionDeadline: venueRequest.submissionDeadline,
-                venueDeadline: venueRequest.venueDeadline,
-                recoveryDeadline: venueRequest.recoveryDeadline
-            }),
+            registration: registration,
             status: Status.PENDING,
             evidenceHash: bytes32(0),
             callbackDataHash: bytes32(0),
@@ -324,7 +321,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         }
         if (IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)) {
             if (block.timestamp < stored.registration.venueDeadline) return false;
-            try IGmxV2ExchangeRouter(exchangeRouter).cancelOrder(requestKey) {}
+            try isolatedAccount.cancelEntry(requestKey) {}
             catch {
                 return false;
             }
@@ -379,6 +376,24 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         _transferExactCollateral(fundingAuthority, amount);
     }
 
+    function finalizeExitedPosition(bytes32 packageId, bytes32 entryRequestKey) external nonReentrant {
+        _assertDeployment();
+        if (
+            msg.sender != isolatedAccount.exitController()
+                || msg.sender.codehash != isolatedAccount.exitControllerCodeHash()
+        ) revert UnauthorizedCaller();
+        RequestRecord storage stored = _request(entryRequestKey);
+        if (
+            activePackageId != packageId || activeRequestKey != entryRequestKey
+                || stored.registration.packageId != packageId || stored.status != Status.EXECUTED
+                || isolatedAccount.positionSize(false) != 0 || isolatedAccount.positionSize(true) != 0
+        ) revert InvalidOutcome();
+        delete funding[packageId];
+        activePackageId = bytes32(0);
+        activeRequestKey = bytes32(0);
+        emit ExitedPositionReleased(packageId, entryRequestKey);
+    }
+
     function afterOrderExecution(
         bytes32 requestKey,
         GmxV2.EventLogData calldata orderData,
@@ -386,7 +401,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(this), address(this), stored.registration, orderData);
+        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
         uint256 currentSize = _positionSize(stored.registration.isLong);
         bytes32 callbackDataHash = keccak256(abi.encode(orderData, eventData));
         if (
@@ -406,7 +421,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(this), address(this), stored.registration, orderData);
+        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
         Status status = stored.recovering ? Status.RECOVERED : Status.CANCELLED;
         uint256 currentSize = _positionSize(stored.registration.isLong);
         if (
@@ -423,7 +438,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(this), address(this), stored.registration, orderData);
+        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
         uint256 currentSize = _positionSize(stored.registration.isLong);
         Status status = currentSize == stored.positionSizeBefore
             && IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
@@ -475,43 +490,6 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             })
         );
         emit EvidenceRelayed(requestKey, stored.registration.packageId, stored.revision);
-    }
-
-    function _createOrderParams(bytes32 packageId, bytes32 requestPayloadHash, VenueRequest calldata venueRequest)
-        private
-        view
-        returns (GmxV2.CreateOrderParams memory params)
-    {
-        address[] memory swapPath = new address[](0);
-        bytes32[] memory dataList = new bytes32[](2);
-        dataList[0] = packageId;
-        dataList[1] = requestPayloadHash;
-        params.addresses = GmxV2.CreateOrderParamsAddresses({
-            receiver: beneficiary,
-            cancellationReceiver: fundingAuthority,
-            callbackContract: address(this),
-            uiFeeReceiver: address(0),
-            market: market,
-            initialCollateralToken: address(collateralToken),
-            swapPath: swapPath
-        });
-        params.numbers = GmxV2.CreateOrderParamsNumbers({
-            sizeDeltaUsd: _absoluteSize(venueRequest.sizeDelta),
-            initialCollateralDeltaAmount: venueRequest.collateralAtoms,
-            triggerPrice: 0,
-            acceptablePrice: venueRequest.acceptablePrice,
-            executionFee: venueRequest.executionFeeWei,
-            callbackGasLimit: venueRequest.callbackGasLimit,
-            minOutputAmount: 0,
-            validFromTime: 0
-        });
-        params.orderType = GmxV2.OrderType.MarketIncrease;
-        params.decreasePositionSwapType = GmxV2.DecreasePositionSwapType.NoSwap;
-        params.isLong = venueRequest.sizeDelta > 0;
-        params.shouldUnwrapNativeToken = false;
-        params.autoCancel = false;
-        params.referralCode = bytes32(0);
-        params.dataList = dataList;
     }
 
     function _record(
@@ -592,7 +570,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     }
 
     function _positionSize(bool isLong) private view returns (uint256) {
-        bytes32 positionKey = keccak256(abi.encode(address(this), market, address(collateralToken), isLong));
+        bytes32 positionKey = keccak256(abi.encode(address(isolatedAccount), market, address(collateralToken), isLong));
         return IGmxV2DataStore(dataStore).getUint(keccak256(abi.encode(positionKey, SIZE_IN_USD)));
     }
 
@@ -627,6 +605,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             address(coordinator).codehash != coordinatorCodeHash || market.codehash != marketCodeHash
                 || address(collateralToken).codehash != collateralTokenCodeHash
                 || address(orderVerifier).codehash != orderVerifierCodeHash || dataStore.codehash != dataStoreCodeHash
+                || address(isolatedAccount).codehash != isolatedAccountCodeHash
                 || eventEmitter.codehash != eventEmitterCodeHash || exchangeRouter.codehash != exchangeRouterCodeHash
                 || router.codehash != routerCodeHash || orderVault.codehash != orderVaultCodeHash
                 || orderHandler.codehash != orderHandlerCodeHash || roleStore.codehash != roleStoreCodeHash

@@ -8,6 +8,9 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
 import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
+import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
+import {GmxV2ExitOrderVerifier} from "../src/GmxV2ExitOrderVerifier.sol";
+import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
 import {GmxV2, IGmxV2ExchangeRouter, IGmxV2OrderCallbackReceiver} from "../src/interfaces/IGmxV2.sol";
 
@@ -202,8 +205,10 @@ contract GmxTestExchangeRouter {
         require(msg.sender == lastAccount);
         require(GmxTestDataStore(dataStore).containsBytes32(ORDER_LIST, key));
         GmxTestDataStore(dataStore).setContains(ORDER_LIST, key, false);
-        GmxTestOrderVault(orderVault)
-            .refund(IERC20(initialCollateralToken), cancellationReceiver, initialCollateralDeltaAmount);
+        if (orderType == GmxV2.OrderType.MarketIncrease) {
+            GmxTestOrderVault(orderVault)
+                .refund(IERC20(initialCollateralToken), cancellationReceiver, initialCollateralDeltaAmount);
+        }
         GmxTestOrderHandler(orderHandler).cancelOrder(IGmxV2OrderCallbackReceiver(callbackContract), key, orderData());
     }
 
@@ -212,6 +217,18 @@ contract GmxTestExchangeRouter {
         bytes32 positionKey = keccak256(abi.encode(lastAccount, market, initialCollateralToken, isLong));
         bytes32 sizeKey = keccak256(abi.encode(positionKey, keccak256(abi.encode("SIZE_IN_USD"))));
         GmxTestDataStore(dataStore).setUint(sizeKey, resultingSize);
+        GmxTestOrderHandler(orderHandler).executeOrder(IGmxV2OrderCallbackReceiver(callbackContract), key, orderData());
+    }
+
+    function executeDecreaseOrder(bytes32 key, uint256 resultingSize, uint256 outputAmount) external {
+        require(orderType == GmxV2.OrderType.MarketDecrease);
+        GmxTestDataStore(dataStore).setContains(ORDER_LIST, key, false);
+        bytes32 positionKey = keccak256(abi.encode(lastAccount, market, initialCollateralToken, isLong));
+        bytes32 sizeKey = keccak256(abi.encode(positionKey, keccak256(abi.encode("SIZE_IN_USD"))));
+        GmxTestDataStore(dataStore).setUint(sizeKey, resultingSize);
+        if (outputAmount != 0) {
+            GmxTestOrderVault(orderVault).refund(IERC20(initialCollateralToken), receiver, outputAmount);
+        }
         GmxTestOrderHandler(orderHandler).executeOrder(IGmxV2OrderCallbackReceiver(callbackContract), key, orderData());
     }
 
@@ -354,7 +371,7 @@ contract GmxV2ArbitrumAdapterTest is Test {
         assertEq(token.balanceOf(address(orderVault)), COLLATERAL);
         assertEq(token.allowance(address(adapter), address(router)), 0);
         assertEq(exchangeRouter.receivedWnt(), EXECUTION_FEE);
-        assertEq(exchangeRouter.lastAccount(), address(adapter));
+        assertEq(exchangeRouter.lastAccount(), address(adapter.isolatedAccount()));
         assertEq(exchangeRouter.receiver(), address(0xBEEF));
         assertEq(exchangeRouter.cancellationReceiver(), address(this));
         assertEq(exchangeRouter.callbackContract(), address(adapter));
@@ -452,7 +469,8 @@ contract GmxV2ArbitrumAdapterTest is Test {
     function testCancellationWithUnexpectedPositionFailsClosed() public {
         bytes32 key = _fundAndCreate(_request());
         dataStore.setContains(adapter.ORDER_LIST(), key, false);
-        bytes32 positionKey = keccak256(abi.encode(address(adapter), address(market), address(token), false));
+        bytes32 positionKey =
+            keccak256(abi.encode(address(adapter.isolatedAccount()), address(market), address(token), false));
         bytes32 sizeKey = keccak256(abi.encode(positionKey, adapter.SIZE_IN_USD()));
         dataStore.setUint(sizeKey, SIZE);
         orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
@@ -582,5 +600,315 @@ contract GmxV2ArbitrumAdapterTest is Test {
 
     function _revision(bytes32 key) private view returns (uint64 revision) {
         (,,,, revision) = adapter.requestEvidence(key);
+    }
+}
+
+contract GmxV2ExitControllerTest is Test {
+    bytes32 private constant PACKAGE_ID = keccak256("exit-package");
+    bytes32 private constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
+    uint256 private constant OWNER_KEY = 0xA11CE;
+    uint256 private constant COLLATERAL = 5_000_000;
+    uint256 private constant SIZE = 4_000e30;
+    uint256 private constant ENTRY_PRICE = 2_500e30;
+    uint256 private constant EXIT_PRICE = 2_400e30;
+    uint256 private constant EXECUTION_FEE = 0.002 ether;
+    uint256 private constant CALLBACK_GAS = 2_000_000;
+
+    GmxTestToken private token;
+    GmxTestDataStore private dataStore;
+    GmxTestRoleStore private roleStore;
+    GmxTestRouter private router;
+    GmxTestOrderHandler private orderHandler;
+    GmxTestExchangeRouter private exchangeRouter;
+    GmxTestCode private eventEmitter;
+    GmxTestOrderVault private orderVault;
+    GmxTestCode private market;
+    GmxV2OrderVerifier private entryVerifier;
+    GmxV2ExitOrderVerifier private exitVerifier;
+    AsyncBondedPackageCoordinator private coordinator;
+    GmxV2ArbitrumAdapter private adapter;
+    GmxV2IsolatedAccount private account;
+    GmxV2ExitController private exitController;
+    GmxV2.Deployment private deployment;
+
+    address private owner;
+    address private feePayer = address(0xFEE);
+    address private feeRefundRecipient = address(0xCAFE);
+    bytes32 private entryRequestKey;
+
+    function setUp() public {
+        vm.warp(10_000);
+        vm.deal(address(this), 10 ether);
+        vm.deal(feePayer, 10 ether);
+        owner = vm.addr(OWNER_KEY);
+        token = new GmxTestToken();
+        dataStore = new GmxTestDataStore();
+        roleStore = new GmxTestRoleStore();
+        router = new GmxTestRouter();
+        orderHandler = new GmxTestOrderHandler();
+        eventEmitter = new GmxTestCode();
+        orderVault = new GmxTestOrderVault();
+        market = new GmxTestCode();
+        entryVerifier = new GmxV2OrderVerifier();
+        exitVerifier = new GmxV2ExitOrderVerifier();
+        exchangeRouter = new GmxTestExchangeRouter(
+            address(dataStore),
+            address(eventEmitter),
+            address(router),
+            address(orderHandler),
+            address(roleStore),
+            address(orderVault)
+        );
+        roleStore.setRole(address(orderHandler), CONTROLLER_ROLE, true);
+        dataStore.setUint(keccak256(abi.encode("REQUEST_EXPIRATION_TIME")), 50);
+
+        ProtocolConfig config = new ProtocolConfig(
+            "eip155:421614", 1, keccak256("manifest"), 1, address(1), address(2), address(3), address(4)
+        );
+        coordinator = new AsyncBondedPackageCoordinator(config, token, keccak256("execution-class"));
+        deployment = GmxV2.Deployment({
+            dataStore: address(dataStore),
+            eventEmitter: address(eventEmitter),
+            exchangeRouter: address(exchangeRouter),
+            router: address(router),
+            orderVault: address(orderVault),
+            orderHandler: address(orderHandler),
+            roleStore: address(roleStore),
+            dataStoreCodeHash: address(dataStore).codehash,
+            eventEmitterCodeHash: address(eventEmitter).codehash,
+            exchangeRouterCodeHash: address(exchangeRouter).codehash,
+            routerCodeHash: address(router).codehash,
+            orderVaultCodeHash: address(orderVault).codehash,
+            orderHandlerCodeHash: address(orderHandler).codehash,
+            roleStoreCodeHash: address(roleStore).codehash
+        });
+        adapter = new GmxV2ArbitrumAdapter(
+            coordinator,
+            address(coordinator).codehash,
+            address(this),
+            owner,
+            address(market),
+            address(market).codehash,
+            token,
+            address(token).codehash,
+            entryVerifier,
+            address(entryVerifier).codehash,
+            deployment
+        );
+        account = adapter.isolatedAccount();
+        exitController = new GmxV2ExitController(
+            adapter,
+            address(adapter).codehash,
+            account,
+            address(account).codehash,
+            exitVerifier,
+            address(exitVerifier).codehash,
+            deployment
+        );
+        vm.prank(owner);
+        account.configureExitController(address(exitController), address(exitController).codehash);
+
+        token.mint(address(this), COLLATERAL);
+        token.approve(address(adapter), COLLATERAL);
+        IAsyncVenueAdapter.VenueRequest memory request = _entryRequest();
+        _mockPackage(request);
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+        vm.prank(address(coordinator));
+        entryRequestKey = adapter.createRequest(PACKAGE_ID, request);
+        exchangeRouter.executeOrder(entryRequestKey, SIZE);
+        assertEq(account.positionSize(false), SIZE);
+    }
+
+    function testSignedFullClosePaysOnlyOwnerAndReleasesAccount() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+
+        assertEq(exchangeRouter.lastAccount(), address(account));
+        assertEq(exchangeRouter.receiver(), owner);
+        assertEq(exchangeRouter.cancellationReceiver(), feeRefundRecipient);
+        assertEq(exchangeRouter.callbackContract(), address(exitController));
+        assertEq(exchangeRouter.sizeDeltaUsd(), SIZE);
+        assertEq(exchangeRouter.initialCollateralDeltaAmount(), type(uint256).max);
+        assertEq(exchangeRouter.minOutputAmount(), authorization.minOutputAmount);
+        assertEq(uint8(exchangeRouter.orderType()), uint8(GmxV2.OrderType.MarketDecrease));
+        assertFalse(exchangeRouter.isLong());
+
+        exchangeRouter.executeDecreaseOrder(exitRequestKey, 0, COLLATERAL);
+
+        (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(status), uint8(GmxV2ExitController.Status.EXECUTED));
+        assertTrue(released);
+        assertEq(token.balanceOf(owner), COLLATERAL);
+        assertEq(token.balanceOf(feePayer), 0);
+        assertEq(token.balanceOf(feeRefundRecipient), 0);
+        assertEq(adapter.activePackageId(), bytes32(0));
+        assertEq(adapter.activeRequestKey(), bytes32(0));
+    }
+
+    function testRejectsExpiredAuthorizationAndReplay() public {
+        GmxV2ExitController.ExitAuthorization memory expired = _authorization();
+        expired.authorizationExpiry = uint64(block.timestamp);
+        expired.cancelAfter = uint64(block.timestamp + 100);
+        bytes memory expiredSignature = _sign(expired);
+        vm.prank(feePayer);
+        vm.expectRevert(GmxV2ExitController.InvalidAuthorization.selector);
+        exitController.submitFullClose{value: EXECUTION_FEE}(expired, expiredSignature);
+        assertEq(exitController.nextNonce(), 0);
+
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+        dataStore.setContains(exitController.ORDER_LIST(), exitRequestKey, false);
+        orderHandler.cancelOrder(exitController, exitRequestKey, exchangeRouter.orderData());
+
+        bytes memory replaySignature = _sign(authorization);
+        vm.prank(feePayer);
+        vm.expectRevert(GmxV2ExitController.InvalidAuthorization.selector);
+        exitController.submitFullClose{value: EXECUTION_FEE}(authorization, replaySignature);
+        assertEq(exitController.nextNonce(), 1);
+    }
+
+    function testDelayedCancellationAcceptsAuthenticatedLateExecution() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+        vm.warp(authorization.cancelAfter);
+
+        bool terminal = exitController.requestCancellationOrReconciliation(exitRequestKey);
+        assertTrue(terminal);
+        (GmxV2ExitController.Status recoveredStatus,,,,) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(recoveredStatus), uint8(GmxV2ExitController.Status.RECOVERED));
+        assertEq(account.positionSize(false), SIZE);
+
+        exchangeRouter.executeOrder(exitRequestKey, 0);
+        (GmxV2ExitController.Status finalStatus,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(finalStatus), uint8(GmxV2ExitController.Status.EXECUTED));
+        assertTrue(released);
+    }
+
+    function testAuthenticatesCallbackAndRejectsUnexpectedShrink() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+        GmxV2.EventLogData memory orderData = exchangeRouter.orderData();
+        GmxV2.EventLogData memory eventData;
+        vm.expectRevert(GmxV2ExitController.UnauthorizedCaller.selector);
+        exitController.afterOrderExecution(exitRequestKey, orderData, eventData);
+
+        orderData.addressItems.items[1].value = address(0xBAD);
+        vm.prank(address(orderHandler));
+        vm.expectRevert(GmxV2ExitOrderVerifier.InvalidOrderData.selector);
+        exitController.afterOrderExecution(exitRequestKey, orderData, eventData);
+
+        vm.warp(authorization.cancelAfter);
+        _setPositionSize(0);
+        dataStore.setContains(exitController.ORDER_LIST(), exitRequestKey, false);
+        bool terminal = exitController.requestCancellationOrReconciliation(exitRequestKey);
+        assertFalse(terminal);
+        (GmxV2ExitController.Status status,,,,) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(status), uint8(GmxV2ExitController.Status.CONFLICT));
+        assertEq(adapter.activePackageId(), PACKAGE_ID);
+    }
+
+    function testPartialDecreaseCallbackNeverLabelsFullClose() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+        exchangeRouter.executeOrder(exitRequestKey, SIZE / 2);
+
+        (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(status), uint8(GmxV2ExitController.Status.CONFLICT));
+        assertFalse(released);
+        assertEq(adapter.activePackageId(), PACKAGE_ID);
+    }
+
+    function testOwnerCannotAuthorizeDifferentPositionReceiverOrHiddenFeeRecipient() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        authorization.receiver = address(0xBAD);
+        bytes memory invalidReceiverSignature = _sign(authorization);
+        vm.prank(feePayer);
+        vm.expectRevert(GmxV2ExitController.InvalidAuthorization.selector);
+        exitController.submitFullClose{value: EXECUTION_FEE}(authorization, invalidReceiverSignature);
+
+        authorization = _authorization();
+        authorization.feePayer = address(0xBAD);
+        bytes memory invalidFeePayerSignature = _sign(authorization);
+        vm.prank(feePayer);
+        vm.expectRevert(GmxV2ExitController.FundingMismatch.selector);
+        exitController.submitFullClose{value: EXECUTION_FEE}(authorization, invalidFeePayerSignature);
+    }
+
+    function _submit(GmxV2ExitController.ExitAuthorization memory authorization) private returns (bytes32 requestKey) {
+        bytes memory signature = _sign(authorization);
+        vm.prank(feePayer);
+        requestKey = exitController.submitFullClose{value: EXECUTION_FEE}(authorization, signature);
+        assertNotEq(requestKey, bytes32(0));
+    }
+
+    function _sign(GmxV2ExitController.ExitAuthorization memory authorization) private view returns (bytes memory) {
+        bytes32 digest = exitController.exitDigest(authorization);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _authorization() private view returns (GmxV2ExitController.ExitAuthorization memory) {
+        return GmxV2ExitController.ExitAuthorization({
+            packageId: PACKAGE_ID,
+            entryRequestKey: entryRequestKey,
+            account: address(account),
+            owner: owner,
+            receiver: owner,
+            feePayer: feePayer,
+            executionFeeRefundRecipient: feeRefundRecipient,
+            market: address(market),
+            collateralToken: address(token),
+            isLong: false,
+            fullCloseSizeUsd: SIZE,
+            acceptablePrice: EXIT_PRICE,
+            minOutputAmount: 1_000e30,
+            executionFeeWei: EXECUTION_FEE,
+            callbackGasLimit: CALLBACK_GAS,
+            authorizationExpiry: uint64(block.timestamp + 100),
+            cancelAfter: uint64(block.timestamp + 200),
+            nonce: exitController.nextNonce()
+        });
+    }
+
+    function _entryRequest() private view returns (IAsyncVenueAdapter.VenueRequest memory) {
+        return IAsyncVenueAdapter.VenueRequest({
+            marketId: bytes32(uint256(uint160(address(market)))),
+            collateralToken: address(token),
+            sizeDelta: -int256(SIZE),
+            collateralAtoms: COLLATERAL,
+            acceptablePrice: ENTRY_PRICE,
+            executionFeeWei: EXECUTION_FEE,
+            callbackGasLimit: CALLBACK_GAS,
+            submissionDeadline: uint64(block.timestamp + 100),
+            venueDeadline: uint64(block.timestamp + 200),
+            recoveryDeadline: uint64(block.timestamp + 300)
+        });
+    }
+
+    function _mockPackage(IAsyncVenueAdapter.VenueRequest memory request) private {
+        AsyncBondedPackageCoordinator.Package memory packageData;
+        packageData.terms.owner = owner;
+        packageData.terms.solver = address(this);
+        packageData.terms.adapter = address(adapter);
+        packageData.terms.handler = address(adapter);
+        packageData.terms.adapterCodeHash = address(adapter).codehash;
+        packageData.terms.handlerCodeHash = address(adapter).codehash;
+        packageData.terms.requestPayloadHash = keccak256(abi.encode(request));
+        packageData.terms.lossAsset = address(token);
+        packageData.terms.residualAsset = address(token);
+        packageData.terms.submissionDeadline = request.submissionDeadline;
+        packageData.terms.venueDeadline = request.venueDeadline;
+        packageData.terms.recoveryDeadline = request.recoveryDeadline;
+        vm.mockCall(
+            address(coordinator),
+            abi.encodeWithSelector(AsyncBondedPackageCoordinator.packageState.selector, PACKAGE_ID),
+            abi.encode(packageData)
+        );
+    }
+
+    function _setPositionSize(uint256 size) private {
+        bytes32 positionKey = keccak256(abi.encode(address(account), address(market), address(token), false));
+        bytes32 sizeKey = keccak256(abi.encode(positionKey, account.SIZE_IN_USD()));
+        dataStore.setUint(sizeKey, size);
     }
 }

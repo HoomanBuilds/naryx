@@ -1,0 +1,416 @@
+[
+  {
+    "type": "function",
+    "name": "verify",
+    "inputs": [
+      {
+        "name": "callbackContract",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "registration",
+        "type": "tuple",
+        "internalType": "struct GmxV2.ExitRegistration",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "authorizationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "account",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feePayer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "executionFeeRefundRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "market",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "isLong",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "fullCloseSizeUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minOutputAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "authorizationExpiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "cancelAfter",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "orderData",
+        "type": "tuple",
+        "internalType": "struct GmxV2.EventLogData",
+        "components": [
+          {
+            "name": "addressItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.AddressItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.AddressKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "address",
+                    "internalType": "address"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.AddressArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "address[]",
+                    "internalType": "address[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "uintItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.UintItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.UintKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.UintArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "uint256[]",
+                    "internalType": "uint256[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "intItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.IntItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.IntKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "int256",
+                    "internalType": "int256"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.IntArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "int256[]",
+                    "internalType": "int256[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "boolItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.BoolItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.BoolKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bool",
+                    "internalType": "bool"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.BoolArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bool[]",
+                    "internalType": "bool[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "bytes32Items",
+            "type": "tuple",
+            "internalType": "struct GmxV2.Bytes32Items",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.Bytes32KeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.Bytes32ArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "bytesItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.BytesItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.BytesKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bytes",
+                    "internalType": "bytes"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.BytesArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "bytes[]",
+                    "internalType": "bytes[]"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "stringItems",
+            "type": "tuple",
+            "internalType": "struct GmxV2.StringItems",
+            "components": [
+              {
+                "name": "items",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.StringKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "string",
+                    "internalType": "string"
+                  }
+                ]
+              },
+              {
+                "name": "arrayItems",
+                "type": "tuple[]",
+                "internalType": "struct GmxV2.StringArrayKeyValue[]",
+                "components": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "internalType": "string"
+                  },
+                  {
+                    "name": "value",
+                    "type": "string[]",
+                    "internalType": "string[]"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "error",
+    "name": "InvalidOrderData",
+    "inputs": []
+  }
+]

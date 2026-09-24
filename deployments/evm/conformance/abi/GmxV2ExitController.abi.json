@@ -3,49 +3,29 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "coordinator_",
+        "name": "entryAdapter_",
         "type": "address",
-        "internalType": "contract AsyncBondedPackageCoordinator"
+        "internalType": "contract GmxV2ArbitrumAdapter"
       },
       {
-        "name": "coordinatorCodeHash_",
+        "name": "entryAdapterCodeHash_",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "fundingAuthority_",
+        "name": "account_",
         "type": "address",
-        "internalType": "address"
+        "internalType": "contract GmxV2IsolatedAccount"
       },
       {
-        "name": "beneficiary_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "market_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "marketCodeHash_",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "collateralToken_",
-        "type": "address",
-        "internalType": "contract IERC20"
-      },
-      {
-        "name": "collateralTokenCodeHash_",
+        "name": "accountCodeHash_",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
         "name": "orderVerifier_",
         "type": "address",
-        "internalType": "contract IGmxV2OrderVerifier"
+        "internalType": "contract IGmxV2ExitOrderVerifier"
       },
       {
         "name": "orderVerifierCodeHash_",
@@ -160,6 +140,19 @@
   },
   {
     "type": "function",
+    "name": "EXIT_AUTHORIZATION_TYPEHASH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ORDER_LIST",
     "inputs": [],
     "outputs": [
@@ -186,33 +179,20 @@
   },
   {
     "type": "function",
-    "name": "SIZE_IN_USD",
+    "name": "account",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "type": "address",
+        "internalType": "contract GmxV2IsolatedAccount"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "activePackageId",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "activeRequestKey",
+    "name": "activeExitRequestKey",
     "inputs": [],
     "outputs": [
       {
@@ -2028,359 +2008,160 @@
   },
   {
     "type": "function",
-    "name": "createRequest",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "venueRequest",
-        "type": "tuple",
-        "internalType": "struct IAsyncVenueAdapter.VenueRequest",
-        "components": [
-          {
-            "name": "marketId",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "collateralToken",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "sizeDelta",
-            "type": "int256",
-            "internalType": "int256"
-          },
-          {
-            "name": "collateralAtoms",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "acceptablePrice",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "executionFeeWei",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "callbackGasLimit",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "submissionDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "venueDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "recoveryDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          }
-        ]
-      }
-    ],
+    "name": "eip712Domain",
+    "inputs": [],
     "outputs": [
       {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "finalizeExitedPosition",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "name": "fields",
+        "type": "bytes1",
+        "internalType": "bytes1"
       },
       {
-        "name": "entryRequestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "finalizeUnfilledRequest",
-    "inputs": [
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "fundRequest",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "name": "name",
+        "type": "string",
+        "internalType": "string"
       },
       {
-        "name": "venueRequest",
-        "type": "tuple",
-        "internalType": "struct IAsyncVenueAdapter.VenueRequest",
-        "components": [
-          {
-            "name": "marketId",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "collateralToken",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "sizeDelta",
-            "type": "int256",
-            "internalType": "int256"
-          },
-          {
-            "name": "collateralAtoms",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "acceptablePrice",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "executionFeeWei",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "callbackGasLimit",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "submissionDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "venueDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "recoveryDeadline",
-            "type": "uint64",
-            "internalType": "uint64"
-          }
-        ]
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "payable"
-  },
-  {
-    "type": "function",
-    "name": "funding",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "requestPayloadHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "name": "version",
+        "type": "string",
+        "internalType": "string"
       },
       {
-        "name": "collateralAtoms",
+        "name": "chainId",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
-        "name": "executionFeeWei",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "verifyingContract",
+        "type": "address",
+        "internalType": "address"
       },
       {
-        "name": "submissionDeadline",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
-        "name": "consumed",
-        "type": "bool",
-        "internalType": "bool"
+        "name": "extensions",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "isolatedAccount",
+    "name": "entryAdapter",
     "inputs": [],
     "outputs": [
       {
         "name": "",
         "type": "address",
-        "internalType": "contract GmxV2IsolatedAccount"
+        "internalType": "contract GmxV2ArbitrumAdapter"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "processRecovery",
+    "name": "exitDigest",
     "inputs": [
       {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "recovered",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "reclaimExpiredFunding",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "relayEvidence",
-    "inputs": [
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "expectedVersion",
-        "type": "uint64",
-        "internalType": "uint64"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "requestEvidence",
-    "inputs": [
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "status",
-        "type": "uint8",
-        "internalType": "enum GmxV2ArbitrumAdapter.Status"
-      },
-      {
-        "name": "evidenceHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "positionSizeBefore",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "positionSizeAfter",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "revision",
-        "type": "uint64",
-        "internalType": "uint64"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "requestRecovery",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "action",
-        "type": "uint8",
-        "internalType": "enum IAsyncVenueAdapter.RecoveryAction"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "requestRegistrationHash",
-    "inputs": [
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "name": "authorization",
+        "type": "tuple",
+        "internalType": "struct GmxV2ExitController.ExitAuthorization",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "account",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feePayer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "executionFeeRefundRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "market",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "isLong",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "fullCloseSizeUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minOutputAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "authorizationExpiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "cancelAfter",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -2394,7 +2175,7 @@
   },
   {
     "type": "function",
-    "name": "sweepUnpositionedCollateral",
+    "name": "exitEvidence",
     "inputs": [
       {
         "name": "requestKey",
@@ -2402,69 +2183,262 @@
         "internalType": "bytes32"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "event",
-    "name": "EvidenceRelayed",
-    "inputs": [
+    "outputs": [
       {
-        "name": "requestKey",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
+        "name": "status",
+        "type": "uint8",
+        "internalType": "enum GmxV2ExitController.Status"
       },
       {
-        "name": "packageId",
+        "name": "evidenceHash",
         "type": "bytes32",
-        "indexed": true,
         "internalType": "bytes32"
       },
       {
         "name": "revision",
         "type": "uint64",
-        "indexed": false,
         "internalType": "uint64"
+      },
+      {
+        "name": "reconciling",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "released",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
-    "anonymous": false
+    "stateMutability": "view"
   },
   {
-    "type": "event",
-    "name": "ExitedPositionReleased",
+    "type": "function",
+    "name": "exitRegistrationHash",
     "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
       {
         "name": "requestKey",
         "type": "bytes32",
-        "indexed": true,
         "internalType": "bytes32"
       }
     ],
-    "anonymous": false
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
-    "type": "event",
-    "name": "ExpiredFundingReclaimed",
+    "type": "function",
+    "name": "finalizeExecutedExit",
     "inputs": [
       {
-        "name": "packageId",
+        "name": "requestKey",
         "type": "bytes32",
-        "indexed": true,
         "internalType": "bytes32"
       }
     ],
+    "outputs": [
+      {
+        "name": "released",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "nextNonce",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "orderVerifier",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IGmxV2ExitOrderVerifier"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "processReconciliation",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "terminal",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requestCancellationOrReconciliation",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "terminal",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "submitFullClose",
+    "inputs": [
+      {
+        "name": "authorization",
+        "type": "tuple",
+        "internalType": "struct GmxV2ExitController.ExitAuthorization",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "account",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feePayer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "executionFeeRefundRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "market",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "isLong",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "fullCloseSizeUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minOutputAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "authorizationExpiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "cancelAfter",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "ownerSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "event",
+    "name": "EIP712DomainChanged",
+    "inputs": [],
     "anonymous": false
   },
   {
     "type": "event",
-    "name": "OutcomeRecorded",
+    "name": "ExitOutcomeRecorded",
     "inputs": [
       {
         "name": "requestKey",
@@ -2476,7 +2450,7 @@
         "name": "status",
         "type": "uint8",
         "indexed": false,
-        "internalType": "enum GmxV2ArbitrumAdapter.Status"
+        "internalType": "enum GmxV2ExitController.Status"
       },
       {
         "name": "revision",
@@ -2495,7 +2469,45 @@
   },
   {
     "type": "event",
-    "name": "RecoveryRequested",
+    "name": "ExitReconciliationRequested",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ExitSubmitted",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IsolatedPositionReleased",
     "inputs": [
       {
         "name": "packageId",
@@ -2511,97 +2523,6 @@
       }
     ],
     "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "RequestCreated",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "requestPayloadHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "RequestFunded",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "requestPayloadHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "collateralAtoms",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeWei",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "UnfilledRequestReleased",
-    "inputs": [
-      {
-        "name": "packageId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "requestKey",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "status",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum GmxV2ArbitrumAdapter.Status"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "error",
-    "name": "AlreadyFunded",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "DeadlinePassed",
-    "inputs": []
   },
   {
     "type": "error",
@@ -2615,7 +2536,7 @@
   },
   {
     "type": "error",
-    "name": "FundingMissing",
+    "name": "InvalidAuthorization",
     "inputs": []
   },
   {
@@ -2630,7 +2551,12 @@
   },
   {
     "type": "error",
-    "name": "InvalidRequest",
+    "name": "InvalidShortString",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSignature",
     "inputs": []
   },
   {
@@ -2640,12 +2566,12 @@
   },
   {
     "type": "error",
-    "name": "SafeERC20FailedOperation",
+    "name": "StringTooLong",
     "inputs": [
       {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
+        "name": "str",
+        "type": "string",
+        "internalType": "string"
       }
     ]
   },

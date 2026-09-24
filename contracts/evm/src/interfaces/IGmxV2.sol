@@ -202,6 +202,28 @@ library GmxV2 {
         uint64 venueDeadline;
         uint64 recoveryDeadline;
     }
+
+    struct ExitRegistration {
+        bytes32 packageId;
+        bytes32 entryRequestKey;
+        bytes32 authorizationHash;
+        address account;
+        address owner;
+        address receiver;
+        address feePayer;
+        address executionFeeRefundRecipient;
+        address market;
+        address collateralToken;
+        bool isLong;
+        uint256 fullCloseSizeUsd;
+        uint256 acceptablePrice;
+        uint256 minOutputAmount;
+        uint256 executionFeeWei;
+        uint256 callbackGasLimit;
+        uint64 authorizationExpiry;
+        uint64 cancelAfter;
+        uint256 nonce;
+    }
 }
 
 interface IGmxV2ExchangeRouter {
@@ -247,6 +269,14 @@ interface IGmxV2OrderVerifier {
         address account,
         address callbackContract,
         GmxV2.RequestRegistration calldata registration,
+        GmxV2.EventLogData calldata orderData
+    ) external pure;
+}
+
+interface IGmxV2ExitOrderVerifier {
+    function verify(
+        address callbackContract,
+        GmxV2.ExitRegistration calldata registration,
         GmxV2.EventLogData calldata orderData
     ) external pure;
 }
