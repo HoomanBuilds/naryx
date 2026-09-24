@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import anchor, { type Idl } from '@coral-xyz/anchor';
 import {
   AddressLookupTableAccount,
+  AddressLookupTableProgram,
   ComputeBudgetProgram,
   Ed25519Program,
   PACKET_DATA_SIZE,
@@ -12,12 +13,16 @@ import {
   SYSVAR_INSTRUCTIONS_PUBKEY,
   SystemProgram,
   TransactionInstruction,
+  VersionedTransaction,
 } from '@solana/web3.js';
 import type { DomainRef, PackageAdmission } from '@naryx/protocol-types';
 import {
   compileFirmCashCarryPlan,
   FIRM_CASH_CARRY_ACCOUNT_NAMES,
   PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES,
+  SOLANA_DEVNET_GENESIS_HASH,
+  SOLANA_MAINNET_BETA_GENESIS_HASH,
+  SolanaUnsignedTransactionMaterializer,
   solanaIdlContentHash,
   type FirmCashCarryAccountName,
   type FirmCashCarryBinding,
@@ -25,6 +30,8 @@ import {
   type PublicCashCarryExitBinding,
   type PublicCashCarryResourceEvidence,
   type PublicCashCarryResourceName,
+  type SolanaLookupTableSnapshot,
+  type SolanaReadOnlyRpc,
 } from '../src/index.js';
 
 const { BN, BorshCoder } = anchor;
@@ -959,6 +966,73 @@ function attachPublicExit(
   return publicExit;
 }
 
+function useDevnet(value: ReturnType<typeof fixture>): void {
+  (value.binding as { environment: 'devnet' }).environment = 'devnet';
+  for (const item of [value.admission.order, value.admission.quote, value.admission.route]) {
+    (item as { environment: 'devnet' }).environment = 'devnet';
+  }
+}
+
+class MaterializerRpc implements SolanaReadOnlyRpc {
+  readonly rpcUrl = 'https://trusted.invalid';
+  readonly calls: string[] = [];
+  readonly #genesisHash: string;
+  readonly #table: AddressLookupTableAccount | null;
+
+  constructor(genesisHash: string, table: AddressLookupTableAccount | null) {
+    this.#genesisHash = genesisHash;
+    this.#table = table;
+  }
+
+  async getGenesisHash(): Promise<string> {
+    this.calls.push('genesis');
+    return this.#genesisHash;
+  }
+
+  async getLatestBlockhash() {
+    this.calls.push('blockhash');
+    return { contextSlot: 500, blockhash: namedAddress('materializer-blockhash').toBase58(), lastValidBlockHeight: 650 };
+  }
+
+  async getLookupTable(address: PublicKey, minContextSlot: number): Promise<SolanaLookupTableSnapshot | null> {
+    this.calls.push(`lookup:${minContextSlot}`);
+    if (this.#table === null || !this.#table.key.equals(address)) return null;
+    return {
+      contextSlot: 500,
+      owner: AddressLookupTableProgram.programId,
+      executable: false,
+      account: this.#table,
+    };
+  }
+}
+
+function materializerHarness(value: ReturnType<typeof fixture>, genesisHash = SOLANA_DEVNET_GENESIS_HASH, includeLookup = true) {
+  const lookupAddresses = [...new Map([
+    ...value.admission.route.accountBindings,
+    ...(value.binding.publicExit?.admission.route.accountBindings ?? []),
+  ].map((binding) => [binding.accountIdentity, new PublicKey(binding.accountIdentity)])).values()];
+  const table = includeLookup
+    ? new AddressLookupTableAccount({
+        key: namedAddress('materializer-lookup-table'),
+        state: {
+          deactivationSlot: (1n << 64n) - 1n,
+          lastExtendedSlot: 400,
+          lastExtendedSlotStartIndex: 0,
+          addresses: lookupAddresses,
+        },
+      })
+    : null;
+  const rpc = new MaterializerRpc(genesisHash, table);
+  const materializer = new SolanaUnsignedTransactionMaterializer(rpc, {
+    environment: 'devnet',
+    domain: value.binding.domain,
+    rpcUrl: rpc.rpcUrl,
+    expectedGenesisHash: SOLANA_DEVNET_GENESIS_HASH,
+    lookupTables: table === null ? [] : [{ address: table.key, expectedAddresses: lookupAddresses }],
+  });
+  return { materializer, rpc };
+}
+
 test('compiles separate solver lock and atomic trader firm entry from the generated IDL', () => {
   const { admission, binding } = fixture();
   const result = compileFirmCashCarryPlan(admission, binding);
@@ -1164,4 +1238,80 @@ test('has no signing, RPC, simulation, or network behavior', () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('materializes a Devnet trader entry with exact ALT and unsigned v0 evidence', async () => {
+  const value = fixture();
+  useDevnet(value);
+  const { materializer, rpc } = materializerHarness(value);
+  const result = await materializer.materialize({
+    planKind: 'TRADER_ENTRY',
+    admission: value.admission,
+    binding: value.binding,
+  });
+
+  const transaction = VersionedTransaction.deserialize(result.transactionBytes);
+  assert.equal(result.planKind, 'TRADER_ENTRY');
+  assert.equal(transaction.version, 0);
+  assert.equal(result.genesisHash, SOLANA_DEVNET_GENESIS_HASH);
+  assert.equal(result.recentBlockhash, namedAddress('materializer-blockhash').toBase58());
+  assert.equal(result.lastValidBlockHeight, 650);
+  assert.deepEqual(result.requiredSignerPubkeys, [value.binding.accounts.trader.address]);
+  assert(transaction.signatures.every((signature) => signature.every((byte) => byte === 0)));
+  assert.equal(result.transactionBase64, Buffer.from(result.transactionBytes).toString('base64'));
+  assert.equal(result.messageBase64, Buffer.from(result.messageBytes).toString('base64'));
+  assert(result.evidence.serializedTransactionBytes <= PACKET_DATA_SIZE);
+  assert(result.evidence.resolvedAddressCount <= 64);
+  assert.equal(result.evidence.computeUnitLimit, value.binding.computeUnitLimit);
+  assert.equal(result.lookupTables.length, 1);
+  assert.equal(result.lookupTables[0]!.contentCommitment.length, 32);
+  assert.equal(result.requestCommitment.length, 32);
+  assert.deepEqual(rpc.calls, ['genesis', 'blockhash', 'lookup:500']);
+});
+
+test('materializes a Devnet trader-recovery exit without a solver signer', async () => {
+  const value = fixture();
+  useDevnet(value);
+  attachPublicExit(value, 'TRADER_RECOVERY');
+  const { materializer } = materializerHarness(value);
+  const result = await materializer.materialize({
+    planKind: 'TRADER_RECOVERY_EXIT',
+    admission: value.admission,
+    binding: value.binding,
+  });
+
+  const transaction = VersionedTransaction.deserialize(result.transactionBytes);
+  assert.equal(result.planKind, 'TRADER_RECOVERY_EXIT');
+  assert.deepEqual(result.requiredSignerPubkeys, [value.binding.accounts.trader.address]);
+  assert.equal(transaction.message.compiledInstructions.length, 2);
+  assert(transaction.signatures.every((signature) => signature.every((byte) => byte === 0)));
+  assert(result.evidence.serializedTransactionBytes <= PACKET_DATA_SIZE);
+  assert.equal(result.evidence.computeUnitLimit, value.binding.publicExit!.computeUnitLimit);
+});
+
+test('rejects wrong genesis and an uncompressed oversized entry before materialization', async () => {
+  const wrongGenesis = fixture();
+  useDevnet(wrongGenesis);
+  const wrongHarness = materializerHarness(wrongGenesis, SOLANA_MAINNET_BETA_GENESIS_HASH);
+  await assert.rejects(
+    wrongHarness.materializer.materialize({
+      planKind: 'TRADER_ENTRY',
+      admission: wrongGenesis.admission,
+      binding: wrongGenesis.binding,
+    }),
+    /mainnet-beta genesis is prohibited/,
+  );
+  assert.deepEqual(wrongHarness.rpc.calls, ['genesis']);
+
+  const oversized = fixture(5);
+  useDevnet(oversized);
+  const oversizedHarness = materializerHarness(oversized, SOLANA_DEVNET_GENESIS_HASH, false);
+  await assert.rejects(
+    oversizedHarness.materializer.materialize({
+      planKind: 'TRADER_ENTRY',
+      admission: oversized.admission,
+      binding: oversized.binding,
+    }),
+    /1232-byte wire limit|encoding overruns Uint8Array/,
+  );
 });

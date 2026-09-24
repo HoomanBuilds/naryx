@@ -22,6 +22,7 @@ import type {
 } from '@naryx/adapter-core';
 
 export * from './firm-plan.js';
+export * from './materializer.js';
 export * from './public-exit-plan.js';
 
 const U64_MAX = (1n << 64n) - 1n;
