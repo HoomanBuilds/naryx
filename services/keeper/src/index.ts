@@ -28,6 +28,7 @@ export * from './hyperliquid-recovery-compiler.js';
 export * from './hyperliquid-recovery-validation.js';
 export * from './hyperliquid-recovery-reconciliation.js';
 export * from './hyperliquid-recovery-submission-journal.js';
+export * from './hyperliquid-evidence-collector.js';
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const CLIENT_ORDER_ID_PATTERN = /^0x[0-9a-fA-F]{32}$/;
