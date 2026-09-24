@@ -1,6 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::Mint;
-use naryx_core::{constants::PROTOCOL_CONFIG_SEED, program::NaryxCore, state::ProtocolConfig};
+use naryx_core::{
+    constants::PROTOCOL_CONFIG_SEED, program::NaryxCore,
+    reservation_policy::reservation_policy_hash, state::ProtocolConfig,
+};
 
 use crate::{
     constants::{RESERVATION_CLASS_SEED, RESERVATION_VERSION},
@@ -90,11 +93,32 @@ pub fn initialize_class_handler(
         &ctx.accounts.consumer_program,
         &ctx.accounts.consumer_program_data,
     )?;
+    let reservation_code_identity = live_code_identity(
+        &ctx.accounts.program.to_account_info(),
+        &ctx.accounts.program_data.to_account_info(),
+    )?;
+    let policy_hash = reservation_policy_hash(
+        ctx.accounts.program.key(),
+        ctx.accounts.program_data.key(),
+        reservation_code_identity,
+        ctx.accounts.reservation_class.key(),
+        RESERVATION_VERSION,
+        &ctx.accounts.protocol_config.domain,
+        ctx.accounts.base_mint.key(),
+        ctx.accounts.quote_mint.key(),
+        ctx.accounts.consumer_program.key(),
+        ctx.accounts.consumer_program_data.key(),
+        consumer_code_identity,
+    );
 
     ctx.accounts.reservation_class.set_inner(ReservationClass {
         version: RESERVATION_VERSION,
         domain: ctx.accounts.protocol_config.domain.clone(),
         domain_identity: args.domain_identity,
+        reservation_program: ctx.accounts.program.key(),
+        reservation_program_data: ctx.accounts.program_data.key(),
+        reservation_code_identity,
+        policy_hash,
         base_mint: ctx.accounts.base_mint.key(),
         quote_mint: ctx.accounts.quote_mint.key(),
         core_program: ctx.accounts.core_program.key(),

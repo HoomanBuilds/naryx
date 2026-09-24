@@ -19,6 +19,7 @@ pub struct InitializeClassArgs {
     pub max_abs_reference_price: i128,
     pub max_abs_reference_offset: i128,
     pub max_fee_atoms: u64,
+    pub firm_onchain_enabled: bool,
 }
 
 #[derive(Accounts)]
@@ -95,6 +96,22 @@ pub fn handler(ctx: Context<InitializeClass>, args: InitializeClassArgs) -> Resu
         &ctx.accounts.consumer_program,
         &ctx.accounts.consumer_program_data,
     )?;
+    if args.firm_onchain_enabled {
+        require_keys_eq!(
+            ctx.accounts.consumer_program.key(),
+            ctx.accounts.core_program.key(),
+            ErrorCode::ClassParameterInvalid
+        );
+        require_keys_eq!(
+            ctx.accounts.consumer_program_data.key(),
+            ctx.accounts.core_program_data.key(),
+            ErrorCode::ClassParameterInvalid
+        );
+        require!(
+            consumer_code_identity == core_code_identity,
+            ErrorCode::CodeIdentityMismatch
+        );
+    }
     ctx.accounts.package_book_class.set_inner(PackageBookClass {
         version: PACKAGE_BOOK_VERSION,
         domain: ctx.accounts.protocol_config.domain.clone(),
@@ -112,7 +129,7 @@ pub fn handler(ctx: Context<InitializeClass>, args: InitializeClassArgs) -> Resu
         max_abs_reference_price: args.max_abs_reference_price,
         max_abs_reference_offset: args.max_abs_reference_offset,
         max_fee_atoms: args.max_fee_atoms,
-        firm_onchain_enabled: false,
+        firm_onchain_enabled: args.firm_onchain_enabled,
         bump: ctx.bumps.package_book_class,
     });
     Ok(())

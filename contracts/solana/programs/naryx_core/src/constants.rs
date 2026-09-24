@@ -28,6 +28,8 @@ pub const CASH_CARRY_OPEN_SEED: &[u8] = b"cash-carry-open";
 pub const CASH_CARRY_EXECUTOR_SEED: &[u8] = b"cash-carry-executor";
 
 pub const PACKAGE_BOOK_PROGRAM_ID: Pubkey = pubkey!("8MgGrVCrAN2AhQ6hHPLqRXkUvwQ2WKHcbSXtXpEWpsFR");
+pub const INVENTORY_RESERVATION_PROGRAM_ID: Pubkey =
+    pubkey!("93BUScJ5mAGt8uHozCaAyDVuydqxC6zmKcrBDKjiqtgo");
 pub const PACKAGE_BOOK_CLASS_SEED: &[u8] = b"package-book-class";
 pub const PACKAGE_QUOTE_SHARD_SEED: &[u8] = b"package-quote-shard";
 pub const PACKAGE_QUOTE_LEVEL_PAGE_SEED: &[u8] = b"quote-level-page";

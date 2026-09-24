@@ -9,6 +9,7 @@ use crate::{
 };
 
 pub const SPOT_ADAPTER_CLASS_ID: &str = "naryx.solana.spot-exact";
+pub const FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID: &str = "naryx.solana.spot-firm-reservation";
 pub const PERP_ADAPTER_CLASS_ID: &str = "naryx.solana.perp-exact";
 pub const CASH_AND_CARRY_TEMPLATE_ID: &str = "cash-and-carry-v1";
 pub const SUPPORTED_ADAPTER_CLASS_VERSION: u32 = 1;

@@ -2,6 +2,7 @@ pub mod constants;
 pub mod error;
 pub mod events;
 pub mod instructions;
+pub mod reservation_policy;
 pub mod state;
 pub mod wire;
 
@@ -217,6 +218,38 @@ pub mod naryx_core {
     ) -> Result<()> {
         instructions::execute_cash_and_carry::quoted_handler(
             ctx, order_hash, quote_hash, route_hash, args, quote_args,
+        )
+    }
+
+    pub fn execute_firm_cash_and_carry<'info>(
+        ctx: Context<'info, ExecuteFirmCashAndCarry<'info>>,
+        order_hash: [u8; HASH_BYTE_LENGTH],
+        quote_hash: [u8; HASH_BYTE_LENGTH],
+        route_hash: [u8; HASH_BYTE_LENGTH],
+        args: CashCarryExecutionArgs,
+        quote_args: CashCarryQuoteArgs,
+        firm_quote_atoms: u64,
+    ) -> Result<()> {
+        instructions::execute_firm_cash_and_carry::handler(
+            ctx,
+            order_hash,
+            quote_hash,
+            route_hash,
+            args,
+            quote_args,
+            firm_quote_atoms,
+        )
+    }
+
+    pub fn lock_firm_quote<'info>(
+        ctx: Context<'info, LockFirmQuote<'info>>,
+        order_hash: [u8; HASH_BYTE_LENGTH],
+        quote_hash: [u8; HASH_BYTE_LENGTH],
+        route_hash: [u8; HASH_BYTE_LENGTH],
+        quote_args: CashCarryQuoteArgs,
+    ) -> Result<()> {
+        instructions::execute_firm_cash_and_carry::lock_firm_quote_handler(
+            ctx, order_hash, quote_hash, route_hash, quote_args,
         )
     }
 }

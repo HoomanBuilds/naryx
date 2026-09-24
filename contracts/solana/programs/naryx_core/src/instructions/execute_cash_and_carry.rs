@@ -34,7 +34,7 @@ use crate::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
         CashCarrySeriesBindingRecord, CashCarrySeriesBindingV1, CashCarryStrategyAuthority,
         ManifestRef, OpenCashCarryPackage, ProtocolConfig, ResourceIndex, ResourceRecord,
-        SettlementClass, SolverRegistry, CASH_CARRY_SERIES_ENTRY_SIDE_ASK,
+        SettlementClass, SolverRegistry, CASH_CARRY_SERIES_ENTRY_SIDE_ASK, SPOT_ADAPTER_CLASS_ID,
     },
     wire::{DomainRef, HASH_BYTE_LENGTH},
 };
@@ -42,20 +42,21 @@ use crate::{
 const EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/cash-carry-execution/v1";
 const RESOURCE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-resources/v1";
 const ECONOMIC_PACKAGE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-economic-package/v1";
-const ROUTE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-route-accounts/v1";
-const PACKAGE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-package-accounts/v1";
+pub(crate) const ROUTE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-route-accounts/v1";
+pub(crate) const PACKAGE_ACCOUNTS_DOMAIN: &[u8] = b"NARYX/cash-carry-package-accounts/v1";
 const QUOTE_INTENT_DOMAIN: &[u8] = b"NARYX/cash-carry-quote-intent/v1";
 const QUOTED_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/quoted-cash-carry-execution/v1";
 const PACKAGE_BOOK_DOMAIN_REF_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-identity";
 const PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR: [u8; 8] =
     [0x93, 0x38, 0x6b, 0x07, 0x4f, 0x8a, 0xcd, 0xb0];
-const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
-const PACKAGE_BOOK_QUOTE_SIDE_ASK: u8 = 2;
-const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
+pub(crate) const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
+pub(crate) const PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN: u8 = 2;
+pub(crate) const PACKAGE_BOOK_QUOTE_SIDE_ASK: u8 = 2;
+pub(crate) const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
 const SERIES_INDEX_ACCOUNT_INDEX: usize = PACKAGE_BOOK_ACCOUNT_COUNT;
 const SERIES_RECORD_ACCOUNT_INDEX: usize = SERIES_INDEX_ACCOUNT_INDEX + 1;
-const QUOTED_ENTRY_ACCOUNT_COUNT: usize = SERIES_RECORD_ACCOUNT_INDEX + 1;
-const OPEN_PACKAGE_VERSION: u8 = 2;
+pub(crate) const QUOTED_ENTRY_ACCOUNT_COUNT: usize = SERIES_RECORD_ACCOUNT_INDEX + 1;
+pub(crate) const OPEN_PACKAGE_VERSION: u8 = 2;
 pub const RISE_COLLATERAL_MUST_BE_PREFUNDED: bool = true;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +66,7 @@ pub enum CashCarryAction {
 }
 
 impl CashCarryAction {
-    fn discriminant(self) -> u8 {
+    pub(crate) fn discriminant(self) -> u8 {
         match self {
             Self::Entry => 1,
             Self::Exit => 2,
@@ -140,9 +141,9 @@ struct PackageBookConsumeCapacityArgs {
 }
 
 #[derive(Clone, Copy)]
-struct QuoteEvidence {
-    intent_commitment: [u8; 32],
-    fill_commitment: [u8; 32],
+pub(crate) struct QuoteEvidence {
+    pub intent_commitment: [u8; 32],
+    pub fill_commitment: [u8; 32],
 }
 
 #[derive(Accounts)]
@@ -344,7 +345,7 @@ pub fn execution_digest(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn quoted_execution_digest(
+pub(crate) fn quoted_execution_digest(
     domain: &DomainRef,
     order_hash: [u8; 32],
     quote_hash: [u8; 32],
@@ -373,7 +374,7 @@ fn quoted_execution_digest(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn quote_intent_commitment(
+pub(crate) fn quote_intent_commitment(
     domain: &DomainRef,
     solver: &Pubkey,
     consumer_authority: &Pubkey,
@@ -415,7 +416,7 @@ fn quote_intent_commitment(
     hashv(&[QUOTE_INTENT_DOMAIN, &data]).to_bytes()
 }
 
-fn encode_consume_capacity_instruction(
+pub(crate) fn encode_consume_capacity_instruction(
     order_hash: [u8; 32],
     quote_hash: [u8; 32],
     route_hash: [u8; 32],
@@ -516,12 +517,15 @@ fn execute<'info>(
         base_asset: &ctx.accounts.resources.base_asset_record,
         quote_asset: &ctx.accounts.resources.quote_asset_record,
     };
-    let admission = reconstruct_admission(&ctx.accounts, &args, execution_domain.clone())?;
+    let admission =
+        reconstruct_admission(&ctx.accounts.resources, &args, execution_domain.clone())?;
     validate_execution_authority(&ctx.accounts, &execution_domain)?;
     let resource_admission_commitment =
-        resource_admission_commitment(&admission, &resource_record_keys(&ctx.accounts));
-    let economic_package_commitment =
-        economic_package_commitment(&admission, &economic_resource_record_keys(&ctx.accounts));
+        resource_admission_commitment(&admission, &resource_record_keys(&ctx.accounts.resources));
+    let economic_package_commitment = economic_package_commitment(
+        &admission,
+        &economic_resource_record_keys(&ctx.accounts.resources),
+    );
     let route_accounts_commitment =
         route_accounts_commitment(&ctx.accounts, ctx.remaining_accounts);
     let package_accounts_commitment = package_accounts_commitment(&ctx.accounts)?;
@@ -534,11 +538,11 @@ fn execute<'info>(
     match args.action {
         CashCarryAction::Entry => {
             validate_cash_carry_admission(&ctx.accounts.config, &admission, &resources)?;
-            validate_resource_indices(&ctx.accounts, true)?;
+            validate_resource_indices(&ctx.accounts.resources, true)?;
         }
         CashCarryAction::Exit => {
             validate_cash_carry_exit_admission(&execution_domain, &admission, &resources)?;
-            validate_resource_indices(&ctx.accounts, false)?;
+            validate_resource_indices(&ctx.accounts.resources, false)?;
         }
     }
     validate_live_resource_accounts(&ctx.accounts)?;
@@ -599,7 +603,7 @@ fn execute<'info>(
         ctx.accounts.rise_strategy.asset_id,
     )?;
     let (perp_base_lots, perp_limit_ticks, spot_quote_limit_atoms) =
-        execution_units(&admission, &ctx.accounts)?;
+        execution_units(&admission, &ctx.accounts.resources)?;
     validate_preconditions(
         &args,
         pre_rise_base_lots,
@@ -835,13 +839,19 @@ fn prepare_quote_evidence<'info>(
 ) -> Result<QuoteEvidence> {
     let quote_accounts = &remaining[..QUOTED_ENTRY_ACCOUNT_COUNT];
     validate_package_book_accounts(
-        accounts,
+        &accounts.config,
         &quote_accounts[..PACKAGE_BOOK_ACCOUNT_COUNT],
         domain,
         solver,
         quote,
     )?;
-    validate_quote_series_binding(accounts, quote_accounts, execution, quote)?;
+    validate_quote_series_binding(
+        &accounts.config,
+        &accounts.resources,
+        quote_accounts,
+        execution,
+        quote,
+    )?;
     let keys = quote_accounts
         .iter()
         .map(AccountInfo::key)
@@ -861,16 +871,30 @@ fn prepare_quote_evidence<'info>(
     })
 }
 
-fn validate_quote_series_binding<'info>(
-    accounts: &ExecuteCashAndCarry<'info>,
+pub(crate) fn validate_quote_series_binding<'info>(
+    config: &ProtocolConfig,
+    resources: &CashCarryResourceAccounts<'info>,
     quote_accounts: &'info [AccountInfo<'info>],
     execution: &CashCarryExecutionArgs,
     quote: &CashCarryQuoteArgs,
 ) -> Result<()> {
-    let index_info = &quote_accounts[SERIES_INDEX_ACCOUNT_INDEX];
-    let record_info = &quote_accounts[SERIES_RECORD_ACCOUNT_INDEX];
-    let index = Account::<CashCarrySeriesBindingIndex>::try_from(index_info)?;
-    let record = Account::<CashCarrySeriesBindingRecord>::try_from(record_info)?;
+    let index = Account::<CashCarrySeriesBindingIndex>::try_from(
+        &quote_accounts[SERIES_INDEX_ACCOUNT_INDEX],
+    )?;
+    let record = Account::<CashCarrySeriesBindingRecord>::try_from(
+        &quote_accounts[SERIES_RECORD_ACCOUNT_INDEX],
+    )?;
+    validate_quote_series_binding_pair(config, resources, &index, &record, execution, quote)
+}
+
+pub(crate) fn validate_quote_series_binding_pair(
+    config: &ProtocolConfig,
+    resources: &CashCarryResourceAccounts,
+    index: &Account<CashCarrySeriesBindingIndex>,
+    record: &Account<CashCarrySeriesBindingRecord>,
+    execution: &CashCarryExecutionArgs,
+    quote: &CashCarryQuoteArgs,
+) -> Result<()> {
     let identity_key = record.binding.identity_key();
     let expected_index = Pubkey::find_program_address(
         &[CASH_CARRY_SERIES_INDEX_SEED, identity_key.as_ref()],
@@ -897,24 +921,24 @@ fn validate_quote_series_binding<'info>(
         ErrorCode::CashCarryQuoteAccountMismatch
     );
     validate_active_cash_carry_series_binding(
-        &accounts.config,
+        config,
         &index,
         record.key(),
         &record,
         identity_key,
         record.binding.binding_hash(),
-        &accounts.resources.base_asset_index,
-        accounts.resources.base_asset_record.key(),
-        &accounts.resources.base_asset_record,
-        &accounts.resources.quote_asset_index,
-        accounts.resources.quote_asset_record.key(),
-        &accounts.resources.quote_asset_record,
+        &resources.base_asset_index,
+        resources.base_asset_record.key(),
+        &resources.base_asset_record,
+        &resources.quote_asset_index,
+        resources.quote_asset_record.key(),
+        &resources.quote_asset_record,
     )?;
     validate_quote_against_series(execution, quote, &record.binding)?;
     Ok(())
 }
 
-fn validate_quote_against_series(
+pub(crate) fn validate_quote_against_series(
     execution: &CashCarryExecutionArgs,
     quote: &CashCarryQuoteArgs,
     binding: &CashCarrySeriesBindingV1,
@@ -939,7 +963,7 @@ fn validate_quote_against_series(
     Ok(package_size_units)
 }
 
-fn derive_package_size_units(
+pub(crate) fn derive_package_size_units(
     execution: &CashCarryExecutionArgs,
     binding: &CashCarrySeriesBindingV1,
 ) -> Result<u64> {
@@ -964,8 +988,8 @@ fn derive_package_size_units(
     u64::try_from(spot_units).map_err(|_| error!(ErrorCode::CashCarryQuotePackageUnitMismatch))
 }
 
-fn validate_package_book_accounts(
-    accounts: &ExecuteCashAndCarry,
+pub(crate) fn validate_package_book_accounts(
+    config: &ProtocolConfig,
     quote_accounts: &[AccountInfo],
     domain: &DomainRef,
     solver: Pubkey,
@@ -1018,13 +1042,13 @@ fn validate_package_book_accounts(
         ErrorCode::CashCarryQuoteAccountMismatch
     );
     require!(
-        &accounts.config.domain == domain,
+        &config.domain == domain,
         ErrorCode::CashCarryQuoteAccountMismatch
     );
     Ok(())
 }
 
-fn expected_package_book_addresses(
+pub(crate) fn expected_package_book_addresses(
     domain: &DomainRef,
     solver: Pubkey,
     series_manifest_hash: [u8; 32],
@@ -1066,7 +1090,7 @@ fn expected_package_book_addresses(
     (class, shard, page)
 }
 
-fn live_program_code_identity(
+pub(crate) fn live_program_code_identity(
     program: &AccountInfo,
     program_data: &AccountInfo,
 ) -> Result<[u8; 32]> {
@@ -1162,7 +1186,7 @@ fn consume_package_quote<'info>(
     Ok(())
 }
 
-fn validate_basic_inputs(
+pub(crate) fn validate_basic_inputs(
     order_hash: [u8; 32],
     quote_hash: [u8; 32],
     route_hash: [u8; 32],
@@ -1183,7 +1207,7 @@ fn validate_basic_inputs(
     Ok(())
 }
 
-fn validate_expiry(current_slot: u64, expiry_slot: u64) -> Result<()> {
+pub(crate) fn validate_expiry(current_slot: u64, expiry_slot: u64) -> Result<()> {
     require!(current_slot < expiry_slot, ErrorCode::CashCarryOrderExpired);
     Ok(())
 }
@@ -1229,43 +1253,25 @@ fn execution_solver(
     }
 }
 
-fn validate_resource_indices(
-    accounts: &ExecuteCashAndCarry,
+pub(crate) fn validate_resource_indices(
+    resources: &CashCarryResourceAccounts,
     require_current_active: bool,
 ) -> Result<()> {
     let pairs = [
         (
-            &accounts.resources.spot_adapter_index,
-            &accounts.resources.spot_adapter_record,
+            &resources.spot_adapter_index,
+            &resources.spot_adapter_record,
         ),
         (
-            &accounts.resources.perp_adapter_index,
-            &accounts.resources.perp_adapter_record,
+            &resources.perp_adapter_index,
+            &resources.perp_adapter_record,
         ),
-        (
-            &accounts.resources.spot_market_index,
-            &accounts.resources.spot_market_record,
-        ),
-        (
-            &accounts.resources.perp_market_index,
-            &accounts.resources.perp_market_record,
-        ),
-        (
-            &accounts.resources.spot_venue_index,
-            &accounts.resources.spot_venue_record,
-        ),
-        (
-            &accounts.resources.perp_venue_index,
-            &accounts.resources.perp_venue_record,
-        ),
-        (
-            &accounts.resources.base_asset_index,
-            &accounts.resources.base_asset_record,
-        ),
-        (
-            &accounts.resources.quote_asset_index,
-            &accounts.resources.quote_asset_record,
-        ),
+        (&resources.spot_market_index, &resources.spot_market_record),
+        (&resources.perp_market_index, &resources.perp_market_record),
+        (&resources.spot_venue_index, &resources.spot_venue_record),
+        (&resources.perp_venue_index, &resources.perp_venue_record),
+        (&resources.base_asset_index, &resources.base_asset_record),
+        (&resources.quote_asset_index, &resources.quote_asset_record),
     ];
     for (index, record) in pairs {
         let expected_index = Pubkey::find_program_address(
@@ -1299,20 +1305,18 @@ fn validate_resource_indices(
     Ok(())
 }
 
-fn reconstruct_admission(
-    accounts: &ExecuteCashAndCarry,
+pub(crate) fn reconstruct_admission(
+    resources: &CashCarryResourceAccounts,
     args: &CashCarryExecutionArgs,
     domain: DomainRef,
 ) -> Result<CashCarryAdmission> {
-    let template = accounts
-        .resources
+    let template = resources
         .spot_adapter_record
         .manifest
         .allowed_template
         .clone()
         .ok_or_else(|| error!(ErrorCode::CashCarryResourceAccountMismatch))?;
-    let settlement = accounts
-        .resources
+    let settlement = resources
         .spot_adapter_record
         .manifest
         .settlement
@@ -1320,55 +1324,15 @@ fn reconstruct_admission(
         .ok_or_else(|| error!(ErrorCode::CashCarryResourceAccountMismatch))?;
     Ok(CashCarryAdmission {
         domain,
-        spot_adapter: accounts
-            .resources
-            .spot_adapter_record
-            .manifest
-            .identity
-            .clone(),
-        perp_adapter: accounts
-            .resources
-            .perp_adapter_record
-            .manifest
-            .identity
-            .clone(),
-        spot_market: accounts
-            .resources
-            .spot_market_record
-            .manifest
-            .identity
-            .clone(),
-        perp_market: accounts
-            .resources
-            .perp_market_record
-            .manifest
-            .identity
-            .clone(),
-        spot_venue: accounts
-            .resources
-            .spot_venue_record
-            .manifest
-            .identity
-            .clone(),
-        perp_venue: accounts
-            .resources
-            .perp_venue_record
-            .manifest
-            .identity
-            .clone(),
-        base_asset: accounts
-            .resources
-            .base_asset_record
-            .manifest
-            .identity
-            .clone(),
-        quote_asset: accounts
-            .resources
-            .quote_asset_record
-            .manifest
-            .identity
-            .clone(),
-        quote_decimals: accounts.resources.quote_asset_record.manifest.decimals,
+        spot_adapter: resources.spot_adapter_record.manifest.identity.clone(),
+        perp_adapter: resources.perp_adapter_record.manifest.identity.clone(),
+        spot_market: resources.spot_market_record.manifest.identity.clone(),
+        perp_market: resources.perp_market_record.manifest.identity.clone(),
+        spot_venue: resources.spot_venue_record.manifest.identity.clone(),
+        perp_venue: resources.perp_venue_record.manifest.identity.clone(),
+        base_asset: resources.base_asset_record.manifest.identity.clone(),
+        quote_asset: resources.quote_asset_record.manifest.identity.clone(),
+        quote_decimals: resources.quote_asset_record.manifest.decimals,
         template,
         settlement,
         action: args.action.resource_action(),
@@ -1381,6 +1345,17 @@ fn reconstruct_admission(
 }
 
 fn validate_live_resource_accounts(accounts: &ExecuteCashAndCarry) -> Result<()> {
+    require!(
+        accounts
+            .resources
+            .spot_adapter_record
+            .manifest
+            .adapter_class
+            .as_ref()
+            .map(|class| class.id.as_str())
+            == Some(SPOT_ADAPTER_CLASS_ID),
+        ErrorCode::CashCarryResourceAccountMismatch
+    );
     verify_code_identity(
         &accounts.resources.spot_adapter_record.manifest,
         &accounts.programs.spot_adapter_program,
@@ -1601,7 +1576,7 @@ fn validate_open_package_identity(
     Ok(())
 }
 
-fn validate_preconditions(
+pub(crate) fn validate_preconditions(
     args: &CashCarryExecutionArgs,
     pre_rise_base_lots: i64,
     pre_collateral: i64,
@@ -1677,19 +1652,17 @@ fn token_route_and_balances(accounts: &ExecuteCashAndCarry) -> Result<(bool, u64
     }
 }
 
-fn execution_units(
+pub(crate) fn execution_units(
     admission: &CashCarryAdmission,
-    accounts: &ExecuteCashAndCarry,
+    resources: &CashCarryResourceAccounts,
 ) -> Result<(u64, u64, u64)> {
-    let spot_units = accounts
-        .resources
+    let spot_units = resources
         .spot_market_record
         .manifest
         .market_units
         .as_ref()
         .ok_or_else(|| error!(ErrorCode::CashCarryResourceAccountMismatch))?;
-    let perp_units = accounts
-        .resources
+    let perp_units = resources
         .perp_market_record
         .manifest
         .market_units
@@ -1804,7 +1777,7 @@ fn execute_rise<'info>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn enforce_postconditions(
+pub(crate) fn enforce_postconditions(
     args: &CashCarryExecutionArgs,
     pre_base: u64,
     post_base: u64,
@@ -1858,7 +1831,7 @@ fn enforce_postconditions(
     }
 }
 
-fn require_solver_signature(
+pub(crate) fn require_solver_signature(
     instructions_sysvar: &AccountInfo,
     solver: &Pubkey,
     digest: &[u8; 32],
@@ -1900,30 +1873,30 @@ fn require_solver_signature(
     Ok(())
 }
 
-fn resource_record_keys(accounts: &ExecuteCashAndCarry) -> [Pubkey; 8] {
+pub(crate) fn resource_record_keys(resources: &CashCarryResourceAccounts) -> [Pubkey; 8] {
     [
-        accounts.resources.spot_adapter_record.key(),
-        accounts.resources.perp_adapter_record.key(),
-        accounts.resources.spot_market_record.key(),
-        accounts.resources.perp_market_record.key(),
-        accounts.resources.spot_venue_record.key(),
-        accounts.resources.perp_venue_record.key(),
-        accounts.resources.base_asset_record.key(),
-        accounts.resources.quote_asset_record.key(),
+        resources.spot_adapter_record.key(),
+        resources.perp_adapter_record.key(),
+        resources.spot_market_record.key(),
+        resources.perp_market_record.key(),
+        resources.spot_venue_record.key(),
+        resources.perp_venue_record.key(),
+        resources.base_asset_record.key(),
+        resources.quote_asset_record.key(),
     ]
 }
 
-fn economic_resource_record_keys(accounts: &ExecuteCashAndCarry) -> [Pubkey; 5] {
+pub(crate) fn economic_resource_record_keys(resources: &CashCarryResourceAccounts) -> [Pubkey; 5] {
     [
-        accounts.resources.perp_adapter_record.key(),
-        accounts.resources.perp_market_record.key(),
-        accounts.resources.perp_venue_record.key(),
-        accounts.resources.base_asset_record.key(),
-        accounts.resources.quote_asset_record.key(),
+        resources.perp_adapter_record.key(),
+        resources.perp_market_record.key(),
+        resources.perp_venue_record.key(),
+        resources.base_asset_record.key(),
+        resources.quote_asset_record.key(),
     ]
 }
 
-fn resource_admission_commitment(
+pub(crate) fn resource_admission_commitment(
     admission: &CashCarryAdmission,
     record_keys: &[Pubkey; 8],
 ) -> [u8; 32] {
@@ -1955,7 +1928,7 @@ fn resource_admission_commitment(
     hashv(&[RESOURCE_COMMITMENT_DOMAIN, &data]).to_bytes()
 }
 
-fn economic_package_commitment(
+pub(crate) fn economic_package_commitment(
     admission: &CashCarryAdmission,
     record_keys: &[Pubkey; 5],
 ) -> [u8; 32] {
@@ -2090,7 +2063,7 @@ fn execution_account_keys(
         accounts.resources.base_asset_index.key(),
         accounts.resources.quote_asset_index.key(),
     ];
-    keys.extend_from_slice(&resource_record_keys(accounts));
+    keys.extend_from_slice(&resource_record_keys(&accounts.resources));
     keys.extend_from_slice(&[
         accounts.programs.spot_adapter_program.key(),
         accounts.programs.spot_adapter_program_data.key(),
@@ -2126,7 +2099,7 @@ fn execution_account_keys(
     keys
 }
 
-fn hash_pubkeys(domain: &[u8], keys: &[Pubkey]) -> [u8; 32] {
+pub(crate) fn hash_pubkeys(domain: &[u8], keys: &[Pubkey]) -> [u8; 32] {
     let mut data = Vec::with_capacity(4 + keys.len() * 32);
     data.extend_from_slice(&(keys.len() as u32).to_be_bytes());
     for key in keys {
