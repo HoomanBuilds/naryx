@@ -758,6 +758,33 @@ contract NaryxStrategyAccountTest is Test {
         assertFalse(verifier.hasOpenPackage(address(account)));
     }
 
+    function testExitSurvivesDomainManifestRotation() public {
+        bytes32 entryReceiptHash = _enter();
+        bytes32 nextDomainManifestHash = keccak256("next-domain-manifest");
+        vm.prank(PROPOSER);
+        config.proposeDomain(2, nextDomainManifestHash);
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateDomain();
+
+        (PackageVerifier.Execution memory execution,) = _exit(entryReceiptHash, solver);
+        execution.domainManifestVersion = 2;
+        execution.domainManifestHash = nextDomainManifestHash;
+        ResourceRegistry.CashCarryAdmission memory admission = _admission(execution);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+
+        assertFalse(verifier.hasOpenPackage(address(account)));
+    }
+
     function _expectPackageUnitsRevert() private {
         (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
         _admit(admission);
