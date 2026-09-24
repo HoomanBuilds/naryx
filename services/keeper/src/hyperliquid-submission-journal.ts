@@ -6,6 +6,13 @@ import {
   type HyperliquidExecutionPlan,
 } from '@naryx/adapter-hyperliquid';
 import {
+  canonicalBytes,
+  encodeAdapterRef,
+  encodeAssetRef,
+  encodeRecoveryPlan,
+  encodeVersionedManifestRef,
+} from '@naryx/protocol-types';
+import {
   beginHyperliquidReconciliation,
   createHyperliquidPackageAttempt,
   markHyperliquidSubmissionUnknown,
@@ -107,7 +114,7 @@ function address(value: string, name: string): `0x${string}` {
   return value.toLowerCase() as `0x${string}`;
 }
 
-function sha256(value: string): `0x${string}` {
+function sha256(value: string | Uint8Array): `0x${string}` {
   return `0x${createHash('sha256').update(value).digest('hex')}`;
 }
 
@@ -157,6 +164,41 @@ function actionCommitment(action: HypercoreBatchedOrderAction): `0x${string}` {
     action.orders.map(orderFields), action.grouping]));
 }
 
+function recoveryPolicyCommitment(
+  plan: HyperliquidSubmissionRecord['packageAttempt']['plan'],
+): `0x${string}` {
+  return sha256(canonicalBytes((writer) => encodeRecoveryPlan(writer, plan.recoveryPolicy)));
+}
+
+function recoveryLegsCommitment(
+  plan: HyperliquidSubmissionRecord['packageAttempt']['plan'],
+): `0x${string}` {
+  return sha256(canonicalBytes((writer) => {
+    writer.writeArray(plan.legs, (target, leg) => {
+      target.writeU8(leg.legIndex, 'leg.legIndex');
+      target.writeString(leg.role, 'leg.role');
+      encodeAdapterRef(target, leg.adapter);
+      encodeVersionedManifestRef(target, leg.venue);
+      encodeVersionedManifestRef(target, leg.market);
+      encodeAssetRef(target, leg.baseAsset);
+      encodeAssetRef(target, leg.quoteAsset);
+      target.writeString(leg.side, 'leg.side');
+      target.writeU128(leg.quantityAtoms, 'leg.quantityAtoms');
+      target.writeU8(leg.sizeDecimals, 'leg.sizeDecimals');
+      target.writeU8(leg.maxPriceDecimals, 'leg.maxPriceDecimals');
+      target.writeI128(leg.signedBaseDeltaAtoms, 'leg.signedBaseDeltaAtoms');
+      target.writeString(leg.clientOrderId, 'leg.clientOrderId');
+      target.writeU32(leg.order.a, 'leg.order.assetId');
+      target.writeBool(leg.order.b, 'leg.order.isBuy');
+      target.writeString(leg.order.p, 'leg.order.price');
+      target.writeString(leg.order.s, 'leg.order.size');
+      target.writeBool(leg.order.r, 'leg.order.reduceOnly');
+      target.writeString(leg.order.t.limit.tif, 'leg.order.timeInForce');
+      target.writeString(leg.order.c, 'leg.order.clientOrderId');
+    }, 'recoveryLegs');
+  }));
+}
+
 function recordCommitment(record: Omit<HyperliquidSubmissionRecord,
   'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'>): `0x${string}` {
   const { plan } = record.packageAttempt;
@@ -184,6 +226,7 @@ function recordCommitment(record: Omit<HyperliquidSubmissionRecord,
     record.expiresAfterMs.toString(), record.vaultAddress,
     record.actionCommitmentScheme, record.actionHash,
     record.spotClientOrderId, record.perpetualClientOrderId,
+    recoveryLegsCommitment(plan), recoveryPolicyCommitment(plan),
     plan.plannedSpotDeltaAtoms.toString(), plan.prePerpetualPositionAtoms.toString(),
     plan.plannedPerpetualDeltaAtoms.toString(), plan.perpetualPositionTargetAtoms.toString(),
     plan.recoveryDeadlineMs.toString(), policyFields]));

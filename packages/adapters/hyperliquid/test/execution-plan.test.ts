@@ -219,8 +219,66 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
       legs,
       actions,
       recoveryPlan: {
+        policyVersion: 1,
+        controllerId: 'hypercore-recovery-controller-v1',
+        controllerCodeHash: 'b1'.repeat(32),
+        authorityModeId: 'agent-wallet-v1',
+        recoveryExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+        maxActionExpiryValue: 1_050n,
         maxTerminalResidual: assetAmount(baseAsset, terminalBaseCap),
         deadlineValue: recoveryDeadline,
+        minRecoveryWindowMs: 50n,
+        maxRecoveryCostCaps: [{ asset: quoteAsset, maxAtoms: 100_000n }],
+        maxAggregateRecoveryLoss: { asset: quoteAsset, atoms: 500_000n },
+        maxIntermediateResidual: { asset: baseAsset, atoms: quantityAtoms },
+        reconciledStateSchemaHash: 'b2'.repeat(32),
+        actionBuilderCodeHash: 'b3'.repeat(32),
+        actionSlots: [
+          {
+            sequence: 0,
+            action: 'COMPLETE_SPOT',
+            targetLeg: 0,
+            adapter: spotAdapter,
+            markets: [spotMarket],
+            maxQuantity: { asset: baseAsset, atoms: grossSpotAtoms },
+            limitPrice: spotLimit,
+            reduceOnly: false,
+            timeInForce: 'IOC',
+          },
+          {
+            sequence: 1,
+            action: 'COMPLETE_PERP',
+            targetLeg: 1,
+            adapter: perpAdapter,
+            markets: [perpMarket],
+            maxQuantity: { asset: baseAsset, atoms: quantityAtoms },
+            limitPrice: perpetualLimit,
+            reduceOnly: action === 'EXIT',
+            timeInForce: 'IOC',
+          },
+          {
+            sequence: 2,
+            action: 'ROLLBACK_SPOT',
+            targetLeg: 0,
+            adapter: spotAdapter,
+            markets: [spotMarket],
+            maxQuantity: { asset: baseAsset, atoms: grossSpotAtoms },
+            limitPrice: price(action === 'ENTRY' ? 590n : 610n),
+            reduceOnly: false,
+            timeInForce: 'IOC',
+          },
+          {
+            sequence: 3,
+            action: 'ROLLBACK_PERP',
+            targetLeg: 1,
+            adapter: perpAdapter,
+            markets: [perpMarket],
+            maxQuantity: { asset: baseAsset, atoms: quantityAtoms },
+            limitPrice: price(action === 'ENTRY' ? 610n : 590n),
+            reduceOnly: action === 'ENTRY',
+            timeInForce: 'IOC',
+          },
+        ],
       },
     },
     orderHash,
@@ -255,8 +313,15 @@ test('compiles one deterministic official-shape batch with separate IOC orders',
   assert.match(first.legs[0].clientOrderId, /^0x[0-9a-f]{32}$/);
   assert.match(first.legs[1].clientOrderId, /^0x[0-9a-f]{32}$/);
   assert.notEqual(first.legs[0].clientOrderId, first.legs[1].clientOrderId);
+  assert.equal(first.legs[0].market.subjectId, 'btc-usdc-spot');
+  assert.equal(first.legs[1].adapter.adapterId, 'hypercore-perp-v1');
   assert.equal(first.signedPerpDeltaAtoms, -10_000n);
   assert.equal(first.signedPerpTargetAtoms, -10_000n);
+  assert.equal(first.recoveryPolicy.controllerId, 'hypercore-recovery-controller-v1');
+  assert.equal(first.recoveryPolicy.actionBuilderCodeHash[0], 0xb3);
+  assert.deepEqual(first.recoveryPolicy.actionSlots.map((slot) => slot.action), [
+    'COMPLETE_SPOT', 'COMPLETE_PERP', 'ROLLBACK_SPOT', 'ROLLBACK_PERP',
+  ]);
   assert.deepEqual(first.terminalResidualPolicy, {
     kind: 'EXACT_NET',
     netSpotDeltaAtoms: 10_000n,

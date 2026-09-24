@@ -6,6 +6,7 @@ import {
   bytesEqual,
   domainRef,
   manifestHash,
+  recoveryPlan,
   versionedManifestRef,
   type AdapterRef,
   type AssetRef,
@@ -16,6 +17,8 @@ import {
   type LegExecution,
   type ManifestHash,
   type PackageAdmission,
+  type RecoveryPlan,
+  type TradeSide,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
 
@@ -72,6 +75,16 @@ export interface HyperliquidPlanCommitments {
 
 export interface HyperliquidPlannedLeg {
   readonly role: 'SPOT' | 'PERPETUAL';
+  readonly legIndex: number;
+  readonly adapter: AdapterRef;
+  readonly venue: VersionedManifestRef;
+  readonly market: VersionedManifestRef;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly side: TradeSide;
+  readonly quantityAtoms: bigint;
+  readonly sizeDecimals: number;
+  readonly maxPriceDecimals: number;
   readonly signedBaseDeltaAtoms: bigint;
   readonly clientOrderId: `0x${string}`;
   readonly order: HypercoreOrderWire;
@@ -107,6 +120,7 @@ export interface HyperliquidExecutionPlan {
   readonly signedPerpDeltaAtoms: bigint;
   readonly signedPerpTargetAtoms: bigint;
   readonly terminalResidualPolicy: HyperliquidTerminalResidualPolicy;
+  readonly recoveryPolicy: RecoveryPlan;
   readonly recoveryDeadlineMs: bigint;
 }
 
@@ -119,7 +133,7 @@ interface HyperliquidMarketBinding {
   readonly maxPriceDecimals: number;
 }
 
-interface FormattedPrice {
+export interface HypercoreFormattedPrice {
   readonly value: string;
   readonly scaled: bigint;
   readonly decimals: number;
@@ -243,7 +257,10 @@ function significantFigures(value: string): number {
   return value.replace('.', '').replace(/^0+/, '').length;
 }
 
-function formatPrice(price: ExactPrice, maxDecimals: number): FormattedPrice {
+export function formatHypercorePrice(
+  price: ExactPrice,
+  maxDecimals: number,
+): HypercoreFormattedPrice {
   const numerator = price.quoteAtoms * powerOfTen(price.baseAsset.decimals);
   const denominator = price.baseAtoms * powerOfTen(price.quoteAsset.decimals);
   for (let decimals = maxDecimals; decimals >= 0; decimals -= 1) {
@@ -259,7 +276,11 @@ function formatPrice(price: ExactPrice, maxDecimals: number): FormattedPrice {
   throw new Error('limit price cannot be represented by HyperCore price rules');
 }
 
-function formatSize(quantityAtoms: bigint, assetDecimals: number, sizeDecimals: number): string {
+export function formatHypercoreSize(
+  quantityAtoms: bigint,
+  assetDecimals: number,
+  sizeDecimals: number,
+): string {
   requireCondition(quantityAtoms > 0n, 'order size must be positive');
   const numerator = quantityAtoms * powerOfTen(sizeDecimals);
   const denominator = powerOfTen(assetDecimals);
@@ -331,11 +352,11 @@ function requestExpiry(admission: PackageAdmission): bigint {
   return earliest;
 }
 
-function quoteAtomsAtWirePrice(
+export function hypercoreQuoteAtomsAtWirePrice(
   baseAtoms: bigint,
   baseDecimals: number,
   quoteDecimals: number,
-  price: FormattedPrice,
+  price: HypercoreFormattedPrice,
   roundUp: boolean,
 ): bigint {
   const numerator = baseAtoms * price.scaled * powerOfTen(quoteDecimals);
@@ -344,7 +365,10 @@ function quoteAtomsAtWirePrice(
   return roundUp && numerator % denominator !== 0n ? quotient + 1n : quotient;
 }
 
-function compareWirePriceToExact(wire: FormattedPrice, exact: ExactPrice): number {
+export function compareHypercoreWirePriceToExact(
+  wire: HypercoreFormattedPrice,
+  exact: ExactPrice,
+): number {
   const left = wire.scaled
     * exact.baseAtoms
     * powerOfTen(exact.quoteAsset.decimals);
@@ -521,16 +545,16 @@ export class HyperliquidExecutionPlanner {
     requireCondition(signedPerpPrice !== undefined, 'signed perpetual limit is missing');
     requireCondition(samePrice(perpetualLeg.limitPrice, signedPerpPrice), 'route perpetual limit does not equal the signed order limit');
 
-    const spotPrice = formatPrice(spotLeg.limitPrice, this.#spot.maxPriceDecimals);
-    const perpetualPrice = formatPrice(perpetualLeg.limitPrice, this.#perpetual.maxPriceDecimals);
-    const perpetualLimitRelation = compareWirePriceToExact(perpetualPrice, signedPerpPrice);
+    const spotPrice = formatHypercorePrice(spotLeg.limitPrice, this.#spot.maxPriceDecimals);
+    const perpetualPrice = formatHypercorePrice(perpetualLeg.limitPrice, this.#perpetual.maxPriceDecimals);
+    const perpetualLimitRelation = compareHypercoreWirePriceToExact(perpetualPrice, signedPerpPrice);
     requireCondition(
       entry ? perpetualLimitRelation >= 0 : perpetualLimitRelation <= 0,
       'wire perpetual price violates the signed limit',
     );
-    const spotSize = formatSize(spotLeg.quantity.atoms, spotLeg.baseAsset.decimals, this.#spot.sizeDecimals);
-    const perpetualSize = formatSize(perpetualLeg.quantity.atoms, perpetualLeg.baseAsset.decimals, this.#perpetual.sizeDecimals);
-    const spotNotional = quoteAtomsAtWirePrice(
+    const spotSize = formatHypercoreSize(spotLeg.quantity.atoms, spotLeg.baseAsset.decimals, this.#spot.sizeDecimals);
+    const perpetualSize = formatHypercoreSize(perpetualLeg.quantity.atoms, perpetualLeg.baseAsset.decimals, this.#perpetual.sizeDecimals);
+    const spotNotional = hypercoreQuoteAtomsAtWirePrice(
       spotLeg.quantity.atoms,
       spotLeg.baseAsset.decimals,
       spotLeg.quoteAsset.decimals,
@@ -580,6 +604,16 @@ export class HyperliquidExecutionPlanner {
     const orderedLegs = [
       Object.freeze({
         role: 'SPOT' as const,
+        legIndex: spotLeg.legIndex,
+        adapter: spotLeg.adapter,
+        venue: spotLeg.venue,
+        market: spotLeg.market,
+        baseAsset: spotLeg.baseAsset,
+        quoteAsset: spotLeg.quoteAsset,
+        side: spotLeg.side,
+        quantityAtoms: spotLeg.quantity.atoms,
+        sizeDecimals: this.#spot.sizeDecimals,
+        maxPriceDecimals: this.#spot.maxPriceDecimals,
         signedBaseDeltaAtoms: order.action === 'ENTRY' ? grossSpot.atoms : -grossSpot.atoms,
         clientOrderId: spotClientOrderId,
         order: spotOrder,
@@ -587,6 +621,16 @@ export class HyperliquidExecutionPlanner {
       }),
       Object.freeze({
         role: 'PERPETUAL' as const,
+        legIndex: perpetualLeg.legIndex,
+        adapter: perpetualLeg.adapter,
+        venue: perpetualLeg.venue,
+        market: perpetualLeg.market,
+        baseAsset: perpetualLeg.baseAsset,
+        quoteAsset: perpetualLeg.quoteAsset,
+        side: perpetualLeg.side,
+        quantityAtoms: perpetualLeg.quantity.atoms,
+        sizeDecimals: this.#perpetual.sizeDecimals,
+        maxPriceDecimals: this.#perpetual.maxPriceDecimals,
         signedBaseDeltaAtoms: signedPerpDeltaAtoms,
         clientOrderId: perpetualClientOrderId,
         order: perpetualOrder,
@@ -599,12 +643,32 @@ export class HyperliquidExecutionPlanner {
     const legs: readonly [HyperliquidPlannedLeg, HyperliquidPlannedLeg] = Object.freeze([
       Object.freeze({
         role: first.role,
+        legIndex: first.legIndex,
+        adapter: first.adapter,
+        venue: first.venue,
+        market: first.market,
+        baseAsset: first.baseAsset,
+        quoteAsset: first.quoteAsset,
+        side: first.side,
+        quantityAtoms: first.quantityAtoms,
+        sizeDecimals: first.sizeDecimals,
+        maxPriceDecimals: first.maxPriceDecimals,
         signedBaseDeltaAtoms: first.signedBaseDeltaAtoms,
         clientOrderId: first.clientOrderId,
         order: first.order,
       }),
       Object.freeze({
         role: second.role,
+        legIndex: second.legIndex,
+        adapter: second.adapter,
+        venue: second.venue,
+        market: second.market,
+        baseAsset: second.baseAsset,
+        quoteAsset: second.quoteAsset,
+        side: second.side,
+        quantityAtoms: second.quantityAtoms,
+        sizeDecimals: second.sizeDecimals,
+        maxPriceDecimals: second.maxPriceDecimals,
         signedBaseDeltaAtoms: second.signedBaseDeltaAtoms,
         clientOrderId: second.clientOrderId,
         order: second.order,
@@ -646,6 +710,7 @@ export class HyperliquidExecutionPlanner {
       signedPerpDeltaAtoms,
       signedPerpTargetAtoms,
       terminalResidualPolicy: terminalResidualPolicy(admission, signedPerpDeltaAtoms),
+      recoveryPolicy: recoveryPlan(recovery),
       recoveryDeadlineMs: recovery.deadlineValue,
     });
   }

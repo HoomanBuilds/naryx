@@ -6,11 +6,14 @@ import {
   type HyperliquidExecutionPlan,
 } from '@naryx/adapter-hyperliquid';
 import {
+  adapterRef,
   assetRef,
   domainRef,
   exactPrice,
   hash32,
   manifestHash,
+  protocolId,
+  versionedManifestRef,
 } from '@naryx/protocol-types';
 import {
   HYPERCORE_RECONCILIATION_SOURCE,
@@ -39,6 +42,26 @@ const commitments = {
 };
 const baseAsset = assetRef('btc', '61'.repeat(32), 8);
 const quoteAsset = assetRef('usdc', '62'.repeat(32), 6);
+const spotAdapter = adapterRef({
+  adapterId: 'hypercore-spot-v1',
+  adapterManifestVersion: 1,
+  adapterManifestHash: '71'.repeat(32),
+});
+const perpetualAdapter = adapterRef({
+  adapterId: 'hypercore-perp-v1',
+  adapterManifestVersion: 1,
+  adapterManifestHash: '72'.repeat(32),
+});
+const venue = versionedManifestRef('hypercore', 1, '73'.repeat(32));
+const spotMarket = versionedManifestRef('btc-usdc-spot', 1, '74'.repeat(32));
+const perpetualMarket = versionedManifestRef('btc-usdc-perp', 1, '75'.repeat(32));
+const limitPrice = exactPrice({
+  baseAsset,
+  quoteAsset,
+  baseAtoms: 1n,
+  quoteAtoms: 600n,
+  roundingDirection: 'CEIL',
+});
 
 function order(
   clientOrderId: `0x${string}`,
@@ -72,12 +95,32 @@ function executionPlan(kind: 'EXACT_NET' | 'BOUNDED_NET' = 'EXACT_NET'):
     legs: [
       {
         role: 'SPOT',
+        legIndex: 0,
+        adapter: spotAdapter,
+        venue,
+        market: spotMarket,
+        baseAsset,
+        quoteAsset,
+        side: 'BUY',
+        quantityAtoms: 100n,
+        sizeDecimals: 6,
+        maxPriceDecimals: 2,
         signedBaseDeltaAtoms: 100n,
         clientOrderId: spotClientOrderId,
         order: spotOrder,
       },
       {
         role: 'PERPETUAL',
+        legIndex: 1,
+        adapter: perpetualAdapter,
+        venue,
+        market: perpetualMarket,
+        baseAsset,
+        quoteAsset,
+        side: 'SELL',
+        quantityAtoms: 100n,
+        sizeDecimals: 6,
+        maxPriceDecimals: 0,
         signedBaseDeltaAtoms: -100n,
         clientOrderId: perpetualClientOrderId,
         order: perpetualOrder,
@@ -109,6 +152,35 @@ function executionPlan(kind: 'EXACT_NET' | 'BOUNDED_NET' = 'EXACT_NET'):
           }),
           maxTerminalResidualQuoteAtoms: 3_000n,
         },
+    recoveryPolicy: {
+      policyVersion: 1,
+      controllerId: protocolId('hypercore-recovery-controller-v1'),
+      controllerCodeHash: manifestHash('76'.repeat(32)),
+      authorityModeId: protocolId('agent-wallet-v1'),
+      recoveryExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+      maxActionExpiryValue: 1_500n,
+      deadlineValue: 2_000n,
+      minRecoveryWindowMs: 500n,
+      maxRecoveryCostCaps: [{ asset: quoteAsset, maxAtoms: 100n }],
+      maxAggregateRecoveryLoss: { asset: quoteAsset, atoms: 1_000n },
+      maxIntermediateResidual: { asset: baseAsset, atoms: 100n },
+      maxTerminalResidual: { asset: baseAsset, atoms: kind === 'EXACT_NET' ? 0n : 5n },
+      reconciledStateSchemaHash: manifestHash('77'.repeat(32)),
+      actionBuilderCodeHash: manifestHash('78'.repeat(32)),
+      actionSlots: [
+        {
+          sequence: 0,
+          action: 'COMPLETE_PERP',
+          targetLeg: 1,
+          adapter: perpetualAdapter,
+          markets: [perpetualMarket],
+          maxQuantity: { asset: baseAsset, atoms: 100n },
+          limitPrice,
+          reduceOnly: false,
+          timeInForce: 'IOC',
+        },
+      ],
+    },
     recoveryDeadlineMs: 2_000n,
   };
 }

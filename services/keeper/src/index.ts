@@ -1,22 +1,30 @@
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
+  formatHypercoreSize,
   type HyperliquidExecutionPlan,
+  type HyperliquidPlannedLeg,
   type HyperliquidPlanCommitments,
   type HyperliquidTerminalResidualPolicy,
 } from '@naryx/adapter-hyperliquid';
 import {
+  adapterRef,
+  assetRef,
   bytesEqual,
   domainRef,
   exactPrice,
   hash32,
   manifestHash,
+  recoveryPlan,
+  versionedManifestRef,
   type DomainRef,
   type ExactPrice,
   type Hash32,
   type ManifestHash,
+  type RecoveryPlan,
 } from '@naryx/protocol-types';
 
 export * from './hyperliquid-submission-journal.js';
+export * from './hyperliquid-recovery-compiler.js';
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const CLIENT_ORDER_ID_PATTERN = /^0x[0-9a-fA-F]{32}$/;
@@ -127,6 +135,7 @@ export interface HyperliquidReconciliationSnapshot {
 export interface HyperliquidReconciliationPlan {
   readonly domain: DomainRef;
   readonly commitments: HyperliquidPlanCommitments;
+  readonly legs: readonly [HyperliquidPlannedLeg, HyperliquidPlannedLeg];
   readonly spotClientOrderId: `0x${string}`;
   readonly perpetualClientOrderId: `0x${string}`;
   readonly plannedSpotDeltaAtoms: bigint;
@@ -134,6 +143,7 @@ export interface HyperliquidReconciliationPlan {
   readonly plannedPerpetualDeltaAtoms: bigint;
   readonly perpetualPositionTargetAtoms: bigint;
   readonly terminalResidualPolicy: HyperliquidTerminalResidualPolicy;
+  readonly recoveryPolicy: RecoveryPlan;
   readonly requestExpiryMs: bigint;
   readonly recoveryDeadlineMs: bigint;
 }
@@ -278,14 +288,189 @@ function normalizedAccount(
   return Object.freeze({ masterAccount, tradingAccount, accountKind: input.accountKind });
 }
 
+function normalizedPlannedLeg(
+  input: HyperliquidPlannedLeg,
+  context: string,
+): HyperliquidPlannedLeg {
+  requireCondition(input.role === 'SPOT' || input.role === 'PERPETUAL', `${context}.role is unsupported`);
+  requireCondition(Number.isInteger(input.legIndex) && input.legIndex >= 0 && input.legIndex <= 255,
+    `${context}.legIndex is invalid`);
+  requireCondition(input.side === 'BUY' || input.side === 'SELL', `${context}.side is unsupported`);
+  requireCondition(input.quantityAtoms > 0n, `${context}.quantityAtoms must be positive`);
+  requireCondition(Number.isInteger(input.sizeDecimals) && input.sizeDecimals >= 0,
+    `${context}.sizeDecimals is invalid`);
+  requireCondition(Number.isInteger(input.maxPriceDecimals) && input.maxPriceDecimals >= 0,
+    `${context}.maxPriceDecimals is invalid`);
+  const maximumDecimals = input.role === 'SPOT' ? 8 : 6;
+  requireCondition(input.sizeDecimals <= maximumDecimals
+    && input.maxPriceDecimals === maximumDecimals - input.sizeDecimals,
+  `${context} HyperCore decimal policy is invalid`);
+  requireCondition(Number.isSafeInteger(input.order.a) && input.order.a >= 0,
+    `${context}.order.a is invalid`);
+  requireCondition(input.order.t.limit.tif === 'Ioc', `${context}.order must be IOC`);
+  requireCondition(input.order.b === (input.side === 'BUY'), `${context}.order side mismatch`);
+  requireCondition(input.order.c.toLowerCase() === input.clientOrderId.toLowerCase(),
+    `${context}.clientOrderId mismatch`);
+  return Object.freeze({
+    role: input.role,
+    legIndex: input.legIndex,
+    adapter: adapterRef(input.adapter, `${context}.adapter`),
+    venue: versionedManifestRef(
+      input.venue.subjectId,
+      input.venue.manifestVersion,
+      input.venue.manifestHash,
+      `${context}.venue`,
+    ),
+    market: versionedManifestRef(
+      input.market.subjectId,
+      input.market.manifestVersion,
+      input.market.manifestHash,
+      `${context}.market`,
+    ),
+    baseAsset: assetRef(
+      input.baseAsset.assetId,
+      input.baseAsset.assetManifestHash,
+      input.baseAsset.decimals,
+      `${context}.baseAsset`,
+    ),
+    quoteAsset: assetRef(
+      input.quoteAsset.assetId,
+      input.quoteAsset.assetManifestHash,
+      input.quoteAsset.decimals,
+      `${context}.quoteAsset`,
+    ),
+    side: input.side,
+    quantityAtoms: input.quantityAtoms,
+    sizeDecimals: input.sizeDecimals,
+    maxPriceDecimals: input.maxPriceDecimals,
+    signedBaseDeltaAtoms: input.signedBaseDeltaAtoms,
+    clientOrderId: normalizedClientOrderId(input.clientOrderId, `${context}.clientOrderId`),
+    order: Object.freeze({
+      a: input.order.a,
+      b: input.order.b,
+      p: input.order.p,
+      s: input.order.s,
+      r: input.order.r,
+      t: Object.freeze({ limit: Object.freeze({ tif: 'Ioc' as const }) }),
+      c: input.order.c.toLowerCase() as `0x${string}`,
+    }),
+  });
+}
+
+function sameAssetRef(left: HyperliquidPlannedLeg['baseAsset'], right: HyperliquidPlannedLeg['baseAsset']): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function sameAdapterRef(left: HyperliquidPlannedLeg['adapter'], right: HyperliquidPlannedLeg['adapter']): boolean {
+  return left.adapterId === right.adapterId
+    && left.adapterManifestVersion === right.adapterManifestVersion
+    && bytesEqual(left.adapterManifestHash, right.adapterManifestHash);
+}
+
+function sameManifestRef(left: HyperliquidPlannedLeg['market'], right: HyperliquidPlannedLeg['market']): boolean {
+  return left.subjectId === right.subjectId
+    && left.manifestVersion === right.manifestVersion
+    && bytesEqual(left.manifestHash, right.manifestHash);
+}
+
+function validateRecoveryPolicy(
+  plan: HyperliquidExecutionPlan,
+  legs: readonly [HyperliquidPlannedLeg, HyperliquidPlannedLeg],
+  policy: RecoveryPlan,
+  terminalResidualPolicy: HyperliquidTerminalResidualPolicy,
+): void {
+  const spot = legs.find((leg) => leg.role === 'SPOT');
+  const perpetual = legs.find((leg) => leg.role === 'PERPETUAL');
+  requireCondition(spot !== undefined && perpetual !== undefined, 'recovery requires exact spot and perpetual legs');
+  requireCondition(spot.legIndex !== perpetual.legIndex, 'planned leg indices must be distinct');
+  requireCondition(sameAssetRef(spot.baseAsset, perpetual.baseAsset)
+    && sameAssetRef(spot.quoteAsset, perpetual.quoteAsset),
+  'planned leg assets mismatch');
+  for (const leg of legs) {
+    requireCondition(absolute(leg.signedBaseDeltaAtoms) === leg.quantityAtoms,
+      `${leg.role} signed quantity mismatch`);
+    requireCondition((leg.signedBaseDeltaAtoms > 0n) === (leg.side === 'BUY'),
+      `${leg.role} signed side mismatch`);
+    requireCondition(leg.order.s === formatHypercoreSize(
+      leg.quantityAtoms,
+      leg.baseAsset.decimals,
+      leg.sizeDecimals,
+    ), `${leg.role} wire size mismatch`);
+  }
+  requireCondition(spot.order.r === false, 'spot plan cannot be reduce-only');
+  requireCondition(perpetual.order.r === (perpetual.side === 'BUY'),
+    'perpetual plan reduce-only flag is inconsistent');
+  requireCondition(policy.recoveryExpiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS',
+    'recovery policy clock is unsupported');
+  requireCondition(policy.deadlineValue === plan.recoveryDeadlineMs,
+    'recovery policy deadline mismatch');
+  requireCondition(policy.maxActionExpiryValue >= plan.requestExpiryMs,
+    'recovery action expiry precedes initial request expiry');
+  requireCondition(plan.requestExpiryMs + policy.minRecoveryWindowMs <= policy.deadlineValue,
+    'initial request leaves insufficient recovery window');
+  requireCondition(sameAssetRef(policy.maxIntermediateResidual.asset, spot.baseAsset)
+    && sameAssetRef(policy.maxTerminalResidual.asset, spot.baseAsset),
+  'recovery residual assets mismatch');
+  requireCondition(policy.maxIntermediateResidual.atoms >= policy.maxTerminalResidual.atoms,
+    'intermediate residual cap is below terminal residual cap');
+  requireCondition(sameAssetRef(policy.maxAggregateRecoveryLoss.asset, spot.quoteAsset),
+    'aggregate recovery loss must use the quote asset');
+  const terminalBaseCap = terminalResidualPolicy.maxTerminalResidualBaseAtoms;
+  requireCondition(policy.maxTerminalResidual.atoms === terminalBaseCap,
+    'recovery terminal residual cap mismatch');
+  if (terminalResidualPolicy.kind === 'BOUNDED_NET') {
+    requireCondition(sameAssetRef(
+      terminalResidualPolicy.residualValuationReferencePrice.baseAsset,
+      spot.baseAsset,
+    ) && sameAssetRef(
+      terminalResidualPolicy.residualValuationReferencePrice.quoteAsset,
+      spot.quoteAsset,
+    ), 'terminal residual valuation assets mismatch');
+  }
+  const seenActions = new Set<string>();
+  for (const slot of policy.actionSlots) {
+    const leg = legs.find((candidate) => candidate.legIndex === slot.targetLeg);
+    requireCondition(leg !== undefined, 'recovery action targets an unknown leg');
+    requireCondition(sameAdapterRef(slot.adapter, leg.adapter), 'recovery action adapter mismatch');
+    requireCondition(slot.markets.length === 1 && sameManifestRef(slot.markets[0]!, leg.market),
+      'recovery action market mismatch');
+    if (slot.action === 'CANCEL_OPEN_ORDERS') continue;
+    requireCondition(!seenActions.has(slot.action), 'recovery trade action is ambiguous');
+    seenActions.add(slot.action);
+    const expectedRole = slot.action.endsWith('_SPOT') ? 'SPOT' : 'PERPETUAL';
+    requireCondition(leg.role === expectedRole, 'recovery action role mismatch');
+    requireCondition(slot.maxQuantity !== undefined && slot.limitPrice !== undefined
+      && slot.reduceOnly !== undefined && slot.timeInForce === 'IOC',
+    'recovery trade action is incomplete');
+    requireCondition(sameAssetRef(slot.maxQuantity.asset, leg.baseAsset),
+      'recovery quantity asset mismatch');
+    requireCondition(sameAssetRef(slot.limitPrice.baseAsset, leg.baseAsset)
+      && sameAssetRef(slot.limitPrice.quoteAsset, leg.quoteAsset),
+    'recovery limit price assets mismatch');
+    if (leg.role === 'SPOT') {
+      requireCondition(slot.reduceOnly === false, 'spot recovery cannot be reduce-only');
+    } else if (slot.action === 'COMPLETE_PERP') {
+      requireCondition(slot.reduceOnly === leg.order.r, 'complete-perp reduce-only mismatch');
+    } else {
+      requireCondition(slot.reduceOnly !== leg.order.r, 'rollback-perp reduce-only mismatch');
+    }
+  }
+}
+
 function normalizedPlan(plan: HyperliquidExecutionPlan): HyperliquidReconciliationPlan {
   requireCondition(plan.version === 1, 'execution plan version is unsupported');
   requireCondition(
     plan.guarantee === HYPERCORE_EXECUTION_GUARANTEE,
     'execution plan guarantee is unsupported',
   );
-  const spot = plan.legs.find((leg) => leg.role === 'SPOT');
-  const perpetual = plan.legs.find((leg) => leg.role === 'PERPETUAL');
+  requireCondition(plan.legs.length === 2, 'execution plan requires two legs');
+  const first = normalizedPlannedLeg(plan.legs[0], 'plan.legs[0]');
+  const second = normalizedPlannedLeg(plan.legs[1], 'plan.legs[1]');
+  const legs = Object.freeze([first, second] as const);
+  const spot = legs.find((leg) => leg.role === 'SPOT');
+  const perpetual = legs.find((leg) => leg.role === 'PERPETUAL');
   requireCondition(spot !== undefined && perpetual !== undefined, 'execution plan requires two distinct legs');
   const spotClientOrderId = normalizedClientOrderId(spot.clientOrderId, 'plan.spot.clientOrderId');
   const perpetualClientOrderId = normalizedClientOrderId(
@@ -344,9 +529,12 @@ function normalizedPlan(plan: HyperliquidExecutionPlan): HyperliquidReconciliati
       'BOUNDED_NET interval and residual caps have no satisfiable outcome',
     );
   }
+  const checkedRecoveryPolicy = recoveryPlan(plan.recoveryPolicy, 'plan.recoveryPolicy');
+  validateRecoveryPolicy(plan, legs, checkedRecoveryPolicy, terminalResidualPolicy);
   return Object.freeze({
     domain: cloneDomain(plan.domain, 'plan.domain'),
     commitments: cloneCommitments(plan.commitments),
+    legs,
     spotClientOrderId,
     perpetualClientOrderId,
     plannedSpotDeltaAtoms: spot.signedBaseDeltaAtoms,
@@ -354,6 +542,7 @@ function normalizedPlan(plan: HyperliquidExecutionPlan): HyperliquidReconciliati
     plannedPerpetualDeltaAtoms: plan.signedPerpDeltaAtoms,
     perpetualPositionTargetAtoms: plan.signedPerpTargetAtoms,
     terminalResidualPolicy,
+    recoveryPolicy: checkedRecoveryPolicy,
     requestExpiryMs: plan.requestExpiryMs,
     recoveryDeadlineMs: plan.recoveryDeadlineMs,
   });
