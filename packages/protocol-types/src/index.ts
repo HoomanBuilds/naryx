@@ -218,6 +218,32 @@ export {
 export { HASH_DOMAIN, domainBytes, domainHash, type HashDomain } from './hashing.js';
 
 export {
+  CASH_CARRY_SERIES_SCHEMA_VERSION,
+  CASH_CARRY_TEMPLATE_ID,
+  CASH_CARRY_TEMPLATE_VERSION,
+  CASH_CARRY_SETTLEMENT_CLASS,
+  CASH_CARRY_SETTLEMENT_CLASS_VERSION,
+  CASH_CARRY_QUOTE_CONVENTION,
+  CASH_CARRY_ENTRY_SIDE,
+  protocolIdIdentityHash,
+  domainRefIdentityHash,
+  settlementClassIdentityHash,
+  seriesManifestRef,
+  encodeSeriesManifestRef,
+  cashCarrySeriesIdentityKey,
+  cashCarrySeriesBindingV1,
+  encodeCashCarrySeriesBindingV1,
+  cashCarrySeriesBindingV1Bytes,
+  cashCarrySeriesBindingV1Hash,
+  type CashCarryEntrySide,
+  type SeriesManifestRefInput,
+  type SeriesManifestRef,
+  type CashCarrySeriesIdentityInput,
+  type CashCarrySeriesBindingV1Input,
+  type CashCarrySeriesBindingV1,
+} from './cash-carry-series-binding.js';
+
+export {
   firmReservationIdentity,
   encodeFirmReservationIdentity,
   firmReservationIdentityBytes,

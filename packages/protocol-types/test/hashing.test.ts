@@ -85,6 +85,11 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/fee-policy',
         'CON/v1/solver-capability',
         'CON/v1/private-rfq-envelope',
+        'CON/v1/protocol-id-identity',
+        'CON/v1/domain-ref-identity',
+        'CON/v1/settlement-class-identity',
+        'CON/v1/cash-carry-series-identity',
+        'CON/v1/cash-carry-series-binding',
       ],
     );
   });

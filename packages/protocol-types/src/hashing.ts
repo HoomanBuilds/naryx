@@ -31,6 +31,11 @@ export const HASH_DOMAIN = Object.freeze({
   FEE_POLICY: 'CON/v1/fee-policy',
   SOLVER_CAPABILITY: 'CON/v1/solver-capability',
   PRIVATE_RFQ_ENVELOPE: 'CON/v1/private-rfq-envelope',
+  PROTOCOL_ID_IDENTITY: 'CON/v1/protocol-id-identity',
+  DOMAIN_REF_IDENTITY: 'CON/v1/domain-ref-identity',
+  SETTLEMENT_CLASS_IDENTITY: 'CON/v1/settlement-class-identity',
+  CASH_CARRY_SERIES_IDENTITY: 'CON/v1/cash-carry-series-identity',
+  CASH_CARRY_SERIES_BINDING: 'CON/v1/cash-carry-series-binding',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];
