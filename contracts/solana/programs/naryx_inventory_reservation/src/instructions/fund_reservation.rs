@@ -50,13 +50,28 @@ pub struct FundReservation<'info> {
         seeds::program = core_program.key()
     )]
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
-    #[account(seeds = [RESERVATION_CLASS_SEED], bump = reservation_class.bump)]
+    #[account(
+        seeds = [
+            RESERVATION_CLASS_SEED,
+            reservation_class.domain_identity.as_ref(),
+            reservation_class.domain.domain_manifest_version().to_be_bytes().as_ref(),
+            reservation_class.domain.domain_manifest_hash().as_ref(),
+            reservation_class.base_mint.as_ref(),
+            reservation_class.quote_mint.as_ref(),
+            reservation_class.consumer_program.as_ref()
+        ],
+        bump = reservation_class.bump
+    )]
     pub reservation_class: Box<Account<'info, ReservationClass>>,
     #[account(
         init_if_needed,
         payer = solver,
         space = 8 + ReservationCapacity::INIT_SPACE,
-        seeds = [RESERVATION_CAPACITY_SEED, solver.key().as_ref()],
+        seeds = [
+            RESERVATION_CAPACITY_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref()
+        ],
         bump
     )]
     pub capacity: Box<Account<'info, ReservationCapacity>>,
@@ -64,7 +79,12 @@ pub struct FundReservation<'info> {
         init,
         payer = solver,
         space = 8 + FirmReservation::INIT_SPACE,
-        seeds = [RESERVATION_SEED, solver.key().as_ref(), args.reservation_id.as_ref()],
+        seeds = [
+            RESERVATION_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            args.reservation_id.as_ref()
+        ],
         bump
     )]
     pub reservation: Box<Account<'info, FirmReservation>>,
@@ -72,7 +92,12 @@ pub struct FundReservation<'info> {
         init,
         payer = solver,
         space = 8 + LivePair::INIT_SPACE,
-        seeds = [LIVE_PAIR_SEED, solver.key().as_ref(), args.strategy_authority.as_ref()],
+        seeds = [
+            LIVE_PAIR_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            args.strategy_authority.as_ref()
+        ],
         bump
     )]
     pub live_pair: Box<Account<'info, LivePair>>,
@@ -81,7 +106,12 @@ pub struct FundReservation<'info> {
         payer = solver,
         token::mint = base_mint,
         token::authority = reservation,
-        seeds = [RESERVATION_VAULT_SEED, solver.key().as_ref(), args.reservation_id.as_ref()],
+        seeds = [
+            RESERVATION_VAULT_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            args.reservation_id.as_ref()
+        ],
         bump
     )]
     pub vault: Box<Account<'info, TokenAccount>>,
@@ -121,14 +151,14 @@ pub fn fund_reservation_handler(
     args: FundReservationArgs,
 ) -> Result<()> {
     let class = &ctx.accounts.reservation_class;
-    require!(class.is_v1_entry(), ErrorCode::ClassParameterInvalid);
+    require!(class.is_current_entry(), ErrorCode::ClassParameterInvalid);
     verify_core_identity(
         class,
         &ctx.accounts.core_program.to_account_info(),
         &ctx.accounts.core_program_data,
     )?;
     require!(
-        ctx.accounts.protocol_config.domain == args.domain,
+        ctx.accounts.protocol_config.domain == class.domain && args.domain == class.domain,
         ErrorCode::DomainInactive
     );
     require!(
@@ -215,9 +245,15 @@ pub fn fund_reservation_handler(
     );
 
     if ctx.accounts.capacity.solver == Pubkey::default() {
+        ctx.accounts.capacity.reservation_class = ctx.accounts.reservation_class.key();
         ctx.accounts.capacity.solver = ctx.accounts.solver.key();
         ctx.accounts.capacity.bump = ctx.bumps.capacity;
     }
+    require_keys_eq!(
+        ctx.accounts.capacity.reservation_class,
+        ctx.accounts.reservation_class.key(),
+        ErrorCode::AccountBindingMismatch
+    );
     require_keys_eq!(
         ctx.accounts.capacity.solver,
         ctx.accounts.solver.key(),
@@ -229,6 +265,7 @@ pub fn fund_reservation_handler(
 
     ctx.accounts.reservation.set_inner(FirmReservation {
         version: RESERVATION_VERSION,
+        reservation_class: ctx.accounts.reservation_class.key(),
         domain: args.domain,
         reservation_id: args.reservation_id,
         solver_id,
@@ -254,6 +291,7 @@ pub fn fund_reservation_handler(
         vault_bump: ctx.bumps.vault,
     });
     ctx.accounts.live_pair.set_inner(LivePair {
+        reservation_class: ctx.accounts.reservation_class.key(),
         solver: ctx.accounts.solver.key(),
         strategy_authority: args.strategy_authority,
         reservation_id: args.reservation_id,
@@ -280,6 +318,7 @@ pub fn fund_reservation_handler(
         ErrorCode::TokenDeltaMismatch
     );
     emit!(ReservationFunded {
+        reservation_class: ctx.accounts.reservation_class.key(),
         reservation_id: args.reservation_id,
         order_hash: args.order_hash,
         route_hash: args.route_hash,

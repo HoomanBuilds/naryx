@@ -11,9 +11,15 @@ pub use initialize_class::*;
 pub use release_reservation::*;
 
 use anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable::get_program_data_address};
+use naryx_core::DomainRef;
 use solana_sha256_hasher::hashv;
 
-use crate::{error::ErrorCode, state::ReservationClass};
+use crate::{constants::DOMAIN_REF_IDENTITY_DOMAIN, error::ErrorCode, state::ReservationClass};
+
+pub fn domain_ref_identity(domain: &DomainRef) -> [u8; 32] {
+    let canonical = domain.canonical_bytes();
+    hashv(&[DOMAIN_REF_IDENTITY_DOMAIN, canonical.as_ref()]).to_bytes()
+}
 
 pub(crate) fn live_code_identity(
     program: &AccountInfo,

@@ -41,19 +41,41 @@ pub struct ConsumeReservation<'info> {
     pub consumer_program: UncheckedAccount<'info>,
     /// CHECK: Pinned code identity is checked against live ProgramData bytes.
     pub consumer_program_data: UncheckedAccount<'info>,
-    #[account(seeds = [RESERVATION_CLASS_SEED], bump = reservation_class.bump)]
+    #[account(
+        seeds = [
+            RESERVATION_CLASS_SEED,
+            reservation_class.domain_identity.as_ref(),
+            reservation_class.domain.domain_manifest_version().to_be_bytes().as_ref(),
+            reservation_class.domain.domain_manifest_hash().as_ref(),
+            reservation_class.base_mint.as_ref(),
+            reservation_class.quote_mint.as_ref(),
+            reservation_class.consumer_program.as_ref()
+        ],
+        bump = reservation_class.bump
+    )]
     pub reservation_class: Box<Account<'info, ReservationClass>>,
     #[account(
         mut,
-        seeds = [RESERVATION_CAPACITY_SEED, solver.key().as_ref()],
+        seeds = [
+            RESERVATION_CAPACITY_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref()
+        ],
         bump = capacity.bump,
-        constraint = capacity.solver == solver.key() @ ErrorCode::AccountBindingMismatch
+        has_one = reservation_class,
+        has_one = solver
     )]
     pub capacity: Box<Account<'info, ReservationCapacity>>,
     #[account(
         mut,
-        seeds = [RESERVATION_SEED, solver.key().as_ref(), reservation.reservation_id.as_ref()],
+        seeds = [
+            RESERVATION_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            reservation.reservation_id.as_ref()
+        ],
         bump = reservation.bump,
+        has_one = reservation_class,
         has_one = solver,
         has_one = strategy_authority
     )]
@@ -61,14 +83,27 @@ pub struct ConsumeReservation<'info> {
     #[account(
         mut,
         close = solver,
-        seeds = [LIVE_PAIR_SEED, solver.key().as_ref(), strategy_authority.key().as_ref()],
+        seeds = [
+            LIVE_PAIR_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            strategy_authority.key().as_ref()
+        ],
         bump = live_pair.bump,
+        has_one = reservation_class,
+        has_one = solver,
+        has_one = strategy_authority,
         constraint = live_pair.reservation_id == reservation.reservation_id @ ErrorCode::AccountBindingMismatch
     )]
     pub live_pair: Box<Account<'info, LivePair>>,
     #[account(
         mut,
-        seeds = [RESERVATION_VAULT_SEED, solver.key().as_ref(), reservation.reservation_id.as_ref()],
+        seeds = [
+            RESERVATION_VAULT_SEED,
+            reservation_class.key().as_ref(),
+            solver.key().as_ref(),
+            reservation.reservation_id.as_ref()
+        ],
         bump = reservation.vault_bump,
         token::mint = reservation_class.base_mint,
         token::authority = reservation
@@ -88,9 +123,10 @@ pub fn consume_reservation_handler(
     args: ConsumeReservationArgs,
 ) -> Result<()> {
     let class = &ctx.accounts.reservation_class;
+    let reservation_class = class.key();
     let reservation = &mut ctx.accounts.reservation;
     require!(
-        class.is_v1_entry() && reservation.is_v1_entry(),
+        class.is_current_entry() && reservation.is_current_entry(),
         ErrorCode::ClassParameterInvalid
     );
     verify_core_identity(
@@ -104,8 +140,16 @@ pub fn consume_reservation_handler(
         &ctx.accounts.consumer_program_data,
     )?;
     require!(
-        ctx.accounts.protocol_config.domain == reservation.domain,
+        ctx.accounts.protocol_config.domain == class.domain && reservation.domain == class.domain,
         ErrorCode::DomainInactive
+    );
+    require!(
+        reservation.base_mint == class.base_mint
+            && reservation.quote_mint == class.quote_mint
+            && ctx.accounts.solver_quote.mint == class.quote_mint
+            && ctx.accounts.strategy_base.mint == class.base_mint
+            && ctx.accounts.strategy_quote.mint == class.quote_mint,
+        ErrorCode::AccountBindingMismatch
     );
     require!(
         !ctx.accounts.protocol_config.entry_paused,
@@ -126,6 +170,7 @@ pub fn consume_reservation_handler(
     let reservation_id = reservation.reservation_id;
     let reservation_bump = reservation.bump;
     reservation.consume(
+        reservation_class,
         args.package_nonce,
         args.order_hash,
         args.quote_hash,
@@ -153,6 +198,7 @@ pub fn consume_reservation_handler(
     let solver_key = ctx.accounts.solver.key();
     let signer_seeds: &[&[u8]] = &[
         RESERVATION_SEED,
+        reservation_class.as_ref(),
         solver_key.as_ref(),
         reservation_id.as_ref(),
         &[reservation_bump],
@@ -197,6 +243,7 @@ pub fn consume_reservation_handler(
         &[signer_seeds],
     ))?;
     emit!(ReservationConsumed {
+        reservation_class,
         reservation_id,
         quote_hash: args.quote_hash,
         base_atoms,

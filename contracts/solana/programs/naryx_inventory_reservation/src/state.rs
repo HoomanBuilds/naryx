@@ -10,6 +10,8 @@ use crate::{
 #[derive(InitSpace)]
 pub struct ReservationClass {
     pub version: u16,
+    pub domain: DomainRef,
+    pub domain_identity: [u8; 32],
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
     pub core_program: Pubkey,
@@ -27,6 +29,7 @@ pub struct ReservationClass {
 #[account]
 #[derive(InitSpace)]
 pub struct ReservationCapacity {
+    pub reservation_class: Pubkey,
     pub solver: Pubkey,
     pub reserved_base_atoms: u64,
     pub bump: u8,
@@ -64,6 +67,7 @@ pub enum ReservationState {
 #[derive(InitSpace)]
 pub struct FirmReservation {
     pub version: u16,
+    pub reservation_class: Pubkey,
     pub domain: DomainRef,
     pub reservation_id: [u8; 32],
     pub solver_id: ProtocolId,
@@ -97,7 +101,14 @@ impl FirmReservation {
         )
     }
 
-    pub fn finalize(&mut self, quote_hash: [u8; 32], current_slot: u64) -> Result<()> {
+    pub fn finalize(
+        &mut self,
+        reservation_class: Pubkey,
+        quote_hash: [u8; 32],
+        current_slot: u64,
+    ) -> Result<()> {
+        self.require_current_entry()?;
+        self.require_class(reservation_class)?;
         require!(quote_hash != [0u8; 32], ErrorCode::CommitmentZero);
         require!(
             self.state == ReservationState::Funded,
@@ -114,12 +125,15 @@ impl FirmReservation {
 
     pub fn consume(
         &mut self,
+        reservation_class: Pubkey,
         package_nonce: u64,
         order_hash: [u8; 32],
         quote_hash: [u8; 32],
         route_hash: [u8; 32],
         current_slot: u64,
     ) -> Result<()> {
+        self.require_current_entry()?;
+        self.require_class(reservation_class)?;
         require!(
             self.state == ReservationState::Live,
             ErrorCode::ReservationStateInvalid
@@ -139,13 +153,29 @@ impl FirmReservation {
         Ok(())
     }
 
-    pub fn release(&mut self, current_slot: u64) -> Result<()> {
+    pub fn release(&mut self, reservation_class: Pubkey, current_slot: u64) -> Result<()> {
+        self.require_current_entry()?;
+        self.require_class(reservation_class)?;
         require!(self.is_open(), ErrorCode::ReservationStateInvalid);
         require!(
             current_slot >= self.expiry_slot,
             ErrorCode::ReservationNotExpired
         );
         self.state = ReservationState::Released;
+        Ok(())
+    }
+
+    pub fn require_class(&self, reservation_class: Pubkey) -> Result<()> {
+        require_keys_eq!(
+            self.reservation_class,
+            reservation_class,
+            ErrorCode::AccountBindingMismatch
+        );
+        Ok(())
+    }
+
+    pub fn require_current_entry(&self) -> Result<()> {
+        require!(self.is_current_entry(), ErrorCode::ClassParameterInvalid);
         Ok(())
     }
 }
@@ -176,6 +206,7 @@ pub fn validate_entry_deltas(
 #[account]
 #[derive(InitSpace)]
 pub struct LivePair {
+    pub reservation_class: Pubkey,
     pub solver: Pubkey,
     pub strategy_authority: Pubkey,
     pub reservation_id: [u8; 32],
@@ -183,13 +214,13 @@ pub struct LivePair {
 }
 
 impl ReservationClass {
-    pub fn is_v1_entry(&self) -> bool {
+    pub fn is_current_entry(&self) -> bool {
         self.version == RESERVATION_VERSION
     }
 }
 
 impl FirmReservation {
-    pub fn is_v1_entry(&self) -> bool {
+    pub fn is_current_entry(&self) -> bool {
         self.version == RESERVATION_VERSION && self.action == RESERVATION_ACTION_ENTRY
     }
 }
