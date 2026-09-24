@@ -1,0 +1,29 @@
+[package]
+name = "naryx_rise_adapter"
+version = "0.1.0"
+description = "Typed Naryx execution boundary for Phoenix Rise perpetuals"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "naryx_rise_adapter"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+
+[dependencies]
+anchor-lang = "=1.2.0"
+phoenix-rise = { version = "=0.6.5", default-features = false, features = ["ix"] }
+phoenix-rise-accounts = "=0.6.5"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
