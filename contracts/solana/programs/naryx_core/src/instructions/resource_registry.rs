@@ -1172,7 +1172,7 @@ fn live_code_identity(program: &AccountInfo, program_data: &AccountInfo) -> Resu
     Ok(hashv(&[data.as_ref()]).to_bytes())
 }
 
-pub fn verify_code_identity(
+pub(crate) fn verify_code_identity(
     manifest: &ResourceManifest,
     program: &AccountInfo,
     program_data: &AccountInfo,
@@ -1237,6 +1237,27 @@ pub fn validate_cash_carry_admission(
     config: &ProtocolConfig,
     admission: &CashCarryAdmission,
     resources: &CashCarryResources,
+) -> Result<u64> {
+    validate_cash_carry_admission_inner(config, admission, resources, true)
+}
+
+pub(crate) fn validate_cash_carry_exit_admission(
+    config: &ProtocolConfig,
+    admission: &CashCarryAdmission,
+    resources: &CashCarryResources,
+) -> Result<u64> {
+    require!(
+        admission.action == ResourceAction::Exit,
+        ErrorCode::ResourceActionNotAllowed
+    );
+    validate_cash_carry_admission_inner(config, admission, resources, false)
+}
+
+fn validate_cash_carry_admission_inner(
+    config: &ProtocolConfig,
+    admission: &CashCarryAdmission,
+    resources: &CashCarryResources,
+    require_active: bool,
 ) -> Result<u64> {
     require!(
         admission.domain == config.domain,
@@ -1307,7 +1328,11 @@ pub fn validate_cash_carry_admission(
         ),
     ];
     for (record, kind, role, identity) in checks {
-        require_resource_ref(record, &config.domain, kind, role, identity)?;
+        if require_active {
+            require_resource_ref(record, &config.domain, kind, role, identity)?;
+        } else {
+            require_historical_resource_ref(record, &config.domain, kind, role, identity)?;
+        }
         require_action(record.control.lifecycle, admission.action)?;
     }
     require!(
@@ -1416,6 +1441,26 @@ pub fn validate_cash_carry_admission(
         );
     }
     Ok(maximum)
+}
+
+fn require_historical_resource_ref(
+    record: &ResourceRecord,
+    domain: &DomainRef,
+    kind: ResourceKind,
+    role: ExecutionRole,
+    expected: &ManifestRef,
+) -> Result<()> {
+    require!(
+        record.manifest.domain == *domain,
+        ErrorCode::ResourceDomainMismatch
+    );
+    require!(
+        record.manifest.kind == kind
+            && record.manifest.role == role
+            && record.manifest.identity == *expected,
+        ErrorCode::ResourceReferenceShape
+    );
+    Ok(())
 }
 
 fn validate_market_leg(

@@ -236,4 +236,42 @@ pub enum ErrorCode {
     ResourcePackageNotionalMismatch,
     #[msg("Cash-and-carry resources are not distinct where required")]
     ResourceInstancesNotDistinct,
+    #[msg("Cash-and-carry execution hash is all zero")]
+    CashCarryHashZero,
+    #[msg("Cash-and-carry execution nonce is zero")]
+    CashCarryNonceZero,
+    #[msg("Cash-and-carry execution is expired")]
+    CashCarryOrderExpired,
+    #[msg("Cash-and-carry entry execution is paused")]
+    CashCarryEntryPaused,
+    #[msg("Cash-and-carry solver is invalid")]
+    CashCarrySolverInvalid,
+    #[msg("Cash-and-carry solver signature instruction is invalid")]
+    CashCarrySignatureInstructionInvalid,
+    #[msg("Cash-and-carry solver signature does not bind this execution")]
+    CashCarrySignatureMismatch,
+    #[msg("Cash-and-carry execution account is not the active resource")]
+    CashCarryResourceNotCurrent,
+    #[msg("Cash-and-carry execution account does not match the admitted resource")]
+    CashCarryResourceAccountMismatch,
+    #[msg("Cash-and-carry token account does not match the admitted asset")]
+    CashCarryTokenAccountMismatch,
+    #[msg("Cash-and-carry route direction is invalid")]
+    CashCarryRouteDirectionInvalid,
+    #[msg("Cash-and-carry execution arithmetic overflowed")]
+    CashCarryArithmeticOverflow,
+    #[msg("Cash-and-carry position or token postcondition failed")]
+    CashCarryPostconditionFailed,
+    #[msg("Cash-and-carry Rise collateral must be prefunded")]
+    CashCarryCollateralNotPrefunded,
+    #[msg("Cash-and-carry Rise collateral is below the signed floor")]
+    CashCarryCollateralBelowFloor,
+    #[msg("Cash-and-carry package is already open")]
+    CashCarryPackageAlreadyOpen,
+    #[msg("Cash-and-carry package is not open")]
+    CashCarryPackageNotOpen,
+    #[msg("Cash-and-carry exit does not match the open package")]
+    CashCarryOpenPackageMismatch,
+    #[msg("Cash-and-carry entry receipt is invalid")]
+    CashCarryEntryReceiptInvalid,
 }

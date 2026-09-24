@@ -2023,6 +2023,8 @@ dependencies = [
  "anchor-spl",
  "litesvm",
  "naryx_conformance_venue",
+ "naryx_orca_adapter",
+ "naryx_rise_adapter",
  "solana-ed25519-program",
  "solana-instructions-sysvar 3.0.1",
  "solana-keypair",

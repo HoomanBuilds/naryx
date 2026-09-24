@@ -366,7 +366,10 @@ fn validate_arena_extras(
     Ok(())
 }
 
-fn read_position_and_collateral(account: &UncheckedAccount, asset_id: u32) -> Result<(i64, i64)> {
+pub fn read_position_and_collateral(
+    account: &UncheckedAccount,
+    asset_id: u32,
+) -> Result<(i64, i64)> {
     let data = account.try_borrow_data()?;
     let header = TraderHeader::try_read_from_account_bytes(&data)
         .map_err(|_| error!(RiseAdapterError::InvalidRiseAccountData))?;

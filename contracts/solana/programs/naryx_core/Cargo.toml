@@ -29,6 +29,8 @@ custom-panic = []
 anchor-lang = { version = "=1.2.0", features = ["init-if-needed"] }
 anchor-spl = { version = "=1.2.0", features = ["token"] }
 naryx_conformance_venue = { path = "../naryx_conformance_venue", features = ["cpi"], optional = true }
+naryx_orca_adapter = { path = "../naryx_orca_adapter", features = ["cpi"] }
+naryx_rise_adapter = { path = "../naryx_rise_adapter", features = ["cpi"] }
 solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 solana-instructions-sysvar = "=3.0.1"
 solana-sdk-ids = "=3.1.0"

@@ -155,3 +155,32 @@ pub struct ConformanceExecutionRecorded {
     pub post_collateral_quote_atoms: u64,
     pub execution_slot: u64,
 }
+
+#[event]
+pub struct CashCarryExecutionRecorded {
+    pub receipt: Pubkey,
+    pub domain: DomainRef,
+    pub order_hash: [u8; 32],
+    pub quote_hash: [u8; 32],
+    pub route_hash: [u8; 32],
+    pub trader: Pubkey,
+    pub solver: Pubkey,
+    pub nonce: u64,
+    pub execution_digest: [u8; 32],
+    pub action: u8,
+    pub spot_quantity_atoms: u64,
+    pub perp_quantity_atoms: u64,
+    pub spot_quote_delta_atoms: u64,
+    pub pre_base_balance: u64,
+    pub post_base_balance: u64,
+    pub pre_quote_balance: u64,
+    pub post_quote_balance: u64,
+    pub pre_rise_base_lots: i64,
+    pub post_rise_base_lots: i64,
+    pub pre_rise_collateral_quote_lots: i64,
+    pub post_rise_collateral_quote_lots: i64,
+    pub execution_slot: u64,
+    pub resource_admission_commitment: [u8; 32],
+    pub route_accounts_commitment: [u8; 32],
+    pub entry_receipt: Pubkey,
+}

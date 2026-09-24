@@ -65,18 +65,70 @@ pub struct ConformanceNonce {
     pub bump: u8,
 }
 
-#[cfg(feature = "conformance")]
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, InitSpace)]
 pub struct PendingSolver {
     pub key: Pubkey,
     pub activation_slot: u64,
 }
 
-#[cfg(feature = "conformance")]
 #[account]
 #[derive(InitSpace)]
 pub struct SolverRegistry {
     pub active: Pubkey,
     pub pending: Option<PendingSolver>,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct CashCarryExecutionReceipt {
+    pub domain: DomainRef,
+    pub order_hash: [u8; 32],
+    pub quote_hash: [u8; 32],
+    pub route_hash: [u8; 32],
+    pub trader: Pubkey,
+    pub solver: Pubkey,
+    pub nonce: u64,
+    pub execution_digest: [u8; 32],
+    pub action: u8,
+    pub spot_quantity_atoms: u64,
+    pub perp_quantity_atoms: u64,
+    pub spot_quote_delta_atoms: u64,
+    pub pre_base_balance: u64,
+    pub post_base_balance: u64,
+    pub pre_quote_balance: u64,
+    pub post_quote_balance: u64,
+    pub pre_rise_base_lots: i64,
+    pub post_rise_base_lots: i64,
+    pub pre_rise_collateral_quote_lots: i64,
+    pub post_rise_collateral_quote_lots: i64,
+    pub execution_slot: u64,
+    pub resource_admission_commitment: [u8; 32],
+    pub route_accounts_commitment: [u8; 32],
+    pub entry_receipt: Pubkey,
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct CashCarryNonce {
+    pub order_hash: [u8; 32],
+    pub execution_digest: [u8; 32],
+    pub bump: u8,
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct OpenCashCarryPackage {
+    pub version: u8,
+    pub domain: DomainRef,
+    pub trader: Pubkey,
+    pub entry_receipt: Pubkey,
+    pub entry_route_hash: [u8; 32],
+    pub resource_admission_commitment: [u8; 32],
+    pub entry_route_accounts_commitment: [u8; 32],
+    pub package_accounts_commitment: [u8; 32],
+    pub spot_quantity_atoms: u64,
+    pub perp_quantity_atoms: u64,
     pub bump: u8,
 }

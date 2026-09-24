@@ -117,6 +117,28 @@ pub mod naryx_core {
     ) -> Result<()> {
         instructions::resource_registry::tighten_resource_control(ctx, control)
     }
+
+    pub fn propose_solver(ctx: Context<ProposeSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::propose(ctx, key)
+    }
+
+    pub fn activate_solver(ctx: Context<ActivateSolver>) -> Result<()> {
+        instructions::solver_registry::activate(ctx)
+    }
+
+    pub fn cancel_solver(ctx: Context<CancelSolver>) -> Result<()> {
+        instructions::solver_registry::cancel(ctx)
+    }
+
+    pub fn execute_cash_and_carry<'info>(
+        ctx: Context<'info, ExecuteCashAndCarry<'info>>,
+        order_hash: [u8; HASH_BYTE_LENGTH],
+        quote_hash: [u8; HASH_BYTE_LENGTH],
+        route_hash: [u8; HASH_BYTE_LENGTH],
+        args: CashCarryExecutionArgs,
+    ) -> Result<()> {
+        instructions::execute_cash_and_carry::handler(ctx, order_hash, quote_hash, route_hash, args)
+    }
 }
 
 #[cfg(feature = "conformance")]
