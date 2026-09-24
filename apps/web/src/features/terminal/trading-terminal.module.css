@@ -154,6 +154,35 @@
   padding-left: 16px;
 }
 
+.walletControl {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.walletControl select,
+.walletControl button {
+  height: 28px;
+  max-width: 132px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  padding: 0 8px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 9px;
+}
+
+.walletControl button:not(:disabled) {
+  cursor: pointer;
+}
+
+.walletControl button:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
 .sessionStatus span {
   color: var(--text-secondary);
   font-size: 11px;
@@ -807,12 +836,109 @@
 }
 
 .evidenceBox,
-.feeSummary {
+.feeSummary,
+.executionReview {
   margin-top: 6px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-muted) 64%, transparent);
   padding: 7px;
+}
+
+.executionReview {
+  margin: 6px 14px 0;
+  border-color: color-mix(in srgb, var(--brand) 28%, var(--border));
+}
+
+.reviewEconomics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin-bottom: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--border-subtle);
+}
+
+.reviewEconomics div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-muted);
+  padding: 5px;
+}
+
+.reviewEconomics span,
+.reviewLeg span,
+.reviewGrid span {
+  color: var(--text-dim);
+  font-size: 8px;
+}
+
+.reviewEconomics strong,
+.reviewLeg strong,
+.reviewGrid strong {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-geist-mono);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reviewLeg {
+  display: flex;
+  min-height: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.reviewGrid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  margin-top: 5px;
+}
+
+.reviewGrid strong {
+  text-align: right;
+}
+
+.reviewNotice {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.submissionReceipt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+  color: var(--brand);
+  font-size: 8px;
+}
+
+.submissionReceipt strong {
+  overflow: hidden;
+  font-family: var(--font-geist-mono);
+  text-align: right;
+  text-overflow: ellipsis;
+}
+
+.submissionReceipt small {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+  font-size: 8px;
 }
 
 .evidenceHeading,
@@ -875,6 +1001,36 @@
   font: inherit;
   font-size: 11px;
   font-weight: 650;
+}
+
+.secondaryAction {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.secondaryAction:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.primaryAction:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand) 58%, var(--border));
+  background: var(--brand);
+  color: #07110e;
+  cursor: pointer;
+}
+
+.primaryAction:not(:disabled):hover {
+  filter: brightness(1.08);
 }
 
 .actionArea p {
@@ -1065,6 +1221,10 @@
     display: none;
   }
 
+  .walletControl select {
+    max-width: 104px;
+  }
+
   .contentGrid {
     grid-template-columns: minmax(0, 1fr) 336px;
   }
@@ -1105,6 +1265,10 @@
 
   .sessionStatus {
     display: none;
+  }
+
+  .walletControl {
+    margin-left: auto;
   }
 
   .domainContext {

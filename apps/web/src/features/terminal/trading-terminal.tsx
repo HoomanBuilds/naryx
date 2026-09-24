@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
+import {
+  useSolanaDevnetWallet,
+  type SolanaWalletSession,
+} from "./solana-wallet-standard";
 import type {
   BasisPoint,
   DomainId,
@@ -10,6 +14,8 @@ import type {
   PackageMode,
   ProviderConnection,
   QuoteMode,
+  SolanaExecutionPreparation,
+  SolanaExecutionPreparationInput,
   SlippageBps,
   TerminalPreview,
   TerminalViewModel,
@@ -64,11 +70,13 @@ function TopNavigation({
   snapshot,
   selectedDomain,
   providerConnection,
+  wallet,
   onDomainChange,
 }: {
   snapshot: TerminalViewModel;
   selectedDomain: DomainId;
   providerConnection: ProviderConnection;
+  wallet: SolanaWalletSession;
   onDomainChange: (domain: DomainId) => void;
 }) {
   const providerLabel = providerConnection === "connected"
@@ -113,11 +121,56 @@ function TopNavigation({
         ))}
       </nav>
 
+      <div className={styles.walletControl}>
+        <select
+          aria-label="Solana Devnet wallet"
+          value={wallet.selectedWallet?.name ?? ""}
+          onChange={(event) => wallet.selectWallet(event.target.value)}
+        >
+          <option value="">Select wallet</option>
+          {wallet.wallets.map((item) => (
+            <option key={item.name} value={item.name}>{item.name}</option>
+          ))}
+        </select>
+        {wallet.selectedAccount ? (
+          <>
+            {wallet.accounts.length > 1 ? (
+              <select
+                aria-label="Solana Devnet wallet account"
+                value={wallet.selectedAccount.address}
+                onChange={(event) => wallet.selectAccount(event.target.value)}
+              >
+                {wallet.accounts.map((account) => (
+                  <option key={account.address} value={account.address}>
+                    {account.label ?? `${account.address.slice(0, 4)}...${account.address.slice(-4)}`}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <button type="button" onClick={() => void wallet.disconnect()}>
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            disabled={!wallet.selectedWallet || wallet.connecting}
+            onClick={() => void wallet.connect()}
+          >
+            {wallet.connecting ? "Connecting" : "Connect Devnet"}
+          </button>
+        )}
+      </div>
+
       <div className={styles.sessionStatus}>
-        <span className={styles.offlineDot} />
+        <span className={wallet.selectedAccount ? styles.statusDot : styles.offlineDot} />
         <div>
-          <span>Wallet offline</span>
-          <small>No signing session</small>
+          <span>{wallet.selectedAccount ? "Devnet wallet ready" : "Wallet offline"}</span>
+          <small>
+            {wallet.selectedAccount
+              ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}`
+              : wallet.error ?? "Wallet Standard only"}
+          </small>
         </div>
       </div>
     </header>
@@ -312,6 +365,128 @@ function PackageSequence({
   );
 }
 
+type ExecutionReview = {
+  preparation: SolanaExecutionPreparation;
+  preparedAt: number;
+  ticketKey: string;
+};
+
+type SubmissionState = {
+  signature: string;
+  status: "SUBMITTED_OBSERVATION_PENDING";
+  ticketKey: string;
+};
+
+function compact(value: string, leading = 10, trailing = 8) {
+  return value.length > leading + trailing + 3
+    ? `${value.slice(0, leading)}...${value.slice(-trailing)}`
+    : value;
+}
+
+function preparationFingerprint(preparation: SolanaExecutionPreparation) {
+  return JSON.stringify({
+    status: preparation.status,
+    environment: preparation.environment,
+    idempotencyKey: preparation.idempotencyKey,
+    domain: preparation.domain,
+    domainManifestVersion: preparation.domainManifestVersion,
+    domainManifestHash: preparation.domainManifestHash,
+    planKind: preparation.planKind,
+    messageBase64: preparation.messageBase64,
+    transactionBase64: preparation.transactionBase64,
+    requiredSignerPubkeys: preparation.requiredSignerPubkeys,
+    recentBlockhash: preparation.recentBlockhash,
+    blockhashContextSlot: preparation.blockhashContextSlot,
+    lastValidBlockHeight: preparation.lastValidBlockHeight,
+    genesisHash: preparation.genesisHash,
+    lookupTables: preparation.lookupTables,
+    evidence: preparation.evidence,
+    requestCommitment: preparation.requestCommitment,
+  });
+}
+
+function ExecutionReviewPanel({
+  review,
+  preview,
+  submission,
+}: {
+  review: ExecutionReview;
+  preview: TerminalPreview | null;
+  submission: SubmissionState | null;
+}) {
+  const { preparation } = review;
+  return (
+    <section className={styles.executionReview} aria-labelledby="execution-review-title">
+      <div className={styles.evidenceHeading}>
+        <h3 id="execution-review-title">Devnet pre-sign review</h3>
+        <span>{submission ? "Submitted" : "Signature required"}</span>
+      </div>
+      <div className={styles.reviewEconomics}>
+        <div>
+          <span>Package</span>
+          <strong>{preview?.size.value ?? "-"} SOL</strong>
+        </div>
+        <div>
+          <span>Bound</span>
+          <strong>{preview ? `$${preview.bound.value}` : "-"}</strong>
+        </div>
+        <div>
+          <span>Fees</span>
+          <strong>{preview ? `$${preview.totalFee.value}` : "-"}</strong>
+        </div>
+      </div>
+      {(preview?.legs ?? []).map((leg) => (
+        <div className={styles.reviewLeg} key={leg.sequence}>
+          <span>Leg {leg.sequence} - {leg.action}</span>
+          <strong>{leg.quantity} at {leg.venue}</strong>
+        </div>
+      ))}
+      <div className={styles.reviewGrid}>
+        <span>Environment</span><strong>Solana Devnet</strong>
+        <span>Domain</span><strong>{preparation.domain}</strong>
+        <span>Genesis</span><strong title={preparation.genesisHash}>{compact(preparation.genesisHash)}</strong>
+        <span>Idempotency</span><strong title={preparation.idempotencyKey}>{compact(preparation.idempotencyKey)}</strong>
+        <span>Domain manifest</span>
+        <strong title={preparation.domainManifestHash}>
+          v{preparation.domainManifestVersion} / {compact(preparation.domainManifestHash)}
+        </strong>
+        <span>Plan</span><strong>{preparation.planKind}</strong>
+        <span>Exact signer</span>
+        <strong title={preparation.requiredSignerPubkeys[0]}>
+          {compact(preparation.requiredSignerPubkeys[0])}
+        </strong>
+        <span>Wire evidence</span>
+        <strong>
+          {preparation.evidence.serializedTransactionBytes} B / {preparation.evidence.resolvedAddressCount} accts
+        </strong>
+        <span>Compute cap</span>
+        <strong>{preparation.evidence.routeComputeUnitLimit.toLocaleString()} CU</strong>
+        <span>Last valid block</span>
+        <strong>{preparation.lastValidBlockHeight.toLocaleString()}</strong>
+        <span>Recent blockhash</span>
+        <strong title={preparation.recentBlockhash}>{compact(preparation.recentBlockhash)}</strong>
+        <span>Blockhash slot</span>
+        <strong>{preparation.blockhashContextSlot.toLocaleString()}</strong>
+        <span>Lookup tables</span><strong>{preparation.lookupTables.length}</strong>
+        <span>Commitment</span>
+        <strong title={preparation.requestCommitment}>
+          {compact(preparation.requestCommitment, 12, 10)}
+        </strong>
+      </div>
+      <p className={styles.reviewNotice}>
+        This review expires after 45 seconds. Submission is not finality and does not mean the package completed.
+      </p>
+      {submission ? (
+        <div className={styles.submissionReceipt}>
+          <span>Transaction submitted</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>Network observation pending. Package completion is not asserted.</small>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function Ticket({
   snapshot,
   mode,
@@ -319,10 +494,19 @@ function Ticket({
   size,
   slippage,
   quoteMode,
+  executionReview,
+  submission,
+  actionLabel,
+  actionReason,
+  actionDisabled,
+  actionBusy,
+  prepareDisabled,
   onModeChange,
   onSizeChange,
   onSlippageChange,
   onQuoteModeChange,
+  onExecutionAction,
+  onPrepareExecution,
 }: {
   snapshot: TerminalViewModel;
   mode: PackageMode;
@@ -330,10 +514,19 @@ function Ticket({
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
+  executionReview: ExecutionReview | null;
+  submission: SubmissionState | null;
+  actionLabel: string;
+  actionReason: string;
+  actionDisabled: boolean;
+  actionBusy: boolean;
+  prepareDisabled: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
   onSlippageChange: (slippage: SlippageBps) => void;
   onQuoteModeChange: (quoteMode: QuoteMode) => void;
+  onExecutionAction: () => void;
+  onPrepareExecution: () => void;
 }) {
   return (
     <aside className={`${styles.panel} ${styles.ticket}`} aria-labelledby="ticket-title">
@@ -443,18 +636,34 @@ function Ticket({
         </div>
       </section>
 
+      {executionReview ? (
+        <ExecutionReviewPanel
+          review={executionReview}
+          preview={preview}
+          submission={submission}
+        />
+      ) : null}
+
       <div className={styles.actionArea}>
+        <button
+          className={styles.secondaryAction}
+          type="button"
+          disabled={prepareDisabled || actionBusy}
+          onClick={onPrepareExecution}
+        >
+          {executionReview ? "Refresh Devnet review" : "Prepare Devnet review"}
+        </button>
         <button
           className={styles.primaryAction}
           type="button"
-          disabled
+          disabled={actionDisabled || actionBusy}
           aria-describedby="execution-note"
+          onClick={onExecutionAction}
         >
-          Execution unavailable
+          {actionBusy ? "Working" : actionLabel}
         </button>
         <p id="execution-note">
-          {preview?.action.reason ??
-            "Enter a valid conformance size to prepare a preview."}
+          {actionReason}
         </p>
       </div>
     </aside>
@@ -559,6 +768,18 @@ export function TradingTerminal({
     initialSnapshot.ticket.defaultSlippageBps,
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
+  const wallet = useSolanaDevnetWallet();
+  const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
+  const [submission, setSubmission] = useState<SubmissionState | null>(null);
+  const [executionError, setExecutionError] = useState<{
+    ticketKey: string;
+    message: string;
+  } | null>(null);
+  const [executionBusy, setExecutionBusy] = useState(false);
+  const [idempotency, setIdempotency] = useState<{
+    ticketKey: string;
+    key: string;
+  } | null>(null);
   const privateProvider = useMemo(() => {
     if (!privateApiBaseUrl) {
       return null;
@@ -572,6 +793,23 @@ export function TradingTerminal({
   const [providerConnection, setProviderConnection] = useState<ProviderConnection>(
     privateProvider ? "connecting" : "disconnected",
   );
+
+  const ticketKey = JSON.stringify({
+    selectedDomain,
+    mode,
+    size,
+    slippage,
+    quoteMode,
+    traderPublicKey: wallet.selectedAccount?.address ?? null,
+  });
+
+  const currentExecutionReview = executionReview?.ticketKey === ticketKey
+    ? executionReview
+    : null;
+  const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
+  const currentExecutionError = executionError?.ticketKey === ticketKey
+    ? executionError.message
+    : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -670,12 +908,137 @@ export function TradingTerminal({
     [selectedDomain, snapshot.domains],
   );
 
+  const actionState = useMemo(() => {
+    if (selectedDomain !== "solana") {
+      return { disabled: true, label: "Solana Devnet only", reason: "Select Solana to prepare the Devnet execution path." };
+    }
+    if (!privateProvider || providerConnection !== "connected") {
+      return { disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
+    }
+    if (!wallet.selectedAccount) {
+      return { disabled: true, label: "Connect Devnet wallet", reason: "Choose a Wallet Standard wallet and authorize a Solana Devnet account." };
+    }
+    if (!wallet.canSignAndSendV0) {
+      return { disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet does not advertise Devnet v0 sign-and-send capability." };
+    }
+    if (!preview || preview.source !== "PRIVATE_TERMINAL_BFF") {
+      return { disabled: true, label: "Executable preview required", reason: "A current private-service package preview is required." };
+    }
+    if (quoteMode !== "coordinated_limits") {
+      return { disabled: true, label: "Coordinated limits required", reason: "Devnet execution requires the coordinated-limits quote mode." };
+    }
+    if (currentSubmission) {
+      return { disabled: true, label: "Transaction submitted", reason: "Observation is pending. Submission does not assert finality or package completion." };
+    }
+    if (!currentExecutionReview) {
+      return { disabled: true, label: "Sign and submit on Devnet", reason: "Prepare and review the unsigned Devnet transaction before signing." };
+    }
+    return { disabled: false, label: "Sign and submit on Devnet", reason: "The wallet will show the exact reviewed Devnet transaction before signing." };
+  }, [
+    currentExecutionReview,
+    currentSubmission,
+    preview,
+    privateProvider,
+    providerConnection,
+    quoteMode,
+    selectedDomain,
+    wallet.canSignAndSendV0,
+    wallet.selectedAccount,
+  ]);
+
+  async function prepareExecution(
+    currentIdempotencyKey: string,
+  ): Promise<SolanaExecutionPreparation> {
+    if (!privateProvider || !wallet.selectedAccount) {
+      throw new Error("Private service and Devnet wallet are required.");
+    }
+    const input: SolanaExecutionPreparationInput = {
+      domain: "svm:devnet",
+      mode,
+      size,
+      slippageBps: slippage,
+      quoteMode,
+      traderPublicKey: wallet.selectedAccount.address,
+      idempotencyKey: currentIdempotencyKey,
+    };
+    return privateProvider.prepareSolanaExecution(input);
+  }
+
+  async function handleExecutionAction() {
+    if (actionState.disabled || executionBusy) return;
+    setExecutionBusy(true);
+    setExecutionError(null);
+    try {
+      if (currentExecutionReview && Date.now() - currentExecutionReview.preparedAt > 45_000) {
+        setExecutionReview(null);
+        setIdempotency(null);
+        setExecutionError({ ticketKey, message: "The prior review expired. Prepare a fresh Devnet transaction." });
+        return;
+      }
+      const key = idempotency?.ticketKey === ticketKey ? idempotency.key : crypto.randomUUID();
+      if (idempotency?.ticketKey !== ticketKey) setIdempotency({ ticketKey, key });
+      const next = await prepareExecution(key);
+      if (!currentExecutionReview) throw new Error("Prepare and review the Devnet transaction first.");
+      const changed = preparationFingerprint(currentExecutionReview.preparation) !==
+        preparationFingerprint(next);
+      if (changed) {
+        setExecutionReview({ preparation: next, preparedAt: Date.now(), ticketKey });
+        setExecutionError({ ticketKey, message: "Execution material changed. Review the refreshed transaction before signing." });
+        return;
+      }
+      const signature = await wallet.signAndSend(next.transactionBytes);
+      setSubmission({ signature, status: "SUBMITTED_OBSERVATION_PENDING", ticketKey });
+    } catch (cause) {
+      setExecutionError({
+        ticketKey,
+        message: cause instanceof Error ? cause.message : "Execution preparation failed.",
+      });
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
+  async function handlePrepareExecution() {
+    if (!privateProvider || providerConnection !== "connected" ||
+        selectedDomain !== "solana" || !wallet.selectedAccount ||
+        !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
+        quoteMode !== "coordinated_limits" ||
+        currentSubmission || executionBusy) return;
+    setExecutionBusy(true);
+    setExecutionError(null);
+    try {
+      const key = currentExecutionReview
+        ? crypto.randomUUID()
+        : idempotency?.ticketKey === ticketKey
+          ? idempotency.key
+          : crypto.randomUUID();
+      setIdempotency({ ticketKey, key });
+      const preparation = await prepareExecution(key);
+      setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
+    } catch (cause) {
+      setExecutionReview(null);
+      setExecutionError({
+        ticketKey,
+        message: cause instanceof Error ? cause.message : "Execution preparation failed.",
+      });
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
+  const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
+    providerConnection !== "connected" || !wallet.selectedAccount ||
+    !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
+    quoteMode !== "coordinated_limits" ||
+    currentSubmission !== null;
+
   return (
     <main className={styles.terminalShell}>
       <TopNavigation
         snapshot={snapshot}
         selectedDomain={selectedDomain}
         providerConnection={providerConnection}
+        wallet={wallet}
         onDomainChange={(domain) => {
           setSelectedDomain(domain);
           if (privateProvider) {
@@ -701,10 +1064,19 @@ export function TradingTerminal({
           size={size}
           slippage={slippage}
           quoteMode={quoteMode}
+          executionReview={currentExecutionReview}
+          submission={currentSubmission}
+          actionLabel={actionState.label}
+          actionReason={currentExecutionError ?? actionState.reason}
+          actionDisabled={actionState.disabled}
+          actionBusy={executionBusy}
+          prepareDisabled={prepareDisabled}
           onModeChange={setMode}
           onSizeChange={setSize}
           onSlippageChange={setSlippage}
           onQuoteModeChange={setQuoteMode}
+          onExecutionAction={() => void handleExecutionAction()}
+          onPrepareExecution={() => void handlePrepareExecution()}
         />
       </div>
       <BottomWorkspace

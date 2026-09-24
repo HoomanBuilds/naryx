@@ -114,6 +114,46 @@ export type TerminalPreviewInput = {
   quoteMode: QuoteMode;
 };
 
+export type SolanaExecutionPreparationInput = Omit<TerminalPreviewInput, "domain"> & {
+  domain: "svm:devnet";
+  traderPublicKey: string;
+  idempotencyKey: string;
+};
+
+export type SolanaExecutionPreparation = {
+  status: "DEVNET_UNSIGNED_REVIEW_REQUIRED";
+  domain: "svm:devnet";
+  environment: "DEVNET";
+  idempotencyKey: string;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+  planKind: "TRADER_ENTRY" | "TRADER_RECOVERY_EXIT";
+  transactionBase64: string;
+  messageBase64: string;
+  requiredSignerPubkeys: readonly string[];
+  recentBlockhash: string;
+  blockhashContextSlot: number;
+  lastValidBlockHeight: number;
+  lookupTables: readonly {
+    address: string;
+    addresses: readonly string[];
+    contentCommitment: string;
+    contextSlot: number;
+  }[];
+  evidence: {
+    resolvedAddressCount: number;
+    serializedMessageBytes: number;
+    serializedTransactionBytes: number;
+    packetDataLimit: 1232;
+    computeUnitLimit: number;
+    computeUnitLimitSource: "EXPLICIT";
+    routeComputeUnitLimit: number;
+  };
+  requestCommitment: string;
+  transactionBytes: Uint8Array;
+};
+
 export type TerminalPreview = {
   source: "LOCAL_CONFORMANCE" | "PRIVATE_TERMINAL_BFF";
   environment: "LOCAL_CONFORMANCE";
