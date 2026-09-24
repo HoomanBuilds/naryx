@@ -259,6 +259,43 @@ contract NaryxStrategyAccountTest is Test {
         account.executePackage(execution, admission, bytes(""), bytes(""), _tradeArgs(0, 0));
     }
 
+    function testRejectsIdleWithdrawalWhilePackageOpen() public {
+        _enter();
+
+        vm.prank(owner);
+        vm.expectRevert(NaryxStrategyAccount.OpenPackageExists.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), owner, 1 ether);
+    }
+
+    function testOwnerWithdrawsExactIdleTokensAfterVerifiedExit() public {
+        bytes32 entryReceiptHash = _enter();
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(entryReceiptHash, solver);
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+
+        address recipient = address(0xBEEF);
+        uint256 accountBalanceBefore = quote.balanceOf(address(account));
+        uint256 recipientBalanceBefore = quote.balanceOf(recipient);
+        vm.prank(owner);
+        account.withdrawIdleToken(IERC20(address(quote)), recipient, 5 ether);
+
+        assertEq(quote.balanceOf(address(account)), accountBalanceBefore - 5 ether);
+        assertEq(quote.balanceOf(recipient), recipientBalanceBefore + 5 ether);
+    }
+
+    function testRejectsUnauthorizedIdleWithdrawal() public {
+        vm.expectRevert(NaryxStrategyAccount.UnauthorizedWithdrawal.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), address(0xBEEF), 1 ether);
+    }
+
     function _enter() private returns (bytes32 receiptHash) {
         (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
         _admit(admission);

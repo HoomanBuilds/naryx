@@ -20,6 +20,12 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     error InvalidConfiguration();
     error InvalidExecution();
     error InvalidRecoveryExit();
+    error InvalidWithdrawal();
+    error OpenPackageExists();
+    error UnauthorizedWithdrawal();
+    error WithdrawalPostconditionFailed();
+
+    event IdleTokenWithdrawn(address indexed token, address indexed recipient, uint256 amount);
 
     address public immutable owner;
     PackageVerifier public immutable verifier;
@@ -68,6 +74,29 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
         verifier.beginRecoveryExit(execution, admission, traderSignature);
         _exit(execution, perpArgs);
         return verifier.finalize(execution, admission, true);
+    }
+
+    function withdrawIdleToken(IERC20 token, address recipient, uint256 amount) external nonReentrant {
+        if (msg.sender != owner) revert UnauthorizedWithdrawal();
+        if (address(token) == address(0) || recipient == address(0) || amount == 0) revert InvalidWithdrawal();
+        if (block.chainid != deploymentChainId || address(verifier).codehash != verifierCodeHash) {
+            revert InvalidConfiguration();
+        }
+        if (verifier.hasOpenPackage(address(this))) revert OpenPackageExists();
+
+        uint256 senderBalanceBefore = token.balanceOf(address(this));
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+        if (senderBalanceBefore < amount || recipientBalanceBefore > type(uint256).max - amount) {
+            revert InvalidWithdrawal();
+        }
+
+        token.safeTransfer(recipient, amount);
+
+        if (
+            token.balanceOf(address(this)) != senderBalanceBefore - amount
+                || token.balanceOf(recipient) != recipientBalanceBefore + amount
+        ) revert WithdrawalPostconditionFailed();
+        emit IdleTokenWithdrawn(address(token), recipient, amount);
     }
 
     function _validateExecution(PackageVerifier.Execution calldata execution) private view {

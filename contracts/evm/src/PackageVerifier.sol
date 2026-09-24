@@ -192,6 +192,10 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         return _receipts[receiptHash];
     }
 
+    function hasOpenPackage(address strategyAccount) external view returns (bool) {
+        return openPackages[strategyAccount].entryReceiptHash != bytes32(0);
+    }
+
     function begin(
         Execution calldata execution,
         ResourceRegistry.CashCarryAdmission calldata admission,
