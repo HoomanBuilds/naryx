@@ -1,0 +1,2870 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "cashCarryTemplateManifestHash_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "ADAPTER_CLASS_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ATOMIC_POSTCONDITION_ID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ATOMIC_POSTCONDITION_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "BASE_PERP_PORT_CLASS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "BASE_SPOT_ADAPTER_CLASS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "CASH_AND_CARRY_TEMPLATE_ID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "CASH_AND_CARRY_TEMPLATE_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ENTRY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "EXIT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activateControl",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "activateRegistration",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "activeResource",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "manifest",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceBinding",
+        "components": [
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.ResourceKind"
+          },
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "identity",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "localAddress",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "expectedCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "legRole",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.LegRole"
+          },
+          {
+            "name": "adapterClassId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "adapterClassVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "venue",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "market",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "baseAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "marketParameters",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.MarketParameters",
+            "components": [
+              {
+                "name": "baseLotAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "quoteTickAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "minimumQuoteNotionalAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierNumerator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierDenominator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "baseDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "quoteDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "allowedTemplate",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "control",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceControl",
+        "components": [
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.Lifecycle"
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteDecimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maximumPackageNotionalQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "bindingHash",
+    "inputs": [
+      {
+        "name": "binding",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceBinding",
+        "components": [
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.ResourceKind"
+          },
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "identity",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "localAddress",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "expectedCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "legRole",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.LegRole"
+          },
+          {
+            "name": "adapterClassId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "adapterClassVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "venue",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "market",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "baseAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "marketParameters",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.MarketParameters",
+            "components": [
+              {
+                "name": "baseLotAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "quoteTickAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "minimumQuoteNotionalAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierNumerator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierDenominator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "baseDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "quoteDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "allowedTemplate",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "cancelControl",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelRegistration",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cashCarryTemplateManifestHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingControl",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.PendingControl",
+        "components": [
+          {
+            "name": "recordKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.Lifecycle"
+          },
+          {
+            "name": "maximumPackageNotionalQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "activationTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "exists",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingRegistration",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.PendingRegistration",
+        "components": [
+          {
+            "name": "binding",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ResourceBinding",
+            "components": [
+              {
+                "name": "kind",
+                "type": "uint8",
+                "internalType": "enum ResourceRegistry.ResourceKind"
+              },
+              {
+                "name": "domain",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.DomainRef",
+                "components": [
+                  {
+                    "name": "domainIdHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "identity",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "localAddress",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "expectedCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "decimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "legRole",
+                "type": "uint8",
+                "internalType": "enum ResourceRegistry.LegRole"
+              },
+              {
+                "name": "adapterClassId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "adapterClassVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "venue",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "market",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "baseAsset",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "quoteAsset",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "marketParameters",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.MarketParameters",
+                "components": [
+                  {
+                    "name": "baseLotAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  },
+                  {
+                    "name": "quoteTickAtomsPerBaseLot",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  },
+                  {
+                    "name": "minimumQuoteNotionalAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  },
+                  {
+                    "name": "contractMultiplierNumerator",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  },
+                  {
+                    "name": "contractMultiplierDenominator",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  },
+                  {
+                    "name": "baseDecimals",
+                    "type": "uint8",
+                    "internalType": "uint8"
+                  },
+                  {
+                    "name": "quoteDecimals",
+                    "type": "uint8",
+                    "internalType": "uint8"
+                  }
+                ]
+              },
+              {
+                "name": "allowedTemplate",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.TemplateRef",
+                "components": [
+                  {
+                    "name": "templateId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "templateVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "templateManifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "settlementClass",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.SettlementClassRef",
+                "components": [
+                  {
+                    "name": "classId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "classVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "control",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ResourceControl",
+            "components": [
+              {
+                "name": "state",
+                "type": "uint8",
+                "internalType": "enum ResourceRegistry.Lifecycle"
+              },
+              {
+                "name": "quoteAsset",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "quoteDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "maximumPackageNotionalQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "activationTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "exists",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proposeControl",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "proposeRegistration",
+    "inputs": [
+      {
+        "name": "binding",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceBinding",
+        "components": [
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.ResourceKind"
+          },
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "identity",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "localAddress",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "expectedCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "legRole",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.LegRole"
+          },
+          {
+            "name": "adapterClassId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "adapterClassVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "venue",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "market",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "baseAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "marketParameters",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.MarketParameters",
+            "components": [
+              {
+                "name": "baseLotAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "quoteTickAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "minimumQuoteNotionalAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierNumerator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierDenominator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "baseDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "quoteDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "allowedTemplate",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "control",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceControl",
+        "components": [
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.Lifecycle"
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteDecimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maximumPackageNotionalQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "resource",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "identity",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ManifestRef",
+        "components": [
+          {
+            "name": "subjectId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "manifest",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceBinding",
+        "components": [
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.ResourceKind"
+          },
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "identity",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "localAddress",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "expectedCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "decimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "legRole",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.LegRole"
+          },
+          {
+            "name": "adapterClassId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "adapterClassVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "venue",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "market",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "baseAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "marketParameters",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.MarketParameters",
+            "components": [
+              {
+                "name": "baseLotAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "quoteTickAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "minimumQuoteNotionalAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierNumerator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "contractMultiplierDenominator",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "baseDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              },
+              {
+                "name": "quoteDecimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "allowedTemplate",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "control",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.ResourceControl",
+        "components": [
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum ResourceRegistry.Lifecycle"
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "quoteDecimals",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maximumPackageNotionalQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "tightenControl",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "validateCashCarry",
+    "inputs": [
+      {
+        "name": "admission",
+        "type": "tuple",
+        "internalType": "struct ResourceRegistry.CashCarryAdmission",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "spot",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.LegAdmission",
+            "components": [
+              {
+                "name": "adapter",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "adapterClassId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "adapterClassVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "market",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "venue",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "quantityAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "limitQuoteAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "perpetual",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.LegAdmission",
+            "components": [
+              {
+                "name": "adapter",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "adapterClassId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "adapterClassVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "market",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "venue",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ResourceRef",
+                "components": [
+                  {
+                    "name": "manifest",
+                    "type": "tuple",
+                    "internalType": "struct ResourceRegistry.ManifestRef",
+                    "components": [
+                      {
+                        "name": "subjectId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "manifestVersion",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "manifestHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "localAddress",
+                    "type": "address",
+                    "internalType": "address"
+                  },
+                  {
+                    "name": "expectedCodeHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "quantityAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "limitQuoteAtomsPerBaseLot",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "baseAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.AssetRef",
+            "components": [
+              {
+                "name": "manifest",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "localAddress",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "expectedCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "decimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "quoteAsset",
+            "type": "tuple",
+            "internalType": "struct ResourceRegistry.AssetRef",
+            "components": [
+              {
+                "name": "manifest",
+                "type": "tuple",
+                "internalType": "struct ResourceRegistry.ManifestRef",
+                "components": [
+                  {
+                    "name": "subjectId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "localAddress",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "expectedCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "decimals",
+                "type": "uint8",
+                "internalType": "uint8"
+              }
+            ]
+          },
+          {
+            "name": "action",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "packageNotionalQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "ControlActivated",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ControlProposalCancelled",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ControlProposed",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ControlTightened",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RegistrationCancelled",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RegistrationProposed",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ResourceActivated",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "kind",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "localBindingHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      },
+      {
+        "name": "maximumPackageNotionalQuoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "ActionNotAllowed",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.Lifecycle"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ActivationTimestampOverflow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AssetDecimalsMismatch",
+    "inputs": [
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ControlProposalExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ControlProposalMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ControlProposalNotReady",
+    "inputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DomainMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidAdmission",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidBinding",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ManifestVersionNotIncreasing",
+    "inputs": [
+      {
+        "name": "activeVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "proposedVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PackageNotionalExceeded",
+    "inputs": [
+      {
+        "name": "maximumQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requestedQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PackageNotionalMismatch",
+    "inputs": [
+      {
+        "name": "expectedQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "providedQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "RegistrationProposalExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RegistrationProposalMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RegistrationProposalNotReady",
+    "inputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ResourceCodeMismatch",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ResourceMismatch",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ResourceUnknown",
+    "inputs": [
+      {
+        "name": "kind",
+        "type": "uint8",
+        "internalType": "enum ResourceRegistry.ResourceKind"
+      },
+      {
+        "name": "subjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StaleControlProposal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedRole",
+    "inputs": [
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "requiredRole",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnsafeImmediateControlChange",
+    "inputs": []
+  }
+]

@@ -1,0 +1,45 @@
+[
+  {
+    "type": "function",
+    "name": "recordSpotFill",
+    "inputs": [
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "packageNonce",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "action",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "baseToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "quoteToken",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "baseAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "quoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  }
+]

@@ -1,0 +1,48 @@
+[
+  {
+    "type": "function",
+    "name": "trade",
+    "inputs": [
+      {
+        "name": "args",
+        "type": "bytes32[2]",
+        "internalType": "bytes32[2]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "position",
+        "type": "tuple",
+        "internalType": "struct ISynFuturesInstrument.PositionCache",
+        "components": [
+          {
+            "name": "balance",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "size",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "entryNotional",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "entrySocialLossIndex",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "entryFundingIndex",
+            "type": "int256",
+            "internalType": "int256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "nonpayable"
+  }
+]

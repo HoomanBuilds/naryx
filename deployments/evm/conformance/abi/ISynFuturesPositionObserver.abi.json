@@ -1,0 +1,58 @@
+[
+  {
+    "type": "function",
+    "name": "getPosition",
+    "inputs": [
+      {
+        "name": "instrument",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "expiry",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "target",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "position",
+        "type": "tuple",
+        "internalType": "struct ISynFuturesPositionObserver.Position",
+        "components": [
+          {
+            "name": "balance",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "size",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "entryNotional",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entrySocialLossIndex",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entryFundingIndex",
+            "type": "int128",
+            "internalType": "int128"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  }
+]
