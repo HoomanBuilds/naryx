@@ -124,14 +124,12 @@ pub struct CashCarryNonce {
 #[derive(InitSpace)]
 pub struct CashCarryStrategyAuthority {
     pub version: u8,
-    pub domain: DomainRef,
-    pub domain_identity: [u8; 32],
+    pub domain_id: ProtocolId,
+    pub domain_id_identity: [u8; 32],
     pub trader: Pubkey,
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
     pub rise_strategy: Pubkey,
-    pub base_token_account: Pubkey,
-    pub quote_token_account: Pubkey,
     pub bump: u8,
 }
 

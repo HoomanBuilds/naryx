@@ -196,6 +196,4 @@ pub struct CashCarryStrategyAuthorityInitialized {
     pub base_mint: Pubkey,
     pub quote_mint: Pubkey,
     pub rise_strategy: Pubkey,
-    pub base_token_account: Pubkey,
-    pub quote_token_account: Pubkey,
 }

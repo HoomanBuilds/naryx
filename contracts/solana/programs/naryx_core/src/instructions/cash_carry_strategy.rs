@@ -1,8 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::{
-    associated_token::AssociatedToken,
-    token::{Mint, Token, TokenAccount},
-};
+use anchor_spl::token::Mint;
 use naryx_rise_adapter::RiseStrategy;
 use solana_sha256_hasher::hashv;
 
@@ -16,11 +13,11 @@ use crate::{
         CashCarryStrategyAuthority, ExecutionRole, ProtocolConfig, ResourceIndex, ResourceKind,
         ResourceRecord,
     },
-    wire::DomainRef,
+    wire::{DomainRef, ProtocolId},
 };
 
 pub(crate) const STRATEGY_AUTHORITY_VERSION: u8 = 1;
-const STRATEGY_DOMAIN_IDENTITY_DOMAIN: &[u8] = b"NARYX/cash-carry-strategy-domain/v1";
+const STRATEGY_DOMAIN_ID_IDENTITY_DOMAIN: &[u8] = b"NARYX/cash-carry-strategy-domain-id/v1";
 
 #[derive(Accounts)]
 pub struct InitializeCashCarryStrategy<'info> {
@@ -53,24 +50,6 @@ pub struct InitializeCashCarryStrategy<'info> {
         bump
     )]
     pub executor_authority: Box<Account<'info, CashCarryStrategyAuthority>>,
-    #[account(
-        init_if_needed,
-        payer = trader,
-        associated_token::mint = base_mint,
-        associated_token::authority = executor_authority,
-        associated_token::token_program = token_program
-    )]
-    pub strategy_base: Box<Account<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = trader,
-        associated_token::mint = quote_mint,
-        associated_token::authority = executor_authority,
-        associated_token::token_program = token_program
-    )]
-    pub strategy_quote: Box<Account<'info, TokenAccount>>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -93,40 +72,37 @@ pub(crate) fn initialize_handler(ctx: Context<InitializeCashCarryStrategy>) -> R
         &ctx.accounts.quote_mint,
     )?;
 
-    let domain_identity = strategy_domain_identity(&ctx.accounts.config.domain);
+    let domain_id = ProtocolId::new(ctx.accounts.config.domain.domain_id())?;
+    let domain_id_identity = strategy_domain_id_identity(&domain_id);
     ctx.accounts
         .executor_authority
         .set_inner(CashCarryStrategyAuthority {
             version: STRATEGY_AUTHORITY_VERSION,
-            domain: ctx.accounts.config.domain.clone(),
-            domain_identity,
+            domain_id,
+            domain_id_identity,
             trader: ctx.accounts.trader.key(),
             base_mint: ctx.accounts.base_mint.key(),
             quote_mint: ctx.accounts.quote_mint.key(),
             rise_strategy: ctx.accounts.rise_strategy.key(),
-            base_token_account: ctx.accounts.strategy_base.key(),
-            quote_token_account: ctx.accounts.strategy_quote.key(),
             bump: ctx.bumps.executor_authority,
         });
     let strategy = &ctx.accounts.executor_authority;
 
     emit!(CashCarryStrategyAuthorityInitialized {
         strategy_authority: strategy.key(),
-        domain: strategy.domain.clone(),
+        domain: ctx.accounts.config.domain.clone(),
         trader: strategy.trader,
         base_mint: strategy.base_mint,
         quote_mint: strategy.quote_mint,
         rise_strategy: strategy.rise_strategy,
-        base_token_account: strategy.base_token_account,
-        quote_token_account: strategy.quote_token_account,
     });
     Ok(())
 }
 
-pub fn strategy_domain_identity(domain: &DomainRef) -> [u8; 32] {
+pub fn strategy_domain_id_identity(domain_id: &ProtocolId) -> [u8; 32] {
     hashv(&[
-        STRATEGY_DOMAIN_IDENTITY_DOMAIN,
-        domain.canonical_bytes().as_ref(),
+        STRATEGY_DOMAIN_ID_IDENTITY_DOMAIN,
+        domain_id.canonical_bytes().as_ref(),
     ])
     .to_bytes()
 }
@@ -141,8 +117,8 @@ pub(crate) fn validate_strategy_authority(
 ) -> Result<()> {
     require!(
         authority.version == STRATEGY_AUTHORITY_VERSION
-            && authority.domain == *domain
-            && authority.domain_identity == strategy_domain_identity(domain)
+            && authority.domain_id.as_str() == domain.domain_id()
+            && authority.domain_id_identity == strategy_domain_id_identity(&authority.domain_id)
             && authority.trader == trader
             && authority.base_mint == base_mint
             && authority.quote_mint == quote_mint
@@ -202,15 +178,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lifecycle_strategy_domain_identity_binds_complete_domain_ref() {
-        let domain = DomainRef::new("solana:test", 1, [1; 32]).unwrap();
-        let version = DomainRef::new("solana:test", 2, [1; 32]).unwrap();
-        let name = DomainRef::new("solana:other", 1, [1; 32]).unwrap();
-        let manifest = DomainRef::new("solana:test", 1, [2; 32]).unwrap();
-        let identity = strategy_domain_identity(&domain);
-        assert_ne!(identity, strategy_domain_identity(&version));
-        assert_ne!(identity, strategy_domain_identity(&name));
-        assert_ne!(identity, strategy_domain_identity(&manifest));
+    fn lifecycle_strategy_domain_identity_is_stable_across_manifest_rotations() {
+        let domain_id = ProtocolId::new("solana:test").unwrap();
+        let identity = strategy_domain_id_identity(&domain_id);
+        assert_eq!(
+            identity,
+            strategy_domain_id_identity(&ProtocolId::new("solana:test").unwrap())
+        );
+        assert_ne!(
+            identity,
+            strategy_domain_id_identity(&ProtocolId::new("solana:other").unwrap())
+        );
     }
 
     #[test]
@@ -222,14 +200,14 @@ mod tests {
         let rise_strategy = Pubkey::new_unique();
         let authority = CashCarryStrategyAuthority {
             version: STRATEGY_AUTHORITY_VERSION,
-            domain: domain.clone(),
-            domain_identity: strategy_domain_identity(&domain),
+            domain_id: ProtocolId::new(domain.domain_id()).unwrap(),
+            domain_id_identity: strategy_domain_id_identity(
+                &ProtocolId::new(domain.domain_id()).unwrap(),
+            ),
             trader,
             base_mint,
             quote_mint,
             rise_strategy,
-            base_token_account: Pubkey::new_unique(),
-            quote_token_account: Pubkey::new_unique(),
             bump: 1,
         };
         assert!(validate_strategy_authority(
@@ -244,6 +222,15 @@ mod tests {
         assert!(validate_strategy_authority(
             &authority,
             &DomainRef::new("solana:test", 2, [2; 32]).unwrap(),
+            trader,
+            base_mint,
+            quote_mint,
+            rise_strategy,
+        )
+        .is_ok());
+        assert!(validate_strategy_authority(
+            &authority,
+            &DomainRef::new("solana:other", 1, [2; 32]).unwrap(),
             trader,
             base_mint,
             quote_mint,
