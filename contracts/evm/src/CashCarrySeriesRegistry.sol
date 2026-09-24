@@ -315,7 +315,7 @@ contract CashCarrySeriesRegistry {
         _checkPauser();
         bytes32 currentRecord = _requireCurrent(key);
         Lifecycle current = _lifecycles[currentRecord];
-        if (uint8(state) < uint8(current)) revert UnsafeImmediateLifecycleChange();
+        if (uint8(state) <= uint8(current)) revert UnsafeImmediateLifecycleChange();
 
         if (_pendingRegistrations[key].exists) _cancelRegistration(key, msg.sender);
         if (_pendingReactivations[key].exists) {

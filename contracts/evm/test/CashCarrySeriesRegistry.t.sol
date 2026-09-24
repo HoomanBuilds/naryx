@@ -219,13 +219,17 @@ contract CashCarrySeriesRegistryTest is Test {
         vm.prank(PROPOSER);
         registry.proposeReactivation(EXPECTED_IDENTITY_KEY);
         readyAt = uint64(block.timestamp) + DELAY;
+        vm.prank(PAUSER);
+        vm.expectRevert(CashCarrySeriesRegistry.UnsafeImmediateLifecycleChange.selector);
+        registry.tightenLifecycle(EXPECTED_IDENTITY_KEY, CashCarrySeriesRegistry.Lifecycle.ENTRY_PAUSED);
+        assertTrue(registry.pendingReactivation(EXPECTED_IDENTITY_KEY).exists);
         vm.warp(readyAt - 1);
         vm.prank(GOVERNANCE_EXECUTOR);
         vm.expectRevert(abi.encodeWithSelector(CashCarrySeriesRegistry.ReactivationProposalNotReady.selector, readyAt));
         registry.activateReactivation(EXPECTED_IDENTITY_KEY);
 
         vm.prank(PAUSER);
-        registry.tightenLifecycle(EXPECTED_IDENTITY_KEY, CashCarrySeriesRegistry.Lifecycle.ENTRY_PAUSED);
+        registry.tightenLifecycle(EXPECTED_IDENTITY_KEY, CashCarrySeriesRegistry.Lifecycle.ALL_PAUSED);
         assertFalse(registry.pendingReactivation(EXPECTED_IDENTITY_KEY).exists);
         vm.prank(PROPOSER);
         registry.proposeReactivation(EXPECTED_IDENTITY_KEY);
