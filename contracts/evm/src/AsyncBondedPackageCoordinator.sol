@@ -253,7 +253,7 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         if (
             adapter.code.length == 0 || handler.code.length == 0 || adapter.codehash != adapterCodeHash
                 || handler.codehash != handlerCodeHash || adapterCodeHash == bytes32(0) || handlerCodeHash == bytes32(0)
-                || adapter == handler
+                || (adapter == handler && adapterCodeHash != handlerCodeHash)
         ) revert InvalidAdmission();
         if (_pendingAdmissions[adapter].activationTimestamp != 0) revert AdmissionExists();
         uint256 activation = block.timestamp + config.configDelaySeconds();

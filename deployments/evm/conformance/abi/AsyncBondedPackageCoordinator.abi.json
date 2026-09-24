@@ -1,0 +1,2538 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "bondToken_",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "executionClassManifestHash_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "EVIDENCE_SCHEMA_ID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "EXECUTION_CLASS_ID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activateAdmission",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "admissions",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "handler",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "adapterCodeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "handlerCodeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "active",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "generation",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "beginRecovery",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "bondCommitment",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "bondToken",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "cancelAdmissionProposal",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "close",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "configCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentChainId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentDomainIdHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "eip712Domain",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "fields",
+        "type": "bytes1",
+        "internalType": "bytes1"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "version",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "verifyingContract",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensions",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "executionClassManifestHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "markVenuePending",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "nextNonce",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "nonce",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "packageId",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "packageState",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Package",
+        "components": [
+          {
+            "name": "terms",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+            "components": [
+              {
+                "name": "domain",
+                "type": "tuple",
+                "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+                "components": [
+                  {
+                    "name": "domainIdHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "owner",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "solver",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "adapter",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "handler",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "adapterCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "handlerCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "orderHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "quoteHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "routeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "seriesIdentityKey",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "seriesBindingVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "seriesBindingHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "executionClassIdentityHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "executionClassManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "requestPayloadHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "reservationHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "bondHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "recoveryPolicyHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "evidenceSchemaHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "bondRecipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "recoveryReserveRecipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "slashRecipient",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "lossAsset",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "residualAsset",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "bondAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "recoveryReserveAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxAggregateLossAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxIntermediateResidualAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "maxTerminalResidualAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "nonce",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "submissionDeadline",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "venueDeadline",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "recoveryDeadline",
+                "type": "uint64",
+                "internalType": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "requestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "outcomeEvidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryEvidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "venueEvidenceCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryEvidenceCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum AsyncBondedPackageCoordinator.State"
+          },
+          {
+            "name": "stateVersion",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "admissionGeneration",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDutyStartedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "lastVenueOutcome",
+            "type": "uint8",
+            "internalType": "enum AsyncBondedPackageCoordinator.Outcome"
+          },
+          {
+            "name": "hasVenueOutcome",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "recoveryDutyActive",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "recoveryActionSubmitted",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "recoveryProven",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "bondSlashed",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "evidenceConflict",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "settledLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pauseAdmission",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "pendingAdmission",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.PendingAdmission",
+        "components": [
+          {
+            "name": "admission",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.Admission",
+            "components": [
+              {
+                "name": "handler",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "adapterCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "handlerCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "active",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "generation",
+                "type": "uint64",
+                "internalType": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "activationTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proposeAdmission",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "handler",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "adapterCodeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "handlerCodeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "recordVenueEvidence",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "evidence",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.VenueEvidence",
+        "components": [
+          {
+            "name": "requestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "outcome",
+            "type": "uint8",
+            "internalType": "enum AsyncBondedPackageCoordinator.Outcome"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "observedLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "intermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "terminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "recoveryPolicyCommitment",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "requestKeyOwner",
+    "inputs": [
+      {
+        "name": "adapterRequestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reservationCommitment",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "reserve",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      },
+      {
+        "name": "ownerSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reserveDigest",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct AsyncBondedPackageCoordinator.Terms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct AsyncBondedPackageCoordinator.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapter",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "handler",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "adapterCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "handlerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "executionClassManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "requestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recoveryPolicyHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceSchemaHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "bondRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "recoveryReserveRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "slashRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "lossAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "residualAsset",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "recoveryReserveAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxAggregateLossAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxIntermediateResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maxTerminalResidualAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "slashMissedRecovery",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "slashMissedSubmission",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "submitRecovery",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "submitRequest",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "request",
+        "type": "tuple",
+        "internalType": "struct IAsyncVenueAdapter.VenueRequest",
+        "components": [
+          {
+            "name": "marketId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "sizeDelta",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "collateralAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "tokenCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "AdmissionActivated",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "handler",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AdmissionPaused",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AdmissionProposed",
+    "inputs": [
+      {
+        "name": "adapter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "handler",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BondSlashed",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "bondAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EIP712DomainChanged",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PackageReleased",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "bondRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "reserveRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "reserveAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "lossRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "lossAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PackageTransition",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "state",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum AsyncBondedPackageCoordinator.State"
+      },
+      {
+        "name": "stateVersion",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "evidenceHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RecoveryActionSubmitted",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RequestRegistered",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AdmissionExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AdmissionMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AdmissionNotReady",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DeadlineNotReached",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DeadlinePassed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DeploymentChanged",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DomainMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FundingMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidAdmission",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidEvidence",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidNonce",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidRequest",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidShortString",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTerms",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PackageExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PackageMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReleaseLocked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "str",
+        "type": "string",
+        "internalType": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedActor",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedRole",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongState",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongVersion",
+    "inputs": []
+  }
+]

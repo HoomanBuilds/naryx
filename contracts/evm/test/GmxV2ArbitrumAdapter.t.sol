@@ -1,0 +1,586 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.37;
+
+import {Test} from "forge-std/Test.sol";
+import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
+import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
+import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
+import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
+import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
+import {GmxV2, IGmxV2ExchangeRouter, IGmxV2OrderCallbackReceiver} from "../src/interfaces/IGmxV2.sol";
+
+contract GmxTestToken is ERC20 {
+    constructor() ERC20("Collateral", "COL") {}
+
+    function mint(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
+    }
+}
+
+contract GmxTestCode {}
+
+contract GmxTestOrderVault {
+    function refund(IERC20 token, address recipient, uint256 amount) external {
+        require(token.transfer(recipient, amount));
+    }
+}
+
+contract GmxTestDataStore {
+    mapping(bytes32 setKey => mapping(bytes32 value => bool)) private _contains;
+    mapping(bytes32 key => uint256 value) private _uints;
+
+    function containsBytes32(bytes32 setKey, bytes32 value) external view returns (bool) {
+        return _contains[setKey][value];
+    }
+
+    function getUint(bytes32 key) external view returns (uint256) {
+        return _uints[key];
+    }
+
+    function setContains(bytes32 setKey, bytes32 value, bool exists) external {
+        _contains[setKey][value] = exists;
+    }
+
+    function setUint(bytes32 key, uint256 value) external {
+        _uints[key] = value;
+    }
+}
+
+contract GmxTestRoleStore {
+    mapping(address account => mapping(bytes32 role => bool)) private _roles;
+
+    function hasRole(address account, bytes32 role) external view returns (bool) {
+        return _roles[account][role];
+    }
+
+    function setRole(address account, bytes32 role, bool active) external {
+        _roles[account][role] = active;
+    }
+}
+
+contract GmxTestRouter {
+    function pull(address token, address account, address receiver, uint256 amount) external {
+        require(IERC20(token).transferFrom(account, receiver, amount));
+    }
+}
+
+contract GmxTestOrderHandler {
+    function executeOrder(IGmxV2OrderCallbackReceiver callback, bytes32 key, GmxV2.EventLogData calldata orderData)
+        external
+    {
+        GmxV2.EventLogData memory eventData;
+        callback.afterOrderExecution(key, orderData, eventData);
+    }
+
+    function cancelOrder(IGmxV2OrderCallbackReceiver callback, bytes32 key, GmxV2.EventLogData calldata orderData)
+        external
+    {
+        GmxV2.EventLogData memory eventData;
+        callback.afterOrderCancellation(key, orderData, eventData);
+    }
+
+    function freezeOrder(IGmxV2OrderCallbackReceiver callback, bytes32 key, GmxV2.EventLogData calldata orderData)
+        external
+    {
+        GmxV2.EventLogData memory eventData;
+        callback.afterOrderFrozen(key, orderData, eventData);
+    }
+}
+
+contract GmxTestExchangeRouter {
+    bytes32 private constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
+
+    address public immutable dataStore;
+    address public immutable eventEmitter;
+    address public immutable router;
+    address public immutable orderHandler;
+    address public immutable roleStore;
+    address public immutable orderVault;
+
+    address public lastAccount;
+    address public receiver;
+    address public cancellationReceiver;
+    address public callbackContract;
+    address public uiFeeReceiver;
+    address public market;
+    address public initialCollateralToken;
+    uint256 public sizeDeltaUsd;
+    uint256 public initialCollateralDeltaAmount;
+    uint256 public triggerPrice;
+    uint256 public acceptablePrice;
+    uint256 public executionFee;
+    uint256 public callbackGasLimit;
+    uint256 public minOutputAmount;
+    uint256 public validFromTime;
+    GmxV2.OrderType public orderType;
+    GmxV2.DecreasePositionSwapType public decreasePositionSwapType;
+    bool public isLong;
+    bool public shouldUnwrapNativeToken;
+    bool public autoCancel;
+    bytes32 public referralCode;
+    uint256 public receivedWnt;
+    uint256 public nonce;
+    bool public failCreate;
+    address[] private _swapPath;
+    bytes32[] private _dataList;
+
+    constructor(
+        address dataStore_,
+        address eventEmitter_,
+        address router_,
+        address orderHandler_,
+        address roleStore_,
+        address orderVault_
+    ) {
+        dataStore = dataStore_;
+        eventEmitter = eventEmitter_;
+        router = router_;
+        orderHandler = orderHandler_;
+        roleStore = roleStore_;
+        orderVault = orderVault_;
+    }
+
+    function setFailCreate(bool fail) external {
+        failCreate = fail;
+    }
+
+    function dataList(uint256 index) external view returns (bytes32) {
+        return _dataList[index];
+    }
+
+    function swapPathLength() external view returns (uint256) {
+        return _swapPath.length;
+    }
+
+    function sendTokens(address token, address receiver_, uint256 amount) external payable {
+        GmxTestRouter(router).pull(token, msg.sender, receiver_, amount);
+    }
+
+    function sendWnt(address receiver_, uint256 amount) external payable {
+        require(receiver_ == orderVault && msg.value == amount);
+        receivedWnt += amount;
+    }
+
+    function createOrder(GmxV2.CreateOrderParams calldata params) external payable returns (bytes32 key) {
+        if (failCreate) revert("CREATE_FAILED");
+        lastAccount = msg.sender;
+        receiver = params.addresses.receiver;
+        cancellationReceiver = params.addresses.cancellationReceiver;
+        callbackContract = params.addresses.callbackContract;
+        uiFeeReceiver = params.addresses.uiFeeReceiver;
+        market = params.addresses.market;
+        initialCollateralToken = params.addresses.initialCollateralToken;
+        delete _swapPath;
+        for (uint256 i; i < params.addresses.swapPath.length; i++) {
+            _swapPath.push(params.addresses.swapPath[i]);
+        }
+        sizeDeltaUsd = params.numbers.sizeDeltaUsd;
+        initialCollateralDeltaAmount = params.numbers.initialCollateralDeltaAmount;
+        triggerPrice = params.numbers.triggerPrice;
+        acceptablePrice = params.numbers.acceptablePrice;
+        executionFee = params.numbers.executionFee;
+        callbackGasLimit = params.numbers.callbackGasLimit;
+        minOutputAmount = params.numbers.minOutputAmount;
+        validFromTime = params.numbers.validFromTime;
+        orderType = params.orderType;
+        decreasePositionSwapType = params.decreasePositionSwapType;
+        isLong = params.isLong;
+        shouldUnwrapNativeToken = params.shouldUnwrapNativeToken;
+        autoCancel = params.autoCancel;
+        referralCode = params.referralCode;
+        delete _dataList;
+        for (uint256 i; i < params.dataList.length; i++) {
+            _dataList.push(params.dataList[i]);
+        }
+        key = keccak256(abi.encode(msg.sender, ++nonce));
+        GmxTestDataStore(dataStore).setContains(ORDER_LIST, key, true);
+    }
+
+    function cancelOrder(bytes32 key) external payable {
+        require(msg.sender == lastAccount);
+        require(GmxTestDataStore(dataStore).containsBytes32(ORDER_LIST, key));
+        GmxTestDataStore(dataStore).setContains(ORDER_LIST, key, false);
+        GmxTestOrderVault(orderVault)
+            .refund(IERC20(initialCollateralToken), cancellationReceiver, initialCollateralDeltaAmount);
+        GmxTestOrderHandler(orderHandler).cancelOrder(IGmxV2OrderCallbackReceiver(callbackContract), key, orderData());
+    }
+
+    function executeOrder(bytes32 key, uint256 resultingSize) external {
+        GmxTestDataStore(dataStore).setContains(ORDER_LIST, key, false);
+        bytes32 positionKey = keccak256(abi.encode(lastAccount, market, initialCollateralToken, isLong));
+        bytes32 sizeKey = keccak256(abi.encode(positionKey, keccak256(abi.encode("SIZE_IN_USD"))));
+        GmxTestDataStore(dataStore).setUint(sizeKey, resultingSize);
+        GmxTestOrderHandler(orderHandler).executeOrder(IGmxV2OrderCallbackReceiver(callbackContract), key, orderData());
+    }
+
+    function orderData() public view returns (GmxV2.EventLogData memory data) {
+        data.addressItems.items = new GmxV2.AddressKeyValue[](7);
+        data.addressItems.items[0] = GmxV2.AddressKeyValue("account", lastAccount);
+        data.addressItems.items[1] = GmxV2.AddressKeyValue("receiver", receiver);
+        data.addressItems.items[2] = GmxV2.AddressKeyValue("callbackContract", callbackContract);
+        data.addressItems.items[3] = GmxV2.AddressKeyValue("uiFeeReceiver", uiFeeReceiver);
+        data.addressItems.items[4] = GmxV2.AddressKeyValue("market", market);
+        data.addressItems.items[5] = GmxV2.AddressKeyValue("initialCollateralToken", initialCollateralToken);
+        data.addressItems.items[6] = GmxV2.AddressKeyValue("cancellationReceiver", cancellationReceiver);
+        data.addressItems.arrayItems = new GmxV2.AddressArrayKeyValue[](1);
+        address[] memory swapPath = new address[](_swapPath.length);
+        for (uint256 i; i < _swapPath.length; i++) {
+            swapPath[i] = _swapPath[i];
+        }
+        data.addressItems.arrayItems[0] = GmxV2.AddressArrayKeyValue("swapPath", swapPath);
+
+        data.uintItems.items = new GmxV2.UintKeyValue[](12);
+        data.uintItems.items[0] = GmxV2.UintKeyValue("orderType", uint256(orderType));
+        data.uintItems.items[1] = GmxV2.UintKeyValue("decreasePositionSwapType", uint256(decreasePositionSwapType));
+        data.uintItems.items[2] = GmxV2.UintKeyValue("sizeDeltaUsd", sizeDeltaUsd);
+        data.uintItems.items[3] = GmxV2.UintKeyValue("initialCollateralDeltaAmount", initialCollateralDeltaAmount);
+        data.uintItems.items[4] = GmxV2.UintKeyValue("triggerPrice", triggerPrice);
+        data.uintItems.items[5] = GmxV2.UintKeyValue("acceptablePrice", acceptablePrice);
+        data.uintItems.items[6] = GmxV2.UintKeyValue("executionFee", executionFee);
+        data.uintItems.items[7] = GmxV2.UintKeyValue("callbackGasLimit", callbackGasLimit);
+        data.uintItems.items[8] = GmxV2.UintKeyValue("minOutputAmount", minOutputAmount);
+        data.uintItems.items[9] = GmxV2.UintKeyValue("updatedAtTime", block.timestamp);
+        data.uintItems.items[10] = GmxV2.UintKeyValue("validFromTime", validFromTime);
+        data.uintItems.items[11] = GmxV2.UintKeyValue("srcChainId", 0);
+
+        data.boolItems.items = new GmxV2.BoolKeyValue[](3);
+        data.boolItems.items[0] = GmxV2.BoolKeyValue("isLong", isLong);
+        data.boolItems.items[1] = GmxV2.BoolKeyValue("shouldUnwrapNativeToken", shouldUnwrapNativeToken);
+        data.boolItems.items[2] = GmxV2.BoolKeyValue("autoCancel", autoCancel);
+
+        data.bytes32Items.arrayItems = new GmxV2.Bytes32ArrayKeyValue[](1);
+        bytes32[] memory list = new bytes32[](_dataList.length);
+        for (uint256 i; i < _dataList.length; i++) {
+            list[i] = _dataList[i];
+        }
+        data.bytes32Items.arrayItems[0] = GmxV2.Bytes32ArrayKeyValue("dataList", list);
+    }
+}
+
+contract GmxV2ArbitrumAdapterTest is Test {
+    bytes32 private constant PACKAGE_ID = keccak256("package");
+    bytes32 private constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
+    uint256 private constant COLLATERAL = 5_000_000;
+    uint256 private constant SIZE = 4_000e30;
+    uint256 private constant ACCEPTABLE_PRICE = 2_500e30;
+    uint256 private constant EXECUTION_FEE = 0.002 ether;
+    uint256 private constant CALLBACK_GAS = 2_000_000;
+
+    GmxTestToken private token;
+    GmxTestDataStore private dataStore;
+    GmxTestRoleStore private roleStore;
+    GmxTestRouter private router;
+    GmxTestOrderHandler private orderHandler;
+    GmxTestExchangeRouter private exchangeRouter;
+    GmxTestCode private eventEmitter;
+    GmxTestOrderVault private orderVault;
+    GmxTestCode private market;
+    GmxV2OrderVerifier private orderVerifier;
+    AsyncBondedPackageCoordinator private coordinator;
+    GmxV2ArbitrumAdapter private adapter;
+    GmxV2.Deployment private deployment;
+
+    receive() external payable {}
+
+    function setUp() public {
+        vm.warp(10_000);
+        vm.deal(address(this), 10 ether);
+        token = new GmxTestToken();
+        dataStore = new GmxTestDataStore();
+        roleStore = new GmxTestRoleStore();
+        router = new GmxTestRouter();
+        orderHandler = new GmxTestOrderHandler();
+        eventEmitter = new GmxTestCode();
+        orderVault = new GmxTestOrderVault();
+        market = new GmxTestCode();
+        orderVerifier = new GmxV2OrderVerifier();
+        exchangeRouter = new GmxTestExchangeRouter(
+            address(dataStore),
+            address(eventEmitter),
+            address(router),
+            address(orderHandler),
+            address(roleStore),
+            address(orderVault)
+        );
+        roleStore.setRole(address(orderHandler), CONTROLLER_ROLE, true);
+
+        ProtocolConfig config = new ProtocolConfig(
+            "eip155:421614", 1, keccak256("manifest"), 1, address(1), address(2), address(3), address(4)
+        );
+        coordinator = new AsyncBondedPackageCoordinator(config, token, keccak256("execution-class"));
+
+        deployment = GmxV2.Deployment({
+            dataStore: address(dataStore),
+            eventEmitter: address(eventEmitter),
+            exchangeRouter: address(exchangeRouter),
+            router: address(router),
+            orderVault: address(orderVault),
+            orderHandler: address(orderHandler),
+            roleStore: address(roleStore),
+            dataStoreCodeHash: address(dataStore).codehash,
+            eventEmitterCodeHash: address(eventEmitter).codehash,
+            exchangeRouterCodeHash: address(exchangeRouter).codehash,
+            routerCodeHash: address(router).codehash,
+            orderVaultCodeHash: address(orderVault).codehash,
+            orderHandlerCodeHash: address(orderHandler).codehash,
+            roleStoreCodeHash: address(roleStore).codehash
+        });
+
+        adapter = new GmxV2ArbitrumAdapter(
+            coordinator,
+            address(coordinator).codehash,
+            address(this),
+            address(0xBEEF),
+            address(market),
+            address(market).codehash,
+            token,
+            address(token).codehash,
+            orderVerifier,
+            address(orderVerifier).codehash,
+            deployment
+        );
+        token.mint(address(this), COLLATERAL * 10);
+        token.approve(address(adapter), type(uint256).max);
+        _mockPackage(_request(), address(0xBEEF));
+    }
+
+    function testCreatesExactlyBoundRequestAndCleansApproval() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        bytes32 requestHash = keccak256(abi.encode(request));
+        bytes32 key = _fundAndCreate(request);
+
+        assertEq(token.balanceOf(address(orderVault)), COLLATERAL);
+        assertEq(token.allowance(address(adapter), address(router)), 0);
+        assertEq(exchangeRouter.receivedWnt(), EXECUTION_FEE);
+        assertEq(exchangeRouter.lastAccount(), address(adapter));
+        assertEq(exchangeRouter.receiver(), address(0xBEEF));
+        assertEq(exchangeRouter.cancellationReceiver(), address(this));
+        assertEq(exchangeRouter.callbackContract(), address(adapter));
+        assertEq(exchangeRouter.market(), address(market));
+        assertEq(exchangeRouter.initialCollateralToken(), address(token));
+        assertEq(exchangeRouter.sizeDeltaUsd(), SIZE);
+        assertEq(exchangeRouter.initialCollateralDeltaAmount(), COLLATERAL);
+        assertEq(exchangeRouter.acceptablePrice(), ACCEPTABLE_PRICE);
+        assertEq(exchangeRouter.executionFee(), EXECUTION_FEE);
+        assertEq(exchangeRouter.callbackGasLimit(), CALLBACK_GAS);
+        assertEq(uint8(exchangeRouter.orderType()), uint8(GmxV2.OrderType.MarketIncrease));
+        assertFalse(exchangeRouter.isLong());
+        assertEq(exchangeRouter.swapPathLength(), 0);
+        assertEq(exchangeRouter.dataList(0), PACKAGE_ID);
+        assertEq(exchangeRouter.dataList(1), requestHash);
+
+        assertNotEq(adapter.requestRegistrationHash(key), bytes32(0));
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.PENDING));
+    }
+
+    function testOfficialInterfaceSelectors() public pure {
+        assertEq(IGmxV2ExchangeRouter.createOrder.selector, bytes4(0xf59c48eb));
+        assertEq(IGmxV2OrderCallbackReceiver.afterOrderExecution.selector, bytes4(0xffaf393f));
+        assertEq(IGmxV2OrderCallbackReceiver.afterOrderCancellation.selector, bytes4(0xd8bbbe42));
+        assertEq(IGmxV2OrderCallbackReceiver.afterOrderFrozen.selector, bytes4(0x83fc34cf));
+    }
+
+    function testAuthenticatesCallbackAndRecordsExactExecution() public {
+        bytes32 key = _fundAndCreate(_request());
+        GmxV2.EventLogData memory orderData = exchangeRouter.orderData();
+        GmxV2.EventLogData memory eventData;
+        vm.expectRevert(GmxV2ArbitrumAdapter.UnauthorizedCaller.selector);
+        adapter.afterOrderExecution(key, orderData, eventData);
+
+        exchangeRouter.executeOrder(key, SIZE);
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.EXECUTED));
+        (GmxV2ArbitrumAdapter.Status status, bytes32 evidenceHash,, uint256 positionSizeAfter,) =
+            adapter.requestEvidence(key);
+        assertEq(uint8(status), uint8(GmxV2ArbitrumAdapter.Status.EXECUTED));
+        assertEq(positionSizeAfter, SIZE);
+        assertNotEq(evidenceHash, bytes32(0));
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidOutcome.selector);
+        adapter.finalizeUnfilledRequest(key);
+    }
+
+    function testRejectsCoordinatorPackageBindingMismatch() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        _mockPackage(request, address(0xBAD));
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+        vm.prank(address(coordinator));
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidRequest.selector);
+        adapter.createRequest(PACKAGE_ID, request);
+        assertEq(token.balanceOf(address(adapter)), COLLATERAL);
+        assertEq(token.balanceOf(address(orderVault)), 0);
+    }
+
+    function testRejectsLongEntry() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        request.sizeDelta = int256(SIZE);
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidRequest.selector);
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+    }
+
+    function testRejectsVenueDeadlineBeforeConfiguredCancellationDelay() public {
+        dataStore.setUint(adapter.REQUEST_EXPIRATION_TIME(), 201);
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidRequest.selector);
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, _request());
+    }
+
+    function testRequiresBondAndCollateralTokenEquality() public {
+        GmxTestToken otherToken = new GmxTestToken();
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidConfiguration.selector);
+        new GmxV2ArbitrumAdapter(
+            coordinator,
+            address(coordinator).codehash,
+            address(this),
+            address(0xBEEF),
+            address(market),
+            address(market).codehash,
+            otherToken,
+            address(otherToken).codehash,
+            orderVerifier,
+            address(orderVerifier).codehash,
+            deployment
+        );
+    }
+
+    function testRecordsCancelledAndFrozenOutcomes() public {
+        bytes32 key = _fundAndCreate(_request());
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.CANCELLED));
+    }
+
+    function testCancellationWithUnexpectedPositionFailsClosed() public {
+        bytes32 key = _fundAndCreate(_request());
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        bytes32 positionKey = keccak256(abi.encode(address(adapter), address(market), address(token), false));
+        bytes32 sizeKey = keccak256(abi.encode(positionKey, adapter.SIZE_IN_USD()));
+        dataStore.setUint(sizeKey, SIZE);
+        orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.CONFLICT));
+    }
+
+    function testRecordsFrozenOutcome() public {
+        bytes32 key = _fundAndCreate(_request());
+        orderHandler.freezeOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.FROZEN));
+    }
+
+    function testDuplicateCallbackIsIdempotentAndConflictFailsClosed() public {
+        bytes32 key = _fundAndCreate(_request());
+        exchangeRouter.executeOrder(key, SIZE);
+        uint64 revision = _revision(key);
+        orderHandler.executeOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(_revision(key), revision);
+        orderHandler.freezeOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.CONFLICT));
+    }
+
+    function testPinsDeploymentCodeIdentity() public {
+        GmxV2.Deployment memory invalid = deployment;
+        invalid.dataStoreCodeHash = bytes32(uint256(1));
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidConfiguration.selector);
+        new GmxV2ArbitrumAdapter(
+            coordinator,
+            address(coordinator).codehash,
+            address(this),
+            address(0xBEEF),
+            address(market),
+            address(market).codehash,
+            token,
+            address(token).codehash,
+            orderVerifier,
+            address(orderVerifier).codehash,
+            invalid
+        );
+
+        bytes32 key = _fundAndCreate(_request());
+        vm.etch(address(orderHandler), hex"00");
+        GmxV2.EventLogData memory orderData = exchangeRouter.orderData();
+        GmxV2.EventLogData memory eventData;
+        vm.expectRevert(GmxV2ArbitrumAdapter.DeploymentChanged.selector);
+        adapter.afterOrderExecution(key, orderData, eventData);
+    }
+
+    function testRecoveryCancelsAndRecordsRecoveredOutcome() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        bytes32 key = _fundAndCreate(request);
+        vm.warp(request.venueDeadline + 1);
+        vm.prank(address(coordinator));
+        bool accepted = adapter.requestRecovery(PACKAGE_ID, key, IAsyncVenueAdapter.RecoveryAction.CANCEL_OR_RECONCILE);
+        assertTrue(accepted);
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.RECOVERED));
+        assertFalse(dataStore.containsBytes32(adapter.ORDER_LIST(), key));
+        assertEq(token.balanceOf(address(0xBEEF)), 0);
+        assertEq(token.balanceOf(address(this)), COLLATERAL * 10);
+        adapter.finalizeUnfilledRequest(key);
+        assertEq(adapter.activePackageId(), bytes32(0));
+        assertEq(adapter.activeRequestKey(), bytes32(0));
+    }
+
+    function testCreateFailureRollsBackCustodyAndFundingState() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+        exchangeRouter.setFailCreate(true);
+        vm.prank(address(coordinator));
+        vm.expectRevert(bytes("CREATE_FAILED"));
+        adapter.createRequest(PACKAGE_ID, request);
+
+        assertEq(token.balanceOf(address(adapter)), COLLATERAL);
+        assertEq(address(adapter).balance, EXECUTION_FEE);
+        assertEq(token.balanceOf(address(orderVault)), 0);
+        assertEq(token.allowance(address(adapter), address(router)), 0);
+        (,,,, bool consumed) = adapter.funding(PACKAGE_ID);
+        assertFalse(consumed);
+    }
+
+    function _fundAndCreate(IAsyncVenueAdapter.VenueRequest memory request) private returns (bytes32 key) {
+        adapter.fundRequest{value: EXECUTION_FEE}(PACKAGE_ID, request);
+        vm.prank(address(coordinator));
+        key = adapter.createRequest(PACKAGE_ID, request);
+        assertNotEq(key, bytes32(0));
+    }
+
+    function _request() private view returns (IAsyncVenueAdapter.VenueRequest memory) {
+        return IAsyncVenueAdapter.VenueRequest({
+            marketId: bytes32(uint256(uint160(address(market)))),
+            collateralToken: address(token),
+            sizeDelta: -int256(SIZE),
+            collateralAtoms: COLLATERAL,
+            acceptablePrice: ACCEPTABLE_PRICE,
+            executionFeeWei: EXECUTION_FEE,
+            callbackGasLimit: CALLBACK_GAS,
+            submissionDeadline: uint64(block.timestamp + 100),
+            venueDeadline: uint64(block.timestamp + 200),
+            recoveryDeadline: uint64(block.timestamp + 300)
+        });
+    }
+
+    function _mockPackage(IAsyncVenueAdapter.VenueRequest memory request, address owner) private {
+        AsyncBondedPackageCoordinator.Package memory packageData;
+        packageData.terms.owner = owner;
+        packageData.terms.solver = address(this);
+        packageData.terms.adapter = address(adapter);
+        packageData.terms.handler = address(adapter);
+        packageData.terms.adapterCodeHash = address(adapter).codehash;
+        packageData.terms.handlerCodeHash = address(adapter).codehash;
+        packageData.terms.requestPayloadHash = keccak256(abi.encode(request));
+        packageData.terms.lossAsset = address(token);
+        packageData.terms.residualAsset = address(token);
+        packageData.terms.submissionDeadline = request.submissionDeadline;
+        packageData.terms.venueDeadline = request.venueDeadline;
+        packageData.terms.recoveryDeadline = request.recoveryDeadline;
+        vm.mockCall(
+            address(coordinator),
+            abi.encodeWithSelector(AsyncBondedPackageCoordinator.packageState.selector, PACKAGE_ID),
+            abi.encode(packageData)
+        );
+    }
+
+    function _status(bytes32 key) private view returns (GmxV2ArbitrumAdapter.Status status) {
+        (status,,,,) = adapter.requestEvidence(key);
+    }
+
+    function _revision(bytes32 key) private view returns (uint64 revision) {
+        (,,,, revision) = adapter.requestEvidence(key);
+    }
+}

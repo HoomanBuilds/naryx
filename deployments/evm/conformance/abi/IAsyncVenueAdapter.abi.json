@@ -1,0 +1,107 @@
+[
+  {
+    "type": "function",
+    "name": "createRequest",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "request",
+        "type": "tuple",
+        "internalType": "struct IAsyncVenueAdapter.VenueRequest",
+        "components": [
+          {
+            "name": "marketId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "sizeDelta",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "collateralAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "submissionDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "venueDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "recoveryDeadline",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requestRecovery",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "action",
+        "type": "uint8",
+        "internalType": "enum IAsyncVenueAdapter.RecoveryAction"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  }
+]

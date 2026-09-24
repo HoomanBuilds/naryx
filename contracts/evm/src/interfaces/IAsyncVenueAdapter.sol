@@ -9,6 +9,10 @@ interface IAsyncVenueAdapter {
         uint256 collateralAtoms;
         uint256 acceptablePrice;
         uint256 executionFeeWei;
+        uint256 callbackGasLimit;
+        uint64 submissionDeadline;
+        uint64 venueDeadline;
+        uint64 recoveryDeadline;
     }
 
     enum RecoveryAction {

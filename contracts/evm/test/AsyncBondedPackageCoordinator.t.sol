@@ -182,6 +182,22 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         coordinator.submitRequest(id, 1, request);
     }
 
+    function testCombinedAdapterAndHandlerAdmission() public {
+        AsyncVenueMock combined = new AsyncVenueMock();
+        bytes32 codeHash = address(combined).codehash;
+        vm.prank(PROPOSER);
+        coordinator.proposeAdmission(address(combined), address(combined), codeHash, codeHash);
+        vm.warp(block.timestamp + 10);
+        vm.prank(EXECUTOR);
+        coordinator.activateAdmission(address(combined));
+        (address admittedHandler, bytes32 adapterHash, bytes32 handlerHash, bool active,) =
+            coordinator.admissions(address(combined));
+        assertEq(admittedHandler, address(combined));
+        assertEq(adapterHash, codeHash);
+        assertEq(handlerHash, codeHash);
+        assertTrue(active);
+    }
+
     function testRequestKeyCallbackAndVersionBinding() public {
         IAsyncVenueAdapter.VenueRequest memory request = _request();
         bytes32 id = _reserve(_terms(owner, request));
@@ -326,7 +342,11 @@ contract AsyncBondedPackageCoordinatorTest is Test {
             sizeDelta: 10,
             collateralAtoms: 1000,
             acceptablePrice: 2000,
-            executionFeeWei: 0
+            executionFeeWei: 1,
+            callbackGasLimit: 200_000,
+            submissionDeadline: uint64(block.timestamp + 10),
+            venueDeadline: uint64(block.timestamp + 20),
+            recoveryDeadline: uint64(block.timestamp + 30)
         });
     }
 
@@ -363,9 +383,9 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         terms.maxIntermediateResidualAtoms = 1000;
         terms.maxTerminalResidualAtoms = 100;
         terms.nonce = 0;
-        terms.submissionDeadline = uint64(block.timestamp + 10);
-        terms.venueDeadline = uint64(block.timestamp + 20);
-        terms.recoveryDeadline = uint64(block.timestamp + 30);
+        terms.submissionDeadline = request.submissionDeadline;
+        terms.venueDeadline = request.venueDeadline;
+        terms.recoveryDeadline = request.recoveryDeadline;
         terms.bondHash = coordinator.bondCommitment(terms);
         terms.reservationHash = coordinator.reservationCommitment(terms);
         terms.recoveryPolicyHash = coordinator.recoveryPolicyCommitment(terms);
@@ -408,6 +428,8 @@ contract AsyncBondedPackageCoordinatorTest is Test {
     }
 
     function _report(bytes32 id, uint64 version, AsyncBondedPackageCoordinator.Outcome outcome, bytes32 hash) private {
-        handler.report(coordinator, id, version, _evidence(adapter.nextKey(), outcome, hash));
+        AsyncBondedPackageCoordinator.VenueEvidence memory evidence = _evidence(adapter.nextKey(), outcome, hash);
+        evidence.requestPayloadHash = coordinator.packageState(id).terms.requestPayloadHash;
+        handler.report(coordinator, id, version, evidence);
     }
 }
