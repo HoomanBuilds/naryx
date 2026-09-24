@@ -22,6 +22,26 @@
         "internalType": "uint256"
       },
       {
+        "name": "spotFillCommitment",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "orderHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "routeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
         "name": "quantity",
         "type": "uint256",
         "internalType": "uint256"
@@ -62,6 +82,26 @@
         "name": "packageNonce",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "spotFillCommitment",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "orderHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "routeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
         "name": "quantity",

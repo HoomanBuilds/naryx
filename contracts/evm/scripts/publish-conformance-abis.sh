@@ -12,6 +12,8 @@ readonly -a ARTIFACTS=(
     "src/SolverRegistry.sol:SolverRegistry|SolverRegistry.abi.json"
     "src/ResourceRegistry.sol:ResourceRegistry|ResourceRegistry.abi.json"
     "src/UniswapV3SpotPort.sol:UniswapV3SpotPort|UniswapV3SpotPort.abi.json"
+    "src/FirmInventoryReservationBook.sol:FirmInventoryReservationBook|FirmInventoryReservationBook.abi.json"
+    "src/DirectInventorySpotPort.sol:DirectInventorySpotPort|DirectInventorySpotPort.abi.json"
     "src/PackageVerifier.sol:PackageVerifier|PackageVerifier.abi.json"
     "src/interfaces/IExactSpotPort.sol:IExactSpotPort|IExactSpotPort.abi.json"
     "src/interfaces/ISpotFillRecorder.sol:ISpotFillRecorder|ISpotFillRecorder.abi.json"

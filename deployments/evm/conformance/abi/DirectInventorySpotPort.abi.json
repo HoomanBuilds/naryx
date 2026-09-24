@@ -3,14 +3,9 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "verifier_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "deployment",
         "type": "tuple",
-        "internalType": "struct UniswapV3SpotPort.Deployment",
+        "internalType": "struct DirectInventorySpotPort.Deployment",
         "components": [
           {
             "name": "chainId",
@@ -18,14 +13,19 @@
             "internalType": "uint256"
           },
           {
-            "name": "factory",
+            "name": "config",
+            "type": "address",
+            "internalType": "contract ProtocolConfig"
+          },
+          {
+            "name": "verifier",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "pool",
+            "name": "reservationBook",
             "type": "address",
-            "internalType": "address"
+            "internalType": "contract FirmInventoryReservationBook"
           },
           {
             "name": "baseToken",
@@ -38,27 +38,32 @@
             "internalType": "contract IERC20"
           },
           {
-            "name": "baseTokenDecimals",
-            "type": "uint8",
-            "internalType": "uint8"
-          },
-          {
-            "name": "quoteTokenDecimals",
-            "type": "uint8",
-            "internalType": "uint8"
-          },
-          {
-            "name": "poolFee",
-            "type": "uint24",
-            "internalType": "uint24"
-          },
-          {
-            "name": "factoryCodeHash",
+            "name": "domainIdHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
           {
-            "name": "poolCodeHash",
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "configCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "verifierCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationBookCodeHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -80,19 +85,6 @@
   {
     "type": "function",
     "name": "ENTRY",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "EXIT",
     "inputs": [],
     "outputs": [
       {
@@ -132,19 +124,6 @@
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "baseTokenDecimals",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -200,6 +179,32 @@
   },
   {
     "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "configCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "deploymentChainId",
     "inputs": [],
     "outputs": [
@@ -213,20 +218,7 @@
   },
   {
     "type": "function",
-    "name": "factory",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "factoryCodeHash",
+    "name": "deploymentDomainIdHash",
     "inputs": [],
     "outputs": [
       {
@@ -239,20 +231,7 @@
   },
   {
     "type": "function",
-    "name": "pool",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "poolCodeHash",
+    "name": "deploymentDomainManifestHash",
     "inputs": [],
     "outputs": [
       {
@@ -265,26 +244,13 @@
   },
   {
     "type": "function",
-    "name": "poolFee",
+    "name": "deploymentDomainManifestVersion",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "uint24",
-        "internalType": "uint24"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "quoteIsToken0",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ],
     "stateMutability": "view"
@@ -317,13 +283,26 @@
   },
   {
     "type": "function",
-    "name": "quoteTokenDecimals",
+    "name": "reservationBook",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "uint8",
-        "internalType": "uint8"
+        "type": "address",
+        "internalType": "contract FirmInventoryReservationBook"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reservationBookCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -333,72 +312,49 @@
     "name": "sellExactInput",
     "inputs": [
       {
-        "name": "packageNonce",
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
-        "name": "spotFillCommitment",
+        "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "orderHash",
+        "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "quoteHash",
+        "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "routeHash",
+        "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
       },
       {
-        "name": "quantity",
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
-        "name": "minQuote",
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
     "outputs": [
       {
-        "name": "quoteOut",
+        "name": "",
         "type": "uint256",
         "internalType": "uint256"
       }
     ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "uniswapV3SwapCallback",
-    "inputs": [
-      {
-        "name": "amount0Delta",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "amount1Delta",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "data",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -433,11 +389,6 @@
   },
   {
     "type": "error",
-    "name": "InvalidCallback",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "InvalidConfiguration",
     "inputs": []
   },
@@ -458,13 +409,12 @@
   },
   {
     "type": "error",
-    "name": "SafeERC20FailedOperation",
-    "inputs": [
-      {
-        "name": "token",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
+    "name": "ReservationMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnsupportedAction",
+    "inputs": []
   }
 ]

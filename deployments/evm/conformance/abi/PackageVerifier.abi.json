@@ -99,6 +99,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -725,6 +730,11 @@
           },
           {
             "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotFillCommitment",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -1449,6 +1459,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -2169,6 +2184,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -2256,6 +2276,26 @@
         "name": "packageNonce",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "spotFillCommitment",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "orderHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "routeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
         "name": "action",
@@ -2348,6 +2388,11 @@
           },
           {
             "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotFillCommitment",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -2994,6 +3039,11 @@
           },
           {
             "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotFillCommitment",
             "type": "bytes32",
             "internalType": "bytes32"
           },

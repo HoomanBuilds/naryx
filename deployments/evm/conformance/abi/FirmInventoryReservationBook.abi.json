@@ -1,0 +1,785 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "baseToken_",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "quoteToken_",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "maximumTtlSeconds_",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "maximumBaseAtomsPerReservation_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximumReservedBaseAtomsPerSolver_",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "ENTRY",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "baseToken",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "baseTokenCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "configCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "consume",
+    "inputs": [
+      {
+        "name": "reservationId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "deploymentChainId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentDomainIdHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentDomainManifestHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentDomainManifestVersion",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "finalizeReservation",
+    "inputs": [
+      {
+        "name": "reservationId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "routeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "liveReservation",
+    "inputs": [
+      {
+        "name": "solverStrategyKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "reservationId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maximumBaseAtomsPerReservation",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maximumReservedBaseAtomsPerSolver",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "maximumTtlSeconds",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "quoteToken",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "quoteTokenCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "releaseExpired",
+    "inputs": [
+      {
+        "name": "reservationId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reservation",
+    "inputs": [
+      {
+        "name": "reservationId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct FirmInventoryReservationBook.Reservation",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct FirmInventoryReservationBook.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "solverId",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "reclaimOwner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "strategyAccount",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "baseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "quoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "consumer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "consumerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum FirmInventoryReservationBook.ReservationState"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "reservationId",
+    "inputs": [
+      {
+        "name": "domainId",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "domainManifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "domainManifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "solverId",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "orderHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "reservationNonce",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "reserve",
+    "inputs": [
+      {
+        "name": "terms",
+        "type": "tuple",
+        "internalType": "struct FirmInventoryReservationBook.ReservationTerms",
+        "components": [
+          {
+            "name": "domain",
+            "type": "tuple",
+            "internalType": "struct FirmInventoryReservationBook.DomainRef",
+            "components": [
+              {
+                "name": "domainIdHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "solverId",
+            "type": "string",
+            "internalType": "string"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "reclaimOwner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "strategyAccount",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "reservationNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "baseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "quoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "expiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "consumer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "consumerCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "reservationId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reservedBaseAtoms",
+    "inputs": [
+      {
+        "name": "solver",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "baseAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "solverStrategyKey",
+    "inputs": [
+      {
+        "name": "solver",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "event",
+    "name": "InventoryConsumed",
+    "inputs": [
+      {
+        "name": "reservationId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "InventoryFunded",
+    "inputs": [
+      {
+        "name": "reservationId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "packageNonce",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "baseAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "quoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "expiry",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "InventoryReleased",
+    "inputs": [
+      {
+        "name": "reservationId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "reclaimOwner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ReservationFinalized",
+    "inputs": [
+      {
+        "name": "reservationId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "quoteHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "routeHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "CapacityExceeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DomainMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidReservation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PostconditionFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationAlreadyExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationNotExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReservationUnavailable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedConsumer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedSolver",
+    "inputs": []
+  }
+]
