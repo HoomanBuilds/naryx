@@ -19,9 +19,9 @@ use solana_sha256_hasher::hashv;
 use crate::{
     constants::{
         CASH_CARRY_EXECUTOR_SEED, CASH_CARRY_NONCE_SEED, CASH_CARRY_OPEN_SEED,
-        CASH_CARRY_RECEIPT_SEED, PACKAGE_BOOK_CLASS_SEED, PACKAGE_BOOK_PROGRAM_ID,
-        PACKAGE_QUOTE_LEVEL_PAGE_SEED, PACKAGE_QUOTE_SHARD_SEED, PROTOCOL_CONFIG_SEED,
-        SOLVER_REGISTRY_SEED,
+        CASH_CARRY_RECEIPT_SEED, CASH_CARRY_SERIES_INDEX_SEED, CASH_CARRY_SERIES_RECORD_SEED,
+        PACKAGE_BOOK_CLASS_SEED, PACKAGE_BOOK_PROGRAM_ID, PACKAGE_QUOTE_LEVEL_PAGE_SEED,
+        PACKAGE_QUOTE_SHARD_SEED, PROTOCOL_CONFIG_SEED, SOLVER_REGISTRY_SEED,
     },
     error::ErrorCode,
     events::CashCarryExecutionRecorded,
@@ -29,10 +29,12 @@ use crate::{
         validate_cash_carry_admission, validate_cash_carry_exit_admission, verify_code_identity,
         CashCarryAdmission, CashCarryResources, ResourceAction,
     },
+    instructions::series_registry::validate_active_cash_carry_series_binding,
     state::{
-        CashCarryExecutionReceipt, CashCarryNonce, CashCarryStrategyAuthority, ManifestRef,
-        OpenCashCarryPackage, ProtocolConfig, ResourceIndex, ResourceRecord, SettlementClass,
-        SolverRegistry,
+        CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
+        CashCarrySeriesBindingRecord, CashCarrySeriesBindingV1, CashCarryStrategyAuthority,
+        ManifestRef, OpenCashCarryPackage, ProtocolConfig, ResourceIndex, ResourceRecord,
+        SettlementClass, SolverRegistry, CASH_CARRY_SERIES_ENTRY_SIDE_ASK,
     },
     wire::{DomainRef, HASH_BYTE_LENGTH},
 };
@@ -48,7 +50,11 @@ const PACKAGE_BOOK_DOMAIN_REF_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-ident
 const PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR: [u8; 8] =
     [0x93, 0x38, 0x6b, 0x07, 0x4f, 0x8a, 0xcd, 0xb0];
 const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
+const PACKAGE_BOOK_QUOTE_SIDE_ASK: u8 = 2;
 const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
+const SERIES_INDEX_ACCOUNT_INDEX: usize = PACKAGE_BOOK_ACCOUNT_COUNT;
+const SERIES_RECORD_ACCOUNT_INDEX: usize = SERIES_INDEX_ACCOUNT_INDEX + 1;
+const QUOTED_ENTRY_ACCOUNT_COUNT: usize = SERIES_RECORD_ACCOUNT_INDEX + 1;
 const OPEN_PACKAGE_VERSION: u8 = 2;
 pub const RISE_COLLATERAL_MUST_BE_PREFUNDED: bool = true;
 
@@ -100,6 +106,7 @@ pub struct CashCarryQuoteArgs {
     pub slot_index: u8,
     pub level_id: u64,
     pub expected_level_sequence: u64,
+    pub expected_side: u8,
     pub package_size_units: u64,
     pub expected_package_price: i128,
     pub expected_max_fee_atoms: u64,
@@ -118,6 +125,7 @@ struct PackageBookConsumeCapacityArgs {
     slot_index: u8,
     level_id: u64,
     expected_level_sequence: u64,
+    expected_side: u8,
     package_size_units: u64,
     expected_package_price: i128,
     expected_max_fee_atoms: u64,
@@ -390,6 +398,7 @@ fn quote_intent_commitment(
     data.push(args.slot_index);
     data.extend_from_slice(&args.level_id.to_be_bytes());
     data.extend_from_slice(&args.expected_level_sequence.to_be_bytes());
+    data.push(args.expected_side);
     data.extend_from_slice(&args.package_size_units.to_be_bytes());
     data.extend_from_slice(&args.expected_package_price.to_be_bytes());
     data.extend_from_slice(&args.expected_max_fee_atoms.to_be_bytes());
@@ -418,6 +427,7 @@ fn encode_consume_capacity_instruction(
         slot_index: args.slot_index,
         level_id: args.level_id,
         expected_level_sequence: args.expected_level_sequence,
+        expected_side: args.expected_side,
         package_size_units: args.package_size_units,
         expected_package_price: args.expected_package_price,
         expected_max_fee_atoms: args.expected_max_fee_atoms,
@@ -430,7 +440,7 @@ fn encode_consume_capacity_instruction(
         quote_hash,
         route_hash,
     };
-    let mut data = Vec::with_capacity(305);
+    let mut data = Vec::with_capacity(306);
     data.extend_from_slice(&PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR);
     wire.serialize(&mut data)?;
     Ok(data)
@@ -476,7 +486,7 @@ fn execute<'info>(
     if let Some(quote) = &quote_args {
         validate_quote_parameters(&args, quote)?;
         require!(
-            ctx.remaining_accounts.len() >= PACKAGE_BOOK_ACCOUNT_COUNT,
+            ctx.remaining_accounts.len() >= QUOTED_ENTRY_ACCOUNT_COUNT,
             ErrorCode::CashCarryQuoteAccountMismatch
         );
     }
@@ -543,6 +553,7 @@ fn execute<'info>(
             &ctx.accounts,
             ctx.remaining_accounts,
             &execution_domain,
+            &args,
             solver,
             order_hash,
             quote_hash,
@@ -609,7 +620,7 @@ fn execute<'info>(
     }
 
     let rise_remaining_start = if quote_args.is_some() {
-        PACKAGE_BOOK_ACCOUNT_COUNT
+        QUOTED_ENTRY_ACCOUNT_COUNT
     } else {
         0
     };
@@ -797,6 +808,7 @@ fn validate_quote_parameters(
             && quote.expected_shard_sequence != 0
             && quote.level_id != 0
             && quote.expected_level_sequence != 0
+            && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_ASK
             && quote.package_size_units != 0
             && quote.expected_expiry_slot != 0
             && quote.expected_expiry_slot <= execution.expiry_slot
@@ -810,18 +822,26 @@ fn validate_quote_parameters(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_quote_evidence(
-    accounts: &ExecuteCashAndCarry,
-    remaining: &[AccountInfo],
+fn prepare_quote_evidence<'info>(
+    accounts: &ExecuteCashAndCarry<'info>,
+    remaining: &'info [AccountInfo<'info>],
     domain: &DomainRef,
+    execution: &CashCarryExecutionArgs,
     solver: Pubkey,
     order_hash: [u8; 32],
     quote_hash: [u8; 32],
     route_hash: [u8; 32],
     quote: &CashCarryQuoteArgs,
 ) -> Result<QuoteEvidence> {
-    let quote_accounts = &remaining[..PACKAGE_BOOK_ACCOUNT_COUNT];
-    validate_package_book_accounts(accounts, quote_accounts, domain, solver, quote)?;
+    let quote_accounts = &remaining[..QUOTED_ENTRY_ACCOUNT_COUNT];
+    validate_package_book_accounts(
+        accounts,
+        &quote_accounts[..PACKAGE_BOOK_ACCOUNT_COUNT],
+        domain,
+        solver,
+        quote,
+    )?;
+    validate_quote_series_binding(accounts, quote_accounts, execution, quote)?;
     let keys = quote_accounts
         .iter()
         .map(AccountInfo::key)
@@ -839,6 +859,109 @@ fn prepare_quote_evidence(
         ),
         fill_commitment: quote.expected_fill_commitment,
     })
+}
+
+fn validate_quote_series_binding<'info>(
+    accounts: &ExecuteCashAndCarry<'info>,
+    quote_accounts: &'info [AccountInfo<'info>],
+    execution: &CashCarryExecutionArgs,
+    quote: &CashCarryQuoteArgs,
+) -> Result<()> {
+    let index_info = &quote_accounts[SERIES_INDEX_ACCOUNT_INDEX];
+    let record_info = &quote_accounts[SERIES_RECORD_ACCOUNT_INDEX];
+    let index = Account::<CashCarrySeriesBindingIndex>::try_from(index_info)?;
+    let record = Account::<CashCarrySeriesBindingRecord>::try_from(record_info)?;
+    let identity_key = record.binding.identity_key();
+    let expected_index = Pubkey::find_program_address(
+        &[CASH_CARRY_SERIES_INDEX_SEED, identity_key.as_ref()],
+        &crate::id(),
+    )
+    .0;
+    let expected_record = Pubkey::find_program_address(
+        &[
+            CASH_CARRY_SERIES_RECORD_SEED,
+            identity_key.as_ref(),
+            record.binding.binding_version.to_be_bytes().as_ref(),
+        ],
+        &crate::id(),
+    )
+    .0;
+    require_keys_eq!(
+        index.key(),
+        expected_index,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    require_keys_eq!(
+        record.key(),
+        expected_record,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    validate_active_cash_carry_series_binding(
+        &accounts.config,
+        &index,
+        record.key(),
+        &record,
+        identity_key,
+        record.binding.binding_hash(),
+        &accounts.resources.base_asset_index,
+        accounts.resources.base_asset_record.key(),
+        &accounts.resources.base_asset_record,
+        &accounts.resources.quote_asset_index,
+        accounts.resources.quote_asset_record.key(),
+        &accounts.resources.quote_asset_record,
+    )?;
+    validate_quote_against_series(execution, quote, &record.binding)?;
+    Ok(())
+}
+
+fn validate_quote_against_series(
+    execution: &CashCarryExecutionArgs,
+    quote: &CashCarryQuoteArgs,
+    binding: &CashCarrySeriesBindingV1,
+) -> Result<u64> {
+    require!(
+        quote.series_manifest_hash == binding.series_manifest_hash
+            && quote.execution_class_manifest_hash == binding.execution_class_manifest_hash
+            && quote.expected_settlement_class_identity_hash
+                == binding.settlement_class_identity_hash,
+        ErrorCode::CashCarryQuoteSeriesMismatch
+    );
+    require!(
+        binding.entry_side == CASH_CARRY_SERIES_ENTRY_SIDE_ASK
+            && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_ASK,
+        ErrorCode::CashCarryQuoteSideMismatch
+    );
+    let package_size_units = derive_package_size_units(execution, binding)?;
+    require!(
+        quote.package_size_units == package_size_units,
+        ErrorCode::CashCarryQuotePackageUnitMismatch
+    );
+    Ok(package_size_units)
+}
+
+fn derive_package_size_units(
+    execution: &CashCarryExecutionArgs,
+    binding: &CashCarrySeriesBindingV1,
+) -> Result<u64> {
+    require!(
+        binding.spot_base_atoms_per_package_unit != 0
+            && binding.perp_quantity_atoms_per_package_unit != 0,
+        ErrorCode::SeriesBindingUnitZero
+    );
+    let spot_quantity = u128::from(execution.spot_quantity_atoms);
+    let perp_quantity = u128::from(execution.perp_quantity_atoms);
+    require!(
+        spot_quantity % binding.spot_base_atoms_per_package_unit == 0
+            && perp_quantity % binding.perp_quantity_atoms_per_package_unit == 0,
+        ErrorCode::CashCarryQuotePackageUnitMismatch
+    );
+    let spot_units = spot_quantity / binding.spot_base_atoms_per_package_unit;
+    let perp_units = perp_quantity / binding.perp_quantity_atoms_per_package_unit;
+    require!(
+        spot_units != 0 && spot_units == perp_units,
+        ErrorCode::CashCarryQuotePackageUnitMismatch
+    );
+    u64::try_from(spot_units).map_err(|_| error!(ErrorCode::CashCarryQuotePackageUnitMismatch))
 }
 
 fn validate_package_book_accounts(
@@ -2062,6 +2185,7 @@ mod tests {
             slot_index: 3,
             level_id: 26,
             expected_level_sequence: 27,
+            expected_side: PACKAGE_BOOK_QUOTE_SIDE_ASK,
             package_size_units: 28,
             expected_package_price: -29,
             expected_max_fee_atoms: 0,
@@ -2102,6 +2226,7 @@ mod tests {
         expected.push(quote.slot_index);
         expected.extend_from_slice(&quote.level_id.to_le_bytes());
         expected.extend_from_slice(&quote.expected_level_sequence.to_le_bytes());
+        expected.push(quote.expected_side);
         expected.extend_from_slice(&quote.package_size_units.to_le_bytes());
         expected.extend_from_slice(&quote.expected_package_price.to_le_bytes());
         expected.extend_from_slice(&quote.expected_max_fee_atoms.to_le_bytes());
@@ -2181,6 +2306,88 @@ mod tests {
         wrong = quote;
         wrong.expected_max_fee_atoms = 1;
         assert!(validate_quote_parameters(&execution, &wrong).is_err());
+    }
+
+    fn series_binding() -> CashCarrySeriesBindingV1 {
+        CashCarrySeriesBindingV1 {
+            schema_version: 1,
+            binding_version: 1,
+            domain_ref_identity_hash: [20; 32],
+            series_manifest_hash: [22; 32],
+            execution_class_manifest_hash: [23; 32],
+            template_identity_hash: [24; 32],
+            template_version: 1,
+            template_manifest_hash: [25; 32],
+            settlement_class_identity_hash: [31; 32],
+            base_asset: manifest(8),
+            quote_asset: manifest(9),
+            quote_convention_identity_hash: [26; 32],
+            entry_side: CASH_CARRY_SERIES_ENTRY_SIDE_ASK,
+            spot_base_atoms_per_package_unit: 20,
+            perp_quantity_atoms_per_package_unit: 2,
+        }
+    }
+
+    #[test]
+    fn quoted_entry_derives_equal_nonzero_package_units() {
+        let execution = execution_args();
+        let binding = series_binding();
+        let mut quote = quote_args();
+        quote.package_size_units = 5;
+        assert_eq!(derive_package_size_units(&execution, &binding).unwrap(), 5);
+        assert_eq!(
+            validate_quote_against_series(&execution, &quote, &binding).unwrap(),
+            5
+        );
+        let domain = DomainRef::new("solana:test", 1, [1; 32]).unwrap();
+        let solver = Pubkey::new_unique();
+        let consumer = Pubkey::new_unique();
+        let quote_accounts = [Pubkey::new_unique()];
+        let commitment = quote_intent_commitment(
+            &domain,
+            &solver,
+            &consumer,
+            [2; 32],
+            [3; 32],
+            [4; 32],
+            &quote,
+            &quote_accounts,
+        );
+        let mut changed_side = quote.clone();
+        changed_side.expected_side = 1;
+        assert_ne!(
+            commitment,
+            quote_intent_commitment(
+                &domain,
+                &solver,
+                &consumer,
+                [2; 32],
+                [3; 32],
+                [4; 32],
+                &changed_side,
+                &quote_accounts,
+            )
+        );
+
+        quote.package_size_units = 4;
+        assert!(validate_quote_against_series(&execution, &quote, &binding).is_err());
+    }
+
+    #[test]
+    fn quoted_entry_rejects_wrong_side_and_invalid_quantity_ratios() {
+        let binding = series_binding();
+        let mut quote = quote_args();
+        quote.package_size_units = 5;
+        quote.expected_side = 1;
+        assert!(validate_quote_against_series(&execution_args(), &quote, &binding).is_err());
+
+        let mut non_divisible = execution_args();
+        non_divisible.spot_quantity_atoms = 101;
+        assert!(derive_package_size_units(&non_divisible, &binding).is_err());
+
+        let mut ratio_mismatch = execution_args();
+        ratio_mismatch.perp_quantity_atoms = 8;
+        assert!(derive_package_size_units(&ratio_mismatch, &binding).is_err());
     }
 
     #[test]

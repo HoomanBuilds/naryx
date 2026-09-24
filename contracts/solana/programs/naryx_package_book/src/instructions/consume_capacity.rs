@@ -24,6 +24,7 @@ pub struct ConsumeCapacityArgs {
     pub slot_index: u8,
     pub level_id: u64,
     pub expected_level_sequence: u64,
+    pub expected_side: u8,
     pub package_size_units: u64,
     pub expected_package_price: i128,
     pub expected_max_fee_atoms: u64,
@@ -151,6 +152,7 @@ pub fn validate_level_expectations(
 ) -> Result<()> {
     require!(
         level.level_sequence == args.expected_level_sequence
+            && level.side == args.expected_side
             && level.expiry_slot == args.expected_expiry_slot
             && level.settlement_class_identity_hash == args.expected_settlement_class_identity_hash
             && level.quote_mode == args.expected_quote_mode

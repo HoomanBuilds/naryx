@@ -340,4 +340,10 @@ pub enum ErrorCode {
     CashCarryQuoteReturnDataInvalid,
     #[msg("Cash-and-carry strategy authority identity is invalid")]
     CashCarryStrategyAuthorityInvalid,
+    #[msg("Cash-and-carry package quote does not match the active series binding")]
+    CashCarryQuoteSeriesMismatch,
+    #[msg("Cash-and-carry package quote side does not match the active series entry side")]
+    CashCarryQuoteSideMismatch,
+    #[msg("Cash-and-carry execution quantities do not resolve to the quoted package units")]
+    CashCarryQuotePackageUnitMismatch,
 }

@@ -3,7 +3,7 @@ use naryx_core::{DomainRef, ProtocolId};
 use naryx_package_book::{
     constants::{
         MAX_QUOTE_LEVELS, PACKAGE_BOOK_VERSION, QUOTE_MODE_EXECUTION_COMMITMENT,
-        QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_BID,
+        QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_ASK, QUOTE_SIDE_BID,
     },
     instructions::consume_capacity::{
         fill_commitment, validate_level_expectations, ConsumeCapacityArgs,
@@ -174,6 +174,7 @@ fn quote_shard_lifecycle_is_sequence_safe_and_capacity_bounded() {
         slot_index: 0,
         level_id: consumed.level_id,
         expected_level_sequence: consumed.level_sequence,
+        expected_side: consumed.side,
         package_size_units: 5,
         expected_package_price: 102,
         expected_max_fee_atoms: consumed.max_fee_atoms,
@@ -194,6 +195,7 @@ fn quote_shard_lifecycle_is_sequence_safe_and_capacity_bounded() {
     expected.push(consume.slot_index);
     expected.extend_from_slice(&consume.level_id.to_le_bytes());
     expected.extend_from_slice(&consume.expected_level_sequence.to_le_bytes());
+    expected.push(consume.expected_side);
     expected.extend_from_slice(&consume.package_size_units.to_le_bytes());
     expected.extend_from_slice(&consume.expected_package_price.to_le_bytes());
     expected.extend_from_slice(&consume.expected_max_fee_atoms.to_le_bytes());
@@ -212,6 +214,9 @@ fn quote_shard_lifecycle_is_sequence_safe_and_capacity_bounded() {
     assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
     wrong = consume;
     wrong.expected_level_sequence += 1;
+    assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
+    wrong = consume;
+    wrong.expected_side = QUOTE_SIDE_ASK;
     assert!(validate_level_expectations(&consumed, &wrong, 102, false).is_err());
     wrong = consume;
     wrong.expected_quote_mode = QUOTE_MODE_FIRM_ONCHAIN;
