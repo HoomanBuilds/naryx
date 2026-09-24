@@ -167,6 +167,23 @@ contract PackageQuoteShardTest is Test {
         assertEq(shard.shardSequence(), 4);
     }
 
+    function testConsumeRejectsDirectionAndSettlementBeforeCapacityChange() public {
+        _upsert(_level(EXECUTION_LEVEL_ID, EXECUTION_COMMITMENT, -25, 100), 1);
+        PackageQuoteShard.ConsumeRequest memory request = _request(EXECUTION_LEVEL_ID, 20, 1);
+
+        request.expectedDirection = PackageQuoteShard.Direction.BID;
+        vm.expectRevert(PackageQuoteShard.InvalidDirection.selector);
+        consumer.consume(request);
+
+        request.expectedDirection = PackageQuoteShard.Direction.ASK;
+        request.expectedSettlementClassIdentityHash = keccak256("wrong-settlement");
+        vm.expectRevert(PackageQuoteShard.InvalidSettlementClass.selector);
+        consumer.consume(request);
+
+        assertEq(shard.quoteLevel(EXECUTION_LEVEL_ID).remainingCapacityUnits, 100);
+        assertEq(shard.shardSequence(), 2);
+    }
+
     function testCancelAllInvalidatesInConstantTimeAndDownstreamRevertRollsBack() public {
         _upsert(_level(EXECUTION_LEVEL_ID, EXECUTION_COMMITMENT, -25, 100), 1);
         vm.prank(SOLVER);
@@ -237,6 +254,8 @@ contract PackageQuoteShardTest is Test {
         PackageQuoteShard.ExecutableQuote memory quote = shard.getExecutableQuote(levelId, sizeUnits);
         request = PackageQuoteShard.ConsumeRequest({
             levelId: levelId,
+            expectedDirection: quote.direction,
+            expectedSettlementClassIdentityHash: quote.settlementClassIdentityHash,
             expectedEpoch: quote.epoch,
             expectedLevelSequence: quote.levelSequence,
             expectedReferenceSequence: quote.referenceSequence,

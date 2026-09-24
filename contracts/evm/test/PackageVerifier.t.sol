@@ -7,6 +7,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
+import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
@@ -106,6 +107,56 @@ contract VerifierAdmissionRegistry {
     }
 }
 
+contract VerifierSeriesRegistry {
+    ProtocolConfig public immutable config;
+    ResourceRegistry public immutable resources;
+    CashCarrySeriesRegistry.CashCarrySeriesBindingV1 private _binding;
+    bytes32 private _identityKey;
+    bytes32 private _bindingHash;
+
+    constructor(ProtocolConfig config_, ResourceRegistry resources_) {
+        config = config_;
+        resources = resources_;
+    }
+
+    function configure(
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 calldata binding_,
+        bytes32 identityKey_,
+        bytes32 bindingHash_
+    ) external {
+        _binding = binding_;
+        _identityKey = identityKey_;
+        _bindingHash = bindingHash_;
+    }
+
+    function validateEntry(CashCarrySeriesRegistry.BindingReference calldata exactRef)
+        external
+        view
+        returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory)
+    {
+        require(
+            exactRef.identityKey == _identityKey && exactRef.bindingVersion == _binding.bindingVersion
+                && exactRef.bindingHash == _bindingHash,
+            "series mismatch"
+        );
+        return _binding;
+    }
+
+    function bindingRecord(bytes32 identityKey_, uint32 bindingVersion_)
+        external
+        view
+        returns (
+            CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory,
+            bytes32,
+            CashCarrySeriesRegistry.Lifecycle,
+            bool
+        )
+    {
+        require(identityKey_ == _identityKey && bindingVersion_ == _binding.bindingVersion, "series mismatch");
+        return (_binding, _bindingHash, CashCarrySeriesRegistry.Lifecycle.ACTIVE, true);
+    }
+}
+
 contract VerifierStrategyAccount is IERC1271 {
     address public immutable owner;
 
@@ -169,6 +220,12 @@ contract PackageVerifierTest is Test {
     uint256 private constant QUANTITY = 1 ether;
     uint256 private constant MARGIN = 4 ether;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("domain-manifest");
+    bytes32 private constant SERIES_IDENTITY_KEY = keccak256("series-identity");
+    bytes32 private constant SERIES_BINDING_HASH = keccak256("series-binding");
+    bytes32 private constant BASE_ASSET_ID = keccak256("base-asset");
+    bytes32 private constant QUOTE_ASSET_ID = keccak256("quote-asset");
+    bytes32 private constant BASE_ASSET_MANIFEST_HASH = keccak256("base-asset-manifest");
+    bytes32 private constant QUOTE_ASSET_MANIFEST_HASH = keccak256("quote-asset-manifest");
     address private constant PROPOSER = address(0x101);
     address private constant CANCELLER = address(0x102);
     address private constant GOVERNANCE_EXECUTOR = address(0x103);
@@ -186,6 +243,7 @@ contract PackageVerifierTest is Test {
     ProtocolConfig private config;
     SolverRegistry private solverRegistry;
     VerifierAdmissionRegistry private admissionRegistry;
+    VerifierSeriesRegistry private seriesRegistry;
     PackageVerifier private verifier;
     PackageQuoteShardRegistry private packageQuoteShardRegistry;
     UniswapV3SpotPort private spotPort;
@@ -204,10 +262,16 @@ contract PackageVerifierTest is Test {
         );
         solverRegistry = new SolverRegistry(config, solver);
         admissionRegistry = new VerifierAdmissionRegistry(config);
+        seriesRegistry = new VerifierSeriesRegistry(config, ResourceRegistry(address(admissionRegistry)));
         packageQuoteShardRegistry = new PackageQuoteShardRegistry(config);
         verifier = new PackageVerifier(
-            config, solverRegistry, ResourceRegistry(address(admissionRegistry)), packageQuoteShardRegistry
+            config,
+            solverRegistry,
+            ResourceRegistry(address(admissionRegistry)),
+            CashCarrySeriesRegistry(address(seriesRegistry)),
+            packageQuoteShardRegistry
         );
+        seriesRegistry.configure(_seriesBinding(), SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
         spotPort = new UniswapV3SpotPort(address(verifier), _spotDeployment());
         strategy = new VerifierStrategyAccount(vm.addr(ownerKey));
 
@@ -299,6 +363,9 @@ contract PackageVerifierTest is Test {
             routeHash: keccak256("route"),
             spotFillCommitment: keccak256("spot-fill"),
             packageQuoteIntentHash: bytes32(0),
+            seriesIdentityKey: SERIES_IDENTITY_KEY,
+            seriesBindingVersion: 1,
+            seriesBindingHash: SERIES_BINDING_HASH,
             action: verifier.ENTRY(),
             strategyAccount: address(strategy),
             solver: solver,
@@ -338,6 +405,12 @@ contract PackageVerifierTest is Test {
         admission.perpetual.market.localAddress = address(perp);
         admission.baseAsset.localAddress = address(base);
         admission.quoteAsset.localAddress = address(quote);
+        admission.baseAsset.manifest = ResourceRegistry.ManifestRef({
+            subjectId: BASE_ASSET_ID, manifestVersion: 1, manifestHash: BASE_ASSET_MANIFEST_HASH
+        });
+        admission.quoteAsset.manifest = ResourceRegistry.ManifestRef({
+            subjectId: QUOTE_ASSET_ID, manifestVersion: 1, manifestHash: QUOTE_ASSET_MANIFEST_HASH
+        });
         admission.spot.quantityAtoms = QUANTITY;
         admission.perpetual.quantityAtoms = QUANTITY;
     }
@@ -376,5 +449,18 @@ contract PackageVerifierTest is Test {
             baseTokenCodeHash: address(base).codehash,
             quoteTokenCodeHash: address(quote).codehash
         });
+    }
+
+    function _seriesBinding() private pure returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding) {
+        binding.bindingVersion = 1;
+        binding.baseAsset = CashCarrySeriesRegistry.SeriesManifestRef({
+            subjectIdentity: BASE_ASSET_ID, manifestVersion: 1, manifestHash: BASE_ASSET_MANIFEST_HASH
+        });
+        binding.quoteAsset = CashCarrySeriesRegistry.SeriesManifestRef({
+            subjectIdentity: QUOTE_ASSET_ID, manifestVersion: 1, manifestHash: QUOTE_ASSET_MANIFEST_HASH
+        });
+        binding.entrySide = 1;
+        binding.spotBaseAtomsPerPackageUnit = 1;
+        binding.perpQuantityAtomsPerPackageUnit = 1;
     }
 }

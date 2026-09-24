@@ -6,6 +6,7 @@ import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {DirectInventorySpotPort} from "../src/DirectInventorySpotPort.sol";
+import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {FirmInventoryReservationBook} from "../src/FirmInventoryReservationBook.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
@@ -144,6 +145,62 @@ contract StrategyAccountAdmissionRegistry {
     }
 }
 
+contract StrategyAccountSeriesRegistry {
+    ProtocolConfig public immutable config;
+    ResourceRegistry public immutable resources;
+    CashCarrySeriesRegistry.CashCarrySeriesBindingV1 private _binding;
+    bytes32 private _identityKey;
+    bytes32 private _bindingHash;
+    bool private _entryAllowed = true;
+
+    constructor(ProtocolConfig config_, ResourceRegistry resources_) {
+        config = config_;
+        resources = resources_;
+    }
+
+    function configure(
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 calldata binding_,
+        bytes32 identityKey_,
+        bytes32 bindingHash_
+    ) external {
+        _binding = binding_;
+        _identityKey = identityKey_;
+        _bindingHash = bindingHash_;
+    }
+
+    function setEntryAllowed(bool entryAllowed_) external {
+        _entryAllowed = entryAllowed_;
+    }
+
+    function validateEntry(CashCarrySeriesRegistry.BindingReference calldata exactRef)
+        external
+        view
+        returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory)
+    {
+        require(_entryAllowed, "series paused");
+        require(
+            exactRef.identityKey == _identityKey && exactRef.bindingVersion == _binding.bindingVersion
+                && exactRef.bindingHash == _bindingHash,
+            "series mismatch"
+        );
+        return _binding;
+    }
+
+    function bindingRecord(bytes32 identityKey_, uint32 bindingVersion_)
+        external
+        view
+        returns (
+            CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory,
+            bytes32,
+            CashCarrySeriesRegistry.Lifecycle,
+            bool
+        )
+    {
+        require(identityKey_ == _identityKey && bindingVersion_ == _binding.bindingVersion, "series mismatch");
+        return (_binding, _bindingHash, CashCarrySeriesRegistry.Lifecycle.ENTRY_PAUSED, true);
+    }
+}
+
 contract NaryxStrategyAccountTest is Test {
     uint32 private constant PERP_EXPIRY = type(uint32).max;
     uint256 private constant QUANTITY = 1 ether;
@@ -154,6 +211,12 @@ contract NaryxStrategyAccountTest is Test {
     bytes32 private constant EXIT_ROUTE_HASH = keccak256("public-exit-route");
     bytes32 private constant SERIES_MANIFEST_HASH = keccak256("series-manifest");
     bytes32 private constant EXECUTION_CLASS_MANIFEST_HASH = keccak256("execution-class-manifest");
+    bytes32 private constant SERIES_IDENTITY_KEY = keccak256("series-identity");
+    bytes32 private constant SERIES_BINDING_HASH = keccak256("series-binding");
+    bytes32 private constant BASE_ASSET_ID = keccak256("base-asset");
+    bytes32 private constant QUOTE_ASSET_ID = keccak256("quote-asset");
+    bytes32 private constant BASE_ASSET_MANIFEST_HASH = keccak256("base-asset-manifest");
+    bytes32 private constant QUOTE_ASSET_MANIFEST_HASH = keccak256("quote-asset-manifest");
     bytes32 private constant SHARD_MANIFEST_HASH = keccak256("shard-manifest");
     bytes32 private constant LEVEL_ID = keccak256("package-level");
     bytes32 private constant REFERENCE_HASH = keccak256("package-reference");
@@ -175,6 +238,7 @@ contract NaryxStrategyAccountTest is Test {
     ProtocolConfig private config;
     SolverRegistry private solverRegistry;
     StrategyAccountAdmissionRegistry private admissionRegistry;
+    StrategyAccountSeriesRegistry private seriesRegistry;
     PackageVerifier private verifier;
     PackageQuoteShardRegistry private packageQuoteShardRegistry;
     PackageQuoteShard private packageQuoteShard;
@@ -195,10 +259,16 @@ contract NaryxStrategyAccountTest is Test {
         );
         solverRegistry = new SolverRegistry(config, solver);
         admissionRegistry = new StrategyAccountAdmissionRegistry(config);
+        seriesRegistry = new StrategyAccountSeriesRegistry(config, ResourceRegistry(address(admissionRegistry)));
         packageQuoteShardRegistry = new PackageQuoteShardRegistry(config);
         verifier = new PackageVerifier(
-            config, solverRegistry, ResourceRegistry(address(admissionRegistry)), packageQuoteShardRegistry
+            config,
+            solverRegistry,
+            ResourceRegistry(address(admissionRegistry)),
+            CashCarrySeriesRegistry(address(seriesRegistry)),
+            packageQuoteShardRegistry
         );
+        seriesRegistry.configure(_seriesBinding(), SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
         packageQuoteShard = new PackageQuoteShard(
             PackageQuoteShard.Deployment({
                 chainId: block.chainid,
@@ -598,6 +668,115 @@ contract NaryxStrategyAccountTest is Test {
         assertEq(packageQuoteShard.shardSequence(), 2);
     }
 
+    function testEntryRejectsNondivisibleSpotQuantity() public {
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding = _seriesBinding();
+        binding.spotBaseAtomsPerPackageUnit = 3;
+        seriesRegistry.configure(binding, SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
+        _expectPackageUnitsRevert();
+    }
+
+    function testEntryRejectsNondivisiblePerpQuantity() public {
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding = _seriesBinding();
+        binding.perpQuantityAtomsPerPackageUnit = 3;
+        seriesRegistry.configure(binding, SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
+        _expectPackageUnitsRevert();
+    }
+
+    function testEntryRejectsUnequalDerivedUnits() public {
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding = _seriesBinding();
+        binding.spotBaseAtomsPerPackageUnit = 2;
+        seriesRegistry.configure(binding, SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
+        _expectPackageUnitsRevert();
+    }
+
+    function testQuotedPackageRejectsWrongDirection() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        intent.consumeRequest.expectedDirection = PackageQuoteShard.Direction.BID;
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        _expectQuotedPackageRevert(execution, admission, intent);
+    }
+
+    function testQuotedPackageRejectsWrongSettlement() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        intent.consumeRequest.expectedSettlementClassIdentityHash = keccak256("wrong-settlement");
+        execution.packageQuoteIntentHash = verifier.packageQuoteIntentHash(intent);
+        _expectQuotedPackageRevert(execution, admission, intent);
+    }
+
+    function testQuotedPackageRejectsWrongSeriesManifest() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding = _seriesBinding();
+        binding.seriesManifestHash = keccak256("wrong-series");
+        seriesRegistry.configure(binding, SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
+        _expectQuotedPackageRevert(execution, admission, intent);
+    }
+
+    function testQuotedPackageRejectsWrongExecutionClass() public {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0, bytes32(0));
+        CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding = _seriesBinding();
+        binding.executionClassManifestHash = keccak256("wrong-execution-class");
+        seriesRegistry.configure(binding, SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
+        _expectQuotedPackageRevert(execution, admission, intent);
+    }
+
+    function testExitSurvivesSeriesPauseAndAssetManifestRotation() public {
+        bytes32 entryReceiptHash = _enter();
+        seriesRegistry.setEntryAllowed(false);
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(entryReceiptHash, solver);
+        admission.baseAsset.manifest.manifestVersion = 2;
+        admission.baseAsset.manifest.manifestHash = keccak256("rotated-base-manifest");
+        admission.quoteAsset.manifest.manifestVersion = 2;
+        admission.quoteAsset.manifest.manifestHash = keccak256("rotated-quote-manifest");
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+
+        account.executePackage(
+            execution,
+            admission,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+
+        assertFalse(verifier.hasOpenPackage(address(account)));
+    }
+
+    function _expectPackageUnitsRevert() private {
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        vm.expectRevert(PackageVerifier.InvalidPackageUnits.selector);
+        account.executePackage(execution, admission, traderSignature, solverSignature, _tradeArgs(0, 0));
+    }
+
+    function _expectQuotedPackageRevert(
+        PackageVerifier.Execution memory execution,
+        ResourceRegistry.CashCarryAdmission memory admission,
+        PackageVerifier.QuoteIntent memory intent
+    ) private {
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+        account.executeQuotedPackage(execution, admission, intent, traderSignature, solverSignature, _tradeArgs(0, 0));
+    }
+
     function _activateQuoteShard() private {
         PackageQuoteShardRegistry.ShardIdentity memory identity = PackageQuoteShardRegistry.ShardIdentity({
             seriesManifestHash: SERIES_MANIFEST_HASH,
@@ -642,6 +821,8 @@ contract NaryxStrategyAccountTest is Test {
         intent.shardReference = shardReference;
         intent.consumeRequest = PackageQuoteShard.ConsumeRequest({
             levelId: LEVEL_ID,
+            expectedDirection: PackageQuoteShard.Direction.ASK,
+            expectedSettlementClassIdentityHash: SETTLEMENT_CLASS_HASH,
             expectedEpoch: 1,
             expectedLevelSequence: 2,
             expectedReferenceSequence: 1,
@@ -706,6 +887,8 @@ contract NaryxStrategyAccountTest is Test {
         intent.shardReference = shardReference;
         intent.consumeRequest = PackageQuoteShard.ConsumeRequest({
             levelId: LEVEL_ID,
+            expectedDirection: PackageQuoteShard.Direction.ASK,
+            expectedSettlementClassIdentityHash: SETTLEMENT_CLASS_HASH,
             expectedEpoch: 1,
             expectedLevelSequence: 2,
             expectedReferenceSequence: 1,
@@ -802,6 +985,9 @@ contract NaryxStrategyAccountTest is Test {
         execution.routeHash = ROUTE_HASH;
         execution.spotFillCommitment = keccak256("entry-spot-fill");
         execution.packageQuoteIntentHash = bytes32(0);
+        execution.seriesIdentityKey = SERIES_IDENTITY_KEY;
+        execution.seriesBindingVersion = 1;
+        execution.seriesBindingHash = SERIES_BINDING_HASH;
         execution.action = action;
         execution.strategyAccount = address(account);
         execution.solver = executionSolver;
@@ -838,6 +1024,12 @@ contract NaryxStrategyAccountTest is Test {
         admission.perpetual.market.localAddress = address(perp);
         admission.baseAsset.localAddress = address(base);
         admission.quoteAsset.localAddress = address(quote);
+        admission.baseAsset.manifest = ResourceRegistry.ManifestRef({
+            subjectId: BASE_ASSET_ID, manifestVersion: 1, manifestHash: BASE_ASSET_MANIFEST_HASH
+        });
+        admission.quoteAsset.manifest = ResourceRegistry.ManifestRef({
+            subjectId: QUOTE_ASSET_ID, manifestVersion: 1, manifestHash: QUOTE_ASSET_MANIFEST_HASH
+        });
         admission.spot.quantityAtoms = QUANTITY;
         admission.perpetual.quantityAtoms = QUANTITY;
     }
@@ -863,5 +1055,21 @@ contract NaryxStrategyAccountTest is Test {
     function _tradeArgs(int128 sizeDelta, int128 balanceDelta) private view returns (bytes32[2] memory args) {
         args[0] = bytes32(uint256(block.timestamp + 1 hours) << 56 | uint256(PERP_EXPIRY));
         args[1] = bytes32(uint256(uint128(sizeDelta)) << 128 | uint256(uint128(balanceDelta)));
+    }
+
+    function _seriesBinding() private pure returns (CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory binding) {
+        binding.bindingVersion = 1;
+        binding.seriesManifestHash = SERIES_MANIFEST_HASH;
+        binding.executionClassManifestHash = EXECUTION_CLASS_MANIFEST_HASH;
+        binding.settlementClassIdentityHash = SETTLEMENT_CLASS_HASH;
+        binding.baseAsset = CashCarrySeriesRegistry.SeriesManifestRef({
+            subjectIdentity: BASE_ASSET_ID, manifestVersion: 1, manifestHash: BASE_ASSET_MANIFEST_HASH
+        });
+        binding.quoteAsset = CashCarrySeriesRegistry.SeriesManifestRef({
+            subjectIdentity: QUOTE_ASSET_ID, manifestVersion: 1, manifestHash: QUOTE_ASSET_MANIFEST_HASH
+        });
+        binding.entrySide = 1;
+        binding.spotBaseAtomsPerPackageUnit = 1;
+        binding.perpQuantityAtomsPerPackageUnit = 1;
     }
 }

@@ -89,6 +89,8 @@ contract PackageQuoteShard {
 
     struct ConsumeRequest {
         bytes32 levelId;
+        Direction expectedDirection;
+        bytes32 expectedSettlementClassIdentityHash;
         uint64 expectedEpoch;
         uint64 expectedLevelSequence;
         uint64 expectedReferenceSequence;
@@ -152,6 +154,8 @@ contract PackageQuoteShard {
     error InvalidReservation();
     error InvalidPrice();
     error InvalidFee();
+    error InvalidDirection();
+    error InvalidSettlementClass();
 
     event ReferenceUpdated(
         int256 packagePrice,
@@ -377,6 +381,10 @@ contract PackageQuoteShard {
         }
 
         ExecutableQuote memory quote = _executableQuote(request.levelId, request.sizeUnits);
+        if (request.expectedDirection != quote.direction) revert InvalidDirection();
+        if (request.expectedSettlementClassIdentityHash != quote.settlementClassIdentityHash) {
+            revert InvalidSettlementClass();
+        }
         if (
             request.expectedEpoch != quote.epoch || request.expectedLevelSequence != quote.levelSequence
                 || request.expectedReferenceSequence != quote.referenceSequence
