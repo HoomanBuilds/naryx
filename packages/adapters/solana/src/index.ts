@@ -21,6 +21,8 @@ import type {
   SimulationEvidence,
 } from '@naryx/adapter-core';
 
+export * from './firm-plan.js';
+
 const U64_MAX = (1n << 64n) - 1n;
 const { BorshCoder, BN } = anchor;
 const ACCOUNT_BINDING_IDS = {
