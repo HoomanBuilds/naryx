@@ -153,6 +153,19 @@
   },
   {
     "type": "function",
+    "name": "FINAL_RECEIPT_DOMAIN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ORDER_LIST",
     "inputs": [],
     "outputs": [
@@ -173,6 +186,19 @@
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TERMINAL_COMPLETE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -2082,6 +2108,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "account",
             "type": "address",
             "internalType": "address"
@@ -2093,6 +2124,11 @@
           },
           {
             "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spotProceedsRecipient",
             "type": "address",
             "internalType": "address"
           },
@@ -2125,6 +2161,41 @@
             "name": "fullCloseSizeUsd",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotMinQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "exitOrderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitQuoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRouteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
           },
           {
             "name": "acceptablePrice",
@@ -2233,6 +2304,112 @@
   },
   {
     "type": "function",
+    "name": "finalPackageReceipt",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct GmxV2ExitController.FinalPackageReceipt",
+        "components": [
+          {
+            "name": "commitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitAuthorizationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "perpEvidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotEvidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryCommitmentsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitCommitmentsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "recipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "fullCloseSizeUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "perpStatus",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "terminalState",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "finalizeExecutedExit",
     "inputs": [
       {
@@ -2334,6 +2511,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "account",
             "type": "address",
             "internalType": "address"
@@ -2345,6 +2527,11 @@
           },
           {
             "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spotProceedsRecipient",
             "type": "address",
             "internalType": "address"
           },
@@ -2377,6 +2564,41 @@
             "name": "fullCloseSizeUsd",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotMinQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "exitOrderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitQuoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRouteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
           },
           {
             "name": "acceptablePrice",
@@ -2501,6 +2723,49 @@
         "type": "bytes32",
         "indexed": false,
         "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "FinalPackageReceiptRecorded",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "entryRequestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "exitRequestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "commitment",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "spotQuoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false

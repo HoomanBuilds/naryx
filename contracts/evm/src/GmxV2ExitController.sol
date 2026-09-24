@@ -15,10 +15,12 @@ import {
 } from "./interfaces/IGmxV2.sol";
 
 contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyGuard {
+    uint8 public constant TERMINAL_COMPLETE = 1;
     bytes32 public constant EXIT_AUTHORIZATION_TYPEHASH = keccak256(
-        "ExitAuthorization(bytes32 packageId,bytes32 entryRequestKey,address account,address owner,address receiver,address feePayer,address executionFeeRefundRecipient,address market,address collateralToken,bool isLong,uint256 fullCloseSizeUsd,uint256 acceptablePrice,uint256 minOutputAmount,uint256 executionFeeWei,uint256 callbackGasLimit,uint64 authorizationExpiry,uint64 cancelAfter,uint256 nonce)"
+        "ExitAuthorization(bytes32 packageId,bytes32 entryRequestKey,bytes32 spotRegistrationHash,address account,address owner,address receiver,address spotProceedsRecipient,address feePayer,address executionFeeRefundRecipient,address market,address collateralToken,bool isLong,uint256 fullCloseSizeUsd,uint256 spotBaseAtoms,uint256 spotMinQuoteAtoms,uint256 packageNonce,bytes32 exitOrderHash,bytes32 exitQuoteHash,bytes32 exitRouteHash,bytes32 exitFillCommitment,uint256 acceptablePrice,uint256 minOutputAmount,uint256 executionFeeWei,uint256 callbackGasLimit,uint64 authorizationExpiry,uint64 cancelAfter,uint256 nonce)"
     );
     bytes32 public constant EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_EXIT_EVIDENCE_V1");
+    bytes32 public constant FINAL_RECEIPT_DOMAIN = keccak256("NARYX_GMX_V2_FINAL_PACKAGE_RECEIPT_V1");
     bytes32 public constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
     bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
     bytes32 public constant REQUEST_EXPIRATION_TIME = keccak256(abi.encode("REQUEST_EXPIRATION_TIME"));
@@ -36,15 +38,24 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     struct ExitAuthorization {
         bytes32 packageId;
         bytes32 entryRequestKey;
+        bytes32 spotRegistrationHash;
         address account;
         address owner;
         address receiver;
+        address spotProceedsRecipient;
         address feePayer;
         address executionFeeRefundRecipient;
         address market;
         address collateralToken;
         bool isLong;
         uint256 fullCloseSizeUsd;
+        uint256 spotBaseAtoms;
+        uint256 spotMinQuoteAtoms;
+        uint256 packageNonce;
+        bytes32 exitOrderHash;
+        bytes32 exitQuoteHash;
+        bytes32 exitRouteHash;
+        bytes32 exitFillCommitment;
         uint256 acceptablePrice;
         uint256 minOutputAmount;
         uint256 executionFeeWei;
@@ -64,6 +75,26 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         bool released;
     }
 
+    struct FinalPackageReceipt {
+        bytes32 commitment;
+        bytes32 packageId;
+        bytes32 entryRequestKey;
+        bytes32 exitRequestKey;
+        bytes32 entryRequestPayloadHash;
+        bytes32 spotRegistrationHash;
+        bytes32 exitAuthorizationHash;
+        bytes32 perpEvidenceHash;
+        bytes32 spotEvidenceHash;
+        bytes32 entryCommitmentsHash;
+        bytes32 exitCommitmentsHash;
+        address recipient;
+        uint256 fullCloseSizeUsd;
+        uint256 spotBaseAtoms;
+        uint256 spotQuoteAtoms;
+        uint8 perpStatus;
+        uint8 terminalState;
+    }
+
     error InvalidConfiguration();
     error DeploymentChanged();
     error UnauthorizedCaller();
@@ -76,6 +107,14 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     event ExitOutcomeRecorded(bytes32 indexed requestKey, Status status, uint64 revision, bytes32 evidenceHash);
     event ExitReconciliationRequested(bytes32 indexed requestKey);
     event IsolatedPositionReleased(bytes32 indexed packageId, bytes32 indexed requestKey);
+    event FinalPackageReceiptRecorded(
+        bytes32 indexed packageId,
+        bytes32 indexed entryRequestKey,
+        bytes32 indexed exitRequestKey,
+        bytes32 commitment,
+        address recipient,
+        uint256 spotQuoteAtoms
+    );
 
     GmxV2ArbitrumAdapter public immutable entryAdapter;
     GmxV2IsolatedAccount public immutable account;
@@ -94,6 +133,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     uint256 public nextNonce;
     bytes32 public activeExitRequestKey;
     mapping(bytes32 requestKey => ExitRecord record) private _exits;
+    mapping(bytes32 requestKey => FinalPackageReceipt receipt) private _finalReceipts;
 
     constructor(
         GmxV2ArbitrumAdapter entryAdapter_,
@@ -146,6 +186,10 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
 
     function exitRegistrationHash(bytes32 requestKey) external view returns (bytes32) {
         return keccak256(abi.encode(_exits[requestKey].registration));
+    }
+
+    function finalPackageReceipt(bytes32 requestKey) external view returns (FinalPackageReceipt memory) {
+        return _finalReceipts[requestKey];
     }
 
     function submitFullClose(ExitAuthorization calldata authorization, bytes calldata ownerSignature)
@@ -288,17 +332,28 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
 
     function _validateAuthorization(ExitAuthorization calldata authorization) private view {
         uint256 cancellationDelay = IGmxV2DataStore(dataStore).getUint(REQUEST_EXPIRATION_TIME);
+        GmxV2.SpotEntryRegistration memory spotRegistration = account.activeSpotRegistration();
         if (
             authorization.packageId != entryAdapter.activePackageId()
-                || authorization.entryRequestKey != entryAdapter.activeRequestKey()
-                || authorization.account != address(account) || authorization.owner != account.owner()
-                || authorization.receiver != account.owner() || authorization.market != account.market()
+                || authorization.entryRequestKey != entryAdapter.activeRequestKey() || !account.hasActiveSpotInventory()
+                || authorization.entryRequestKey != account.activeSpotRequestKey()
+                || authorization.spotRegistrationHash != keccak256(abi.encode(spotRegistration))
+                || authorization.packageId != spotRegistration.packageId || authorization.account != address(account)
+                || authorization.owner != account.owner() || authorization.receiver != account.owner()
+                || authorization.market != account.market() || authorization.spotProceedsRecipient != account.owner()
                 || authorization.feePayer == address(0) || authorization.executionFeeRefundRecipient == address(0)
                 || authorization.collateralToken != address(account.collateralToken()) || authorization.isLong
                 || authorization.fullCloseSizeUsd == 0 || authorization.fullCloseSizeUsd != account.positionSize(false)
+                || authorization.spotBaseAtoms == 0 || authorization.spotBaseAtoms != spotRegistration.baseAtoms
+                || authorization.spotMinQuoteAtoms == 0 || authorization.packageNonce != spotRegistration.packageNonce
+                || authorization.exitOrderHash == bytes32(0) || authorization.exitQuoteHash == bytes32(0)
+                || authorization.exitRouteHash == bytes32(0) || authorization.exitFillCommitment == bytes32(0)
+                || authorization.exitFillCommitment == spotRegistration.entryFillCommitment
+                || authorization.exitFillCommitment == spotRegistration.rollbackFillCommitment
                 || account.positionSize(true) != 0 || authorization.acceptablePrice == 0
-                || authorization.executionFeeWei == 0 || authorization.callbackGasLimit == 0
-                || authorization.nonce != nextNonce || block.timestamp >= authorization.authorizationExpiry
+                || authorization.minOutputAmount == 0 || authorization.executionFeeWei == 0
+                || authorization.callbackGasLimit == 0 || authorization.nonce != nextNonce
+                || block.timestamp >= authorization.authorizationExpiry
                 || authorization.authorizationExpiry >= authorization.cancelAfter
                 || cancellationDelay > type(uint64).max - block.timestamp
                 || authorization.cancelAfter < block.timestamp + cancellationDelay
@@ -319,15 +374,24 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
             packageId: authorization.packageId,
             entryRequestKey: authorization.entryRequestKey,
             authorizationHash: authorizationHash,
+            spotRegistrationHash: authorization.spotRegistrationHash,
             account: authorization.account,
             owner: authorization.owner,
             receiver: authorization.receiver,
+            spotProceedsRecipient: authorization.spotProceedsRecipient,
             feePayer: authorization.feePayer,
             executionFeeRefundRecipient: authorization.executionFeeRefundRecipient,
             market: authorization.market,
             collateralToken: authorization.collateralToken,
             isLong: authorization.isLong,
             fullCloseSizeUsd: authorization.fullCloseSizeUsd,
+            spotBaseAtoms: authorization.spotBaseAtoms,
+            spotMinQuoteAtoms: authorization.spotMinQuoteAtoms,
+            packageNonce: authorization.packageNonce,
+            exitOrderHash: authorization.exitOrderHash,
+            exitQuoteHash: authorization.exitQuoteHash,
+            exitRouteHash: authorization.exitRouteHash,
+            exitFillCommitment: authorization.exitFillCommitment,
             acceptablePrice: authorization.acceptablePrice,
             minOutputAmount: authorization.minOutputAmount,
             executionFeeWei: authorization.executionFeeWei,
@@ -343,26 +407,36 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
             EXIT_AUTHORIZATION_TYPEHASH,
             authorization.packageId,
             authorization.entryRequestKey,
+            authorization.spotRegistrationHash,
             authorization.account,
             authorization.owner,
             authorization.receiver,
+            authorization.spotProceedsRecipient,
             authorization.feePayer,
-            authorization.executionFeeRefundRecipient,
-            authorization.market
+            authorization.executionFeeRefundRecipient
         );
         bytes memory second = abi.encode(
+            authorization.market,
             authorization.collateralToken,
             authorization.isLong,
             authorization.fullCloseSizeUsd,
+            authorization.spotBaseAtoms,
+            authorization.spotMinQuoteAtoms,
+            authorization.packageNonce,
+            authorization.exitOrderHash
+        );
+        bytes memory third = abi.encode(
+            authorization.exitQuoteHash,
+            authorization.exitRouteHash,
+            authorization.exitFillCommitment,
             authorization.acceptablePrice,
             authorization.minOutputAmount,
             authorization.executionFeeWei,
             authorization.callbackGasLimit,
             authorization.authorizationExpiry,
-            authorization.cancelAfter,
-            authorization.nonce
+            authorization.cancelAfter
         );
-        return keccak256(bytes.concat(first, second));
+        return keccak256(bytes.concat(first, second, third, abi.encode(authorization.nonce)));
     }
 
     function _reconcile(ExitRecord storage stored, bytes32 requestKey) private returns (bool) {
@@ -386,6 +460,16 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
 
     function _release(ExitRecord storage stored, bytes32 requestKey) private returns (bool) {
         if (stored.released) return true;
+        FinalPackageReceipt storage receipt = _finalReceipts[requestKey];
+        if (receipt.commitment == bytes32(0)) {
+            try account.completeSuccessfulExit(stored.registration, requestKey) returns (
+                GmxV2.SpotExitResult memory spotResult
+            ) {
+                _storeFinalReceipt(stored, requestKey, spotResult);
+            } catch {
+                return false;
+            }
+        }
         try entryAdapter.finalizeExitedPosition(stored.registration.packageId, stored.registration.entryRequestKey) {
             stored.released = true;
             if (activeExitRequestKey == requestKey) activeExitRequestKey = bytes32(0);
@@ -394,6 +478,96 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         } catch {
             return false;
         }
+    }
+
+    function _storeFinalReceipt(ExitRecord storage stored, bytes32 requestKey, GmxV2.SpotExitResult memory spotResult)
+        private
+    {
+        bytes32 exitCommitmentsHash = keccak256(
+            abi.encode(
+                stored.registration.packageNonce,
+                stored.registration.exitOrderHash,
+                stored.registration.exitQuoteHash,
+                stored.registration.exitRouteHash,
+                stored.registration.exitFillCommitment
+            )
+        );
+        uint8 perpStatus = uint8(stored.status);
+        uint8 terminalState = TERMINAL_COMPLETE;
+        bytes32 commitment =
+            _receiptCommitment(stored, requestKey, spotResult, exitCommitmentsHash, perpStatus, terminalState);
+        FinalPackageReceipt storage receipt = _finalReceipts[requestKey];
+        receipt.commitment = commitment;
+        receipt.packageId = stored.registration.packageId;
+        receipt.entryRequestKey = stored.registration.entryRequestKey;
+        receipt.exitRequestKey = requestKey;
+        receipt.entryRequestPayloadHash = spotResult.entryRequestPayloadHash;
+        receipt.spotRegistrationHash = stored.registration.spotRegistrationHash;
+        receipt.exitAuthorizationHash = stored.registration.authorizationHash;
+        receipt.perpEvidenceHash = stored.evidenceHash;
+        receipt.spotEvidenceHash = spotResult.evidenceHash;
+        receipt.entryCommitmentsHash = spotResult.entryCommitmentsHash;
+        receipt.exitCommitmentsHash = exitCommitmentsHash;
+        receipt.recipient = stored.registration.spotProceedsRecipient;
+        receipt.fullCloseSizeUsd = stored.registration.fullCloseSizeUsd;
+        receipt.spotBaseAtoms = stored.registration.spotBaseAtoms;
+        receipt.spotQuoteAtoms = spotResult.quoteAtoms;
+        receipt.perpStatus = perpStatus;
+        receipt.terminalState = terminalState;
+        emit FinalPackageReceiptRecorded(
+            receipt.packageId,
+            receipt.entryRequestKey,
+            requestKey,
+            commitment,
+            receipt.recipient,
+            receipt.spotQuoteAtoms
+        );
+    }
+
+    function _receiptCommitment(
+        ExitRecord storage stored,
+        bytes32 requestKey,
+        GmxV2.SpotExitResult memory spotResult,
+        bytes32 exitCommitmentsHash,
+        uint8 perpStatus,
+        uint8 terminalState
+    ) private view returns (bytes32) {
+        bytes32 receiptIdentityHash = keccak256(
+            abi.encode(
+                stored.registration.packageId,
+                stored.registration.entryRequestKey,
+                requestKey,
+                spotResult.entryRequestPayloadHash,
+                stored.registration.spotRegistrationHash,
+                stored.registration.authorizationHash
+            )
+        );
+        bytes32 outcomesHash = keccak256(
+            abi.encode(
+                stored.evidenceHash, spotResult.evidenceHash, spotResult.entryCommitmentsHash, exitCommitmentsHash
+            )
+        );
+        bytes32 economicsHash = keccak256(
+            abi.encode(
+                stored.registration.spotProceedsRecipient,
+                stored.registration.fullCloseSizeUsd,
+                stored.registration.spotBaseAtoms,
+                spotResult.quoteAtoms
+            )
+        );
+        return keccak256(
+            abi.encode(
+                FINAL_RECEIPT_DOMAIN,
+                block.chainid,
+                address(this),
+                address(account),
+                receiptIdentityHash,
+                outcomesHash,
+                economicsHash,
+                perpStatus,
+                terminalState
+            )
+        );
     }
 
     function _record(ExitRecord storage stored, bytes32 requestKey, Status status, bytes32 callbackDataHash) private {

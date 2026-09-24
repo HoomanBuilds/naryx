@@ -1158,7 +1158,7 @@ contract GmxV2ExitControllerTest is Test {
         assertEq(account.positionSize(false), SIZE);
     }
 
-    function testSignedFullClosePaysOnlyOwnerAndKeepsSpotInventoryLocked() public {
+    function testSignedFullCloseFinalizesBothLegsAndReceipt() public {
         GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
         bytes32 exitRequestKey = _submit(authorization);
 
@@ -1176,13 +1176,25 @@ contract GmxV2ExitControllerTest is Test {
 
         (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
         assertEq(uint8(status), uint8(GmxV2ExitController.Status.EXECUTED));
-        assertFalse(released);
-        assertEq(token.balanceOf(owner), COLLATERAL);
+        assertTrue(released);
+        assertEq(token.balanceOf(owner), COLLATERAL + (SPOT_BASE * 2));
         assertEq(token.balanceOf(feePayer), 0);
         assertEq(token.balanceOf(feeRefundRecipient), 0);
-        assertEq(adapter.activePackageId(), PACKAGE_ID);
-        assertEq(adapter.activeRequestKey(), entryRequestKey);
-        assertTrue(account.hasActiveSpotInventory());
+        assertEq(baseToken.balanceOf(address(account)), 0);
+        assertEq(token.balanceOf(address(account)), 0);
+        assertEq(adapter.activePackageId(), bytes32(0));
+        assertEq(adapter.activeRequestKey(), bytes32(0));
+        assertFalse(account.hasActiveSpotInventory());
+        GmxV2ExitController.FinalPackageReceipt memory receipt = exitController.finalPackageReceipt(exitRequestKey);
+        assertNotEq(receipt.commitment, bytes32(0));
+        assertEq(receipt.entryRequestKey, entryRequestKey);
+        assertEq(receipt.exitRequestKey, exitRequestKey);
+        assertEq(receipt.recipient, owner);
+        assertEq(receipt.fullCloseSizeUsd, SIZE);
+        assertEq(receipt.spotBaseAtoms, SPOT_BASE);
+        assertEq(receipt.spotQuoteAtoms, SPOT_BASE * 2);
+        assertEq(receipt.perpStatus, uint8(GmxV2ExitController.Status.EXECUTED));
+        assertEq(receipt.terminalState, 1);
     }
 
     function testRejectsExpiredAuthorizationAndReplay() public {
@@ -1221,7 +1233,9 @@ contract GmxV2ExitControllerTest is Test {
         exchangeRouter.executeOrder(exitRequestKey, 0);
         (GmxV2ExitController.Status finalStatus,,,, bool released) = exitController.exitEvidence(exitRequestKey);
         assertEq(uint8(finalStatus), uint8(GmxV2ExitController.Status.EXECUTED));
-        assertFalse(released);
+        assertTrue(released);
+        assertFalse(account.hasActiveSpotInventory());
+        assertEq(adapter.activePackageId(), bytes32(0));
     }
 
     function testAuthenticatesCallbackAndRejectsUnexpectedShrink() public {
@@ -1258,20 +1272,26 @@ contract GmxV2ExitControllerTest is Test {
         assertEq(adapter.activePackageId(), PACKAGE_ID);
     }
 
-    function testOwnerCannotAuthorizeDifferentPositionReceiverOrHiddenFeeRecipient() public {
+    function testSpotRecipientAndPostconditionFailureRemainUnreleased() public {
         GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
-        authorization.receiver = address(0xBAD);
+        authorization.spotProceedsRecipient = address(0xBAD);
         bytes memory invalidReceiverSignature = _sign(authorization);
         vm.prank(feePayer);
         vm.expectRevert(GmxV2ExitController.InvalidAuthorization.selector);
         exitController.submitFullClose{value: EXECUTION_FEE}(authorization, invalidReceiverSignature);
 
         authorization = _authorization();
-        authorization.feePayer = address(0xBAD);
-        bytes memory invalidFeePayerSignature = _sign(authorization);
-        vm.prank(feePayer);
-        vm.expectRevert(GmxV2ExitController.FundingMismatch.selector);
-        exitController.submitFullClose{value: EXECUTION_FEE}(authorization, invalidFeePayerSignature);
+        authorization.spotMinQuoteAtoms = SPOT_BASE * 3;
+        bytes32 exitRequestKey = _submit(authorization);
+        exchangeRouter.executeDecreaseOrder(exitRequestKey, 0, COLLATERAL);
+
+        (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(status), uint8(GmxV2ExitController.Status.EXECUTED));
+        assertFalse(released);
+        assertTrue(account.hasActiveSpotInventory());
+        assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
+        assertEq(adapter.activePackageId(), PACKAGE_ID);
+        assertEq(exitController.finalPackageReceipt(exitRequestKey).commitment, bytes32(0));
     }
 
     function _submit(GmxV2ExitController.ExitAuthorization memory authorization) private returns (bytes32 requestKey) {
@@ -1291,15 +1311,24 @@ contract GmxV2ExitControllerTest is Test {
         return GmxV2ExitController.ExitAuthorization({
             packageId: PACKAGE_ID,
             entryRequestKey: entryRequestKey,
+            spotRegistrationHash: keccak256(abi.encode(account.activeSpotRegistration())),
             account: address(account),
             owner: owner,
             receiver: owner,
+            spotProceedsRecipient: owner,
             feePayer: feePayer,
             executionFeeRefundRecipient: feeRefundRecipient,
             market: address(market),
             collateralToken: address(token),
             isLong: false,
             fullCloseSizeUsd: SIZE,
+            spotBaseAtoms: SPOT_BASE,
+            spotMinQuoteAtoms: MIN_ROLLBACK_QUOTE,
+            packageNonce: 9,
+            exitOrderHash: keccak256("exit-close-order"),
+            exitQuoteHash: keccak256("exit-close-quote"),
+            exitRouteHash: keccak256("exit-close-route"),
+            exitFillCommitment: keccak256("exit-close-fill"),
             acceptablePrice: EXIT_PRICE,
             minOutputAmount: 1_000e30,
             executionFeeWei: EXECUTION_FEE,

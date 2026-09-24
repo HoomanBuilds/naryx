@@ -130,6 +130,19 @@
   },
   {
     "type": "function",
+    "name": "SPOT_EXIT_EVIDENCE_DOMAIN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "activeSpotQuoteAtoms",
     "inputs": [],
     "outputs": [
@@ -304,6 +317,194 @@
   },
   {
     "type": "function",
+    "name": "completeSuccessfulExit",
+    "inputs": [
+      {
+        "name": "registration",
+        "type": "tuple",
+        "internalType": "struct GmxV2.ExitRegistration",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryRequestKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "authorizationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "account",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spotProceedsRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "feePayer",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "executionFeeRefundRecipient",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "market",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "isLong",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "fullCloseSizeUsd",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotMinQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "exitOrderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitQuoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRouteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "acceptablePrice",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minOutputAmount",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "executionFeeWei",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "callbackGasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "authorizationExpiry",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "cancelAfter",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "exitRequestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "type": "tuple",
+        "internalType": "struct GmxV2.SpotExitResult",
+        "components": [
+          {
+            "name": "entryRequestPayloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "entryCommitmentsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "configureEntryController",
     "inputs": [
       {
@@ -381,6 +582,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "account",
             "type": "address",
             "internalType": "address"
@@ -392,6 +598,11 @@
           },
           {
             "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spotProceedsRecipient",
             "type": "address",
             "internalType": "address"
           },
@@ -424,6 +635,41 @@
             "name": "fullCloseSizeUsd",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotMinQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "exitOrderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitQuoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRouteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
           },
           {
             "name": "acceptablePrice",

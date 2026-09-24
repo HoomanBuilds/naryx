@@ -226,15 +226,24 @@ library GmxV2 {
         bytes32 packageId;
         bytes32 entryRequestKey;
         bytes32 authorizationHash;
+        bytes32 spotRegistrationHash;
         address account;
         address owner;
         address receiver;
+        address spotProceedsRecipient;
         address feePayer;
         address executionFeeRefundRecipient;
         address market;
         address collateralToken;
         bool isLong;
         uint256 fullCloseSizeUsd;
+        uint256 spotBaseAtoms;
+        uint256 spotMinQuoteAtoms;
+        uint256 packageNonce;
+        bytes32 exitOrderHash;
+        bytes32 exitQuoteHash;
+        bytes32 exitRouteHash;
+        bytes32 exitFillCommitment;
         uint256 acceptablePrice;
         uint256 minOutputAmount;
         uint256 executionFeeWei;
@@ -242,6 +251,13 @@ library GmxV2 {
         uint64 authorizationExpiry;
         uint64 cancelAfter;
         uint256 nonce;
+    }
+
+    struct SpotExitResult {
+        bytes32 entryRequestPayloadHash;
+        bytes32 entryCommitmentsHash;
+        bytes32 evidenceHash;
+        uint256 quoteAtoms;
     }
 }
 

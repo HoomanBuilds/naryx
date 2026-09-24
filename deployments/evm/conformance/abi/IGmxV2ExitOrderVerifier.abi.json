@@ -29,6 +29,11 @@
             "internalType": "bytes32"
           },
           {
+            "name": "spotRegistrationHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "account",
             "type": "address",
             "internalType": "address"
@@ -40,6 +45,11 @@
           },
           {
             "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spotProceedsRecipient",
             "type": "address",
             "internalType": "address"
           },
@@ -72,6 +82,41 @@
             "name": "fullCloseSizeUsd",
             "type": "uint256",
             "internalType": "uint256"
+          },
+          {
+            "name": "spotBaseAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "spotMinQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageNonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "exitOrderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitQuoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitRouteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "exitFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
           },
           {
             "name": "acceptablePrice",

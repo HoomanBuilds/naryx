@@ -14,6 +14,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
 
     bytes32 public constant SIZE_IN_USD = keccak256(abi.encode("SIZE_IN_USD"));
     bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
+    bytes32 public constant SPOT_EXIT_EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_SPOT_EXIT_EVIDENCE_V1");
 
     error InvalidConfiguration();
     error DeploymentChanged();
@@ -48,6 +49,16 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         bytes32 routeHash;
         uint256 baseAtoms;
         uint256 quoteBound;
+    }
+
+    struct SpotSale {
+        uint256 packageNonce;
+        bytes32 fillCommitment;
+        bytes32 orderHash;
+        bytes32 quoteHash;
+        bytes32 routeHash;
+        uint256 baseAtoms;
+        uint256 minQuoteAtoms;
     }
 
     address public entryController;
@@ -265,36 +276,17 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
                 || collateralToken.allowance(address(this), address(spotPort)) != 0
         ) revert InvalidRequest();
 
-        _armSpotFill(
-            2,
-            registration.packageNonce,
-            registration.rollbackFillCommitment,
-            registration.orderHash,
-            registration.quoteHash,
-            registration.routeHash,
-            registration.baseAtoms,
-            registration.rollbackMinQuoteAtoms
+        quoteOut = _sellSpot(
+            SpotSale({
+                packageNonce: registration.packageNonce,
+                fillCommitment: registration.rollbackFillCommitment,
+                orderHash: registration.orderHash,
+                quoteHash: registration.quoteHash,
+                routeHash: registration.routeHash,
+                baseAtoms: registration.baseAtoms,
+                minQuoteAtoms: registration.rollbackMinQuoteAtoms
+            })
         );
-        spotBaseToken.forceApprove(address(spotPort), registration.baseAtoms);
-        quoteOut = spotPort.sellExactInput(
-            registration.packageNonce,
-            registration.rollbackFillCommitment,
-            registration.orderHash,
-            registration.quoteHash,
-            registration.routeHash,
-            registration.baseAtoms,
-            registration.rollbackMinQuoteAtoms
-        );
-        spotBaseToken.forceApprove(address(spotPort), 0);
-        if (_spotFillContext.action != 0 || quoteOut == 0 || quoteOut != _recordedSpotQuoteAtoms) {
-            revert FundingMismatch();
-        }
-        _recordedSpotQuoteAtoms = 0;
-        if (
-            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != quoteOut
-                || address(this).balance != 0 || spotBaseToken.allowance(address(this), address(spotPort)) != 0
-                || collateralToken.allowance(address(this), address(spotPort)) != 0
-        ) revert FundingMismatch();
 
         address fundingOwner = registration.fundingOwner;
         uint256 baseAtoms = registration.baseAtoms;
@@ -307,6 +299,101 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
             revert FundingMismatch();
         }
         emit SpotInventoryRolledBack(packageId, requestKey, fundingOwner, baseAtoms, quoteOut);
+    }
+
+    function completeSuccessfulExit(GmxV2.ExitRegistration calldata registration, bytes32 exitRequestKey)
+        external
+        nonReentrant
+        returns (GmxV2.SpotExitResult memory result)
+    {
+        _assertExitController();
+        _assertSpotDeployment();
+        GmxV2.SpotEntryRegistration memory spotRegistration = _spotRegistration;
+        bytes32 spotRegistrationHash = keccak256(abi.encode(spotRegistration));
+        if (
+            !hasActiveSpotInventory || exitRequestKey == bytes32(0)
+                || registration.packageId != spotRegistration.packageId
+                || registration.entryRequestKey != activeSpotRequestKey
+                || registration.spotRegistrationHash != spotRegistrationHash || registration.account != address(this)
+                || registration.owner != owner || registration.receiver != owner
+                || registration.spotProceedsRecipient != owner || registration.market != market
+                || registration.collateralToken != address(collateralToken) || registration.isLong
+                || registration.fullCloseSizeUsd == 0 || registration.spotBaseAtoms != spotRegistration.baseAtoms
+                || registration.packageNonce != spotRegistration.packageNonce || registration.spotMinQuoteAtoms == 0
+                || registration.exitOrderHash == bytes32(0) || registration.exitQuoteHash == bytes32(0)
+                || registration.exitRouteHash == bytes32(0) || registration.exitFillCommitment == bytes32(0)
+                || registration.exitFillCommitment == spotRegistration.entryFillCommitment
+                || registration.exitFillCommitment == spotRegistration.rollbackFillCommitment
+                || IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, exitRequestKey) || positionSize(false) != 0
+                || positionSize(true) != 0 || spotBaseToken.balanceOf(address(this)) != spotRegistration.baseAtoms
+                || collateralToken.balanceOf(address(this)) != 0 || address(this).balance != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert InvalidRequest();
+
+        result.quoteAtoms = _sellSpot(
+            SpotSale({
+                packageNonce: registration.packageNonce,
+                fillCommitment: registration.exitFillCommitment,
+                orderHash: registration.exitOrderHash,
+                quoteHash: registration.exitQuoteHash,
+                routeHash: registration.exitRouteHash,
+                baseAtoms: registration.spotBaseAtoms,
+                minQuoteAtoms: registration.spotMinQuoteAtoms
+            })
+        );
+        result.entryRequestPayloadHash = spotRegistration.requestPayloadHash;
+        result.entryCommitmentsHash = keccak256(
+            abi.encode(
+                spotRegistration.packageNonce,
+                spotRegistration.orderHash,
+                spotRegistration.quoteHash,
+                spotRegistration.routeHash,
+                spotRegistration.entryFillCommitment,
+                spotRegistration.rollbackFillCommitment
+            )
+        );
+        bytes32 exitCommitmentsHash = keccak256(
+            abi.encode(
+                registration.packageNonce,
+                registration.exitOrderHash,
+                registration.exitQuoteHash,
+                registration.exitRouteHash,
+                registration.exitFillCommitment
+            )
+        );
+        bytes32 exitIdentityHash = keccak256(
+            abi.encode(
+                registration.packageId,
+                registration.entryRequestKey,
+                exitRequestKey,
+                registration.authorizationHash,
+                spotRegistrationHash,
+                exitCommitmentsHash
+            )
+        );
+        result.evidenceHash = keccak256(
+            abi.encode(
+                SPOT_EXIT_EVIDENCE_DOMAIN,
+                block.chainid,
+                address(this),
+                exitIdentityHash,
+                registration.spotBaseAtoms,
+                result.quoteAtoms,
+                registration.spotProceedsRecipient
+            )
+        );
+
+        delete _spotRegistration;
+        activeSpotRequestKey = bytes32(0);
+        activeSpotQuoteAtoms = 0;
+        hasActiveSpotInventory = false;
+        _transferExactToken(collateralToken, registration.spotProceedsRecipient, result.quoteAtoms);
+        if (
+            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
     }
 
     function activeSpotRegistration() external view returns (GmxV2.SpotEntryRegistration memory) {
@@ -358,10 +445,20 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         returns (bytes32 requestKey)
     {
         _assertExitController();
+        GmxV2.SpotEntryRegistration memory spotRegistration = _spotRegistration;
         if (
             registration.packageId == bytes32(0) || registration.entryRequestKey == bytes32(0)
                 || registration.authorizationHash == bytes32(0) || registration.account != address(this)
                 || registration.owner != owner || registration.receiver != owner || registration.market != market
+                || !hasActiveSpotInventory || registration.entryRequestKey != activeSpotRequestKey
+                || registration.spotRegistrationHash != keccak256(abi.encode(spotRegistration))
+                || registration.spotProceedsRecipient != owner
+                || registration.spotBaseAtoms != spotRegistration.baseAtoms
+                || registration.packageNonce != spotRegistration.packageNonce || registration.spotMinQuoteAtoms == 0
+                || registration.exitOrderHash == bytes32(0) || registration.exitQuoteHash == bytes32(0)
+                || registration.exitRouteHash == bytes32(0) || registration.exitFillCommitment == bytes32(0)
+                || registration.exitFillCommitment == spotRegistration.entryFillCommitment
+                || registration.exitFillCommitment == spotRegistration.rollbackFillCommitment
                 || registration.collateralToken != address(collateralToken) || registration.isLong
                 || registration.fullCloseSizeUsd == 0 || registration.fullCloseSizeUsd != positionSize(false)
                 || positionSize(true) != 0 || registration.acceptablePrice == 0
@@ -459,6 +556,39 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
             baseAtoms: baseAtoms,
             quoteBound: quoteBound
         });
+    }
+
+    function _sellSpot(SpotSale memory sale) private returns (uint256 quoteOut) {
+        _armSpotFill(
+            2,
+            sale.packageNonce,
+            sale.fillCommitment,
+            sale.orderHash,
+            sale.quoteHash,
+            sale.routeHash,
+            sale.baseAtoms,
+            sale.minQuoteAtoms
+        );
+        spotBaseToken.forceApprove(address(spotPort), sale.baseAtoms);
+        quoteOut = spotPort.sellExactInput(
+            sale.packageNonce,
+            sale.fillCommitment,
+            sale.orderHash,
+            sale.quoteHash,
+            sale.routeHash,
+            sale.baseAtoms,
+            sale.minQuoteAtoms
+        );
+        spotBaseToken.forceApprove(address(spotPort), 0);
+        if (_spotFillContext.action != 0 || quoteOut == 0 || quoteOut != _recordedSpotQuoteAtoms) {
+            revert FundingMismatch();
+        }
+        _recordedSpotQuoteAtoms = 0;
+        if (
+            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != quoteOut
+                || address(this).balance != 0 || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
     }
 
     function _sendCollateral(uint256 amount) private {
