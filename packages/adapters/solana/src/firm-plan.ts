@@ -18,6 +18,11 @@ import {
   type DomainRef,
   type PackageAdmission,
 } from '@naryx/protocol-types';
+import {
+  compilePublicCashCarryExitPlan,
+  type PublicCashCarryExitBinding,
+  type PublicCashCarryExitPlan,
+} from './public-exit-plan.js';
 
 const { BN, BorshCoder } = anchor;
 const U64_MAX = (1n << 64n) - 1n;
@@ -45,6 +50,8 @@ const HASH_DOMAINS = {
   reservationPolicy: 'NARYX/firm-reservation-policy/v1',
   domainIdentity: 'CON/v1/domain-ref-identity',
   reservationId: 'CON/v1/reservation-id',
+  routeAccounts: 'NARYX/cash-carry-route-accounts/v1',
+  packageAccounts: 'NARYX/cash-carry-package-accounts/v1',
 } as const;
 
 export const FIRM_CASH_CARRY_ACCOUNT_NAMES = [
@@ -300,6 +307,7 @@ export interface FirmCashCarryBinding {
   readonly traderRouteBindingId: string;
   readonly solverRouteBindingId: string;
   readonly messageContext?: SolanaMessageContext;
+  readonly publicExit?: PublicCashCarryExitBinding;
 }
 
 export type SolanaMessageSizeEvidence =
@@ -338,10 +346,9 @@ export interface FirmCashCarryPlan {
   readonly traderEntry: UnsignedSolanaTransactionPlan & Readonly<{
     stage: 'TRADER_ATOMIC_FIRM_ENTRY';
   }>;
-  readonly publicExit: Readonly<{
-    status: 'UNSUPPORTED';
-    code: 'PUBLISHED_PUBLIC_EXIT_IDL_AND_BINDINGS_REQUIRED';
-    requiredInstruction: 'execute_cash_and_carry';
+  readonly publicExit: PublicCashCarryExitPlan | Readonly<{
+    status: 'EVIDENCE_REQUIRED';
+    code: 'PUBLIC_EXIT_BINDING_REQUIRED';
   }>;
 }
 
@@ -1076,9 +1083,20 @@ function executionDigest(
     lengthPrefix(keys.length),
     ...keys.map((key) => key.toBytes()),
   );
+  const intent = quoteIntentCommitment(admission, binding, addresses);
+  const quote = binding.quoteArgs;
+  const quoted = domainHash(HASH_DOMAINS.quotedExecution, base, intent, quote.expectedFillCommitment);
+  return domainHash(HASH_DOMAINS.firmExecution, quoted, bigEndian(binding.firmQuoteAtoms, 8));
+}
+
+function quoteIntentCommitment(
+  admission: PackageAdmission,
+  binding: FirmCashCarryBinding,
+  addresses: ReadonlyMap<FirmCashCarryAccountName, PublicKey>,
+): Uint8Array {
   const quote = binding.quoteArgs;
   const quoteKeys = [addresses.get('quoteLock')!, addresses.get('seriesIndex')!, addresses.get('seriesRecord')!];
-  const intent = domainHash(
+  return domainHash(
     HASH_DOMAINS.quoteIntent,
     domainBytes(binding.domain),
     addresses.get('solver')!.toBytes(),
@@ -1107,8 +1125,37 @@ function executionDigest(
     lengthPrefix(quoteKeys.length),
     ...quoteKeys.map((key) => key.toBytes()),
   );
-  const quoted = domainHash(HASH_DOMAINS.quotedExecution, base, intent, quote.expectedFillCommitment);
-  return domainHash(HASH_DOMAINS.firmExecution, quoted, bigEndian(binding.firmQuoteAtoms, 8));
+}
+
+function firmRouteAccountsCommitment(
+  binding: FirmCashCarryBinding,
+  addresses: ReadonlyMap<FirmCashCarryAccountName, PublicKey>,
+): Uint8Array {
+  const names: readonly FirmCashCarryAccountName[] = [
+    'traderBase', 'traderQuote', 'executorBase', 'executorQuote', 'solverQuote',
+    'reservationClass', 'reservationCapacity', 'reservation', 'livePair', 'reservationVault',
+    'quoteLock', 'seriesIndex', 'seriesRecord', 'riseStrategy', 'riseLogAuthority',
+    'riseGlobalConfig', 'riseTraderAccount', 'risePerpAssetMap', 'riseGlobalTraderIndexHeader',
+    'riseActiveTraderBufferHeader', 'riseOrderbook', 'riseSplineCollection',
+  ];
+  const keys = [
+    ...names.map((name) => addresses.get(name)!),
+    ...binding.riseDynamicAccounts.map((account) => publicKey(account.address, 'Rise dynamic account')),
+  ];
+  return domainHash(
+    HASH_DOMAINS.routeAccounts,
+    lengthPrefix(keys.length),
+    ...keys.map((key) => key.toBytes()),
+  );
+}
+
+function firmPackageAccountsCommitment(addresses: ReadonlyMap<FirmCashCarryAccountName, PublicKey>): Uint8Array {
+  const keys = [addresses.get('traderBase')!, addresses.get('traderQuote')!, addresses.get('riseStrategy')!];
+  return domainHash(
+    HASH_DOMAINS.packageAccounts,
+    lengthPrefix(keys.length),
+    ...keys.map((key) => key.toBytes()),
+  );
 }
 
 export function compileFirmCashCarryPlan(
@@ -1213,6 +1260,62 @@ export function compileFirmCashCarryPlan(
   const entryAddressCount = resolvedAddressCount(identities.trader, entryInstructions);
   requireCondition(lockAddressCount <= MAX_RESOLVED_ADDRESSES, 'firm lock exceeds 64 resolved addresses');
   requireCondition(entryAddressCount <= MAX_RESOLVED_ADDRESSES, 'firm entry exceeds 64 resolved addresses');
+  const publicExit = binding.publicExit === undefined
+    ? Object.freeze({ status: 'EVIDENCE_REQUIRED' as const, code: 'PUBLIC_EXIT_BINDING_REQUIRED' as const })
+    : (() => {
+        for (const [name, exitDeployment, entryDeployment] of [
+          ['core', binding.publicExit.deployments.core, binding.deployments.core],
+          ['perp adapter', binding.publicExit.deployments.perpAdapter, binding.deployments.perpAdapter],
+          ['perp venue', binding.publicExit.deployments.perpVenue, binding.deployments.perpVenue],
+        ] as const) {
+          requireKey(exitDeployment.programId, entryDeployment.programId, `${name} exit deployment`);
+          requireKey(exitDeployment.programDataAddress, entryDeployment.programDataAddress, `${name} exit program data`);
+          requireBytes(exitDeployment.codeIdentity, entryDeployment.codeIdentity, `${name} exit code identity`);
+        }
+        return compilePublicCashCarryExitPlan(binding.publicExit, {
+          environment: binding.environment,
+          coreIdl: binding.coreIdl,
+          domain: binding.domain,
+          coreProgram,
+          trader: identities.trader,
+          solver: identities.solver,
+          config: addresses.get('config')!,
+          solverRegistry: addresses.get('solverRegistry')!,
+          entryReceipt: addresses.get('receipt')!,
+          openPackage: addresses.get('openPackage')!,
+          executorAuthority: addresses.get('executorAuthority')!,
+          riseStrategy: addresses.get('riseStrategy')!,
+          traderBase: addresses.get('traderBase')!,
+          traderQuote: addresses.get('traderQuote')!,
+          seriesIndex: addresses.get('seriesIndex')!,
+          seriesRecord: addresses.get('seriesRecord')!,
+          entryOrderHash: admission.orderHash,
+          entryQuoteHash: admission.quoteHash,
+          entryRouteHash: admission.routeHash,
+          templateVersion: admission.order.templateVersion,
+          templateManifestHash: admission.order.packageTemplateManifestHash,
+          entryNonce: binding.executionArgs.nonce,
+          spotQuantityAtoms: binding.executionArgs.spotQuantityAtoms,
+          perpQuantityAtoms: binding.executionArgs.perpQuantityAtoms,
+          quoteIntentCommitment: quoteIntentCommitment(admission, binding, addresses),
+          packageFillCommitment: binding.quoteArgs.expectedFillCommitment,
+          resourceAdmissionCommitment: binding.resourceAdmissionCommitment,
+          routeAccountsCommitment: firmRouteAccountsCommitment(binding, addresses),
+          packageAccountsCommitment: firmPackageAccountsCommitment(addresses),
+          seriesManifestHash: binding.series.seriesManifestHash,
+          executionClassManifestHash: binding.series.executionClassManifestHash,
+          settlementClassIdentityHash: binding.series.settlementClassIdentityHash,
+          spotBaseAtomsPerPackageUnit: binding.series.spotBaseAtomsPerPackageUnit,
+          perpQuantityAtomsPerPackageUnit: binding.series.perpQuantityAtomsPerPackageUnit,
+          entryResourceRecords: {
+            perpAdapter: addresses.get('perpAdapterRecord')!,
+            perpMarket: addresses.get('perpMarketRecord')!,
+            perpVenue: addresses.get('perpVenueRecord')!,
+            baseAsset: addresses.get('baseAssetRecord')!,
+            quoteAsset: addresses.get('quoteAssetRecord')!,
+          },
+        });
+      })();
 
   return Object.freeze({
     kind: 'MULTI_TRANSACTION_FIRM_CASH_CARRY_PLAN',
@@ -1239,10 +1342,6 @@ export function compileFirmCashCarryPlan(
       resolvedAddressCount: entryAddressCount,
       messageSize: messageSize(identities.trader, entryInstructions, binding.messageContext),
     }),
-    publicExit: Object.freeze({
-      status: 'UNSUPPORTED',
-      code: 'PUBLISHED_PUBLIC_EXIT_IDL_AND_BINDINGS_REQUIRED',
-      requiredInstruction: 'execute_cash_and_carry',
-    }),
+    publicExit,
   });
 }

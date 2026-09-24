@@ -17,9 +17,14 @@ import type { DomainRef, PackageAdmission } from '@naryx/protocol-types';
 import {
   compileFirmCashCarryPlan,
   FIRM_CASH_CARRY_ACCOUNT_NAMES,
+  PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES,
   solanaIdlContentHash,
   type FirmCashCarryAccountName,
   type FirmCashCarryBinding,
+  type PublicCashCarryExitAccountName,
+  type PublicCashCarryExitBinding,
+  type PublicCashCarryResourceEvidence,
+  type PublicCashCarryResourceName,
 } from '../src/index.js';
 
 const { BN, BorshCoder } = anchor;
@@ -45,6 +50,24 @@ function fixedIdlAddress(name: string): PublicKey {
   };
   const value = visit(instruction.accounts);
   assert(value !== undefined, `missing fixed IDL address ${name}`);
+  return new PublicKey(value);
+}
+
+function publicExitIdlAddress(name: string): PublicKey {
+  const instruction = coreIdl.instructions.find((item) => item.name === 'execute_cash_and_carry')!;
+  const visit = (items: typeof instruction.accounts): string | undefined => {
+    for (const item of items) {
+      if ('accounts' in item) {
+        const found = visit(item.accounts);
+        if (found !== undefined) return found;
+      } else if (item.name === name) {
+        return item.address;
+      }
+    }
+    return undefined;
+  };
+  const value = visit(instruction.accounts);
+  assert(value !== undefined, `missing fixed public-exit IDL address ${name}`);
   return new PublicKey(value);
 }
 
@@ -127,7 +150,10 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
   const quoteMint = address(206);
   const trader = address(207);
   const solver = address(208);
-  const executorAuthority = address(209);
+  const riseStrategy = address(209);
+  const executorAuthority = PublicKey.findProgramAddressSync([
+    Buffer.from('cash-carry-executor'), trader.toBuffer(), riseStrategy.toBuffer(),
+  ], coreProgram)[0];
   const coreCode = hash(31);
   const reservationCode = hash(32);
   const packageBookCode = hash(33);
@@ -191,9 +217,31 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
 
   let nextAddress = 1;
   const accountAddresses = Object.fromEntries(FIRM_CASH_CARRY_ACCOUNT_NAMES.map((name) => [name, address(nextAddress++).toBase58()])) as Record<FirmCashCarryAccountName, string>;
+  const resourceSeeds = {
+    spotAdapter: ['adapter', hash(71)], perpAdapter: ['adapter', hash(72)],
+    spotMarket: ['market', hash(73)], perpMarket: ['market', hash(74)],
+    spotVenue: ['venue', hash(75)], perpVenue: ['venue', hash(76)],
+    baseAsset: ['asset', hash(77)], quoteAsset: ['asset', hash(78)],
+  } as const;
+  for (const [name, [kind, subjectId]] of Object.entries(resourceSeeds)) {
+    accountAddresses[`${name}Index` as FirmCashCarryAccountName] = PublicKey.findProgramAddressSync([
+      Buffer.from('naryx-resource-index'), Buffer.from(kind), Buffer.from(subjectId),
+    ], coreProgram)[0].toBase58();
+    accountAddresses[`${name}Record` as FirmCashCarryAccountName] = PublicKey.findProgramAddressSync([
+      Buffer.from('naryx-resource-record'), Buffer.from(kind), Buffer.from(subjectId), Buffer.from(bigEndian(1n, 4)),
+    ], coreProgram)[0].toBase58();
+  }
+  const seriesIdentity = domainHash(
+    'CON/v1/cash-carry-series-identity', domainIdentity, seriesHash, executionClassHash,
+  );
   Object.assign(accountAddresses, {
     trader: trader.toBase58(),
     solver: solver.toBase58(),
+    config: PublicKey.findProgramAddressSync([Buffer.from('naryx-protocol-config')], coreProgram)[0].toBase58(),
+    solverRegistry: PublicKey.findProgramAddressSync([Buffer.from('conformance-solver')], coreProgram)[0].toBase58(),
+    receipt: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-receipt'), trader.toBuffer(), Buffer.from(orderHash)], coreProgram)[0].toBase58(),
+    nonceMarker: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-nonce'), trader.toBuffer(), Buffer.from(bigEndian(7n, 8))], coreProgram)[0].toBase58(),
+    openPackage: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-open'), trader.toBuffer(), riseStrategy.toBuffer()], coreProgram)[0].toBase58(),
     executorAuthority: executorAuthority.toBase58(),
     reservationClass: reservationClass.toBase58(),
     reservationCapacity: reservationCapacity.toBase58(),
@@ -206,6 +254,8 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
     executorBase: ata(executorAuthority, baseMint).toBase58(),
     executorQuote: ata(executorAuthority, quoteMint).toBase58(),
     quoteLock: quoteLock.toBase58(),
+    seriesIndex: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-series-index'), Buffer.from(seriesIdentity)], coreProgram)[0].toBase58(),
+    seriesRecord: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-series-record'), Buffer.from(seriesIdentity), Buffer.from(bigEndian(1n, 4))], coreProgram)[0].toBase58(),
     coreProgram: coreProgram.toBase58(),
     coreProgramData: address(210).toBase58(),
     reservationProgram: reservationProgram.toBase58(),
@@ -216,6 +266,7 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
     perpAdapterProgramData: address(213).toBase58(),
     perpVenueProgram: perpVenueProgram.toBase58(),
     perpVenueProgramData: address(214).toBase58(),
+    riseStrategy: riseStrategy.toBase58(),
     riseLogAuthority: fixedIdlAddress('rise_log_authority').toBase58(),
     riseGlobalConfig: fixedIdlAddress('rise_global_config').toBase58(),
     tokenProgram: LEGACY_TOKEN_PROGRAM_ID.toBase58(),
@@ -276,6 +327,8 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
       environment: 'local',
       domain,
       templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: hash(59),
       direction: 'LONG_SPOT_SHORT_PERP',
       settlementClass: 'ATOMIC_POSTCONDITION',
       action: 'ENTRY',
@@ -309,6 +362,8 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
       domain,
       orderHash,
       templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: hash(59),
       direction: 'LONG_SPOT_SHORT_PERP',
       settlementClass: 'ATOMIC_POSTCONDITION',
       executionPlanKind: 'SVM_ATOMIC_CPI',
@@ -495,6 +550,415 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
   return { admission, binding };
 }
 
+function namedAddress(name: string): PublicKey {
+  return new PublicKey(sha256(Buffer.from(name, 'ascii')));
+}
+
+function attachPublicExit(
+  value: ReturnType<typeof fixture>,
+  mode: 'SOLVER_AUTHORIZED' | 'TRADER_RECOVERY' = 'SOLVER_AUTHORIZED',
+  dynamicCount = 0,
+): PublicCashCarryExitBinding {
+  const { admission: entry, binding: firm } = value;
+  const coreProgram = new PublicKey(firm.deployments.core.programId);
+  const trader = new PublicKey(firm.accounts.trader.address);
+  const solver = new PublicKey(firm.accounts.solver.address);
+  const baseMint = new PublicKey(firm.resources.baseAsset.subjectAddress);
+  const quoteMint = new PublicKey(firm.resources.quoteAsset.subjectAddress);
+  const spotAdapterProgram = publicExitIdlAddress('spot_adapter_program');
+  const spotVenueProgram = publicExitIdlAddress('spot_venue_program');
+  const spotAdapterData = namedAddress('exit-spot-adapter-data');
+  const spotVenueData = namedAddress('exit-spot-venue-data');
+  const spotAdapterCode = hash(91);
+  const spotVenueCode = hash(92);
+  const whirlpool = namedAddress('exit-whirlpool');
+  const exitOrderHash = hash(93);
+  const exitQuoteHash = hash(94);
+  const exitRouteHash = hash(95);
+  const entryReceiptHash = hash(96);
+  const settlementManifestHash = hash(97);
+
+  const resourceInputs = {
+    spotAdapter: { protocolSubjectId: 'orca', subjectId: hash(81), manifestHash: hash(101), subjectAddress: spotAdapterProgram, programId: spotAdapterProgram, programDataAddress: spotAdapterData, codeIdentity: spotAdapterCode },
+    perpAdapter: { protocolSubjectId: entry.route.legs[1]!.adapter.adapterId, subjectId: hash(72), manifestHash: entry.route.legs[1]!.adapter.adapterManifestHash, subjectAddress: firm.deployments.perpAdapter.programId, programId: firm.deployments.perpAdapter.programId, programDataAddress: firm.deployments.perpAdapter.programDataAddress, codeIdentity: firm.deployments.perpAdapter.codeIdentity },
+    spotMarket: { protocolSubjectId: 'orca-market', subjectId: hash(82), manifestHash: hash(102), subjectAddress: whirlpool, programId: spotVenueProgram, programDataAddress: spotVenueData, codeIdentity: spotVenueCode },
+    perpMarket: { protocolSubjectId: entry.route.legs[1]!.market.subjectId, subjectId: hash(74), manifestHash: entry.route.legs[1]!.market.manifestHash, subjectAddress: firm.accounts.riseOrderbook.address, programId: firm.deployments.perpVenue.programId, programDataAddress: firm.deployments.perpVenue.programDataAddress, codeIdentity: firm.deployments.perpVenue.codeIdentity },
+    spotVenue: { protocolSubjectId: 'orca-venue', subjectId: hash(83), manifestHash: hash(103), subjectAddress: whirlpool, programId: spotVenueProgram, programDataAddress: spotVenueData, codeIdentity: spotVenueCode },
+    perpVenue: { protocolSubjectId: entry.route.legs[1]!.venue.subjectId, subjectId: hash(76), manifestHash: entry.route.legs[1]!.venue.manifestHash, subjectAddress: firm.accounts.riseGlobalConfig.address, programId: firm.deployments.perpVenue.programId, programDataAddress: firm.deployments.perpVenue.programDataAddress, codeIdentity: firm.deployments.perpVenue.codeIdentity },
+    baseAsset: { protocolSubjectId: baseMint.toBase58(), subjectId: hash(77), manifestHash: entry.order.quantity.asset.assetManifestHash, subjectAddress: baseMint, programId: LEGACY_TOKEN_PROGRAM_ID },
+    quoteAsset: { protocolSubjectId: quoteMint.toBase58(), subjectId: hash(78), manifestHash: entry.order.maxSpotQuoteIn!.asset.assetManifestHash, subjectAddress: quoteMint, programId: LEGACY_TOKEN_PROGRAM_ID },
+  } as const;
+  const resources = Object.fromEntries(Object.entries(resourceInputs).map(([name, resource]) => [name, {
+    domain: firm.domain,
+    protocolSubjectId: resource.protocolSubjectId,
+    subjectId: resource.subjectId,
+    manifestVersion: 1,
+    manifestHash: resource.manifestHash,
+    subjectAddress: resource.subjectAddress,
+    programId: resource.programId,
+    ...('programDataAddress' in resource ? { programDataAddress: resource.programDataAddress, codeIdentity: resource.codeIdentity } : {}),
+    lifecycle: 'EXIT_ONLY' as const,
+    currentActiveRecord: namedAddress(`current-${name}`),
+  }])) as unknown as Record<PublicCashCarryResourceName, PublicCashCarryResourceEvidence>;
+
+  const accountAddresses = Object.fromEntries(PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.map((name) => [name, namedAddress(`exit-${name}`).toBase58()])) as Record<PublicCashCarryExitAccountName, string>;
+  Object.assign(accountAddresses, {
+    trader: trader.toBase58(),
+    config: new PublicKey(firm.accounts.config.address).toBase58(),
+    solverRegistry: new PublicKey(firm.accounts.solverRegistry.address).toBase58(),
+    receipt: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-receipt'), trader.toBuffer(), Buffer.from(exitOrderHash)], coreProgram)[0].toBase58(),
+    nonceMarker: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-nonce'), trader.toBuffer(), Buffer.from(bigEndian(8n, 8))], coreProgram)[0].toBase58(),
+    openPackage: new PublicKey(firm.accounts.openPackage.address).toBase58(),
+    entryReceipt: new PublicKey(firm.accounts.receipt.address).toBase58(),
+    executorAuthority: new PublicKey(firm.accounts.executorAuthority.address).toBase58(),
+    spotAdapterProgram: spotAdapterProgram.toBase58(),
+    spotAdapterProgramData: spotAdapterData.toBase58(),
+    perpAdapterProgram: new PublicKey(firm.deployments.perpAdapter.programId).toBase58(),
+    perpAdapterProgramData: new PublicKey(firm.deployments.perpAdapter.programDataAddress).toBase58(),
+    spotVenueProgram: spotVenueProgram.toBase58(),
+    spotVenueProgramData: spotVenueData.toBase58(),
+    perpVenueProgram: new PublicKey(firm.deployments.perpVenue.programId).toBase58(),
+    perpVenueProgramData: new PublicKey(firm.deployments.perpVenue.programDataAddress).toBase58(),
+    traderTokenA: new PublicKey(firm.accounts.traderBase.address).toBase58(),
+    traderTokenB: new PublicKey(firm.accounts.traderQuote.address).toBase58(),
+    whirlpool: whirlpool.toBase58(),
+    whirlpoolOracle: PublicKey.findProgramAddressSync([Buffer.from('oracle'), whirlpool.toBuffer()], spotVenueProgram)[0].toBase58(),
+    riseStrategy: new PublicKey(firm.accounts.riseStrategy.address).toBase58(),
+    riseLogAuthority: new PublicKey(firm.accounts.riseLogAuthority.address).toBase58(),
+    riseGlobalConfig: new PublicKey(firm.accounts.riseGlobalConfig.address).toBase58(),
+    riseTraderAccount: new PublicKey(firm.accounts.riseTraderAccount.address).toBase58(),
+    risePerpAssetMap: new PublicKey(firm.accounts.risePerpAssetMap.address).toBase58(),
+    riseGlobalTraderIndexHeader: new PublicKey(firm.accounts.riseGlobalTraderIndexHeader.address).toBase58(),
+    riseActiveTraderBufferHeader: new PublicKey(firm.accounts.riseActiveTraderBufferHeader.address).toBase58(),
+    riseOrderbook: new PublicKey(firm.accounts.riseOrderbook.address).toBase58(),
+    riseSplineCollection: new PublicKey(firm.accounts.riseSplineCollection.address).toBase58(),
+    tokenProgram: LEGACY_TOKEN_PROGRAM_ID.toBase58(),
+    instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY.toBase58(),
+    systemProgram: SystemProgram.programId.toBase58(),
+  });
+  const resourceAccountNames = {
+    spotAdapter: ['spotAdapterIndex', 'spotAdapterRecord', 'adapter'],
+    perpAdapter: ['perpAdapterIndex', 'perpAdapterRecord', 'adapter'],
+    spotMarket: ['spotMarketIndex', 'spotMarketRecord', 'market'],
+    perpMarket: ['perpMarketIndex', 'perpMarketRecord', 'market'],
+    spotVenue: ['spotVenueIndex', 'spotVenueRecord', 'venue'],
+    perpVenue: ['perpVenueIndex', 'perpVenueRecord', 'venue'],
+    baseAsset: ['baseAssetIndex', 'baseAssetRecord', 'asset'],
+    quoteAsset: ['quoteAssetIndex', 'quoteAssetRecord', 'asset'],
+  } as const;
+  for (const [name, [indexName, recordName, kind]] of Object.entries(resourceAccountNames) as [PublicCashCarryResourceName, readonly [PublicCashCarryExitAccountName, PublicCashCarryExitAccountName, string]][]) {
+    const resource = resources[name];
+    accountAddresses[indexName] = PublicKey.findProgramAddressSync([
+      Buffer.from('naryx-resource-index'), Buffer.from(kind), Buffer.from(resource.subjectId),
+    ], coreProgram)[0].toBase58();
+    accountAddresses[recordName] = PublicKey.findProgramAddressSync([
+      Buffer.from('naryx-resource-record'), Buffer.from(kind), Buffer.from(resource.subjectId), Buffer.from(bigEndian(1n, 4)),
+    ], coreProgram)[0].toBase58();
+  }
+  const accounts = Object.fromEntries(PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.map((name) => [name, {
+    address: accountAddresses[name],
+    routeBindingId: `exit-${name}`,
+  }])) as PublicCashCarryExitBinding['accounts'];
+  const dynamic = Array.from({ length: dynamicCount }, (_, index) => ({
+    address: namedAddress(`exit-dynamic-${index}`).toBase58(),
+    routeBindingId: `exit-dynamic-${index}`,
+    isWritable: index % 2 === 0,
+  }));
+  const programCodes = new Map<PublicCashCarryExitAccountName, Uint8Array>([
+    ['spotAdapterProgram', spotAdapterCode],
+    ['perpAdapterProgram', firm.deployments.perpAdapter.codeIdentity],
+    ['spotVenueProgram', spotVenueCode],
+    ['perpVenueProgram', firm.deployments.perpVenue.codeIdentity],
+  ]);
+  const tokenAuthorities = {
+    traderTokenA: trader,
+    traderTokenB: trader,
+    spotVaultA: whirlpool,
+    spotVaultB: whirlpool,
+  } as const;
+  const resourceOwnerNames = new Set(PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.filter((name) => name.endsWith('Index') || name.endsWith('Record')));
+  const accountBindings = PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.map((name) => ({
+    routeBindingId: accounts[name].routeBindingId,
+    accountIdentity: accountAddresses[name],
+    ...(programCodes.has(name) ? { codeIdentity: hex(programCodes.get(name)!) } : {}),
+    ...(resourceOwnerNames.has(name) ? { ownerIdentity: coreProgram.toBase58() } : {}),
+    ...(name in tokenAuthorities ? {
+      ownerIdentity: LEGACY_TOKEN_PROGRAM_ID.toBase58(),
+      authorityIdentity: tokenAuthorities[name as keyof typeof tokenAuthorities].toBase58(),
+    } : {}),
+  }));
+  accountBindings.push(...dynamic.map((account) => ({ routeBindingId: account.routeBindingId, accountIdentity: account.address })));
+  if (mode === 'SOLVER_AUTHORIZED') accountBindings.push({ routeBindingId: 'exit-solver', accountIdentity: solver.toBase58() });
+
+  const baseAsset = entry.order.quantity.asset;
+  const quoteAsset = entry.order.maxSpotQuoteIn!.asset;
+  const spotAdapter = { adapterId: 'orca', adapterManifestVersion: 1, adapterManifestHash: resources.spotAdapter.manifestHash };
+  const perpAdapter = entry.route.legs[1]!.adapter;
+  const spotVenue = { subjectId: 'orca-venue', manifestVersion: 1, manifestHash: resources.spotVenue.manifestHash };
+  const spotMarket = { subjectId: 'orca-market', manifestVersion: 1, manifestHash: resources.spotMarket.manifestHash };
+  const exitAdmission = {
+    orderHash: exitOrderHash,
+    quoteHash: exitQuoteHash,
+    routeHash: exitRouteHash,
+    order: {
+      environment: firm.environment,
+      domain: firm.domain,
+      templateId: 'cash-and-carry-v1',
+      templateVersion: entry.order.templateVersion,
+      packageTemplateManifestHash: entry.order.packageTemplateManifestHash,
+      direction: 'LONG_SPOT_SHORT_PERP',
+      settlementClass: 'ATOMIC_POSTCONDITION',
+      action: 'EXIT',
+      partialFillPolicy: 'EXACT_ALL_LEGS',
+      owner: trader.toBase58(),
+      expiryUnit: 'SOLANA_SLOT',
+      expiryValue: 700n,
+      nonce: 8n,
+      quantity: { asset: baseAsset, atoms: 10n },
+      expectedPrePositionSize: { asset: baseAsset, atoms: -10n },
+      minSpotQuoteOut: { asset: quoteAsset, atoms: 50n },
+      entryReceiptHash,
+    },
+    quote: {
+      environment: firm.environment,
+      domain: firm.domain,
+      orderHash: exitOrderHash,
+      routeHash: exitRouteHash,
+      solverId: solver.toBase58(),
+      solverSignatureScheme: 'ED25519',
+      solverVerificationKey: solver.toBytes(),
+      expectedGrossSpotQuantity: { asset: baseAsset, atoms: 10n },
+      expectedSpotNotional: { asset: quoteAsset, atoms: 50n },
+      protocolFee: { asset: quoteAsset, atoms: 0n },
+      solverFee: { asset: quoteAsset, atoms: 0n },
+      validUntilUnit: 'SOLANA_SLOT',
+      validUntilValue: 680n,
+    },
+    route: {
+      environment: firm.environment,
+      domain: firm.domain,
+      orderHash: exitOrderHash,
+      templateId: 'cash-and-carry-v1',
+      templateVersion: entry.order.templateVersion,
+      packageTemplateManifestHash: entry.order.packageTemplateManifestHash,
+      direction: 'LONG_SPOT_SHORT_PERP',
+      settlementClass: 'ATOMIC_POSTCONDITION',
+      executionPlanKind: 'SVM_ATOMIC_CPI',
+      action: 'EXIT',
+      partialFillPolicy: 'EXACT_ALL_LEGS',
+      owner: trader.toBase58(),
+      solver: solver.toBase58(),
+      routeExpiryUnit: 'SOLANA_SLOT',
+      routeExpiryValue: 690n,
+      serviceCharges: [],
+      accountBindings,
+      legs: [
+        { legRole: 'SPOT', side: 'SELL', reduceOnly: false, quantity: { asset: baseAsset, atoms: 10n }, baseAsset, quoteAsset, adapter: spotAdapter, venue: spotVenue, market: spotMarket, limitPrice: { baseAtoms: 1n, quoteAtoms: 5n } },
+        { legRole: 'PERPETUAL', side: 'BUY', reduceOnly: true, quantity: { asset: baseAsset, atoms: 10n }, baseAsset, quoteAsset, adapter: perpAdapter, venue: entry.route.legs[1]!.venue, market: entry.route.legs[1]!.market, limitPrice: { baseAtoms: 1n, quoteAtoms: 8n } },
+      ],
+      actions: [{ authorityBindingId: accounts.trader.routeBindingId }, { authorityBindingId: accounts.trader.routeBindingId }],
+    },
+  } as unknown as PackageAdmission;
+
+  const quote = firm.quoteArgs;
+  const quoteKeys = [firm.accounts.quoteLock, firm.accounts.seriesIndex, firm.accounts.seriesRecord].map((account) => new PublicKey(account.address));
+  const quoteIntentCommitment = domainHash(
+    'NARYX/cash-carry-quote-intent/v1',
+    domainBytes(firm.domain),
+    solver.toBytes(),
+    new PublicKey(firm.accounts.quoteLock.address).toBytes(),
+    entry.orderHash,
+    entry.quoteHash,
+    entry.routeHash,
+    quote.packageBookCodeIdentity,
+    quote.seriesManifestHash,
+    quote.executionClassManifestHash,
+    bigEndian(quote.expectedReferenceSequence, 8),
+    bigEndian(quote.expectedShardSequence, 8),
+    Uint8Array.of(quote.slotIndex),
+    bigEndian(quote.levelId, 8),
+    bigEndian(quote.expectedLevelSequence, 8),
+    Uint8Array.of(quote.expectedSide),
+    bigEndian(quote.packageSizeUnits, 8),
+    bigEndian(quote.expectedPackagePrice, 16),
+    bigEndian(quote.expectedMaxFeeAtoms, 8),
+    bigEndian(quote.expectedExpirySlot, 8),
+    quote.expectedSettlementClassIdentityHash,
+    Uint8Array.of(quote.expectedQuoteMode),
+    quote.expectedReservationPolicyHash,
+    quote.reservationId,
+    quote.expectedFillCommitment,
+    bigEndian(BigInt(quoteKeys.length), 4),
+    ...quoteKeys.map((key) => key.toBytes()),
+  );
+  const routeNames: readonly FirmCashCarryAccountName[] = [
+    'traderBase', 'traderQuote', 'executorBase', 'executorQuote', 'solverQuote', 'reservationClass',
+    'reservationCapacity', 'reservation', 'livePair', 'reservationVault', 'quoteLock', 'seriesIndex',
+    'seriesRecord', 'riseStrategy', 'riseLogAuthority', 'riseGlobalConfig', 'riseTraderAccount',
+    'risePerpAssetMap', 'riseGlobalTraderIndexHeader', 'riseActiveTraderBufferHeader', 'riseOrderbook', 'riseSplineCollection',
+  ];
+  const routeKeys = [...routeNames.map((name) => new PublicKey(firm.accounts[name].address)), ...firm.riseDynamicAccounts.map((account) => new PublicKey(account.address))];
+  const entryRouteAccountsCommitment = domainHash(
+    'NARYX/cash-carry-route-accounts/v1', bigEndian(BigInt(routeKeys.length), 4), ...routeKeys.map((key) => key.toBytes()),
+  );
+  const packageKeys = [firm.accounts.traderBase, firm.accounts.traderQuote, firm.accounts.riseStrategy].map((account) => new PublicKey(account.address));
+  const packageAccountsCommitment = domainHash(
+    'NARYX/cash-carry-package-accounts/v1', bigEndian(3n, 4), ...packageKeys.map((key) => key.toBytes()),
+  );
+  const orderedResources: readonly PublicCashCarryResourceName[] = ['spotAdapter', 'perpAdapter', 'spotMarket', 'perpMarket', 'spotVenue', 'perpVenue', 'baseAsset', 'quoteAsset'];
+  const manifestBytes = (resource: PublicCashCarryResourceEvidence) => Buffer.concat([
+    Buffer.from(resource.subjectId), Buffer.from(bigEndian(BigInt(resource.manifestVersion), 4)), Buffer.from(resource.manifestHash),
+  ]);
+  const commonCommitmentParts = [
+    protocolIdBytes('cash-and-carry-v1'),
+    bigEndian(BigInt(entry.order.templateVersion), 4),
+    entry.order.packageTemplateManifestHash,
+    Uint8Array.of(1),
+    bigEndian(1n, 4),
+    settlementManifestHash,
+    Uint8Array.of(quoteAsset.decimals),
+  ];
+  const resourceAdmissionCommitment = domainHash(
+    'NARYX/cash-carry-resources/v1',
+    domainBytes(firm.domain),
+    ...orderedResources.map((name) => manifestBytes(resources[name])),
+    ...commonCommitmentParts,
+    ...orderedResources.map((name) => new PublicKey(accounts[`${name}Record` as PublicCashCarryExitAccountName].address).toBytes()),
+  );
+  const economicNames: readonly PublicCashCarryResourceName[] = ['perpAdapter', 'perpMarket', 'perpVenue', 'baseAsset', 'quoteAsset'];
+  const economicPackageCommitment = domainHash(
+    'NARYX/cash-carry-economic-package/v1',
+    domainBytes(firm.domain),
+    ...economicNames.map((name) => manifestBytes(resources[name])),
+    ...commonCommitmentParts,
+    ...economicNames.map((name) => new PublicKey(accounts[`${name}Record` as PublicCashCarryExitAccountName].address).toBytes()),
+  );
+  const domainIdentity = domainHash('CON/v1/domain-ref-identity', domainBytes(firm.domain));
+  const seriesIdentity = domainHash(
+    'CON/v1/cash-carry-series-identity', domainIdentity, firm.series.seriesManifestHash, firm.series.executionClassManifestHash,
+  );
+  const seriesBindingHash = domainHash(
+    'CON/v1/cash-carry-series-binding',
+    bigEndian(1n, 4),
+    bigEndian(1n, 4),
+    domainIdentity,
+    firm.series.seriesManifestHash,
+    firm.series.executionClassManifestHash,
+    domainHash('CON/v1/protocol-id-identity', protocolIdBytes('cash-and-carry-v1')),
+    bigEndian(BigInt(entry.order.templateVersion), 4),
+    entry.order.packageTemplateManifestHash,
+    firm.series.settlementClassIdentityHash,
+    manifestBytes(resources.baseAsset),
+    manifestBytes(resources.quoteAsset),
+    domainHash('CON/v1/protocol-id-identity', protocolIdBytes('annualized-net-yield-v1')),
+    Uint8Array.of(1),
+    bigEndian(firm.series.spotBaseAtomsPerPackageUnit, 16),
+    bigEndian(firm.series.perpQuantityAtomsPerPackageUnit, 16),
+  );
+  const publicExit = {
+    admission: exitAdmission,
+    activeDomain: { ...firm.domain, domainManifestVersion: 2, domainManifestHash: hash(98) } as DomainRef,
+    deployments: {
+      core: firm.deployments.core,
+      spotAdapter: { programId: spotAdapterProgram, programDataAddress: spotAdapterData, codeIdentity: spotAdapterCode },
+      perpAdapter: firm.deployments.perpAdapter,
+      spotVenue: { programId: spotVenueProgram, programDataAddress: spotVenueData, codeIdentity: spotVenueCode },
+      perpVenue: firm.deployments.perpVenue,
+    },
+    accounts,
+    riseDynamicAccounts: dynamic,
+    resources: {
+      ...resources,
+      quoteDecimals: quoteAsset.decimals,
+      spotBaseLotAtoms: 1n,
+      perpBaseLotAtoms: 1n,
+      perpQuoteTickAtomsPerBaseLot: 1n,
+      settlementVersion: 1 as const,
+      settlementManifestHash,
+    },
+    tokenAccounts: {
+      traderTokenA: { mint: baseMint, authority: trader, amountAtoms: 10n },
+      traderTokenB: { mint: quoteMint, authority: trader, amountAtoms: 0n },
+      spotVaultA: { mint: baseMint, authority: whirlpool, amountAtoms: 1_000n },
+      spotVaultB: { mint: quoteMint, authority: whirlpool, amountAtoms: 1_000n },
+    },
+    historicalSeries: {
+      identityKey: seriesIdentity,
+      bindingVersion: 1,
+      bindingHash: seriesBindingHash,
+      seriesManifestHash: firm.series.seriesManifestHash,
+      executionClassManifestHash: firm.series.executionClassManifestHash,
+      index: firm.accounts.seriesIndex.address,
+      record: firm.accounts.seriesRecord.address,
+    },
+    openPackage: {
+      version: 2 as const,
+      address: firm.accounts.openPackage.address,
+      domain: firm.domain,
+      trader,
+      entryReceipt: firm.accounts.receipt.address,
+      entryRouteHash: entry.routeHash,
+      quoteIntentCommitment,
+      packageFillCommitment: firm.quoteArgs.expectedFillCommitment,
+      entryResourceAdmissionCommitment: firm.resourceAdmissionCommitment,
+      entryRouteAccountsCommitment,
+      economicPackageCommitment,
+      packageAccountsCommitment,
+      spotQuantityAtoms: firm.executionArgs.spotQuantityAtoms,
+      perpQuantityAtoms: firm.executionArgs.perpQuantityAtoms,
+      entryPackageNonce: firm.executionArgs.nonce,
+    },
+    entryReceipt: {
+      address: firm.accounts.receipt.address,
+      ownerProgram: coreProgram,
+      receiptHash: entryReceiptHash,
+      domain: firm.domain,
+      orderHash: entry.orderHash,
+      quoteHash: entry.quoteHash,
+      routeHash: entry.routeHash,
+      trader,
+      solver,
+      nonce: firm.executionArgs.nonce,
+      action: 'ENTRY' as const,
+      recovery: false as const,
+      quoteIntentCommitment,
+      packageFillCommitment: firm.quoteArgs.expectedFillCommitment,
+      resourceAdmissionCommitment: firm.resourceAdmissionCommitment,
+      routeAccountsCommitment: entryRouteAccountsCommitment,
+      spotQuantityAtoms: firm.executionArgs.spotQuantityAtoms,
+      perpQuantityAtoms: firm.executionArgs.perpQuantityAtoms,
+    },
+    executionArgs: {
+      spotQuantityAtoms: 10n,
+      perpQuantityAtoms: 10n,
+      spotLimitQuoteAtomsPerBaseLot: 5n,
+      perpLimitQuoteAtomsPerBaseLot: 8n,
+      packageNotionalAtoms: 50n,
+      spotSqrtPriceLimit: 1n,
+      minimumRiseCollateralQuoteLots: 1n,
+      clientOrderId: 10n,
+      expirySlot: 680n,
+      nonce: 8n,
+    },
+    postconditions: {
+      expectedSpotBaseDebitAtoms: 10n,
+      minimumSpotQuoteOutAtoms: 50n,
+      expectedPreRiseBaseLots: -10n,
+      expectedPostRiseBaseLots: 0n as const,
+      minimumPostRiseCollateralQuoteLots: 1n,
+    },
+    authorization: mode === 'SOLVER_AUTHORIZED'
+      ? { mode, activeSolver: solver, solverRouteBindingId: 'exit-solver', solverSignature: new Uint8Array(64).fill(100) }
+      : { mode, recoveryAuthority: trader, recoveryAuthorityRouteBindingId: accounts.trader.routeBindingId, acknowledgedOpenPackage: firm.accounts.openPackage.address },
+    resourceAdmissionCommitment,
+    computeUnitLimit: 1_000_000,
+    currentSlot: 200n,
+    traderRouteBindingId: accounts.trader.routeBindingId,
+  } as const satisfies PublicCashCarryExitBinding;
+  (firm as { publicExit: PublicCashCarryExitBinding }).publicExit = publicExit;
+  return publicExit;
+}
+
 test('compiles separate solver lock and atomic trader firm entry from the generated IDL', () => {
   const { admission, binding } = fixture();
   const result = compileFirmCashCarryPlan(admission, binding);
@@ -509,7 +973,7 @@ test('compiles separate solver lock and atomic trader firm entry from the genera
   assert(result.traderEntry.instructions[0]!.programId.equals(ComputeBudgetProgram.programId));
   assert(result.traderEntry.instructions[1]!.programId.equals(Ed25519Program.programId));
   assert.deepEqual(Array.from(result.traderEntry.instructions[1]!.data.subarray(112)), Array.from(result.executionDigest));
-  assert.equal(result.publicExit.code, 'PUBLISHED_PUBLIC_EXIT_IDL_AND_BINDINGS_REQUIRED');
+  assert.deepEqual(result.publicExit, { status: 'EVIDENCE_REQUIRED', code: 'PUBLIC_EXIT_BINDING_REQUIRED' });
   assert.deepEqual(result.solverLock.messageSize, { status: 'UNPROVEN', reason: 'RECENT_BLOCKHASH_AND_ALT_CONTENTS_REQUIRED' });
 
   const coder = new BorshCoder(coreIdl);
@@ -585,6 +1049,77 @@ test('accepts the exact 64 resolved-address boundary', () => {
   const { admission, binding } = fixture(5);
   const result = compileFirmCashCarryPlan(admission, binding);
   assert.equal(result.traderEntry.resolvedAddressCount, 64);
+});
+
+test('encodes solver-authorized and trader-recovery public exits with distinct authorization', () => {
+  const normal = fixture();
+  attachPublicExit(normal, 'SOLVER_AUTHORIZED');
+  const normalPlan = compileFirmCashCarryPlan(normal.admission, normal.binding).publicExit;
+  assert.equal(normalPlan.status, 'SUPPORTED');
+  if (normalPlan.status === 'SUPPORTED') {
+    assert.equal(normalPlan.authorization.mode, 'SOLVER_AUTHORIZED');
+    assert.equal(normalPlan.instructions.length, 3);
+    assert(normalPlan.instructions[1]!.programId.equals(Ed25519Program.programId));
+    assert.deepEqual(Array.from(normalPlan.instructions[1]!.data.subarray(112)), Array.from(normalPlan.executionDigest));
+    const decoded = new BorshCoder(coreIdl).instruction.decode(normalPlan.instructions[2]!.data);
+    assert.equal(decoded?.name, 'execute_cash_and_carry');
+    const args = (decoded?.data as { args: { action: object; recovery: boolean; spot_quantity_atoms: InstanceType<typeof BN>; nonce: InstanceType<typeof BN> } }).args;
+    assert.deepEqual(args.action, { Exit: {} });
+    assert.equal(args.recovery, false);
+    assert.equal(args.spot_quantity_atoms.toString(), '10');
+    assert.equal(args.nonce.toString(), '8');
+  }
+
+  const recovery = fixture();
+  attachPublicExit(recovery, 'TRADER_RECOVERY');
+  const recoveryPlan = compileFirmCashCarryPlan(recovery.admission, recovery.binding).publicExit;
+  assert.equal(recoveryPlan.status, 'SUPPORTED');
+  if (recoveryPlan.status === 'SUPPORTED') {
+    assert.equal(recoveryPlan.authorization.mode, 'TRADER_RECOVERY');
+    assert.equal(recoveryPlan.instructions.length, 2);
+    assert(recoveryPlan.instructions.every((instruction) => !instruction.programId.equals(Ed25519Program.programId)));
+    const decoded = new BorshCoder(coreIdl).instruction.decode(recoveryPlan.instructions[1]!.data);
+    assert.equal((decoded?.data as { args: { recovery: boolean } }).args.recovery, true);
+  }
+});
+
+test('proves the 64-address public-exit boundary and full unsigned envelope', () => {
+  const value = fixture();
+  const exit = attachPublicExit(value, 'SOLVER_AUTHORIZED', 8);
+  const lookupTable = new AddressLookupTableAccount({
+    key: namedAddress('exit-lookup-table'),
+    state: {
+      deactivationSlot: (1n << 64n) - 1n,
+      lastExtendedSlot: 0,
+      lastExtendedSlotStartIndex: 0,
+      addresses: exit.admission.route.accountBindings.map((account) => new PublicKey(account.accountIdentity)),
+    },
+  });
+  (exit as { messageContext: PublicCashCarryExitBinding['messageContext'] }).messageContext = {
+    recentBlockhash: namedAddress('exit-blockhash').toBase58(),
+    addressLookupTables: [lookupTable],
+  };
+  const plan = compileFirmCashCarryPlan(value.admission, value.binding).publicExit;
+  assert.equal(plan.status, 'SUPPORTED');
+  if (plan.status === 'SUPPORTED') {
+    assert.equal(plan.resolvedAddressCount, 64);
+    assert.equal(plan.messageSize.status, 'PROVEN');
+    if (plan.messageSize.status === 'PROVEN') {
+      assert.deepEqual([plan.messageSize.serializedMessageBytes, plan.messageSize.serializedTransactionBytes], [684, 749]);
+      assert.equal(plan.messageSize.fitsPacketDataLimit, plan.messageSize.serializedTransactionBytes <= PACKET_DATA_SIZE);
+    }
+  }
+
+  const over = fixture();
+  attachPublicExit(over, 'SOLVER_AUTHORIZED', 9);
+  assert.throws(() => compileFirmCashCarryPlan(over.admission, over.binding), /public exit exceeds 64 resolved addresses/);
+});
+
+test('rejects a public exit whose open package points at another entry receipt', () => {
+  const value = fixture();
+  const exit = attachPublicExit(value, 'SOLVER_AUTHORIZED');
+  (exit.openPackage as { entryReceipt: PublicKey }).entryReceipt = namedAddress('wrong-entry-receipt');
+  assert.throws(() => compileFirmCashCarryPlan(value.admission, value.binding), /open package entry receipt mismatch/);
 });
 
 test('proves the full unsigned v0 transaction envelope size with concrete message context', () => {
