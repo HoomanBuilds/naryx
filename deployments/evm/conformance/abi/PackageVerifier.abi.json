@@ -18,6 +18,11 @@
         "internalType": "contract ResourceRegistry"
       },
       {
+        "name": "cashCarrySeriesRegistry_",
+        "type": "address",
+        "internalType": "contract CashCarrySeriesRegistry"
+      },
+      {
         "name": "packageQuoteShardRegistry_",
         "type": "address",
         "internalType": "contract PackageQuoteShardRegistry"
@@ -110,6 +115,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -759,6 +779,21 @@
             "internalType": "bytes32"
           },
           {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -1392,6 +1427,16 @@
                 "internalType": "bytes32"
               },
               {
+                "name": "expectedDirection",
+                "type": "uint8",
+                "internalType": "enum PackageQuoteShard.Direction"
+              },
+              {
+                "name": "expectedSettlementClassIdentityHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
                 "name": "expectedEpoch",
                 "type": "uint64",
                 "internalType": "uint64"
@@ -1521,6 +1566,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -2117,6 +2177,32 @@
   },
   {
     "type": "function",
+    "name": "cashCarrySeriesRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract CashCarrySeriesRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "cashCarrySeriesRegistryCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "config",
     "inputs": [],
     "outputs": [
@@ -2256,6 +2342,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -2890,7 +2991,7 @@
   },
   {
     "type": "function",
-    "name": "openPackages",
+    "name": "openPackage",
     "inputs": [
       {
         "name": "strategyAccount",
@@ -2900,64 +3001,86 @@
     ],
     "outputs": [
       {
-        "name": "entryReceiptHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "routeHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      },
-      {
-        "name": "spotPort",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "perpObserver",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "perpInstrument",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "perpExpiry",
-        "type": "uint32",
-        "internalType": "uint32"
-      },
-      {
-        "name": "baseToken",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "quoteToken",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "baseQuantityAtoms",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "perpQuantityWad",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "packageSizeUnits",
-        "type": "uint128",
-        "internalType": "uint128"
-      },
-      {
-        "name": "entryPerpNotionalWad",
-        "type": "uint128",
-        "internalType": "uint128"
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct PackageVerifier.OpenPackage",
+        "components": [
+          {
+            "name": "entryReceiptHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "spotPort",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "perpObserver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "perpInstrument",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "perpExpiry",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "baseToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "quoteToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "baseQuantityAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "perpQuantityWad",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "packageSizeUnits",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entryPerpNotionalWad",
+            "type": "uint128",
+            "internalType": "uint128"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -3020,6 +3143,16 @@
             "components": [
               {
                 "name": "levelId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "expectedDirection",
+                "type": "uint8",
+                "internalType": "enum PackageQuoteShard.Direction"
+              },
+              {
+                "name": "expectedSettlementClassIdentityHash",
                 "type": "bytes32",
                 "internalType": "bytes32"
               },
@@ -3181,6 +3314,21 @@
           },
           {
             "name": "packageQuoteFillCommitment",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -3399,6 +3547,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -4060,6 +4223,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
@@ -4790,7 +4968,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidPackageUnits",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidRecoveryExit",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSeriesBinding",
     "inputs": []
   },
   {

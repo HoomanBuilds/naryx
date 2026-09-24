@@ -218,6 +218,16 @@
             "internalType": "bytes32"
           },
           {
+            "name": "expectedDirection",
+            "type": "uint8",
+            "internalType": "enum PackageQuoteShard.Direction"
+          },
+          {
+            "name": "expectedSettlementClassIdentityHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "expectedEpoch",
             "type": "uint64",
             "internalType": "uint64"
@@ -1060,6 +1070,11 @@
   },
   {
     "type": "error",
+    "name": "InvalidDirection",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidFee",
     "inputs": []
   },
@@ -1086,6 +1101,11 @@
   {
     "type": "error",
     "name": "InvalidReservation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSettlementClass",
     "inputs": []
   },
   {

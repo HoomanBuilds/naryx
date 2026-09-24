@@ -11,6 +11,7 @@ readonly -a ARTIFACTS=(
     "src/ProtocolConfig.sol:ProtocolConfig|ProtocolConfig.abi.json"
     "src/SolverRegistry.sol:SolverRegistry|SolverRegistry.abi.json"
     "src/ResourceRegistry.sol:ResourceRegistry|ResourceRegistry.abi.json"
+    "src/CashCarrySeriesRegistry.sol:CashCarrySeriesRegistry|CashCarrySeriesRegistry.abi.json"
     "src/UniswapV3SpotPort.sol:UniswapV3SpotPort|UniswapV3SpotPort.abi.json"
     "src/FirmInventoryReservationBook.sol:FirmInventoryReservationBook|FirmInventoryReservationBook.abi.json"
     "src/DirectInventorySpotPort.sol:DirectInventorySpotPort|DirectInventorySpotPort.abi.json"

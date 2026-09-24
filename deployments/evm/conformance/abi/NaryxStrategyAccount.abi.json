@@ -78,6 +78,21 @@
             "internalType": "bytes32"
           },
           {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -728,6 +743,21 @@
             "internalType": "bytes32"
           },
           {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
             "name": "action",
             "type": "uint8",
             "internalType": "uint8"
@@ -1361,6 +1391,16 @@
                 "internalType": "bytes32"
               },
               {
+                "name": "expectedDirection",
+                "type": "uint8",
+                "internalType": "enum PackageQuoteShard.Direction"
+              },
+              {
+                "name": "expectedSettlementClassIdentityHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
                 "name": "expectedEpoch",
                 "type": "uint64",
                 "internalType": "uint64"
@@ -1495,6 +1535,21 @@
           },
           {
             "name": "packageQuoteIntentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesIdentityKey",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "seriesBindingVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "seriesBindingHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
