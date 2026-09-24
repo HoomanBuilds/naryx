@@ -1,10 +1,12 @@
 use anchor_lang::prelude::*;
 use naryx_core::{DomainRef, ProtocolId};
+use solana_sha256_hasher::hashv;
 
 use crate::{
     constants::{
-        LEVEL_ACTIVE, LEVEL_INACTIVE, MAX_QUOTE_LEVELS, PACKAGE_BOOK_VERSION,
-        QUOTE_MODE_EXECUTION_COMMITMENT, QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_ASK, QUOTE_SIDE_BID,
+        DOMAIN_REF_IDENTITY_DOMAIN, LEVEL_ACTIVE, LEVEL_INACTIVE, MAX_QUOTE_LEVELS,
+        PACKAGE_BOOK_VERSION, QUOTE_MODE_EXECUTION_COMMITMENT, QUOTE_MODE_FIRM_ONCHAIN,
+        QUOTE_SIDE_ASK, QUOTE_SIDE_BID,
     },
     error::ErrorCode,
 };
@@ -14,6 +16,7 @@ use crate::{
 pub struct PackageBookClass {
     pub version: u16,
     pub domain: DomainRef,
+    pub domain_identity_hash: [u8; 32],
     pub domain_manifest_version: u32,
     pub domain_manifest_hash: [u8; 32],
     pub core_program: Pubkey,
@@ -29,6 +32,11 @@ pub struct PackageBookClass {
     pub max_fee_atoms: u64,
     pub firm_onchain_enabled: bool,
     pub bump: u8,
+}
+
+pub fn domain_ref_identity(domain: &DomainRef) -> [u8; 32] {
+    let canonical = domain.canonical_bytes();
+    hashv(&[DOMAIN_REF_IDENTITY_DOMAIN, canonical.as_ref()]).to_bytes()
 }
 
 #[zero_copy]

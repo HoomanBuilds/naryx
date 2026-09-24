@@ -6,11 +6,12 @@ use crate::{
     error::ErrorCode,
     instructions::live_code_identity,
     program::NaryxPackageBook,
-    state::PackageBookClass,
+    state::{domain_ref_identity, PackageBookClass},
 };
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
 pub struct InitializeClassArgs {
+    pub domain_identity_hash: [u8; 32],
     pub domain_manifest_version: u32,
     pub domain_manifest_hash: [u8; 32],
     pub max_heartbeat_ttl_slots: u64,
@@ -49,6 +50,7 @@ pub struct InitializeClass<'info> {
         space = 8 + PackageBookClass::INIT_SPACE,
         seeds = [
             PACKAGE_BOOK_CLASS_SEED,
+            args.domain_identity_hash.as_ref(),
             args.domain_manifest_version.to_le_bytes().as_ref(),
             args.domain_manifest_hash.as_ref()
         ],
@@ -68,6 +70,10 @@ pub fn handler(ctx: Context<InitializeClass>, args: InitializeClassArgs) -> Resu
                 .domain_manifest_version()
             && args.domain_manifest_hash
                 == ctx.accounts.protocol_config.domain.domain_manifest_hash(),
+        ErrorCode::DomainInactive
+    );
+    require!(
+        args.domain_identity_hash == domain_ref_identity(&ctx.accounts.protocol_config.domain),
         ErrorCode::DomainInactive
     );
     require!(
@@ -92,6 +98,7 @@ pub fn handler(ctx: Context<InitializeClass>, args: InitializeClassArgs) -> Resu
     ctx.accounts.package_book_class.set_inner(PackageBookClass {
         version: PACKAGE_BOOK_VERSION,
         domain: ctx.accounts.protocol_config.domain.clone(),
+        domain_identity_hash: args.domain_identity_hash,
         domain_manifest_version: args.domain_manifest_version,
         domain_manifest_hash: args.domain_manifest_hash,
         core_program: ctx.accounts.core_program.key(),

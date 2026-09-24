@@ -52,6 +52,7 @@ pub struct ConsumeCapacity<'info> {
     #[account(
         seeds = [
             PACKAGE_BOOK_CLASS_SEED,
+            package_book_class.domain_identity_hash.as_ref(),
             package_book_class.domain_manifest_version.to_le_bytes().as_ref(),
             package_book_class.domain_manifest_hash.as_ref()
         ],

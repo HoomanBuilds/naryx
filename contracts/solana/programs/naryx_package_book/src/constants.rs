@@ -9,5 +9,6 @@ pub const QUOTE_SIDE_ASK: u8 = 2;
 pub const QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
 pub const QUOTE_MODE_FIRM_ONCHAIN: u8 = 2;
 pub const FILL_COMMITMENT_DOMAIN: &[u8] = b"CON/v1/package-fill-commitment";
+pub const DOMAIN_REF_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-identity";
 pub const LEVEL_ACTIVE: u8 = 1;
 pub const LEVEL_INACTIVE: u8 = 0;

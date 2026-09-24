@@ -6,7 +6,9 @@ use naryx_package_book::{
         QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_BID,
     },
     instructions::consume_capacity::fill_commitment,
-    state::{PackageBookClass, PackageQuoteShard, QuoteLevel, QuoteLevelUpdate},
+    state::{
+        domain_ref_identity, PackageBookClass, PackageQuoteShard, QuoteLevel, QuoteLevelUpdate,
+    },
 };
 
 fn key(byte: u8) -> Pubkey {
@@ -16,6 +18,7 @@ fn key(byte: u8) -> Pubkey {
 fn class(domain: DomainRef) -> PackageBookClass {
     PackageBookClass {
         version: PACKAGE_BOOK_VERSION,
+        domain_identity_hash: domain_ref_identity(&domain),
         domain,
         domain_manifest_version: 1,
         domain_manifest_hash: [13; 32],
@@ -92,6 +95,14 @@ fn quote_shard_lifecycle_is_sequence_safe_and_capacity_bounded() {
     let class = class(domain.clone());
     let mut shard = shard(domain);
     let mut levels = [QuoteLevel::EMPTY; MAX_QUOTE_LEVELS];
+    assert_eq!(
+        class.domain_identity_hash,
+        [
+            0xfd, 0x9e, 0x05, 0x2d, 0x64, 0x4e, 0xc2, 0x6a, 0x93, 0x30, 0x85, 0xde, 0x74, 0x57,
+            0x77, 0x27, 0x8e, 0x6a, 0xb8, 0xbd, 0xfa, 0x51, 0x3e, 0xfc, 0xeb, 0xee, 0xea, 0x3c,
+            0xe7, 0x3e, 0xe0, 0x45,
+        ]
+    );
 
     shard
         .update_reference(&class, 1, 1, 105, [14; 32], 60, 10)
