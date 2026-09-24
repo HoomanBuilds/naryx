@@ -103,3 +103,19 @@ fn reservation_lifecycle_guards_and_accounting() {
     validate_entry_deltas(10, 25, 2, 12, 40, 15, 5, 30, 10, 0).unwrap();
     assert!(validate_entry_deltas(10, 25, 2, 11, 40, 15, 5, 30, 10, 0).is_err());
 }
+
+#[test]
+fn reservation_id_matches_protocol_vector() {
+    let domain = DomainRef::new("eip155:8453", 7, [0x11; 32]).unwrap();
+    let solver_id = ProtocolId::new("solver-alpha").unwrap();
+    let mut nonce = [0u8; 32];
+    nonce[31] = 42;
+    assert_eq!(
+        reservation_id(&domain, &solver_id, &[0x22; 32], &nonce),
+        [
+            0x82, 0x41, 0x72, 0x88, 0x52, 0xcb, 0x44, 0x0e, 0x70, 0xea, 0x75, 0x80, 0x18, 0x94,
+            0xdd, 0x27, 0x5a, 0xd2, 0x06, 0x10, 0x76, 0xce, 0xee, 0xc9, 0x6b, 0xb4, 0xe6, 0x6b,
+            0x78, 0x8d, 0x99, 0xd1,
+        ]
+    );
+}
