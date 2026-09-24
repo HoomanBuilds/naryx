@@ -106,7 +106,7 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         quoteIsToken0 = IUniswapV3Pool(deployment.pool).token0() == address(deployment.quoteToken);
     }
 
-    function buyExactOutput(uint256 packageNonce, uint256 quantity, uint256 maxQuote)
+    function buyExactOutput(uint256 packageNonce, bytes32 spotFillCommitment, uint256 quantity, uint256 maxQuote)
         external
         nonReentrant
         returns (uint256 quoteIn)
@@ -124,24 +124,26 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         quoteToken.safeTransferFrom(msg.sender, address(this), maxQuote);
         if (quoteToken.balanceOf(address(this)) != portQuoteBefore + maxQuote) revert PostconditionFailed();
 
-        bytes memory callbackData = abi.encode(msg.sender, packageNonce, true, maxQuote);
-        _callbackCommitment = keccak256(callbackData);
-        bool zeroForOne = quoteIsToken0;
-        (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
-            .swap(
-                msg.sender,
-                zeroForOne,
-                -int256(quantity),
-                zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-                callbackData
-            );
-        if (_callbackCommitment != bytes32(0)) revert PostconditionFailed();
+        {
+            bytes memory callbackData = abi.encode(msg.sender, packageNonce, spotFillCommitment, true, maxQuote);
+            _callbackCommitment = keccak256(callbackData);
+            bool zeroForOne = quoteIsToken0;
+            (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
+                .swap(
+                    msg.sender,
+                    zeroForOne,
+                    -int256(quantity),
+                    zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
+                    callbackData
+                );
+            if (_callbackCommitment != bytes32(0)) revert PostconditionFailed();
 
-        int256 quoteDelta = quoteIsToken0 ? amount0 : amount1;
-        int256 baseDelta = quoteIsToken0 ? amount1 : amount0;
-        if (quoteDelta <= 0 || baseDelta != -int256(quantity)) revert PostconditionFailed();
-        quoteIn = uint256(quoteDelta);
-        if (quoteIn > maxQuote) revert PostconditionFailed();
+            int256 quoteDelta = quoteIsToken0 ? amount0 : amount1;
+            int256 baseDelta = quoteIsToken0 ? amount1 : amount0;
+            if (quoteDelta <= 0 || baseDelta != -int256(quantity)) revert PostconditionFailed();
+            quoteIn = uint256(quoteDelta);
+            if (quoteIn > maxQuote) revert PostconditionFailed();
+        }
 
         quoteToken.safeTransfer(msg.sender, maxQuote - quoteIn);
         if (
@@ -150,10 +152,10 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
                 || baseToken.balanceOf(msg.sender) != strategyBaseBefore + quantity
                 || quoteToken.balanceOf(msg.sender) != strategyQuoteBefore - quoteIn
         ) revert PostconditionFailed();
-        _recordSpotFill(packageNonce, ENTRY, quantity, quoteIn);
+        _recordSpotFill(packageNonce, spotFillCommitment, ENTRY, quantity, quoteIn);
     }
 
-    function sellExactInput(uint256 packageNonce, uint256 quantity, uint256 minQuote)
+    function sellExactInput(uint256 packageNonce, bytes32 spotFillCommitment, uint256 quantity, uint256 minQuote)
         external
         nonReentrant
         returns (uint256 quoteOut)
@@ -171,26 +173,28 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         baseToken.safeTransferFrom(msg.sender, address(this), quantity);
         if (baseToken.balanceOf(address(this)) != portBaseBefore + quantity) revert PostconditionFailed();
 
-        bytes memory callbackData = abi.encode(msg.sender, packageNonce, false, quantity);
-        _callbackCommitment = keccak256(callbackData);
-        bool zeroForOne = !quoteIsToken0;
-        (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
-            .swap(
-                msg.sender,
-                zeroForOne,
-                int256(quantity),
-                zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
-                callbackData
-            );
-        if (_callbackCommitment != bytes32(0)) revert PostconditionFailed();
+        {
+            bytes memory callbackData = abi.encode(msg.sender, packageNonce, spotFillCommitment, false, quantity);
+            _callbackCommitment = keccak256(callbackData);
+            bool zeroForOne = !quoteIsToken0;
+            (int256 amount0, int256 amount1) = IUniswapV3Pool(pool)
+                .swap(
+                    msg.sender,
+                    zeroForOne,
+                    int256(quantity),
+                    zeroForOne ? MIN_SQRT_RATIO_PLUS_ONE : MAX_SQRT_RATIO_MINUS_ONE,
+                    callbackData
+                );
+            if (_callbackCommitment != bytes32(0)) revert PostconditionFailed();
 
-        int256 quoteDelta = quoteIsToken0 ? amount0 : amount1;
-        int256 baseDelta = quoteIsToken0 ? amount1 : amount0;
-        if (quoteDelta >= 0 || quoteDelta == type(int256).min || baseDelta != int256(quantity)) {
-            revert PostconditionFailed();
+            int256 quoteDelta = quoteIsToken0 ? amount0 : amount1;
+            int256 baseDelta = quoteIsToken0 ? amount1 : amount0;
+            if (quoteDelta >= 0 || quoteDelta == type(int256).min || baseDelta != int256(quantity)) {
+                revert PostconditionFailed();
+            }
+            quoteOut = uint256(-quoteDelta);
+            if (quoteOut < minQuote) revert PostconditionFailed();
         }
-        quoteOut = uint256(-quoteDelta);
-        if (quoteOut < minQuote) revert PostconditionFailed();
 
         if (
             baseToken.balanceOf(address(this)) != portBaseBefore
@@ -198,7 +202,7 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
                 || baseToken.balanceOf(msg.sender) != strategyBaseBefore - quantity
                 || quoteToken.balanceOf(msg.sender) != strategyQuoteBefore + quoteOut
         ) revert PostconditionFailed();
-        _recordSpotFill(packageNonce, EXIT, quantity, quoteOut);
+        _recordSpotFill(packageNonce, spotFillCommitment, EXIT, quantity, quoteOut);
     }
 
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
@@ -208,7 +212,7 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         }
         _callbackCommitment = bytes32(0);
 
-        (,, bool quoteOwed, uint256 maxOwed) = abi.decode(data, (address, uint256, bool, uint256));
+        (,,, bool quoteOwed, uint256 maxOwed) = abi.decode(data, (address, uint256, bytes32, bool, uint256));
         int256 owedDelta = quoteOwed == quoteIsToken0 ? amount0Delta : amount1Delta;
         int256 outputDelta = quoteOwed == quoteIsToken0 ? amount1Delta : amount0Delta;
         if (owedDelta <= 0 || outputDelta >= 0 || uint256(owedDelta) > maxOwed) revert InvalidCallback();
@@ -221,10 +225,23 @@ contract UniswapV3SpotPort is IExactSpotPort, ReentrancyGuard {
         _assertDeployment();
     }
 
-    function _recordSpotFill(uint256 packageNonce, uint8 action, uint256 baseAtoms, uint256 quoteAtoms) private {
+    function _recordSpotFill(
+        uint256 packageNonce,
+        bytes32 spotFillCommitment,
+        uint8 action,
+        uint256 baseAtoms,
+        uint256 quoteAtoms
+    ) private {
         ISpotFillRecorder(verifier)
             .recordSpotFill(
-                msg.sender, packageNonce, action, address(baseToken), address(quoteToken), baseAtoms, quoteAtoms
+                msg.sender,
+                packageNonce,
+                spotFillCommitment,
+                action,
+                address(baseToken),
+                address(quoteToken),
+                baseAtoms,
+                quoteAtoms
             );
     }
 

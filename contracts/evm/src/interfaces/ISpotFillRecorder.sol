@@ -5,6 +5,7 @@ interface ISpotFillRecorder {
     function recordSpotFill(
         address strategyAccount,
         uint256 packageNonce,
+        bytes32 spotFillCommitment,
         uint8 action,
         address baseToken,
         address quoteToken,

@@ -127,12 +127,17 @@ contract VerifierStrategyAccount is IERC1271 {
         verifier.begin(execution, admission, traderSignature, solverSignature);
         IERC20(execution.quoteToken).approve(execution.spotPort, execution.spotQuoteBoundAtoms);
         UniswapV3SpotPort(execution.spotPort)
-            .buyExactOutput(execution.nonce, execution.baseQuantityAtoms, execution.spotQuoteBoundAtoms);
+            .buyExactOutput(
+                execution.nonce,
+                execution.spotFillCommitment,
+                execution.baseQuantityAtoms,
+                execution.spotQuoteBoundAtoms
+            );
         ISynFuturesInstrument(execution.perpInstrument).trade(perpArgs);
         return verifier.finalize(execution, admission, false);
     }
 
-    function beginWithWrongFill(
+    function executeEntryWithWrongSpotFillCommitment(
         PackageVerifier verifier,
         PackageVerifier.Execution calldata execution,
         ResourceRegistry.CashCarryAdmission calldata admission,
@@ -140,15 +145,14 @@ contract VerifierStrategyAccount is IERC1271 {
         bytes calldata solverSignature
     ) external {
         verifier.begin(execution, admission, traderSignature, solverSignature);
-        verifier.recordSpotFill(
-            address(this),
-            execution.nonce,
-            execution.action,
-            execution.baseToken,
-            execution.quoteToken,
-            execution.baseQuantityAtoms,
-            execution.spotQuoteBoundAtoms
-        );
+        IERC20(execution.quoteToken).approve(execution.spotPort, execution.spotQuoteBoundAtoms);
+        UniswapV3SpotPort(execution.spotPort)
+            .buyExactOutput(
+                execution.nonce,
+                keccak256("wrong-spot-fill"),
+                execution.baseQuantityAtoms,
+                execution.spotQuoteBoundAtoms
+            );
     }
 }
 
@@ -225,13 +229,15 @@ contract PackageVerifierTest is Test {
         assertEq(receipt_.postPerpEntryNotionalWad, uint128(2 ether));
     }
 
-    function testWrongSpotFillCallerReverts() public {
+    function testWrongSpotFillCommitmentReverts() public {
         (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
         admissionRegistry.setExpectedAdmissionHash(keccak256(abi.encode(admission)));
         (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
 
         vm.expectRevert(PackageVerifier.InvalidSpotFill.selector);
-        strategy.beginWithWrongFill(verifier, execution, admission, traderSignature, solverSignature);
+        strategy.executeEntryWithWrongSpotFillCommitment(
+            verifier, execution, admission, traderSignature, solverSignature
+        );
         assertEq(verifier.nextNonce(address(strategy)), 0);
     }
 
@@ -280,6 +286,7 @@ contract PackageVerifierTest is Test {
             orderHash: keccak256("order"),
             quoteHash: keccak256("quote"),
             routeHash: keccak256("route"),
+            spotFillCommitment: keccak256("spot-fill"),
             action: verifier.ENTRY(),
             strategyAccount: address(strategy),
             solver: solver,

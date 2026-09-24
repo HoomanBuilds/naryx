@@ -50,6 +50,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 orderHash;
         bytes32 quoteHash;
         bytes32 routeHash;
+        bytes32 spotFillCommitment;
         uint8 action;
         address strategyAccount;
         address solver;
@@ -96,6 +97,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 orderHash;
         bytes32 quoteHash;
         bytes32 routeHash;
+        bytes32 spotFillCommitment;
         uint8 action;
         address strategyAccount;
         address solver;
@@ -216,6 +218,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     function recordSpotFill(
         address strategyAccount,
         uint256 packageNonce,
+        bytes32 spotFillCommitment,
         uint8 action,
         address baseToken,
         address quoteToken,
@@ -226,7 +229,8 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         bytes32 contextHash = _transientBytes32(contextKey, CONTEXT_HASH_FIELD);
         if (contextHash == bytes32(0)) revert ContextNotActive();
         if (_transientBool(contextKey, SPOT_FILL_SEEN_FIELD)) revert InvalidSpotFill();
-        bytes32 fillHash = keccak256(abi.encode(msg.sender, action, baseToken, quoteToken, baseAtoms));
+        bytes32 fillHash =
+            keccak256(abi.encode(msg.sender, spotFillCommitment, action, baseToken, quoteToken, baseAtoms));
         if (fillHash != contextHash) revert InvalidSpotFill();
         _storeTransientBool(contextKey, SPOT_FILL_SEEN_FIELD, true);
         _storeTransientUint(contextKey, SPOT_QUOTE_FIELD, quoteAtoms);
@@ -309,6 +313,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         receiptData.orderHash = execution.orderHash;
         receiptData.quoteHash = execution.quoteHash;
         receiptData.routeHash = execution.routeHash;
+        receiptData.spotFillCommitment = execution.spotFillCommitment;
         receiptData.action = execution.action;
         receiptData.strategyAccount = execution.strategyAccount;
         receiptData.solver = execution.solver;
@@ -363,7 +368,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 || execution.perpQuantityWad > uint256(uint128(type(int128).max)) || execution.spotQuoteBoundAtoms == 0
                 || execution.packageNotionalQuoteAtoms == 0 || execution.orderHash == bytes32(0)
                 || execution.quoteHash == bytes32(0) || execution.routeHash == bytes32(0)
-                || (execution.action != ENTRY && execution.action != EXIT)
+                || execution.spotFillCommitment == bytes32(0) || (execution.action != ENTRY && execution.action != EXIT)
                 || execution.minimumPostPerpBalanceWad > execution.maximumPostPerpBalanceWad
         ) revert InvalidExecution();
         if (block.timestamp >= execution.deadline) revert Expired();
@@ -532,6 +537,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
                 execution.orderHash,
                 execution.quoteHash,
                 execution.routeHash,
+                execution.spotFillCommitment,
                 admissionHash,
                 execution.action,
                 execution.baseQuantityAtoms,
@@ -577,6 +583,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         return keccak256(
             abi.encode(
                 execution.spotPort,
+                execution.spotFillCommitment,
                 execution.action,
                 execution.baseToken,
                 execution.quoteToken,
