@@ -2,6 +2,12 @@ export type DomainId = "solana" | "base" | "arbitrum" | "hyperliquid";
 
 export type PackageMode = "entry" | "exit";
 
+export type QuoteMode = "coordinated_limits" | "indicative_preview";
+
+export type SlippageBps = 5 | 10 | 25;
+
+export type ProviderConnection = "connected" | "connecting" | "disconnected";
+
 export type WorkspaceTab = "positions" | "orders" | "history" | "receipts";
 
 export type TerminalDomain = {
@@ -47,15 +53,11 @@ export type PackagePlan = {
 export type TicketModel = {
   defaultSize: string;
   sizeSymbol: string;
-  entryQuotePerUnit: number;
-  exitOutputPerUnit: number;
-  defaultSlippageBps: number;
-  quoteModes: string[];
-  feeRows: Array<{
+  defaultSlippageBps: SlippageBps;
+  quoteModes: Array<{
+    id: QuoteMode;
     label: string;
-    ratePerUnit: number;
   }>;
-  networkFee: number;
   evidence: Array<{
     label: string;
     value: string;
@@ -80,6 +82,8 @@ export type TerminalViewModel = {
     title: string;
     detail: string;
     capturedAt: string;
+    source: "LOCAL_CONFORMANCE" | "PRIVATE_TERMINAL_BFF";
+    evidenceGrade: "FIXTURE_UNATTESTED";
     executionEnabled: boolean;
   };
   domains: TerminalDomain[];
@@ -102,6 +106,52 @@ export type TerminalViewModel = {
   workspaces: WorkspaceModel[];
 };
 
+export type TerminalPreviewInput = {
+  domain: DomainId;
+  mode: PackageMode;
+  size: string;
+  slippageBps: SlippageBps;
+  quoteMode: QuoteMode;
+};
+
+export type TerminalPreview = {
+  source: "LOCAL_CONFORMANCE" | "PRIVATE_TERMINAL_BFF";
+  environment: "LOCAL_CONFORMANCE";
+  capturedAt: string;
+  evidenceGrade: "FIXTURE_UNATTESTED";
+  executionAvailable: false;
+  domain: DomainId;
+  mode: PackageMode;
+  quoteMode: QuoteMode;
+  size: {
+    baseAtoms: string;
+    value: string;
+    symbol: "SOL";
+  };
+  bound: {
+    label: string;
+    quoteAtoms: string;
+    value: string;
+    symbol: "USDC";
+  };
+  fees: Array<{
+    label: string;
+    amountAtoms: string;
+    value: string;
+  }>;
+  totalFee: {
+    amountAtoms: string;
+    value: string;
+    symbol: "USDC";
+  };
+  legs: PackageLeg[];
+  action: {
+    available: false;
+    reason: string;
+  };
+};
+
 export interface TerminalViewModelProvider {
-  getSnapshot(): Promise<TerminalViewModel>;
+  getSnapshot(domain: DomainId, signal?: AbortSignal): Promise<TerminalViewModel>;
+  getPreview(input: TerminalPreviewInput, signal?: AbortSignal): Promise<TerminalPreview>;
 }

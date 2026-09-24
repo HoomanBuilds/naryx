@@ -1,17 +1,23 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { localConformanceTerminalProvider } from "./local-conformance-provider";
+import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
 import type {
   BasisPoint,
   DomainId,
   PackageLeg,
   PackageMode,
+  ProviderConnection,
+  QuoteMode,
+  SlippageBps,
+  TerminalPreview,
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
 
-const SLIPPAGE_OPTIONS = [5, 10, 25];
+const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-US", {
@@ -57,12 +63,20 @@ function BrandMark() {
 function TopNavigation({
   snapshot,
   selectedDomain,
+  providerConnection,
   onDomainChange,
 }: {
   snapshot: TerminalViewModel;
   selectedDomain: DomainId;
+  providerConnection: ProviderConnection;
   onDomainChange: (domain: DomainId) => void;
 }) {
+  const providerLabel = providerConnection === "connected"
+    ? "Private service connected"
+    : providerConnection === "connecting"
+      ? "Checking private service"
+      : "Local fallback";
+
   return (
     <header className={styles.topNavigation}>
       <div className={styles.brand}>
@@ -75,11 +89,11 @@ function TopNavigation({
 
       <div
         className={styles.environmentBadge}
-        title={`${snapshot.environment.title}. ${snapshot.environment.detail}`}
+        title={`${snapshot.environment.title}. ${snapshot.environment.detail} Captured ${snapshot.environment.capturedAt}.`}
       >
         <span className={styles.statusDot} />
         <span>{snapshot.environment.label}</span>
-        <small>{snapshot.environment.capturedAt}</small>
+        <small>{providerLabel}</small>
       </div>
 
       <nav className={styles.domainSelector} aria-label="Execution domain preview">
@@ -266,11 +280,14 @@ function LegCard({ leg }: { leg: PackageLeg }) {
 function PackageSequence({
   snapshot,
   mode,
+  preview,
 }: {
   snapshot: TerminalViewModel;
   mode: PackageMode;
+  preview: TerminalPreview | null;
 }) {
   const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
+  const legs = preview?.mode === mode ? preview.legs : plan.legs;
 
   return (
     <section className={`${styles.panel} ${styles.sequencePanel}`} aria-labelledby="sequence-title">
@@ -283,13 +300,13 @@ function PackageSequence({
         <span className={styles.sequencePolicy}>Fail closed</span>
       </div>
       <div className={styles.legs}>
-        <LegCard leg={plan.legs[0]} />
+        <LegCard leg={legs[0]} />
         <div className={styles.dependencyConnector} aria-hidden="true">
           <span />
           <b>then</b>
           <span />
         </div>
-        <LegCard leg={plan.legs[1]} />
+        <LegCard leg={legs[1]} />
       </div>
     </section>
   );
@@ -298,29 +315,26 @@ function PackageSequence({
 function Ticket({
   snapshot,
   mode,
+  preview,
+  size,
+  slippage,
+  quoteMode,
   onModeChange,
+  onSizeChange,
+  onSlippageChange,
+  onQuoteModeChange,
 }: {
   snapshot: TerminalViewModel;
   mode: PackageMode;
+  preview: TerminalPreview | null;
+  size: string;
+  slippage: SlippageBps;
+  quoteMode: QuoteMode;
   onModeChange: (mode: PackageMode) => void;
+  onSizeChange: (size: string) => void;
+  onSlippageChange: (slippage: SlippageBps) => void;
+  onQuoteModeChange: (quoteMode: QuoteMode) => void;
 }) {
-  const [size, setSize] = useState(snapshot.ticket.defaultSize);
-  const [slippage, setSlippage] = useState(snapshot.ticket.defaultSlippageBps);
-  const [quoteMode, setQuoteMode] = useState(snapshot.ticket.quoteModes[0]);
-  const units = Number.parseFloat(size) || 0;
-  const boundary =
-    units *
-    (mode === "entry"
-      ? snapshot.ticket.entryQuotePerUnit
-      : snapshot.ticket.exitOutputPerUnit);
-  const feeTotal =
-    units > 0
-      ? snapshot.ticket.feeRows.reduce(
-          (total, row) => total + row.ratePerUnit * units,
-          snapshot.ticket.networkFee,
-        )
-      : 0;
-
   return (
     <aside className={`${styles.panel} ${styles.ticket}`} aria-labelledby="ticket-title">
       <div className={styles.ticketHeader}>
@@ -355,7 +369,7 @@ function Ticket({
           inputMode="decimal"
           autoComplete="off"
           value={size}
-          onChange={(event) => setSize(sanitizeSize(event.target.value))}
+          onChange={(event) => onSizeChange(sanitizeSize(event.target.value))}
           aria-describedby="size-context"
         />
         <span>{snapshot.ticket.sizeSymbol}</span>
@@ -367,8 +381,8 @@ function Ticket({
       <div className={styles.boundaryRow}>
         <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
         <div>
-          <strong>{formatCurrency(boundary)}</strong>
-          <small>USDC fixture estimate</small>
+          <strong>{preview ? `$${preview.bound.value}` : "Unavailable"}</strong>
+          <small>USDC conformance estimate</small>
         </div>
       </div>
 
@@ -381,7 +395,7 @@ function Ticket({
               key={option}
               className={slippage === option ? styles.segmentActive : undefined}
               aria-pressed={slippage === option}
-              onClick={() => setSlippage(option)}
+              onClick={() => onSlippageChange(option)}
             >
               {option} bps
             </button>
@@ -394,10 +408,10 @@ function Ticket({
         <select
           id="quote-mode"
           value={quoteMode}
-          onChange={(event) => setQuoteMode(event.target.value)}
+          onChange={(event) => onQuoteModeChange(event.target.value as QuoteMode)}
         >
           {snapshot.ticket.quoteModes.map((item) => (
-            <option key={item}>{item}</option>
+            <option key={item.id} value={item.id}>{item.label}</option>
           ))}
         </select>
       </label>
@@ -417,19 +431,15 @@ function Ticket({
 
       <section className={styles.feeSummary} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title">Fee summary</h3>
-        {snapshot.ticket.feeRows.map((row) => (
+        {(preview?.fees ?? []).map((row) => (
           <div className={styles.summaryRow} key={row.label}>
             <span>{row.label}</span>
-            <strong>{formatCurrency(row.ratePerUnit * units)}</strong>
+            <strong>${row.value}</strong>
           </div>
         ))}
-        <div className={styles.summaryRow}>
-          <span>Estimated network fees</span>
-          <strong>{formatCurrency(units > 0 ? snapshot.ticket.networkFee : 0)}</strong>
-        </div>
         <div className={`${styles.summaryRow} ${styles.totalRow}`}>
           <span>Estimated total</span>
-          <strong>{formatCurrency(feeTotal)}</strong>
+          <strong>{preview ? `$${preview.totalFee.value}` : "Unavailable"}</strong>
         </div>
       </section>
 
@@ -437,24 +447,36 @@ function Ticket({
         <button
           className={styles.primaryAction}
           type="button"
-          disabled={!snapshot.environment.executionEnabled}
+          disabled
           aria-describedby="execution-note"
         >
           Execution unavailable
         </button>
         <p id="execution-note">
-          Configure an executable private route and signing session before submission.
+          {preview?.action.reason ??
+            "Enter a valid conformance size to prepare a preview."}
         </p>
       </div>
     </aside>
   );
 }
 
-function BottomWorkspace({ snapshot }: { snapshot: TerminalViewModel }) {
+function BottomWorkspace({
+  snapshot,
+  providerConnection,
+}: {
+  snapshot: TerminalViewModel;
+  providerConnection: ProviderConnection;
+}) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("positions");
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
+  const providerLabel = providerConnection === "connected"
+    ? "Provider connected"
+    : providerConnection === "connecting"
+      ? "Provider connecting"
+      : "Provider disconnected";
 
   return (
     <section className={`${styles.panel} ${styles.bottomWorkspace}`} aria-label="Trading workspace">
@@ -475,7 +497,8 @@ function BottomWorkspace({ snapshot }: { snapshot: TerminalViewModel }) {
           </button>
         ))}
         <div className={styles.workspaceStatus}>
-          <span className={styles.offlineDot} /> Provider disconnected
+          <span className={providerConnection === "connected" ? styles.statusDot : styles.offlineDot} />
+          {providerLabel}
         </div>
       </div>
 
@@ -518,9 +541,130 @@ function BottomWorkspace({ snapshot }: { snapshot: TerminalViewModel }) {
   );
 }
 
-export function TradingTerminal({ snapshot }: { snapshot: TerminalViewModel }) {
-  const [selectedDomain, setSelectedDomain] = useState(snapshot.selectedDomain);
+export function TradingTerminal({
+  initialSnapshot,
+  initialPreview,
+  privateApiBaseUrl,
+}: {
+  initialSnapshot: TerminalViewModel;
+  initialPreview: TerminalPreview;
+  privateApiBaseUrl: string | null;
+}) {
+  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const [preview, setPreview] = useState<TerminalPreview | null>(initialPreview);
+  const [selectedDomain, setSelectedDomain] = useState(initialSnapshot.selectedDomain);
   const [mode, setMode] = useState<PackageMode>("entry");
+  const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
+  const [slippage, setSlippage] = useState<SlippageBps>(
+    initialSnapshot.ticket.defaultSlippageBps,
+  );
+  const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
+  const privateProvider = useMemo(() => {
+    if (!privateApiBaseUrl) {
+      return null;
+    }
+    try {
+      return new PrivateHttpTerminalProvider(privateApiBaseUrl);
+    } catch {
+      return null;
+    }
+  }, [privateApiBaseUrl]);
+  const [providerConnection, setProviderConnection] = useState<ProviderConnection>(
+    privateProvider ? "connecting" : "disconnected",
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
+    async function loadSnapshot() {
+      if (!privateProvider) {
+        const localSnapshot = await localConformanceTerminalProvider.getSnapshot(
+          selectedDomain,
+        );
+        if (active) {
+          setSnapshot(localSnapshot);
+          setProviderConnection("disconnected");
+        }
+        return;
+      }
+
+      try {
+        const serviceSnapshot = await privateProvider.getSnapshot(
+          selectedDomain,
+          controller.signal,
+        );
+        if (active) {
+          setSnapshot(serviceSnapshot);
+          setProviderConnection("connected");
+        }
+      } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const localSnapshot = await localConformanceTerminalProvider.getSnapshot(
+          selectedDomain,
+        );
+        if (active) {
+          setSnapshot(localSnapshot);
+          setProviderConnection("disconnected");
+        }
+      }
+    }
+
+    void loadSnapshot();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [privateProvider, selectedDomain]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const timeout = window.setTimeout(async () => {
+      const input = {
+        domain: selectedDomain,
+        mode,
+        size,
+        slippageBps: slippage,
+        quoteMode,
+      };
+      try {
+        const nextPreview = privateProvider
+          ? await privateProvider.getPreview(input, controller.signal)
+          : await localConformanceTerminalProvider.getPreview(input);
+        if (active) {
+          setPreview(nextPreview);
+          if (privateProvider) {
+            setProviderConnection("connected");
+          }
+        }
+      } catch {
+        if (controller.signal.aborted) {
+          return;
+        }
+        try {
+          const localPreview = await localConformanceTerminalProvider.getPreview(input);
+          if (active) {
+            setPreview(localPreview);
+            setProviderConnection("disconnected");
+          }
+        } catch {
+          if (active) {
+            setPreview(null);
+          }
+        }
+      }
+    }, 200);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
+
   const selectedDomainModel = useMemo(
     () => snapshot.domains.find((domain) => domain.id === selectedDomain),
     [selectedDomain, snapshot.domains],
@@ -531,7 +675,13 @@ export function TradingTerminal({ snapshot }: { snapshot: TerminalViewModel }) {
       <TopNavigation
         snapshot={snapshot}
         selectedDomain={selectedDomain}
-        onDomainChange={setSelectedDomain}
+        providerConnection={providerConnection}
+        onDomainChange={(domain) => {
+          setSelectedDomain(domain);
+          if (privateProvider) {
+            setProviderConnection("connecting");
+          }
+        }}
       />
       <div className={styles.domainContext} role="status">
         <span>{selectedDomainModel?.label}</span>
@@ -542,11 +692,25 @@ export function TradingTerminal({ snapshot }: { snapshot: TerminalViewModel }) {
       <div className={styles.contentGrid}>
         <div className={styles.marketWorkspace}>
           <BasisChart snapshot={snapshot} />
-          <PackageSequence snapshot={snapshot} mode={mode} />
+          <PackageSequence snapshot={snapshot} mode={mode} preview={preview} />
         </div>
-        <Ticket snapshot={snapshot} mode={mode} onModeChange={setMode} />
+        <Ticket
+          snapshot={snapshot}
+          mode={mode}
+          preview={preview}
+          size={size}
+          slippage={slippage}
+          quoteMode={quoteMode}
+          onModeChange={setMode}
+          onSizeChange={setSize}
+          onSlippageChange={setSlippage}
+          onQuoteModeChange={setQuoteMode}
+        />
       </div>
-      <BottomWorkspace snapshot={snapshot} />
+      <BottomWorkspace
+        snapshot={snapshot}
+        providerConnection={providerConnection}
+      />
     </main>
   );
 }

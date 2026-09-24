@@ -1,11 +1,9 @@
 # services/api
 
-Public API and the authoritative durable store for orders, quotes, authorizations, submission attempts, nonces, recovery state, and the outbox.
+Private backend-for-frontend for the operator terminal.
 
-Owns the order and quote lifecycle, RFQ delivery, quote selection, preflight, domain action compilation, and settlement coordination.
+The current service exposes only deterministic, read-only package snapshots and previews. It has no signer, wallet authority, persistence, submission endpoint, or mainnet path.
 
-May depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`.
+It binds to loopback by default. Cross-origin browser access is allowed only for the exact configured terminal origin.
 
-Must not depend on `apps/web`, `packages/sdk`, or another service's internals.
-
-A user master key never enters this service. No mainnet write until the readiness gates pass.
+It may depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`. It must not depend on `apps/web`, `packages/sdk`, or another service's internals.

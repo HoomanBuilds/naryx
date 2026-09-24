@@ -1,7 +1,17 @@
 import type {
+  DomainId,
+  TerminalPreview,
+  TerminalPreviewInput,
   TerminalViewModel,
   TerminalViewModelProvider,
 } from "./terminal-view-model";
+
+const BASE_SCALE = BigInt(1_000_000);
+const QUOTE_SCALE = BigInt(1_000_000);
+const BPS_SCALE = BigInt(10_000);
+const SPOT_PRICE = BigInt(148_240_000);
+const PERPETUAL_PRICE = BigInt(149_070_000);
+const NETWORK_FEE = BigInt(180_000);
 
 const LOCAL_CONFORMANCE_SNAPSHOT: TerminalViewModel = {
   environment: {
@@ -9,6 +19,8 @@ const LOCAL_CONFORMANCE_SNAPSHOT: TerminalViewModel = {
     title: "Deterministic conformance data",
     detail: "No RPC, venue session, wallet, or executable route is connected.",
     capturedAt: "2026-09-20 12:00 UTC",
+    source: "LOCAL_CONFORMANCE",
+    evidenceGrade: "FIXTURE_UNATTESTED",
     executionEnabled: false,
   },
   selectedDomain: "solana",
@@ -140,16 +152,11 @@ const LOCAL_CONFORMANCE_SNAPSHOT: TerminalViewModel = {
   ticket: {
     defaultSize: "100",
     sizeSymbol: "SOL",
-    entryQuotePerUnit: 148.8,
-    exitOutputPerUnit: 147,
     defaultSlippageBps: 10,
-    quoteModes: ["Coordinated limits", "Indicative preview"],
-    feeRows: [
-      { label: "Spot venue fee", ratePerUnit: 0.1186 },
-      { label: "Perp venue fee", ratePerUnit: 0.0298 },
-      { label: "Coordinator fee", ratePerUnit: 0 },
+    quoteModes: [
+      { id: "coordinated_limits", label: "Coordinated limits" },
+      { id: "indicative_preview", label: "Indicative preview" },
     ],
-    networkFee: 0.18,
     evidence: [
       { label: "Manifest", value: "Fixture manifest v1" },
       { label: "Quote binding", value: "Not network-attested" },
@@ -219,9 +226,142 @@ const LOCAL_CONFORMANCE_SNAPSHOT: TerminalViewModel = {
   ],
 };
 
+function parseBaseAtoms(value: string): bigint {
+  if (!/^(?:0|[1-9]\d{0,5})(?:\.\d{1,6})?$/.test(value)) {
+    throw new Error("Invalid conformance size.");
+  }
+  const [whole = "0", fraction = ""] = value.split(".");
+  const atoms = BigInt(whole) * BASE_SCALE + BigInt(fraction.padEnd(6, "0"));
+  if (atoms <= BigInt(0) || atoms > BigInt(100_000) * BASE_SCALE) {
+    throw new Error("Conformance size is outside the supported range.");
+  }
+  return atoms;
+}
+
+function formatAtoms(atoms: bigint): string {
+  return `${atoms / QUOTE_SCALE}.${(atoms % QUOTE_SCALE).toString().padStart(6, "0")}`;
+}
+
+function multiplyDivideFloor(value: bigint, multiplier: bigint, divisor: bigint): bigint {
+  return value * multiplier / divisor;
+}
+
+function multiplyDivideCeil(value: bigint, multiplier: bigint, divisor: bigint): bigint {
+  return (value * multiplier + divisor - BigInt(1)) / divisor;
+}
+
+function previewLegs(input: TerminalPreviewInput, size: string) {
+  const slippage = BigInt(input.slippageBps);
+  if (input.mode === "entry") {
+    const maximumSpot = multiplyDivideCeil(SPOT_PRICE, BPS_SCALE + slippage, BPS_SCALE);
+    const minimumPerpetual = multiplyDivideFloor(
+      PERPETUAL_PRICE,
+      BPS_SCALE - slippage,
+      BPS_SCALE,
+    );
+    return [
+      {
+        sequence: 1, action: "Buy spot", instrument: "SOL / USDC",
+        venue: "Solana spot route fixture", quantity: `${size} SOL`,
+        limitLabel: "Maximum price", limit: `$${formatAtoms(maximumSpot)}`,
+        state: "Preview ready", dependency: "First leg",
+      },
+      {
+        sequence: 2, action: "Short perpetual", instrument: "SOL-PERP",
+        venue: "Hyperliquid testnet route fixture", quantity: `${size} SOL`,
+        limitLabel: "Minimum entry", limit: `$${formatAtoms(minimumPerpetual)}`,
+        state: "Awaiting leg 1", dependency: "Requires accepted spot receipt",
+      },
+    ];
+  }
+  const maximumPerpetual = multiplyDivideCeil(
+    PERPETUAL_PRICE,
+    BPS_SCALE + slippage,
+    BPS_SCALE,
+  );
+  const minimumSpot = multiplyDivideFloor(SPOT_PRICE, BPS_SCALE - slippage, BPS_SCALE);
+  return [
+    {
+      sequence: 1, action: "Buy to close", instrument: "SOL-PERP",
+      venue: "Hyperliquid testnet route fixture", quantity: `${size} SOL`,
+      limitLabel: "Maximum close", limit: `$${formatAtoms(maximumPerpetual)}`,
+      state: "Preview ready", dependency: "First leg",
+    },
+    {
+      sequence: 2, action: "Sell spot", instrument: "SOL / USDC",
+      venue: "Solana spot route fixture", quantity: `${size} SOL`,
+      limitLabel: "Minimum output", limit: `$${formatAtoms(minimumSpot)}`,
+      state: "Awaiting leg 1", dependency: "Requires accepted perp close",
+    },
+  ];
+}
+
 class LocalConformanceTerminalProvider implements TerminalViewModelProvider {
-  async getSnapshot(): Promise<TerminalViewModel> {
-    return LOCAL_CONFORMANCE_SNAPSHOT;
+  async getSnapshot(domain: DomainId): Promise<TerminalViewModel> {
+    return { ...LOCAL_CONFORMANCE_SNAPSHOT, selectedDomain: domain };
+  }
+
+  async getPreview(input: TerminalPreviewInput): Promise<TerminalPreview> {
+    const sizeAtoms = parseBaseAtoms(input.size);
+    const normalizedSize = formatAtoms(sizeAtoms);
+    const slippage = BigInt(input.slippageBps);
+    const boundPrice = input.mode === "entry"
+      ? multiplyDivideCeil(SPOT_PRICE, BPS_SCALE + slippage, BPS_SCALE)
+      : multiplyDivideFloor(SPOT_PRICE, BPS_SCALE - slippage, BPS_SCALE);
+    const boundAtoms = input.mode === "entry"
+      ? multiplyDivideCeil(sizeAtoms, boundPrice, BASE_SCALE)
+      : multiplyDivideFloor(sizeAtoms, boundPrice, BASE_SCALE);
+    const spotNotional = multiplyDivideCeil(sizeAtoms, SPOT_PRICE, BASE_SCALE);
+    const perpetualNotional = multiplyDivideCeil(sizeAtoms, PERPETUAL_PRICE, BASE_SCALE);
+    const spotFee = multiplyDivideCeil(spotNotional, BigInt(8), BPS_SCALE);
+    const perpetualFee = multiplyDivideCeil(
+      perpetualNotional,
+      BigInt(2),
+      BPS_SCALE,
+    );
+    const fees = [
+      { label: "Spot venue fee", amountAtoms: spotFee.toString(), value: formatAtoms(spotFee) },
+      {
+        label: "Perp venue fee",
+        amountAtoms: perpetualFee.toString(),
+        value: formatAtoms(perpetualFee),
+      },
+      {
+        label: "Coordinator fee",
+        amountAtoms: "0",
+        value: formatAtoms(BigInt(0)),
+      },
+      {
+        label: "Estimated network fees",
+        amountAtoms: NETWORK_FEE.toString(),
+        value: formatAtoms(NETWORK_FEE),
+      },
+    ];
+    const totalFee = spotFee + perpetualFee + NETWORK_FEE;
+    return {
+      source: "LOCAL_CONFORMANCE",
+      environment: "LOCAL_CONFORMANCE",
+      capturedAt: LOCAL_CONFORMANCE_SNAPSHOT.environment.capturedAt,
+      evidenceGrade: "FIXTURE_UNATTESTED",
+      executionAvailable: false,
+      domain: input.domain,
+      mode: input.mode,
+      quoteMode: input.quoteMode,
+      size: { baseAtoms: sizeAtoms.toString(), value: normalizedSize, symbol: "SOL" },
+      bound: {
+        label: input.mode === "entry" ? "Maximum quote" : "Minimum output",
+        quoteAtoms: boundAtoms.toString(),
+        value: formatAtoms(boundAtoms),
+        symbol: "USDC",
+      },
+      fees,
+      totalFee: { amountAtoms: totalFee.toString(), value: formatAtoms(totalFee), symbol: "USDC" },
+      legs: previewLegs(input, normalizedSize),
+      action: {
+        available: false,
+        reason: "Configure an executable private route and signing session before submission.",
+      },
+    };
   }
 }
 
