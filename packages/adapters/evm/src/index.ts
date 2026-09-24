@@ -34,6 +34,7 @@ const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MIN = -(1n << 127n);
 const INT128_MAX = (1n << 127n) - 1n;
+const ATOMIC_SETTLEMENT_CLASS_ID = keccak256(stringToHex('ATOMIC_POSTCONDITION'));
 
 export const EVM_RUNTIME_IDENTITY = Object.freeze({
   runtimeClassId: 'naryx-evm',
@@ -161,6 +162,14 @@ function requiredAddress(value: unknown, name: string): Address {
   return checked;
 }
 
+function ecdsaSignature(value: unknown, name: string): Hex {
+  requireCondition(
+    typeof value === 'string' && /^0x[0-9a-fA-F]{130}$/.test(value),
+    `${name} must be exactly 65 bytes`,
+  );
+  return value as Hex;
+}
+
 function uint(value: bigint, maximum: bigint, name: string): bigint {
   requireCondition(typeof value === 'bigint' && value >= 0n && value <= maximum, `${name} is outside its unsigned range`);
   return value;
@@ -268,6 +277,9 @@ export function compileEvmAtomicPackage(
   requireCondition(quote.environment === order.environment && route.environment === order.environment, 'package environment mismatch');
   requireCondition(order.direction === 'LONG_SPOT_SHORT_PERP' && route.direction === order.direction, 'direction is unsupported');
   requireCondition(order.settlementClass === 'ATOMIC_POSTCONDITION' && route.settlementClass === 'ATOMIC_POSTCONDITION', 'settlement class is unsupported');
+  const settlementClassId = nonzeroHash(deployment.settlementClass.classId, 'settlementClass.classId');
+  requireCondition(settlementClassId === ATOMIC_SETTLEMENT_CLASS_ID, 'settlement class identity is unsupported');
+  requireCondition(deployment.settlementClass.classVersion === 1, 'settlement class version is unsupported');
   requireCondition(route.executionPlanKind === 'EVM_ATOMIC_BATCH', 'execution plan is unsupported');
   requireCondition(order.partialFillPolicy === 'EXACT_ALL_LEGS' && route.partialFillPolicy === 'EXACT_ALL_LEGS', 'partial fills are unsupported');
   requireCondition(order.expiryUnit === 'EVM_UNIX_SECONDS' && quote.validUntilUnit === 'EVM_UNIX_SECONDS' && route.routeExpiryUnit === 'EVM_UNIX_SECONDS', 'expiry clock is unsupported');
@@ -282,7 +294,9 @@ export function compileEvmAtomicPackage(
   requireCondition(quote.solverSignatureScheme === 'SECP256K1_RECOVERABLE', 'solver signature scheme is unsupported');
   requireCondition(quote.quoteMode !== 'FIRM_ONCHAIN', 'onchain firm quotes require the quoted-package compiler');
   requireCondition(quote.solverVerificationKey.length === 20, 'solver verification key must be an EVM address');
-  requireCondition(bounds.traderSignature !== '0x', 'trader signature is required');
+  const traderSignature = ecdsaSignature(bounds.traderSignature, 'trader signature');
+  requireCondition(quote.signature instanceof Uint8Array && quote.signature.length === 65, 'solver quote signature must be exactly 65 bytes');
+  const solverSignature = bytesToHex(quote.signature);
   requireCondition(route.actions.length === 2 && route.serviceCharges.length === 0, 'route contains unsupported actions or service charges');
   requireCondition(route.actions.every((action) => action.nativeValue === undefined || action.nativeValue.atoms === 0n), 'native-value actions are unsupported');
   requireCondition(bounds.minimumPostPerpBalanceWad <= bounds.maximumPostPerpBalanceWad, 'post-perpetual balance bounds are inverted');
@@ -387,8 +401,8 @@ export function compileEvmAtomicPackage(
       templateManifestHash: nonzeroHash(order.packageTemplateManifestHash, 'packageTemplateManifestHash'),
     },
     settlementClass: {
-      classId: nonzeroHash(deployment.settlementClass.classId, 'settlementClass.classId'),
-      classVersion: uint32(deployment.settlementClass.classVersion, 'settlementClass.classVersion'),
+      classId: settlementClassId,
+      classVersion: deployment.settlementClass.classVersion,
     },
     spot: {
       adapter: manifestResource(deployment.spot.adapter),
@@ -426,8 +440,8 @@ export function compileEvmAtomicPackage(
     args: [
       execution,
       resourceAdmission,
-      bounds.traderSignature,
-      bytesToHex(quote.signature),
+      traderSignature,
+      solverSignature,
       [
         nonzeroHash(bounds.perpArgs[0], 'perpArgs[0]'),
         nonzeroHash(bounds.perpArgs[1], 'perpArgs[1]'),

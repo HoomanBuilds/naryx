@@ -34,7 +34,11 @@ import {
 
 const hash = (byte: number): Hash32 => new Uint8Array(32).fill(byte) as Hash32;
 const hashHex = (byte: number): Hex => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
+const signatureHex = (byte: number): Hex => `0x${byte.toString(16).padStart(2, '0').repeat(65)}`;
 const address = (byte: number): Address => `0x${byte.toString(16).padStart(2, '0').repeat(20)}`;
+const atomicSettlementClassId = Uint8Array.from(
+  Buffer.from(keccak256(stringToHex('ATOMIC_POSTCONDITION')).slice(2), 'hex'),
+) as Hash32;
 
 const strategyAccount = address(1);
 const spotPort = address(2);
@@ -102,7 +106,7 @@ function deployment(domainManifest: DomainManifest, chainReference: bigint): Evm
     deploymentChainReference: chainReference,
     strategyAccount: { address: strategyAccount, expectedCodeHash: hashHex(40) },
     packageVerifier: { address: packageVerifier, expectedCodeHash: hashHex(70) },
-    settlementClass: { classId: hash(41), classVersion: 1 },
+    settlementClass: { classId: atomicSettlementClassId, classVersion: 1 },
     spot: {
       adapter: resource(spotAdapter.adapterId, spotAdapter.adapterManifestVersion, spotAdapter.adapterManifestHash, spotPort, 42),
       adapterClassId: 'exact-spot-port',
@@ -239,7 +243,7 @@ function admission(domainManifest: DomainManifest): PackageAdmission {
 
 const bounds: EvmAtomicExecutionBounds = {
   currentUnixSeconds: 1_000n,
-  traderSignature: '0x1234',
+  traderSignature: signatureHex(9),
   spotFillCommitment: hash(55),
   packageSizeUnits: 2n,
   expectedPrePerpBalanceWad: 10n,
@@ -305,6 +309,34 @@ test('rejects non-EVM and non-atomic routes', () => {
   assert.throws(
     () => compileEvmAtomicPackage({ ...admitted, order: { ...admitted.order, settlementClass: 'BATCHED_IOC_WITH_RECOVERY' } }, deployment(domainManifest, 84_532n), bounds),
     /settlement class is unsupported/,
+  );
+});
+
+test('rejects an unrecognized atomic settlement identity or version', () => {
+  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const admitted = admission(domainManifest);
+  const identity = deployment(domainManifest, 84_532n);
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classId: hash(41) } }, bounds),
+    /settlement class identity is unsupported/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, { ...identity, settlementClass: { ...identity.settlementClass, classVersion: 2 } }, bounds),
+    /settlement class version is unsupported/,
+  );
+});
+
+test('rejects non-65-byte ECDSA signatures', () => {
+  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const admitted = admission(domainManifest);
+  const identity = deployment(domainManifest, 84_532n);
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, { ...bounds, traderSignature: '0x1234' }),
+    /trader signature must be exactly 65 bytes/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage({ ...admitted, quote: { ...admitted.quote, signature: new Uint8Array(64).fill(1) } }, identity, bounds),
+    /solver quote signature must be exactly 65 bytes/,
   );
 });
 
