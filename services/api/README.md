@@ -14,4 +14,6 @@ It binds to loopback by default. Cross-origin browser access is allowed only for
 
 Concrete Devnet ports are built by `createSolanaDevnetExecutionPorts`. The factory must receive reviewed server-owned contexts and a trusted Devnet RPC before the existing server can use it.
 
+The service also exposes POST `/internal/terminal/hyperliquid-testnet/execute`. The browser request carries only `attemptId` and `idempotencyKey`. The server-owned injected port owns the Testnet attempt and returns a sanitized `hypercore:testnet` `TESTNET` result. The default process has no port, so the route fails with `EXECUTION_UNAVAILABLE`. The current limit is one identified attempt per request with no plan, account, signer, or venue payload from the browser.
+
 It may depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`. It must not depend on `apps/web`, `packages/sdk`, or another service's internals.

@@ -2,6 +2,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
+  HyperliquidTestnetTerminalValidationError,
+  parseHyperliquidTestnetTerminalExecutionRequest,
+  validateHyperliquidTestnetTerminalExecutionResult,
+  type HyperliquidTestnetTerminalExecutionPort,
+} from "./hyperliquid-testnet-terminal.js";
+import {
   ExecutionValidationError,
   parseExecutionObservationRequest,
   parseExecutionPreparationRequest,
@@ -133,6 +139,7 @@ export function createPrivateTerminalRequestHandler(
   config: PrivateTerminalServerConfig,
   executionPorts: PrivateTerminalExecutionPorts = {},
   orderPorts?: InternalOrderPorts,
+  hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -155,6 +162,7 @@ export function createPrivateTerminalRequestHandler(
         environment: "LOCAL_CONFORMANCE",
         executionPreparationAvailable: executionPorts.preparation !== undefined,
         executionObservationAvailable: executionPorts.observation !== undefined,
+        hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined,
       });
       return;
     }
@@ -258,6 +266,34 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    if (url.pathname === "/internal/terminal/hyperliquid-testnet/execute") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (hyperliquidTestnetExecutionPort === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "Hyperliquid Testnet execution is unavailable.");
+        return;
+      }
+      try {
+        const terminalRequest = parseHyperliquidTestnetTerminalExecutionRequest(await readJson(request));
+        const sanitized = validateHyperliquidTestnetTerminalExecutionResult(
+          await hyperliquidTestnetExecutionPort.execute(terminalRequest),
+          terminalRequest,
+        );
+        sendJson(response, 200, sanitized);
+      } catch (error) {
+        if (error instanceof HyperliquidTestnetTerminalValidationError ||
+            error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "HYPERLIQUID_EXECUTION_FAILED", "Hyperliquid Testnet execution failed closed.");
+      }
+      return;
+    }
+
     if (url.pathname === "/internal/terminal/orders") {
       if (request.method !== "POST") {
         response.setHeader("Allow", "POST, OPTIONS");
@@ -330,8 +366,14 @@ export function createPrivateTerminalServer(
   config: PrivateTerminalServerConfig,
   executionPorts: PrivateTerminalExecutionPorts = {},
   orderPorts?: InternalOrderPorts,
+  hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
 ) {
-  const handler = createPrivateTerminalRequestHandler(config, executionPorts, orderPorts);
+  const handler = createPrivateTerminalRequestHandler(
+    config,
+    executionPorts,
+    orderPorts,
+    hyperliquidTestnetExecutionPort,
+  );
   return createServer((request, response) => {
     handler(request, response).catch(() => {
       if (!response.headersSent) {

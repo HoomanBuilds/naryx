@@ -1,0 +1,289 @@
+import assert from "node:assert/strict";
+import type { AddressInfo } from "node:net";
+import test from "node:test";
+import {
+  createPrivateTerminalServer,
+  type HyperliquidTestnetTerminalExecutionPort,
+  type HyperliquidTestnetTerminalExecutionResult,
+} from "../src/index.js";
+
+const ATTEMPT_ID = "attempt-0123456789AB";
+const IDEMPOTENCY_KEY = "idem-0123456789ABCD";
+const ACTION = `0x${"aa".repeat(32)}`;
+const REQUEST = `0x${"bb".repeat(32)}`;
+const ERROR = `0x${"cc".repeat(32)}`;
+const EVIDENCE = `0x${"dd".repeat(32)}`;
+const ENDPOINT = "/internal/terminal/hyperliquid-testnet/execute";
+
+async function listen(server: ReturnType<typeof createPrivateTerminalServer>): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function close(server: ReturnType<typeof createPrivateTerminalServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+  });
+}
+
+function base(status: string): Record<string, unknown> {
+  return {
+    attemptId: ATTEMPT_ID,
+    idempotencyKey: IDEMPOTENCY_KEY,
+    domain: "hypercore:testnet",
+    environment: "TESTNET",
+    status,
+  };
+}
+
+function variantFixtures(): Array<{ name: string; result: HyperliquidTestnetTerminalExecutionResult }> {
+  return [
+    {
+      name: "CHECKPOINT_INCOMPLETE",
+      result: { ...base("CHECKPOINT_INCOMPLETE"), reasons: ["EVIDENCE_PENDING"], rawEvidenceCommitments: [EVIDENCE] } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "CHECKPOINT_FAILED",
+      result: { ...base("CHECKPOINT_FAILED"), errorCommitment: ERROR } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "NOT_SUBMITTED",
+      result: {
+        ...base("NOT_SUBMITTED"),
+        evidenceStatus: "PRECONDITION_REJECTED",
+        actionCommitment: null,
+        requestCommitment: null,
+        errorCommitment: ERROR,
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "SUBMISSION_CALL_FAILED",
+      result: { ...base("SUBMISSION_CALL_FAILED"), errorCommitment: ERROR } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "SUBMISSION_RESULT_INVALID",
+      result: { ...base("SUBMISSION_RESULT_INVALID"), errorCommitment: ERROR } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "RECONCILIATION_DEFERRED",
+      result: {
+        ...base("RECONCILIATION_DEFERRED"),
+        submissionStatus: "ACKNOWLEDGED",
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+        errorCommitment: ERROR,
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "RECONCILIATION_INCOMPLETE",
+      result: {
+        ...base("RECONCILIATION_INCOMPLETE"),
+        submissionStatus: "AMBIGUOUS",
+        packageStatus: "RECONCILING",
+        reasons: ["RECONCILIATION_PENDING"],
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+        rawEvidenceCommitments: [EVIDENCE],
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "RECONCILED",
+      result: {
+        ...base("RECONCILED"),
+        submissionStatus: "ACKNOWLEDGED",
+        packageStatus: "COMPLETED_EXACT",
+        reasons: [],
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+        rawEvidenceCommitments: [EVIDENCE],
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+    {
+      name: "HANDOFF_REJECTED",
+      result: {
+        ...base("HANDOFF_REJECTED"),
+        reason: "HANDOFF_REFUSED",
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
+  ];
+}
+
+test("hyperliquid testnet terminal execution boundary is injected and fail-closed", async () => {
+  const origin = "http://127.0.0.1:3000";
+  const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
+  const body = { attemptId: ATTEMPT_ID, idempotencyKey: IDEMPOTENCY_KEY };
+
+  const unavailable = createPrivateTerminalServer(config);
+  const unavailableUrl = await listen(unavailable);
+  try {
+    const health = await fetch(`${unavailableUrl}/internal/healthz`);
+    assert.equal(health.status, 200);
+    const healthBody = await health.json() as { hyperliquidTestnetExecutionAvailable: boolean };
+    assert.equal(healthBody.hyperliquidTestnetExecutionAvailable, false);
+    const response = await fetch(`${unavailableUrl}${ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: { code: "EXECUTION_UNAVAILABLE", message: "Hyperliquid Testnet execution is unavailable." },
+    });
+    const wrongMethod = await fetch(`${unavailableUrl}${ENDPOINT}`, {
+      method: "GET",
+      headers: { Origin: origin },
+    });
+    assert.equal(wrongMethod.status, 405);
+  } finally {
+    await close(unavailable);
+  }
+
+  let calls = 0;
+  let next: unknown | undefined;
+  const port: HyperliquidTestnetTerminalExecutionPort = {
+    execute: async (request) => {
+      calls += 1;
+      assert.deepEqual(request, body);
+      assert.deepEqual(JSON.parse(JSON.stringify(request)), request);
+      return next as HyperliquidTestnetTerminalExecutionResult;
+    },
+  };
+  const server = createPrivateTerminalServer(config, {}, undefined, port);
+  const serverUrl = await listen(server);
+  try {
+    const health = await fetch(`${serverUrl}/internal/healthz`);
+    assert.equal((await health.json() as { hyperliquidTestnetExecutionAvailable: boolean }).hyperliquidTestnetExecutionAvailable, true);
+
+    next = {
+      ...base("RECONCILED"),
+      submissionStatus: "ACKNOWLEDGED",
+      packageStatus: "COMPLETED_EXACT",
+      reasons: [],
+      actionCommitment: ACTION,
+      requestCommitment: REQUEST,
+      rawEvidenceCommitments: [EVIDENCE],
+    };
+    const reconciled = await fetch(`${serverUrl}${ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify(body),
+    });
+    assert.equal(reconciled.status, 200);
+    assert.deepEqual(await reconciled.json(), next);
+    assert.equal(calls, 1);
+
+    for (const extra of [{ ...body, plan: {} }, { ...body, account: "x" }, { ...body, signer: "y" }]) {
+      const rejected = await fetch(`${serverUrl}${ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(extra),
+      });
+      assert.equal(rejected.status, 400);
+      assert.match((await rejected.json() as { error: { code: string } }).error.code, /INVALID_HYPERLIQUID/);
+    }
+    assert.equal(calls, 1);
+
+    for (const fixture of variantFixtures()) {
+      next = fixture.result;
+      const response = await fetch(`${serverUrl}${ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 200, fixture.name);
+      assert.deepEqual(await response.json(), fixture.result);
+    }
+
+    const badResults: unknown[] = [
+      { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE], attemptId: "attempt-mismatched-01" },
+      { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: "NOT_A_HASH", requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] },
+      { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE], plan: {} },
+      { ...base("RECONCILED"), submissionStatus: "VENUE_SUCCESS", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] },
+    ];
+    for (const bad of badResults) {
+      next = bad;
+      const response = await fetch(`${serverUrl}${ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), {
+        error: { code: "HYPERLIQUID_EXECUTION_FAILED", message: "Hyperliquid Testnet execution failed closed." },
+      });
+    }
+
+    const sixteenCommitments = Array.from(
+      { length: 16 },
+      (_, index) => `0x${(index + 1).toString(16).padStart(64, "0")}`,
+    );
+    next = {
+      ...base("RECONCILED"),
+      submissionStatus: "ACKNOWLEDGED",
+      packageStatus: "COMPLETED_EXACT",
+      reasons: [],
+      actionCommitment: ACTION,
+      requestCommitment: REQUEST,
+      rawEvidenceCommitments: sixteenCommitments,
+    };
+    const sixteen = await fetch(`${serverUrl}${ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify(body),
+    });
+    assert.equal(sixteen.status, 200);
+    assert.deepEqual(await sixteen.json(), next);
+
+    const sixtyFiveCommitments = Array.from(
+      { length: 65 },
+      (_, index) => `0x${(index + 1).toString(16).padStart(64, "0")}`,
+    );
+    next = {
+      ...base("RECONCILED"),
+      submissionStatus: "ACKNOWLEDGED",
+      packageStatus: "COMPLETED_EXACT",
+      reasons: [],
+      actionCommitment: ACTION,
+      requestCommitment: REQUEST,
+      rawEvidenceCommitments: sixtyFiveCommitments,
+    };
+    const sixtyFive = await fetch(`${serverUrl}${ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify(body),
+    });
+    assert.equal(sixtyFive.status, 502);
+    assert.deepEqual(await sixtyFive.json(), {
+      error: { code: "HYPERLIQUID_EXECUTION_FAILED", message: "Hyperliquid Testnet execution failed closed." },
+    });
+
+    next = { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: [], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] };
+    const throwing = createPrivateTerminalServer(config, {}, undefined, {
+      execute: async () => {
+        throw new Error("boom");
+      },
+    });
+    const throwingUrl = await listen(throwing);
+    try {
+      const response = await fetch(`${throwingUrl}${ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), {
+        error: { code: "HYPERLIQUID_EXECUTION_FAILED", message: "Hyperliquid Testnet execution failed closed." },
+      });
+    } finally {
+      await close(throwing);
+    }
+  } finally {
+    await close(server);
+  }
+});

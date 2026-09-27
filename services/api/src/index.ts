@@ -37,6 +37,19 @@ export {
   type InternalOrderPorts,
 } from "./terminal-orders.js";
 export {
+  HYPERLIQUID_TESTNET_DOMAIN,
+  HYPERLIQUID_TESTNET_ENVIRONMENT,
+  HyperliquidTestnetTerminalValidationError,
+  parseHyperliquidTestnetTerminalExecutionRequest,
+  validateHyperliquidTestnetTerminalExecutionResult,
+  type HyperliquidTestnetEvidenceStatus,
+  type HyperliquidTestnetFinalPackageStatus,
+  type HyperliquidTestnetSubmissionStatus,
+  type HyperliquidTestnetTerminalExecutionPort,
+  type HyperliquidTestnetTerminalExecutionRequest,
+  type HyperliquidTestnetTerminalExecutionResult,
+} from "./hyperliquid-testnet-terminal.js";
+export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,
   loadPrivateTerminalServerConfig,
