@@ -647,3 +647,17 @@ export {
   type SignedAtomicEntryQuoteCode,
   type SignedAtomicEntryQuoteInput,
 } from './signed-atomic-entry-quote.js';
+export {
+  HyperliquidTestnetRuntimeCoordinator,
+  type HandoffBearingSubmission,
+  type HyperliquidTestnetPackageSubmissionPort,
+  type HyperliquidTestnetRuntimeCoordinatorInput,
+  type HyperliquidTestnetRuntimeCoordinatorResult,
+  type HyperliquidTestnetRuntimeEvidenceWindow,
+  type HyperliquidTestnetRuntimeMarketBinding,
+  type HyperliquidTestnetRuntimePrepareInput,
+  type HyperliquidTestnetRuntimePrepareResult,
+  type HyperliquidTestnetRuntimeRawCommitment,
+  type HyperliquidTestnetStructuralEvidencePort,
+  type NotSubmittedSubmission,
+} from './hyperliquid-testnet-runtime.js';
