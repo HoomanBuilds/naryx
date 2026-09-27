@@ -626,3 +626,15 @@ export {
   HyperliquidSqliteDurableJournal,
   type HyperliquidSqliteJournalOptions,
 } from './hyperliquid-sqlite-journal.js';
+export {
+  AtomicRouteDecisionError,
+  planAtomicEntryRoute,
+  type AtomicRouteCandidate,
+  type AtomicRouteCandidateProvider,
+  type AtomicRouteDecision,
+  type AtomicRouteDecisionRecord,
+  type AtomicRouteEligibleDecision,
+  type AtomicRoutePlanInput,
+  type AtomicRouteRejectedDecision,
+  type AtomicRouteRejectionReason,
+} from './atomic-route-decision.js';
