@@ -12,4 +12,6 @@ The service also exposes an internal unsigned-order boundary at POST `/internal/
 
 It binds to loopback by default. Cross-origin browser access is allowed only for the exact configured terminal origin.
 
+Concrete Devnet ports are built by `createSolanaDevnetExecutionPorts`. The factory must receive reviewed server-owned contexts and a trusted Devnet RPC before the existing server can use it.
+
 It may depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`. It must not depend on `apps/web`, `packages/sdk`, or another service's internals.

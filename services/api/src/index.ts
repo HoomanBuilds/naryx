@@ -1,4 +1,18 @@
 export {
+  createSolanaDevnetExecutionPorts,
+  HttpSolanaDevnetReadOnlyRpc,
+  InMemoryPreparedSolanaDevnetStore,
+  SOLANA_MAINNET_GENESIS_HASH,
+  type PreparedSolanaDevnetRecord,
+  type PreparedSolanaDevnetStore,
+  type SolanaDevnetContextProvider,
+  type SolanaDevnetExecutionContext,
+  type SolanaDevnetMaterializer,
+  type SolanaDevnetReadOnlyRpc,
+  type SolanaDevnetRuntimePortsOptions,
+  type SolanaSignatureStatus,
+} from "./solana-devnet-runtime-ports.js";
+export {
   createCanonicalEntryOrder,
   EntryOrderValidationError,
   type ActiveOrderContext,
