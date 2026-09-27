@@ -28,6 +28,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@naryx/protocol-types": "file:../../packages/protocol-types",
     "@solana/addresses": "8.3.0",
     "@solana/transaction-messages": "8.3.0",
     "@solana/transactions": "8.3.0",

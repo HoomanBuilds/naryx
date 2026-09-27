@@ -1,4 +1,12 @@
 export {
+  createCanonicalEntryOrder,
+  EntryOrderValidationError,
+  type ActiveOrderContext,
+  type ActiveOrderContextProvider,
+  type CanonicalEntryOrder,
+  type CanonicalEntryRequest,
+} from "./canonical-entry-order.js";
+export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,
   loadPrivateTerminalServerConfig,
