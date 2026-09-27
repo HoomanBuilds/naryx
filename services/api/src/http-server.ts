@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { EntryOrderValidationError } from "./canonical-entry-order.js";
+import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
   ExecutionValidationError,
   parseExecutionObservationRequest,
@@ -7,6 +9,11 @@ import {
   validateUnsignedSolanaDevnetMaterialization,
   type PrivateTerminalExecutionPorts,
 } from "./terminal-execution.js";
+import {
+  InternalOrderCoordinator,
+  TerminalOrderValidationError,
+  type InternalOrderPorts,
+} from "./terminal-orders.js";
 import { createTerminalPreview, parsePreviewRequest, PreviewValidationError } from "./terminal-preview.js";
 import { createTerminalSnapshot } from "./terminal-snapshot.js";
 import { isDomainId } from "./terminal-types.js";
@@ -115,9 +122,17 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+function hasOrderPorts(ports: InternalOrderPorts | undefined): ports is InternalOrderPorts {
+  return ports !== undefined &&
+    typeof ports.contexts === "function" &&
+    ports.store !== undefined &&
+    ports.clock !== undefined;
+}
+
 export function createPrivateTerminalRequestHandler(
   config: PrivateTerminalServerConfig,
   executionPorts: PrivateTerminalExecutionPorts = {},
+  orderPorts?: InternalOrderPorts,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -243,6 +258,70 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    if (url.pathname === "/internal/terminal/orders") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts)) {
+        reject(response, 503, "ORDER_CREATION_UNAVAILABLE", "Order creation is unavailable.");
+        return;
+      }
+      try {
+        const coordinator = new InternalOrderCoordinator(orderPorts);
+        const result = await coordinator.createOrder(await readJson(request));
+        sendJson(response, result.created ? 201 : 200, {
+          status: "UNSIGNED_CREATED",
+          created: result.created,
+          order: result.record,
+          traderAuthorization: "REQUIRED",
+          solverQuoting: "REQUIRED",
+          note: "Unsigned order stored. Trader authorization and solver quoting are still required. No signing, quoting, or submission was performed.",
+        });
+      } catch (error) {
+        if (error instanceof TerminalOrderValidationError || error instanceof EntryOrderValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        if (error instanceof InternalOrderConflictError) {
+          reject(response, 409, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "ORDER_CREATION_FAILED", "Order creation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/internal/terminal/orders/")) {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts)) {
+        reject(response, 503, "ORDER_CREATION_UNAVAILABLE", "Order creation is unavailable.");
+        return;
+      }
+      const orderHash = url.pathname.slice("/internal/terminal/orders/".length);
+      try {
+        const coordinator = new InternalOrderCoordinator(orderPorts);
+        const record = coordinator.getOrder(orderHash);
+        if (record === undefined) {
+          reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        sendJson(response, 200, record);
+      } catch (error) {
+        if (error instanceof TerminalOrderValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "ORDER_RETRIEVAL_FAILED", "Order retrieval failed closed.");
+      }
+      return;
+    }
+
     reject(response, 404, "NOT_FOUND", "Route not found.");
   };
 }
@@ -250,8 +329,9 @@ export function createPrivateTerminalRequestHandler(
 export function createPrivateTerminalServer(
   config: PrivateTerminalServerConfig,
   executionPorts: PrivateTerminalExecutionPorts = {},
+  orderPorts?: InternalOrderPorts,
 ) {
-  const handler = createPrivateTerminalRequestHandler(config, executionPorts);
+  const handler = createPrivateTerminalRequestHandler(config, executionPorts, orderPorts);
   return createServer((request, response) => {
     handler(request, response).catch(() => {
       if (!response.headersSent) {

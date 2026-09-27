@@ -6,7 +6,9 @@ The service exposes deterministic package snapshots and previews plus injected b
 
 Preparation accepts only a normalized cash-and-carry request. The injected port owns route compilation and returns an unsigned materialization. The HTTP boundary independently verifies the Devnet identity, plan kind, trader signer, zero signatures, wire size, resolved-account count, compute-unit cap, lookup commitments, and evidence before returning `DEVNET_UNSIGNED_REVIEW_REQUIRED`.
 
-Observation is read-only and reports `SUBMITTED`, `FINALIZED`, `FAILED`, or `EXPIRED`. This service has no signer, wallet authority, transaction submission, simulation, broadcast, persistence, arbitrary instruction input, RPC URL input, or mainnet path.
+Observation is read-only and reports `SUBMITTED`, `FINALIZED`, `FAILED`, or `EXPIRED`. The observation boundary has no signer, wallet authority, submission, simulation, broadcast, arbitrary instruction input, RPC URL input, or mainnet path.
+
+The service also exposes an internal unsigned-order boundary at POST `/internal/terminal/orders` and GET `/internal/terminal/orders/{orderHash}`. The browser request carries only `contextId`, `owner`, `settlementAccount`, `size`, `slippageBps`, and `idempotencyKey`; size is parsed to integer atoms with the server-owned active context base-asset decimals and the authoritative clock is injected by the server. Orders are stored as `UNSIGNED_CREATED` and responses state that trader authorization and solver quoting are still required. The default process has no order ports, so both routes fail with `ORDER_CREATION_UNAVAILABLE`. This boundary performs no signing, quote creation, transaction preparation, submission, simulation, broadcast, or mainnet path.
 
 It binds to loopback by default. Cross-origin browser access is allowed only for the exact configured terminal origin.
 

@@ -17,6 +17,12 @@ export {
   type InternalOrderStore,
 } from "./internal-order-store.js";
 export {
+  InternalOrderCoordinator,
+  TerminalOrderValidationError,
+  type InternalOrderClockPort,
+  type InternalOrderPorts,
+} from "./terminal-orders.js";
+export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,
   loadPrivateTerminalServerConfig,
