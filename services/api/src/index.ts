@@ -7,6 +7,16 @@ export {
   type CanonicalEntryRequest,
 } from "./canonical-entry-order.js";
 export {
+  InternalOrderConflictError,
+  InternalOrderStoreError,
+  SqliteInternalOrderStore,
+  type InternalOrderCreateResult,
+  type InternalOrderInput,
+  type InternalOrderRecord,
+  type InternalOrderStatus,
+  type InternalOrderStore,
+} from "./internal-order-store.js";
+export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,
   loadPrivateTerminalServerConfig,

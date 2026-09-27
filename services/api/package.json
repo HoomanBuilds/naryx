@@ -32,9 +32,11 @@
     "@solana/addresses": "8.3.0",
     "@solana/transaction-messages": "8.3.0",
     "@solana/transactions": "8.3.0",
+    "better-sqlite3": "13.0.3",
     "bs58": "6.0.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.2",
     "typescript": "7.0.2"
   }
