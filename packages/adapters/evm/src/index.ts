@@ -544,3 +544,47 @@ export function compileEvmAtomicPackage(
 }
 
 export { NARYX_STRATEGY_ACCOUNT_ABI } from './abi.js';
+export {
+  ASYNC_COORDINATOR_OBSERVATION_ABI,
+  GMX_ENTRY_ADAPTER_OBSERVATION_ABI,
+  GMX_EXIT_CONTROLLER_OBSERVATION_ABI,
+  PACKAGE_VERIFIER_OBSERVATION_ABI,
+} from './abi.js';
+export type {
+  EvmChainHead,
+  EvmContractRead,
+  EvmEvidenceGrade,
+  EvmFinalityPolicy,
+  EvmObservedLog,
+  EvmObservedReceipt,
+  EvmReadPort,
+} from './readPort.js';
+export {
+  chainReference,
+  equalAddress,
+  equalHash,
+  hash32,
+  requiredEvmAddress,
+  safeCount,
+  structField,
+  validateFinalityPolicy,
+} from './readPort.js';
+export type {
+  EvmAtomicLifecycle,
+  EvmAtomicObservation,
+  EvmAtomicObservationBinding,
+  EvmAtomicOpenPackage,
+  EvmAtomicPackageReceipt,
+} from './atomicObservation.js';
+export { observeEvmAtomicPackage } from './atomicObservation.js';
+export type {
+  EvmAsyncBondedObservation,
+  EvmAsyncCoordinatorView,
+  EvmAsyncEntryView,
+  EvmAsyncExitView,
+  EvmAsyncFinalReceiptView,
+  EvmAsyncLifecycle,
+  EvmAsyncObservationBinding,
+  EvmAsyncObservationKeys,
+} from './asyncObservation.js';
+export { COORDINATOR_STATE_LABELS, VENUE_STATUS_LABELS, observeAsyncBondedPackage } from './asyncObservation.js';
