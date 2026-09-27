@@ -638,3 +638,12 @@ export {
   type AtomicRouteRejectedDecision,
   type AtomicRouteRejectionReason,
 } from './atomic-route-decision.js';
+export {
+  SignedAtomicEntryQuoteError,
+  signAtomicEntryQuote,
+  type AtomicEntryQuoteTerms,
+  type Ed25519AtomicQuoteSigner,
+  type SignedAtomicEntryQuote,
+  type SignedAtomicEntryQuoteCode,
+  type SignedAtomicEntryQuoteInput,
+} from './signed-atomic-entry-quote.js';
