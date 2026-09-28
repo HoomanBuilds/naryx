@@ -10,6 +10,7 @@ import {
 } from "@naryx/protocol-types";
 import {
   createCanonicalEntryOrder,
+  createLocalAtomicOrderRuntime,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
 } from "../src/index.js";
@@ -115,4 +116,15 @@ test("canonical entry builds atomic order and rejects inactive context", () => {
   const pausedProvider: ActiveOrderContextProvider = (contextId) =>
     contextId === paused.contextId ? paused : undefined;
   assert.throws(() => createCanonicalEntryOrder(pausedProvider, request), /not active/);
+});
+
+test("shared local catalog produces active order and clock ports", async () => {
+  const runtime = createLocalAtomicOrderRuntime(undefined, () => 5_000n);
+  const context = runtime.contexts("local:svm:sol-carry-v1");
+  assert.ok(context !== undefined);
+  assert.equal(context.environment, "local");
+  assert.equal(context.domain.domainId, "svm:local");
+  assert.equal(context.spotAdapters[0]?.adapterId, "solana-conformance-v1");
+  assert.equal(await runtime.clock.currentClock(context), 5_000n);
+  assert.equal(runtime.contexts("unknown"), undefined);
 });

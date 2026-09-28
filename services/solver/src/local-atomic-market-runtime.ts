@@ -1,4 +1,4 @@
-import type { LocalAtomicMarketCatalog } from '@naryx/adapter-core';
+import { localConformanceSlot, type LocalAtomicMarketCatalog } from '@naryx/adapter-core';
 import { payloadTemplateHash, type ActionCommitmentInput, type RouteAccountBindingInput } from '@naryx/protocol-types';
 import {
   InMemoryAtomicQuoteNonceSource,
@@ -79,11 +79,6 @@ function actions(catalog: LocalAtomicMarketCatalog): readonly ActionCommitmentIn
       payload,
     },
   ]);
-}
-
-export function localConformanceSlot(nowMs = Date.now()): bigint {
-  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('local clock is invalid');
-  return BigInt(Math.floor(nowMs / 400));
 }
 
 export function createLocalAtomicMarketRuntime(

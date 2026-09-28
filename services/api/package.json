@@ -28,6 +28,7 @@
     "node": ">=22.12.0"
   },
   "dependencies": {
+    "@naryx/adapter-core": "file:../../packages/adapter-core",
     "@naryx/adapter-evm": "file:../../packages/adapters/evm",
     "@naryx/adapter-solana": "file:../../packages/adapters/solana",
     "@naryx/protocol-types": "file:../../packages/protocol-types",

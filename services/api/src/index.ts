@@ -63,6 +63,10 @@ export {
   type InternalOrderPorts,
 } from "./terminal-orders.js";
 export {
+  createLocalAtomicOrderRuntime,
+  type LocalAtomicOrderRuntime,
+} from "./local-atomic-order-context.js";
+export {
   HYPERLIQUID_TESTNET_DOMAIN,
   HYPERLIQUID_TESTNET_ENVIRONMENT,
   HyperliquidTestnetTerminalValidationError,

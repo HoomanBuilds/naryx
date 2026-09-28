@@ -351,3 +351,8 @@ export const LOCAL_ATOMIC_MARKET_CATALOG_V1 = parseLocalAtomicMarketCatalog({
     conformanceVenue: 'ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y',
   },
 });
+
+export function localConformanceSlot(nowMs = Date.now()): bigint {
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) throw new Error('local clock is invalid');
+  return BigInt(Math.floor(nowMs / 400));
+}

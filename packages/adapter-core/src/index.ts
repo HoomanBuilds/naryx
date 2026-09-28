@@ -39,6 +39,7 @@ export interface ExecutionAdapter<TPayload, TReceipt> {
 
 export {
   LOCAL_ATOMIC_MARKET_CATALOG_V1,
+  localConformanceSlot,
   parseLocalAtomicMarketCatalog,
   type LocalAtomicMarketCatalog,
 } from './local-atomic-market-catalog.js';
