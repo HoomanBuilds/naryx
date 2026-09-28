@@ -665,6 +665,7 @@ export {
 export { HttpInternalOrderProvider } from './http-internal-order-provider.js';
 export { SqliteInternalAtomicQuoteStore } from './internal-atomic-quote-sqlite-store.js';
 export {
+  HttpSelectedSolanaAdmissionProvider,
   SolanaExecutionAuthorizationError,
   SolanaExecutionAuthorizationService,
   SqliteSolanaExecutionAuthorizationStore,

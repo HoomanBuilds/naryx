@@ -2,8 +2,13 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import { LOCAL_ATOMIC_MARKET_CATALOG_V1 } from '@naryx/adapter-core';
+import { SolanaConformanceAdapter } from '@naryx/adapter-solana';
+import { Connection } from '@solana/web3.js';
 import {
+  HttpSelectedSolanaAdmissionProvider,
   HttpInternalOrderProvider,
+  SolanaExecutionAuthorizationService,
+  SqliteSolanaExecutionAuthorizationStore,
   SqliteInternalAtomicQuoteStore,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
@@ -66,6 +71,7 @@ if (signerPath === undefined || signerPath.length === 0) {
 }
 
 const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
+const executionSigner = loadSigner(signerPath);
 const manifestRuntime = environmentManifestPath === undefined
   ? undefined
   : await loadSolanaLocalEnvironmentRuntime(
@@ -95,15 +101,38 @@ const coordinator = createInternalAtomicQuoteCoordinator({
   orders: orderProvider.get,
   candidates: runtime.providers.candidates,
   terms: runtime.providers.terms,
-  signer: loadSigner(signerPath),
+  signer: executionSigner,
   store,
 });
-const server = createInternalAtomicQuoteServer(coordinator);
+const authorizationStore = manifestRuntime === undefined
+  ? undefined
+  : new SqliteSolanaExecutionAuthorizationStore(absolutePath(
+    process.env.NARYX_SOLVER_SOLANA_AUTHORIZATION_DB ?? '/tmp/naryx-local/solver-solana-authorizations.db',
+    'NARYX_SOLVER_SOLANA_AUTHORIZATION_DB',
+  ));
+const authorization = manifestRuntime === undefined || authorizationStore === undefined
+  ? undefined
+  : new SolanaExecutionAuthorizationService({
+    manifest: manifestRuntime.manifest,
+    selectedAdmission: new HttpSelectedSolanaAdmissionProvider(apiOrigin).get,
+    compiler: new SolanaConformanceAdapter({
+      connection: new Connection(manifestRuntime.manifest.rpc.url, 'confirmed'),
+      domain: manifestRuntime.manifest.runtime.catalog.domain,
+      environment: 'local',
+      expectedGenesisHash: manifestRuntime.manifest.rpc.genesisHash,
+      executionSignatureProvider: () => { throw new Error('authorization compilation does not request a signature'); },
+    }),
+    signer: executionSigner,
+    store: authorizationStore,
+    readSlot: manifestRuntime.readSlot,
+  });
+const server = createInternalAtomicQuoteServer(coordinator, authorization);
 
 function shutdown(): void {
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   server.close(() => {
     store.close();
+    authorizationStore?.close();
     process.exitCode = 0;
   });
 }

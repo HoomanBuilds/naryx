@@ -11,6 +11,10 @@ import {
   type AtomicEntryQuoteTerms,
   type Ed25519AtomicQuoteSigner,
 } from './signed-atomic-entry-quote.js';
+import {
+  SolanaExecutionAuthorizationError,
+  type SolanaExecutionAuthorizationPort,
+} from './solana-execution-authorization.js';
 
 const MAX_BODY_BYTES = 4_096;
 const HASH_HEX = /^[0-9a-f]{64}$/;
@@ -268,13 +272,40 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-export function createInternalAtomicQuoteRequestHandler(port: InternalAtomicQuotePort) {
+export function createInternalAtomicQuoteRequestHandler(
+  port: InternalAtomicQuotePort,
+  authorization?: SolanaExecutionAuthorizationPort,
+) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!isLoopbackAddress(request.socket.remoteAddress)) {
       reject(response, 403, 'LOOPBACK_REQUIRED', 'internal quote access is loopback-only');
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
+    if (url.pathname === '/internal/solana/execution-authorizations' && url.search === '') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'only POST is allowed');
+        return;
+      }
+      if (authorization === undefined) {
+        reject(response, 503, 'AUTHORIZATION_UNAVAILABLE', 'Solana execution authorization is unavailable');
+        return;
+      }
+      try {
+        const value = await readJson(request);
+        sendJson(response, 200, await authorization.authorize(value as { attemptId: string }));
+      } catch (error) {
+        if (error instanceof SolanaExecutionAuthorizationError) {
+          const status = error.code === 'ATTEMPT_NOT_FOUND' ? 404
+            : error.code === 'NONCE_REPLAY' ? 409 : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'AUTHORIZATION_FAILED', 'Solana execution authorization failed closed');
+      }
+      return;
+    }
     if (url.pathname !== '/internal/quotes/atomic-entry' || url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'internal route was not found');
       return;
@@ -300,6 +331,9 @@ export function createInternalAtomicQuoteRequestHandler(port: InternalAtomicQuot
   };
 }
 
-export function createInternalAtomicQuoteServer(port: InternalAtomicQuotePort) {
-  return createServer(createInternalAtomicQuoteRequestHandler(port));
+export function createInternalAtomicQuoteServer(
+  port: InternalAtomicQuotePort,
+  authorization?: SolanaExecutionAuthorizationPort,
+) {
+  return createServer(createInternalAtomicQuoteRequestHandler(port, authorization));
 }

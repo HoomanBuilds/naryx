@@ -6,11 +6,18 @@ import Database from 'better-sqlite3';
 import bs58 from 'bs58';
 import {
   bytesEqual,
+  fromProtocolJson,
   packageOrderHash,
   quoteHash,
   routeHash,
+  routePayload,
+  solverQuote,
   solverSignatureDigest,
+  validatePackageOrderProfile,
   type PackageAdmission,
+  type PackageOrderInput,
+  type RoutePayloadInput,
+  type SolverQuoteInput,
 } from '@naryx/protocol-types';
 import type { SolanaLocalEnvironmentManifest } from '@naryx/adapter-core';
 
@@ -40,6 +47,57 @@ export interface SolanaExecutionAuthorizationCompiler {
 export type SelectedSolanaAdmissionProvider = (
   attemptId: string,
 ) => PackageAdmission | undefined | Promise<PackageAdmission | undefined>;
+
+function loopbackOrigin(value: string): string {
+  const url = new URL(value);
+  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname.startsWith('127.');
+  if (url.protocol !== 'http:' || !loopback || url.username !== '' || url.password !== ''
+    || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new Error('selected admission endpoint must be a loopback HTTP origin');
+  }
+  return url.origin;
+}
+
+export class HttpSelectedSolanaAdmissionProvider {
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+
+  constructor(origin: string, fetchImplementation: typeof fetch = fetch) {
+    this.#origin = loopbackOrigin(origin);
+    this.#fetch = fetchImplementation;
+  }
+
+  readonly get: SelectedSolanaAdmissionProvider = async (attemptId) => {
+    if (!ATTEMPT_ID.test(attemptId)) fail('INVALID_REQUEST', 'attemptId is invalid');
+    const response = await this.#fetch(`${this.#origin}/internal/solver/attempts/${attemptId}`, {
+      method: 'GET', redirect: 'error', signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status === 404) return undefined;
+    if (!response.ok || response.headers.get('content-type')?.split(';', 1)[0] !== 'application/json') {
+      throw new Error(`selected admission endpoint returned HTTP ${response.status}`);
+    }
+    const value = await response.json() as Record<string, unknown>;
+    if (value.version !== 1 || value.attemptId !== attemptId
+      || typeof value.orderHash !== 'string' || !HASH.test(value.orderHash)
+      || typeof value.routeHash !== 'string' || !HASH.test(value.routeHash)
+      || typeof value.quoteHash !== 'string' || !HASH.test(value.quoteHash)) {
+      fail('BINDING_MISMATCH', 'selected admission response is invalid');
+    }
+    const parsedOrder = validatePackageOrderProfile(
+      fromProtocolJson(value.order, 'selectedAdmission.order') as PackageOrderInput,
+    );
+    const route = routePayload(fromProtocolJson(value.route, 'selectedAdmission.route') as RoutePayloadInput);
+    const quote = solverQuote(fromProtocolJson(value.quote, 'selectedAdmission.quote') as SolverQuoteInput);
+    return Object.freeze({
+      order: parsedOrder,
+      route,
+      quote,
+      orderHash: Uint8Array.from(Buffer.from(value.orderHash, 'hex')),
+      routeHash: Uint8Array.from(Buffer.from(value.routeHash, 'hex')),
+      quoteHash: Uint8Array.from(Buffer.from(value.quoteHash, 'hex')),
+    }) as PackageAdmission;
+  };
+}
 
 export interface SolanaExecutionSigner {
   readonly verificationKey: Uint8Array;

@@ -70,6 +70,13 @@ export interface ConformanceReceipt {
   readonly executionSlot: bigint;
 }
 
+export interface ConformancePosition {
+  readonly market: PublicKey;
+  readonly trader: PublicKey;
+  readonly shortBaseAtoms: bigint;
+  readonly collateralQuoteAtoms: bigint;
+}
+
 export interface AuthenticatedConformanceExecution {
   readonly instructions: readonly TransactionInstruction[];
   readonly executionDigest: Uint8Array;
@@ -477,6 +484,19 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
       postCollateralQuoteAtoms: rawBigInt(decoded.post_collateral_quote_atoms as InstanceType<typeof BN>, 'post collateral'),
       executionSlot: rawBigInt(decoded.execution_slot as InstanceType<typeof BN>, 'execution slot'),
     };
+  }
+
+  decodePosition(data: Buffer): ConformancePosition {
+    const decoded = new BorshCoder(this.#venueIdl).accounts.decode('PerpPosition', data) as Record<string, unknown>;
+    const market = decoded.market;
+    const trader = decoded.trader;
+    requireCondition(market instanceof PublicKey && trader instanceof PublicKey, 'position identity is invalid');
+    return Object.freeze({
+      market,
+      trader,
+      shortBaseAtoms: rawBigInt(decoded.short_base_atoms as InstanceType<typeof BN>, 'position short base'),
+      collateralQuoteAtoms: rawBigInt(decoded.collateral_quote_atoms as InstanceType<typeof BN>, 'position collateral quote'),
+    });
   }
 
   async readEvidence(executionReference: string, admission: PackageAdmission): Promise<ExecutionEvidence<ConformanceReceipt> | null> {
