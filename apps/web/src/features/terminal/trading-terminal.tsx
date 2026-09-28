@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
+import type { SolanaExecutionObservation } from "./private-http-terminal-provider";
 import {
   useSolanaDevnetWallet,
   type SolanaWalletSession,
@@ -373,9 +374,49 @@ type ExecutionReview = {
 
 type SubmissionState = {
   signature: string;
-  status: "SUBMITTED_OBSERVATION_PENDING";
+  idempotencyKey: string;
   ticketKey: string;
+  observation: SolanaExecutionObservation | null;
+  observationUnavailable: boolean;
+  consecutiveFailures: number;
+  lastCheckedAt: number | null;
 };
+
+const OBSERVATION_POLL_INTERVAL_MS = 4000;
+const OBSERVATION_MAX_AUTO_FAILURES = 3;
+
+function isObservationTerminal(observation: SolanaExecutionObservation | null): boolean {
+  return observation?.lifecycle === "FINALIZED" ||
+    observation?.lifecycle === "FAILED" ||
+    observation?.lifecycle === "EXPIRED";
+}
+
+function observationNetworkLabel(submission: SubmissionState): string {
+  if (submission.observation?.lifecycle === "FINALIZED") return "Finalized";
+  if (submission.observation?.lifecycle === "FAILED") return "Failed";
+  if (submission.observation?.lifecycle === "EXPIRED") return "Expired";
+  if (submission.observationUnavailable) return "Observation unavailable";
+  return "Submitted";
+}
+
+function observationEvidenceLabel(submission: SubmissionState): string {
+  const observation = submission.observation;
+  if (!observation) return "No slot observed yet";
+  if (observation.lifecycle === "SUBMITTED") {
+    return observation.observedSlot === null
+      ? "No slot observed yet"
+      : `Slot ${observation.observedSlot.toLocaleString()}`;
+  }
+  if (observation.lifecycle === "FINALIZED") {
+    return `Slot ${observation.finalizedSlot.toLocaleString()}`;
+  }
+  if (observation.lifecycle === "FAILED") {
+    return observation.failedSlot === null
+      ? `Code ${observation.failureCode}`
+      : `Slot ${observation.failedSlot.toLocaleString()} / ${observation.failureCode}`;
+  }
+  return `Last valid ${observation.lastValidBlockHeight.toLocaleString()} / observed ${observation.observedBlockHeight.toLocaleString()}`;
+}
 
 function compact(value: string, leading = 10, trailing = 8) {
   return value.length > leading + trailing + 3
@@ -409,17 +450,34 @@ function ExecutionReviewPanel({
   review,
   preview,
   submission,
+  confirming,
+  onRetryObservation,
 }: {
   review: ExecutionReview;
   preview: TerminalPreview | null;
   submission: SubmissionState | null;
+  confirming: boolean;
+  onRetryObservation: () => void;
 }) {
   const { preparation } = review;
+  const observation = submission?.observation ?? null;
+  const unavailable = submission?.observationUnavailable ?? false;
+  const badge = !submission
+    ? confirming ? "Confirm in wallet" : "Signature required"
+    : observation?.lifecycle === "FINALIZED"
+      ? "Finalized on Devnet"
+      : observation?.lifecycle === "FAILED"
+        ? "Failed on Devnet"
+        : observation?.lifecycle === "EXPIRED"
+          ? "Expired"
+          : unavailable
+            ? "Observation unavailable"
+            : "Submitted";
   return (
     <section className={styles.executionReview} aria-labelledby="execution-review-title">
       <div className={styles.evidenceHeading}>
         <h3 id="execution-review-title">Devnet pre-sign review</h3>
-        <span>{submission ? "Submitted" : "Signature required"}</span>
+        <span>{badge}</span>
       </div>
       <div className={styles.reviewEconomics}>
         <div>
@@ -476,11 +534,72 @@ function ExecutionReviewPanel({
       <p className={styles.reviewNotice}>
         This review expires after 45 seconds. Submission is not finality and does not mean the package completed.
       </p>
-      {submission ? (
-        <div className={styles.submissionReceipt}>
+      {!submission && confirming ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Wallet confirmation</span>
+          <strong>Confirm in wallet</strong>
+          <small>Approve the exact reviewed Devnet transaction in your wallet. Closing the wallet prompt cancels submission.</small>
+        </div>
+      ) : null}
+      {submission && !observation && !unavailable ? (
+        <div className={styles.submissionReceipt} role="status">
           <span>Transaction submitted</span>
           <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
-          <small>Network observation pending. Package completion is not asserted.</small>
+          <small>Waiting for network observation on Solana Devnet. No slot observed yet. Submission is not finality and does not mean the package completed.</small>
+        </div>
+      ) : null}
+      {submission && observation?.lifecycle === "SUBMITTED" && !unavailable ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Transaction submitted</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>
+            {observation.observedSlot === null
+              ? "Waiting for network observation on Solana Devnet. No slot observed yet. Submission is not confirmation and does not mean the package completed."
+              : `Observed at slot ${observation.observedSlot.toLocaleString()} on Solana Devnet. Waiting for finality. Submission is not confirmation and does not mean the package completed.`}
+          </small>
+        </div>
+      ) : null}
+      {submission && observation?.lifecycle === "FINALIZED" ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Finalized on Solana Devnet</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>
+            {`Finalized at slot ${observation.finalizedSlot.toLocaleString()}. Network finality only. This does not mean the package is open, closed, or complete.`}
+          </small>
+        </div>
+      ) : null}
+      {submission && observation?.lifecycle === "FAILED" ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Failed on Solana Devnet</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>
+            {observation.failedSlot === null
+              ? `Failure code ${observation.failureCode}. No slot reported. The transaction did not finalize.`
+              : `Failure code ${observation.failureCode} at slot ${observation.failedSlot.toLocaleString()}. The transaction did not finalize.`}
+          </small>
+        </div>
+      ) : null}
+      {submission && observation?.lifecycle === "EXPIRED" ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Expired before finality</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>
+            {`Last valid block height ${observation.lastValidBlockHeight.toLocaleString()}, observed block height ${observation.observedBlockHeight.toLocaleString()}. The transaction did not finalize.`}
+          </small>
+        </div>
+      ) : null}
+      {submission && unavailable && !isObservationTerminal(observation) ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Observation unavailable</span>
+          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <small>Observation temporarily unavailable. The transaction was submitted and network state is unknown. Finality is not asserted.</small>
+          <button
+            type="button"
+            className={styles.observationRetry}
+            onClick={onRetryObservation}
+          >
+            Retry observation
+          </button>
         </div>
       ) : null}
     </section>
@@ -496,6 +615,7 @@ function Ticket({
   quoteMode,
   executionReview,
   submission,
+  confirming,
   actionLabel,
   actionReason,
   actionDisabled,
@@ -507,6 +627,7 @@ function Ticket({
   onQuoteModeChange,
   onExecutionAction,
   onPrepareExecution,
+  onRetryObservation,
 }: {
   snapshot: TerminalViewModel;
   mode: PackageMode;
@@ -516,6 +637,7 @@ function Ticket({
   quoteMode: QuoteMode;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
+  confirming: boolean;
   actionLabel: string;
   actionReason: string;
   actionDisabled: boolean;
@@ -527,6 +649,7 @@ function Ticket({
   onQuoteModeChange: (quoteMode: QuoteMode) => void;
   onExecutionAction: () => void;
   onPrepareExecution: () => void;
+  onRetryObservation: () => void;
 }) {
   return (
     <aside className={`${styles.panel} ${styles.ticket}`} aria-labelledby="ticket-title">
@@ -641,6 +764,8 @@ function Ticket({
           review={executionReview}
           preview={preview}
           submission={submission}
+          confirming={confirming}
+          onRetryObservation={onRetryObservation}
         />
       ) : null}
 
@@ -660,9 +785,9 @@ function Ticket({
           aria-describedby="execution-note"
           onClick={onExecutionAction}
         >
-          {actionBusy ? "Working" : actionLabel}
+          {confirming ? "Confirm in wallet" : actionBusy ? "Preparing Devnet review" : actionLabel}
         </button>
-        <p id="execution-note">
+        <p id="execution-note" role="status">
           {actionReason}
         </p>
       </div>
@@ -673,9 +798,15 @@ function Ticket({
 function BottomWorkspace({
   snapshot,
   providerConnection,
+  submission,
+  attemptMode,
+  onRetryObservation,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
+  submission: SubmissionState | null;
+  attemptMode: PackageMode;
+  onRetryObservation: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("positions");
   const activeWorkspace =
@@ -686,6 +817,9 @@ function BottomWorkspace({
     : providerConnection === "connecting"
       ? "Provider connecting"
       : "Provider disconnected";
+  const showObservationRow = activeWorkspace.tab === "receipts" && submission !== null;
+  const needsRetry = showObservationRow && submission !== null &&
+    submission.observationUnavailable && !isObservationTerminal(submission.observation);
 
   return (
     <section className={`${styles.panel} ${styles.bottomWorkspace}`} aria-label="Trading workspace">
@@ -717,6 +851,11 @@ function BottomWorkspace({
         aria-labelledby={`tab-${activeWorkspace.tab}`}
         className={styles.tableScroller}
       >
+        {showObservationRow && submission ? (
+          <p className={styles.receiptsNote} role="status">
+            Network evidence only. Not a durable lifecycle receipt. {observationNetworkLabel(submission)} on Solana Devnet.
+          </p>
+        ) : null}
         <table className={styles.workspaceTable}>
           <thead>
             <tr>
@@ -732,17 +871,46 @@ function BottomWorkspace({
             </tr>
           </thead>
           <tbody>
-            <tr>
-              <td colSpan={activeWorkspace.columns.length}>
-                <div className={styles.emptyState}>
-                  <span className={styles.emptyGlyph} aria-hidden="true" />
-                  <div>
-                    <strong>{activeWorkspace.emptyTitle}</strong>
-                    <p>{activeWorkspace.emptyDetail}</p>
+            {showObservationRow && submission ? (
+              <tr>
+                <td className={styles.receiptsCell} title={submission.signature}>
+                  {compact(submission.signature, 10, 8)}
+                </td>
+                <td className={styles.receiptsCell}>Solana Devnet</td>
+                <td className={styles.receiptsCell}>{attemptMode === "entry" ? "Entry" : "Exit"}</td>
+                <td className={`${styles.receiptsCell} ${styles.receiptsCellNumeric}`}>
+                  {observationEvidenceLabel(submission)}
+                </td>
+                <td className={styles.receiptsCell}>{observationNetworkLabel(submission)}</td>
+                <td className={styles.receiptsCell}>
+                  <span>Network evidence only</span>
+                  {needsRetry ? (
+                    <span>
+                      {" "}
+                      <button
+                        type="button"
+                        className={styles.inlineRetry}
+                        onClick={onRetryObservation}
+                      >
+                        Retry observation
+                      </button>
+                    </span>
+                  ) : null}
+                </td>
+              </tr>
+            ) : (
+              <tr>
+                <td colSpan={activeWorkspace.columns.length}>
+                  <div className={styles.emptyState}>
+                    <span className={styles.emptyGlyph} aria-hidden="true" />
+                    <div>
+                      <strong>{activeWorkspace.emptyTitle}</strong>
+                      <p>{activeWorkspace.emptyDetail}</p>
+                    </div>
                   </div>
-                </div>
-              </td>
-            </tr>
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -776,6 +944,7 @@ export function TradingTerminal({
     message: string;
   } | null>(null);
   const [executionBusy, setExecutionBusy] = useState(false);
+  const [confirmingInWallet, setConfirmingInWallet] = useState(false);
   const [idempotency, setIdempotency] = useState<{
     ticketKey: string;
     key: string;
@@ -928,6 +1097,36 @@ export function TradingTerminal({
       return { disabled: true, label: "Coordinated limits required", reason: "Devnet execution requires the coordinated-limits quote mode." };
     }
     if (currentSubmission) {
+      const observation = currentSubmission.observation;
+      if (observation?.lifecycle === "FINALIZED") {
+        return {
+          disabled: true,
+          label: "Transaction finalized",
+          reason: `Finalized on Solana Devnet at slot ${observation.finalizedSlot.toLocaleString()}. Network finality only. This does not mean the package completed.`,
+        };
+      }
+      if (observation?.lifecycle === "FAILED") {
+        return {
+          disabled: true,
+          label: "Transaction failed",
+          reason: observation.failedSlot === null
+            ? `Failed on Solana Devnet with code ${observation.failureCode}. The transaction did not finalize.`
+            : `Failed on Solana Devnet with code ${observation.failureCode} at slot ${observation.failedSlot.toLocaleString()}. The transaction did not finalize.`,
+        };
+      }
+      if (observation?.lifecycle === "EXPIRED") {
+        return {
+          disabled: true,
+          label: "Transaction expired",
+          reason: `Expired before finality on Solana Devnet. Last valid block height ${observation.lastValidBlockHeight.toLocaleString()}, observed ${observation.observedBlockHeight.toLocaleString()}. The transaction did not finalize.`,
+        };
+      }
+      if (currentSubmission.observationUnavailable) {
+        return { disabled: true, label: "Transaction submitted", reason: "Observation temporarily unavailable. The transaction was submitted and network state is unknown. Use Retry observation." };
+      }
+      if (observation?.lifecycle === "SUBMITTED" && observation.observedSlot !== null) {
+        return { disabled: true, label: "Transaction submitted", reason: `Submitted to Solana Devnet and observed at slot ${observation.observedSlot.toLocaleString()}. Waiting for finality. Submission does not assert package completion.` };
+      }
       return { disabled: true, label: "Transaction submitted", reason: "Observation is pending. Submission does not assert finality or package completion." };
     }
     if (!currentExecutionReview) {
@@ -986,8 +1185,21 @@ export function TradingTerminal({
         setExecutionError({ ticketKey, message: "Execution material changed. Review the refreshed transaction before signing." });
         return;
       }
-      const signature = await wallet.signAndSend(next.transactionBytes);
-      setSubmission({ signature, status: "SUBMITTED_OBSERVATION_PENDING", ticketKey });
+      setConfirmingInWallet(true);
+      try {
+        const signature = await wallet.signAndSend(next.transactionBytes);
+        setSubmission({
+          signature,
+          idempotencyKey: key,
+          ticketKey,
+          observation: null,
+          observationUnavailable: false,
+          consecutiveFailures: 0,
+          lastCheckedAt: null,
+        });
+      } finally {
+        setConfirmingInWallet(false);
+      }
     } catch (cause) {
       setExecutionError({
         ticketKey,
@@ -1024,6 +1236,102 @@ export function TradingTerminal({
     } finally {
       setExecutionBusy(false);
     }
+  }
+
+  const currentObservation = currentSubmission?.observation ?? null;
+  const currentObservationTerminal = isObservationTerminal(currentObservation);
+  const currentObservationAutoPaused = currentSubmission !== null &&
+    currentSubmission.observationUnavailable &&
+    currentSubmission.consecutiveFailures >= OBSERVATION_MAX_AUTO_FAILURES &&
+    !currentObservationTerminal;
+  const observationSignature = currentSubmission?.signature ?? null;
+  const observationIdempotencyKey = currentSubmission?.idempotencyKey ?? null;
+  const observationTicketKey = currentSubmission?.ticketKey ?? null;
+
+  useEffect(() => {
+    if (!privateProvider) return;
+    if (!observationSignature || !observationIdempotencyKey || !observationTicketKey) return;
+    if (currentObservationTerminal) return;
+    if (currentObservationAutoPaused) return;
+    const signature = observationSignature;
+    const idempotencyKey = observationIdempotencyKey;
+    const ticket = observationTicketKey;
+    const controller = new AbortController();
+    let active = true;
+    let inFlight = false;
+    async function poll() {
+      if (!active || inFlight) return;
+      if (!privateProvider) return;
+      inFlight = true;
+      try {
+        const observation = await privateProvider.observeSolanaExecution(
+          { idempotencyKey, signature },
+          controller.signal,
+        );
+        if (!active || controller.signal.aborted) return;
+        setSubmission((previous) => {
+          if (!previous || previous.signature !== signature ||
+              previous.ticketKey !== ticket || previous.idempotencyKey !== idempotencyKey) {
+            return previous;
+          }
+          return {
+            ...previous,
+            observation,
+            observationUnavailable: false,
+            consecutiveFailures: 0,
+            lastCheckedAt: Date.now(),
+          };
+        });
+      } catch (cause) {
+        if (!active || controller.signal.aborted) return;
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setSubmission((previous) => {
+          if (!previous || previous.signature !== signature ||
+              previous.ticketKey !== ticket || previous.idempotencyKey !== idempotencyKey) {
+            return previous;
+          }
+          return {
+            ...previous,
+            observationUnavailable: true,
+            consecutiveFailures: previous.consecutiveFailures + 1,
+            lastCheckedAt: Date.now(),
+          };
+        });
+      } finally {
+        inFlight = false;
+      }
+    }
+    void poll();
+    const interval = window.setInterval(() => {
+      void poll();
+    }, OBSERVATION_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      controller.abort();
+    };
+  }, [
+    privateProvider,
+    observationSignature,
+    observationIdempotencyKey,
+    observationTicketKey,
+    currentObservationTerminal,
+    currentObservationAutoPaused,
+  ]);
+
+  function handleRetryObservation() {
+    if (!currentSubmission) return;
+    if (currentObservationTerminal) return;
+    const signature = currentSubmission.signature;
+    const ticket = currentSubmission.ticketKey;
+    const idempotencyKey = currentSubmission.idempotencyKey;
+    setSubmission((previous) => {
+      if (!previous || previous.signature !== signature ||
+          previous.ticketKey !== ticket || previous.idempotencyKey !== idempotencyKey) {
+        return previous;
+      }
+      return { ...previous, observationUnavailable: false, consecutiveFailures: 0 };
+    });
   }
 
   const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
@@ -1066,8 +1374,9 @@ export function TradingTerminal({
           quoteMode={quoteMode}
           executionReview={currentExecutionReview}
           submission={currentSubmission}
+          confirming={confirmingInWallet}
           actionLabel={actionState.label}
-          actionReason={currentExecutionError ?? actionState.reason}
+          actionReason={confirmingInWallet && !currentSubmission ? "Confirm in wallet. Approve the exact reviewed Devnet transaction." : (currentExecutionError ?? actionState.reason)}
           actionDisabled={actionState.disabled}
           actionBusy={executionBusy}
           prepareDisabled={prepareDisabled}
@@ -1077,11 +1386,15 @@ export function TradingTerminal({
           onQuoteModeChange={setQuoteMode}
           onExecutionAction={() => void handleExecutionAction()}
           onPrepareExecution={() => void handlePrepareExecution()}
+          onRetryObservation={handleRetryObservation}
         />
       </div>
       <BottomWorkspace
         snapshot={snapshot}
         providerConnection={providerConnection}
+        submission={currentSubmission}
+        attemptMode={mode}
+        onRetryObservation={handleRetryObservation}
       />
     </main>
   );

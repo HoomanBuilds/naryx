@@ -14,6 +14,37 @@ const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
 const MAX_TRANSACTION_BYTES = 1232;
 const MAX_RESOLVED_ACCOUNTS = 64;
 const MAX_COMPUTE_UNITS = 1_260_000;
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const FAILURE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+export type SolanaExecutionObservationRequest = Readonly<{
+  idempotencyKey: string;
+  signature: string;
+}>;
+
+export type SolanaExecutionObservation =
+  | Readonly<{
+    lifecycle: "SUBMITTED";
+    signature: string;
+    observedSlot: number | null;
+  }>
+  | Readonly<{
+    lifecycle: "FINALIZED";
+    signature: string;
+    finalizedSlot: number;
+  }>
+  | Readonly<{
+    lifecycle: "FAILED";
+    signature: string;
+    failedSlot: number | null;
+    failureCode: string;
+  }>
+  | Readonly<{
+    lifecycle: "EXPIRED";
+    signature: string;
+    lastValidBlockHeight: number;
+    observedBlockHeight: number;
+  }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -300,6 +331,163 @@ function requirePreview(value: unknown): TerminalPreview {
   return value as TerminalPreview;
 }
 
+function requireObservationIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(value)) {
+    throw new Error("Observation idempotency key is invalid.");
+  }
+  return value;
+}
+
+function requireCanonicalSignature(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("Observation signature is invalid.");
+  }
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(value);
+  } catch {
+    throw new Error("Observation signature is invalid.");
+  }
+  if (decoded.length !== 64 || bs58.encode(decoded) !== value) {
+    throw new Error("Observation signature is invalid.");
+  }
+  return value;
+}
+
+function requireNonnegativeSlot(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requirePositiveHeight(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireFailureCode(value: unknown): string {
+  if (typeof value !== "string" || !FAILURE_CODE_PATTERN.test(value)) {
+    throw new Error("Observation failure code is invalid.");
+  }
+  return value;
+}
+
+function requireObservation(
+  value: unknown,
+  request: SolanaExecutionObservationRequest,
+): SolanaExecutionObservation {
+  if (!isRecord(value)) {
+    throw new Error("Devnet observation response is invalid.");
+  }
+  if (value.environment !== "DEVNET" || value.domain !== "svm:devnet") {
+    throw new Error("Devnet observation is not bound to Solana Devnet.");
+  }
+  if (value.idempotencyKey !== request.idempotencyKey) {
+    throw new Error("Devnet observation idempotency key does not match the request.");
+  }
+  if (value.signature !== request.signature) {
+    throw new Error("Devnet observation signature does not match the request.");
+  }
+  if (value.lifecycle === "SUBMITTED") {
+    requireExactKeys(value, [
+      "domain",
+      "environment",
+      "idempotencyKey",
+      "lifecycle",
+      "observedSlot",
+      "signature",
+    ], "Devnet observation");
+    const observedSlotRaw = value.observedSlot;
+    const observedSlot = observedSlotRaw === null
+      ? null
+      : requireNonnegativeSlot(observedSlotRaw, "Observed slot");
+    return Object.freeze({
+      lifecycle: "SUBMITTED",
+      signature: request.signature,
+      observedSlot,
+    });
+  }
+  if (value.lifecycle === "FINALIZED") {
+    requireExactKeys(value, [
+      "domain",
+      "environment",
+      "finalizedSlot",
+      "idempotencyKey",
+      "lifecycle",
+      "signature",
+    ], "Devnet observation");
+    return Object.freeze({
+      lifecycle: "FINALIZED",
+      signature: request.signature,
+      finalizedSlot: requireNonnegativeSlot(value.finalizedSlot, "Finalized slot"),
+    });
+  }
+  if (value.lifecycle === "FAILED") {
+    requireExactKeys(value, [
+      "domain",
+      "environment",
+      "failedSlot",
+      "failureCode",
+      "idempotencyKey",
+      "lifecycle",
+      "signature",
+    ], "Devnet observation");
+    const failedSlotRaw = value.failedSlot;
+    const failedSlot = failedSlotRaw === null
+      ? null
+      : requireNonnegativeSlot(failedSlotRaw, "Failed slot");
+    return Object.freeze({
+      lifecycle: "FAILED",
+      signature: request.signature,
+      failedSlot,
+      failureCode: requireFailureCode(value.failureCode),
+    });
+  }
+  if (value.lifecycle === "EXPIRED") {
+    requireExactKeys(value, [
+      "domain",
+      "environment",
+      "idempotencyKey",
+      "lastValidBlockHeight",
+      "lifecycle",
+      "observedBlockHeight",
+      "signature",
+    ], "Devnet observation");
+    const lastValidBlockHeight = requirePositiveHeight(
+      value.lastValidBlockHeight,
+      "Last valid block height",
+    );
+    const observedBlockHeight = requirePositiveHeight(
+      value.observedBlockHeight,
+      "Observed block height",
+    );
+    if (observedBlockHeight <= lastValidBlockHeight) {
+      throw new Error("Devnet expired observation has not crossed last valid block height.");
+    }
+    return Object.freeze({
+      lifecycle: "EXPIRED",
+      signature: request.signature,
+      lastValidBlockHeight,
+      observedBlockHeight,
+    });
+  }
+  throw new Error("Devnet observation lifecycle is unsupported.");
+}
+
+function toSafeObservationError(status: number, code: string | null): Error {
+  if (status === 503 || code === "EXECUTION_UNAVAILABLE" ||
+      status === 502 || code === "EXECUTION_OBSERVATION_FAILED") {
+    return new Error("Devnet observation is temporarily unavailable.");
+  }
+  if (status === 400 || status === 405 || status === 404) {
+    return new Error("Devnet observation rejected the request.");
+  }
+  return new Error("Devnet observation is temporarily unavailable.");
+}
+
 export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
   readonly #baseUrl: string;
 
@@ -362,5 +550,41 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error(`Execution preparation failed with ${response.status}.`);
     }
     return requirePreparation(await response.json() as unknown, input);
+  }
+
+  async observeSolanaExecution(
+    request: SolanaExecutionObservationRequest,
+    signal?: AbortSignal,
+  ): Promise<SolanaExecutionObservation> {
+    const idempotencyKey = requireObservationIdempotencyKey(request.idempotencyKey);
+    const signature = requireCanonicalSignature(request.signature);
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/execution/observe`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idempotencyKey, signature }),
+      signal,
+    });
+    if (!response.ok) {
+      let code: string | null = null;
+      try {
+        const body = await response.json() as unknown;
+        if (isRecord(body) && isRecord(body.error) && typeof body.error.code === "string") {
+          code = body.error.code;
+        }
+      } catch {
+        code = null;
+      }
+      throw toSafeObservationError(response.status, code);
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json() as unknown;
+    } catch {
+      throw new Error("Devnet observation response is invalid.");
+    }
+    return requireObservation(payload, { idempotencyKey, signature });
   }
 }
