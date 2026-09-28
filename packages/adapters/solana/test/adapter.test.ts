@@ -30,6 +30,7 @@ const accountIds = {
   'spot-quote-vault': address(15),
   'perp-quote-vault': address(16),
   'conformance-program': new PublicKey(venueIdl.address),
+  'entry-receipt': address(18),
 };
 
 function admission(action: 'ENTRY' | 'EXIT' = 'ENTRY'): PackageAdmission {
@@ -53,6 +54,9 @@ function admission(action: 'ENTRY' | 'EXIT' = 'ENTRY'): PackageAdmission {
       expiryUnit: 'SOLANA_SLOT',
       expiryValue: 500n,
       quantity: { atoms: 9n },
+      entryReceiptHash: action === 'EXIT' ? hash(4) : undefined,
+      expectedPrePositionSize: { atoms: action === 'EXIT' ? -9n : 0n },
+      expectedPrePositionEntryNotional: { atoms: action === 'EXIT' ? 20n : 0n },
       maxSpotQuoteIn: action === 'ENTRY' ? { atoms: 70n } : undefined,
       minSpotQuoteOut: action === 'EXIT' ? { atoms: 60n } : undefined,
       maxMarginAdded: { atoms: 20n },
@@ -85,7 +89,9 @@ function admission(action: 'ENTRY' | 'EXIT' = 'ENTRY'): PackageAdmission {
       routeExpiryUnit: 'SOLANA_SLOT',
       routeExpiryValue: 490n,
       serviceCharges: [],
-      accountBindings: Object.entries(accountIds).map(([routeBindingId, pubkey]) => ({
+      accountBindings: Object.entries(accountIds)
+        .filter(([routeBindingId]) => action === 'EXIT' || routeBindingId !== 'entry-receipt')
+        .map(([routeBindingId, pubkey]) => ({
         routeBindingId,
         accountIdentity: pubkey.toBase58(),
       })),
@@ -129,7 +135,7 @@ for (const action of ['ENTRY', 'EXIT'] as const) {
     assert.deepEqual(Array.from(verificationData.subarray(112)), Array.from(result.payload.executionDigest));
     const decoded = coder.instruction.decode(result.payload.coreInstruction.data);
     assert.equal(decoded?.name, 'execute_conformance_atomic');
-    const data = decoded?.data as { order_hash: number[]; quote_hash: number[]; route_hash: number[]; args: { action: object; base_quantity_atoms: InstanceType<typeof BN>; spot_quote_limit_atoms: InstanceType<typeof BN>; collateral_quote_limit_atoms: InstanceType<typeof BN>; expiry_slot: InstanceType<typeof BN>; nonce: InstanceType<typeof BN> } };
+    const data = decoded?.data as { order_hash: number[]; quote_hash: number[]; route_hash: number[]; args: { action: object; base_quantity_atoms: InstanceType<typeof BN>; spot_quote_limit_atoms: InstanceType<typeof BN>; collateral_quote_limit_atoms: InstanceType<typeof BN>; expiry_slot: InstanceType<typeof BN>; nonce: InstanceType<typeof BN>; entry_execution_digest: number[]; expected_pre_short_base_atoms: InstanceType<typeof BN>; expected_pre_collateral_quote_atoms: InstanceType<typeof BN> } };
     assert.deepEqual(data.order_hash, Array.from(hash(1)));
     assert.deepEqual(data.quote_hash, Array.from(hash(3)));
     assert.deepEqual(data.route_hash, Array.from(hash(2)));
@@ -139,12 +145,16 @@ for (const action of ['ENTRY', 'EXIT'] as const) {
     assert.equal(data.args.collateral_quote_limit_atoms.toString(), action === 'ENTRY' ? '20' : '10');
     assert.equal(data.args.expiry_slot.toString(), '480');
     assert.equal(data.args.nonce.toString(), '7');
+    assert.deepEqual(data.args.entry_execution_digest, Array.from(action === 'ENTRY' ? new Uint8Array(32) : hash(4)));
+    assert.equal(data.args.expected_pre_short_base_atoms.toString(), action === 'ENTRY' ? '0' : '9');
+    assert.equal(data.args.expected_pre_collateral_quote_atoms.toString(), action === 'ENTRY' ? '0' : '20');
     const instruction = coreIdl.instructions.find((item) => item.name === 'execute_conformance_atomic')!;
     assert.deepEqual(result.payload.coreInstruction.keys.map((item) => item.pubkey.toBase58()), instruction.accounts.map((item) => {
       if (item.name === 'config') return adapter().configAddress().toBase58();
       if (item.name === 'solver_registry') return adapter().solverRegistryAddress().toBase58();
       if (item.name === 'receipt') return adapter().receiptAddress(trader, hash(1)).toBase58();
       if (item.name === 'nonce_marker') return adapter().nonceMarkerAddress(trader, 7n).toBase58();
+      if (item.name === 'entry_receipt') return action === 'ENTRY' ? coreIdl.address : accountIds['entry-receipt'].toBase58();
       if (item.name === 'instructions_sysvar') return SYSVAR_INSTRUCTIONS_PUBKEY.toBase58();
       if (item.name === 'token_program' || item.name === 'system_program') return (item as { address: string }).address;
       return accountIds[item.name === 'trader_base' ? 'trader-base'
@@ -212,6 +222,18 @@ test('rejects missing bindings, mismatched venue, and u64 overflow', async () =>
   await assert.rejects(compiler.compile({ ...zeroNonce, order: { ...zeroNonce.order, nonce: 0n } }), /nonce must be nonzero/);
   const overflow = admission();
   await assert.rejects(compiler.compile({ ...overflow, order: { ...overflow.order, quantity: { ...overflow.order.quantity, atoms: 1n << 64n } }, quote: { ...overflow.quote, expectedGrossSpotQuantity: { ...overflow.quote.expectedGrossSpotQuantity, atoms: 1n << 64n } }, route: { ...overflow.route, legs: overflow.route.legs.map((leg) => ({ ...leg, quantity: { ...leg.quantity, atoms: 1n << 64n } })) } }), /base quantity must fit u64/);
+});
+
+test('rejects a tampered exit that does not close the bound pre-position', async () => {
+  const compiler = adapter();
+  const exit = admission('EXIT');
+  await assert.rejects(compiler.compile({
+    ...exit,
+    order: {
+      ...exit.order,
+      expectedPrePositionSize: { ...exit.order.expectedPrePositionSize, atoms: -8n },
+    },
+  }), /exit must close the exact authoritative short position/);
 });
 
 test('decodes receipt only at trader-bound PDA', async () => {

@@ -150,6 +150,8 @@ pub enum ErrorCode {
     ConformanceSignatureInstructionInvalid,
     #[msg("Conformance solver signature does not bind this execution")]
     ConformanceSignatureMismatch,
+    #[msg("Conformance exit does not match its authoritative entry receipt")]
+    ConformanceEntryReceiptMismatch,
     #[msg("Resource subject identifier is all zero")]
     ResourceSubjectZero,
     #[msg("Resource manifest version is zero")]

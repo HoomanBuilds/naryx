@@ -441,12 +441,19 @@ impl Env {
             &naryx_core::id(),
         )
         .0;
+        let entry_receipt = if action == ConformanceAction::Exit {
+            Some(receipt_address(self.trader.pubkey(), [0x11; 32]))
+        } else {
+            None
+        };
+        let entry = entry_receipt.map(|address| read_receipt(&self.svm, address));
         let accounts = naryx_core::accounts::ExecuteConformanceAtomic {
             trader: self.trader.pubkey(),
             config: self.config,
             solver_registry: self.solver_registry,
             receipt,
             nonce_marker,
+            entry_receipt,
             market: self.market,
             position: self.position,
             trader_base: self.trader_base,
@@ -466,6 +473,18 @@ impl Env {
             collateral_quote_limit_atoms,
             expiry_slot,
             nonce,
+            entry_execution_digest: entry
+                .as_ref()
+                .map(|receipt| receipt.execution_digest)
+                .unwrap_or([0; 32]),
+            expected_pre_short_base_atoms: entry
+                .as_ref()
+                .map(|receipt| receipt.post_short_base_atoms)
+                .unwrap_or(0),
+            expected_pre_collateral_quote_atoms: entry
+                .as_ref()
+                .map(|receipt| receipt.post_collateral_quote_atoms)
+                .unwrap_or(0),
         };
         let quote_hash = [0x22; 32];
         let route_hash = [0x33; 32];
@@ -483,6 +502,7 @@ impl Env {
                 self.solver.pubkey(),
                 receipt,
                 nonce_marker,
+                entry_receipt.unwrap_or(naryx_core::id()),
                 self.market,
                 self.position,
                 self.trader_base,
@@ -595,6 +615,38 @@ fn successful_exit_remains_available_while_entry_is_paused() {
     assert_eq!(receipt.action, 2);
     assert_eq!(receipt.pre_short_base_atoms, 2);
     assert_eq!(receipt.post_short_base_atoms, 0);
+}
+
+#[test]
+fn exit_cannot_replay_after_the_authoritative_position_is_closed() {
+    let mut env = setup(true);
+    let entry = env.execution_ix(
+        [0x11; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 3,
+    );
+    env.execute(entry).unwrap();
+    let exit_hash = [0x12; 32];
+    let exit = env.execution_ix(
+        exit_hash,
+        ConformanceAction::Exit,
+        2,
+        1,
+        env.current_slot() + 2,
+    );
+    env.execute(exit).unwrap();
+    let closed = env.snapshot();
+    let replay = env.execution_ix(
+        exit_hash,
+        ConformanceAction::Exit,
+        2,
+        1,
+        env.current_slot() + 1,
+    );
+    assert!(env.execute(replay).is_err());
+    assert_eq!(env.snapshot(), closed);
 }
 
 #[test]

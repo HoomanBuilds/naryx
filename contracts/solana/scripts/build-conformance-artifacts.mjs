@@ -61,6 +61,7 @@ try {
     "solver_registry",
     "receipt",
     "nonce_marker",
+    "entry_receipt",
     "market",
     "position",
     "trader_base",
@@ -82,6 +83,9 @@ try {
     "collateral_quote_limit_atoms",
     "expiry_slot",
     "nonce",
+    "entry_execution_digest",
+    "expected_pre_short_base_atoms",
+    "expected_pre_collateral_quote_atoms",
   ], "conformance execution argument field");
   const venueProgram = execution.accounts.find((account) => account.name === "conformance_program");
   if (venueProgram.address !== venue.address) {

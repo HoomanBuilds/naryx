@@ -43,9 +43,12 @@ const ACCOUNT_BINDING_IDS = {
   spot_quote_vault: 'spot-quote-vault',
   perp_quote_vault: 'perp-quote-vault',
   conformance_program: 'conformance-program',
+  entry_receipt: 'entry-receipt',
 } as const;
 
-const REQUIRED_BINDINGS: ReadonlySet<string> = new Set(Object.values(ACCOUNT_BINDING_IDS));
+const BASE_BINDINGS: ReadonlySet<string> = new Set(
+  Object.values(ACCOUNT_BINDING_IDS).filter((value) => value !== ACCOUNT_BINDING_IDS.entry_receipt),
+);
 
 export interface ConformanceReceipt {
   readonly address: PublicKey;
@@ -141,6 +144,8 @@ function conformanceExecutionDigest(
   hashes: readonly Uint8Array[],
   action: 1 | 2,
   values: readonly bigint[],
+  entryExecutionDigest: Uint8Array,
+  expectedPreValues: readonly bigint[],
   accountKeys: readonly PublicKey[],
 ): Uint8Array {
   const digest = createHash('sha256');
@@ -149,6 +154,8 @@ function conformanceExecutionDigest(
   for (const hash of hashes) digest.update(hash);
   digest.update(Uint8Array.of(action));
   for (const value of values) digest.update(bigEndian(value, 8));
+  digest.update(entryExecutionDigest);
+  for (const value of expectedPreValues) digest.update(bigEndian(value, 8));
   for (const key of accountKeys) digest.update(key.toBytes());
   return new Uint8Array(digest.digest());
 }
@@ -322,13 +329,16 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
     equalHash(quote.orderHash, admission.orderHash, 'quote order hash');
     equalHash(quote.routeHash, admission.routeHash, 'quote route hash');
 
+    const requiredBindings = order.action === 'EXIT'
+      ? new Set(Object.values(ACCOUNT_BINDING_IDS))
+      : BASE_BINDINGS;
     const bindings = new Map<string, PublicKey>();
     for (const binding of route.accountBindings) {
-      requireCondition(REQUIRED_BINDINGS.has(binding.routeBindingId), `unsupported route binding ${binding.routeBindingId}`);
+      requireCondition(requiredBindings.has(binding.routeBindingId), `unsupported route binding ${binding.routeBindingId}`);
       requireCondition(!bindings.has(binding.routeBindingId), `duplicate route binding ${binding.routeBindingId}`);
       bindings.set(binding.routeBindingId, requiredPubkey(binding.accountIdentity, binding.routeBindingId));
     }
-    for (const bindingId of REQUIRED_BINDINGS) requireCondition(bindings.has(bindingId), `missing route binding ${bindingId}`);
+    for (const bindingId of requiredBindings) requireCondition(bindings.has(bindingId), `missing route binding ${bindingId}`);
     const trader = bindings.get('trader')!;
     const solver = bindings.get('solver')!;
     requireCondition(trader.equals(requiredPubkey(order.owner, 'order owner')), 'trader binding does not match order owner');
@@ -343,16 +353,25 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
     const spotLimit = entry ? order.maxSpotQuoteIn?.atoms : order.minSpotQuoteOut?.atoms;
     requireCondition(spotLimit !== undefined, 'spot quote bound is missing');
     const collateralLimit = entry ? order.maxMarginAdded.atoms : order.minVenueReserveReturned.atoms;
+    const entryExecutionDigest = entry ? new Uint8Array(32) : order.entryReceiptHash;
+    const expectedPreShort = entry ? 0n : -order.expectedPrePositionSize.atoms;
+    const expectedPreCollateral = entry ? 0n : order.expectedPrePositionEntryNotional.atoms;
+    requireCondition(entryExecutionDigest !== undefined, 'exit entry receipt hash is missing');
+    requireCondition(entry || expectedPreShort === order.quantity.atoms, 'exit must close the exact authoritative short position');
+    requireCondition(entry || expectedPreCollateral > 0n, 'exit pre-position collateral must be positive');
     const accounts = new Map<string, PublicKey>([
       ['config', this.configAddress()],
       ['solver_registry', this.solverRegistryAddress()],
       ['receipt', this.receiptAddress(trader, admission.orderHash)],
       ['nonce_marker', this.nonceMarkerAddress(trader, order.nonce)],
+      ['entry_receipt', entry ? this.#programId : bindings.get('entry-receipt')!],
       ['token_program', requiredPubkey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'token program')],
       ['system_program', requiredPubkey('11111111111111111111111111111111', 'system program')],
       ['instructions_sysvar', SYSVAR_INSTRUCTIONS_PUBKEY],
     ]);
-    for (const [accountName, bindingId] of Object.entries(ACCOUNT_BINDING_IDS)) accounts.set(accountName, bindings.get(bindingId)!);
+    for (const [accountName, bindingId] of Object.entries(ACCOUNT_BINDING_IDS)) {
+      if (bindingId !== ACCOUNT_BINDING_IDS.entry_receipt) accounts.set(accountName, bindings.get(bindingId)!);
+    }
 
     const instruction = this.#coreIdl.instructions.find((item) => item.name === 'execute_conformance_atomic')!;
     const keys = instruction.accounts.map((account) => {
@@ -373,6 +392,9 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
         collateral_quote_limit_atoms: checkedU64(collateralLimit, 'collateral quote limit'),
         expiry_slot: checkedU64(expiry, 'expiry slot'),
         nonce: checkedU64(order.nonce, 'nonce'),
+        entry_execution_digest: Array.from(entryExecutionDigest),
+        expected_pre_short_base_atoms: checkedU64(expectedPreShort, 'expected pre short base'),
+        expected_pre_collateral_quote_atoms: checkedU64(expectedPreCollateral, 'expected pre collateral quote'),
       },
     });
     const coreInstruction = new TransactionInstruction({ programId: this.#programId, keys, data });
@@ -381,6 +403,8 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
       [admission.orderHash, admission.quoteHash, admission.routeHash],
       entry ? 1 : 2,
       [order.quantity.atoms, spotLimit, collateralLimit, expiry, order.nonce],
+      entryExecutionDigest,
+      [expectedPreShort, expectedPreCollateral],
       [
         this.#programId,
         trader,
@@ -389,6 +413,7 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
         solver,
         accounts.get('receipt')!,
         accounts.get('nonce_marker')!,
+        accounts.get('entry_receipt')!,
         accounts.get('market')!,
         accounts.get('position')!,
         accounts.get('trader_base')!,

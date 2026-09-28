@@ -44,6 +44,9 @@ pub struct ConformanceExecutionArgs {
     pub collateral_quote_limit_atoms: u64,
     pub expiry_slot: u64,
     pub nonce: u64,
+    pub entry_execution_digest: [u8; HASH_BYTE_LENGTH],
+    pub expected_pre_short_base_atoms: u64,
+    pub expected_pre_collateral_quote_atoms: u64,
 }
 
 #[derive(Accounts)]
@@ -74,6 +77,7 @@ pub struct ExecuteConformanceAtomic<'info> {
         bump
     )]
     pub nonce_marker: Account<'info, ConformanceNonce>,
+    pub entry_receipt: Option<Box<Account<'info, ConformanceExecutionReceipt>>>,
     pub market: Box<Account<'info, MarketConfig>>,
     #[account(mut)]
     pub position: Box<Account<'info, PerpPosition>>,
@@ -101,7 +105,7 @@ pub fn execution_digest(
     quote_hash: [u8; 32],
     route_hash: [u8; 32],
     args: ConformanceExecutionArgs,
-    account_keys: &[Pubkey; 18],
+    account_keys: &[Pubkey; 19],
 ) -> [u8; 32] {
     let mut data = Vec::with_capacity(32 * 18 + 128);
     data.extend_from_slice(&domain.canonical_bytes());
@@ -114,6 +118,9 @@ pub fn execution_digest(
     data.extend_from_slice(&args.collateral_quote_limit_atoms.to_be_bytes());
     data.extend_from_slice(&args.expiry_slot.to_be_bytes());
     data.extend_from_slice(&args.nonce.to_be_bytes());
+    data.extend_from_slice(&args.entry_execution_digest);
+    data.extend_from_slice(&args.expected_pre_short_base_atoms.to_be_bytes());
+    data.extend_from_slice(&args.expected_pre_collateral_quote_atoms.to_be_bytes());
     for key in account_keys {
         data.extend_from_slice(key.as_ref());
     }
@@ -194,6 +201,32 @@ pub(crate) fn handler(
             !ctx.accounts.config.entry_paused,
             ErrorCode::ConformanceEntryPaused
         );
+        require!(
+            ctx.accounts.entry_receipt.is_none()
+                && args.entry_execution_digest == [0; HASH_BYTE_LENGTH]
+                && args.expected_pre_short_base_atoms == 0
+                && args.expected_pre_collateral_quote_atoms == 0,
+            ErrorCode::ConformanceEntryReceiptMismatch
+        );
+    } else {
+        let entry = ctx
+            .accounts
+            .entry_receipt
+            .as_ref()
+            .ok_or_else(|| error!(ErrorCode::ConformanceEntryReceiptMismatch))?;
+        require!(
+            entry.domain == ctx.accounts.config.domain
+                && entry.trader == ctx.accounts.trader.key()
+                && entry.action == ConformanceAction::Entry.discriminant()
+                && entry.execution_digest == args.entry_execution_digest
+                && entry.post_short_base_atoms == args.expected_pre_short_base_atoms
+                && entry.post_collateral_quote_atoms == args.expected_pre_collateral_quote_atoms
+                && ctx.accounts.position.short_base_atoms == args.expected_pre_short_base_atoms
+                && ctx.accounts.position.collateral_quote_atoms
+                    == args.expected_pre_collateral_quote_atoms
+                && args.base_quantity_atoms == args.expected_pre_short_base_atoms,
+            ErrorCode::ConformanceEntryReceiptMismatch
+        );
     }
     let solver = ctx.accounts.solver_registry.active;
     require_keys_neq!(
@@ -209,6 +242,11 @@ pub(crate) fn handler(
         solver,
         ctx.accounts.receipt.key(),
         ctx.accounts.nonce_marker.key(),
+        ctx.accounts
+            .entry_receipt
+            .as_ref()
+            .map(|account| account.key())
+            .unwrap_or(crate::id()),
         ctx.accounts.market.key(),
         ctx.accounts.position.key(),
         ctx.accounts.trader_base.key(),
