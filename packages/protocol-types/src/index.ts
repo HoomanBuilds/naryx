@@ -1,4 +1,13 @@
 export {
+  fromProtocolJson,
+  parseProtocolJson,
+  stringifyProtocolJson,
+  toProtocolJson,
+  type ProtocolJsonArray,
+  type ProtocolJsonObject,
+  type ProtocolJsonValue,
+} from './protocol-json.js';
+export {
   ProtocolError,
   RangeViolationError,
   MalformedInputError,
