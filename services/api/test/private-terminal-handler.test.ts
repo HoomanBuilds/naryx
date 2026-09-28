@@ -120,6 +120,7 @@ test("private terminal validates previews and injected Devnet preparation", asyn
     recentBlockhash: RECENT_BLOCKHASH,
     blockhashContextSlot: 100,
     lastValidBlockHeight: 250,
+    lifecycleAttemptId: `solana-cash-carry-${"33".repeat(32)}`,
     genesisHash: SOLANA_DEVNET_GENESIS_HASH,
     lookupTables: [],
     evidence: {

@@ -1,14 +1,15 @@
 import { isAddress } from "@solana/addresses";
 import bs58 from "bs58";
 import { createPublicKey, verify } from "node:crypto";
-import { bytesEqual } from "@naryx/protocol-types";
-import type { DomainRef, PackageAdmission } from "@naryx/protocol-types";
+import { bytesEqual, enumDiscriminant, SETTLEMENT_CLASS } from "@naryx/protocol-types";
+import type { DomainRef, PackageAdmission, SettlementClass, VersionedManifestRef } from "@naryx/protocol-types";
 import type {
   FirmCashCarryBinding,
   SolanaMaterializationRequest,
   UnsignedSolanaMaterialization,
 } from "@naryx/adapter-solana";
 import {
+  isSolanaDevnetLifecycleAttemptId,
   SOLANA_DEVNET_GENESIS_HASH,
   validateUnsignedSolanaDevnetMaterialization,
 } from "./terminal-execution.js";
@@ -25,6 +26,27 @@ export const SOLANA_MAINNET_GENESIS_HASH = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc1
 const SOLANA_FAILURE_CODE = "SOLANA_TRANSACTION_ERROR";
 const HEX_32_PATTERN = /^[0-9a-f]{64}$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const LIFECYCLE_ID_PREFIX = "solana-cash-carry-";
+
+export type SolanaDevnetLifecycleAction = "ENTRY" | "EXIT";
+
+export type SolanaDevnetLifecycleBinding = Readonly<{
+  attemptId: string;
+  packageId: string;
+  packageCommitmentHex: string;
+  action: SolanaDevnetLifecycleAction;
+  domain: DomainRef;
+  settlementClass: SettlementClass;
+  evidenceSource: VersionedManifestRef;
+}>;
+
+export interface SolanaDevnetPackageLifecycleRecorder {
+  recordPrepared(record: PreparedSolanaDevnetRecord): void | Promise<void>;
+  recordObservation(
+    record: PreparedSolanaDevnetRecord,
+    observation: PrivateTerminalExecutionObservation,
+  ): void | Promise<void>;
+}
 
 export type SolanaDevnetExecutionContext = Readonly<{
   admission: PackageAdmission;
@@ -42,6 +64,7 @@ export interface SolanaDevnetMaterializer {
 export type PreparedSolanaDevnetRecord = Readonly<{
   request: NormalizedCashCarryExecutionRequest;
   materialization: UnsignedSolanaDevnetMaterializationDto;
+  lifecycleBinding: SolanaDevnetLifecycleBinding;
   lastValidBlockHeight: number;
   boundSignature: string | undefined;
 }>;
@@ -51,6 +74,7 @@ export interface PreparedSolanaDevnetStore {
   save(
     request: NormalizedCashCarryExecutionRequest,
     materialization: UnsignedSolanaDevnetMaterializationDto,
+    lifecycleBinding: SolanaDevnetLifecycleBinding,
   ): PreparedSolanaDevnetRecord;
   bindSignature(idempotencyKey: string, signature: string): PreparedSolanaDevnetRecord;
 }
@@ -72,6 +96,7 @@ export type SolanaDevnetRuntimePortsOptions = Readonly<{
   materializer: SolanaDevnetMaterializer;
   store: PreparedSolanaDevnetStore;
   rpc: SolanaDevnetReadOnlyRpc;
+  lifecycleRecorder?: SolanaDevnetPackageLifecycleRecorder;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +242,9 @@ function bindingDomain(binding: FirmCashCarryBinding): DomainRef | undefined {
 function copyDto(
   dto: UnsignedSolanaDevnetMaterializationDto,
 ): UnsignedSolanaDevnetMaterializationDto {
+  if (!isSolanaDevnetLifecycleAttemptId(dto.lifecycleAttemptId)) {
+    throw new Error("Materialization lifecycle attempt is invalid.");
+  }
   return Object.freeze({
     domain: dto.domain,
     domainManifestVersion: dto.domainManifestVersion,
@@ -228,6 +256,7 @@ function copyDto(
     recentBlockhash: dto.recentBlockhash,
     blockhashContextSlot: dto.blockhashContextSlot,
     lastValidBlockHeight: dto.lastValidBlockHeight,
+    lifecycleAttemptId: dto.lifecycleAttemptId,
     genesisHash: dto.genesisHash,
     lookupTables: Object.freeze(dto.lookupTables.map((table) =>
       Object.freeze({
@@ -239,6 +268,255 @@ function copyDto(
     )),
     evidence: Object.freeze({ ...dto.evidence }),
     requestCommitment: dto.requestCommitment,
+  });
+}
+
+function copyDomainRef(domain: DomainRef): DomainRef {
+  return Object.freeze({
+    domainId: domain.domainId,
+    domainManifestVersion: domain.domainManifestVersion,
+    domainManifestHash: Uint8Array.from(domain.domainManifestHash),
+  }) as unknown as DomainRef;
+}
+
+function copyEvidenceSource(source: VersionedManifestRef): VersionedManifestRef {
+  return Object.freeze({
+    subjectId: source.subjectId,
+    manifestVersion: source.manifestVersion,
+    manifestHash: Uint8Array.from(source.manifestHash),
+  }) as unknown as VersionedManifestRef;
+}
+
+function copyLifecycleBinding(binding: SolanaDevnetLifecycleBinding): SolanaDevnetLifecycleBinding {
+  return Object.freeze({
+    attemptId: binding.attemptId,
+    packageId: binding.packageId,
+    packageCommitmentHex: binding.packageCommitmentHex,
+    action: binding.action,
+    domain: copyDomainRef(binding.domain),
+    settlementClass: binding.settlementClass,
+    evidenceSource: copyEvidenceSource(binding.evidenceSource),
+  });
+}
+
+function lifecycleBindingsEqual(
+  left: SolanaDevnetLifecycleBinding,
+  right: SolanaDevnetLifecycleBinding,
+): boolean {
+  return left.attemptId === right.attemptId &&
+    left.packageId === right.packageId &&
+    left.packageCommitmentHex === right.packageCommitmentHex &&
+    left.action === right.action &&
+    left.domain.domainId === right.domain.domainId &&
+    left.domain.domainManifestVersion === right.domain.domainManifestVersion &&
+    bytesEqual(left.domain.domainManifestHash, right.domain.domainManifestHash) &&
+    left.settlementClass === right.settlementClass &&
+    left.evidenceSource.subjectId === right.evidenceSource.subjectId &&
+    left.evidenceSource.manifestVersion === right.evidenceSource.manifestVersion &&
+    bytesEqual(left.evidenceSource.manifestHash, right.evidenceSource.manifestHash);
+}
+
+function requireLifecycleBinding(value: unknown): SolanaDevnetLifecycleBinding {
+  if (!isRecord(value)) throw new Error("Lifecycle binding must be an object.");
+  const candidate = value as Record<string, unknown>;
+  if (!isSolanaDevnetLifecycleAttemptId(candidate.attemptId)) {
+    throw new Error("Lifecycle binding attempt id is invalid.");
+  }
+  if (!isSolanaDevnetLifecycleAttemptId(candidate.packageId)) {
+    throw new Error("Lifecycle binding package id is invalid.");
+  }
+  if (typeof candidate.packageCommitmentHex !== "string" ||
+      !HEX_32_PATTERN.test(candidate.packageCommitmentHex) ||
+      /^0+$/.test(candidate.packageCommitmentHex)) {
+    throw new Error("Lifecycle binding package commitment is invalid.");
+  }
+  if (candidate.action !== "ENTRY" && candidate.action !== "EXIT") {
+    throw new Error("Lifecycle binding action must be ENTRY or EXIT.");
+  }
+  const domain = asDomainRef(candidate.domain, "lifecycle binding domain");
+  if (typeof candidate.settlementClass !== "string") {
+    throw new Error("Lifecycle binding settlement class is invalid.");
+  }
+  try {
+    enumDiscriminant(SETTLEMENT_CLASS, candidate.settlementClass as SettlementClass, "lifecycle settlementClass");
+  } catch {
+    throw new Error("Lifecycle binding settlement class is invalid.");
+  }
+  if (!isRecord(candidate.evidenceSource)) {
+    throw new Error("Lifecycle binding evidence source is invalid.");
+  }
+  const source = candidate.evidenceSource as Record<string, unknown>;
+  if (typeof source.subjectId !== "string" || source.subjectId.length === 0) {
+    throw new Error("Lifecycle binding evidence source is invalid.");
+  }
+  if (typeof source.manifestVersion !== "number" ||
+      !Number.isSafeInteger(source.manifestVersion) ||
+      source.manifestVersion <= 0) {
+    throw new Error("Lifecycle binding evidence source is invalid.");
+  }
+  const manifestHash = source.manifestHash;
+  if (!(manifestHash instanceof Uint8Array) || manifestHash.length !== 32 ||
+      manifestHash.every((byte) => byte === 0)) {
+    throw new Error("Lifecycle binding evidence source is invalid.");
+  }
+  const expectedPrefix = `${LIFECYCLE_ID_PREFIX}${candidate.packageCommitmentHex as string}`;
+  if (candidate.attemptId !== expectedPrefix || candidate.packageId !== expectedPrefix) {
+    throw new Error("Lifecycle binding identity does not match its commitment.");
+  }
+  return Object.freeze({
+    attemptId: candidate.attemptId as string,
+    packageId: candidate.packageId as string,
+    packageCommitmentHex: candidate.packageCommitmentHex as string,
+    action: candidate.action as SolanaDevnetLifecycleAction,
+    domain: copyDomainRef(domain),
+    settlementClass: candidate.settlementClass as SettlementClass,
+    evidenceSource: Object.freeze({
+      subjectId: source.subjectId as VersionedManifestRef["subjectId"],
+      manifestVersion: source.manifestVersion as number,
+      manifestHash: Uint8Array.from(manifestHash),
+    }) as unknown as VersionedManifestRef,
+  });
+}
+
+function toEntryOrderHex(value: unknown, name: string): string {
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32 || value.every((byte) => byte === 0)) {
+      throw new Error(`${name} must be 32 nonzero bytes.`);
+    }
+    return Buffer.from(value).toString("hex");
+  }
+  if (typeof value === "string" && HEX_32_PATTERN.test(value) && !/^0+$/.test(value)) {
+    return value;
+  }
+  throw new Error(`${name} must be canonical lowercase 32-byte hex.`);
+}
+
+function publicExitAdmissionDomains(admission: unknown): {
+  order: DomainRef;
+  quote: DomainRef;
+  route: DomainRef;
+} {
+  if (!isRecord(admission)) {
+    throw new Error("Exit preparation requires public exit admission.");
+  }
+  const order = (admission as Record<string, unknown>).order;
+  const quote = (admission as Record<string, unknown>).quote;
+  const route = (admission as Record<string, unknown>).route;
+  if (!isRecord(order) || !isRecord(quote) || !isRecord(route)) {
+    throw new Error("Exit preparation requires public exit admission.");
+  }
+  if (order.environment !== "devnet" ||
+      quote.environment !== "devnet" ||
+      route.environment !== "devnet") {
+    throw new Error("Public exit admission environment must be Devnet.");
+  }
+  return {
+    order: asDomainRef(order.domain, "public exit admission order domain"),
+    quote: asDomainRef(quote.domain, "public exit admission quote domain"),
+    route: asDomainRef(route.domain, "public exit admission route domain"),
+  };
+}
+
+export function deriveSolanaDevnetLifecycleBinding(args: Readonly<{
+  request: NormalizedCashCarryExecutionRequest;
+  admission: PackageAdmission;
+  binding: FirmCashCarryBinding;
+}>): SolanaDevnetLifecycleBinding {
+  const request = args.request;
+  const admission = args.admission;
+  const binding = args.binding;
+  if (!isRecord(admission as unknown) || !isRecord(binding as unknown)) {
+    throw new Error("Execution context must carry admission and binding.");
+  }
+  const order = (admission as unknown as Record<string, unknown>).order;
+  if (!isRecord(order)) throw new Error("Execution context admission order is invalid.");
+  const orderAction = (order as Record<string, unknown>).action;
+  let entryOrderHex: string;
+  let action: SolanaDevnetLifecycleAction;
+  let lifecycleDomain: DomainRef;
+  let settlementClass: SettlementClass;
+  if (request.mode === "entry") {
+    action = "ENTRY";
+    if (orderAction !== undefined && orderAction !== "ENTRY") {
+      throw new Error("Admission order action does not match entry request.");
+    }
+    lifecycleDomain = asDomainRef(
+      (order as Record<string, unknown>).domain,
+      "admission order domain",
+    );
+    const settlementRaw = (order as Record<string, unknown>).settlementClass;
+    if (typeof settlementRaw !== "string") {
+      throw new Error("Admission order settlement class is invalid.");
+    }
+    try {
+      enumDiscriminant(SETTLEMENT_CLASS, settlementRaw as SettlementClass, "admission settlementClass");
+    } catch {
+      throw new Error("Admission order settlement class is invalid.");
+    }
+    settlementClass = settlementRaw as SettlementClass;
+    const orderHash = (admission as unknown as Record<string, unknown>).orderHash;
+    entryOrderHex = toEntryOrderHex(orderHash, "admission orderHash");
+  } else {
+    action = "EXIT";
+    // Top-level admission is historical entry evidence; effective exit order is publicExit.admission.order.
+    if (orderAction !== undefined && orderAction !== "ENTRY") {
+      throw new Error("Admission order action does not match exit request.");
+    }
+    const publicExit = (binding as unknown as Record<string, unknown>).publicExit;
+    if (!isRecord(publicExit)) {
+      throw new Error("Exit preparation requires public exit evidence.");
+    }
+    const entryReceipt = (publicExit as Record<string, unknown>).entryReceipt;
+    if (!isRecord(entryReceipt)) {
+      throw new Error("Exit preparation requires public exit evidence.");
+    }
+    entryOrderHex = toEntryOrderHex(
+      (entryReceipt as Record<string, unknown>).orderHash,
+      "public exit entry receipt orderHash",
+    );
+    const exitAdmission = (publicExit as Record<string, unknown>).admission;
+    const exitDomains = publicExitAdmissionDomains(exitAdmission);
+    requireSameDomain(exitDomains.quote, exitDomains.order, "Public exit admission quote");
+    requireSameDomain(exitDomains.route, exitDomains.order, "Public exit admission route");
+    const exitOrder = (exitAdmission as Record<string, unknown>).order as Record<string, unknown>;
+    if (exitOrder.action !== "EXIT") {
+      throw new Error("Public exit admission order action does not match exit request.");
+    }
+    const exitSettlementRaw = exitOrder.settlementClass;
+    if (typeof exitSettlementRaw !== "string") {
+      throw new Error("Public exit admission order settlement class is invalid.");
+    }
+    try {
+      enumDiscriminant(SETTLEMENT_CLASS, exitSettlementRaw as SettlementClass, "public exit admission settlementClass");
+    } catch {
+      throw new Error("Public exit admission order settlement class is invalid.");
+    }
+    settlementClass = exitSettlementRaw as SettlementClass;
+    lifecycleDomain = exitDomains.order;
+    const activeDomain = asDomainRef(
+      (publicExit as Record<string, unknown>).activeDomain,
+      "public exit active domain",
+    );
+    if (activeDomain.domainId !== lifecycleDomain.domainId) {
+      throw new Error("public exit active domain identity mismatch");
+    }
+  }
+  const identity = `${LIFECYCLE_ID_PREFIX}${entryOrderHex}`;
+  if (!isSolanaDevnetLifecycleAttemptId(identity)) {
+    throw new Error("Derived lifecycle identity is invalid.");
+  }
+  return Object.freeze({
+    attemptId: identity,
+    packageId: identity,
+    packageCommitmentHex: entryOrderHex,
+    action,
+    domain: copyDomainRef(lifecycleDomain),
+    settlementClass,
+    evidenceSource: Object.freeze({
+      subjectId: lifecycleDomain.domainId,
+      manifestVersion: lifecycleDomain.domainManifestVersion,
+      manifestHash: Uint8Array.from(lifecycleDomain.domainManifestHash),
+    }) as unknown as VersionedManifestRef,
   });
 }
 
@@ -259,12 +537,14 @@ function copyRequest(
 function copyRecord(record: {
   request: NormalizedCashCarryExecutionRequest;
   materialization: UnsignedSolanaDevnetMaterializationDto;
+  lifecycleBinding: SolanaDevnetLifecycleBinding;
   lastValidBlockHeight: number;
   boundSignature: string | undefined;
 }): PreparedSolanaDevnetRecord {
   return Object.freeze({
     request: copyRequest(record.request),
     materialization: copyDto(record.materialization),
+    lifecycleBinding: copyLifecycleBinding(record.lifecycleBinding),
     lastValidBlockHeight: record.lastValidBlockHeight,
     boundSignature: record.boundSignature,
   });
@@ -273,6 +553,7 @@ function copyRecord(record: {
 function mapToDto(
   materialization: UnsignedSolanaMaterialization,
   request: NormalizedCashCarryExecutionRequest,
+  lifecycleBinding: SolanaDevnetLifecycleBinding,
 ): UnsignedSolanaDevnetMaterializationDto {
   if (!isRecord(materialization as unknown)) {
     throw new Error("Materialization must be an object.");
@@ -346,6 +627,7 @@ function mapToDto(
     recentBlockhash: materialization.recentBlockhash,
     blockhashContextSlot: materialization.blockhashContextSlot,
     lastValidBlockHeight: materialization.lastValidBlockHeight,
+    lifecycleAttemptId: lifecycleBinding.attemptId,
     genesisHash: materialization.genesisHash,
     lookupTables,
     evidence: {
@@ -375,6 +657,7 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
   private readonly records = new Map<string, {
     request: NormalizedCashCarryExecutionRequest;
     materialization: UnsignedSolanaDevnetMaterializationDto;
+    lifecycleBinding: SolanaDevnetLifecycleBinding;
     lastValidBlockHeight: number;
     boundSignature: string | undefined;
   }>();
@@ -388,18 +671,28 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
   save(
     request: NormalizedCashCarryExecutionRequest,
     materialization: UnsignedSolanaDevnetMaterializationDto,
+    lifecycleBinding: SolanaDevnetLifecycleBinding,
   ): PreparedSolanaDevnetRecord {
     requireIdempotencyKey(request.idempotencyKey);
+    const checkedBinding = requireLifecycleBinding(lifecycleBinding);
+    const checkedMaterialization = copyDto(materialization);
+    if (checkedMaterialization.lifecycleAttemptId !== checkedBinding.attemptId) {
+      throw new Error("Materialization lifecycle attempt does not match its binding.");
+    }
     const existing = this.records.get(request.idempotencyKey);
     if (existing !== undefined) {
       if (!requestsEqual(existing.request, request)) {
         throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different request fields.`);
       }
+      if (!lifecycleBindingsEqual(existing.lifecycleBinding, checkedBinding)) {
+        throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different lifecycle binding.`);
+      }
       return copyRecord(existing);
     }
     const stored = {
       request: copyRequest(request),
-      materialization: copyDto(materialization),
+      materialization: checkedMaterialization,
+      lifecycleBinding: copyLifecycleBinding(checkedBinding),
       lastValidBlockHeight: materialization.lastValidBlockHeight,
       boundSignature: undefined as string | undefined,
     };
@@ -547,6 +840,7 @@ export function createSolanaDevnetExecutionPorts(
   const materializer = options.materializer;
   const store = options.store;
   const rpc = options.rpc;
+  const lifecycleRecorder = options.lifecycleRecorder;
   if (typeof contextProvider !== "function") throw new Error("Context provider must be a function.");
   if (typeof materializer?.materialize !== "function") throw new Error("Materializer must expose materialize.");
   if (typeof store?.get !== "function" || typeof store?.save !== "function" ||
@@ -557,10 +851,29 @@ export function createSolanaDevnetExecutionPorts(
       typeof rpc?.getBlockHeight !== "function") {
     throw new Error("Read-only RPC must expose genesis, status, and block height.");
   }
+  if (lifecycleRecorder !== undefined) {
+    if (typeof (lifecycleRecorder as SolanaDevnetPackageLifecycleRecorder).recordPrepared !== "function" ||
+        typeof (lifecycleRecorder as SolanaDevnetPackageLifecycleRecorder).recordObservation !== "function") {
+      throw new Error("Lifecycle recorder must expose recordPrepared and recordObservation.");
+    }
+  }
   const inFlight = new Map<string, {
     request: NormalizedCashCarryExecutionRequest;
     promise: Promise<UnsignedSolanaDevnetMaterializationDto>;
   }>();
+
+  async function recordPreparedOrFail(record: PreparedSolanaDevnetRecord): Promise<void> {
+    if (lifecycleRecorder === undefined) return;
+    await lifecycleRecorder.recordPrepared(record);
+  }
+
+  async function recordObservationOrFail(
+    record: PreparedSolanaDevnetRecord,
+    observation: PrivateTerminalExecutionObservation,
+  ): Promise<void> {
+    if (lifecycleRecorder === undefined) return;
+    await lifecycleRecorder.recordObservation(record, observation);
+  }
 
   return Object.freeze({
     preparation: Object.freeze({
@@ -571,6 +884,7 @@ export function createSolanaDevnetExecutionPorts(
           if (!requestsEqual(cached.request, request)) {
             throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different request fields.`);
           }
+          await recordPreparedOrFail(cached);
           return copyDto(cached.materialization);
         }
         const ongoing = inFlight.get(request.idempotencyKey);
@@ -578,7 +892,11 @@ export function createSolanaDevnetExecutionPorts(
           if (!requestsEqual(ongoing.request, request)) {
             throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different request fields.`);
           }
-          return copyDto(await ongoing.promise);
+          const awaited = copyDto(await ongoing.promise);
+          const replayed = store.get(request.idempotencyKey);
+          if (replayed === undefined) throw new Error("Prepared execution was not stored.");
+          await recordPreparedOrFail(replayed);
+          return awaited;
         }
         const snapshot = copyRequest(request);
         const task: Promise<UnsignedSolanaDevnetMaterializationDto> = (async () => {
@@ -604,6 +922,11 @@ export function createSolanaDevnetExecutionPorts(
             requireSameDomain(domains.quote, domains.order, "Admission quote");
             requireSameDomain(domains.route, domains.order, "Admission route");
           }
+          const lifecycleBinding = deriveSolanaDevnetLifecycleBinding({
+            request: snapshot,
+            admission,
+            binding,
+          });
           const materialization = await materializer.materialize({
             planKind: expectedPlanKind,
             admission,
@@ -622,8 +945,8 @@ export function createSolanaDevnetExecutionPorts(
           if (boundDomain !== undefined) {
             requireSameDomain(boundDomain, materialDomain, "Binding");
           }
-          const dto = mapToDto(materialization, snapshot);
-          store.save(snapshot, dto);
+          const dto = mapToDto(materialization, snapshot, lifecycleBinding);
+          store.save(snapshot, dto, lifecycleBinding);
           const stored = store.get(snapshot.idempotencyKey);
           if (stored === undefined) throw new Error("Prepared execution was not stored.");
           return copyDto(stored.materialization);
@@ -631,6 +954,9 @@ export function createSolanaDevnetExecutionPorts(
         inFlight.set(request.idempotencyKey, { request: snapshot, promise: task });
         try {
           const result = await task;
+          const stored = store.get(request.idempotencyKey);
+          if (stored === undefined) throw new Error("Prepared execution was not stored.");
+          await recordPreparedOrFail(stored);
           return copyDto(result);
         } finally {
           inFlight.delete(request.idempotencyKey);
@@ -649,32 +975,35 @@ export function createSolanaDevnetExecutionPorts(
         const bound = store.bindSignature(request.idempotencyKey, signature);
         requireDevnetGenesis(await rpc.getGenesisHash());
         const status = await rpc.getSignatureStatus(signature);
+        let observation: PrivateTerminalExecutionObservation;
         if (status !== null && status.err !== null && status.err !== undefined) {
-          return Object.freeze({
+          observation = Object.freeze({
             lifecycle: "FAILED",
             signature,
             failedSlot: status.slot,
             failureCode: SOLANA_FAILURE_CODE,
           });
-        }
-        if (status !== null && status.confirmationStatus === "finalized" &&
+        } else if (status !== null && status.confirmationStatus === "finalized" &&
             (status.err === null || status.err === undefined)) {
           if (status.slot === null) throw new Error("Finalized status is missing its slot.");
-          return Object.freeze({ lifecycle: "FINALIZED", signature, finalizedSlot: status.slot });
-        }
-        if (status === null) {
+          observation = Object.freeze({ lifecycle: "FINALIZED", signature, finalizedSlot: status.slot });
+        } else if (status === null) {
           const observedBlockHeight = await rpc.getBlockHeight();
           if (observedBlockHeight > bound.lastValidBlockHeight) {
-            return Object.freeze({
+            observation = Object.freeze({
               lifecycle: "EXPIRED",
               signature,
               lastValidBlockHeight: bound.lastValidBlockHeight,
               observedBlockHeight,
             });
+          } else {
+            observation = Object.freeze({ lifecycle: "SUBMITTED", signature, observedSlot: null });
           }
-          return Object.freeze({ lifecycle: "SUBMITTED", signature, observedSlot: null });
+        } else {
+          observation = Object.freeze({ lifecycle: "SUBMITTED", signature, observedSlot: status.slot });
         }
-        return Object.freeze({ lifecycle: "SUBMITTED", signature, observedSlot: status.slot });
+        await recordObservationOrFail(bound, observation);
+        return observation;
       },
     }),
   });

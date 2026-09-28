@@ -31,6 +31,7 @@ const MATERIALIZATION_KEYS = [
   "evidence",
   "genesisHash",
   "lastValidBlockHeight",
+  "lifecycleAttemptId",
   "lookupTables",
   "messageBase64",
   "planKind",
@@ -102,11 +103,25 @@ export type UnsignedSolanaDevnetMaterializationDto = Readonly<{
   recentBlockhash: string;
   blockhashContextSlot: number;
   lastValidBlockHeight: number;
+  lifecycleAttemptId: string;
   genesisHash: typeof SOLANA_DEVNET_GENESIS_HASH;
   lookupTables: readonly SolanaLookupCommitmentDto[];
   evidence: SolanaMaterializationEvidenceDto;
   requestCommitment: string;
 }>;
+
+export const SOLANA_DEVNET_LIFECYCLE_ATTEMPT_ID_PATTERN = /^solana-cash-carry-[0-9a-f]{64}$/;
+
+export function isSolanaDevnetLifecycleAttemptId(value: unknown): value is string {
+  return typeof value === "string" && SOLANA_DEVNET_LIFECYCLE_ATTEMPT_ID_PATTERN.test(value);
+}
+
+function requireLifecycleAttemptId(value: unknown): string {
+  if (!isSolanaDevnetLifecycleAttemptId(value)) {
+    throw new Error("lifecycleAttemptId must be a valid Solana devnet lifecycle attempt id");
+  }
+  return value;
+}
 
 export interface PrivateTerminalExecutionPreparationPort {
   prepare(
@@ -474,7 +489,7 @@ export function validateUnsignedSolanaDevnetMaterialization(
       evidence.serializedTransactionBytes !== transactionBytes.length) {
     throw new Error("materialization evidence does not match transaction bytes");
   }
-  return Object.freeze({
+  const base = {
     domain: "svm:devnet",
     domainManifestVersion,
     domainManifestHash,
@@ -485,11 +500,13 @@ export function validateUnsignedSolanaDevnetMaterialization(
     recentBlockhash,
     blockhashContextSlot: requirePositiveInteger(value.blockhashContextSlot, "blockhashContextSlot"),
     lastValidBlockHeight: requirePositiveInteger(value.lastValidBlockHeight, "lastValidBlockHeight"),
+    lifecycleAttemptId: requireLifecycleAttemptId(value.lifecycleAttemptId),
     genesisHash: SOLANA_DEVNET_GENESIS_HASH,
     lookupTables,
     evidence,
     requestCommitment: requireNonzeroCommitment(value.requestCommitment, "requestCommitment"),
-  });
+  } as const;
+  return Object.freeze(base);
 }
 
 export function validateExecutionObservation(

@@ -16,6 +16,7 @@ const MAX_RESOLVED_ACCOUNTS = 64;
 const MAX_COMPUTE_UNITS = 1_260_000;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const FAILURE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+const LIFECYCLE_ATTEMPT_ID_PATTERN = /^solana-cash-carry-[0-9a-f]{64}$/;
 
 export type SolanaExecutionObservationRequest = Readonly<{
   idempotencyKey: string;
@@ -126,6 +127,13 @@ function requireStringArray(value: unknown, name: string): readonly string[] {
   return Object.freeze([...value]);
 }
 
+function requireLifecycleAttemptId(value: unknown): string {
+  if (typeof value !== "string" || !LIFECYCLE_ATTEMPT_ID_PATTERN.test(value)) {
+    throw new Error("Lifecycle attempt id is invalid.");
+  }
+  return value;
+}
+
 function requirePreparation(
   value: unknown,
   input: SolanaExecutionPreparationInput,
@@ -147,6 +155,7 @@ function requirePreparation(
     "recentBlockhash",
     "blockhashContextSlot",
     "lastValidBlockHeight",
+    "lifecycleAttemptId",
     "genesisHash",
     "lookupTables",
     "evidence",
@@ -293,6 +302,7 @@ function requirePreparation(
     recentBlockhash: requireBase58Bytes32(value.recentBlockhash, "Recent blockhash"),
     blockhashContextSlot: requireInteger(value.blockhashContextSlot, "Blockhash context slot"),
     lastValidBlockHeight: requireInteger(value.lastValidBlockHeight, "Last valid block height"),
+    lifecycleAttemptId: requireLifecycleAttemptId(value.lifecycleAttemptId),
     lookupTables: Object.freeze(lookupTables),
     evidence: Object.freeze({
       resolvedAddressCount,

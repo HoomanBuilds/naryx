@@ -77,9 +77,15 @@ test("solana devnet runtime prepares once and observes with bound signatures", a
     domainManifestHash: Uint8Array.from(Buffer.from("11".repeat(32), "hex")),
   } as unknown as DomainRef;
   const admissionStub = {
-    order: { environment: "devnet", domain: devnetDomain },
+    order: {
+      environment: "devnet",
+      domain: devnetDomain,
+      settlementClass: "ATOMIC_POSTCONDITION",
+      action: "ENTRY",
+    },
     quote: { environment: "devnet", domain: devnetDomain },
     route: { environment: "devnet", domain: devnetDomain },
+    orderHash: Uint8Array.from(Buffer.from("33".repeat(32), "hex")),
   } as unknown as PackageAdmission;
   const bindingStub = {
     environment: "devnet",

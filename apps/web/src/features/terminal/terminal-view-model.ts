@@ -135,6 +135,7 @@ export type SolanaExecutionPreparation = {
   recentBlockhash: string;
   blockhashContextSlot: number;
   lastValidBlockHeight: number;
+  lifecycleAttemptId: string;
   lookupTables: readonly {
     address: string;
     addresses: readonly string[];

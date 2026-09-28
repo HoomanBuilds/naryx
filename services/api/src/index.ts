@@ -1,5 +1,6 @@
 export {
   createSolanaDevnetExecutionPorts,
+  deriveSolanaDevnetLifecycleBinding,
   HttpSolanaDevnetReadOnlyRpc,
   InMemoryPreparedSolanaDevnetStore,
   SOLANA_MAINNET_GENESIS_HASH,
@@ -7,11 +8,15 @@ export {
   type PreparedSolanaDevnetStore,
   type SolanaDevnetContextProvider,
   type SolanaDevnetExecutionContext,
+  type SolanaDevnetLifecycleAction,
+  type SolanaDevnetLifecycleBinding,
   type SolanaDevnetMaterializer,
+  type SolanaDevnetPackageLifecycleRecorder,
   type SolanaDevnetReadOnlyRpc,
   type SolanaDevnetRuntimePortsOptions,
   type SolanaSignatureStatus,
 } from "./solana-devnet-runtime-ports.js";
+export { SolanaDevnetLifecycleStoreRecorder } from "./solana-devnet-lifecycle-recorder.js";
 export {
   createCanonicalEntryOrder,
   EntryOrderValidationError,
@@ -94,9 +99,11 @@ export {
 export { PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 } from "./private-terminal-manifest.js";
 export {
   ExecutionValidationError,
+  isSolanaDevnetLifecycleAttemptId,
   parseExecutionObservationRequest,
   parseExecutionPreparationRequest,
   SOLANA_DEVNET_GENESIS_HASH,
+  SOLANA_DEVNET_LIFECYCLE_ATTEMPT_ID_PATTERN,
   validateExecutionObservation,
   validateUnsignedSolanaDevnetMaterialization,
   type NormalizedCashCarryExecutionRequest,
