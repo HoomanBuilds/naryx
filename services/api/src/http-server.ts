@@ -39,6 +39,11 @@ import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 import { createTerminalPreview, parsePreviewRequest, PreviewValidationError } from "./terminal-preview.js";
 import { createTerminalSnapshot } from "./terminal-snapshot.js";
 import { isDomainId } from "./terminal-types.js";
+import {
+  parseSolverAtomicQuoteRequest,
+  SolverQuoteClientError,
+  type SolverAtomicQuotePort,
+} from "./solver-quote-client.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -158,6 +163,7 @@ export function createPrivateTerminalRequestHandler(
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
   lifecycleStore?: PackageLifecycleStore,
+  solverQuotePort?: SolverAtomicQuotePort,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -185,6 +191,7 @@ export function createPrivateTerminalRequestHandler(
         evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
         evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
         lifecycleReadAvailable: lifecycleStore !== undefined,
+        solverQuotingAvailable: solverQuotePort !== undefined,
       });
       return;
     }
@@ -477,6 +484,45 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const quoteMatch = /^\/internal\/terminal\/orders\/([0-9a-f]{64})\/quote$/.exec(url.pathname);
+    if (quoteMatch !== null) {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts) || solverQuotePort === undefined) {
+        reject(response, 503, "SOLVER_QUOTING_UNAVAILABLE", "Solver quoting is unavailable.");
+        return;
+      }
+      const orderHash = quoteMatch[1] as string;
+      try {
+        const coordinator = new InternalOrderCoordinator(orderPorts);
+        if (coordinator.getOrder(orderHash) === undefined) {
+          reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        const raw = await readJson(request);
+        if (typeof raw !== "object" || raw === null || Array.isArray(raw)
+          || Object.keys(raw).length !== 1 || typeof (raw as Record<string, unknown>).idempotencyKey !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request must contain only idempotencyKey.");
+          return;
+        }
+        const quoteRequest = parseSolverAtomicQuoteRequest({
+          orderHash,
+          idempotencyKey: (raw as Record<string, unknown>).idempotencyKey,
+        });
+        sendJson(response, 200, await solverQuotePort.quote(quoteRequest));
+      } catch (error) {
+        if (error instanceof SolverQuoteClientError) {
+          reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "SOLVER_QUOTE_FAILED", "Solver quoting failed closed.");
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/internal/terminal/orders/")) {
       if (request.method !== "GET") {
         response.setHeader("Allow", "GET, OPTIONS");
@@ -517,6 +563,7 @@ export function createPrivateTerminalServer(
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
   lifecycleStore?: PackageLifecycleStore,
+  solverQuotePort?: SolverAtomicQuotePort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -525,6 +572,7 @@ export function createPrivateTerminalServer(
     hyperliquidTestnetExecutionPort,
     evmTestnetPorts,
     lifecycleStore,
+    solverQuotePort,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

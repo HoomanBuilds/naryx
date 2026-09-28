@@ -135,3 +135,12 @@ export {
 } from "./terminal-preview.js";
 export { createTerminalSnapshot } from "./terminal-snapshot.js";
 export type { PreviewRequest, PreviewResponse } from "./terminal-types.js";
+export {
+  HttpInternalSolverQuoteClient,
+  SolverQuoteClientError,
+  parseSolverAtomicQuoteRequest,
+  validateSolverAtomicQuoteResponse,
+  type SolverAtomicQuotePort,
+  type SolverAtomicQuoteRequest,
+  type SolverAtomicQuoteResponse,
+} from "./solver-quote-client.js";

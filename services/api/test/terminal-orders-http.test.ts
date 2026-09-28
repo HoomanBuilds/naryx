@@ -16,6 +16,7 @@ import {
   SqliteInternalOrderStore,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
+  type SolverAtomicQuoteRequest,
 } from "../src/index.js";
 
 const BASE_HASH = "22".repeat(32);
@@ -132,10 +133,35 @@ test("internal terminal orders create, replay, retrieve, and conflict in one flo
     contextId === context.contextId ? context : undefined;
   const store = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   try {
-    const server = createPrivateTerminalServer(config, {}, {
+    const quoteRequests: SolverAtomicQuoteRequest[] = [];
+    const orderPorts = {
       contexts: provider,
       store,
       clock: { currentClock: async () => 1_000_500n },
+    };
+    const server = createPrivateTerminalServer(config, {}, orderPorts, undefined, {}, undefined, {
+      quote: async (request) => {
+        quoteRequests.push(request);
+        return {
+          version: 1,
+          status: "SIGNED",
+          idempotencyKey: request.idempotencyKey,
+          orderHash: request.orderHash,
+          routeHash: "71".repeat(32),
+          quoteHash: "72".repeat(32),
+          solverSignatureDigest: "73".repeat(32),
+          routeBytes: "01",
+          solverQuoteBytes: "02",
+          route: { orderHash: request.orderHash },
+          quote: {
+            orderHash: request.orderHash,
+            routeHash: "71".repeat(32),
+            solverSignatureScheme: "ED25519",
+            quoteMode: "EXECUTION_COMMITMENT",
+            signature: "74".repeat(64),
+          },
+        };
+      },
     });
     const serverUrl = await listen(server);
     try {
@@ -193,6 +219,23 @@ test("internal terminal orders create, replay, retrieve, and conflict in one flo
       };
       assert.equal(retrieved.orderHashHex, created.order.orderHashHex);
       assert.equal(retrieved.idempotencyKey, body.idempotencyKey);
+
+      const quoteResponse = await fetch(
+        `${serverUrl}/internal/terminal/orders/${created.order.orderHashHex}/quote`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: origin },
+          body: JSON.stringify({ idempotencyKey: "test-quote-key-0001" }),
+        },
+      );
+      assert.equal(quoteResponse.status, 200);
+      const quoted = await quoteResponse.json() as { status: string; orderHash: string };
+      assert.equal(quoted.status, "SIGNED");
+      assert.equal(quoted.orderHash, created.order.orderHashHex);
+      assert.deepEqual(quoteRequests, [{
+        orderHash: created.order.orderHashHex,
+        idempotencyKey: "test-quote-key-0001",
+      }]);
 
       const conflictResponse = await fetch(`${serverUrl}/internal/terminal/orders`, {
         method: "POST",
