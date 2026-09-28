@@ -26,6 +26,7 @@ function gcd(left: bigint, right: bigint): bigint {
 function bindings(catalog: LocalAtomicMarketCatalog): readonly RouteAccountBindingInput[] {
   return Object.freeze([
     { routeBindingId: 'trader', accountIdentity: catalog.accounts.trader, authorityIdentity: catalog.accounts.trader },
+    { routeBindingId: 'solver', accountIdentity: catalog.solver.solverId },
     { routeBindingId: 'market', adapter: catalog.adapter, adapterBindingId: 'market', accountIdentity: catalog.accounts.market },
     { routeBindingId: 'position', adapter: catalog.adapter, adapterBindingId: 'position', accountIdentity: catalog.accounts.position },
     { routeBindingId: 'trader-base', adapter: catalog.adapter, adapterBindingId: 'trader-base', accountIdentity: catalog.accounts.traderBase },
@@ -40,6 +41,7 @@ function bindings(catalog: LocalAtomicMarketCatalog): readonly RouteAccountBindi
 function actions(catalog: LocalAtomicMarketCatalog): readonly ActionCommitmentInput[] {
   const accountMetas = [
     { routeBindingId: 'trader', isSigner: true, isWritable: true },
+    { routeBindingId: 'solver', isSigner: false, isWritable: false },
     { routeBindingId: 'market', isSigner: false, isWritable: true },
     { routeBindingId: 'position', isSigner: false, isWritable: true },
     { routeBindingId: 'trader-base', isSigner: false, isWritable: true },
