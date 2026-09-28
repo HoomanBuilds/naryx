@@ -1,10 +1,13 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import anchor, { type Idl } from '@coral-xyz/anchor';
 import {
   Connection,
+  Ed25519Program,
   PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
@@ -27,9 +30,11 @@ export * from './public-exit-plan.js';
 export * from './cash-carry-accounts.js';
 
 const U64_MAX = (1n << 64n) - 1n;
+const EXECUTION_DIGEST_DOMAIN = 'NARYX/conformance-execution/v1';
 const { BorshCoder, BN } = anchor;
 const ACCOUNT_BINDING_IDS = {
   trader: 'trader',
+  solver: 'solver',
   market: 'market',
   position: 'position',
   trader_base: 'trader-base',
@@ -44,11 +49,15 @@ const REQUIRED_BINDINGS: ReadonlySet<string> = new Set(Object.values(ACCOUNT_BIN
 
 export interface ConformanceReceipt {
   readonly address: PublicKey;
+  readonly domain: DomainRef;
   readonly trader: PublicKey;
+  readonly solver: PublicKey;
   readonly orderHash: Uint8Array;
   readonly quoteHash: Uint8Array;
   readonly routeHash: Uint8Array;
   readonly action: 'ENTRY' | 'EXIT';
+  readonly nonce: bigint;
+  readonly executionDigest: Uint8Array;
   readonly baseQuantityAtoms: bigint;
   readonly preBaseBalance: bigint;
   readonly postBaseBalance: bigint;
@@ -61,11 +70,23 @@ export interface ConformanceReceipt {
   readonly executionSlot: bigint;
 }
 
+export interface AuthenticatedConformanceExecution {
+  readonly instructions: readonly TransactionInstruction[];
+  readonly executionDigest: Uint8Array;
+  readonly coreInstruction: TransactionInstruction;
+}
+
+export type ConformanceExecutionSignatureProvider = (
+  executionDigest: Uint8Array,
+  admission: PackageAdmission,
+) => Uint8Array | Promise<Uint8Array>;
+
 export interface SolanaConformanceAdapterOptions {
   readonly connection: Connection;
   readonly domain: DomainRef;
   readonly environment: 'local' | 'devnet' | 'testnet';
   readonly expectedGenesisHash: string;
+  readonly executionSignatureProvider: ConformanceExecutionSignatureProvider;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -75,6 +96,46 @@ function requireCondition(condition: boolean, message: string): asserts conditio
 function checkedU64(value: bigint, name: string): InstanceType<typeof BN> {
   requireCondition(typeof value === 'bigint' && value >= 0n && value <= U64_MAX, `${name} must fit u64`);
   return new BN(value.toString());
+}
+
+function bigEndian(value: bigint, bytes: number): Uint8Array {
+  checkedU64(value, 'execution digest integer');
+  const output = new Uint8Array(bytes);
+  let remaining = value;
+  for (let index = bytes - 1; index >= 0; index -= 1) {
+    output[index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+  requireCondition(remaining === 0n, 'execution digest integer is out of range');
+  return output;
+}
+
+function domainBytes(domain: DomainRef): Uint8Array {
+  const domainId = Buffer.from(domain.domainId, 'utf8');
+  requireCondition(domainId.length > 0 && domainId.length <= 128 && /^[\x00-\x7f]+$/.test(domain.domainId), 'domain id is invalid');
+  return Buffer.concat([
+    Buffer.from(bigEndian(BigInt(domainId.length), 4)),
+    domainId,
+    Buffer.from(bigEndian(BigInt(domain.domainManifestVersion), 4)),
+    Buffer.from(domain.domainManifestHash),
+  ]);
+}
+
+function conformanceExecutionDigest(
+  domain: DomainRef,
+  hashes: readonly Uint8Array[],
+  action: 1 | 2,
+  values: readonly bigint[],
+  accountKeys: readonly PublicKey[],
+): Uint8Array {
+  const digest = createHash('sha256');
+  digest.update(Buffer.from(EXECUTION_DIGEST_DOMAIN, 'ascii'));
+  digest.update(domainBytes(domain));
+  for (const hash of hashes) digest.update(hash);
+  digest.update(Uint8Array.of(action));
+  for (const value of values) digest.update(bigEndian(value, 8));
+  for (const key of accountKeys) digest.update(key.toBytes());
+  return new Uint8Array(digest.digest());
 }
 
 function requiredPubkey(value: string, name: string): PublicKey {
@@ -124,11 +185,31 @@ function rawHash(value: Uint8Array | number[], name: string): Uint8Array {
   return bytes;
 }
 
-export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionInstruction, ConformanceReceipt> {
+function rawDomain(value: unknown): DomainRef {
+  requireCondition(typeof value === 'object' && value !== null, 'receipt domain is invalid');
+  const decoded = value as Record<string, unknown>;
+  requireCondition(typeof decoded.domain_id === 'string' && decoded.domain_id.length > 0, 'receipt domain id is invalid');
+  requireCondition(typeof decoded.domain_manifest_version === 'number' && Number.isInteger(decoded.domain_manifest_version) && decoded.domain_manifest_version > 0, 'receipt domain version is invalid');
+  return Object.freeze({
+    domainId: decoded.domain_id,
+    domainManifestVersion: decoded.domain_manifest_version,
+    domainManifestHash: rawHash(decoded.domain_manifest_hash as Uint8Array, 'receipt domain hash'),
+  }) as DomainRef;
+}
+
+interface CompiledConformanceCore {
+  readonly admission: PackageAdmission;
+  readonly coreInstruction: TransactionInstruction;
+  readonly executionDigest: Uint8Array;
+  readonly solver: PublicKey;
+}
+
+export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedConformanceExecution, ConformanceReceipt> {
   readonly #connection: Connection;
   readonly #domain: DomainRef;
   readonly #environment: 'local' | 'devnet' | 'testnet';
   readonly #expectedGenesisHash: string;
+  readonly #executionSignatureProvider: ConformanceExecutionSignatureProvider;
   readonly #coreIdl = loadIdl('naryx_core.json');
   readonly #venueIdl = loadIdl('naryx_conformance_venue.json');
   readonly #coder = new BorshCoder(this.#coreIdl);
@@ -138,10 +219,12 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
   constructor(options: SolanaConformanceAdapterOptions) {
     requireCondition(options.domain.domainId.startsWith('svm:'), 'domain must use the SVM namespace');
     requireCondition(options.expectedGenesisHash.length > 0, 'expected genesis hash is required');
+    requireCondition(typeof options.executionSignatureProvider === 'function', 'execution signature provider is required');
     this.#connection = options.connection;
     this.#domain = options.domain;
     this.#environment = options.environment;
     this.#expectedGenesisHash = options.expectedGenesisHash;
+    this.#executionSignatureProvider = options.executionSignatureProvider;
     requireCondition(
       this.#coreIdl.instructions.some((instruction) => instruction.name === 'execute_conformance_atomic'),
       'published core IDL does not include conformance execution',
@@ -152,6 +235,17 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     return PublicKey.findProgramAddressSync([Buffer.from('naryx-protocol-config')], this.#programId)[0];
   }
 
+  solverRegistryAddress(): PublicKey {
+    return PublicKey.findProgramAddressSync([Buffer.from('conformance-solver')], this.#programId)[0];
+  }
+
+  nonceMarkerAddress(trader: PublicKey, nonce: bigint): PublicKey {
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('conformance-nonce'), trader.toBuffer(), Buffer.from(bigEndian(nonce, 8))],
+      this.#programId,
+    )[0];
+  }
+
   receiptAddress(trader: PublicKey, orderHash: Uint8Array): PublicKey {
     return PublicKey.findProgramAddressSync(
       [Buffer.from('conformance-receipt'), trader.toBuffer(), Buffer.from(hashBytes(orderHash, 'orderHash'))],
@@ -159,7 +253,20 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     )[0];
   }
 
-  async compile(admission: PackageAdmission): Promise<CompiledExecution<TransactionInstruction>> {
+  async compile(admission: PackageAdmission): Promise<CompiledExecution<AuthenticatedConformanceExecution>> {
+    const compiled = this.#compileCore(admission);
+    const signature = await this.#executionSignatureProvider(Uint8Array.from(compiled.executionDigest), admission);
+    return this.#authenticatedPlan(compiled, signature);
+  }
+
+  async compileAuthenticated(
+    admission: PackageAdmission,
+    solverSignature: Uint8Array,
+  ): Promise<CompiledExecution<AuthenticatedConformanceExecution>> {
+    return this.#authenticatedPlan(this.#compileCore(admission), solverSignature);
+  }
+
+  #compileCore(admission: PackageAdmission): CompiledConformanceCore {
     const { order, quote, route } = admission;
     requireCondition(order.environment === this.#environment, 'order environment is unsupported');
     requireCondition(quote.environment === this.#environment && route.environment === this.#environment, 'package environment mismatch');
@@ -177,6 +284,7 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     requireCondition(route.legs[0]?.side === (order.action === 'ENTRY' ? 'BUY' : 'SELL'), 'spot side mismatch');
     requireCondition(route.legs[1]?.side === (order.action === 'ENTRY' ? 'SELL' : 'BUY'), 'perpetual side mismatch');
     requireCondition(route.serviceCharges.length === 0 && quote.protocolFee.atoms === 0n && quote.solverFee.atoms === 0n, 'this conformance program does not collect service charges');
+    requireCondition(order.nonce > 0n, 'nonce must be nonzero');
     equalHash(route.orderHash, admission.orderHash, 'route order hash');
     equalHash(quote.orderHash, admission.orderHash, 'quote order hash');
     equalHash(quote.routeHash, admission.routeHash, 'quote route hash');
@@ -189,7 +297,11 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     }
     for (const bindingId of REQUIRED_BINDINGS) requireCondition(bindings.has(bindingId), `missing route binding ${bindingId}`);
     const trader = bindings.get('trader')!;
+    const solver = bindings.get('solver')!;
     requireCondition(trader.equals(requiredPubkey(order.owner, 'order owner')), 'trader binding does not match order owner');
+    requireCondition(solver.equals(requiredPubkey(route.solver, 'route solver')), 'solver binding does not match route solver');
+    requireCondition(quote.solverSignatureScheme === 'ED25519', 'conformance execution requires Ed25519 solver verification');
+    requireCondition(bytesEqual(solver.toBytes(), quote.solverVerificationKey), 'solver binding does not match quote verification key');
     requireCondition(bindings.get('conformance-program')!.equals(this.#venueProgramId), 'conformance program binding mismatch');
     requireCondition(route.actions.length === 2 && route.actions.every((action) => action.targetBindingId === 'conformance-program' && action.authorityBindingId === 'trader'), 'route actions are unsupported');
 
@@ -200,9 +312,12 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     const collateralLimit = entry ? order.maxMarginAdded.atoms : order.minVenueReserveReturned.atoms;
     const accounts = new Map<string, PublicKey>([
       ['config', this.configAddress()],
+      ['solver_registry', this.solverRegistryAddress()],
       ['receipt', this.receiptAddress(trader, admission.orderHash)],
+      ['nonce_marker', this.nonceMarkerAddress(trader, order.nonce)],
       ['token_program', requiredPubkey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'token program')],
       ['system_program', requiredPubkey('11111111111111111111111111111111', 'system program')],
+      ['instructions_sysvar', SYSVAR_INSTRUCTIONS_PUBKEY],
     ]);
     for (const [accountName, bindingId] of Object.entries(ACCOUNT_BINDING_IDS)) accounts.set(accountName, bindings.get(bindingId)!);
 
@@ -224,26 +339,74 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
         spot_quote_limit_atoms: checkedU64(spotLimit, 'spot quote limit'),
         collateral_quote_limit_atoms: checkedU64(collateralLimit, 'collateral quote limit'),
         expiry_slot: checkedU64(expiry, 'expiry slot'),
+        nonce: checkedU64(order.nonce, 'nonce'),
       },
     });
+    const coreInstruction = new TransactionInstruction({ programId: this.#programId, keys, data });
+    const executionDigest = conformanceExecutionDigest(
+      this.#domain,
+      [admission.orderHash, admission.quoteHash, admission.routeHash],
+      entry ? 1 : 2,
+      [order.quantity.atoms, spotLimit, collateralLimit, expiry, order.nonce],
+      [
+        this.#programId,
+        trader,
+        accounts.get('config')!,
+        accounts.get('solver_registry')!,
+        solver,
+        accounts.get('receipt')!,
+        accounts.get('nonce_marker')!,
+        accounts.get('market')!,
+        accounts.get('position')!,
+        accounts.get('trader_base')!,
+        accounts.get('trader_quote')!,
+        accounts.get('spot_base_vault')!,
+        accounts.get('spot_quote_vault')!,
+        accounts.get('perp_quote_vault')!,
+        accounts.get('conformance_program')!,
+        accounts.get('token_program')!,
+        accounts.get('system_program')!,
+        accounts.get('instructions_sysvar')!,
+      ],
+    );
+    return { admission, coreInstruction, executionDigest, solver };
+  }
+
+  #authenticatedPlan(
+    compiled: CompiledConformanceCore,
+    solverSignature: Uint8Array,
+  ): CompiledExecution<AuthenticatedConformanceExecution> {
+    requireCondition(solverSignature instanceof Uint8Array && solverSignature.length === 64, 'solver execution signature must be 64 bytes');
+    const verificationInstruction = Ed25519Program.createInstructionWithPublicKey({
+      publicKey: compiled.solver.toBytes(),
+      message: compiled.executionDigest,
+      signature: solverSignature,
+    });
+    const instructions = Object.freeze([verificationInstruction, compiled.coreInstruction]);
     return {
       domain: this.#domain,
-      orderHash: admission.orderHash,
-      quoteHash: admission.quoteHash,
-      routeHash: admission.routeHash,
-      payload: new TransactionInstruction({ programId: this.#programId, keys, data }),
+      orderHash: compiled.admission.orderHash,
+      quoteHash: compiled.admission.quoteHash,
+      routeHash: compiled.admission.routeHash,
+      payload: Object.freeze({
+        instructions,
+        executionDigest: Uint8Array.from(compiled.executionDigest),
+        coreInstruction: compiled.coreInstruction,
+      }),
     };
   }
 
-  async simulate(compiled: CompiledExecution<TransactionInstruction>): Promise<SimulationEvidence> {
+  async simulate(compiled: CompiledExecution<AuthenticatedConformanceExecution>): Promise<SimulationEvidence> {
     requireCondition(sameDomain(compiled.domain, this.#domain), 'simulation domain is unsupported');
-    requireCondition(compiled.payload.programId.equals(this.#programId), 'simulation program is unsupported');
+    requireCondition(compiled.payload.coreInstruction.programId.equals(this.#programId), 'simulation program is unsupported');
+    requireCondition(compiled.payload.instructions.at(-1) === compiled.payload.coreInstruction, 'core instruction must be last');
+    requireCondition(compiled.payload.instructions.at(-2)?.programId.equals(Ed25519Program.programId) === true, 'solver verification must immediately precede core execution');
     const genesisHash = await this.#connection.getGenesisHash();
     requireCondition(genesisHash === this.#expectedGenesisHash, 'RPC genesis hash mismatch');
-    const payer = compiled.payload.keys.find((key) => key.isSigner)?.pubkey;
+    const payer = compiled.payload.coreInstruction.keys.find((key) => key.isSigner)?.pubkey;
     requireCondition(payer !== undefined, 'simulation requires a trader account meta');
     const blockhash = await this.#connection.getLatestBlockhash('confirmed');
-    const message = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash.blockhash, instructions: [compiled.payload] }).compileToV0Message();
+    const message = new TransactionMessage({ payerKey: payer, recentBlockhash: blockhash.blockhash, instructions: [...compiled.payload.instructions] }).compileToV0Message();
     const transaction = new VersionedTransaction(message);
     const response = await this.#connection.simulateTransaction(transaction, { sigVerify: false, replaceRecentBlockhash: true });
     return {
@@ -260,17 +423,23 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     const quoteHashValue = rawHash(decoded.quote_hash as Uint8Array, 'receipt quote hash');
     const routeHashValue = rawHash(decoded.route_hash as Uint8Array, 'receipt route hash');
     const trader = decoded.trader as PublicKey;
+    const solver = decoded.solver as PublicKey;
     requireCondition(trader instanceof PublicKey, 'receipt trader is invalid');
+    requireCondition(solver instanceof PublicKey, 'receipt solver is invalid');
     requireCondition(address.equals(this.receiptAddress(trader, orderHash)), 'receipt PDA mismatch');
     const action = decoded.action;
     requireCondition(action === 1 || action === 2, 'receipt action is invalid');
     return {
       address,
+      domain: rawDomain(decoded.domain),
       trader,
+      solver,
       orderHash,
       quoteHash: quoteHashValue,
       routeHash: routeHashValue,
       action: action === 1 ? 'ENTRY' : 'EXIT',
+      nonce: rawBigInt(decoded.nonce as InstanceType<typeof BN>, 'nonce'),
+      executionDigest: rawHash(decoded.execution_digest as Uint8Array, 'execution digest'),
       baseQuantityAtoms: rawBigInt(decoded.base_quantity_atoms as InstanceType<typeof BN>, 'base quantity'),
       preBaseBalance: rawBigInt(decoded.pre_base_balance as InstanceType<typeof BN>, 'pre base balance'),
       postBaseBalance: rawBigInt(decoded.post_base_balance as InstanceType<typeof BN>, 'post base balance'),
@@ -299,6 +468,9 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<TransactionIns
     equalHash(receipt.quoteHash, admission.quoteHash, 'receipt quote hash');
     equalHash(receipt.routeHash, admission.routeHash, 'receipt route hash');
     requireCondition(receipt.trader.equals(trader) && receipt.action === admission.order.action, 'receipt order mismatch');
+    requireCondition(sameDomain(receipt.domain, this.#domain), 'receipt domain mismatch');
+    requireCondition(receipt.solver.equals(requiredPubkey(admission.route.solver, 'route solver')), 'receipt solver mismatch');
+    requireCondition(receipt.nonce === admission.order.nonce, 'receipt nonce mismatch');
     requireCondition(receipt.baseQuantityAtoms === admission.order.quantity.atoms, 'receipt quantity mismatch');
     return {
       executionReference,
