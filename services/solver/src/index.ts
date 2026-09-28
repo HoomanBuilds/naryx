@@ -659,6 +659,7 @@ export {
   type InternalAtomicQuoteResponse,
   type InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
+export { HttpInternalOrderProvider } from './http-internal-order-provider.js';
 export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,

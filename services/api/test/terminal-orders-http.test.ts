@@ -216,9 +216,26 @@ test("internal terminal orders create, replay, retrieve, and conflict in one flo
       const retrieved = (await retrievedResponse.json()) as {
         orderHashHex: string;
         idempotencyKey: string;
+        nonceDecimal: string;
       };
       assert.equal(retrieved.orderHashHex, created.order.orderHashHex);
       assert.equal(retrieved.idempotencyKey, body.idempotencyKey);
+
+      const solverOrderResponse = await fetch(
+        `${serverUrl}/internal/solver/orders/${created.order.orderHashHex}`,
+      );
+      assert.equal(solverOrderResponse.status, 200);
+      const solverOrder = await solverOrderResponse.json() as {
+        version: number;
+        orderHash: string;
+        order: { nonce: { $naryxType: string; value: string } };
+      };
+      assert.equal(solverOrder.version, 1);
+      assert.equal(solverOrder.orderHash, created.order.orderHashHex);
+      assert.deepEqual(solverOrder.order.nonce, {
+        $naryxType: "bigint",
+        value: retrieved.nonceDecimal,
+      });
 
       const quoteResponse = await fetch(
         `${serverUrl}/internal/terminal/orders/${created.order.orderHashHex}/quote`,

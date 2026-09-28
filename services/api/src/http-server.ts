@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { toProtocolJson } from "@naryx/protocol-types";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
@@ -61,6 +62,12 @@ function isLoopbackHost(host: string): boolean {
     const value = Number(octet);
     return value >= 0 && value <= 255;
   });
+}
+
+function isLoopbackPeer(address: string | undefined): boolean {
+  if (address === "::1") return true;
+  const host = address?.startsWith("::ffff:") === true ? address.slice(7) : address;
+  return host !== undefined && isLoopbackHost(host);
 }
 
 function parsePort(value: string | undefined): number {
@@ -176,6 +183,41 @@ export function createPrivateTerminalRequestHandler(
       }
       response.statusCode = 204;
       response.end();
+      return;
+    }
+
+    const solverOrderMatch = url.search === ""
+      ? /^\/internal\/solver\/orders\/([0-9a-f]{64})$/.exec(url.pathname)
+      : null;
+    if (solverOrderMatch !== null) {
+      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+        reject(response, 403, "LOOPBACK_REQUIRED", "Internal solver order access is loopback-only.");
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts)) {
+        reject(response, 503, "ORDER_RETRIEVAL_UNAVAILABLE", "Order retrieval is unavailable.");
+        return;
+      }
+      const orderHash = solverOrderMatch[1] as string;
+      try {
+        const order = orderPorts.store.getCanonicalOrderByHash(orderHash);
+        if (order === undefined) {
+          reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        sendJson(response, 200, {
+          version: 1,
+          orderHash,
+          order: toProtocolJson(order, "order"),
+        });
+      } catch {
+        reject(response, 502, "ORDER_RETRIEVAL_FAILED", "Canonical order retrieval failed closed.");
+      }
       return;
     }
 

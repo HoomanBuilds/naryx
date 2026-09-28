@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import {
   adapterRef,
@@ -12,12 +14,14 @@ import {
   routePayloadBytes,
   solverQuoteBytes,
   solverSignatureDigest,
+  toProtocolJson,
   validatePackageOrderProfile,
   versionedManifestRef,
 } from '@naryx/protocol-types';
 import type { PackageOrderInput, RoutePayloadInput } from '@naryx/protocol-types';
 import {
   InternalAtomicQuoteError,
+  HttpInternalOrderProvider,
   SignedAtomicEntryQuoteError,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
@@ -429,4 +433,30 @@ test('serves idempotent signed quotes over the loopback-only internal boundary',
   assert.equal(malformed.status, 400);
   const method = await fetch(url);
   assert.equal(method.status, 405);
+});
+
+test('retrieves and rehashes canonical orders over the internal API boundary', async (context) => {
+  const order = validatePackageOrderProfile(orderInput());
+  const orderHash = packageOrderHash(order);
+  let corrupt = false;
+  const server = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({
+      version: 1,
+      orderHash: Buffer.from(orderHash).toString('hex'),
+      order: toProtocolJson(corrupt ? { ...order, nonce: order.nonce + 1n } : order),
+    }));
+  });
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  context.after(() => server.close());
+  const address = server.address() as AddressInfo;
+  const provider = new HttpInternalOrderProvider(`http://127.0.0.1:${address.port}`);
+  assert.deepEqual(await provider.get(orderHash), order);
+  corrupt = true;
+  await assert.rejects(async () => provider.get(orderHash), /hash is mismatched/);
+  assert.throws(() => new HttpInternalOrderProvider('https://orders.example.com'), /loopback/);
 });

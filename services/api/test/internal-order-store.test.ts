@@ -154,6 +154,7 @@ test("internal order store persists canonical entry orders across reopen", () =>
     assert.deepEqual(store.getByIdempotencyKey(request.idempotencyKey), created.record);
     assert.deepEqual(store.getByOrderHash(canonical.orderHash), created.record);
     assert.deepEqual(store.getByOrderHash(toHex(canonical.orderHash)), created.record);
+    assert.deepEqual(store.getCanonicalOrderByHash(canonical.orderHash), canonical.order);
   } finally {
     store.close();
   }
@@ -165,6 +166,7 @@ test("internal order store persists canonical entry orders across reopen", () =>
     assert.ok(persisted !== undefined);
     assert.equal(persisted.orderHashHex, toHex(canonical.orderHash));
     assert.equal(persisted.nonceDecimal, canonical.order.nonce.toString(10));
+    assert.deepEqual(reopened.getCanonicalOrderByHash(canonical.orderHash), canonical.order);
     const replayed = reopened.createOrGet({ order: canonical, request });
     assert.equal(replayed.created, false);
     assert.deepEqual(replayed.record, persisted);

@@ -2,8 +2,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { bytesEqual, fromHex, packageOrderBytes, packageOrderHash, toHex, validatePackageOrderProfile } from "@naryx/protocol-types";
-import type { PackageOrderInput } from "@naryx/protocol-types";
+import { bytesEqual, fromHex, packageOrderBytes, packageOrderHash, parseProtocolJson, stringifyProtocolJson, toHex, validatePackageOrderProfile } from "@naryx/protocol-types";
+import type { PackageOrder, PackageOrderInput } from "@naryx/protocol-types";
 import type {
   CanonicalEntryOrder,
   CanonicalEntryRequest,
@@ -41,6 +41,7 @@ export interface InternalOrderStore {
   createOrGet(input: InternalOrderInput): InternalOrderCreateResult;
   getByOrderHash(orderHash: Uint8Array | string): InternalOrderRecord | undefined;
   getByIdempotencyKey(idempotencyKey: string): InternalOrderRecord | undefined;
+  getCanonicalOrderByHash(orderHash: Uint8Array | string): PackageOrder | undefined;
   close(): void;
 }
 
@@ -64,7 +65,7 @@ export class InternalOrderConflictError extends InternalOrderStoreError {
   }
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const BUSY_TIMEOUT_MS = 5_000;
 const HASH_BYTES = 32;
 const ORDER_STATUS: InternalOrderStatus = "UNSIGNED_CREATED";
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS internal_orders (
   request_commitment BLOB NOT NULL UNIQUE,
   order_hash BLOB NOT NULL UNIQUE,
   order_bytes BLOB NOT NULL,
+  order_json TEXT,
   context_id TEXT NOT NULL,
   domain_id TEXT NOT NULL,
   domain_manifest_version INTEGER NOT NULL,
@@ -97,6 +99,7 @@ interface OrderRow {
   readonly request_commitment: unknown;
   readonly order_hash: unknown;
   readonly order_bytes: unknown;
+  readonly order_json: unknown;
   readonly context_id: unknown;
   readonly domain_id: unknown;
   readonly domain_manifest_version: unknown;
@@ -115,6 +118,7 @@ interface ParsedOrderInput {
   readonly orderHash: Uint8Array;
   readonly orderHashHex: string;
   readonly orderBytes: Uint8Array;
+  readonly orderJson: string;
   readonly contextId: string;
   readonly domainId: string;
   readonly domainManifestVersion: number;
@@ -262,6 +266,7 @@ function parseStoreInput(input: InternalOrderInput): ParsedOrderInput {
     orderHash,
     orderHashHex: toHex(orderHash),
     orderBytes,
+    orderJson: stringifyProtocolJson(validatedOrder, "order.order"),
     contextId: request.contextId,
     domainId: domain.domainId,
     domainManifestVersion: domain.domainManifestVersion as number,
@@ -359,6 +364,30 @@ function rowToRecord(row: OrderRow): InternalOrderRecord {
   });
 }
 
+function rowToCanonicalOrder(row: OrderRow): PackageOrder {
+  if (typeof row.order_json !== "string" || row.order_json.length === 0) {
+    throw new InternalOrderStoreError(
+      "ORDER_DOCUMENT_UNAVAILABLE",
+      "Stored order predates canonical document persistence and must be replayed before quoting.",
+    );
+  }
+  let order: PackageOrder;
+  try {
+    order = validatePackageOrderProfile(
+      parseProtocolJson(row.order_json, "storedOrder") as PackageOrderInput,
+      "storedOrder",
+    );
+  } catch {
+    throw new InternalOrderStoreError("CORRUPT_ROW", "Stored canonical order document is invalid.");
+  }
+  if (!(row.order_hash instanceof Uint8Array) || !(row.order_bytes instanceof Uint8Array)
+    || !bytesEqual(packageOrderHash(order), row.order_hash)
+    || !bytesEqual(packageOrderBytes(order), row.order_bytes)) {
+    throw new InternalOrderStoreError("CORRUPT_ROW", "Stored canonical order document binding is invalid.");
+  }
+  return order;
+}
+
 function isConstraintError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -372,6 +401,7 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
   private readonly selectByKey: Database.Statement;
   private readonly selectByHash: Database.Statement;
   private readonly insertOrder: Database.Statement;
+  private readonly updateOrderJson: Database.Statement;
   private readonly createOrGetTxn: (parsed: ParsedOrderInput) => InternalOrderCreateResult;
 
   constructor(dbPath: string) {
@@ -400,6 +430,12 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
       const userVersion = db.pragma("user_version", { simple: true });
       if (userVersion === 0) {
         db.pragma(`user_version = ${SCHEMA_VERSION}`);
+      } else if (userVersion === 1) {
+        const columns = db.prepare("PRAGMA table_info(internal_orders)").all() as Array<{ name?: unknown }>;
+        if (!columns.some((column) => column.name === "order_json")) {
+          db.exec("ALTER TABLE internal_orders ADD COLUMN order_json TEXT");
+        }
+        db.pragma(`user_version = ${SCHEMA_VERSION}`);
       } else if (userVersion !== SCHEMA_VERSION) {
         throw new InternalOrderStoreError(
           "SCHEMA_MISMATCH",
@@ -409,8 +445,11 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
       this.db = db;
       this.selectByKey = db.prepare("SELECT * FROM internal_orders WHERE idempotency_key = ?");
       this.selectByHash = db.prepare("SELECT * FROM internal_orders WHERE order_hash = ?");
+      this.updateOrderJson = db.prepare(
+        "UPDATE internal_orders SET order_json = ? WHERE idempotency_key = ? AND order_json IS NULL",
+      );
       this.insertOrder = db.prepare(
-        "INSERT INTO internal_orders (idempotency_key, request_commitment, order_hash, order_bytes, context_id, domain_id, domain_manifest_version, domain_manifest_hash, owner, settlement_account, nonce_decimal, status, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO internal_orders (idempotency_key, request_commitment, order_hash, order_bytes, order_json, context_id, domain_id, domain_manifest_version, domain_manifest_hash, owner, settlement_account, nonce_decimal, status, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       );
       this.createOrGetTxn = db.transaction((parsed: ParsedOrderInput): InternalOrderCreateResult => {
         const existing = this.selectByKey.get(parsed.idempotencyKey) as OrderRow | undefined;
@@ -419,7 +458,12 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
           if (record.requestCommitmentHex !== parsed.requestCommitmentHex) {
             throw new InternalOrderConflictError(parsed.idempotencyKey);
           }
-          return Object.freeze({ record, created: false });
+          if (existing.order_json === null) {
+            this.updateOrderJson.run(parsed.orderJson, parsed.idempotencyKey);
+          }
+          const refreshed = this.selectByKey.get(parsed.idempotencyKey) as OrderRow;
+          rowToCanonicalOrder(refreshed);
+          return Object.freeze({ record: rowToRecord(refreshed), created: false });
         }
         const createdAtMs = Date.now();
         if (!Number.isSafeInteger(createdAtMs) || createdAtMs <= 0) {
@@ -431,6 +475,7 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
             Buffer.from(parsed.requestCommitment),
             Buffer.from(parsed.orderHash),
             Buffer.from(parsed.orderBytes),
+            parsed.orderJson,
             parsed.contextId,
             parsed.domainId,
             parsed.domainManifestVersion,
@@ -497,6 +542,12 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
     }
     const row = this.selectByKey.get(idempotencyKey) as OrderRow | undefined;
     return row === undefined ? undefined : rowToRecord(row);
+  }
+
+  getCanonicalOrderByHash(orderHash: Uint8Array | string): PackageOrder | undefined {
+    const bytes = normalizeHashInput(orderHash, "orderHash");
+    const row = this.selectByHash.get(Buffer.from(bytes)) as OrderRow | undefined;
+    return row === undefined ? undefined : rowToCanonicalOrder(row);
   }
 
   close(): void {
