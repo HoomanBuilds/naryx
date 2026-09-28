@@ -9,7 +9,8 @@
     "format": "prettier --write package.json src test",
     "format:check": "prettier --check package.json src test",
     "test": "npm run build:runtime && npm run build:programs && node --test test/environment.test.js",
-    "build:runtime": "npm --prefix ../../packages/protocol-types run build && npm --prefix ../../packages/adapter-core run build"
+    "test:phase-exit": "npm run build:runtime && npm run build:programs && node --test test/phase-exit.test.js",
+    "build:runtime": "npm --prefix ../../packages/protocol-types run build && npm --prefix ../../packages/adapter-core run build && npm --prefix ../../packages/adapters/solana run build && npm --prefix ../../services/solver run build && npm --prefix ../../services/api run build"
   },
   "keywords": [],
   "author": "",
@@ -18,8 +19,12 @@
   "dependencies": {
     "@anchor-lang/core": "1.2.0",
     "@naryx/adapter-core": "file:../../packages/adapter-core",
+    "@naryx/adapter-solana": "file:../../packages/adapters/solana",
+    "@naryx/api": "file:../../services/api",
     "@naryx/protocol-types": "file:../../packages/protocol-types",
-    "@solana/web3.js": "1.99.0"
+    "@naryx/solver": "file:../../services/solver",
+    "@solana/web3.js": "1.99.0",
+    "bs58": "6.0.0"
   },
   "devDependencies": {
     "prettier": "3.6.2"
