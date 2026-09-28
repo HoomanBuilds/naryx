@@ -30,6 +30,12 @@ import {
   TerminalOrderValidationError,
   type InternalOrderPorts,
 } from "./terminal-orders.js";
+import {
+  LifecycleQueryValidationError,
+  parseLifecycleQuery,
+  serializeLifecycleResponse,
+} from "./package-lifecycle-read.js";
+import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 import { createTerminalPreview, parsePreviewRequest, PreviewValidationError } from "./terminal-preview.js";
 import { createTerminalSnapshot } from "./terminal-snapshot.js";
 import { isDomainId } from "./terminal-types.js";
@@ -151,6 +157,7 @@ export function createPrivateTerminalRequestHandler(
   orderPorts?: InternalOrderPorts,
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
+  lifecycleStore?: PackageLifecycleStore,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -177,7 +184,50 @@ export function createPrivateTerminalRequestHandler(
         evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined,
         evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
         evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
+        lifecycleReadAvailable: lifecycleStore !== undefined,
       });
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/lifecycle") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (lifecycleStore === undefined) {
+        reject(response, 503, "LIFECYCLE_UNAVAILABLE", "Package lifecycle reading is unavailable.");
+        return;
+      }
+      let query;
+      try {
+        query = parseLifecycleQuery(url.searchParams);
+      } catch (error) {
+        if (error instanceof LifecycleQueryValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, "INVALID_QUERY", "Lifecycle query is invalid.");
+        return;
+      }
+      try {
+        const attempt = lifecycleStore.getAttempt(query.attemptId);
+        if (attempt === undefined) {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Attempt was not found.");
+          return;
+        }
+        let anchorPage: unknown;
+        if (query.afterRevision > 0n) {
+          const rawRevision = (attempt as { revision?: unknown }).revision;
+          if (typeof rawRevision === "bigint" && query.afterRevision < rawRevision) {
+            anchorPage = lifecycleStore.listReceipts(query.attemptId, query.afterRevision - 1n, 1);
+          }
+        }
+        const receipts = lifecycleStore.listReceipts(query.attemptId, query.afterRevision, query.limit);
+        sendJson(response, 200, serializeLifecycleResponse(attempt, receipts, query, anchorPage));
+      } catch {
+        reject(response, 502, "LIFECYCLE_READ_FAILED", "Package lifecycle reading failed closed.");
+      }
       return;
     }
 
@@ -466,6 +516,7 @@ export function createPrivateTerminalServer(
   orderPorts?: InternalOrderPorts,
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
+  lifecycleStore?: PackageLifecycleStore,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -473,6 +524,7 @@ export function createPrivateTerminalServer(
     orderPorts,
     hyperliquidTestnetExecutionPort,
     evmTestnetPorts,
+    lifecycleStore,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {
