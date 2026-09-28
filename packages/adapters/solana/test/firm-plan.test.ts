@@ -18,6 +18,7 @@ import {
 import type { DomainRef, PackageAdmission } from '@naryx/protocol-types';
 import {
   compileFirmCashCarryPlan,
+  decodeCashCarryExecutionReceipt,
   FIRM_CASH_CARRY_ACCOUNT_NAMES,
   PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES,
   SOLANA_DEVNET_GENESIS_HASH,
@@ -41,6 +42,51 @@ const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xW
 const address = (byte: number): PublicKey => new PublicKey(new Uint8Array(32).fill(byte));
 const hash = (byte: number): Uint8Array => new Uint8Array(32).fill(byte);
 const hex = (value: Uint8Array): string => Buffer.from(value).toString('hex');
+
+test('decodes the production cash-carry receipt account shape', async () => {
+  const coder = new BorshCoder(coreIdl);
+  const trader = address(21);
+  const solver = address(22);
+  const entryReceipt = address(23);
+  const data = await coder.accounts.encode('CashCarryExecutionReceipt', {
+    domain: { domain_id: 'svm:devnet', domain_manifest_version: 1, domain_manifest_hash: Array.from(hash(1)) },
+    order_hash: Array.from(hash(2)),
+    quote_hash: Array.from(hash(3)),
+    route_hash: Array.from(hash(4)),
+    trader,
+    solver,
+    nonce: new BN(7),
+    execution_digest: Array.from(hash(5)),
+    quote_intent_commitment: Array.from(hash(6)),
+    package_fill_commitment: Array.from(hash(7)),
+    action: 1,
+    recovery: false,
+    spot_quantity_atoms: new BN(10),
+    perp_quantity_atoms: new BN(11),
+    spot_quote_delta_atoms: new BN(12),
+    pre_base_balance: new BN(13),
+    post_base_balance: new BN(14),
+    pre_quote_balance: new BN(15),
+    post_quote_balance: new BN(16),
+    pre_rise_base_lots: new BN(-10),
+    post_rise_base_lots: new BN(-11),
+    pre_rise_collateral_quote_lots: new BN(17),
+    post_rise_collateral_quote_lots: new BN(18),
+    execution_slot: new BN(19),
+    resource_admission_commitment: Array.from(hash(8)),
+    route_accounts_commitment: Array.from(hash(9)),
+    entry_receipt: entryReceipt,
+    bump: 255,
+  });
+  const decoded = decodeCashCarryExecutionReceipt(coreIdl, data);
+  assert.equal(decoded.trader, trader.toBase58());
+  assert.equal(decoded.solver, solver.toBase58());
+  assert.equal(decoded.entryReceipt, entryReceipt.toBase58());
+  assert.equal(decoded.nonce, 7n);
+  assert.equal(decoded.spotQuantityAtoms, 10n);
+  assert.equal(decoded.perpQuantityAtoms, 11n);
+  assert.equal(hex(decoded.routeAccountsCommitment), hex(hash(9)));
+});
 
 function fixedIdlAddress(name: string): PublicKey {
   const instruction = coreIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;

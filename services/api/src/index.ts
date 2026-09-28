@@ -12,11 +12,21 @@ export {
   type SolanaDevnetLifecycleBinding,
   type SolanaDevnetMaterializer,
   type SolanaDevnetPackageLifecycleRecorder,
+  type SolanaDevnetPostconditionBinding,
+  type SolanaDevnetPostconditionProof,
+  type SolanaDevnetPostconditionVerifier,
   type SolanaDevnetReadOnlyRpc,
+  type SolanaReadOnlyAccount,
+  type SolanaReadOnlyAccountSnapshot,
   type SolanaDevnetRuntimePortsOptions,
   type SolanaSignatureStatus,
 } from "./solana-devnet-runtime-ports.js";
 export { SolanaDevnetLifecycleStoreRecorder } from "./solana-devnet-lifecycle-recorder.js";
+export {
+  ReadOnlySolanaDevnetPostconditionVerifier,
+  type SolanaDevnetPostconditionRpc,
+  type SolanaDevnetPostconditionVerifierOptions,
+} from "./solana-devnet-postcondition-verifier.js";
 export {
   createCanonicalEntryOrder,
   EntryOrderValidationError,

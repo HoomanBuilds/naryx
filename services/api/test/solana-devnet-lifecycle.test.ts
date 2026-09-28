@@ -536,7 +536,7 @@ test("exit is rejected before OPEN and binding mismatch fails closed", async () 
   });
 });
 
-test("exit from seeded OPEN reaches submitted but not closed, failure reaches recovery", async () => {
+test("verified postconditions promote finalized entry and exit exactly once", async () => {
   await withTempLifecycleStore(async (dbPath) => {
     const { rawTrader, trader, privateKey } = setupTrader();
     const domain = makeDomain();
@@ -617,25 +617,23 @@ test("exit from seeded OPEN reaches submitted but not closed, failure reaches re
       await ports.observation!.observe({ idempotencyKey: entryKey, signature: entrySignature });
       const headBeforeOpen = lifecycleStore.getAttempt(expectedAttempt)!;
       assert.equal(headBeforeOpen.state, "ENTRY_CONFIRMED");
-      lifecycleStore.recordEvent({
-        version: 1,
-        domain,
-        settlementClass: "ATOMIC_POSTCONDITION",
-        packageId: expectedAttempt,
-        packageCommitment: orderHex,
-        attemptId: expectedAttempt,
-        eventId: "seed-open-001",
-        expectedRevision: headBeforeOpen.revision,
-        nextState: "OPEN",
-        evidenceGrade: "CONSENSUS_VERIFIED",
-        onchainEnforced: false,
-        evidenceSource: {
-          subjectId: domain.domainId,
-          manifestVersion: domain.domainManifestVersion,
-          manifestHash: Uint8Array.from(domain.domainManifestHash) as unknown as import("@naryx/protocol-types").ManifestHash,
-        },
-        evidenceCommitment: "aa".repeat(32),
-      });
+      const entryRecord = preparedStore.get(entryKey)!;
+      assert.throws(() => recorder.recordPostcondition(entryRecord, {
+        action: "EXIT",
+        finalizedSlot: 300,
+        accountContextSlot: 301,
+        receiptDataHashHex: "aa".repeat(32),
+        openPackageDataHashHex: null,
+      }));
+      const entryProof = {
+        action: "ENTRY" as const,
+        finalizedSlot: 300,
+        accountContextSlot: 301,
+        receiptDataHashHex: "aa".repeat(32),
+        openPackageDataHashHex: "bb".repeat(32),
+      };
+      recorder.recordPostcondition(entryRecord, entryProof);
+      recorder.recordPostcondition(entryRecord, entryProof);
       assert.equal(lifecycleStore.getAttempt(expectedAttempt)!.state, "OPEN");
       const exitKey = "test-lifecycle-exit-open-exit";
       const exitPrepared = await ports.preparation!.prepare(
@@ -670,15 +668,21 @@ test("exit from seeded OPEN reaches submitted but not closed, failure reaches re
       assert.equal(afterFinalized.state, "EXIT_SUBMITTED");
       const states = lifecycleStore.listReceipts(expectedAttempt, 0n, 100).map((entry) => entry.nextState);
       assert.ok(!states.includes("CLOSED"));
-      rpcMode = "failed";
-      const failedExitKey = "test-lifecycle-exit-recovery-exit";
-      const failExitMessage = buildMessage(rawTrader, Buffer.alloc(32, 8));
-      void failExitMessage;
-      const secondExitSignature = exitSignature;
-      const failed = await ports.observation!.observe({ idempotencyKey: exitKey, signature: secondExitSignature });
-      assert.equal(failed.lifecycle, "FAILED");
-      assert.equal(lifecycleStore.getAttempt(expectedAttempt)!.state, "RECOVERY_PENDING");
-      void failedExitKey;
+      const exitRecord = preparedStore.get(exitKey)!;
+      const exitProof = {
+        action: "EXIT" as const,
+        finalizedSlot: 400,
+        accountContextSlot: 402,
+        receiptDataHashHex: "cc".repeat(32),
+        openPackageDataHashHex: null,
+      };
+      recorder.recordPostcondition(exitRecord, exitProof);
+      recorder.recordPostcondition(exitRecord, exitProof);
+      const closed = lifecycleStore.getAttempt(expectedAttempt)!;
+      assert.equal(closed.state, "CLOSED");
+      const closedReceipt = lifecycleStore.listReceipts(expectedAttempt, closed.revision - 1n, 1)[0]!;
+      assert.equal(closedReceipt.evidenceGrade, "CONSENSUS_VERIFIED");
+      assert.equal(closedReceipt.onchainEnforced, true);
     } finally {
       lifecycleStore.close();
     }

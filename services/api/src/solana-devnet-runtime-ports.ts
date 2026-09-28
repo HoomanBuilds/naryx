@@ -40,11 +40,51 @@ export type SolanaDevnetLifecycleBinding = Readonly<{
   evidenceSource: VersionedManifestRef;
 }>;
 
+export type SolanaDevnetPostconditionBinding = Readonly<{
+  coreProgram: string;
+  receiptAccount: string;
+  openPackageAccount: string;
+  entryReceiptAccount: string;
+  orderHashHex: string;
+  quoteHashHex: string;
+  routeHashHex: string;
+  trader: string;
+  solver: string;
+  nonce: bigint;
+  spotQuantityAtoms: bigint;
+  perpQuantityAtoms: bigint;
+  resourceAdmissionCommitmentHex: string;
+  packageFillCommitmentHex: string;
+  expectedOpenPackage?: Readonly<{
+    quoteIntentCommitmentHex: string;
+    routeAccountsCommitmentHex: string;
+    economicPackageCommitmentHex: string;
+    packageAccountsCommitmentHex: string;
+  }>;
+  recovery: boolean;
+}>;
+
+export type SolanaDevnetPostconditionProof = Readonly<{
+  action: SolanaDevnetLifecycleAction;
+  finalizedSlot: number;
+  accountContextSlot: number;
+  receiptDataHashHex: string;
+  openPackageDataHashHex: string | null;
+}>;
+
+export interface SolanaDevnetPostconditionVerifier {
+  verify(record: PreparedSolanaDevnetRecord, finalizedSlot: number): Promise<SolanaDevnetPostconditionProof>;
+}
+
 export interface SolanaDevnetPackageLifecycleRecorder {
   recordPrepared(record: PreparedSolanaDevnetRecord): void | Promise<void>;
   recordObservation(
     record: PreparedSolanaDevnetRecord,
     observation: PrivateTerminalExecutionObservation,
+  ): void | Promise<void>;
+  recordPostcondition?(
+    record: PreparedSolanaDevnetRecord,
+    proof: SolanaDevnetPostconditionProof,
   ): void | Promise<void>;
 }
 
@@ -65,6 +105,7 @@ export type PreparedSolanaDevnetRecord = Readonly<{
   request: NormalizedCashCarryExecutionRequest;
   materialization: UnsignedSolanaDevnetMaterializationDto;
   lifecycleBinding: SolanaDevnetLifecycleBinding;
+  postconditionBinding?: SolanaDevnetPostconditionBinding;
   lastValidBlockHeight: number;
   boundSignature: string | undefined;
 }>;
@@ -75,6 +116,7 @@ export interface PreparedSolanaDevnetStore {
     request: NormalizedCashCarryExecutionRequest,
     materialization: UnsignedSolanaDevnetMaterializationDto,
     lifecycleBinding: SolanaDevnetLifecycleBinding,
+    postconditionBinding?: SolanaDevnetPostconditionBinding,
   ): PreparedSolanaDevnetRecord;
   bindSignature(idempotencyKey: string, signature: string): PreparedSolanaDevnetRecord;
 }
@@ -83,6 +125,16 @@ export type SolanaSignatureStatus = Readonly<{
   slot: number | null;
   confirmationStatus: string | null;
   err: unknown;
+}>;
+
+export type SolanaReadOnlyAccount = Readonly<{
+  owner: string;
+  data: Uint8Array;
+}>;
+
+export type SolanaReadOnlyAccountSnapshot = Readonly<{
+  contextSlot: number;
+  accounts: readonly (SolanaReadOnlyAccount | null)[];
 }>;
 
 export interface SolanaDevnetReadOnlyRpc {
@@ -97,6 +149,7 @@ export type SolanaDevnetRuntimePortsOptions = Readonly<{
   store: PreparedSolanaDevnetStore;
   rpc: SolanaDevnetReadOnlyRpc;
   lifecycleRecorder?: SolanaDevnetPackageLifecycleRecorder;
+  postconditionVerifier?: SolanaDevnetPostconditionVerifier;
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -520,6 +573,83 @@ export function deriveSolanaDevnetLifecycleBinding(args: Readonly<{
   });
 }
 
+function solanaAddress(value: unknown, name: string): string {
+  const candidate = typeof value === "string"
+    ? value
+    : typeof value === "object" && value !== null && typeof (value as { toString?: unknown }).toString === "function"
+      ? String(value)
+      : "";
+  if (!isAddress(candidate)) throw new Error(`${name} must be a valid Solana address.`);
+  return candidate;
+}
+
+function deriveSolanaDevnetPostconditionBinding(args: Readonly<{
+  request: NormalizedCashCarryExecutionRequest;
+  admission: PackageAdmission;
+  binding: FirmCashCarryBinding;
+}>): SolanaDevnetPostconditionBinding {
+  const { request, admission, binding } = args;
+  const exitSource = binding.publicExit;
+  if (request.mode === "exit" && exitSource === undefined) throw new Error("Postcondition verification requires public exit evidence.");
+  const source = request.mode === "entry" ? binding : exitSource!;
+  const effectiveAdmission = request.mode === "entry" ? admission : exitSource!.admission;
+  const accounts = source.accounts as unknown as Record<string, { address: unknown }>;
+  const receiptAccount = solanaAddress(accounts.receipt?.address, "postcondition receipt account");
+  const openPackageAccount = solanaAddress(accounts.openPackage?.address, "postcondition open package account");
+  const trader = solanaAddress(accounts.trader?.address, "postcondition trader");
+  const orderHashHex = toCanonicalHex32(effectiveAdmission.orderHash, "postcondition order hash");
+  const quoteHashHex = toCanonicalHex32(effectiveAdmission.quoteHash, "postcondition quote hash");
+  const routeHashHex = toCanonicalHex32(effectiveAdmission.routeHash, "postcondition route hash");
+  if (request.mode === "entry") {
+    const publicExit = binding.publicExit;
+    const expectedOpenPackage = publicExit === undefined ? undefined : Object.freeze({
+      quoteIntentCommitmentHex: toCanonicalHex32(publicExit.openPackage.quoteIntentCommitment, "open package quote intent"),
+      routeAccountsCommitmentHex: toCanonicalHex32(publicExit.openPackage.entryRouteAccountsCommitment, "open package route accounts"),
+      economicPackageCommitmentHex: toCanonicalHex32(publicExit.openPackage.economicPackageCommitment, "open package economic commitment"),
+      packageAccountsCommitmentHex: toCanonicalHex32(publicExit.openPackage.packageAccountsCommitment, "open package accounts commitment"),
+    });
+    return Object.freeze({
+      coreProgram: solanaAddress(binding.deployments.core.programId, "postcondition core program"),
+      receiptAccount,
+      openPackageAccount,
+      entryReceiptAccount: receiptAccount,
+      orderHashHex,
+      quoteHashHex,
+      routeHashHex,
+      trader,
+      solver: solanaAddress(accounts.solver?.address, "postcondition solver"),
+      nonce: binding.executionArgs.nonce,
+      spotQuantityAtoms: binding.executionArgs.spotQuantityAtoms,
+      perpQuantityAtoms: binding.executionArgs.perpQuantityAtoms,
+      resourceAdmissionCommitmentHex: toCanonicalHex32(binding.resourceAdmissionCommitment, "postcondition resource admission"),
+      packageFillCommitmentHex: toCanonicalHex32(binding.quoteArgs.expectedFillCommitment, "postcondition package fill"),
+      ...(expectedOpenPackage === undefined ? {} : { expectedOpenPackage }),
+      recovery: false,
+    });
+  }
+  const exit = binding.publicExit!;
+  const solver = exit.authorization.mode === "TRADER_RECOVERY"
+    ? "11111111111111111111111111111111"
+    : solanaAddress(exit.authorization.activeSolver, "postcondition solver");
+  return Object.freeze({
+    coreProgram: solanaAddress(exit.deployments.core.programId, "postcondition core program"),
+    receiptAccount,
+    openPackageAccount,
+    entryReceiptAccount: solanaAddress(accounts.entryReceipt?.address, "postcondition entry receipt account"),
+    orderHashHex,
+    quoteHashHex,
+    routeHashHex,
+    trader,
+    solver,
+    nonce: exit.executionArgs.nonce,
+    spotQuantityAtoms: exit.executionArgs.spotQuantityAtoms,
+    perpQuantityAtoms: exit.executionArgs.perpQuantityAtoms,
+    resourceAdmissionCommitmentHex: toCanonicalHex32(exit.resourceAdmissionCommitment, "postcondition resource admission"),
+    packageFillCommitmentHex: "0".repeat(64),
+    recovery: exit.authorization.mode === "TRADER_RECOVERY",
+  });
+}
+
 function copyRequest(
   request: NormalizedCashCarryExecutionRequest,
 ): NormalizedCashCarryExecutionRequest {
@@ -538,6 +668,7 @@ function copyRecord(record: {
   request: NormalizedCashCarryExecutionRequest;
   materialization: UnsignedSolanaDevnetMaterializationDto;
   lifecycleBinding: SolanaDevnetLifecycleBinding;
+  postconditionBinding?: SolanaDevnetPostconditionBinding;
   lastValidBlockHeight: number;
   boundSignature: string | undefined;
 }): PreparedSolanaDevnetRecord {
@@ -545,6 +676,14 @@ function copyRecord(record: {
     request: copyRequest(record.request),
     materialization: copyDto(record.materialization),
     lifecycleBinding: copyLifecycleBinding(record.lifecycleBinding),
+    ...(record.postconditionBinding === undefined ? {} : {
+      postconditionBinding: Object.freeze({
+        ...record.postconditionBinding,
+        ...(record.postconditionBinding.expectedOpenPackage === undefined
+          ? {}
+          : { expectedOpenPackage: Object.freeze({ ...record.postconditionBinding.expectedOpenPackage }) }),
+      }),
+    }),
     lastValidBlockHeight: record.lastValidBlockHeight,
     boundSignature: record.boundSignature,
   });
@@ -658,6 +797,7 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
     request: NormalizedCashCarryExecutionRequest;
     materialization: UnsignedSolanaDevnetMaterializationDto;
     lifecycleBinding: SolanaDevnetLifecycleBinding;
+    postconditionBinding?: SolanaDevnetPostconditionBinding;
     lastValidBlockHeight: number;
     boundSignature: string | undefined;
   }>();
@@ -672,6 +812,7 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
     request: NormalizedCashCarryExecutionRequest,
     materialization: UnsignedSolanaDevnetMaterializationDto,
     lifecycleBinding: SolanaDevnetLifecycleBinding,
+    postconditionBinding?: SolanaDevnetPostconditionBinding,
   ): PreparedSolanaDevnetRecord {
     requireIdempotencyKey(request.idempotencyKey);
     const checkedBinding = requireLifecycleBinding(lifecycleBinding);
@@ -687,12 +828,24 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
       if (!lifecycleBindingsEqual(existing.lifecycleBinding, checkedBinding)) {
         throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different lifecycle binding.`);
       }
+      if (JSON.stringify(existing.postconditionBinding, (_key, value) => typeof value === "bigint" ? value.toString() : value) !==
+          JSON.stringify(postconditionBinding, (_key, value) => typeof value === "bigint" ? value.toString() : value)) {
+        throw new Error(`Idempotency key "${request.idempotencyKey}" was already used with different postcondition binding.`);
+      }
       return copyRecord(existing);
     }
     const stored = {
       request: copyRequest(request),
       materialization: checkedMaterialization,
       lifecycleBinding: copyLifecycleBinding(checkedBinding),
+      ...(postconditionBinding === undefined ? {} : {
+        postconditionBinding: Object.freeze({
+          ...postconditionBinding,
+          ...(postconditionBinding.expectedOpenPackage === undefined
+            ? {}
+            : { expectedOpenPackage: Object.freeze({ ...postconditionBinding.expectedOpenPackage }) }),
+        }),
+      }),
       lastValidBlockHeight: materialization.lastValidBlockHeight,
       boundSignature: undefined as string | undefined,
     };
@@ -799,6 +952,45 @@ export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc {
     throw new Error("Solana RPC getBlockHeight returned malformed result.");
   }
 
+  async getMultipleAccounts(addresses: readonly string[], minContextSlot: number): Promise<SolanaReadOnlyAccountSnapshot> {
+    if (addresses.length === 0 || addresses.some((address) => !isAddress(address))) {
+      throw new Error("Solana account query contains an invalid address.");
+    }
+    if (!Number.isSafeInteger(minContextSlot) || minContextSlot < 0) {
+      throw new Error("Solana account query minContextSlot is invalid.");
+    }
+    const result = await this.call("getMultipleAccounts", [
+      addresses,
+      { commitment: "finalized", encoding: "base64", minContextSlot },
+    ]);
+    if (!isRecord(result)) throw new Error("Solana RPC getMultipleAccounts returned malformed result.");
+    if (typeof result.context !== "object" || result.context === null || Array.isArray(result.context)) {
+      throw new Error("Solana RPC getMultipleAccounts returned malformed context.");
+    }
+    const contextSlot = (result.context as Record<string, unknown>).slot;
+    if (typeof contextSlot !== "number" || !Number.isSafeInteger(contextSlot) || contextSlot < minContextSlot) {
+      throw new Error("Solana RPC getMultipleAccounts returned stale context.");
+    }
+    if (!Array.isArray(result.value) || result.value.length !== addresses.length) {
+      throw new Error("Solana RPC getMultipleAccounts returned malformed accounts.");
+    }
+    const accounts = result.value.map((entry, index): SolanaReadOnlyAccount | null => {
+      if (entry === null) return null;
+      if (!isRecord(entry) || typeof entry.owner !== "string" || !isAddress(entry.owner) || entry.executable !== false) {
+        throw new Error(`Solana RPC account ${index} is malformed.`);
+      }
+      if (!Array.isArray(entry.data) || entry.data.length !== 2 || entry.data[1] !== "base64" || typeof entry.data[0] !== "string") {
+        throw new Error(`Solana RPC account ${index} data is malformed.`);
+      }
+      const data = Buffer.from(entry.data[0], "base64");
+      if (data.length === 0 || data.toString("base64") !== entry.data[0]) {
+        throw new Error(`Solana RPC account ${index} data is not canonical base64.`);
+      }
+      return Object.freeze({ owner: entry.owner, data: Uint8Array.from(data) });
+    });
+    return Object.freeze({ contextSlot, accounts: Object.freeze(accounts) });
+  }
+
   private async call(method: string, params: unknown[]): Promise<unknown> {
     const id = this.nextId;
     this.nextId += 1;
@@ -841,6 +1033,7 @@ export function createSolanaDevnetExecutionPorts(
   const store = options.store;
   const rpc = options.rpc;
   const lifecycleRecorder = options.lifecycleRecorder;
+  const postconditionVerifier = options.postconditionVerifier;
   if (typeof contextProvider !== "function") throw new Error("Context provider must be a function.");
   if (typeof materializer?.materialize !== "function") throw new Error("Materializer must expose materialize.");
   if (typeof store?.get !== "function" || typeof store?.save !== "function" ||
@@ -855,6 +1048,14 @@ export function createSolanaDevnetExecutionPorts(
     if (typeof (lifecycleRecorder as SolanaDevnetPackageLifecycleRecorder).recordPrepared !== "function" ||
         typeof (lifecycleRecorder as SolanaDevnetPackageLifecycleRecorder).recordObservation !== "function") {
       throw new Error("Lifecycle recorder must expose recordPrepared and recordObservation.");
+    }
+  }
+  if (postconditionVerifier !== undefined) {
+    if (typeof postconditionVerifier.verify !== "function") {
+      throw new Error("Postcondition verifier must expose verify.");
+    }
+    if (lifecycleRecorder === undefined || typeof lifecycleRecorder.recordPostcondition !== "function") {
+      throw new Error("Postcondition verification requires a lifecycle recorder with recordPostcondition.");
     }
   }
   const inFlight = new Map<string, {
@@ -927,6 +1128,9 @@ export function createSolanaDevnetExecutionPorts(
             admission,
             binding,
           });
+          const postconditionBinding = postconditionVerifier === undefined
+            ? undefined
+            : deriveSolanaDevnetPostconditionBinding({ request: snapshot, admission, binding });
           const materialization = await materializer.materialize({
             planKind: expectedPlanKind,
             admission,
@@ -946,7 +1150,7 @@ export function createSolanaDevnetExecutionPorts(
             requireSameDomain(boundDomain, materialDomain, "Binding");
           }
           const dto = mapToDto(materialization, snapshot, lifecycleBinding);
-          store.save(snapshot, dto, lifecycleBinding);
+          store.save(snapshot, dto, lifecycleBinding, postconditionBinding);
           const stored = store.get(snapshot.idempotencyKey);
           if (stored === undefined) throw new Error("Prepared execution was not stored.");
           return copyDto(stored.materialization);
@@ -1003,6 +1207,10 @@ export function createSolanaDevnetExecutionPorts(
           observation = Object.freeze({ lifecycle: "SUBMITTED", signature, observedSlot: status.slot });
         }
         await recordObservationOrFail(bound, observation);
+        if (observation.lifecycle === "FINALIZED" && postconditionVerifier !== undefined) {
+          const proof = await postconditionVerifier.verify(bound, observation.finalizedSlot);
+          await lifecycleRecorder!.recordPostcondition!(bound, proof);
+        }
         return observation;
       },
     }),

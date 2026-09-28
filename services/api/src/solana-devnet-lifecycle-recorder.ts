@@ -6,6 +6,7 @@ import type {
 import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 import type {
   PreparedSolanaDevnetRecord,
+  SolanaDevnetPostconditionProof,
   SolanaDevnetPackageLifecycleRecorder as SolanaDevnetRecorderPort,
 } from "./solana-devnet-runtime-ports.js";
 import type { PrivateTerminalExecutionObservation } from "./terminal-execution.js";
@@ -43,12 +44,16 @@ function stateSlug(state: PackageLifecycleState): string {
       return "entry-submitted";
     case "ENTRY_CONFIRMED":
       return "entry-confirmed";
+    case "OPEN":
+      return "open";
     case "EXIT_REQUESTED":
       return "exit-requested";
     case "EXIT_SUBMITTED":
       return "exit-submitted";
     case "RECOVERY_PENDING":
       return "recovery-pending";
+    case "CLOSED":
+      return "closed";
     case "FAILED":
       return "failed";
     case "EXPIRED":
@@ -71,6 +76,7 @@ function commonFields(
   record: PreparedSolanaDevnetRecord,
   nextState: PackageLifecycleState,
   grade: PackageEvidenceGrade,
+  onchainEnforced = false,
 ): readonly string[] {
   const binding = record.lifecycleBinding;
   return [
@@ -84,7 +90,7 @@ function commonFields(
     binding.settlementClass,
     nextState,
     grade,
-    "false",
+    String(onchainEnforced),
     binding.evidenceSource.subjectId,
     String(binding.evidenceSource.manifestVersion),
     toHex(binding.evidenceSource.manifestHash),
@@ -134,7 +140,7 @@ function requireBindingPresent(record: PreparedSolanaDevnetRecord): void {
 function verifyHeadBinding(
   store: PackageLifecycleStore,
   record: PreparedSolanaDevnetRecord,
-): { revision: bigint; state: PackageLifecycleState } | undefined {
+): { revision: bigint; state: PackageLifecycleState; eventId: string } | undefined {
   const binding = record.lifecycleBinding;
   const head = store.getAttempt(binding.attemptId);
   if (head === undefined) return undefined;
@@ -145,7 +151,7 @@ function verifyHeadBinding(
   if (head.attemptId !== binding.attemptId) {
     throw new Error("Lifecycle head attempt does not match the prepared record.");
   }
-  return { revision: head.revision, state: head.state };
+  return { revision: head.revision, state: head.state, eventId: head.eventId };
 }
 
 function recordOne(
@@ -154,6 +160,7 @@ function recordOne(
   nextState: PackageLifecycleState,
   grade: PackageEvidenceGrade,
   extra: readonly string[],
+  onchainEnforced = false,
 ): void {
   const binding = record.lifecycleBinding;
   const head = store.getAttempt(binding.attemptId);
@@ -170,7 +177,7 @@ function recordOne(
     }
     expectedRevision = head.revision;
   }
-  const evidenceCommitment = computeEvidenceCommitment([...commonFields(record, nextState, grade), ...extra]);
+  const evidenceCommitment = computeEvidenceCommitment([...commonFields(record, nextState, grade, onchainEnforced), ...extra]);
   const eventId = computeEventId(nextState, evidenceCommitment);
   const domainManifestHash = Uint8Array.from(binding.domain.domainManifestHash) as unknown as import("@naryx/protocol-types").ManifestHash;
   const evidenceManifestHash = Uint8Array.from(binding.evidenceSource.manifestHash) as unknown as import("@naryx/protocol-types").ManifestHash;
@@ -190,7 +197,7 @@ function recordOne(
     expectedRevision,
     nextState,
     evidenceGrade: grade,
-    onchainEnforced: false,
+    onchainEnforced,
     evidenceSource: {
       subjectId: binding.evidenceSource.subjectId,
       manifestVersion: binding.evidenceSource.manifestVersion,
@@ -287,6 +294,50 @@ export class SolanaDevnetLifecycleStoreRecorder implements SolanaDevnetRecorderP
       return;
     }
     this.recordExitObservation(record, observation, headInfo.state);
+  }
+
+  recordPostcondition(record: PreparedSolanaDevnetRecord, proof: SolanaDevnetPostconditionProof): void {
+    requireBindingPresent(record);
+    if (proof.action !== record.lifecycleBinding.action) {
+      throw new Error("Postcondition proof action does not match the lifecycle binding.");
+    }
+    const head = verifyHeadBinding(this.store, record);
+    if (head === undefined) throw new Error("Postcondition proof requires an existing lifecycle head.");
+    const nextState = proof.action === "ENTRY" ? "OPEN" : "CLOSED";
+    const requiredState = proof.action === "ENTRY" ? "ENTRY_CONFIRMED" : "EXIT_SUBMITTED";
+    if (!Number.isSafeInteger(proof.finalizedSlot) || proof.finalizedSlot < 0 ||
+        !Number.isSafeInteger(proof.accountContextSlot) || proof.accountContextSlot < proof.finalizedSlot ||
+        !/^[0-9a-f]{64}$/.test(proof.receiptDataHashHex) || /^0+$/.test(proof.receiptDataHashHex) ||
+        (proof.action === "ENTRY" && (proof.openPackageDataHashHex === null || !/^[0-9a-f]{64}$/.test(proof.openPackageDataHashHex) || /^0+$/.test(proof.openPackageDataHashHex))) ||
+        (proof.action === "EXIT" && proof.openPackageDataHashHex !== null)) {
+      throw new Error("Postcondition proof is malformed.");
+    }
+    const extra = [
+      String(proof.finalizedSlot),
+      String(proof.accountContextSlot),
+      proof.receiptDataHashHex,
+      proof.openPackageDataHashHex ?? "absent",
+    ];
+    const evidenceCommitment = computeEvidenceCommitment([
+      ...commonFields(record, nextState, "CONSENSUS_VERIFIED", true),
+      ...extra,
+    ]);
+    const eventId = computeEventId(nextState, evidenceCommitment);
+    if (head.state === nextState) {
+      if (head.eventId !== eventId) throw new Error("Postcondition proof conflicts with the recorded lifecycle head.");
+      return;
+    }
+    if (head.state !== requiredState) {
+      throw new Error(`Postcondition proof is invalid from "${head.state}".`);
+    }
+    recordOne(
+      this.store,
+      record,
+      nextState,
+      "CONSENSUS_VERIFIED",
+      extra,
+      true,
+    );
   }
 
   private recordEntryObservation(

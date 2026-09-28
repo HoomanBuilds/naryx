@@ -24,6 +24,7 @@ import type {
 export * from './firm-plan.js';
 export * from './materializer.js';
 export * from './public-exit-plan.js';
+export * from './cash-carry-accounts.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 const { BorshCoder, BN } = anchor;
