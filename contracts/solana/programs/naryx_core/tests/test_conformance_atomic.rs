@@ -30,7 +30,8 @@ use {
         constants::{CONFORMANCE_RECEIPT_SEED, PROTOCOL_CONFIG_SEED},
         error::ErrorCode,
         instructions::{
-            execution_digest, ConformanceAction, ConformanceExecutionArgs, GovernanceRoles,
+            execute_conformance_atomic::execution_digest, ConformanceAction,
+            ConformanceExecutionArgs, GovernanceRoles,
         },
         state::{ConformanceExecutionReceipt, ProtocolConfig},
         wire::HASH_BYTE_LENGTH,
