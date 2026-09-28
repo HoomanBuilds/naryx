@@ -3,6 +3,10 @@ import { toProtocolJson } from "@naryx/protocol-types";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
+  ExecutionIntentStoreError,
+  type ExecutionIntentStore,
+} from "./execution-intent-store.js";
+import {
   HyperliquidTestnetTerminalValidationError,
   parseHyperliquidTestnetTerminalExecutionRequest,
   validateHyperliquidTestnetTerminalExecutionResult,
@@ -171,6 +175,7 @@ export function createPrivateTerminalRequestHandler(
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
   lifecycleStore?: PackageLifecycleStore,
   solverQuotePort?: SolverAtomicQuotePort,
+  executionIntentStore?: ExecutionIntentStore,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -234,6 +239,7 @@ export function createPrivateTerminalRequestHandler(
         evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
         lifecycleReadAvailable: lifecycleStore !== undefined,
         solverQuotingAvailable: solverQuotePort !== undefined,
+        executionIntentAvailable: executionIntentStore !== undefined,
       });
       return;
     }
@@ -526,6 +532,46 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const authorizeMatch = /^\/internal\/terminal\/orders\/([0-9a-f]{64})\/authorize$/.exec(url.pathname);
+    if (authorizeMatch !== null) {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts) || executionIntentStore === undefined) {
+        reject(response, 503, "AUTHORIZATION_UNAVAILABLE", "Order authorization is unavailable.");
+        return;
+      }
+      try {
+        const order = orderPorts.store.getByOrderHash(authorizeMatch[1] as string);
+        if (order === undefined) {
+          reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).length !== 1 || typeof (body as Record<string, unknown>).signature !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request must contain only signature.");
+          return;
+        }
+        sendJson(response, 200, {
+          status: "TRADER_AUTHORIZED",
+          authorization: executionIntentStore.authorize(
+            order,
+            (body as Record<string, unknown>).signature as string,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ExecutionIntentStoreError) {
+          reject(response, error.code.endsWith("CONFLICT") ? 409 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "AUTHORIZATION_FAILED", "Order authorization failed closed.");
+      }
+      return;
+    }
+
     const quoteMatch = /^\/internal\/terminal\/orders\/([0-9a-f]{64})\/quote$/.exec(url.pathname);
     if (quoteMatch !== null) {
       if (request.method !== "POST") {
@@ -543,6 +589,11 @@ export function createPrivateTerminalRequestHandler(
         const orderRecord = coordinator.getOrder(orderHash);
         if (orderRecord === undefined) {
           reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        if (executionIntentStore !== undefined
+          && executionIntentStore.getAuthorization(orderHash) === undefined) {
+          reject(response, 409, "AUTHORIZATION_REQUIRED", "Trader authorization is required before quoting.");
           return;
         }
         const raw = await readJson(request);
@@ -564,6 +615,7 @@ export function createPrivateTerminalRequestHandler(
         const currentClock = await orderPorts.clock.currentClock(context);
         const quoteResponse = await solverQuotePort.quote(quoteRequest);
         solverQuotePort.verify?.(quoteResponse, canonicalOrder, currentClock);
+        executionIntentStore?.recordQuote(quoteResponse);
         sendJson(response, 200, quoteResponse);
       } catch (error) {
         if (error instanceof SolverQuoteClientError) {
@@ -571,6 +623,67 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "SOLVER_QUOTE_FAILED", "Solver quoting failed closed.");
+      }
+      return;
+    }
+
+    const selectMatch = /^\/internal\/terminal\/orders\/([0-9a-f]{64})\/select$/.exec(url.pathname);
+    if (selectMatch !== null) {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (executionIntentStore === undefined) {
+        reject(response, 503, "SELECTION_UNAVAILABLE", "Quote selection is unavailable.");
+        return;
+      }
+      try {
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).length !== 1 || typeof (body as Record<string, unknown>).quoteHash !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request must contain only quoteHash.");
+          return;
+        }
+        sendJson(response, 201, {
+          status: "AUTHORIZED_QUOTE_SELECTED",
+          attempt: executionIntentStore.selectQuote(
+            selectMatch[1] as string,
+            (body as Record<string, unknown>).quoteHash as string,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof ExecutionIntentStoreError) {
+          const status = error.code === "QUOTE_NOT_FOUND" ? 404
+            : error.code.endsWith("CONFLICT") || error.code === "AUTHORIZATION_REQUIRED" ? 409 : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "SELECTION_FAILED", "Quote selection failed closed.");
+      }
+      return;
+    }
+
+    const attemptMatch = /^\/internal\/terminal\/attempts\/(local-atomic-[0-9a-f]{64})$/.exec(url.pathname);
+    if (attemptMatch !== null) {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (executionIntentStore === undefined) {
+        reject(response, 503, "ATTEMPT_UNAVAILABLE", "Execution attempt reading is unavailable.");
+        return;
+      }
+      try {
+        const attempt = executionIntentStore.getAttempt(attemptMatch[1] as string);
+        if (attempt === undefined) {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Execution attempt was not found.");
+          return;
+        }
+        sendJson(response, 200, { attempt, quote: executionIntentStore.getSelectedQuote(attempt.attemptId) });
+      } catch {
+        reject(response, 502, "ATTEMPT_READ_FAILED", "Execution attempt reading failed closed.");
       }
       return;
     }
@@ -616,6 +729,7 @@ export function createPrivateTerminalServer(
   evmTestnetPorts: EvmTestnetTerminalPorts = {},
   lifecycleStore?: PackageLifecycleStore,
   solverQuotePort?: SolverAtomicQuotePort,
+  executionIntentStore?: ExecutionIntentStore,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -625,6 +739,7 @@ export function createPrivateTerminalServer(
     evmTestnetPorts,
     lifecycleStore,
     solverQuotePort,
+    executionIntentStore,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

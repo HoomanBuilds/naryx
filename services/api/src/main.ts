@@ -4,6 +4,7 @@ import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
 import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
 import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
+import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -19,6 +20,10 @@ const lifecycleStore = new SqlitePackageLifecycleStore(absolutePath(
   process.env.NARYX_API_LIFECYCLE_DB ?? "/tmp/naryx-local/package-lifecycle.db",
   "NARYX_API_LIFECYCLE_DB",
 ));
+const executionIntentStore = new SqliteExecutionIntentStore(absolutePath(
+  process.env.NARYX_API_EXECUTION_INTENT_DB ?? "/tmp/naryx-local/execution-intents.db",
+  "NARYX_API_EXECUTION_INTENT_DB",
+));
 const orderRuntime = createLocalAtomicOrderRuntime();
 const solverClient = new HttpInternalSolverQuoteClient(
   process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
@@ -31,12 +36,14 @@ const server = createPrivateTerminalServer(
   {},
   lifecycleStore,
   solverClient,
+  executionIntentStore,
 );
 
 function shutdown(): void {
   server.close(() => {
     orderStore.close();
     lifecycleStore.close();
+    executionIntentStore.close();
     process.exitCode = 0;
   });
 }

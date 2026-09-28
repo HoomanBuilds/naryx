@@ -67,6 +67,13 @@ export {
   type LocalAtomicOrderRuntime,
 } from "./local-atomic-order-context.js";
 export {
+  ExecutionIntentStoreError,
+  SqliteExecutionIntentStore,
+  type ExecutionAuthorization,
+  type ExecutionIntentStore,
+  type SelectedExecutionAttempt,
+} from "./execution-intent-store.js";
+export {
   HYPERLIQUID_TESTNET_DOMAIN,
   HYPERLIQUID_TESTNET_ENVIRONMENT,
   HyperliquidTestnetTerminalValidationError,

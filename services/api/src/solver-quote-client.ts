@@ -94,6 +94,7 @@ export function validateSolverAtomicQuoteResponse(
     throw new SolverQuoteClientError("INVALID_RESPONSE", "solver response fields are invalid");
   }
   if (value.version !== 1 || value.status !== "SIGNED"
+    || typeof value.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(value.idempotencyKey)
     || value.idempotencyKey !== request.idempotencyKey || value.orderHash !== request.orderHash) {
     throw new SolverQuoteClientError("INVALID_RESPONSE", "solver response binding is invalid");
   }
