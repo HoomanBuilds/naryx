@@ -25,8 +25,10 @@ import type { PackageOrderInput, RoutePayloadInput } from '@naryx/protocol-types
 import {
   InternalAtomicQuoteError,
   HttpInternalOrderProvider,
+  InMemoryAtomicQuoteNonceSource,
   SqliteInternalAtomicQuoteStore,
   SignedAtomicEntryQuoteError,
+  createConfiguredAtomicMarketProviders,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
   planAtomicEntryRoute,
@@ -287,6 +289,109 @@ function quoteTerms(): AtomicEntryQuoteTerms {
     quoteNonce: 7n,
   };
 }
+
+function configuredProviders(
+  orderHash: Uint8Array,
+  currentClock: () => bigint,
+  capacityBaseAtoms = 1_000_000n,
+) {
+  const route = routeInput(orderHash);
+  return createConfiguredAtomicMarketProviders({
+    candidateId: 'local-conformance-sol-carry',
+    active: true,
+    capacityBaseAtoms,
+    evidenceGrade: 'LOCAL_CONFORMANCE',
+    solverId: 'solver-alpha',
+    solverCapabilityManifestHash: CAPABILITY_MANIFEST,
+    templateRegistryRecordHash: route.templateRegistryRecordHash,
+    feePolicyVersion: route.feePolicyVersion,
+    feePolicyManifestHash: route.feePolicyManifestHash,
+    routeTtl: 100n,
+    quoteTtl: 50n,
+    currentClock,
+    nonceSource: new InMemoryAtomicQuoteNonceSource(),
+    spot: {
+      adapter: route.legs[0]!.adapter,
+      venue: route.legs[0]!.venue,
+      market: route.legs[0]!.market,
+      limitPrice: route.legs[0]!.limitPrice,
+      actionSequence: route.legs[0]!.actionSequence,
+    },
+    perpetual: {
+      adapter: route.legs[1]!.adapter,
+      venue: route.legs[1]!.venue,
+      market: route.legs[1]!.market,
+      limitPrice: route.legs[1]!.limitPrice,
+      actionSequence: route.legs[1]!.actionSequence,
+    },
+    entrySpread: orderInput().maxEntrySpread!,
+    marginBps: 25,
+    fees: {
+      baseAssetFeeBps: 0,
+      venueFeeBps: 0,
+      builderFeeBps: 0,
+      protocolFeeBps: 0,
+      solverFeeBps: 0,
+      priorityFeeQuoteAtoms: 0n,
+      builderRecipient: 'builder-treasury',
+      protocolRecipient: 'protocol-treasury',
+      solverRecipient: 'solver-treasury',
+      collectionAuthority: 'conformance-program',
+      collectionModeId: 'atomic-collection-v1',
+    },
+    accountBindings: route.accountBindings,
+    actions: route.actions,
+    preconditions: route.preconditions,
+    postconditions: route.postconditions,
+    evidenceRequirements: route.evidenceRequirements,
+  });
+}
+
+test('builds and signs server-owned local conformance candidates and quote terms', async () => {
+  const input = { ...orderInput(), environment: 'local' };
+  const order = validatePackageOrderProfile(input);
+  const orderHash = packageOrderHash(input);
+  const providers = configuredProviders(orderHash, () => 100n);
+  const decision = planAtomicEntryRoute({ order, orderHash }, providers.candidates);
+  const terms = providers.terms({ order, decision }) as AtomicEntryQuoteTerms;
+
+  assert.equal(decision.candidateId, 'local-conformance-sol-carry');
+  assert.equal(decision.route.routeExpiryValue, 150n);
+  assert.equal(terms.validUntilValue, decision.route.routeExpiryValue);
+  assert.equal(terms.expectedGrossSpotQuantity.atoms, order.quantity.atoms);
+  assert.equal(terms.expectedNetSpotQuantity.atoms, order.quantity.atoms);
+  assert.equal(terms.quoteNonce, 1n);
+
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  const signed = await signAtomicEntryQuote({
+    order,
+    decision,
+    terms,
+    signer: {
+      verificationKey: Uint8Array.from(spki.subarray(spki.length - 32)),
+      signDigest: (digest) => Uint8Array.from(sign(null, Buffer.from(digest), privateKey)),
+    },
+  });
+  assert.ok(bytesEqual(signed.quote.orderHash, orderHash));
+});
+
+test('rejects insufficient configured capacity and expired order clocks', () => {
+  const input = { ...orderInput(), environment: 'local' };
+  const order = validatePackageOrderProfile(input);
+  const orderHash = packageOrderHash(input);
+  assert.throws(
+    () => planAtomicEntryRoute(
+      { order, orderHash },
+      configuredProviders(orderHash, () => 100n, order.quantity.atoms - 1n).candidates,
+    ),
+    /NO_ELIGIBLE_ROUTE/,
+  );
+  assert.throws(
+    () => configuredProviders(orderHash, () => order.expiryValue).candidates({ order, orderHash }),
+    /order is expired/,
+  );
+});
 
 test('signs a canonical atomic ENTRY quote and rejects fee-cap and wrong-digest signatures', async () => {
   const input = orderInput();

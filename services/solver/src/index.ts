@@ -665,6 +665,15 @@ export {
 export { HttpInternalOrderProvider } from './http-internal-order-provider.js';
 export { SqliteInternalAtomicQuoteStore } from './internal-atomic-quote-sqlite-store.js';
 export {
+  InMemoryAtomicQuoteNonceSource,
+  createConfiguredAtomicMarketProviders,
+  type AtomicQuoteNonceSource,
+  type ConfiguredAtomicFeeSchedule,
+  type ConfiguredAtomicMarketInput,
+  type ConfiguredAtomicMarketLeg,
+  type ConfiguredAtomicMarketProviders,
+} from './configured-atomic-market.js';
+export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,
   type HyperliquidTestnetPackageSubmissionPort,
