@@ -123,12 +123,12 @@ function sameAsset(left: AssetRef, right: AssetRef): boolean {
     bytesEqual(left.assetManifestHash, right.assetManifestHash);
 }
 
-function hashToU256(value: Hash32): bigint {
+function hashToNonce(value: Hash32): bigint {
   let result = 0n;
-  for (const byte of value) {
+  for (const byte of value.subarray(0, 8)) {
     result = (result << 8n) + BigInt(byte);
   }
-  return result;
+  return result === 0n ? 1n : result;
 }
 
 function requireNonemptyString(value: unknown, code: string, message: string): string {
@@ -334,10 +334,7 @@ export function createCanonicalEntryOrder(
     createHash("sha256").update(INTERNAL_REQUEST_DOMAIN, "ascii").update(requestPayload).digest(),
     "requestCommitment",
   );
-  const nonce = hashToU256(requestCommitment);
-  if (nonce <= 0n) {
-    throw new EntryOrderValidationError("INVALID_IDEMPOTENCY_KEY", "Derived nonce is zero.");
-  }
+  const nonce = hashToNonce(requestCommitment);
   const input: PackageOrderInput = {
     version: context.orderVersion,
     environment: context.environment,
@@ -431,7 +428,7 @@ export function createCanonicalExitOrder(
     createHash("sha256").update("NARYX/internal-exit-order-request/v1", "ascii").update(requestPayload).digest(),
     "exitRequestCommitment",
   );
-  const nonce = hashToU256(requestCommitment);
+  const nonce = hashToNonce(requestCommitment);
   const input: PackageOrderInput = {
     version: context.orderVersion,
     environment: context.environment,

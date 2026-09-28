@@ -101,6 +101,7 @@ test("canonical entry builds atomic order and rejects inactive context", () => {
   assert.ok(first.orderBytes instanceof Uint8Array && first.orderBytes.length > 0);
   assert.equal(first.orderHash.length, 32);
   assert.equal(first.requestCommitment.length, 32);
+  assert.ok(first.order.nonce > 0n && first.order.nonce <= 0xffff_ffff_ffff_ffffn);
   const second = createCanonicalEntryOrder(provider, request);
   assert.equal(toHex(second.orderHash), toHex(first.orderHash));
   assert.equal(toHex(second.requestCommitment), toHex(first.requestCommitment));
@@ -140,6 +141,7 @@ test("canonical exit binds the entry receipt and exact authoritative position", 
   assert.equal(exit.order.expectedPrePositionEntryNotional.atoms, 150_000_000n);
   assert.equal(exit.order.minSpotQuoteOut?.atoms, 140_000_000n);
   assert.equal(exit.order.maxResidualBaseQuantity.atoms, 0n);
+  assert.ok(exit.order.nonce > 0n && exit.order.nonce <= 0xffff_ffff_ffff_ffffn);
   assert.deepEqual(exit.order.entryReceiptHash, new Uint8Array(32).fill(7));
 });
 
