@@ -97,6 +97,10 @@ export {
   type SolanaLocalPreparedExecutionStore,
 } from "./solana-local-execution.js";
 export {
+  loadSolanaLocalEnvironmentRuntime,
+  type LoadedSolanaLocalEnvironmentRuntime,
+} from "./solana-local-environment-runtime.js";
+export {
   HYPERLIQUID_TESTNET_DOMAIN,
   HYPERLIQUID_TESTNET_ENVIRONMENT,
   HyperliquidTestnetTerminalValidationError,
