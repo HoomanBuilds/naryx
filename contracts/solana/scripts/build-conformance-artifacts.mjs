@@ -26,6 +26,13 @@ function requireNames(items, names, kind) {
   }
 }
 
+function requireExactNames(items, names, kind) {
+  const actual = items.map((item) => item.name);
+  if (actual.length !== names.length || actual.some((name, index) => name !== names[index])) {
+    throw new Error(`Invalid ${kind} order: expected ${names.join(", ")}; received ${actual.join(", ")}`);
+  }
+}
+
 try {
   runAnchor(["build", "-p", "naryx_conformance_venue", "--ignore-keys", "--no-idl"]);
   runAnchor(["build", "-p", "naryx_core", "--ignore-keys", "--no-idl", "--", "--features", "conformance"]);
@@ -48,8 +55,34 @@ try {
   requireNames(venue.accounts, ["MarketConfig", "PerpPosition"], "venue account");
 
   const execution = core.instructions.find((instruction) => instruction.name === "execute_conformance_atomic");
-  requireNames(execution.accounts, ["trader", "config", "receipt", "market", "position", "conformance_program"], "execution account");
-  requireNames(execution.args, ["order_hash", "quote_hash", "route_hash", "args"], "execution argument");
+  requireExactNames(execution.accounts, [
+    "trader",
+    "config",
+    "solver_registry",
+    "receipt",
+    "nonce_marker",
+    "market",
+    "position",
+    "trader_base",
+    "trader_quote",
+    "spot_base_vault",
+    "spot_quote_vault",
+    "perp_quote_vault",
+    "conformance_program",
+    "token_program",
+    "system_program",
+    "instructions_sysvar",
+  ], "execution account");
+  requireExactNames(execution.args, ["order_hash", "quote_hash", "route_hash", "args"], "execution argument");
+  const executionArgs = core.types.find((type) => type.name === "ConformanceExecutionArgs");
+  requireExactNames(executionArgs.type.fields, [
+    "action",
+    "base_quantity_atoms",
+    "spot_quote_limit_atoms",
+    "collateral_quote_limit_atoms",
+    "expiry_slot",
+    "nonce",
+  ], "conformance execution argument field");
   const venueProgram = execution.accounts.find((account) => account.name === "conformance_program");
   if (venueProgram.address !== venue.address) {
     throw new Error("Core and conformance venue program identities differ");

@@ -8,6 +8,278 @@
   },
   "instructions": [
     {
+      "name": "activate_cash_carry_series_binding_control",
+      "discriminator": [
+        191,
+        141,
+        25,
+        97,
+        170,
+        183,
+        15,
+        49
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        },
+        {
+          "name": "base_asset_index"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset_index"
+        },
+        {
+          "name": "quote_asset"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_cash_carry_series_binding_version",
+      "discriminator": [
+        145,
+        246,
+        242,
+        95,
+        12,
+        184,
+        4,
+        15
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "previous_record",
+          "writable": true
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.binding.binding_version",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "base_asset_index"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset_index"
+        },
+        {
+          "name": "quote_asset"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "activate_domain",
       "discriminator": [
         150,
@@ -56,6 +328,651 @@
                   102,
                   105,
                   103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_initial_cash_carry_series_binding",
+      "discriminator": [
+        92,
+        31,
+        240,
+        62,
+        139,
+        73,
+        63,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.binding.binding_version",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "base_asset_index"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset_index"
+        },
+        {
+          "name": "quote_asset"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_initial_resource",
+      "discriminator": [
+        244,
+        50,
+        39,
+        200,
+        249,
+        245,
+        136,
+        92
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.manifest_version",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_resource_control",
+      "discriminator": [
+        230,
+        218,
+        154,
+        218,
+        43,
+        177,
+        71,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_resource_version",
+      "discriminator": [
+        103,
+        97,
+        254,
+        4,
+        117,
+        209,
+        116,
+        229
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "previous_record",
+          "writable": true
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.manifest_version",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_solver",
+      "discriminator": [
+        95,
+        177,
+        196,
+        20,
+        196,
+        247,
+        52,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
                 ]
               }
             ]
@@ -122,6 +1039,207 @@
       "args": []
     },
     {
+      "name": "cancel_cash_carry_series_binding_control",
+      "discriminator": [
+        86,
+        48,
+        186,
+        77,
+        128,
+        104,
+        110,
+        64
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_cash_carry_series_binding_registration",
+      "discriminator": [
+        85,
+        58,
+        38,
+        151,
+        54,
+        242,
+        33,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "cancel_domain_proposal",
       "discriminator": [
         127,
@@ -170,6 +1288,298 @@
                   102,
                   105,
                   103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_resource_control",
+      "discriminator": [
+        161,
+        225,
+        192,
+        55,
+        94,
+        172,
+        233,
+        206
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_resource_registration",
+      "discriminator": [
+        52,
+        79,
+        171,
+        166,
+        162,
+        81,
+        13,
+        24
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_solver",
+      "discriminator": [
+        203,
+        27,
+        161,
+        124,
+        31,
+        116,
+        48,
+        63
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
                 ]
               }
             ]
@@ -287,6 +1697,36 @@
           }
         },
         {
+          "name": "solver_registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "receipt",
           "writable": true,
           "pda": {
@@ -322,6 +1762,44 @@
               {
                 "kind": "arg",
                 "path": "order_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nonce_marker",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  110,
+                  111,
+                  110,
+                  99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "trader"
+              },
+              {
+                "kind": "arg",
+                "path": "args.nonce"
               }
             ]
           }
@@ -364,6 +1842,10 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "instructions_sysvar",
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -566,6 +2048,663 @@
       "args": []
     },
     {
+      "name": "propose_adapter",
+      "discriminator": [
+        250,
+        105,
+        201,
+        205,
+        6,
+        27,
+        187,
+        139
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  100,
+                  97,
+                  112,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  100,
+                  97,
+                  112,
+                  116,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "venue"
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset"
+        },
+        {
+          "name": "adapter_program"
+        },
+        {
+          "name": "adapter_program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeAdapterArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_asset",
+      "discriminator": [
+        247,
+        56,
+        95,
+        199,
+        16,
+        122,
+        169,
+        171
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeAssetArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_cash_carry_series_binding_control",
+      "discriminator": [
+        70,
+        83,
+        163,
+        212,
+        203,
+        151,
+        130,
+        180
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "lifecycle",
+          "type": {
+            "defined": {
+              "name": "Lifecycle"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_cash_carry_series_binding_version",
+      "discriminator": [
+        64,
+        103,
+        124,
+        117,
+        2,
+        185,
+        240,
+        148
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.expected_identity_key"
+              }
+            ]
+          }
+        },
+        {
+          "name": "previous_record"
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.expected_identity_key"
+              },
+              {
+                "kind": "arg",
+                "path": "args.binding.binding_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "base_asset_index"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset_index"
+        },
+        {
+          "name": "quote_asset"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeCashCarrySeriesBindingArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "propose_domain",
       "discriminator": [
         216,
@@ -637,6 +2776,766 @@
       ]
     },
     {
+      "name": "propose_initial_cash_carry_series_binding",
+      "discriminator": [
+        168,
+        89,
+        201,
+        122,
+        67,
+        252,
+        186,
+        22
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.expected_identity_key"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.expected_identity_key"
+              },
+              {
+                "kind": "arg",
+                "path": "args.binding.binding_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "base_asset_index"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset_index"
+        },
+        {
+          "name": "quote_asset"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeCashCarrySeriesBindingArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_market",
+      "discriminator": [
+        39,
+        201,
+        255,
+        2,
+        194,
+        181,
+        58,
+        105
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "venue"
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset"
+        },
+        {
+          "name": "venue_program"
+        },
+        {
+          "name": "venue_program_data"
+        },
+        {
+          "name": "market_account"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeMarketArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_resource_control",
+      "discriminator": [
+        218,
+        1,
+        141,
+        113,
+        139,
+        118,
+        70,
+        121
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "control",
+          "type": {
+            "defined": {
+              "name": "ResourceControl"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_solver",
+      "discriminator": [
+        12,
+        40,
+        145,
+        55,
+        101,
+        61,
+        243,
+        236
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "propose_venue",
+      "discriminator": [
+        127,
+        247,
+        135,
+        201,
+        103,
+        49,
+        122,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  110,
+                  117,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  110,
+                  117,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.identity.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "base_asset"
+        },
+        {
+          "name": "quote_asset"
+        },
+        {
+          "name": "venue_program"
+        },
+        {
+          "name": "venue_program_data"
+        },
+        {
+          "name": "venue_account"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeVenueArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "schedule_unpause",
       "discriminator": [
         4,
@@ -692,9 +3591,257 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "tighten_cash_carry_series_binding",
+      "discriminator": [
+        191,
+        126,
+        50,
+        122,
+        156,
+        34,
+        227,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "pauser",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  115,
+                  104,
+                  45,
+                  99,
+                  97,
+                  114,
+                  114,
+                  121,
+                  45,
+                  115,
+                  101,
+                  114,
+                  105,
+                  101,
+                  115,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.identity_key",
+                "account": "CashCarrySeriesBindingRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "lifecycle",
+          "type": {
+            "defined": {
+              "name": "Lifecycle"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "tighten_resource_control",
+      "discriminator": [
+        129,
+        234,
+        197,
+        68,
+        156,
+        235,
+        33,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "pauser",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.kind",
+                "account": "ResourceRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.manifest.identity.subject_id",
+                "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "control",
+          "type": {
+            "defined": {
+              "name": "ResourceControl"
+            }
+          }
+        }
+      ]
     }
   ],
   "accounts": [
+    {
+      "name": "CashCarrySeriesBindingIndex",
+      "discriminator": [
+        149,
+        67,
+        55,
+        147,
+        192,
+        231,
+        118,
+        127
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingRecord",
+      "discriminator": [
+        62,
+        251,
+        142,
+        180,
+        60,
+        57,
+        193,
+        184
+      ]
+    },
     {
       "name": "ConformanceExecutionReceipt",
       "discriminator": [
@@ -709,6 +3856,19 @@
       ]
     },
     {
+      "name": "ConformanceNonce",
+      "discriminator": [
+        162,
+        79,
+        110,
+        66,
+        42,
+        112,
+        180,
+        219
+      ]
+    },
+    {
       "name": "ProtocolConfig",
       "discriminator": [
         207,
@@ -720,9 +3880,165 @@
         215,
         209
       ]
+    },
+    {
+      "name": "ResourceIndex",
+      "discriminator": [
+        59,
+        23,
+        134,
+        63,
+        152,
+        201,
+        129,
+        238
+      ]
+    },
+    {
+      "name": "ResourceRecord",
+      "discriminator": [
+        187,
+        7,
+        65,
+        181,
+        31,
+        227,
+        144,
+        245
+      ]
+    },
+    {
+      "name": "SolverRegistry",
+      "discriminator": [
+        189,
+        134,
+        123,
+        146,
+        230,
+        87,
+        53,
+        251
+      ]
     }
   ],
   "events": [
+    {
+      "name": "CashCarryExecutionRecorded",
+      "discriminator": [
+        81,
+        128,
+        67,
+        2,
+        246,
+        235,
+        82,
+        21
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingActivated",
+      "discriminator": [
+        53,
+        149,
+        185,
+        71,
+        128,
+        166,
+        162,
+        158
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingControlActivated",
+      "discriminator": [
+        50,
+        248,
+        116,
+        197,
+        92,
+        176,
+        132,
+        122
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingControlCancelled",
+      "discriminator": [
+        143,
+        4,
+        249,
+        193,
+        253,
+        93,
+        138,
+        236
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingControlProposed",
+      "discriminator": [
+        125,
+        70,
+        248,
+        119,
+        24,
+        9,
+        20,
+        146
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingRegistrationCancelled",
+      "discriminator": [
+        159,
+        243,
+        53,
+        175,
+        38,
+        163,
+        62,
+        113
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingRegistrationProposed",
+      "discriminator": [
+        43,
+        119,
+        220,
+        163,
+        228,
+        142,
+        214,
+        222
+      ]
+    },
+    {
+      "name": "CashCarrySeriesBindingTightened",
+      "discriminator": [
+        84,
+        184,
+        9,
+        246,
+        188,
+        163,
+        5,
+        150
+      ]
+    },
+    {
+      "name": "CashCarryStrategyAuthorityInitialized",
+      "discriminator": [
+        243,
+        60,
+        97,
+        142,
+        42,
+        8,
+        60,
+        213
+      ]
+    },
     {
       "name": "ConformanceExecutionRecorded",
       "discriminator": [
@@ -812,6 +4128,97 @@
         169,
         87,
         231
+      ]
+    },
+    {
+      "name": "ResourceActivated",
+      "discriminator": [
+        225,
+        80,
+        20,
+        209,
+        0,
+        0,
+        170,
+        51
+      ]
+    },
+    {
+      "name": "ResourceControlActivated",
+      "discriminator": [
+        28,
+        209,
+        65,
+        193,
+        10,
+        165,
+        232,
+        62
+      ]
+    },
+    {
+      "name": "ResourceControlCancelled",
+      "discriminator": [
+        188,
+        108,
+        174,
+        70,
+        243,
+        34,
+        158,
+        74
+      ]
+    },
+    {
+      "name": "ResourceControlProposed",
+      "discriminator": [
+        208,
+        159,
+        218,
+        111,
+        225,
+        69,
+        156,
+        111
+      ]
+    },
+    {
+      "name": "ResourceControlTightened",
+      "discriminator": [
+        18,
+        229,
+        31,
+        215,
+        243,
+        155,
+        26,
+        100
+      ]
+    },
+    {
+      "name": "ResourceRegistrationCancelled",
+      "discriminator": [
+        171,
+        152,
+        77,
+        162,
+        179,
+        71,
+        145,
+        55
+      ]
+    },
+    {
+      "name": "ResourceRegistrationProposed",
+      "discriminator": [
+        31,
+        48,
+        166,
+        23,
+        126,
+        88,
+        151,
+        57
       ]
     },
     {
@@ -1176,9 +4583,1200 @@
       "code": 6066,
       "name": "ConformancePostconditionFailed",
       "msg": "Conformance execution postcondition failed"
+    },
+    {
+      "code": 6067,
+      "name": "ConformanceNonceZero",
+      "msg": "Conformance nonce is zero"
+    },
+    {
+      "code": 6068,
+      "name": "ConformanceSolverInvalid",
+      "msg": "Conformance solver key is invalid"
+    },
+    {
+      "code": 6069,
+      "name": "ConformanceSolverProposalExists",
+      "msg": "Conformance solver proposal already exists"
+    },
+    {
+      "code": 6070,
+      "name": "ConformanceSolverProposalMissing",
+      "msg": "Conformance solver proposal is missing"
+    },
+    {
+      "code": 6071,
+      "name": "ConformanceSolverProposalNotReady",
+      "msg": "Conformance solver proposal is not ready"
+    },
+    {
+      "code": 6072,
+      "name": "ConformanceSignatureInstructionInvalid",
+      "msg": "Conformance solver signature instruction is invalid"
+    },
+    {
+      "code": 6073,
+      "name": "ConformanceSignatureMismatch",
+      "msg": "Conformance solver signature does not bind this execution"
+    },
+    {
+      "code": 6074,
+      "name": "ResourceSubjectZero",
+      "msg": "Resource subject identifier is all zero"
+    },
+    {
+      "code": 6075,
+      "name": "ResourceManifestVersionZero",
+      "msg": "Resource manifest version is zero"
+    },
+    {
+      "code": 6076,
+      "name": "ResourceManifestHashZero",
+      "msg": "Resource manifest hash is all zero"
+    },
+    {
+      "code": 6077,
+      "name": "ResourceDescriptorVersionZero",
+      "msg": "Resource descriptor version is zero"
+    },
+    {
+      "code": 6078,
+      "name": "ResourceDescriptorHashZero",
+      "msg": "Resource descriptor hash is all zero"
+    },
+    {
+      "code": 6079,
+      "name": "ResourceDescriptorUnsupported",
+      "msg": "Resource descriptor is not a supported semantic version"
+    },
+    {
+      "code": 6080,
+      "name": "ResourceSettlementUnsupported",
+      "msg": "Resource settlement class is not supported"
+    },
+    {
+      "code": 6081,
+      "name": "ResourceQuoteLimitMissing",
+      "msg": "Resource quote limit is missing"
+    },
+    {
+      "code": 6082,
+      "name": "ResourceQuoteLimitUnexpected",
+      "msg": "Resource quote limit is not allowed for this resource kind"
+    },
+    {
+      "code": 6083,
+      "name": "ResourceQuoteLimitMismatch",
+      "msg": "Resource quote limit does not bind the exact quote asset and decimals"
+    },
+    {
+      "code": 6084,
+      "name": "ResourceMaximumNotionalZero",
+      "msg": "Resource maximum notional is zero"
+    },
+    {
+      "code": 6085,
+      "name": "ResourceMarketUnitZero",
+      "msg": "Resource market unit is zero"
+    },
+    {
+      "code": 6086,
+      "name": "ResourceMarketMultiplierNotReduced",
+      "msg": "Resource market multiplier is not in lowest terms"
+    },
+    {
+      "code": 6087,
+      "name": "ResourceReferenceShape",
+      "msg": "Resource reference shape is invalid"
+    },
+    {
+      "code": 6088,
+      "name": "ResourceAddressZero",
+      "msg": "Resource address is the default Pubkey"
+    },
+    {
+      "code": 6089,
+      "name": "ResourceAccountMismatch",
+      "msg": "Resource account identity is invalid"
+    },
+    {
+      "code": 6090,
+      "name": "ResourceProgramUnsupported",
+      "msg": "Resource program is not recognized"
+    },
+    {
+      "code": 6091,
+      "name": "ResourceCodeIdentityMismatch",
+      "msg": "Resource program or code identity changed"
+    },
+    {
+      "code": 6092,
+      "name": "ResourceDecimalsMismatch",
+      "msg": "Resource decimals do not match the mint"
+    },
+    {
+      "code": 6093,
+      "name": "ResourceRoleMismatch",
+      "msg": "Resource role is invalid for this kind"
+    },
+    {
+      "code": 6094,
+      "name": "ResourceDomainMismatch",
+      "msg": "Resource manifest domain does not match the active domain"
+    },
+    {
+      "code": 6095,
+      "name": "ResourceIndexMismatch",
+      "msg": "Resource index does not match the proposed record"
+    },
+    {
+      "code": 6096,
+      "name": "ResourceRegistrationExists",
+      "msg": "A resource registration proposal is already pending"
+    },
+    {
+      "code": 6097,
+      "name": "ResourceRegistrationMissing",
+      "msg": "No resource registration proposal is pending"
+    },
+    {
+      "code": 6098,
+      "name": "ResourceRegistrationNotReady",
+      "msg": "Resource registration is before its activation slot"
+    },
+    {
+      "code": 6099,
+      "name": "ResourceManifestVersionNotIncreasing",
+      "msg": "Resource manifest version is not newer than the last proposed version"
+    },
+    {
+      "code": 6100,
+      "name": "ResourceAlreadyActive",
+      "msg": "Resource is already active"
+    },
+    {
+      "code": 6101,
+      "name": "ResourceNotActive",
+      "msg": "Resource is not the active record for its subject"
+    },
+    {
+      "code": 6102,
+      "name": "ResourceControlProposalExists",
+      "msg": "A resource control proposal is already pending"
+    },
+    {
+      "code": 6103,
+      "name": "ResourceControlProposalMissing",
+      "msg": "No resource control proposal is pending"
+    },
+    {
+      "code": 6104,
+      "name": "ResourceControlProposalNotReady",
+      "msg": "Resource control proposal is before its activation slot"
+    },
+    {
+      "code": 6105,
+      "name": "ResourceDeprecatedTerminal",
+      "msg": "Deprecated resource control is terminal"
+    },
+    {
+      "code": 6106,
+      "name": "ResourceUnsafeImmediateControl",
+      "msg": "Immediate resource control update would widen permissions or risk"
+    },
+    {
+      "code": 6107,
+      "name": "ResourceActionNotAllowed",
+      "msg": "Resource does not permit this action"
+    },
+    {
+      "code": 6108,
+      "name": "ResourceMaximumNotionalExceeded",
+      "msg": "Resource package notional exceeds an exact quote-asset limit"
+    },
+    {
+      "code": 6109,
+      "name": "ResourceLegValueZero",
+      "msg": "Resource leg quantity or limit price is zero"
+    },
+    {
+      "code": 6110,
+      "name": "ResourceBaseLotMismatch",
+      "msg": "Resource leg quantity is not aligned to the market base lot"
+    },
+    {
+      "code": 6111,
+      "name": "ResourceQuoteTickMismatch",
+      "msg": "Resource leg limit price is not aligned to the market quote tick"
+    },
+    {
+      "code": 6112,
+      "name": "ResourceMinimumNotionalNotMet",
+      "msg": "Resource leg quote notional is below the market minimum"
+    },
+    {
+      "code": 6113,
+      "name": "ResourceNotionalOverflow",
+      "msg": "Resource leg notional arithmetic overflowed"
+    },
+    {
+      "code": 6114,
+      "name": "ResourceEconomicQuantityMismatch",
+      "msg": "Cash-and-carry legs do not carry equal multiplier-adjusted base quantity"
+    },
+    {
+      "code": 6115,
+      "name": "ResourcePackageNotionalMismatch",
+      "msg": "Resource package notional does not equal the larger exact leg notional"
+    },
+    {
+      "code": 6116,
+      "name": "ResourceInstancesNotDistinct",
+      "msg": "Cash-and-carry resources are not distinct where required"
+    },
+    {
+      "code": 6117,
+      "name": "SeriesBindingSchemaUnsupported",
+      "msg": "Cash-and-carry series binding schema is unsupported"
+    },
+    {
+      "code": 6118,
+      "name": "SeriesBindingVersionZero",
+      "msg": "Cash-and-carry series binding version is zero"
+    },
+    {
+      "code": 6119,
+      "name": "SeriesBindingHashZero",
+      "msg": "Cash-and-carry series binding hash is all zero"
+    },
+    {
+      "code": 6120,
+      "name": "SeriesBindingDomainMismatch",
+      "msg": "Cash-and-carry series binding domain does not match"
+    },
+    {
+      "code": 6121,
+      "name": "SeriesBindingTemplateUnsupported",
+      "msg": "Cash-and-carry series binding template is unsupported"
+    },
+    {
+      "code": 6122,
+      "name": "SeriesBindingSettlementUnsupported",
+      "msg": "Cash-and-carry series binding settlement class is unsupported"
+    },
+    {
+      "code": 6123,
+      "name": "SeriesBindingQuoteConventionUnsupported",
+      "msg": "Cash-and-carry series binding quote convention is unsupported"
+    },
+    {
+      "code": 6124,
+      "name": "SeriesBindingEntrySideUnsupported",
+      "msg": "Cash-and-carry series binding entry side is unsupported"
+    },
+    {
+      "code": 6125,
+      "name": "SeriesBindingUnitZero",
+      "msg": "Cash-and-carry series binding unit is zero"
+    },
+    {
+      "code": 6126,
+      "name": "SeriesBindingAssetMismatch",
+      "msg": "Cash-and-carry series binding asset does not match an active registered asset"
+    },
+    {
+      "code": 6127,
+      "name": "SeriesBindingIdentityMismatch",
+      "msg": "Cash-and-carry series identity key does not match canonical fields"
+    },
+    {
+      "code": 6128,
+      "name": "SeriesBindingHashMismatch",
+      "msg": "Cash-and-carry series binding hash does not match canonical fields"
+    },
+    {
+      "code": 6129,
+      "name": "SeriesBindingIndexMismatch",
+      "msg": "Cash-and-carry series binding index is inconsistent"
+    },
+    {
+      "code": 6130,
+      "name": "SeriesBindingRegistrationExists",
+      "msg": "A cash-and-carry series binding registration is already pending"
+    },
+    {
+      "code": 6131,
+      "name": "SeriesBindingRegistrationMissing",
+      "msg": "No cash-and-carry series binding registration is pending"
+    },
+    {
+      "code": 6132,
+      "name": "SeriesBindingRegistrationNotReady",
+      "msg": "Cash-and-carry series binding registration is before its activation slot"
+    },
+    {
+      "code": 6133,
+      "name": "SeriesBindingVersionNotIncreasing",
+      "msg": "Cash-and-carry series binding version is not increasing"
+    },
+    {
+      "code": 6134,
+      "name": "SeriesBindingAlreadyActive",
+      "msg": "Cash-and-carry series binding is already active"
+    },
+    {
+      "code": 6135,
+      "name": "SeriesBindingNotActive",
+      "msg": "Cash-and-carry series binding is not active"
+    },
+    {
+      "code": 6136,
+      "name": "SeriesBindingSemanticMutation",
+      "msg": "Cash-and-carry series binding changes immutable economic semantics"
+    },
+    {
+      "code": 6137,
+      "name": "SeriesBindingLifecycleUnsupported",
+      "msg": "Cash-and-carry series binding lifecycle is unsupported"
+    },
+    {
+      "code": 6138,
+      "name": "SeriesBindingControlProposalExists",
+      "msg": "Cash-and-carry series binding control proposal already exists"
+    },
+    {
+      "code": 6139,
+      "name": "SeriesBindingControlProposalMissing",
+      "msg": "Cash-and-carry series binding control proposal is missing"
+    },
+    {
+      "code": 6140,
+      "name": "SeriesBindingControlProposalNotReady",
+      "msg": "Cash-and-carry series binding control proposal is before its activation slot"
+    },
+    {
+      "code": 6141,
+      "name": "SeriesBindingDeprecatedTerminal",
+      "msg": "Deprecated cash-and-carry series binding is terminal"
+    },
+    {
+      "code": 6142,
+      "name": "SeriesBindingUnsafeImmediateControl",
+      "msg": "Immediate cash-and-carry series binding control would widen permissions"
+    },
+    {
+      "code": 6143,
+      "name": "CashCarryHashZero",
+      "msg": "Cash-and-carry execution hash is all zero"
+    },
+    {
+      "code": 6144,
+      "name": "CashCarryNonceZero",
+      "msg": "Cash-and-carry execution nonce is zero"
+    },
+    {
+      "code": 6145,
+      "name": "CashCarryOrderExpired",
+      "msg": "Cash-and-carry execution is expired"
+    },
+    {
+      "code": 6146,
+      "name": "CashCarryEntryPaused",
+      "msg": "Cash-and-carry entry execution is paused"
+    },
+    {
+      "code": 6147,
+      "name": "CashCarrySolverInvalid",
+      "msg": "Cash-and-carry solver is invalid"
+    },
+    {
+      "code": 6148,
+      "name": "CashCarrySignatureInstructionInvalid",
+      "msg": "Cash-and-carry solver signature instruction is invalid"
+    },
+    {
+      "code": 6149,
+      "name": "CashCarrySignatureMismatch",
+      "msg": "Cash-and-carry solver signature does not bind this execution"
+    },
+    {
+      "code": 6150,
+      "name": "CashCarryResourceNotCurrent",
+      "msg": "Cash-and-carry execution account is not the active resource"
+    },
+    {
+      "code": 6151,
+      "name": "CashCarryResourceAccountMismatch",
+      "msg": "Cash-and-carry execution account does not match the admitted resource"
+    },
+    {
+      "code": 6152,
+      "name": "CashCarryTokenAccountMismatch",
+      "msg": "Cash-and-carry token account does not match the admitted asset"
+    },
+    {
+      "code": 6153,
+      "name": "CashCarryRouteDirectionInvalid",
+      "msg": "Cash-and-carry route direction is invalid"
+    },
+    {
+      "code": 6154,
+      "name": "CashCarryArithmeticOverflow",
+      "msg": "Cash-and-carry execution arithmetic overflowed"
+    },
+    {
+      "code": 6155,
+      "name": "CashCarryPostconditionFailed",
+      "msg": "Cash-and-carry position or token postcondition failed"
+    },
+    {
+      "code": 6156,
+      "name": "CashCarryCollateralNotPrefunded",
+      "msg": "Cash-and-carry Rise collateral must be prefunded"
+    },
+    {
+      "code": 6157,
+      "name": "CashCarryCollateralBelowFloor",
+      "msg": "Cash-and-carry Rise collateral is below the signed floor"
+    },
+    {
+      "code": 6158,
+      "name": "CashCarryPackageAlreadyOpen",
+      "msg": "Cash-and-carry package is already open"
+    },
+    {
+      "code": 6159,
+      "name": "CashCarryPackageNotOpen",
+      "msg": "Cash-and-carry package is not open"
+    },
+    {
+      "code": 6160,
+      "name": "CashCarryOpenPackageMismatch",
+      "msg": "Cash-and-carry exit does not match the open package"
+    },
+    {
+      "code": 6161,
+      "name": "CashCarryEntryReceiptInvalid",
+      "msg": "Cash-and-carry entry receipt is invalid"
+    },
+    {
+      "code": 6162,
+      "name": "CashCarryRecoveryInvalid",
+      "msg": "Cash-and-carry recovery mode is only valid for exit"
+    },
+    {
+      "code": 6163,
+      "name": "CashCarryQuoteActionInvalid",
+      "msg": "Cash-and-carry quoted execution is only valid for a normal entry"
+    },
+    {
+      "code": 6164,
+      "name": "CashCarryQuoteParameterInvalid",
+      "msg": "Cash-and-carry package quote parameters are invalid"
+    },
+    {
+      "code": 6165,
+      "name": "CashCarryQuoteAccountMismatch",
+      "msg": "Cash-and-carry package-book account binding is invalid"
+    },
+    {
+      "code": 6166,
+      "name": "CashCarryQuoteCodeIdentityMismatch",
+      "msg": "Cash-and-carry package-book code identity changed"
+    },
+    {
+      "code": 6167,
+      "name": "CashCarryQuoteReturnDataInvalid",
+      "msg": "Cash-and-carry package-book return data is invalid"
+    },
+    {
+      "code": 6168,
+      "name": "CashCarryStrategyAuthorityInvalid",
+      "msg": "Cash-and-carry strategy authority identity is invalid"
+    },
+    {
+      "code": 6169,
+      "name": "CashCarryQuoteSeriesMismatch",
+      "msg": "Cash-and-carry package quote does not match the active series binding"
+    },
+    {
+      "code": 6170,
+      "name": "CashCarryQuoteSideMismatch",
+      "msg": "Cash-and-carry package quote side does not match the active series entry side"
+    },
+    {
+      "code": 6171,
+      "name": "CashCarryQuotePackageUnitMismatch",
+      "msg": "Cash-and-carry execution quantities do not resolve to the quoted package units"
     }
   ],
   "types": [
+    {
+      "name": "CashCarryExecutionRecorded",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "order_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "route_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "trader",
+            "type": "pubkey"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "execution_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_intent_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "package_fill_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "action",
+            "type": "u8"
+          },
+          {
+            "name": "recovery",
+            "type": "bool"
+          },
+          {
+            "name": "spot_quantity_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "perp_quantity_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "spot_quote_delta_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "pre_base_balance",
+            "type": "u64"
+          },
+          {
+            "name": "post_base_balance",
+            "type": "u64"
+          },
+          {
+            "name": "pre_quote_balance",
+            "type": "u64"
+          },
+          {
+            "name": "post_quote_balance",
+            "type": "u64"
+          },
+          {
+            "name": "pre_rise_base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "post_rise_base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "pre_rise_collateral_quote_lots",
+            "type": "i64"
+          },
+          {
+            "name": "post_rise_collateral_quote_lots",
+            "type": "i64"
+          },
+          {
+            "name": "execution_slot",
+            "type": "u64"
+          },
+          {
+            "name": "resource_admission_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "route_accounts_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "entry_receipt",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_version",
+            "type": "u32"
+          },
+          {
+            "name": "binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingControlActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingControlCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingControlProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingIndex",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "latest_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "active_binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "pending_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding",
+            "type": {
+              "defined": {
+                "name": "CashCarrySeriesBindingV1"
+              }
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "pending_control",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingSeriesBindingControl"
+                }
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingRegistrationCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_version",
+            "type": "u32"
+          },
+          {
+            "name": "binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingRegistrationProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "binding_version",
+            "type": "u32"
+          },
+          {
+            "name": "binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingTightened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "registration_cancelled",
+            "type": "bool"
+          },
+          {
+            "name": "control_cancelled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarrySeriesBindingV1",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "schema_version",
+            "type": "u32"
+          },
+          {
+            "name": "binding_version",
+            "type": "u32"
+          },
+          {
+            "name": "domain_ref_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "series_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "execution_class_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "template_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "template_version",
+            "type": "u32"
+          },
+          {
+            "name": "template_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "settlement_class_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_convention_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "entry_side",
+            "type": "u8"
+          },
+          {
+            "name": "spot_base_atoms_per_package_unit",
+            "type": "u128"
+          },
+          {
+            "name": "perp_quantity_atoms_per_package_unit",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CashCarryStrategyAuthorityInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "strategy_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "trader",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "quote_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "rise_strategy",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
     {
       "name": "ConformanceAction",
       "type": {
@@ -1221,6 +5819,10 @@
           {
             "name": "expiry_slot",
             "type": "u64"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
           }
         ]
       }
@@ -1230,6 +5832,14 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
           {
             "name": "order_hash",
             "type": {
@@ -1260,6 +5870,23 @@
           {
             "name": "trader",
             "type": "pubkey"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "execution_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
             "name": "action",
@@ -1322,6 +5949,14 @@
             "type": "pubkey"
           },
           {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
             "name": "order_hash",
             "type": {
               "array": [
@@ -1351,6 +5986,23 @@
           {
             "name": "trader",
             "type": "pubkey"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "execution_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
             "name": "action",
@@ -1395,6 +6047,65 @@
           {
             "name": "execution_slot",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConformanceNonce",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "order_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "execution_digest",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DescriptorRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": {
+              "defined": {
+                "name": "ProtocolId"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -1545,6 +6256,23 @@
       }
     },
     {
+      "name": "ExecutionRole",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "None"
+          },
+          {
+            "name": "Spot"
+          },
+          {
+            "name": "Perp"
+          }
+        ]
+      }
+    },
+    {
       "name": "GovernanceRoles",
       "type": {
         "kind": "struct",
@@ -1564,6 +6292,59 @@
           {
             "name": "pauser",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Lifecycle",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Active"
+          },
+          {
+            "name": "EntryPaused"
+          },
+          {
+            "name": "ExitOnly"
+          },
+          {
+            "name": "AllPaused"
+          },
+          {
+            "name": "Deprecated"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ManifestRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
@@ -1633,6 +6414,62 @@
       }
     },
     {
+      "name": "MarketUnits",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "base_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "base_lot_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "quote_tick_atoms_per_base_lot",
+            "type": "u64"
+          },
+          {
+            "name": "minimum_quote_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_numerator",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_denominator",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingControl",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "PendingDomain",
       "type": {
         "kind": "struct",
@@ -1644,6 +6481,42 @@
                 "name": "DomainRef"
               }
             }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingSeriesBindingControl",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingSolver",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "type": "pubkey"
           },
           {
             "name": "activation_slot",
@@ -1676,6 +6549,276 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeAdapterArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "ExecutionRole"
+              }
+            }
+          },
+          {
+            "name": "adapter_class",
+            "type": {
+              "defined": {
+                "name": "DescriptorRef"
+              }
+            }
+          },
+          {
+            "name": "venue",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "market",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "allowed_template",
+            "type": {
+              "defined": {
+                "name": "DescriptorRef"
+              }
+            }
+          },
+          {
+            "name": "settlement",
+            "type": {
+              "defined": {
+                "name": "SettlementRef"
+              }
+            }
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeAssetArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeCashCarrySeriesBindingArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "binding",
+            "type": {
+              "defined": {
+                "name": "CashCarrySeriesBindingV1"
+              }
+            }
+          },
+          {
+            "name": "expected_identity_key",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "expected_binding_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeMarketArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "ExecutionRole"
+              }
+            }
+          },
+          {
+            "name": "venue",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "units",
+            "type": {
+              "defined": {
+                "name": "MarketUnits"
+              }
+            }
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeVenueArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "ExecutionRole"
+              }
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
           }
         ]
       }
@@ -1812,6 +6955,654 @@
           {
             "name": "value",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteLimit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "maximum_notional_atoms",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControl",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "quote_limit",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "QuoteLimit"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControlActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControlCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControlProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControlTightened",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "registration_cancelled",
+            "type": "bool"
+          },
+          {
+            "name": "control_cancelled",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceIndex",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "latest_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "active_identity",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "pending_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_identity",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Asset"
+          },
+          {
+            "name": "Venue"
+          },
+          {
+            "name": "Market"
+          },
+          {
+            "name": "Adapter"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceManifest",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "subject_address",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_data",
+            "type": "pubkey"
+          },
+          {
+            "name": "code_identity",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "ExecutionRole"
+              }
+            }
+          },
+          {
+            "name": "adapter_class",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "DescriptorRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "venue",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "market",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "allowed_template",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "DescriptorRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "settlement",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "SettlementRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "market_units",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "MarketUnits"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "manifest",
+            "type": {
+              "defined": {
+                "name": "ResourceManifest"
+              }
+            }
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          },
+          {
+            "name": "pending_control",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingControl"
+                }
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceRegistrationCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceRegistrationProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementClass",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "AtomicPostcondition"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "class",
+            "type": {
+              "defined": {
+                "name": "SettlementClass"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SolverRegistry",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingSolver"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
