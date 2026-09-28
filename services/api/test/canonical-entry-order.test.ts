@@ -10,6 +10,7 @@ import {
 } from "@naryx/protocol-types";
 import {
   createCanonicalEntryOrder,
+  createCanonicalExitOrder,
   createLocalAtomicOrderRuntime,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
@@ -116,6 +117,30 @@ test("canonical entry builds atomic order and rejects inactive context", () => {
   const pausedProvider: ActiveOrderContextProvider = (contextId) =>
     contextId === paused.contextId ? paused : undefined;
   assert.throws(() => createCanonicalEntryOrder(pausedProvider, request), /not active/);
+});
+
+test("canonical exit binds the entry receipt and exact authoritative position", () => {
+  const context = activeContext();
+  const provider: ActiveOrderContextProvider = (contextId) =>
+    contextId === context.contextId ? context : undefined;
+  const exit = createCanonicalExitOrder(provider, {
+    contextId: context.contextId,
+    owner: "owner-1",
+    settlementAccount: "strategy-account-1",
+    entryReceiptHash: new Uint8Array(32).fill(7),
+    positionSizeAtoms: 1_000_000_000n,
+    positionEntryNotionalAtoms: 150_000_000n,
+    minSpotQuoteOutAtoms: 140_000_000n,
+    minExitQuoteOutcomeAtoms: 140_000_000n,
+    idempotencyKey: "test-exit-key-00001",
+    currentClock: 1_000_500n,
+  });
+  assert.equal(exit.order.action, "EXIT");
+  assert.equal(exit.order.expectedPrePositionSize.atoms, -1_000_000_000n);
+  assert.equal(exit.order.expectedPrePositionEntryNotional.atoms, 150_000_000n);
+  assert.equal(exit.order.minSpotQuoteOut?.atoms, 140_000_000n);
+  assert.equal(exit.order.maxResidualBaseQuantity.atoms, 0n);
+  assert.deepEqual(exit.order.entryReceiptHash, new Uint8Array(32).fill(7));
 });
 
 test("shared local catalog produces active order and clock ports", async () => {

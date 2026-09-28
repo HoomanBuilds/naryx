@@ -30,11 +30,13 @@ export {
 } from "./solana-devnet-postcondition-verifier.js";
 export {
   createCanonicalEntryOrder,
+  createCanonicalExitOrder,
   EntryOrderValidationError,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
   type CanonicalEntryOrder,
   type CanonicalEntryRequest,
+  type CanonicalExitRequest,
 } from "./canonical-entry-order.js";
 export {
   InternalOrderConflictError,

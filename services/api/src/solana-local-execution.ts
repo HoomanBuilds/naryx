@@ -90,6 +90,8 @@ implements SolanaLocalExecutionAuthorizationPort {
 export interface SolanaLocalPreparedExecution {
   readonly version: 1;
   readonly attemptId: string;
+  readonly action: "ENTRY" | "EXIT";
+  readonly lifecycleAttemptId: string;
   readonly status: "PREPARED" | "SIGNED" | "SUBMITTED_UNKNOWN" | "SUBMITTED" | "CONSENSUS_VERIFIED" | "FAILED";
   readonly unsignedTransactionBase64: string;
   readonly messageBase64: string;
@@ -104,6 +106,7 @@ export interface SolanaLocalPreparedExecution {
 export interface SolanaLocalPreparedExecutionStore {
   savePrepared(record: SolanaLocalPreparedExecution): SolanaLocalPreparedExecution;
   get(attemptId: string): SolanaLocalPreparedExecution | undefined;
+  getByReceiptAddress(receiptAddress: string): SolanaLocalPreparedExecution | undefined;
   update(attemptId: string, status: SolanaLocalPreparedExecution["status"], signature: string): SolanaLocalPreparedExecution;
   close(): void;
 }
@@ -165,10 +168,23 @@ export class SqliteSolanaLocalPreparedExecutionStore implements SolanaLocalPrepa
     const value = JSON.parse(row.record_json) as SolanaLocalPreparedExecution;
     if (value.version !== 1 || value.attemptId !== attemptId || typeof value.messageBase64 !== "string"
       || typeof value.unsignedTransactionBase64 !== "string" || typeof value.trader !== "string"
+      || (value.action !== "ENTRY" && value.action !== "EXIT")
+      || typeof value.lifecycleAttemptId !== "string" || !ATTEMPT_ID.test(value.lifecycleAttemptId)
       || typeof value.receiptAddress !== "string" || typeof value.nonceMarkerAddress !== "string") {
       throw new Error("Stored Solana preparation is invalid.");
     }
     return Object.freeze(value);
+  }
+
+  getByReceiptAddress(receiptAddress: string): SolanaLocalPreparedExecution | undefined {
+    new PublicKey(receiptAddress);
+    const rows = this.#db.prepare("SELECT record_json FROM solana_local_preparations").all() as { record_json?: unknown }[];
+    const matches = rows.map((row) => {
+      if (typeof row.record_json !== "string") throw new Error("Stored Solana preparation is invalid.");
+      return JSON.parse(row.record_json) as SolanaLocalPreparedExecution;
+    }).filter((record) => record.receiptAddress === receiptAddress);
+    if (matches.length > 1) throw new Error("Solana receipt address is not unique in durable state.");
+    return matches[0] === undefined ? undefined : this.get(matches[0].attemptId);
   }
 
   update(attemptId: string, status: SolanaLocalPreparedExecution["status"], signature: string): SolanaLocalPreparedExecution {
@@ -198,6 +214,9 @@ export interface SolanaLocalExecutionLifecyclePort {
   prepare(attemptId: string): unknown;
   submit(attemptId: string): unknown;
   recordConsensusOpen(attemptId: string, evidence: Uint8Array): unknown;
+  prepareExit(attemptId: string): unknown;
+  submitExit(attemptId: string): unknown;
+  recordConsensusClosed(attemptId: string, evidence: Uint8Array): unknown;
 }
 
 export interface SolanaLocalConformancePort {
@@ -324,6 +343,15 @@ export class SolanaLocalExecutionService {
     const existing = this.#store.get(attemptId);
     if (existing !== undefined) return existing;
     const admission = this.#admission(attemptId);
+    const entryReceiptAddress = admission.order.action === "EXIT"
+      ? admission.route.accountBindings.find((binding) => binding.routeBindingId === "entry-receipt")?.accountIdentity
+      : undefined;
+    const entryPreparation = entryReceiptAddress === undefined ? undefined : this.#store.getByReceiptAddress(entryReceiptAddress);
+    if (admission.order.action === "EXIT"
+      && (entryPreparation === undefined || entryPreparation.action !== "ENTRY"
+        || entryPreparation.status !== "CONSENSUS_VERIFIED")) {
+      throw new Error("Solana exit requires a consensus-verified local entry preparation.");
+    }
     const authorization = await this.#authorization.authorize(attemptId);
     const compiled = await this.#adapter.compileAuthenticated(
       admission,
@@ -346,6 +374,8 @@ export class SolanaLocalExecutionService {
     const prepared = this.#store.savePrepared(Object.freeze({
       version: 1,
       attemptId,
+      action: admission.order.action,
+      lifecycleAttemptId: entryPreparation?.attemptId ?? attemptId,
       status: "PREPARED",
       unsignedTransactionBase64: Buffer.from(transaction.serialize()).toString("base64"),
       messageBase64: Buffer.from(message.serialize()).toString("base64"),
@@ -356,7 +386,8 @@ export class SolanaLocalExecutionService {
       nonceMarkerAddress: this.#adapter.nonceMarkerAddress(trader, admission.order.nonce).toBase58(),
       signature: null,
     }));
-    this.#lifecycle.prepare(attemptId);
+    if (admission.order.action === "ENTRY") this.#lifecycle.prepare(attemptId);
+    else this.#lifecycle.prepareExit(prepared.lifecycleAttemptId);
     return prepared;
   }
 
@@ -401,7 +432,8 @@ export class SolanaLocalExecutionService {
     }
     const signature = bs58.encode(signatureBytes);
     this.#store.update(attemptId, "SIGNED", signature);
-    this.#lifecycle.submit(attemptId);
+    if (prepared.action === "ENTRY") this.#lifecycle.submit(attemptId);
+    else this.#lifecycle.submitExit(prepared.lifecycleAttemptId);
     await this.#validateLive();
     try {
       const returned = await this.#rpc.sendRawTransaction(transaction.serialize());
@@ -434,7 +466,8 @@ export class SolanaLocalExecutionService {
     if (evidence === null || nonce === null || positionAccount === null
       || nonce.owner.toBase58() !== this.#manifest.programs.core.id
       || positionAccount.owner.toBase58() !== this.#manifest.programs.conformanceVenue.id
-      || !evidence.receipt.address.equals(receiptAddress)) {
+      || !evidence.receipt.address.equals(receiptAddress)
+      || evidence.receipt.action !== prepared.action) {
       this.#store.update(attemptId, "SUBMITTED_UNKNOWN", prepared.signature);
       return Object.freeze({ attemptId, status: "SUBMITTED_UNKNOWN", signature: prepared.signature });
     }
@@ -445,7 +478,8 @@ export class SolanaLocalExecutionService {
       .update(receiptAddress.toBytes())
       .update(evidence.receipt.executionDigest)
       .digest();
-    this.#lifecycle.recordConsensusOpen(attemptId, commitment);
+    if (prepared.action === "ENTRY") this.#lifecycle.recordConsensusOpen(attemptId, commitment);
+    else this.#lifecycle.recordConsensusClosed(prepared.lifecycleAttemptId, commitment);
     this.#store.update(attemptId, "CONSENSUS_VERIFIED", prepared.signature);
     return Object.freeze({ attemptId, status: "CONSENSUS_VERIFIED", signature: prepared.signature });
   }
@@ -459,7 +493,11 @@ export class SolanaLocalExecutionService {
       || position.collateralQuoteAtoms !== receipt.postCollateralQuoteAtoms
       || !position.market.equals(new PublicKey(this.#manifest.accounts.market))
       || !position.trader.equals(new PublicKey(this.#manifest.identities.trader))) {
-      throw new Error("Confirmed Solana entry postconditions do not match authoritative accounts.");
+      throw new Error("Confirmed Solana postconditions do not match authoritative accounts.");
+    }
+    if (receipt.action === "EXIT"
+      && (receipt.postShortBaseAtoms !== 0n || receipt.postCollateralQuoteAtoms !== 0n)) {
+      throw new Error("Confirmed Solana exit did not reach its signed zero-residual terminal state.");
     }
     for (const address of [
       this.#manifest.accounts["trader-base"],

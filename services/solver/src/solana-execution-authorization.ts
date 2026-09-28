@@ -225,12 +225,16 @@ function requireManifestBindings(
     binding.routeBindingId,
     binding.accountIdentity,
   ]));
+  const entryReceipt = actual.get('entry-receipt');
   if (actual.size !== admission.route.accountBindings.length
     || [...expected].some(([name, value]) => actual.get(name) !== value)
     || admission.order.owner !== manifest.identities.trader
     || admission.route.solver !== manifest.identities.solver
     || admission.quote.solverId !== manifest.identities.solver
-    || !bytesEqual(admission.quote.solverVerificationKey, bs58.decode(manifest.identities.solver))) {
+    || !bytesEqual(admission.quote.solverVerificationKey, bs58.decode(manifest.identities.solver))
+    || (admission.order.action === 'EXIT'
+      ? entryReceipt === undefined || admission.order.entryReceiptHash === undefined
+      : entryReceipt !== undefined)) {
     fail('BINDING_MISMATCH', 'selected admission contains non-manifest account substitutions');
   }
 }

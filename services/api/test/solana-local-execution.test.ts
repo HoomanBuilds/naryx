@@ -25,7 +25,7 @@ import {
 const key = (byte: number) => new PublicKey(new Uint8Array(32).fill(byte));
 const hash = (byte: number) => new Uint8Array(32).fill(byte);
 
-function fixture(scratch: string) {
+function fixture(scratch: string, action: "ENTRY" | "EXIT" = "ENTRY") {
   const traderKeys = generateKeyPairSync("ed25519");
   const spki = traderKeys.publicKey.export({ format: "der", type: "spki" }) as Buffer;
   const trader = new PublicKey(spki.subarray(spki.length - 32));
@@ -39,6 +39,7 @@ function fixture(scratch: string) {
   const spotQuoteVault = key(15);
   const perpQuoteVault = key(16);
   const receiptAddress = key(22);
+  const entryReceiptAddress = key(24);
   const nonceAddress = key(23);
   const domain = {
     domainId: "svm:local",
@@ -49,8 +50,12 @@ function fixture(scratch: string) {
     orderHash: hash(1),
     routeHash: hash(2),
     quoteHash: hash(3),
-    order: { owner: trader.toBase58(), nonce: 7n, quantity: { atoms: 2n } },
-    route: {},
+    order: { owner: trader.toBase58(), nonce: 7n, action, quantity: { atoms: 2n } },
+    route: {
+      accountBindings: action === "EXIT"
+        ? [{ routeBindingId: "entry-receipt", accountIdentity: entryReceiptAddress.toBase58() }]
+        : [],
+    },
     quote: {},
   } as unknown as PackageAdmission;
   const executionDigest = hash(7);
@@ -62,7 +67,7 @@ function fixture(scratch: string) {
     orderHash: admission.orderHash,
     quoteHash: admission.quoteHash,
     routeHash: admission.routeHash,
-    action: "ENTRY" as const,
+    action,
     nonce: 7n,
     executionDigest,
     baseQuantityAtoms: 2n,
@@ -71,9 +76,9 @@ function fixture(scratch: string) {
     preQuoteBalance: 100n,
     postQuoteBalance: 95n,
     preShortBaseAtoms: 0n,
-    postShortBaseAtoms: 2n,
+    postShortBaseAtoms: action === "ENTRY" ? 2n : 0n,
     preCollateralQuoteAtoms: 0n,
-    postCollateralQuoteAtoms: 1n,
+    postCollateralQuoteAtoms: action === "ENTRY" ? 1n : 0n,
     executionSlot: 50n,
   } as unknown as ConformanceReceipt;
   const adapter: SolanaLocalConformancePort = {
@@ -112,8 +117,8 @@ function fixture(scratch: string) {
     decodePosition: () => ({
       market,
       trader,
-      shortBaseAtoms: 2n,
-      collateralQuoteAtoms: 1n,
+      shortBaseAtoms: action === "ENTRY" ? 2n : 0n,
+      collateralQuoteAtoms: action === "ENTRY" ? 1n : 0n,
     }),
   };
   const manifest = {
@@ -159,6 +164,9 @@ function fixture(scratch: string) {
     prepare: (id) => lifecycleCalls.push(`prepare:${id}`),
     submit: (id) => lifecycleCalls.push(`submit:${id}`),
     recordConsensusOpen: (id) => lifecycleCalls.push(`open:${id}`),
+    prepareExit: (id) => lifecycleCalls.push(`prepare-exit:${id}`),
+    submitExit: (id) => lifecycleCalls.push(`submit-exit:${id}`),
+    recordConsensusClosed: (id) => lifecycleCalls.push(`closed:${id}`),
   };
   const path = join(scratch, "preparations.db");
   const service = (store: SqliteSolanaLocalPreparedExecutionStore) => new SolanaLocalExecutionService({
@@ -183,6 +191,7 @@ function fixture(scratch: string) {
   };
   return {
     path,
+    entryReceiptAddress,
     service,
     signPrepared,
     lifecycleCalls,
@@ -249,6 +258,52 @@ test("reconciles response loss across restart without resubmitting", async () =>
     assert.equal(reconciled.status, "CONSENSUS_VERIFIED");
     assert.equal(store.get(attemptId)?.status, "CONSENSUS_VERIFIED");
     assert.deepEqual(setup.lifecycleCalls.map((value) => value.split(":", 1)[0]), ["prepare", "submit", "open"]);
+  } finally {
+    store.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("submits a canonical exit and closes only after a confirmed zero-residual receipt", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-solana-local-exit-"));
+  const setup = fixture(scratch, "EXIT");
+  let store = new SqliteSolanaLocalPreparedExecutionStore(setup.path);
+  try {
+    const attemptId = `local-atomic-${"77".repeat(32)}`;
+    const entryAttemptId = `local-atomic-${"76".repeat(32)}`;
+    store.savePrepared({
+      version: 1,
+      attemptId: entryAttemptId,
+      action: "ENTRY",
+      lifecycleAttemptId: entryAttemptId,
+      status: "CONSENSUS_VERIFIED",
+      unsignedTransactionBase64: "entry",
+      messageBase64: "entry",
+      recentBlockhash: key(29).toBase58(),
+      lastValidBlockHeight: 99,
+      trader: key(8).toBase58(),
+      receiptAddress: setup.entryReceiptAddress.toBase58(),
+      nonceMarkerAddress: key(28).toBase58(),
+      signature: bs58.encode(new Uint8Array(64).fill(1)),
+    });
+    const prepared = await setup.service(store).prepare(attemptId);
+    assert.equal(prepared.action, "EXIT");
+    setup.setLoseResponse(true);
+    const ambiguous = await setup.service(store).submit(attemptId, {
+      signedTransactionBase64: setup.signPrepared(prepared),
+    });
+    assert.equal(ambiguous.status, "SUBMITTED_UNKNOWN");
+    store.close();
+
+    store = new SqliteSolanaLocalPreparedExecutionStore(setup.path);
+    setup.setStatus({ confirmationStatus: "confirmed", err: null });
+    const result = await setup.service(store).reconcile(attemptId);
+    assert.equal(result.status, "CONSENSUS_VERIFIED");
+    assert.deepEqual(setup.lifecycleCalls, [
+      `prepare-exit:${entryAttemptId}`,
+      `submit-exit:${entryAttemptId}`,
+      `closed:${entryAttemptId}`,
+    ]);
   } finally {
     store.close();
     rmSync(scratch, { recursive: true, force: true });

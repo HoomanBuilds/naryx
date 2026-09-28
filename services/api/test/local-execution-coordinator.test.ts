@@ -152,6 +152,18 @@ test("advances a submitted manifest execution only from bound consensus evidence
       (error: unknown) => error instanceof LocalExecutionCoordinatorError
         && error.code === "ATTEMPT_BINDING_MISMATCH",
     );
+    assert.equal(setup.coordinator.prepareExit(setup.attempt.attemptId).state, "EXIT_REQUESTED");
+    assert.equal(setup.coordinator.submitExit(setup.attempt.attemptId).state, "EXIT_SUBMITTED");
+    const closed = setup.coordinator.recordConsensusClosed(setup.attempt.attemptId, evidence);
+    assert.equal(closed.state, "CLOSED");
+    assert.equal(closed.receipts.at(-1)?.evidenceGrade, "CONSENSUS_VERIFIED");
+    assert.equal(closed.receipts.at(-1)?.onchainEnforced, true);
+    assert.deepEqual(setup.coordinator.recordConsensusClosed(setup.attempt.attemptId, evidence), closed);
+    assert.throws(
+      () => setup.coordinator.recordConsensusClosed(setup.attempt.attemptId, new Uint8Array(32).fill(8)),
+      (error: unknown) => error instanceof LocalExecutionCoordinatorError
+        && error.code === "ATTEMPT_BINDING_MISMATCH",
+    );
   } finally {
     setup.lifecycle.close();
     setup.intents.close();

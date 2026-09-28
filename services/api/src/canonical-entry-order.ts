@@ -68,6 +68,19 @@ export interface CanonicalEntryRequest {
   readonly currentClock: bigint;
 }
 
+export interface CanonicalExitRequest {
+  readonly contextId: string;
+  readonly owner: string;
+  readonly settlementAccount: string;
+  readonly entryReceiptHash: Uint8Array;
+  readonly positionSizeAtoms: bigint;
+  readonly positionEntryNotionalAtoms: bigint;
+  readonly minSpotQuoteOutAtoms: bigint;
+  readonly minExitQuoteOutcomeAtoms: bigint;
+  readonly idempotencyKey: string;
+  readonly currentClock: bigint;
+}
+
 export interface CanonicalEntryOrder {
   readonly order: PackageOrder;
   readonly orderBytes: Uint8Array;
@@ -370,4 +383,99 @@ export function createCanonicalEntryOrder(
   const orderBytes = packageOrderBytes(input);
   const orderHash = packageOrderHash(input);
   return Object.freeze({ order, orderBytes, orderHash, requestCommitment });
+}
+
+export function createCanonicalExitOrder(
+  provider: ActiveOrderContextProvider,
+  request: CanonicalExitRequest,
+): CanonicalEntryOrder {
+  if (typeof request !== "object" || request === null
+    || typeof request.contextId !== "string" || !CONTEXT_ID_PATTERN.test(request.contextId)
+    || typeof request.owner !== "string" || request.owner.length === 0
+    || typeof request.settlementAccount !== "string" || request.settlementAccount.length === 0
+    || !(request.entryReceiptHash instanceof Uint8Array) || request.entryReceiptHash.length !== 32
+    || request.entryReceiptHash.every((byte) => byte === 0)
+    || typeof request.positionSizeAtoms !== "bigint" || request.positionSizeAtoms <= 0n
+    || typeof request.positionEntryNotionalAtoms !== "bigint" || request.positionEntryNotionalAtoms <= 0n
+    || typeof request.minSpotQuoteOutAtoms !== "bigint" || request.minSpotQuoteOutAtoms < 0n
+    || typeof request.minExitQuoteOutcomeAtoms !== "bigint" || request.minExitQuoteOutcomeAtoms < 0n
+    || typeof request.idempotencyKey !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(request.idempotencyKey)
+    || typeof request.currentClock !== "bigint" || request.currentClock <= 0n || request.currentClock > U64_MAX) {
+    throw new EntryOrderValidationError("INVALID_EXIT", "Canonical exit inputs are invalid.");
+  }
+  const context = loadContext(provider, {
+    contextId: request.contextId,
+    owner: request.owner,
+    settlementAccount: request.settlementAccount,
+    sizeAtoms: request.positionSizeAtoms,
+    slippageBps: 1,
+    idempotencyKey: request.idempotencyKey,
+    currentClock: request.currentClock,
+  });
+  const expiryValue = request.currentClock + context.expiryTtl;
+  if (expiryValue <= request.currentClock || expiryValue > U64_MAX) {
+    throw new EntryOrderValidationError("UNSAFE_EXPIRY", "Exit expiry is outside the safe window.");
+  }
+  const requestPayload = canonicalBytes((writer) => {
+    writer.writeString(request.contextId, "exitRequest.contextId");
+    writer.writeString(request.owner, "exitRequest.owner");
+    writer.writeString(request.settlementAccount, "exitRequest.settlementAccount");
+    writer.writeFixedBytes(request.entryReceiptHash, 32, "exitRequest.entryReceiptHash");
+    writer.writeU256(request.positionSizeAtoms, "exitRequest.positionSizeAtoms");
+    writer.writeU256(request.positionEntryNotionalAtoms, "exitRequest.positionEntryNotionalAtoms");
+    writer.writeU256(request.minSpotQuoteOutAtoms, "exitRequest.minSpotQuoteOutAtoms");
+    writer.writeU256(request.minExitQuoteOutcomeAtoms, "exitRequest.minExitQuoteOutcomeAtoms");
+    writer.writeString(request.idempotencyKey, "exitRequest.idempotencyKey");
+  });
+  const requestCommitment = hash32(
+    createHash("sha256").update("NARYX/internal-exit-order-request/v1", "ascii").update(requestPayload).digest(),
+    "exitRequestCommitment",
+  );
+  const nonce = hashToU256(requestCommitment);
+  const input: PackageOrderInput = {
+    version: context.orderVersion,
+    environment: context.environment,
+    domain: context.domain,
+    templateId: context.templateId,
+    templateVersion: context.templateVersion,
+    packageTemplateManifestHash: context.packageTemplateManifestHash,
+    owner: request.owner,
+    settlementAccount: request.settlementAccount,
+    nonce,
+    expiryUnit: context.expiryUnit,
+    expiryValue,
+    direction: "LONG_SPOT_SHORT_PERP",
+    action: "EXIT",
+    packageOrderType: "MARKETABLE_LIMIT",
+    packageTimeInForce: "FOK",
+    partialFillPolicy: "EXACT_ALL_LEGS",
+    quantity: { asset: context.baseAsset, atoms: request.positionSizeAtoms },
+    exitOutcomeSchemaVersion: 1,
+    entryReceiptHash: request.entryReceiptHash,
+    expectedPrePositionSize: { asset: context.baseAsset, atoms: -request.positionSizeAtoms },
+    expectedPrePositionEntryNotional: { asset: context.quoteAsset, atoms: request.positionEntryNotionalAtoms },
+    minExitQuoteOutcome: { asset: context.quoteAsset, atoms: request.minExitQuoteOutcomeAtoms },
+    minSpotQuoteOut: { asset: context.quoteAsset, atoms: request.minSpotQuoteOutAtoms },
+    maxMarginAdded: { asset: context.quoteAsset, atoms: 0n },
+    minVenueReserveReturned: { asset: context.quoteAsset, atoms: context.minVenueReserveReturnedAtoms },
+    minWalletQuoteBalanceDelta: { asset: context.quoteAsset, atoms: context.minWalletQuoteBalanceDeltaAtoms },
+    maxVenueFeeAtomsByAsset: [...context.maxVenueFeeAtomsByAsset],
+    maxProtocolFee: { asset: context.quoteAsset, atoms: context.maxProtocolFeeAtoms },
+    maxSolverFee: { asset: context.quoteAsset, atoms: context.maxSolverFeeAtoms },
+    maxPriorityFee: { asset: context.quoteAsset, atoms: context.maxPriorityFeeAtoms },
+    maxRecoveryCostAtomsByAsset: [],
+    permittedSpotAdapters: [...context.spotAdapters],
+    permittedPerpAdapters: [...context.perpAdapters],
+    settlementClass: "ATOMIC_POSTCONDITION",
+    maxAggregateRecoveryLossQuote: { asset: context.quoteAsset, atoms: 0n },
+    maxResidualBaseQuantity: { asset: context.baseAsset, atoms: 0n },
+    allowedRecoveryActions: [],
+  };
+  const order = validatePackageOrderProfile(input, "packageOrder");
+  return Object.freeze({
+    order,
+    orderBytes: packageOrderBytes(input),
+    orderHash: packageOrderHash(input),
+    requestCommitment,
+  });
 }

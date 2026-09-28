@@ -111,6 +111,36 @@ export class LocalExecutionCoordinator {
     return this.#result("consensus-open", binding);
   }
 
+  prepareExit(attemptId: string): LocalExecutionResult {
+    const binding = this.#binding(attemptId);
+    this.#ensureTransition(binding, "OPEN", "EXIT_REQUESTED", "onchain-exit-requested");
+    if (this.#state(binding) !== "EXIT_REQUESTED") {
+      throw new LocalExecutionCoordinatorError("ATTEMPT_STATE_CONFLICT", "Exit cannot be prepared unless the package is open.");
+    }
+    return this.#result("prepare", binding);
+  }
+
+  submitExit(attemptId: string): LocalExecutionResult {
+    const binding = this.#binding(attemptId);
+    this.#ensureTransition(binding, "EXIT_REQUESTED", "EXIT_SUBMITTED", "onchain-exit-submitted");
+    if (this.#state(binding) !== "EXIT_SUBMITTED") {
+      throw new LocalExecutionCoordinatorError("ATTEMPT_STATE_CONFLICT", "Exit cannot be submitted from its current lifecycle state.");
+    }
+    return this.#result("submit", binding);
+  }
+
+  recordConsensusClosed(attemptId: string, evidence: Uint8Array): LocalExecutionResult {
+    if (!(evidence instanceof Uint8Array) || evidence.length !== 32 || evidence.every((byte) => byte === 0)) {
+      throw new LocalExecutionCoordinatorError("INVALID_EVIDENCE", "Consensus evidence must be a nonzero hash.");
+    }
+    const binding = this.#binding(attemptId);
+    this.#ensureConsensusTransition(binding, "EXIT_SUBMITTED", "CLOSED", "onchain-exit-closed", evidence);
+    if (this.#state(binding) !== "CLOSED") {
+      throw new LocalExecutionCoordinatorError("ATTEMPT_STATE_CONFLICT", "Package cannot close without confirmed onchain exit evidence.");
+    }
+    return this.#result("close", binding);
+  }
+
   open(attemptId: string): LocalExecutionResult {
     const binding = this.#binding(attemptId);
     this.#ensureInitial(binding, "PACKAGE_CREATED", "package-created");
