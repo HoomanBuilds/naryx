@@ -8,7 +8,8 @@
     "build:programs": "node ../../contracts/solana/scripts/build-conformance-artifacts.mjs",
     "format": "prettier --write package.json src test",
     "format:check": "prettier --check package.json src test",
-    "test": "npm run build:programs && node --test test/environment.test.js"
+    "test": "npm run build:runtime && npm run build:programs && node --test test/environment.test.js",
+    "build:runtime": "npm --prefix ../../packages/protocol-types run build && npm --prefix ../../packages/adapter-core run build"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +17,8 @@
   "type": "module",
   "dependencies": {
     "@anchor-lang/core": "1.2.0",
+    "@naryx/adapter-core": "file:../../packages/adapter-core",
+    "@naryx/protocol-types": "file:../../packages/protocol-types",
     "@solana/web3.js": "1.99.0"
   },
   "devDependencies": {

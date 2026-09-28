@@ -17,6 +17,13 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import {
+  HASH_DOMAIN,
+  domainHash,
+  domainRefFromManifest,
+  encodeAscii,
+} from "@naryx/protocol-types";
+import { createSolanaLocalEnvironmentManifestJson } from "@naryx/adapter-core";
 
 const { AnchorProvider, BN, Program, Wallet, web3 } = anchor;
 
@@ -66,6 +73,27 @@ const seededBalances = Object.freeze({
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function localDomain(genesisHash) {
+  return domainRefFromManifest({
+    manifestVersion: 1,
+    environment: "local",
+    domainId: "svm:local",
+    runtimeClassId: "svm",
+    runtimeClassVersion: 1,
+    chainNamespace: "solana",
+    chainReference: genesisHash,
+    executionVerifierId: programIds.core.toBase58(),
+    executionVerifierCodeHash: sha256(artifacts.core),
+    clockModelId: "solana-slot",
+    finalityPolicyHash: domainHash(
+      HASH_DOMAIN.DOMAIN_REF_IDENTITY,
+      encodeAscii("solana:confirmed"),
+    ),
+    addressCodecId: "solana-base58-pubkey",
+    supportedSettlementClasses: ["ATOMIC_POSTCONDITION"],
+  });
 }
 
 function keypairPath(runDir, label, keypair) {
@@ -361,7 +389,7 @@ async function provision(runDir, rpcUrl, connection, identities, keyPaths) {
     loaderId,
   );
   const domainManifestHash = Array.from(
-    createHash("sha256").update("naryx:local-svm:conformance:v1").digest(),
+    localDomain(await connection.getGenesisHash()).domainManifestHash,
   );
 
   await core.methods
@@ -564,64 +592,73 @@ async function buildManifest(
     balances[name] = String(await tokenBalance(connection, address));
   }
 
-  const manifest = deepFreeze({
-    schemaVersion: 1,
-    evidenceGrade: "CONFORMANCE_DEPENDENCY",
-    network: "local-validator",
-    mainnet: false,
-    limitations: [
-      "The conformance venue is not Orca and does not emulate Orca liquidity or execution.",
-      "The conformance venue is not Phoenix and does not emulate Phoenix markets or execution.",
-      "This environment provides local protocol conformance evidence only.",
-    ],
-    rpc: {
-      url: rpcUrl,
+  const programData = {
+    core: web3.PublicKey.findProgramAddressSync(
+      [programIds.core.toBuffer()],
+      loaderId,
+    )[0].toBase58(),
+    conformanceVenue: web3.PublicKey.findProgramAddressSync(
+      [programIds.venue.toBuffer()],
+      loaderId,
+    )[0].toBase58(),
+  };
+  const manifest = deepFreeze(
+    createSolanaLocalEnvironmentManifestJson({
+      limitations: [
+        "The conformance venue is not Orca and does not emulate Orca liquidity or execution.",
+        "The conformance venue is not Phoenix and does not emulate Phoenix markets or execution.",
+        "This environment provides local protocol conformance evidence only.",
+      ],
+      rpcUrl,
       genesisHash: await connection.getGenesisHash(),
       manifestSlot: await connection.getSlot("confirmed"),
-    },
-    programs: {
-      core: {
-        id: programIds.core.toBase58(),
-        sha256: deployedHashes.core,
+      maximumManifestAgeSlots: 4096,
+      programs: {
+        core: {
+          id: programIds.core.toBase58(),
+          programDataId: programData.core,
+          sha256: deployedHashes.core,
+        },
+        conformanceVenue: {
+          id: programIds.venue.toBase58(),
+          programDataId: programData.conformanceVenue,
+          sha256: deployedHashes.venue,
+        },
       },
-      conformanceVenue: {
-        id: programIds.venue.toBase58(),
-        sha256: deployedHashes.venue,
+      identities: publicIdentities(identities),
+      assets: {
+        base: {
+          label: "NARYX_LOCAL_BASE_6",
+          mint: provisioned.mints.base.publicKey.toBase58(),
+          decimals: 6,
+        },
+        quote: {
+          label: "NARYX_LOCAL_QUOTE_6",
+          mint: provisioned.mints.quote.publicKey.toBase58(),
+          decimals: 6,
+        },
       },
-    },
-    identities: publicIdentities(identities),
-    assets: {
-      base: {
-        label: "NARYX_LOCAL_BASE_6",
-        mint: provisioned.mints.base.publicKey.toBase58(),
-        decimals: 6,
+      accounts: {
+        ...addressStrings(provisioned.addresses),
+        ...Object.fromEntries(
+          Object.entries(provisioned.tokenAccounts).map(([name, address]) => [
+            name,
+            address.toBase58(),
+          ]),
+        ),
       },
-      quote: {
-        label: "NARYX_LOCAL_QUOTE_6",
-        mint: provisioned.mints.quote.publicKey.toBase58(),
-        decimals: 6,
+      governance: {
+        configDelaySlots: delaySlots,
+        solverActivationSlot: provisioned.delayEvidence.solverActivationSlot,
+        entryActivationSlot: provisioned.delayEvidence.entryActivationSlot,
+        activatedAtSlot: provisioned.delayEvidence.activatedAtSlot,
       },
-    },
-    accounts: {
-      ...addressStrings(provisioned.addresses),
-      ...Object.fromEntries(
-        Object.entries(provisioned.tokenAccounts).map(([name, address]) => [
-          name,
-          address.toBase58(),
-        ]),
+      economics: Object.fromEntries(
+        Object.entries(economics).map(([name, value]) => [name, String(value)]),
       ),
-    },
-    governance: {
-      configDelaySlots: delaySlots,
-      solverActivationSlot: provisioned.delayEvidence.solverActivationSlot,
-      entryActivationSlot: provisioned.delayEvidence.entryActivationSlot,
-      activatedAtSlot: provisioned.delayEvidence.activatedAtSlot,
-    },
-    economics: Object.fromEntries(
-      Object.entries(economics).map(([name, value]) => [name, String(value)]),
-    ),
-    balances,
-  });
+      balances,
+    }),
+  );
   const manifestPath = join(runDir, "environment-manifest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
     mode: 0o444,
@@ -688,6 +725,11 @@ export async function validateEnvironment(environment) {
   );
   const position = await provisioned.venue.account.perpPosition.fetch(
     provisioned.addresses.position,
+  );
+  assertEqual(
+    Buffer.from(config.domain.domainManifestHash).toString("hex"),
+    manifest.runtime.domainManifestHash,
+    "Core domain manifest hash does not match the generated canonical manifest",
   );
   if (
     config.entryPaused ||

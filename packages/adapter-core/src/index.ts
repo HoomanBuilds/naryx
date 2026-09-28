@@ -43,3 +43,15 @@ export {
   parseLocalAtomicMarketCatalog,
   type LocalAtomicMarketCatalog,
 } from './local-atomic-market-catalog.js';
+
+export {
+  createSolanaLocalEnvironmentManifest,
+  createSolanaLocalEnvironmentManifestJson,
+  deriveSolanaLocalRuntime,
+  parseSolanaLocalEnvironmentManifest,
+  validateSolanaLocalRpcSnapshot,
+  type SolanaLocalEnvironmentManifest,
+  type SolanaLocalManifestFacts,
+  type SolanaLocalProgramIdentity,
+  type SolanaLocalRpcSnapshot,
+} from './solana-local-environment.js';
