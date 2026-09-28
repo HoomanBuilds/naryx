@@ -81,6 +81,20 @@ export {
   type LocalExecutionResult,
 } from "./local-execution-coordinator.js";
 export {
+  ConnectionSolanaLocalExecutionRpc,
+  HttpSolanaLocalExecutionAuthorizationClient,
+  SolanaLocalExecutionService,
+  SqliteSolanaLocalPreparedExecutionStore,
+  type SolanaLocalExecutionAuthorization,
+  type SolanaLocalExecutionAuthorizationPort,
+  type SolanaLocalConformancePort,
+  type SolanaLocalExecutionLifecyclePort,
+  type SolanaLocalExecutionResult,
+  type SolanaLocalExecutionRpc,
+  type SolanaLocalPreparedExecution,
+  type SolanaLocalPreparedExecutionStore,
+} from "./solana-local-execution.js";
+export {
   HYPERLIQUID_TESTNET_DOMAIN,
   HYPERLIQUID_TESTNET_ENVIRONMENT,
   HyperliquidTestnetTerminalValidationError,

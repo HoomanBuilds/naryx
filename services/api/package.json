@@ -35,6 +35,7 @@
     "@solana/addresses": "8.3.0",
     "@solana/transaction-messages": "8.3.0",
     "@solana/transactions": "8.3.0",
+    "@solana/web3.js": "1.99.0",
     "better-sqlite3": "13.0.3",
     "bs58": "6.0.0",
     "viem": "2.56.8"

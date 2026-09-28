@@ -8,6 +8,14 @@ import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 import { composePrivateTerminalRuntime } from "./runtime-composition.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
+import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
+import { Connection } from "@solana/web3.js";
+import {
+  ConnectionSolanaLocalExecutionRpc,
+  HttpSolanaLocalExecutionAuthorizationClient,
+  SolanaLocalExecutionService,
+  SqliteSolanaLocalPreparedExecutionStore,
+} from "./solana-local-execution.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -49,6 +57,38 @@ const localExecutionCoordinator = new LocalExecutionCoordinator({
   orders: orderStore,
   lifecycle: lifecycleStore,
 });
+const solanaLocalPreparationStore = manifestRuntime === undefined
+  ? undefined
+  : new SqliteSolanaLocalPreparedExecutionStore(absolutePath(
+    process.env.NARYX_API_SOLANA_LOCAL_PREPARATION_DB ?? "/tmp/naryx-local/api-solana-preparations.db",
+    "NARYX_API_SOLANA_LOCAL_PREPARATION_DB",
+  ));
+const solanaConnection = manifestRuntime === undefined
+  ? undefined
+  : new Connection(manifestRuntime.manifest.rpc.url, "confirmed");
+const solanaLocalExecution = manifestRuntime === undefined
+    || solanaLocalPreparationStore === undefined
+    || solanaConnection === undefined
+  ? undefined
+  : new SolanaLocalExecutionService({
+    manifest: manifestRuntime.manifest,
+    intents: executionIntentStore,
+    orders: orderStore,
+    authorization: new HttpSolanaLocalExecutionAuthorizationClient(
+      process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+    ),
+    adapter: new SolanaConformanceAdapter({
+      connection: solanaConnection,
+      domain: manifestRuntime.manifest.runtime.catalog.domain,
+      environment: "local",
+      expectedGenesisHash: manifestRuntime.manifest.rpc.genesisHash,
+      executionSignatureProvider: () => { throw new Error("API cannot sign solver execution authorization."); },
+    }),
+    rpc: new ConnectionSolanaLocalExecutionRpc(solanaConnection),
+    store: solanaLocalPreparationStore,
+    lifecycle: localExecutionCoordinator,
+    validateLive: manifestRuntime.validateLive,
+  });
 const runtime = composePrivateTerminalRuntime();
 const server = createPrivateTerminalServer(
   config,
@@ -62,6 +102,7 @@ const server = createPrivateTerminalServer(
   localExecutionCoordinator,
   runtime.health,
   manifestRuntime === undefined ? "PHASE4_FIXTURE" : "MANIFEST_VALIDATED",
+  solanaLocalExecution,
 );
 
 function shutdown(): void {
@@ -69,6 +110,7 @@ function shutdown(): void {
     orderStore.close();
     lifecycleStore.close();
     executionIntentStore.close();
+    solanaLocalPreparationStore?.close();
     process.exitCode = 0;
   });
 }

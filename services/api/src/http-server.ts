@@ -54,6 +54,7 @@ import {
   type SolverAtomicQuotePort,
 } from "./solver-quote-client.js";
 import type { PrivateTerminalRuntimeHealth } from "./runtime-composition.js";
+import type { SolanaLocalExecutionService } from "./solana-local-execution.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -184,6 +185,7 @@ export function createPrivateTerminalRequestHandler(
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
+  solanaLocalExecution?: SolanaLocalExecutionService,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -234,6 +236,50 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const solverAttemptMatch = url.search === ""
+      ? /^\/internal\/solver\/attempts\/(local-atomic-[0-9a-f]{64})$/.exec(url.pathname)
+      : null;
+    if (solverAttemptMatch !== null) {
+      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+        reject(response, 403, "LOOPBACK_REQUIRED", "Internal solver attempt access is loopback-only.");
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts) || executionIntentStore === undefined) {
+        reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Selected attempt retrieval is unavailable.");
+        return;
+      }
+      const attemptId = solverAttemptMatch[1] as string;
+      try {
+        const attempt = executionIntentStore.getAttempt(attemptId);
+        const selected = executionIntentStore.getSelectedQuote(attemptId);
+        const order = attempt === undefined
+          ? undefined
+          : orderPorts.store.getCanonicalOrderByHash(attempt.orderHash);
+        if (attempt === undefined || selected === undefined || order === undefined) {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Selected execution attempt was not found.");
+          return;
+        }
+        sendJson(response, 200, {
+          version: 1,
+          attemptId,
+          orderHash: attempt.orderHash,
+          routeHash: attempt.routeHash,
+          quoteHash: attempt.quoteHash,
+          order: toProtocolJson(order, "selectedAttempt.order"),
+          route: selected.route,
+          quote: selected.quote,
+        });
+      } catch {
+        reject(response, 502, "ATTEMPT_RETRIEVAL_FAILED", "Selected attempt retrieval failed closed.");
+      }
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
       sendJson(response, 200, {
         status: "ready",
@@ -250,6 +296,7 @@ export function createPrivateTerminalRequestHandler(
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,
         localExecutionAvailable: localExecutionCoordinator !== undefined,
+        solanaLocalExecutionAvailable: solanaLocalExecution !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
@@ -712,6 +759,10 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 503, "LOCAL_EXECUTION_UNAVAILABLE", "Local execution coordination is unavailable.");
         return;
       }
+      if (localAtomicRuntimeMode !== "PHASE4_FIXTURE") {
+        reject(response, 409, "FIXTURE_MODE_DISABLED", "Fixture lifecycle actions are disabled for manifest-validated execution.");
+        return;
+      }
       const attemptId = attemptActionMatch[1] as string;
       const action = attemptActionMatch[2] as string;
       try {
@@ -732,6 +783,37 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "LOCAL_EXECUTION_FAILED", "Local execution coordination failed closed.");
+      }
+      return;
+    }
+
+    const solanaLocalActionMatch = url.search === ""
+      ? /^\/internal\/terminal\/attempts\/(local-atomic-[0-9a-f]{64})\/solana-local\/(prepare|submit|reconcile)$/.exec(url.pathname)
+      : null;
+    if (solanaLocalActionMatch !== null) {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (solanaLocalExecution === undefined) {
+        reject(response, 503, "SOLANA_LOCAL_EXECUTION_UNAVAILABLE", "Manifest-validated local Solana execution is unavailable.");
+        return;
+      }
+      const attemptId = solanaLocalActionMatch[1] as string;
+      const action = solanaLocalActionMatch[2] as string;
+      try {
+        const result = action === "prepare"
+          ? await solanaLocalExecution.prepare(attemptId)
+          : action === "reconcile"
+            ? await solanaLocalExecution.reconcile(attemptId)
+            : await solanaLocalExecution.submit(attemptId, await readJson(request) as {
+              signedTransactionBase64?: string;
+              signature?: string;
+            });
+        sendJson(response, 200, result);
+      } catch {
+        reject(response, 409, "SOLANA_LOCAL_EXECUTION_FAILED", "Manifest-validated local Solana execution failed closed.");
       }
       return;
     }
@@ -781,6 +863,7 @@ export function createPrivateTerminalServer(
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
+  solanaLocalExecution?: SolanaLocalExecutionService,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -794,6 +877,7 @@ export function createPrivateTerminalServer(
     localExecutionCoordinator,
     runtimeHealth,
     localAtomicRuntimeMode,
+    solanaLocalExecution,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

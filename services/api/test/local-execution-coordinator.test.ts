@@ -129,6 +129,37 @@ test("durably coordinates the deterministic local lifecycle including recovery",
   }
 });
 
+test("advances a submitted manifest execution only from bound consensus evidence", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-local-consensus-execution-"));
+  const setup = fixture(scratch);
+  try {
+    setup.coordinator.prepare(setup.attempt.attemptId);
+    setup.coordinator.submit(setup.attempt.attemptId);
+    const evidence = new Uint8Array(32).fill(9);
+    const opened = setup.coordinator.recordConsensusOpen(setup.attempt.attemptId, evidence);
+    assert.equal(opened.state, "OPEN");
+    assert.deepEqual(opened.receipts.slice(-2).map((receipt) => ({
+      state: receipt.nextState,
+      grade: receipt.evidenceGrade,
+      onchain: receipt.onchainEnforced,
+    })), [
+      { state: "ENTRY_CONFIRMED", grade: "CONSENSUS_VERIFIED", onchain: true },
+      { state: "OPEN", grade: "CONSENSUS_VERIFIED", onchain: true },
+    ]);
+    assert.deepEqual(setup.coordinator.recordConsensusOpen(setup.attempt.attemptId, evidence), opened);
+    assert.throws(
+      () => setup.coordinator.recordConsensusOpen(setup.attempt.attemptId, new Uint8Array(32).fill(8)),
+      (error: unknown) => error instanceof LocalExecutionCoordinatorError
+        && error.code === "ATTEMPT_BINDING_MISMATCH",
+    );
+  } finally {
+    setup.lifecycle.close();
+    setup.intents.close();
+    setup.orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("fails closed without an authorized selected attempt and serves narrow actions", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-local-execution-http-"));
   const setup = fixture(scratch);

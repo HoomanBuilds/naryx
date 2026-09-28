@@ -10,6 +10,7 @@ import {
 } from '@naryx/adapter-core';
 
 const UPGRADEABLE_LOADER = 'BPFLoaderUpgradeab1e11111111111111111111111';
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
 async function rpc(url: string, method: string, params: readonly unknown[] = []): Promise<unknown> {
   const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
@@ -36,6 +37,32 @@ export interface LoadedSolanaLocalEnvironmentRuntime {
   readonly manifest: SolanaLocalEnvironmentManifest;
   readonly initialSlot: bigint;
   readSlot(): Promise<bigint>;
+  validateLive(): Promise<void>;
+}
+
+async function validateManifestAccounts(manifest: SolanaLocalEnvironmentManifest): Promise<void> {
+  const expected = new Map<string, string>([
+    [manifest.accounts.config, manifest.programs.core.id],
+    [manifest.accounts.solverRegistry, manifest.programs.core.id],
+    [manifest.accounts.market, manifest.programs.conformanceVenue.id],
+    [manifest.accounts.position, manifest.programs.conformanceVenue.id],
+    [manifest.assets.base.mint, TOKEN_PROGRAM],
+    [manifest.assets.quote.mint, TOKEN_PROGRAM],
+    [manifest.accounts.spotBaseVault, TOKEN_PROGRAM],
+    [manifest.accounts.spotQuoteVault, TOKEN_PROGRAM],
+    [manifest.accounts.perpQuoteVault, TOKEN_PROGRAM],
+    [manifest.accounts['trader-base'], TOKEN_PROGRAM],
+    [manifest.accounts['trader-quote'], TOKEN_PROGRAM],
+  ]);
+  const result = await rpc(manifest.rpc.url, 'getMultipleAccounts', [
+    [...expected.keys()], { encoding: 'base64', commitment: 'confirmed' },
+  ]) as { value?: readonly ({ owner?: string } | null)[] };
+  if (!Array.isArray(result.value) || result.value.length !== expected.size) {
+    throw new Error('manifest-bound Solana accounts are missing');
+  }
+  [...expected].forEach(([address, owner], index) => {
+    if (result.value?.[index]?.owner !== owner) throw new Error(`manifest-bound Solana account ${address} is invalid`);
+  });
 }
 
 export async function loadSolanaLocalEnvironmentRuntime(path: string, expectedSolverId: string): Promise<LoadedSolanaLocalEnvironmentRuntime> {
@@ -48,6 +75,21 @@ export async function loadSolanaLocalEnvironmentRuntime(path: string, expectedSo
   ]);
   const snapshot: SolanaLocalRpcSnapshot = { genesisHash: String(genesisHash), slot: Number(slotValue), programs: { core, conformanceVenue } };
   const initialSlot = validateSolanaLocalRpcSnapshot(manifest, snapshot, expectedSolverId);
+  await validateManifestAccounts(manifest);
+  const validateLive = async () => {
+    const [genesis, slotValue, liveCore, liveVenue] = await Promise.all([
+      rpc(manifest.rpc.url, 'getGenesisHash'),
+      rpc(manifest.rpc.url, 'getSlot', [{ commitment: 'confirmed' }]),
+      programSnapshot(manifest, 'core'),
+      programSnapshot(manifest, 'conformanceVenue'),
+      validateManifestAccounts(manifest),
+    ]);
+    validateSolanaLocalRpcSnapshot(manifest, {
+      genesisHash: String(genesis),
+      slot: Number(slotValue),
+      programs: { core: liveCore, conformanceVenue: liveVenue },
+    }, expectedSolverId);
+  };
   return Object.freeze({
     manifest,
     initialSlot,
@@ -58,5 +100,6 @@ export async function loadSolanaLocalEnvironmentRuntime(path: string, expectedSo
       if (!Number.isSafeInteger(slot) || slot <= 0) throw new Error('validator returned an invalid slot');
       return BigInt(slot);
     },
+    validateLive,
   });
 }

@@ -20,6 +20,8 @@ const EVIDENCE_SOURCE_HASH = manifestHash(createHash("sha256")
 
 export type LocalExecutionAction =
   | "prepare"
+  | "submit"
+  | "consensus-open"
   | "open"
   | "observation-ambiguity"
   | "controller-recovery"
@@ -77,6 +79,36 @@ export class LocalExecutionCoordinator {
     this.#ensureInitial(binding, "PACKAGE_CREATED", "package-created");
     this.#ensureTransition(binding, "PACKAGE_CREATED", "ENTRY_PREPARED", "entry-prepared");
     return this.#result("prepare", binding);
+  }
+
+  submit(attemptId: string): LocalExecutionResult {
+    const binding = this.#binding(attemptId);
+    this.#ensureInitial(binding, "PACKAGE_CREATED", "package-created");
+    this.#ensureTransition(binding, "PACKAGE_CREATED", "ENTRY_PREPARED", "entry-prepared");
+    this.#ensureTransition(binding, "ENTRY_PREPARED", "ENTRY_SUBMITTED", "entry-submitted");
+    if (this.#state(binding) !== "ENTRY_SUBMITTED") {
+      throw new LocalExecutionCoordinatorError(
+        "ATTEMPT_STATE_CONFLICT",
+        "Attempt cannot be submitted from its current lifecycle state.",
+      );
+    }
+    return this.#result("submit", binding);
+  }
+
+  recordConsensusOpen(attemptId: string, evidence: Uint8Array): LocalExecutionResult {
+    if (!(evidence instanceof Uint8Array) || evidence.length !== 32 || evidence.every((byte) => byte === 0)) {
+      throw new LocalExecutionCoordinatorError("INVALID_EVIDENCE", "Consensus evidence must be a nonzero hash.");
+    }
+    const binding = this.#binding(attemptId);
+    this.#ensureConsensusTransition(binding, "ENTRY_SUBMITTED", "ENTRY_CONFIRMED", "onchain-entry-confirmed", evidence);
+    this.#ensureConsensusTransition(binding, "ENTRY_CONFIRMED", "OPEN", "onchain-entry-open", evidence);
+    if (this.#state(binding) !== "OPEN") {
+      throw new LocalExecutionCoordinatorError(
+        "ATTEMPT_STATE_CONFLICT",
+        "Attempt cannot be opened without confirmed onchain evidence.",
+      );
+    }
+    return this.#result("consensus-open", binding);
   }
 
   open(attemptId: string): LocalExecutionResult {
@@ -221,6 +253,66 @@ export class LocalExecutionCoordinator {
     }
     const head = this.#head(binding);
     if (head.state === prior) this.#append(binding, next, event);
+  }
+
+  #ensureConsensusTransition(
+    binding: ExecutionBinding,
+    prior: PackageLifecycleState,
+    next: PackageLifecycleState,
+    event: string,
+    evidence: Uint8Array,
+  ): void {
+    const recorded = this.#ports.lifecycle.getReceiptByEventId(this.#eventId(binding, event));
+    if (recorded !== undefined) {
+      this.#validateConsensusReceipt(binding, recorded, next, event, evidence);
+      return;
+    }
+    if (this.#head(binding).state !== prior) return;
+    const head = this.#head(binding);
+    this.#ports.lifecycle.recordEvent({
+      version: 1,
+      domain: binding.domain,
+      settlementClass: binding.settlementClass,
+      packageId: binding.attempt.attemptId,
+      packageCommitment: binding.packageCommitment,
+      attemptId: binding.attempt.attemptId,
+      eventId: this.#eventId(binding, event),
+      expectedRevision: head.revision,
+      nextState: next,
+      evidenceGrade: "CONSENSUS_VERIFIED",
+      onchainEnforced: true,
+      evidenceSource: {
+        subjectId: protocolId(EVIDENCE_SOURCE_ID),
+        manifestVersion: 1,
+        manifestHash: EVIDENCE_SOURCE_HASH,
+      },
+      evidenceCommitment: digest("consensus-evidence", binding.packageCommitment, Buffer.from(event, "ascii"), evidence),
+    });
+  }
+
+  #validateConsensusReceipt(
+    binding: ExecutionBinding,
+    receipt: PackageLifecycleReceipt,
+    state: PackageLifecycleState,
+    event: string,
+    evidence: Uint8Array,
+  ): void {
+    if (receipt.attemptId !== binding.attempt.attemptId
+      || receipt.packageId !== binding.attempt.attemptId
+      || !bytesEqual(receipt.packageCommitment, binding.packageCommitment)
+      || receipt.eventId !== this.#eventId(binding, event)
+      || receipt.nextState !== state
+      || receipt.evidenceGrade !== "CONSENSUS_VERIFIED"
+      || !receipt.onchainEnforced
+      || !bytesEqual(
+        receipt.evidenceCommitment,
+        digest("consensus-evidence", binding.packageCommitment, Buffer.from(event, "ascii"), evidence),
+      )) {
+      throw new LocalExecutionCoordinatorError(
+        "ATTEMPT_BINDING_MISMATCH",
+        "Stored consensus lifecycle event does not match the onchain evidence.",
+      );
+    }
   }
 
   #requireRecordedEvent(
