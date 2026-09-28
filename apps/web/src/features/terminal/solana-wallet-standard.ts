@@ -12,7 +12,9 @@ import {
 } from "@wallet-standard/features";
 import {
   SolanaSignAndSendTransaction,
+  SolanaSignMessage,
   type SolanaSignAndSendTransactionFeature,
+  type SolanaSignMessageFeature,
 } from "@solana/wallet-standard-features";
 import bs58 from "bs58";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,24 +22,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 const SOLANA_DEVNET_CHAIN = "solana:devnet";
 
 type DevnetWallet = Wallet & {
-  features: Wallet["features"] & StandardConnectFeature & SolanaSignAndSendTransactionFeature &
-    Partial<StandardDisconnectFeature & StandardEventsFeature>;
+  features: Wallet["features"] & StandardConnectFeature &
+    Partial<SolanaSignAndSendTransactionFeature & SolanaSignMessageFeature &
+      StandardDisconnectFeature & StandardEventsFeature>;
 };
 
 function isDevnetWallet(wallet: Wallet): wallet is DevnetWallet {
   const connect = wallet.features[StandardConnect];
-  const sender = wallet.features[SolanaSignAndSendTransaction];
   return wallet.chains.includes(SOLANA_DEVNET_CHAIN) &&
     typeof connect === "object" && connect !== null &&
-    typeof (connect as { connect?: unknown }).connect === "function" &&
-    typeof sender === "object" && sender !== null &&
-    typeof (sender as { signAndSendTransaction?: unknown }).signAndSendTransaction === "function";
+    typeof (connect as { connect?: unknown }).connect === "function";
 }
 
 function eligibleAccounts(accounts: readonly WalletAccount[]): readonly WalletAccount[] {
   return accounts.filter((account) =>
     account.chains.includes(SOLANA_DEVNET_CHAIN) &&
-    account.features.includes(SolanaSignAndSendTransaction),
+    (account.features.includes(SolanaSignAndSendTransaction) ||
+      account.features.includes(SolanaSignMessage)),
   );
 }
 
@@ -49,11 +50,13 @@ export type SolanaWalletSession = {
   connecting: boolean;
   error: string | null;
   canSignAndSendV0: boolean;
+  canSignMessage: boolean;
   selectWallet(name: string): void;
   selectAccount(address: string): void;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   signAndSend(transaction: Uint8Array): Promise<string>;
+  signMessage(message: Uint8Array): Promise<string>;
 };
 
 export function useSolanaDevnetWallet(): SolanaWalletSession {
@@ -105,7 +108,13 @@ export function useSolanaDevnetWallet(): SolanaWalletSession {
   ) ?? null;
   const canSignAndSendV0 = Boolean(
     selectedWallet && selectedAccount &&
-    selectedWallet.features[SolanaSignAndSendTransaction].supportedTransactionVersions.includes(0),
+    selectedWallet.features[SolanaSignAndSendTransaction]
+      ?.supportedTransactionVersions.includes(0),
+  );
+  const canSignMessage = Boolean(
+    selectedWallet && selectedAccount &&
+    selectedAccount.features.includes(SolanaSignMessage) &&
+    selectedWallet.features[SolanaSignMessage],
   );
 
   const selectWallet = useCallback((name: string) => {
@@ -150,7 +159,11 @@ export function useSolanaDevnetWallet(): SolanaWalletSession {
     if (!selectedWallet || !selectedAccount || !canSignAndSendV0) {
       throw new Error("A Wallet Standard account with Devnet v0 signing is required.");
     }
-    const [output] = await selectedWallet.features[SolanaSignAndSendTransaction]
+    const sender = selectedWallet.features[SolanaSignAndSendTransaction];
+    if (!sender) {
+      throw new Error("The selected wallet does not support Devnet transaction submission.");
+    }
+    const [output] = await sender
       .signAndSendTransaction({
         transaction,
         account: selectedAccount,
@@ -166,6 +179,22 @@ export function useSolanaDevnetWallet(): SolanaWalletSession {
     return bs58.encode(output.signature);
   }, [canSignAndSendV0, selectedAccount, selectedWallet]);
 
+  const signMessage = useCallback(async (message: Uint8Array) => {
+    if (!selectedWallet || !selectedAccount || !canSignMessage) {
+      throw new Error("A Wallet Standard account with Solana message signing is required.");
+    }
+    const signer = selectedWallet.features[SolanaSignMessage];
+    if (!signer) {
+      throw new Error("The selected wallet does not support Solana message signing.");
+    }
+    const [output] = await signer.signMessage({ message, account: selectedAccount });
+    if (!output || output.signature.length !== 64 ||
+        !bytesEqual(output.signedMessage, message)) {
+      throw new Error("Wallet did not sign the exact canonical order bytes.");
+    }
+    return bs58.encode(output.signature);
+  }, [canSignMessage, selectedAccount, selectedWallet]);
+
   return {
     wallets,
     selectedWallet,
@@ -174,10 +203,16 @@ export function useSolanaDevnetWallet(): SolanaWalletSession {
     connecting,
     error,
     canSignAndSendV0,
+    canSignMessage,
     selectWallet,
     selectAccount: setSelectedAccountAddress,
     connect,
     disconnect,
     signAndSend,
+    signMessage,
   };
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }

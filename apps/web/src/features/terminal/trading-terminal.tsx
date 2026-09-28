@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
 import type {
+  LocalAuthorization,
+  LocalExecutionAction,
+  LocalOrderCreateResponse,
+  LocalSelectedAttempt,
+  LocalSolverQuote,
   PackageLifecycleResponse,
   SolanaExecutionObservation,
 } from "./private-http-terminal-provider";
@@ -393,6 +398,17 @@ type LifecycleViewState = {
   unavailable: boolean;
 };
 
+type LocalFlowState = {
+  ticketKey: string;
+  order: LocalOrderCreateResponse | null;
+  authorization: LocalAuthorization | null;
+  quote: LocalSolverQuote | null;
+  attempt: LocalSelectedAttempt | null;
+  lifecycle: PackageLifecycleResponse | null;
+  busy: string | null;
+  error: string | null;
+};
+
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
 
@@ -433,6 +449,100 @@ function compact(value: string, leading = 10, trailing = 8) {
   return value.length > leading + trailing + 3
     ? `${value.slice(0, leading)}...${value.slice(-trailing)}`
     : value;
+}
+
+function protocolScalar(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.$naryxType === "bigint" && typeof record.value === "string") return record.value;
+  }
+  return "-";
+}
+
+function quoteAmount(quote: LocalSolverQuote, key: string): string {
+  const value = quote.quote[key];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "-";
+  return protocolScalar((value as Record<string, unknown>).atoms);
+}
+
+function LocalExecutionPanel({
+  flow,
+  enabled,
+  canSignMessage,
+  onStep,
+}: {
+  flow: LocalFlowState | null;
+  enabled: boolean;
+  canSignMessage: boolean;
+  onStep: (step: "create" | "authorize" | "quote" | "select" | LocalExecutionAction) => void;
+}) {
+  const order = flow?.order?.order ?? null;
+  const quote = flow?.quote ?? null;
+  const attempt = flow?.attempt ?? null;
+  const state = flow?.lifecycle?.attempt.state ?? null;
+  const busy = flow?.busy !== null && flow?.busy !== undefined;
+  return (
+    <section className={styles.executionReview} aria-labelledby="local-execution-title">
+      <div className={styles.evidenceHeading}>
+        <h3 id="local-execution-title">Local conformance lifecycle</h3>
+        <span>{state ?? (attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : order ? "UNSIGNED" : "READY")}</span>
+      </div>
+      <p className={styles.reviewNotice}>
+        Deterministic local controller evidence only. These actions are not onchain transactions and do not prove atomic execution.
+      </p>
+      {order ? (
+        <div className={styles.reviewGrid}>
+          <span>Order hash</span><strong title={order.orderHashHex}>{compact(order.orderHashHex, 12, 10)}</strong>
+          <span>Canonical bytes</span><strong>{order.orderBytes.length} B</strong>
+          <span>Domain</span><strong>{order.domainId}</strong>
+          <span>Manifest</span><strong title={order.domainManifestHashHex}>v{order.domainManifestVersion} / {compact(order.domainManifestHashHex)}</strong>
+          <span>Nonce</span><strong title={order.nonceDecimal}>{compact(order.nonceDecimal)}</strong>
+          <span>Authorization</span><strong>{flow?.authorization ? "Wallet signed exact bytes" : "Required"}</strong>
+        </div>
+      ) : null}
+      {quote ? (
+        <div className={styles.reviewGrid}>
+          <span>Quote status</span><strong>{quote.status}</strong>
+          <span>Solver</span><strong>{protocolScalar(quote.quote.solverId)}</strong>
+          <span>Quote mode</span><strong>{protocolScalar(quote.quote.quoteMode)}</strong>
+          <span>Valid until</span><strong>{protocolScalar(quote.quote.validUntilValue)} {protocolScalar(quote.quote.validUntilUnit)}</strong>
+          <span>Outcome</span><strong>{protocolScalar((quote.quote.quotedOutcome as Record<string, unknown> | undefined)?.kind)}</strong>
+          <span>Solver fee atoms</span><strong>{quoteAmount(quote, "solverFee")}</strong>
+          <span>Protocol fee atoms</span><strong>{quoteAmount(quote, "protocolFee")}</strong>
+          <span>Priority fee atoms</span><strong>{quoteAmount(quote, "expectedPriorityFee")}</strong>
+          <span>Quote hash</span><strong title={quote.quoteHash}>{compact(quote.quoteHash, 12, 10)}</strong>
+          <span>Route hash</span><strong title={quote.routeHash}>{compact(quote.routeHash, 12, 10)}</strong>
+          <span>Solver digest</span><strong title={quote.solverSignatureDigest}>{compact(quote.solverSignatureDigest, 12, 10)}</strong>
+          <span>Quote bytes</span><strong>{quote.solverQuoteBytes.length / 2} B</strong>
+          <span>Route bytes</span><strong>{quote.routeBytes.length / 2} B</strong>
+        </div>
+      ) : null}
+      {attempt ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Selected attempt</span>
+          <strong title={attempt.attemptId}>{compact(attempt.attemptId, 18, 12)}</strong>
+          <small>{state ? `Authoritative lifecycle head: ${state}.` : "Ready for local preparation."}</small>
+        </div>
+      ) : null}
+      <div className={styles.localActions}>
+        <button type="button" className={styles.secondaryAction} disabled={!enabled || busy || Boolean(order)} onClick={() => onStep("create")}>Create canonical order</button>
+        <button type="button" className={styles.secondaryAction} disabled={!order || !canSignMessage || busy || Boolean(flow?.authorization)} onClick={() => onStep("authorize")}>Sign and authorize</button>
+        <button type="button" className={styles.secondaryAction} disabled={!flow?.authorization || busy || Boolean(quote)} onClick={() => onStep("quote")}>Request signed quote</button>
+        <button type="button" className={styles.primaryAction} disabled={!quote || busy || Boolean(attempt)} onClick={() => onStep("select")}>Select reviewed quote</button>
+        <button type="button" className={styles.secondaryAction} disabled={!attempt || busy || state !== null} onClick={() => onStep("prepare")}>Prepare local attempt</button>
+        <button type="button" className={styles.primaryAction} disabled={!attempt || busy || (state !== "ENTRY_PREPARED" && state !== "PACKAGE_CREATED")} onClick={() => onStep("open")}>Open locally</button>
+        <button type="button" className={styles.secondaryAction} disabled={!attempt || busy || (state !== "OPEN" && state !== "ENTRY_SUBMITTED")} onClick={() => onStep("observation-ambiguity")}>Drill observation ambiguity</button>
+        <button type="button" className={styles.secondaryAction} disabled={!attempt || busy || state !== "RECOVERY_PENDING"} onClick={() => onStep("controller-recovery")}>Controller recovery</button>
+        <button type="button" className={styles.primaryAction} disabled={!attempt || busy || state !== "OPEN"} onClick={() => onStep("close")}>Close / exit locally</button>
+      </div>
+      <p className={styles.fieldContext} role="status">
+        {flow?.error ?? (flow?.busy ? `${flow.busy}.` : canSignMessage
+          ? "Each transition is explicit and refreshes the durable authoritative receipt chain."
+          : "The selected wallet must advertise SolanaSignMessage to authorize exact order bytes.")}
+      </p>
+    </section>
+  );
 }
 
 function preparationFingerprint(preparation: SolanaExecutionPreparation) {
@@ -629,6 +739,9 @@ function Ticket({
   size,
   slippage,
   quoteMode,
+  localFlow,
+  localFlowEnabled,
+  localCanSignMessage,
   executionReview,
   submission,
   confirming,
@@ -641,6 +754,7 @@ function Ticket({
   onSizeChange,
   onSlippageChange,
   onQuoteModeChange,
+  onLocalStep,
   onExecutionAction,
   onPrepareExecution,
   onRetryObservation,
@@ -651,6 +765,9 @@ function Ticket({
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
+  localFlow: LocalFlowState | null;
+  localFlowEnabled: boolean;
+  localCanSignMessage: boolean;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
   confirming: boolean;
@@ -663,6 +780,7 @@ function Ticket({
   onSizeChange: (size: string) => void;
   onSlippageChange: (slippage: SlippageBps) => void;
   onQuoteModeChange: (quoteMode: QuoteMode) => void;
+  onLocalStep: (step: "create" | "authorize" | "quote" | "select" | LocalExecutionAction) => void;
   onExecutionAction: () => void;
   onPrepareExecution: () => void;
   onRetryObservation: () => void;
@@ -760,6 +878,13 @@ function Ticket({
           </div>
         ))}
       </section>
+
+      <LocalExecutionPanel
+        flow={localFlow}
+        enabled={localFlowEnabled}
+        canSignMessage={localCanSignMessage}
+        onStep={onLocalStep}
+      />
 
       <section className={styles.feeSummary} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title">Fee summary</h3>
@@ -998,6 +1123,7 @@ export function TradingTerminal({
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
   const wallet = useSolanaDevnetWallet();
+  const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
   const [lifecycleView, setLifecycleView] = useState<LifecycleViewState | null>(null);
@@ -1039,6 +1165,7 @@ export function TradingTerminal({
     ? executionReview
     : null;
   const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
+  const currentLocalFlow = localFlow?.ticketKey === ticketKey ? localFlow : null;
   const currentLifecycle = lifecycleView?.ticketKey === ticketKey &&
     lifecycleView.attemptId === currentExecutionReview?.preparation.lifecycleAttemptId
     ? lifecycleView
@@ -1469,11 +1596,80 @@ export function TradingTerminal({
     setLifecycleRefresh((value) => value + 1);
   }
 
+  async function handleLocalStep(
+    step: "create" | "authorize" | "quote" | "select" | LocalExecutionAction,
+  ) {
+    if (!privateProvider || !wallet.selectedAccount) return;
+    const base: LocalFlowState = currentLocalFlow ?? {
+      ticketKey,
+      order: null,
+      authorization: null,
+      quote: null,
+      attempt: null,
+      lifecycle: null,
+      busy: null,
+      error: null,
+    };
+    setLocalFlow({ ...base, busy: step, error: null });
+    try {
+      if (step === "create") {
+        const order = await privateProvider.createLocalOrder({
+          owner: wallet.selectedAccount.address,
+          settlementAccount: wallet.selectedAccount.address,
+          size,
+          slippageBps: slippage,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        setLocalFlow({ ...base, order, busy: null, error: null });
+        return;
+      }
+      if (!base.order) throw new Error("Create the canonical order first.");
+      if (step === "authorize") {
+        const signature = await wallet.signMessage(base.order.order.orderBytes);
+        const authorization = await privateProvider.authorizeLocalOrder(
+          base.order.order,
+          signature,
+        );
+        setLocalFlow({ ...base, authorization, busy: null, error: null });
+        return;
+      }
+      if (!base.authorization) throw new Error("Authorize the canonical order first.");
+      if (step === "quote") {
+        const quote = await privateProvider.requestLocalQuote(
+          base.order.order,
+          crypto.randomUUID(),
+        );
+        setLocalFlow({ ...base, quote, busy: null, error: null });
+        return;
+      }
+      if (!base.quote) throw new Error("Request and review a signed solver quote first.");
+      if (step === "select") {
+        const attempt = await privateProvider.selectLocalQuote(base.quote);
+        setLocalFlow({ ...base, attempt, busy: null, error: null });
+        return;
+      }
+      if (!base.attempt) throw new Error("Select the reviewed quote first.");
+      const result = await privateProvider.runLocalExecutionAction(base.attempt, step);
+      setLocalFlow({ ...base, lifecycle: result.lifecycle, busy: null, error: null });
+    } catch (cause) {
+      setLocalFlow({
+        ...base,
+        busy: null,
+        error: cause instanceof Error ? cause.message : "Local execution action failed.",
+      });
+    }
+  }
+
   const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
     providerConnection !== "connected" || !wallet.selectedAccount ||
     !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
     quoteMode !== "coordinated_limits" ||
     currentSubmission !== null;
+  const localFlowEnabled = selectedDomain === "solana" && mode === "entry" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
+    quoteMode === "coordinated_limits";
+  const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
   return (
     <main className={styles.terminalShell}>
@@ -1507,6 +1703,9 @@ export function TradingTerminal({
           size={size}
           slippage={slippage}
           quoteMode={quoteMode}
+          localFlow={currentLocalFlow}
+          localFlowEnabled={localFlowEnabled}
+          localCanSignMessage={wallet.canSignMessage}
           executionReview={currentExecutionReview}
           submission={currentSubmission}
           confirming={confirmingInWallet}
@@ -1519,6 +1718,7 @@ export function TradingTerminal({
           onSizeChange={setSize}
           onSlippageChange={setSlippage}
           onQuoteModeChange={setQuoteMode}
+          onLocalStep={(step) => void handleLocalStep(step)}
           onExecutionAction={() => void handleExecutionAction()}
           onPrepareExecution={() => void handlePrepareExecution()}
           onRetryObservation={handleRetryObservation}
@@ -1529,9 +1729,9 @@ export function TradingTerminal({
         providerConnection={providerConnection}
         submission={currentSubmission}
         attemptMode={mode}
-        lifecycle={currentLifecycle?.data ?? null}
-        lifecycleLoading={currentLifecycle?.loading ?? false}
-        lifecycleUnavailable={currentLifecycle?.unavailable ?? false}
+        lifecycle={displayedLifecycle}
+        lifecycleLoading={currentLocalFlow ? false : currentLifecycle?.loading ?? false}
+        lifecycleUnavailable={currentLocalFlow ? false : currentLifecycle?.unavailable ?? false}
         onRetryObservation={handleRetryObservation}
         onRetryLifecycle={handleRetryLifecycle}
       />

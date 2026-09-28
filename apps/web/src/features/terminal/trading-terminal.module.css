@@ -698,6 +698,17 @@
   margin-left: 14px;
 }
 
+.localActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.localActions button:last-of-type {
+  grid-column: 1 / -1;
+}
+
 .fieldLabel {
   display: flex;
   align-items: center;

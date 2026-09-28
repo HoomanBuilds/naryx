@@ -17,6 +17,8 @@ const MAX_COMPUTE_UNITS = 1_260_000;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const FAILURE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const LIFECYCLE_ATTEMPT_ID_PATTERN = /^solana-cash-carry-[0-9a-f]{64}$/;
+const LOCAL_ATTEMPT_ID_PATTERN = /^local-atomic-[0-9a-f]{64}$/;
+const LOCAL_CONTEXT_ID = "local:svm:sol-carry-v1";
 
 export type SolanaExecutionObservationRequest = Readonly<{
   idempotencyKey: string;
@@ -111,6 +113,75 @@ export type PackageLifecycleReceipt = Readonly<{
 export type PackageLifecycleResponse = Readonly<{
   attempt: PackageLifecycleAttempt;
   receipts: readonly PackageLifecycleReceipt[];
+}>;
+
+export type LocalOrderRecord = Readonly<{
+  idempotencyKey: string;
+  requestCommitmentHex: string;
+  orderHashHex: string;
+  orderBase64: string;
+  contextId: typeof LOCAL_CONTEXT_ID;
+  domainId: "svm:local";
+  domainManifestVersion: number;
+  domainManifestHashHex: string;
+  owner: string;
+  settlementAccount: string;
+  nonceDecimal: string;
+  status: "UNSIGNED_CREATED";
+  createdAtMs: number;
+  orderBytes: Uint8Array;
+}>;
+
+export type LocalOrderCreateResponse = Readonly<{
+  status: "UNSIGNED_CREATED";
+  created: boolean;
+  order: LocalOrderRecord;
+  traderAuthorization: "REQUIRED";
+  solverQuoting: "REQUIRED";
+  note: string;
+}>;
+
+export type LocalAuthorization = Readonly<{
+  orderHash: string;
+  owner: string;
+  signature: string;
+  authorizedAtMs: number;
+}>;
+
+export type LocalSolverQuote = Readonly<{
+  version: 1;
+  status: "SIGNED";
+  idempotencyKey: string;
+  orderHash: string;
+  routeHash: string;
+  quoteHash: string;
+  solverSignatureDigest: string;
+  routeBytes: string;
+  solverQuoteBytes: string;
+  route: Readonly<Record<string, unknown>>;
+  quote: Readonly<Record<string, unknown>>;
+}>;
+
+export type LocalSelectedAttempt = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  routeHash: string;
+  quoteHash: string;
+  status: "AUTHORIZED_QUOTE_SELECTED";
+  selectedAtMs: number;
+}>;
+
+export type LocalExecutionAction =
+  | "prepare"
+  | "open"
+  | "observation-ambiguity"
+  | "controller-recovery"
+  | "close";
+
+export type LocalExecutionResult = Readonly<{
+  action: LocalExecutionAction;
+  state: PackageLifecycleState;
+  lifecycle: PackageLifecycleResponse;
 }>;
 
 const PACKAGE_LIFECYCLE_STATES = new Set<PackageLifecycleState>([
@@ -269,10 +340,331 @@ function requireStringArray(value: unknown, name: string): readonly string[] {
 }
 
 function requireLifecycleAttemptId(value: unknown): string {
-  if (typeof value !== "string" || !LIFECYCLE_ATTEMPT_ID_PATTERN.test(value)) {
+  if (typeof value !== "string" ||
+      (!LIFECYCLE_ATTEMPT_ID_PATTERN.test(value) && !LOCAL_ATTEMPT_ID_PATTERN.test(value))) {
     throw new Error("Lifecycle attempt id is invalid.");
   }
   return value;
+}
+
+function requireLocalAttemptId(value: unknown): string {
+  if (typeof value !== "string" || !LOCAL_ATTEMPT_ID_PATTERN.test(value)) {
+    throw new Error("Local execution attempt id is invalid.");
+  }
+  return value;
+}
+
+function requireCanonicalBase58Signature(value: unknown, name: string): string {
+  const signature = requireString(value, name);
+  let decoded: Uint8Array;
+  try {
+    decoded = bs58.decode(signature);
+  } catch {
+    throw new Error(`${name} is invalid.`);
+  }
+  if (decoded.length !== 64 || bs58.encode(decoded) !== signature) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return signature;
+}
+
+function requireLocalOrderRecord(
+  value: unknown,
+  expected: { owner: string; settlementAccount: string; idempotencyKey: string },
+): LocalOrderRecord {
+  if (!isRecord(value)) throw new Error("Canonical order response is invalid.");
+  requireExactKeys(value, [
+    "idempotencyKey",
+    "requestCommitmentHex",
+    "orderHashHex",
+    "orderBase64",
+    "contextId",
+    "domainId",
+    "domainManifestVersion",
+    "domainManifestHashHex",
+    "owner",
+    "settlementAccount",
+    "nonceDecimal",
+    "status",
+    "createdAtMs",
+  ], "Canonical order");
+  if (value.idempotencyKey !== expected.idempotencyKey || value.owner !== expected.owner ||
+      value.settlementAccount !== expected.settlementAccount || value.contextId !== LOCAL_CONTEXT_ID ||
+      value.domainId !== "svm:local" || value.status !== "UNSIGNED_CREATED") {
+    throw new Error("Canonical order response does not match the request.");
+  }
+  const orderBytes = decodeCanonicalBase64(value.orderBase64, "Canonical order bytes");
+  if (orderBytes.length === 0) throw new Error("Canonical order bytes are empty.");
+  const domainManifestVersion = requireInteger(value.domainManifestVersion, "Order domain manifest version");
+  const createdAtMs = requireInteger(value.createdAtMs, "Order creation time");
+  if (domainManifestVersion === 0 || createdAtMs === 0) {
+    throw new Error("Canonical order metadata is invalid.");
+  }
+  return Object.freeze({
+    idempotencyKey: value.idempotencyKey,
+    requestCommitmentHex: requireHex32(value.requestCommitmentHex, "Order request commitment"),
+    orderHashHex: requireHex32(value.orderHashHex, "Order hash"),
+    orderBase64: value.orderBase64 as string,
+    contextId: LOCAL_CONTEXT_ID,
+    domainId: "svm:local",
+    domainManifestVersion,
+    domainManifestHashHex: requireHex32(value.domainManifestHashHex, "Order domain manifest hash"),
+    owner: value.owner as string,
+    settlementAccount: value.settlementAccount as string,
+    nonceDecimal: requireCanonicalUnsigned(value.nonceDecimal, "Order nonce", true),
+    status: "UNSIGNED_CREATED",
+    createdAtMs,
+    orderBytes,
+  });
+}
+
+function requireLocalOrderCreateResponse(
+  value: unknown,
+  expected: { owner: string; settlementAccount: string; idempotencyKey: string },
+): LocalOrderCreateResponse {
+  if (!isRecord(value)) throw new Error("Canonical order response is invalid.");
+  requireExactKeys(value, [
+    "status", "created", "order", "traderAuthorization", "solverQuoting", "note",
+  ], "Canonical order response");
+  if (value.status !== "UNSIGNED_CREATED" || typeof value.created !== "boolean" ||
+      value.traderAuthorization !== "REQUIRED" || value.solverQuoting !== "REQUIRED") {
+    throw new Error("Canonical order response status is invalid.");
+  }
+  return Object.freeze({
+    status: "UNSIGNED_CREATED",
+    created: value.created,
+    order: requireLocalOrderRecord(value.order, expected),
+    traderAuthorization: "REQUIRED",
+    solverQuoting: "REQUIRED",
+    note: requireString(value.note, "Canonical order note"),
+  });
+}
+
+function requireLocalAuthorization(
+  value: unknown,
+  order: LocalOrderRecord,
+  signature: string,
+): LocalAuthorization {
+  if (!isRecord(value)) throw new Error("Order authorization response is invalid.");
+  requireExactKeys(value, ["status", "authorization"], "Order authorization response");
+  if (value.status !== "TRADER_AUTHORIZED" || !isRecord(value.authorization)) {
+    throw new Error("Order authorization status is invalid.");
+  }
+  requireExactKeys(
+    value.authorization,
+    ["orderHash", "owner", "signature", "authorizedAtMs"],
+    "Order authorization",
+  );
+  const authorization = value.authorization;
+  if (authorization.orderHash !== order.orderHashHex || authorization.owner !== order.owner ||
+      authorization.signature !== signature) {
+    throw new Error("Order authorization does not match the canonical order.");
+  }
+  const authorizedAtMs = requireInteger(authorization.authorizedAtMs, "Authorization time");
+  if (authorizedAtMs === 0) throw new Error("Authorization time is invalid.");
+  return Object.freeze({
+    orderHash: order.orderHashHex,
+    owner: order.owner,
+    signature: requireCanonicalBase58Signature(signature, "Authorization signature"),
+    authorizedAtMs,
+  });
+}
+
+function requireLocalSolverQuote(
+  value: unknown,
+  orderHash: string,
+  idempotencyKey: string,
+): LocalSolverQuote {
+  if (!isRecord(value)) throw new Error("Solver quote response is invalid.");
+  requireExactKeys(value, [
+    "version", "status", "idempotencyKey", "orderHash", "routeHash", "quoteHash",
+    "solverSignatureDigest", "routeBytes", "solverQuoteBytes", "route", "quote",
+  ], "Solver quote response");
+  if (value.version !== 1 || value.status !== "SIGNED" || value.orderHash !== orderHash ||
+      value.idempotencyKey !== idempotencyKey || !isRecord(value.route) || !isRecord(value.quote)) {
+    throw new Error("Solver quote binding is invalid.");
+  }
+  requireKeysWithOptional(value.route, [
+    "version", "environment", "domain", "orderHash", "templateId", "templateVersion",
+    "packageTemplateManifestHash", "templateRegistryRecordHash", "owner", "settlementAccount",
+    "solver", "direction", "action", "quantityPolicyClass", "partialFillPolicy",
+    "settlementClass", "executionPlanKind", "routeExpiryUnit", "routeExpiryValue",
+    "feePolicyVersion", "feePolicyManifestHash", "accountBindings", "serviceCharges",
+    "preconditions", "legs", "actions", "postconditions", "evidenceRequirements",
+  ], ["recoveryPlan"], "Solver route");
+  requireKeysWithOptional(value.quote, [
+    "version", "environment", "domain", "orderHash", "solverId",
+    "solverCapabilityManifestHash", "solverSignatureScheme", "solverVerificationKey",
+    "quoteMode", "routeHash", "quotedOutcome", "expectedSpotNotional",
+    "expectedPerpNotional", "expectedGrossSpotQuantity", "expectedNetSpotQuantity",
+    "expectedBaseAssetFee", "expectedMarginDelta", "expectedRawFillFeesByAsset",
+    "expectedBuilderFeesByAsset", "expectedNormalizedVenueFeesByAsset", "solverFee",
+    "protocolFee", "expectedPriorityFee", "maxRecoveryCostAtomsByAsset", "feePolicyVersion",
+    "feePolicyManifestHash", "validUntilUnit", "validUntilValue", "quoteNonce", "signature",
+  ], ["expectedTerminalResidualBaseQuantity", "expectedTerminalResidualQuoteValue", "reservationId"], "Solver quote");
+  if (value.route.version !== 1 || value.route.environment !== "local" ||
+      value.route.settlementClass !== "ATOMIC_POSTCONDITION" ||
+      value.quote.version !== 1 || value.quote.environment !== "local" ||
+      value.quote.solverSignatureScheme !== "ED25519" ||
+      value.quote.quoteMode !== "EXECUTION_COMMITMENT" ||
+      typeof value.quote.solverId !== "string" || value.quote.solverId.length === 0 ||
+      !isRecord(value.quote.quotedOutcome)) {
+    throw new Error("Solver quote semantics are invalid.");
+  }
+  requireTaggedBytes32(value.route.orderHash, "Solver route order hash");
+  requireTaggedBytes32(value.quote.orderHash, "Solver quote order hash");
+  requireTaggedBytes32(value.quote.routeHash, "Solver quote route hash");
+  requireTaggedScalar(value.route.routeExpiryValue, "bigint", "Solver route expiry");
+  requireTaggedScalar(value.quote.validUntilValue, "bigint", "Solver quote expiry");
+  requireTaggedScalar(value.quote.quoteNonce, "bigint", "Solver quote nonce");
+  const signatureBytes = requireTaggedScalar(value.quote.signature, "bytes", "Solver quote signature");
+  if (signatureBytes.length !== 128) throw new Error("Solver quote signature is invalid.");
+  for (const key of [
+    "expectedRawFillFeesByAsset", "expectedBuilderFeesByAsset",
+    "expectedNormalizedVenueFeesByAsset", "maxRecoveryCostAtomsByAsset",
+  ]) {
+    if (!Array.isArray(value.quote[key])) throw new Error("Solver quote fee evidence is invalid.");
+  }
+  for (const key of ["solverFee", "protocolFee", "expectedPriorityFee"]) {
+    const amount = value.quote[key];
+    if (!isRecord(amount)) throw new Error("Solver quote fee amount is invalid.");
+    requireExactKeys(amount, ["asset", "atoms"], "Solver quote fee amount");
+    requireTaggedScalar(amount.atoms, "bigint", "Solver quote fee atoms");
+  }
+  for (const [field, raw] of [["Route bytes", value.routeBytes], ["Solver quote bytes", value.solverQuoteBytes]] as const) {
+    if (typeof raw !== "string" || raw.length === 0 || !/^(?:[0-9a-f]{2})+$/.test(raw)) {
+      throw new Error(`${field} are invalid.`);
+    }
+  }
+  return Object.freeze({
+    version: 1,
+    status: "SIGNED",
+    idempotencyKey,
+    orderHash,
+    routeHash: requireHex32(value.routeHash, "Route hash"),
+    quoteHash: requireHex32(value.quoteHash, "Quote hash"),
+    solverSignatureDigest: requireHex32(value.solverSignatureDigest, "Solver signature digest"),
+    routeBytes: value.routeBytes as string,
+    solverQuoteBytes: value.solverQuoteBytes as string,
+    route: Object.freeze({ ...value.route }),
+    quote: Object.freeze({ ...value.quote }),
+  });
+}
+
+function requireLocalSelectedAttempt(value: unknown, quote: LocalSolverQuote): LocalSelectedAttempt {
+  if (!isRecord(value)) throw new Error("Quote selection response is invalid.");
+  requireExactKeys(value, ["status", "attempt"], "Quote selection response");
+  if (value.status !== "AUTHORIZED_QUOTE_SELECTED" || !isRecord(value.attempt)) {
+    throw new Error("Quote selection status is invalid.");
+  }
+  requireExactKeys(
+    value.attempt,
+    ["attemptId", "orderHash", "routeHash", "quoteHash", "status", "selectedAtMs"],
+    "Selected attempt",
+  );
+  const attempt = value.attempt;
+  if (attempt.orderHash !== quote.orderHash || attempt.routeHash !== quote.routeHash ||
+      attempt.quoteHash !== quote.quoteHash || attempt.status !== "AUTHORIZED_QUOTE_SELECTED") {
+    throw new Error("Selected attempt does not match the reviewed quote.");
+  }
+  const selectedAtMs = requireInteger(attempt.selectedAtMs, "Selection time");
+  if (selectedAtMs === 0) throw new Error("Selection time is invalid.");
+  return Object.freeze({
+    attemptId: requireLocalAttemptId(attempt.attemptId),
+    orderHash: quote.orderHash,
+    routeHash: quote.routeHash,
+    quoteHash: quote.quoteHash,
+    status: "AUTHORIZED_QUOTE_SELECTED",
+    selectedAtMs,
+  });
+}
+
+function requireTaggedScalar(value: unknown, type: "bigint" | "bytes", name: string): string {
+  if (!isRecord(value)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, ["$naryxType", "value"], name);
+  if (value.$naryxType !== type || typeof value.value !== "string") {
+    throw new Error(`${name} is invalid.`);
+  }
+  if (type === "bigint" && !/^(?:0|[1-9][0-9]*)$/.test(value.value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  if (type === "bytes" && !/^(?:[0-9a-f]{2})+$/.test(value.value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value.value;
+}
+
+function requireTaggedBytes32(value: unknown, name: string): string {
+  const hex = requireTaggedScalar(value, "bytes", name);
+  if (hex.length !== 64 || /^0{64}$/.test(hex)) throw new Error(`${name} is invalid.`);
+  return hex;
+}
+
+function requireLocalActionResponse(
+  value: unknown,
+  action: LocalExecutionAction,
+  attempt: LocalSelectedAttempt,
+): PackageLifecycleState {
+  if (!isRecord(value)) throw new Error("Local execution response is invalid.");
+  requireExactKeys(value, ["action", "attempt", "receipts", "state"], "Local execution response");
+  if (value.action !== action || !isRecord(value.attempt) || !Array.isArray(value.receipts) ||
+      value.receipts.length === 0 || value.receipts.length > 100) {
+    throw new Error("Local execution response is invalid.");
+  }
+  requireExactKeys(
+    value.attempt,
+    ["attemptId", "orderHash", "routeHash", "quoteHash", "status", "selectedAtMs"],
+    "Local execution attempt",
+  );
+  if (value.attempt.attemptId !== attempt.attemptId || value.attempt.orderHash !== attempt.orderHash ||
+      value.attempt.routeHash !== attempt.routeHash || value.attempt.quoteHash !== attempt.quoteHash ||
+      value.attempt.status !== attempt.status || value.attempt.selectedAtMs !== attempt.selectedAtMs) {
+    throw new Error("Local execution attempt binding is invalid.");
+  }
+  const state = requireLifecycleState(value.state, "Local execution state");
+  let previousState: PackageLifecycleState | undefined;
+  for (const [index, raw] of value.receipts.entries()) {
+    if (!isRecord(raw)) throw new Error("Local lifecycle receipt is invalid.");
+    requireKeysWithOptional(raw, [
+      "version", "domain", "settlementClass", "packageId", "packageCommitment", "attemptId",
+      "eventId", "revision", "nextState", "observedAtUnixMilliseconds", "evidenceGrade",
+      "onchainEnforced", "evidenceSource", "evidenceCommitment",
+    ], ["priorState", "previousReceiptHash"], "Local lifecycle receipt");
+    if (raw.version !== 1 || raw.settlementClass !== "ATOMIC_POSTCONDITION" ||
+        raw.packageId !== attempt.attemptId || raw.attemptId !== attempt.attemptId ||
+        typeof raw.eventId !== "string" || raw.onchainEnforced !== false ||
+        raw.evidenceGrade !== "LOCAL_RECORDED" || !isRecord(raw.domain) ||
+        !isRecord(raw.evidenceSource)) {
+      throw new Error("Local lifecycle receipt binding is invalid.");
+    }
+    requireExactKeys(raw.domain, ["domainId", "domainManifestVersion", "domainManifestHash"], "Local lifecycle domain");
+    requireExactKeys(raw.evidenceSource, ["subjectId", "manifestVersion", "manifestHash"], "Local lifecycle evidence source");
+    if (raw.domain.domainId !== "svm:local" || raw.domain.domainManifestVersion !== 1 ||
+        raw.evidenceSource.subjectId !== "local-conformance-execution-v1" ||
+        raw.evidenceSource.manifestVersion !== 1) {
+      throw new Error("Local lifecycle evidence source is invalid.");
+    }
+    const revision = requireTaggedScalar(raw.revision, "bigint", "Local lifecycle revision");
+    if (revision !== String(index + 1)) throw new Error("Local lifecycle receipt revision is invalid.");
+    if (requireTaggedScalar(raw.observedAtUnixMilliseconds, "bigint", "Local lifecycle observed time") === "0") {
+      throw new Error("Local lifecycle observed time is invalid.");
+    }
+    requireTaggedBytes32(raw.domain.domainManifestHash, "Local domain manifest hash");
+    requireTaggedBytes32(raw.evidenceSource.manifestHash, "Local evidence manifest hash");
+    requireTaggedBytes32(raw.packageCommitment, "Local lifecycle package commitment");
+    requireTaggedBytes32(raw.evidenceCommitment, "Local lifecycle evidence commitment");
+    const nextState = requireLifecycleState(raw.nextState, "Local lifecycle next state");
+    if (index === 0 ? raw.priorState !== undefined || nextState !== "PACKAGE_CREATED"
+      : raw.priorState !== previousState || raw.previousReceiptHash === undefined) {
+      throw new Error("Local lifecycle receipt chain is invalid.");
+    }
+    if (raw.previousReceiptHash !== undefined) {
+      requireTaggedBytes32(raw.previousReceiptHash, "Local previous receipt hash");
+    }
+    previousState = nextState;
+  }
+  if (previousState !== state) throw new Error("Local execution state does not match its receipts.");
+  return state;
 }
 
 function requirePreparation(
@@ -858,6 +1250,128 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw new Error(`Private terminal preview failed with ${response.status}.`);
     return requirePreview(await response.json() as unknown);
+  }
+
+  async createLocalOrder(
+    input: Readonly<{
+      owner: string;
+      settlementAccount: string;
+      size: string;
+      slippageBps: number;
+      idempotencyKey: string;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<LocalOrderCreateResponse> {
+    const request = {
+      contextId: LOCAL_CONTEXT_ID,
+      owner: requireBase58Bytes32(input.owner, "Order owner"),
+      settlementAccount: requireString(input.settlementAccount, "Settlement account"),
+      size: requireString(input.size, "Order size"),
+      slippageBps: requireInteger(input.slippageBps, "Order slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    if (request.slippageBps === 0) throw new Error("Order slippage is invalid.");
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Canonical order creation failed with ${response.status}.`);
+    return requireLocalOrderCreateResponse(await response.json() as unknown, request);
+  }
+
+  async authorizeLocalOrder(
+    order: LocalOrderRecord,
+    signature: string,
+    signal?: AbortSignal,
+  ): Promise<LocalAuthorization> {
+    const checkedSignature = requireCanonicalBase58Signature(signature, "Authorization signature");
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/orders/${order.orderHashHex}/authorize`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signature: checkedSignature }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Order authorization failed with ${response.status}.`);
+    return requireLocalAuthorization(await response.json() as unknown, order, checkedSignature);
+  }
+
+  async requestLocalQuote(
+    order: LocalOrderRecord,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<LocalSolverQuote> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/orders/${order.orderHashHex}/quote`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: key }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Solver quote request failed with ${response.status}.`);
+    return requireLocalSolverQuote(await response.json() as unknown, order.orderHashHex, key);
+  }
+
+  async selectLocalQuote(
+    quote: LocalSolverQuote,
+    signal?: AbortSignal,
+  ): Promise<LocalSelectedAttempt> {
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/orders/${quote.orderHash}/select`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash: quote.quoteHash }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Quote selection failed with ${response.status}.`);
+    return requireLocalSelectedAttempt(await response.json() as unknown, quote);
+  }
+
+  async runLocalExecutionAction(
+    attempt: LocalSelectedAttempt,
+    action: LocalExecutionAction,
+    signal?: AbortSignal,
+  ): Promise<LocalExecutionResult> {
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/attempts/${attempt.attemptId}/${action}`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Local ${action} action failed with ${response.status}.`);
+    const state = requireLocalActionResponse(await response.json() as unknown, action, attempt);
+    const lifecycle = await this.getPackageLifecycle(attempt.attemptId, signal);
+    if (lifecycle.attempt.state !== state) {
+      throw new Error("Local action response does not match the authoritative lifecycle head.");
+    }
+    return Object.freeze({ action, state, lifecycle });
   }
 
   async prepareSolanaExecution(
