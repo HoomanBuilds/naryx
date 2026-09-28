@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { LOCAL_ATOMIC_MARKET_CATALOG_V1 } from '@naryx/adapter-core';
 import {
   adapterRef,
   assetRef,
@@ -31,6 +32,7 @@ import {
   createConfiguredAtomicMarketProviders,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
+  createLocalAtomicMarketRuntime,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
 } from '../src/index.js';
@@ -340,6 +342,8 @@ function configuredProviders(
       collectionModeId: 'atomic-collection-v1',
     },
     accountBindings: route.accountBindings,
+    ownerAccountBindingIds: ['trader-authority'],
+    settlementAccountBindingIds: [],
     actions: route.actions,
     preconditions: route.preconditions,
     postconditions: route.postconditions,
@@ -391,6 +395,17 @@ test('rejects insufficient configured capacity and expired order clocks', () => 
     () => configuredProviders(orderHash, () => order.expiryValue).candidates({ order, orderHash }),
     /order is expired/,
   );
+});
+
+test('loads the shared local runtime catalog into solver-owned providers', () => {
+  const runtime = createLocalAtomicMarketRuntime(
+    LOCAL_ATOMIC_MARKET_CATALOG_V1,
+    new InMemoryAtomicQuoteNonceSource(),
+    () => 100n,
+  );
+  assert.equal(runtime.catalog.contextId, 'local:svm:sol-carry-v1');
+  assert.equal(runtime.catalog.domain.domainId, 'svm:local');
+  assert.equal(runtime.catalog.solver.capacityBaseAtoms, 100_000_000_000n);
 });
 
 test('signs a canonical atomic ENTRY quote and rejects fee-cap and wrong-digest signatures', async () => {

@@ -1,0 +1,90 @@
+import { readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { LOCAL_ATOMIC_MARKET_CATALOG_V1 } from '@naryx/adapter-core';
+import {
+  HttpInternalOrderProvider,
+  SqliteInternalAtomicQuoteStore,
+  createInternalAtomicQuoteCoordinator,
+  createInternalAtomicQuoteServer,
+  createLocalAtomicMarketRuntime,
+} from './index.js';
+
+const ED25519_SPKI_PREFIX_BYTES = 12;
+
+function loopbackHost(value: string): string {
+  if (value === 'localhost' || value === '::1' || /^127(?:\.\d{1,3}){3}$/.test(value)) return value;
+  throw new Error('NARYX_SOLVER_HOST must be loopback');
+}
+
+function port(value: string | undefined): number {
+  if (value === undefined) return 8_788;
+  if (!/^\d{1,5}$/.test(value)) throw new Error('NARYX_SOLVER_PORT must be a TCP port');
+  const parsed = Number(value);
+  if (parsed < 1 || parsed > 65_535) throw new Error('NARYX_SOLVER_PORT must be a TCP port');
+  return parsed;
+}
+
+function absolutePath(value: string, name: string): string {
+  if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
+  return resolve(value);
+}
+
+function loadSigner(path: string) {
+  const privateKey = createPrivateKey(readFileSync(absolutePath(path, 'NARYX_SOLVER_ED25519_KEY_PATH')));
+  if (privateKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error('solver signing key must be Ed25519');
+  }
+  const spki = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
+  if (!(spki instanceof Buffer) || spki.length !== ED25519_SPKI_PREFIX_BYTES + 32) {
+    throw new Error('solver Ed25519 public key encoding is invalid');
+  }
+  const verificationKey = Uint8Array.from(spki.subarray(ED25519_SPKI_PREFIX_BYTES));
+  const expected = process.env.NARYX_SOLVER_ED25519_PUBLIC_KEY_HEX;
+  if (expected !== undefined
+    && (!/^[0-9a-f]{64}$/.test(expected)
+      || Buffer.from(verificationKey).toString('hex') !== expected)) {
+    throw new Error('solver signing key does not match the configured verification key');
+  }
+  return Object.freeze({
+    verificationKey,
+    signDigest: (digest: Uint8Array) => Uint8Array.from(sign(null, Buffer.from(digest), privateKey)),
+  });
+}
+
+const host = loopbackHost(process.env.NARYX_SOLVER_HOST ?? '127.0.0.1');
+const listenPort = port(process.env.NARYX_SOLVER_PORT);
+const quoteDbPath = absolutePath(
+  process.env.NARYX_SOLVER_QUOTE_DB ?? '/tmp/naryx-local/solver-quotes.db',
+  'NARYX_SOLVER_QUOTE_DB',
+);
+const apiOrigin = process.env.NARYX_API_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8787';
+const signerPath = process.env.NARYX_SOLVER_ED25519_KEY_PATH;
+if (signerPath === undefined || signerPath.length === 0) {
+  throw new Error('NARYX_SOLVER_ED25519_KEY_PATH is required');
+}
+
+const runtime = createLocalAtomicMarketRuntime(LOCAL_ATOMIC_MARKET_CATALOG_V1);
+const orderProvider = new HttpInternalOrderProvider(apiOrigin);
+const store = new SqliteInternalAtomicQuoteStore(quoteDbPath);
+const coordinator = createInternalAtomicQuoteCoordinator({
+  orders: orderProvider.get,
+  candidates: runtime.providers.candidates,
+  terms: runtime.providers.terms,
+  signer: loadSigner(signerPath),
+  store,
+});
+const server = createInternalAtomicQuoteServer(coordinator);
+
+function shutdown(): void {
+  server.close(() => {
+    store.close();
+    process.exitCode = 0;
+  });
+}
+
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
+server.listen(listenPort, host, () => {
+  process.stdout.write(`Internal solver listening on http://${host}:${listenPort}\n`);
+});

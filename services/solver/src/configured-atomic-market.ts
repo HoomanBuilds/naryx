@@ -91,6 +91,8 @@ export interface ConfiguredAtomicMarketInput {
   readonly marginBps: number;
   readonly fees: ConfiguredAtomicFeeSchedule;
   readonly accountBindings: readonly RouteAccountBindingInput[];
+  readonly ownerAccountBindingIds: readonly string[];
+  readonly settlementAccountBindingIds: readonly string[];
   readonly actions: readonly ActionCommitmentInput[];
   readonly preconditions: readonly StateConstraintInput[];
   readonly postconditions: readonly StateConstraintInput[];
@@ -254,7 +256,17 @@ function build(
     routeExpiryValue,
     feePolicyVersion: input.feePolicyVersion,
     feePolicyManifestHash: input.feePolicyManifestHash,
-    accountBindings: input.accountBindings,
+    accountBindings: input.accountBindings.map((binding) => ({
+      ...binding,
+      accountIdentity: input.ownerAccountBindingIds.includes(binding.routeBindingId)
+        ? order.owner
+        : input.settlementAccountBindingIds.includes(binding.routeBindingId)
+          ? order.settlementAccount
+          : binding.accountIdentity,
+      ...(input.ownerAccountBindingIds.includes(binding.routeBindingId)
+        ? { authorityIdentity: order.owner }
+        : {}),
+    })),
     serviceCharges: charges,
     preconditions: input.preconditions,
     legs: [

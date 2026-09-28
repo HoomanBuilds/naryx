@@ -36,3 +36,9 @@ export interface ExecutionAdapter<TPayload, TReceipt> {
     admission: PackageAdmission,
   ): Promise<ExecutionEvidence<TReceipt> | null>;
 }
+
+export {
+  LOCAL_ATOMIC_MARKET_CATALOG_V1,
+  parseLocalAtomicMarketCatalog,
+  type LocalAtomicMarketCatalog,
+} from './local-atomic-market-catalog.js';

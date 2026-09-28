@@ -674,6 +674,11 @@ export {
   type ConfiguredAtomicMarketProviders,
 } from './configured-atomic-market.js';
 export {
+  createLocalAtomicMarketRuntime,
+  localConformanceSlot,
+  type LocalAtomicMarketRuntime,
+} from './local-atomic-market-runtime.js';
+export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,
   type HyperliquidTestnetPackageSubmissionPort,

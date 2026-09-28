@@ -4,6 +4,7 @@
   "description": "Private execution orchestration for compiled venue actions.",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js"
   },
@@ -20,9 +21,14 @@
   },
   "types": "./dist/index.d.ts",
   "sideEffects": false,
-  "files": ["dist"],
-  "engines": {"node": ">=22.12.0"},
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
+    "@naryx/adapter-core": "file:../../packages/adapter-core",
     "@naryx/adapter-hyperliquid": "file:../../packages/adapters/hyperliquid",
     "@naryx/protocol-types": "file:../../packages/protocol-types",
     "@nktkas/hyperliquid": "0.33.3",
