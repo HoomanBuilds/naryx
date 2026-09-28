@@ -649,6 +649,7 @@ export {
 } from './signed-atomic-entry-quote.js';
 export {
   InternalAtomicQuoteError,
+  InMemoryInternalAtomicQuoteStore,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteRequestHandler,
   createInternalAtomicQuoteServer,
@@ -657,9 +658,12 @@ export {
   type InternalAtomicQuotePort,
   type InternalAtomicQuoteRequest,
   type InternalAtomicQuoteResponse,
+  type InternalAtomicQuoteStore,
   type InternalAtomicQuoteTermsProvider,
+  type StoredInternalAtomicQuote,
 } from './internal-atomic-quote-server.js';
 export { HttpInternalOrderProvider } from './http-internal-order-provider.js';
+export { SqliteInternalAtomicQuoteStore } from './internal-atomic-quote-sqlite-store.js';
 export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,

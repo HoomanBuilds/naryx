@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   adapterRef,
@@ -22,6 +25,7 @@ import type { PackageOrderInput, RoutePayloadInput } from '@naryx/protocol-types
 import {
   InternalAtomicQuoteError,
   HttpInternalOrderProvider,
+  SqliteInternalAtomicQuoteStore,
   SignedAtomicEntryQuoteError,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
@@ -459,4 +463,41 @@ test('retrieves and rehashes canonical orders over the internal API boundary', a
   corrupt = true;
   await assert.rejects(async () => provider.get(orderHash), /hash is mismatched/);
   assert.throws(() => new HttpInternalOrderProvider('https://orders.example.com'), /loopback/);
+});
+
+test('persists signed quote idempotency across restart', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'naryx-solver-quotes-'));
+  const path = join(scratch, 'quotes.db');
+  const orderHash = '11'.repeat(32);
+  const response = {
+    version: 1 as const,
+    status: 'SIGNED' as const,
+    idempotencyKey: 'quote-restart-key-0001',
+    orderHash,
+    routeHash: '22'.repeat(32),
+    quoteHash: '33'.repeat(32),
+    solverSignatureDigest: '44'.repeat(32),
+    routeBytes: '01',
+    solverQuoteBytes: '02',
+    route: {},
+    quote: {},
+  };
+  const first = new SqliteInternalAtomicQuoteStore(path);
+  try {
+    assert.deepEqual(first.save({ orderHash, response }).response, response);
+  } finally {
+    first.close();
+  }
+  const reopened = new SqliteInternalAtomicQuoteStore(path);
+  try {
+    assert.deepEqual(reopened.get(response.idempotencyKey)?.response, response);
+    assert.throws(
+      () => reopened.save({ orderHash: '55'.repeat(32), response: { ...response, orderHash: '55'.repeat(32) } }),
+      (error: unknown) => error instanceof InternalAtomicQuoteError
+        && error.code === 'IDEMPOTENCY_CONFLICT',
+    );
+  } finally {
+    reopened.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

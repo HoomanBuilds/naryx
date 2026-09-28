@@ -51,6 +51,17 @@ export interface InternalAtomicQuoteDependencies {
   readonly candidates: AtomicRouteCandidateProvider;
   readonly terms: InternalAtomicQuoteTermsProvider;
   readonly signer: Ed25519AtomicQuoteSigner;
+  readonly store?: InternalAtomicQuoteStore;
+}
+
+export interface StoredInternalAtomicQuote {
+  readonly orderHash: string;
+  readonly response: InternalAtomicQuoteResponse;
+}
+
+export interface InternalAtomicQuoteStore {
+  get(idempotencyKey: string): StoredInternalAtomicQuote | undefined;
+  save(record: StoredInternalAtomicQuote): StoredInternalAtomicQuote;
 }
 
 export interface InternalAtomicQuotePort {
@@ -64,6 +75,32 @@ export class InternalAtomicQuoteError extends Error {
     super(`${code}: ${message}`);
     this.name = 'InternalAtomicQuoteError';
     this.code = code;
+  }
+}
+
+export class InMemoryInternalAtomicQuoteStore implements InternalAtomicQuoteStore {
+  readonly #records = new Map<string, StoredInternalAtomicQuote>();
+
+  get(idempotencyKey: string): StoredInternalAtomicQuote | undefined {
+    return this.#records.get(idempotencyKey);
+  }
+
+  save(record: StoredInternalAtomicQuote): StoredInternalAtomicQuote {
+    const key = record.response.idempotencyKey;
+    const existing = this.#records.get(key);
+    if (existing !== undefined) {
+      if (existing.orderHash !== record.orderHash
+        || JSON.stringify(existing.response) !== JSON.stringify(record.response)) {
+        throw new InternalAtomicQuoteError(
+          'IDEMPOTENCY_CONFLICT',
+          'idempotencyKey is already bound to a different quote',
+        );
+      }
+      return existing;
+    }
+    const stored = Object.freeze({ orderHash: record.orderHash, response: record.response });
+    this.#records.set(key, stored);
+    return stored;
   }
 }
 
@@ -118,10 +155,7 @@ function jsonSafe(value: unknown): JsonValue {
 export function createInternalAtomicQuoteCoordinator(
   dependencies: InternalAtomicQuoteDependencies,
 ): InternalAtomicQuotePort {
-  const completed = new Map<string, Readonly<{
-    orderHash: string;
-    response: InternalAtomicQuoteResponse;
-  }>>();
+  const store = dependencies.store ?? new InMemoryInternalAtomicQuoteStore();
   const pending = new Map<string, Readonly<{
     orderHash: string;
     promise: Promise<InternalAtomicQuoteResponse>;
@@ -130,7 +164,7 @@ export function createInternalAtomicQuoteCoordinator(
   return Object.freeze({
     async quote(rawRequest: InternalAtomicQuoteRequest): Promise<InternalAtomicQuoteResponse> {
       const request = parseRequest(rawRequest);
-      const prior = completed.get(request.idempotencyKey);
+      const prior = store.get(request.idempotencyKey);
       if (prior !== undefined) {
         if (prior.orderHash !== request.orderHash) {
           throw new InternalAtomicQuoteError(
@@ -193,8 +227,7 @@ export function createInternalAtomicQuoteCoordinator(
       pending.set(request.idempotencyKey, { orderHash: request.orderHash, promise: task });
       try {
         const response = await task;
-        completed.set(request.idempotencyKey, { orderHash: request.orderHash, response });
-        return response;
+        return store.save({ orderHash: request.orderHash, response }).response;
       } finally {
         pending.delete(request.idempotencyKey);
       }
