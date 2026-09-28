@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
-import type { SolanaExecutionObservation } from "./private-http-terminal-provider";
+import type {
+  PackageLifecycleResponse,
+  SolanaExecutionObservation,
+} from "./private-http-terminal-provider";
 import {
   useSolanaDevnetWallet,
   type SolanaWalletSession,
@@ -382,6 +385,14 @@ type SubmissionState = {
   lastCheckedAt: number | null;
 };
 
+type LifecycleViewState = {
+  ticketKey: string;
+  attemptId: string;
+  data: PackageLifecycleResponse | null;
+  loading: boolean;
+  unavailable: boolean;
+};
+
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
 
@@ -439,6 +450,7 @@ function preparationFingerprint(preparation: SolanaExecutionPreparation) {
     recentBlockhash: preparation.recentBlockhash,
     blockhashContextSlot: preparation.blockhashContextSlot,
     lastValidBlockHeight: preparation.lastValidBlockHeight,
+    lifecycleAttemptId: preparation.lifecycleAttemptId,
     genesisHash: preparation.genesisHash,
     lookupTables: preparation.lookupTables,
     evidence: preparation.evidence,
@@ -521,6 +533,10 @@ function ExecutionReviewPanel({
         <strong>{preparation.evidence.routeComputeUnitLimit.toLocaleString()} CU</strong>
         <span>Last valid block</span>
         <strong>{preparation.lastValidBlockHeight.toLocaleString()}</strong>
+        <span>Lifecycle attempt</span>
+        <strong title={preparation.lifecycleAttemptId}>
+          {compact(preparation.lifecycleAttemptId, 18, 12)}
+        </strong>
         <span>Recent blockhash</span>
         <strong title={preparation.recentBlockhash}>{compact(preparation.recentBlockhash)}</strong>
         <span>Blockhash slot</span>
@@ -800,13 +816,21 @@ function BottomWorkspace({
   providerConnection,
   submission,
   attemptMode,
+  lifecycle,
+  lifecycleLoading,
+  lifecycleUnavailable,
   onRetryObservation,
+  onRetryLifecycle,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
   submission: SubmissionState | null;
   attemptMode: PackageMode;
+  lifecycle: PackageLifecycleResponse | null;
+  lifecycleLoading: boolean;
+  lifecycleUnavailable: boolean;
   onRetryObservation: () => void;
+  onRetryLifecycle: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("positions");
   const activeWorkspace =
@@ -817,8 +841,9 @@ function BottomWorkspace({
     : providerConnection === "connecting"
       ? "Provider connecting"
       : "Provider disconnected";
-  const showObservationRow = activeWorkspace.tab === "receipts" && submission !== null;
-  const needsRetry = showObservationRow && submission !== null &&
+  const showReceipts = activeWorkspace.tab === "receipts";
+  const showNetworkEvidence = showReceipts && submission !== null;
+  const needsRetry = showNetworkEvidence && submission !== null &&
     submission.observationUnavailable && !isObservationTerminal(submission.observation);
 
   return (
@@ -851,9 +876,51 @@ function BottomWorkspace({
         aria-labelledby={`tab-${activeWorkspace.tab}`}
         className={styles.tableScroller}
       >
-        {showObservationRow && submission ? (
-          <p className={styles.receiptsNote} role="status">
-            Network evidence only. Not a durable lifecycle receipt. {observationNetworkLabel(submission)} on Solana Devnet.
+        {showReceipts && lifecycle ? (
+          <div className={styles.lifecycleSummary} role="status">
+            <div>
+              <span>Lifecycle head</span>
+              <strong>{lifecycle.attempt.state}</strong>
+            </div>
+            <div>
+              <span>Revision</span>
+              <strong>{lifecycle.attempt.revision}</strong>
+            </div>
+            <div>
+              <span>Attempt</span>
+              <strong title={lifecycle.attempt.attemptId}>
+                {compact(lifecycle.attempt.attemptId, 16, 10)}
+              </strong>
+            </div>
+            <div>
+              <span>Latest receipt</span>
+              <strong title={lifecycle.attempt.receiptHashHex}>
+                {compact(lifecycle.attempt.receiptHashHex, 12, 10)}
+              </strong>
+            </div>
+          </div>
+        ) : null}
+        {showReceipts && lifecycleUnavailable ? (
+          <p className={styles.lifecycleUnavailable} role="status">
+            Durable lifecycle is temporarily unavailable.
+            <button type="button" className={styles.inlineRetry} onClick={onRetryLifecycle}>
+              Retry lifecycle
+            </button>
+          </p>
+        ) : null}
+        {showReceipts && lifecycleLoading && !lifecycle ? (
+          <p className={styles.receiptsNote} role="status">Loading durable lifecycle receipts.</p>
+        ) : null}
+        {showNetworkEvidence && submission ? (
+          <p className={styles.networkEvidence} role="status">
+            <span>
+              Network evidence only: {observationNetworkLabel(submission)} on Solana Devnet for the {attemptMode} transaction. {observationEvidenceLabel(submission)}.
+            </span>
+            {needsRetry ? (
+              <button type="button" className={styles.inlineRetry} onClick={onRetryObservation}>
+                Retry observation
+              </button>
+            ) : null}
           </p>
         ) : null}
         <table className={styles.workspaceTable}>
@@ -871,33 +938,27 @@ function BottomWorkspace({
             </tr>
           </thead>
           <tbody>
-            {showObservationRow && submission ? (
-              <tr>
-                <td className={styles.receiptsCell} title={submission.signature}>
-                  {compact(submission.signature, 10, 8)}
-                </td>
-                <td className={styles.receiptsCell}>Solana Devnet</td>
-                <td className={styles.receiptsCell}>{attemptMode === "entry" ? "Entry" : "Exit"}</td>
-                <td className={`${styles.receiptsCell} ${styles.receiptsCellNumeric}`}>
-                  {observationEvidenceLabel(submission)}
-                </td>
-                <td className={styles.receiptsCell}>{observationNetworkLabel(submission)}</td>
-                <td className={styles.receiptsCell}>
-                  <span>Network evidence only</span>
-                  {needsRetry ? (
-                    <span>
-                      {" "}
-                      <button
-                        type="button"
-                        className={styles.inlineRetry}
-                        onClick={onRetryObservation}
-                      >
-                        Retry observation
-                      </button>
-                    </span>
-                  ) : null}
-                </td>
-              </tr>
+            {showReceipts && lifecycle ? (
+              lifecycle.receipts.map((receipt) => (
+                <tr key={receipt.receiptHashHex}>
+                  <td className={styles.receiptsCell} title={receipt.receiptHashHex}>
+                    {compact(receipt.receiptHashHex, 10, 8)}
+                  </td>
+                  <td className={styles.receiptsCell} title={receipt.domain.domainManifestHashHex}>
+                    {receipt.domain.domainId}
+                  </td>
+                  <td className={styles.receiptsCell}>
+                    {receipt.priorState ?? "START"} &gt; {receipt.nextState}
+                  </td>
+                  <td className={`${styles.receiptsCell} ${styles.receiptsCellNumeric}`}>
+                    {receipt.revision}
+                  </td>
+                  <td className={styles.receiptsCell}>{receipt.evidenceGrade}</td>
+                  <td className={styles.receiptsCell}>
+                    {receipt.onchainEnforced ? "Onchain" : "Controller"}
+                  </td>
+                </tr>
+              ))
             ) : (
               <tr>
                 <td colSpan={activeWorkspace.columns.length}>
@@ -939,6 +1000,8 @@ export function TradingTerminal({
   const wallet = useSolanaDevnetWallet();
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
+  const [lifecycleView, setLifecycleView] = useState<LifecycleViewState | null>(null);
+  const [lifecycleRefresh, setLifecycleRefresh] = useState(0);
   const [executionError, setExecutionError] = useState<{
     ticketKey: string;
     message: string;
@@ -976,6 +1039,10 @@ export function TradingTerminal({
     ? executionReview
     : null;
   const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
+  const currentLifecycle = lifecycleView?.ticketKey === ticketKey &&
+    lifecycleView.attemptId === currentExecutionReview?.preparation.lifecycleAttemptId
+    ? lifecycleView
+    : null;
   const currentExecutionError = executionError?.ticketKey === ticketKey
     ? executionError.message
     : null;
@@ -1071,6 +1138,48 @@ export function TradingTerminal({
       controller.abort();
     };
   }, [mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
+
+  const lifecycleAttemptId = currentExecutionReview?.preparation.lifecycleAttemptId ?? null;
+  const lifecycleTicketKey = currentExecutionReview?.ticketKey ?? null;
+
+  useEffect(() => {
+    if (!privateProvider || !lifecycleAttemptId || !lifecycleTicketKey) return;
+    const provider = privateProvider;
+    const attemptId = lifecycleAttemptId;
+    const boundTicketKey = lifecycleTicketKey;
+    const controller = new AbortController();
+    let active = true;
+    async function loadLifecycle() {
+      try {
+        const data = await provider.getPackageLifecycle(attemptId, controller.signal);
+        if (!active || controller.signal.aborted) return;
+        setLifecycleView({
+          ticketKey: boundTicketKey,
+          attemptId,
+          data,
+          loading: false,
+          unavailable: false,
+        });
+      } catch (cause) {
+        if (!active || controller.signal.aborted) return;
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setLifecycleView((previous) => ({
+          ticketKey: boundTicketKey,
+          attemptId,
+          data: previous?.ticketKey === boundTicketKey && previous.attemptId === attemptId
+            ? previous.data
+            : null,
+          loading: false,
+          unavailable: true,
+        }));
+      }
+    }
+    void loadLifecycle();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [lifecycleAttemptId, lifecycleRefresh, lifecycleTicketKey, privateProvider]);
 
   const selectedDomainModel = useMemo(
     () => snapshot.domains.find((domain) => domain.id === selectedDomain),
@@ -1182,6 +1291,13 @@ export function TradingTerminal({
         preparationFingerprint(next);
       if (changed) {
         setExecutionReview({ preparation: next, preparedAt: Date.now(), ticketKey });
+        setLifecycleView({
+          ticketKey,
+          attemptId: next.lifecycleAttemptId,
+          data: null,
+          loading: true,
+          unavailable: false,
+        });
         setExecutionError({ ticketKey, message: "Execution material changed. Review the refreshed transaction before signing." });
         return;
       }
@@ -1227,6 +1343,13 @@ export function TradingTerminal({
       setIdempotency({ ticketKey, key });
       const preparation = await prepareExecution(key);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
+      setLifecycleView({
+        ticketKey,
+        attemptId: preparation.lifecycleAttemptId,
+        data: null,
+        loading: true,
+        unavailable: false,
+      });
     } catch (cause) {
       setExecutionReview(null);
       setExecutionError({
@@ -1282,6 +1405,10 @@ export function TradingTerminal({
             lastCheckedAt: Date.now(),
           };
         });
+        setLifecycleView((previous) => previous?.ticketKey === ticket && previous.data
+          ? { ...previous, loading: true, unavailable: false }
+          : previous);
+        setLifecycleRefresh((value) => value + 1);
       } catch (cause) {
         if (!active || controller.signal.aborted) return;
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -1332,6 +1459,14 @@ export function TradingTerminal({
       }
       return { ...previous, observationUnavailable: false, consecutiveFailures: 0 };
     });
+  }
+
+  function handleRetryLifecycle() {
+    if (!currentExecutionReview) return;
+    setLifecycleView((previous) => previous?.ticketKey === currentExecutionReview.ticketKey
+      ? { ...previous, loading: true, unavailable: false }
+      : previous);
+    setLifecycleRefresh((value) => value + 1);
   }
 
   const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
@@ -1394,7 +1529,11 @@ export function TradingTerminal({
         providerConnection={providerConnection}
         submission={currentSubmission}
         attemptMode={mode}
+        lifecycle={currentLifecycle?.data ?? null}
+        lifecycleLoading={currentLifecycle?.loading ?? false}
+        lifecycleUnavailable={currentLifecycle?.unavailable ?? false}
         onRetryObservation={handleRetryObservation}
+        onRetryLifecycle={handleRetryLifecycle}
       />
     </main>
   );

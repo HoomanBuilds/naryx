@@ -47,6 +47,101 @@ export type SolanaExecutionObservation =
     observedBlockHeight: number;
   }>;
 
+export type PackageLifecycleState =
+  | "PACKAGE_CREATED"
+  | "ENTRY_PREPARED"
+  | "ENTRY_SUBMITTED"
+  | "ENTRY_CONFIRMED"
+  | "OPEN"
+  | "EXIT_REQUESTED"
+  | "EXIT_SUBMITTED"
+  | "RECOVERY_PENDING"
+  | "MANUAL_INTERVENTION"
+  | "CLOSED"
+  | "FAILED"
+  | "EXPIRED"
+  | "CANCELLED";
+
+export type PackageEvidenceGrade =
+  | "LOCAL_RECORDED"
+  | "CONTROLLER_ATTESTED"
+  | "VENUE_CORROBORATED"
+  | "CONSENSUS_VERIFIED";
+
+export type PackageLifecycleAttempt = Readonly<{
+  attemptId: string;
+  packageId: string;
+  packageCommitmentHex: string;
+  revision: string;
+  state: PackageLifecycleState;
+  receiptHashHex: string;
+  eventId: string;
+  observedAtUnixMilliseconds: string;
+}>;
+
+export type PackageLifecycleReceipt = Readonly<{
+  version: 1;
+  domain: Readonly<{
+    domainId: string;
+    domainManifestVersion: number;
+    domainManifestHashHex: string;
+  }>;
+  settlementClass: "ATOMIC_POSTCONDITION" | "BATCHED_IOC_WITH_RECOVERY" | "ASYNC_BONDED_SOLVER";
+  packageId: string;
+  packageCommitmentHex: string;
+  attemptId: string;
+  eventId: string;
+  revision: string;
+  priorState?: PackageLifecycleState;
+  previousReceiptHashHex?: string;
+  nextState: PackageLifecycleState;
+  observedAtUnixMilliseconds: string;
+  evidenceGrade: PackageEvidenceGrade;
+  onchainEnforced: boolean;
+  evidenceSource: Readonly<{
+    subjectId: string;
+    manifestVersion: number;
+    manifestHashHex: string;
+  }>;
+  evidenceCommitmentHex: string;
+  intentCommitmentHex: string;
+  receiptHashHex: string;
+}>;
+
+export type PackageLifecycleResponse = Readonly<{
+  attempt: PackageLifecycleAttempt;
+  receipts: readonly PackageLifecycleReceipt[];
+}>;
+
+const PACKAGE_LIFECYCLE_STATES = new Set<PackageLifecycleState>([
+  "PACKAGE_CREATED",
+  "ENTRY_PREPARED",
+  "ENTRY_SUBMITTED",
+  "ENTRY_CONFIRMED",
+  "OPEN",
+  "EXIT_REQUESTED",
+  "EXIT_SUBMITTED",
+  "RECOVERY_PENDING",
+  "MANUAL_INTERVENTION",
+  "CLOSED",
+  "FAILED",
+  "EXPIRED",
+  "CANCELLED",
+]);
+const PACKAGE_EVIDENCE_GRADES = new Set<PackageEvidenceGrade>([
+  "LOCAL_RECORDED",
+  "CONTROLLER_ATTESTED",
+  "VENUE_CORROBORATED",
+  "CONSENSUS_VERIFIED",
+]);
+const SETTLEMENT_CLASSES = new Set<PackageLifecycleReceipt["settlementClass"]>([
+  "ATOMIC_POSTCONDITION",
+  "BATCHED_IOC_WITH_RECOVERY",
+  "ASYNC_BONDED_SOLVER",
+]);
+const CANONICAL_UNSIGNED_PATTERN = /^(0|[1-9][0-9]*)$/;
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -59,6 +154,19 @@ function requireExactKeys(
   const actual = Object.keys(value).sort();
   const expected = [...keys].sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${name} fields are invalid.`);
+  }
+}
+
+function requireKeysWithOptional(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[],
+  name: string,
+): void {
+  const actual = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  if (required.some((key) => !(key in value)) || actual.some((key) => !allowed.has(key))) {
     throw new Error(`${name} fields are invalid.`);
   }
 }
@@ -83,6 +191,39 @@ function requireHex32(value: unknown, name: string): string {
     throw new Error(`${name} is invalid.`);
   }
   return hex;
+}
+
+function requireProtocolId(value: unknown, name: string): string {
+  const id = requireString(value, name);
+  if (id.length > 128 || !/^[\x00-\x7f]+$/.test(id)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return id;
+}
+
+function requireCanonicalUnsigned(value: unknown, name: string, positive: boolean): string {
+  if (typeof value !== "string" || !CANONICAL_UNSIGNED_PATTERN.test(value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > MAX_SAFE_INTEGER_BIGINT || (positive && parsed === BigInt(0))) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireLifecycleState(value: unknown, name: string): PackageLifecycleState {
+  if (typeof value !== "string" || !PACKAGE_LIFECYCLE_STATES.has(value as PackageLifecycleState)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value as PackageLifecycleState;
+}
+
+function requireEvidenceGrade(value: unknown): PackageEvidenceGrade {
+  if (typeof value !== "string" || !PACKAGE_EVIDENCE_GRADES.has(value as PackageEvidenceGrade)) {
+    throw new Error("Lifecycle evidence grade is invalid.");
+  }
+  return value as PackageEvidenceGrade;
 }
 
 function requireBase58Bytes32(value: unknown, name: string): string {
@@ -487,6 +628,182 @@ function requireObservation(
   throw new Error("Devnet observation lifecycle is unsupported.");
 }
 
+function requireLifecycleAttempt(value: unknown, requestedAttemptId: string): PackageLifecycleAttempt {
+  if (!isRecord(value)) throw new Error("Lifecycle attempt is invalid.");
+  requireExactKeys(value, [
+    "attemptId",
+    "packageId",
+    "packageCommitmentHex",
+    "revision",
+    "state",
+    "receiptHashHex",
+    "eventId",
+    "observedAtUnixMilliseconds",
+  ], "Lifecycle attempt");
+  const attemptId = requireLifecycleAttemptId(value.attemptId);
+  if (attemptId !== requestedAttemptId) throw new Error("Lifecycle attempt does not match the request.");
+  return Object.freeze({
+    attemptId,
+    packageId: requireProtocolId(value.packageId, "Lifecycle package id"),
+    packageCommitmentHex: requireHex32(value.packageCommitmentHex, "Lifecycle package commitment"),
+    revision: requireCanonicalUnsigned(value.revision, "Lifecycle revision", true),
+    state: requireLifecycleState(value.state, "Lifecycle state"),
+    receiptHashHex: requireHex32(value.receiptHashHex, "Lifecycle receipt hash"),
+    eventId: requireProtocolId(value.eventId, "Lifecycle event id"),
+    observedAtUnixMilliseconds: requireCanonicalUnsigned(
+      value.observedAtUnixMilliseconds,
+      "Lifecycle observed time",
+      true,
+    ),
+  });
+}
+
+function requireLifecycleReceipt(value: unknown): PackageLifecycleReceipt {
+  if (!isRecord(value)) throw new Error("Lifecycle receipt is invalid.");
+  requireKeysWithOptional(value, [
+    "version",
+    "domain",
+    "settlementClass",
+    "packageId",
+    "packageCommitmentHex",
+    "attemptId",
+    "eventId",
+    "revision",
+    "nextState",
+    "observedAtUnixMilliseconds",
+    "evidenceGrade",
+    "onchainEnforced",
+    "evidenceSource",
+    "evidenceCommitmentHex",
+    "intentCommitmentHex",
+    "receiptHashHex",
+  ], ["priorState", "previousReceiptHashHex"], "Lifecycle receipt");
+  if (value.version !== 1) throw new Error("Lifecycle receipt version is invalid.");
+  if (!isRecord(value.domain)) throw new Error("Lifecycle receipt domain is invalid.");
+  requireExactKeys(
+    value.domain,
+    ["domainId", "domainManifestVersion", "domainManifestHashHex"],
+    "Lifecycle receipt domain",
+  );
+  if (!isRecord(value.evidenceSource)) throw new Error("Lifecycle evidence source is invalid.");
+  requireExactKeys(
+    value.evidenceSource,
+    ["subjectId", "manifestVersion", "manifestHashHex"],
+    "Lifecycle evidence source",
+  );
+  if (typeof value.settlementClass !== "string" ||
+      !SETTLEMENT_CLASSES.has(value.settlementClass as PackageLifecycleReceipt["settlementClass"])) {
+    throw new Error("Lifecycle settlement class is invalid.");
+  }
+  if (typeof value.onchainEnforced !== "boolean") {
+    throw new Error("Lifecycle enforcement flag is invalid.");
+  }
+  const priorState = value.priorState === undefined
+    ? undefined
+    : requireLifecycleState(value.priorState, "Lifecycle prior state");
+  const previousReceiptHashHex = value.previousReceiptHashHex === undefined
+    ? undefined
+    : requireHex32(value.previousReceiptHashHex, "Lifecycle previous receipt hash");
+  if ((priorState === undefined) !== (previousReceiptHashHex === undefined)) {
+    throw new Error("Lifecycle receipt linkage is incomplete.");
+  }
+  const receipt: PackageLifecycleReceipt = {
+    version: 1,
+    domain: Object.freeze({
+      domainId: requireProtocolId(value.domain.domainId, "Lifecycle domain id"),
+      domainManifestVersion: requireInteger(
+        value.domain.domainManifestVersion,
+        "Lifecycle domain manifest version",
+      ),
+      domainManifestHashHex: requireHex32(
+        value.domain.domainManifestHashHex,
+        "Lifecycle domain manifest hash",
+      ),
+    }),
+    settlementClass: value.settlementClass as PackageLifecycleReceipt["settlementClass"],
+    packageId: requireProtocolId(value.packageId, "Lifecycle receipt package id"),
+    packageCommitmentHex: requireHex32(
+      value.packageCommitmentHex,
+      "Lifecycle receipt package commitment",
+    ),
+    attemptId: requireLifecycleAttemptId(value.attemptId),
+    eventId: requireProtocolId(value.eventId, "Lifecycle receipt event id"),
+    revision: requireCanonicalUnsigned(value.revision, "Lifecycle receipt revision", true),
+    nextState: requireLifecycleState(value.nextState, "Lifecycle next state"),
+    observedAtUnixMilliseconds: requireCanonicalUnsigned(
+      value.observedAtUnixMilliseconds,
+      "Lifecycle receipt observed time",
+      true,
+    ),
+    evidenceGrade: requireEvidenceGrade(value.evidenceGrade),
+    onchainEnforced: value.onchainEnforced,
+    evidenceSource: Object.freeze({
+      subjectId: requireProtocolId(value.evidenceSource.subjectId, "Lifecycle evidence subject"),
+      manifestVersion: requireInteger(
+        value.evidenceSource.manifestVersion,
+        "Lifecycle evidence manifest version",
+      ),
+      manifestHashHex: requireHex32(
+        value.evidenceSource.manifestHashHex,
+        "Lifecycle evidence manifest hash",
+      ),
+    }),
+    evidenceCommitmentHex: requireHex32(
+      value.evidenceCommitmentHex,
+      "Lifecycle evidence commitment",
+    ),
+    intentCommitmentHex: requireHex32(
+      value.intentCommitmentHex,
+      "Lifecycle intent commitment",
+    ),
+    receiptHashHex: requireHex32(value.receiptHashHex, "Lifecycle receipt hash"),
+    ...(priorState === undefined ? {} : { priorState }),
+    ...(previousReceiptHashHex === undefined ? {} : { previousReceiptHashHex }),
+  };
+  if (receipt.domain.domainManifestVersion === 0 || receipt.evidenceSource.manifestVersion === 0) {
+    throw new Error("Lifecycle manifest version must be positive.");
+  }
+  return Object.freeze(receipt);
+}
+
+function requireLifecycleResponse(value: unknown, requestedAttemptId: string): PackageLifecycleResponse {
+  if (!isRecord(value)) throw new Error("Lifecycle response is invalid.");
+  requireExactKeys(value, ["attempt", "receipts"], "Lifecycle response");
+  const attempt = requireLifecycleAttempt(value.attempt, requestedAttemptId);
+  if (!Array.isArray(value.receipts) || value.receipts.length === 0 || value.receipts.length > 100) {
+    throw new Error("Lifecycle receipt history is invalid.");
+  }
+  const receipts = value.receipts.map(requireLifecycleReceipt);
+  for (const [index, receipt] of receipts.entries()) {
+    const expectedRevision = String(index + 1);
+    if (receipt.revision !== expectedRevision ||
+        receipt.attemptId !== attempt.attemptId ||
+        receipt.packageId !== attempt.packageId ||
+        receipt.packageCommitmentHex !== attempt.packageCommitmentHex) {
+      throw new Error("Lifecycle receipt history does not match its attempt.");
+    }
+    if (index === 0) {
+      if (receipt.priorState !== undefined || receipt.previousReceiptHashHex !== undefined ||
+          receipt.nextState !== "PACKAGE_CREATED") {
+        throw new Error("Lifecycle receipt history has an invalid initial receipt.");
+      }
+      continue;
+    }
+    const previous = receipts[index - 1];
+    if (!previous || receipt.priorState !== previous.nextState ||
+        receipt.previousReceiptHashHex !== previous.receiptHashHex) {
+      throw new Error("Lifecycle receipt history has a broken chain.");
+    }
+  }
+  const latest = receipts.at(-1);
+  if (!latest || latest.revision !== attempt.revision || latest.nextState !== attempt.state ||
+      latest.receiptHashHex !== attempt.receiptHashHex || latest.eventId !== attempt.eventId ||
+      latest.observedAtUnixMilliseconds !== attempt.observedAtUnixMilliseconds) {
+    throw new Error("Lifecycle receipt history does not match the attempt head.");
+  }
+  return Object.freeze({ attempt, receipts: Object.freeze(receipts) });
+}
+
 function toSafeObservationError(status: number, code: string | null): Error {
   if (status === 503 || code === "EXECUTION_UNAVAILABLE" ||
       status === 502 || code === "EXECUTION_OBSERVATION_FAILED") {
@@ -560,6 +877,33 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error(`Execution preparation failed with ${response.status}.`);
     }
     return requirePreparation(await response.json() as unknown, input);
+  }
+
+  async getPackageLifecycle(
+    attemptId: string,
+    signal?: AbortSignal,
+  ): Promise<PackageLifecycleResponse> {
+    const checkedAttemptId = requireLifecycleAttemptId(attemptId);
+    const query = new URLSearchParams({
+      attemptId: checkedAttemptId,
+      afterRevision: "0",
+      limit: "100",
+    });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/lifecycle?${query.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw new Error("Package lifecycle is temporarily unavailable.");
+    let payload: unknown;
+    try {
+      payload = await response.json() as unknown;
+    } catch {
+      throw new Error("Package lifecycle response is invalid.");
+    }
+    return requireLifecycleResponse(payload, checkedAttemptId);
   }
 
   async observeSolanaExecution(

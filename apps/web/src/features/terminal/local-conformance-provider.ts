@@ -215,10 +215,10 @@ const LOCAL_CONFORMANCE_SNAPSHOT: TerminalViewModel = {
       columns: [
         { label: "Receipt" },
         { label: "Domain" },
-        { label: "Leg" },
-        { label: "Block", numeric: true },
-        { label: "Finality" },
+        { label: "Transition" },
+        { label: "Revision", numeric: true },
         { label: "Evidence" },
+        { label: "Enforcement" },
       ],
       emptyTitle: "No network receipts",
       emptyDetail: "Receipt evidence appears only after an executable route is configured.",
