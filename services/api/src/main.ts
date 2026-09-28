@@ -5,6 +5,7 @@ import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
 import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
 import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
+import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -28,6 +29,11 @@ const orderRuntime = createLocalAtomicOrderRuntime();
 const solverClient = new HttpInternalSolverQuoteClient(
   process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
 );
+const localExecutionCoordinator = new LocalExecutionCoordinator({
+  intents: executionIntentStore,
+  orders: orderStore,
+  lifecycle: lifecycleStore,
+});
 const server = createPrivateTerminalServer(
   config,
   {},
@@ -37,6 +43,7 @@ const server = createPrivateTerminalServer(
   lifecycleStore,
   solverClient,
   executionIntentStore,
+  localExecutionCoordinator,
 );
 
 function shutdown(): void {

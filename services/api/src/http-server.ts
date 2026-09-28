@@ -7,6 +7,10 @@ import {
   type ExecutionIntentStore,
 } from "./execution-intent-store.js";
 import {
+  LocalExecutionCoordinatorError,
+  type LocalExecutionCoordinator,
+} from "./local-execution-coordinator.js";
+import {
   HyperliquidTestnetTerminalValidationError,
   parseHyperliquidTestnetTerminalExecutionRequest,
   validateHyperliquidTestnetTerminalExecutionResult,
@@ -176,6 +180,7 @@ export function createPrivateTerminalRequestHandler(
   lifecycleStore?: PackageLifecycleStore,
   solverQuotePort?: SolverAtomicQuotePort,
   executionIntentStore?: ExecutionIntentStore,
+  localExecutionCoordinator?: LocalExecutionCoordinator,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -240,6 +245,7 @@ export function createPrivateTerminalRequestHandler(
         lifecycleReadAvailable: lifecycleStore !== undefined,
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,
+        localExecutionAvailable: localExecutionCoordinator !== undefined,
       });
       return;
     }
@@ -688,6 +694,43 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const attemptActionMatch = url.search === ""
+      ? /^\/internal\/terminal\/attempts\/(local-atomic-[0-9a-f]{64})\/(prepare|open|observation-ambiguity|controller-recovery|close)$/.exec(url.pathname)
+      : null;
+    if (attemptActionMatch !== null) {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (localExecutionCoordinator === undefined) {
+        reject(response, 503, "LOCAL_EXECUTION_UNAVAILABLE", "Local execution coordination is unavailable.");
+        return;
+      }
+      const attemptId = attemptActionMatch[1] as string;
+      const action = attemptActionMatch[2] as string;
+      try {
+        const result = action === "prepare" ? localExecutionCoordinator.prepare(attemptId)
+          : action === "open" ? localExecutionCoordinator.open(attemptId)
+          : action === "observation-ambiguity"
+            ? localExecutionCoordinator.recordObservationAmbiguity(attemptId)
+            : action === "controller-recovery"
+              ? localExecutionCoordinator.recoverController(attemptId)
+              : localExecutionCoordinator.close(attemptId);
+        sendJson(response, 200, toProtocolJson(result, "localExecutionResult"));
+      } catch (error) {
+        if (error instanceof LocalExecutionCoordinatorError) {
+          const status = error.code === "ATTEMPT_NOT_FOUND" ? 404
+            : error.code === "ATTEMPT_STATE_CONFLICT" || error.code === "ATTEMPT_BINDING_MISMATCH" ? 409
+              : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "LOCAL_EXECUTION_FAILED", "Local execution coordination failed closed.");
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/internal/terminal/orders/")) {
       if (request.method !== "GET") {
         response.setHeader("Allow", "GET, OPTIONS");
@@ -730,6 +773,7 @@ export function createPrivateTerminalServer(
   lifecycleStore?: PackageLifecycleStore,
   solverQuotePort?: SolverAtomicQuotePort,
   executionIntentStore?: ExecutionIntentStore,
+  localExecutionCoordinator?: LocalExecutionCoordinator,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -740,6 +784,7 @@ export function createPrivateTerminalServer(
     lifecycleStore,
     solverQuotePort,
     executionIntentStore,
+    localExecutionCoordinator,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

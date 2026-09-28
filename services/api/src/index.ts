@@ -74,6 +74,13 @@ export {
   type SelectedExecutionAttempt,
 } from "./execution-intent-store.js";
 export {
+  LocalExecutionCoordinator,
+  LocalExecutionCoordinatorError,
+  type LocalExecutionAction,
+  type LocalExecutionCoordinatorPorts,
+  type LocalExecutionResult,
+} from "./local-execution-coordinator.js";
+export {
   HYPERLIQUID_TESTNET_DOMAIN,
   HYPERLIQUID_TESTNET_ENVIRONMENT,
   HyperliquidTestnetTerminalValidationError,
