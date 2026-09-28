@@ -8,6 +8,16 @@ import {
   type HyperliquidTestnetTerminalExecutionPort,
 } from "./hyperliquid-testnet-terminal.js";
 import {
+  EvmTestnetTerminalValidationError,
+  parseEvmTestnetObserveAsyncRequest,
+  parseEvmTestnetObserveAtomicRequest,
+  parseEvmTestnetPrepareAtomicRequest,
+  validateEvmTestnetAsyncObservation,
+  validateEvmTestnetAtomicObservation,
+  validateEvmTestnetAtomicPreparation,
+  type EvmTestnetTerminalPorts,
+} from "./evm-testnet-runtime-ports.js";
+import {
   ExecutionValidationError,
   parseExecutionObservationRequest,
   parseExecutionPreparationRequest,
@@ -140,6 +150,7 @@ export function createPrivateTerminalRequestHandler(
   executionPorts: PrivateTerminalExecutionPorts = {},
   orderPorts?: InternalOrderPorts,
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
+  evmTestnetPorts: EvmTestnetTerminalPorts = {},
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -163,6 +174,9 @@ export function createPrivateTerminalRequestHandler(
         executionPreparationAvailable: executionPorts.preparation !== undefined,
         executionObservationAvailable: executionPorts.observation !== undefined,
         hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined,
+        evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined,
+        evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
+        evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
       });
       return;
     }
@@ -294,6 +308,90 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    if (url.pathname === "/internal/terminal/evm-testnet/prepare-atomic") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmTestnetPorts.preparation === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "EVM Testnet atomic preparation is unavailable.");
+        return;
+      }
+      try {
+        const terminalRequest = parseEvmTestnetPrepareAtomicRequest(await readJson(request));
+        const sanitized = validateEvmTestnetAtomicPreparation(
+          await evmTestnetPorts.preparation.prepare(terminalRequest),
+          terminalRequest,
+        );
+        sendJson(response, 200, sanitized);
+      } catch (error) {
+        if (error instanceof EvmTestnetTerminalValidationError ||
+            error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_ATOMIC_PREPARATION_FAILED", "EVM Testnet preparation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-testnet/observe-atomic") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmTestnetPorts.atomicObservation === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "EVM Testnet atomic observation is unavailable.");
+        return;
+      }
+      try {
+        const terminalRequest = parseEvmTestnetObserveAtomicRequest(await readJson(request));
+        const sanitized = validateEvmTestnetAtomicObservation(
+          await evmTestnetPorts.atomicObservation.observe(terminalRequest),
+          terminalRequest,
+        );
+        sendJson(response, 200, sanitized);
+      } catch (error) {
+        if (error instanceof EvmTestnetTerminalValidationError ||
+            error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_ATOMIC_OBSERVATION_FAILED", "EVM Testnet observation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-testnet/observe-async") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmTestnetPorts.asyncObservation === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "EVM Testnet async observation is unavailable.");
+        return;
+      }
+      try {
+        const terminalRequest = parseEvmTestnetObserveAsyncRequest(await readJson(request));
+        const sanitized = validateEvmTestnetAsyncObservation(
+          await evmTestnetPorts.asyncObservation.observe(terminalRequest),
+          terminalRequest,
+        );
+        sendJson(response, 200, sanitized);
+      } catch (error) {
+        if (error instanceof EvmTestnetTerminalValidationError ||
+            error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_ASYNC_OBSERVATION_FAILED", "EVM Testnet observation failed closed.");
+      }
+      return;
+    }
+
     if (url.pathname === "/internal/terminal/orders") {
       if (request.method !== "POST") {
         response.setHeader("Allow", "POST, OPTIONS");
@@ -367,12 +465,14 @@ export function createPrivateTerminalServer(
   executionPorts: PrivateTerminalExecutionPorts = {},
   orderPorts?: InternalOrderPorts,
   hyperliquidTestnetExecutionPort?: HyperliquidTestnetTerminalExecutionPort,
+  evmTestnetPorts: EvmTestnetTerminalPorts = {},
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
     executionPorts,
     orderPorts,
     hyperliquidTestnetExecutionPort,
+    evmTestnetPorts,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {
