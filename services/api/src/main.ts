@@ -6,6 +6,7 @@ import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
 import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
+import { composePrivateTerminalRuntime } from "./runtime-composition.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -34,16 +35,18 @@ const localExecutionCoordinator = new LocalExecutionCoordinator({
   orders: orderStore,
   lifecycle: lifecycleStore,
 });
+const runtime = composePrivateTerminalRuntime();
 const server = createPrivateTerminalServer(
   config,
-  {},
+  runtime.solanaDevnet,
   { contexts: orderRuntime.contexts, store: orderStore, clock: orderRuntime.clock },
-  undefined,
-  {},
+  runtime.hyperliquidTestnet,
+  runtime.evmTestnet,
   lifecycleStore,
   solverClient,
   executionIntentStore,
   localExecutionCoordinator,
+  runtime.health,
 );
 
 function shutdown(): void {

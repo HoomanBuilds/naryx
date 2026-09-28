@@ -53,6 +53,7 @@ import {
   SolverQuoteClientError,
   type SolverAtomicQuotePort,
 } from "./solver-quote-client.js";
+import type { PrivateTerminalRuntimeHealth } from "./runtime-composition.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -181,6 +182,7 @@ export function createPrivateTerminalRequestHandler(
   solverQuotePort?: SolverAtomicQuotePort,
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
+  runtimeHealth?: PrivateTerminalRuntimeHealth,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -246,6 +248,7 @@ export function createPrivateTerminalRequestHandler(
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,
         localExecutionAvailable: localExecutionCoordinator !== undefined,
+        ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
     }
@@ -774,6 +777,7 @@ export function createPrivateTerminalServer(
   solverQuotePort?: SolverAtomicQuotePort,
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
+  runtimeHealth?: PrivateTerminalRuntimeHealth,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -785,6 +789,7 @@ export function createPrivateTerminalServer(
     solverQuotePort,
     executionIntentStore,
     localExecutionCoordinator,
+    runtimeHealth,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

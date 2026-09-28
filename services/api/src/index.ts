@@ -125,6 +125,13 @@ export {
   loadPrivateTerminalServerConfig,
   type PrivateTerminalServerConfig,
 } from "./http-server.js";
+export {
+  composePrivateTerminalRuntime,
+  type PrivateTerminalRuntimeComposition,
+  type PrivateTerminalRuntimeFactories,
+  type PrivateTerminalRuntimeHealth,
+  type RuntimeBoundaryHealth,
+} from "./runtime-composition.js";
 export { PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 } from "./private-terminal-manifest.js";
 export {
   ExecutionValidationError,
