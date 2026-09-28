@@ -32,7 +32,8 @@
     "@naryx/adapter-hyperliquid": "file:../../packages/adapters/hyperliquid",
     "@naryx/protocol-types": "file:../../packages/protocol-types",
     "@nktkas/hyperliquid": "0.33.3",
-    "better-sqlite3": "13.0.3"
+    "better-sqlite3": "13.0.3",
+    "bs58": "6.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",

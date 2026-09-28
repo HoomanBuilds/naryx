@@ -183,6 +183,7 @@ export function createPrivateTerminalRequestHandler(
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
+  localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -238,6 +239,7 @@ export function createPrivateTerminalRequestHandler(
         status: "ready",
         scope: "private_terminal",
         environment: "LOCAL_CONFORMANCE",
+        localAtomicRuntimeMode,
         executionPreparationAvailable: executionPorts.preparation !== undefined,
         executionObservationAvailable: executionPorts.observation !== undefined,
         hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined,
@@ -778,6 +780,7 @@ export function createPrivateTerminalServer(
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
+  localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -790,6 +793,7 @@ export function createPrivateTerminalServer(
     executionIntentStore,
     localExecutionCoordinator,
     runtimeHealth,
+    localAtomicRuntimeMode,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

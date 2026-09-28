@@ -15,6 +15,7 @@ export interface LocalAtomicOrderRuntime {
 export function createLocalAtomicOrderRuntime(
   catalog: LocalAtomicMarketCatalog = LOCAL_ATOMIC_MARKET_CATALOG_V1,
   currentClock: () => bigint = () => localConformanceSlot(),
+  readClock: () => Promise<bigint> = async () => currentClock(),
 ): LocalAtomicOrderRuntime {
   const contexts: ActiveOrderContextProvider = (contextId) => {
     if (contextId !== catalog.contextId) return undefined;
@@ -58,7 +59,7 @@ export function createLocalAtomicOrderRuntime(
   const clock: InternalOrderClockPort = Object.freeze({
     currentClock: async (context: ActiveOrderContext) => {
       if (context.contextId !== catalog.contextId) throw new Error('local order context is unknown');
-      return currentClock();
+      return readClock();
     },
   });
   return Object.freeze({ catalog, contexts, clock });

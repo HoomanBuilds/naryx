@@ -7,6 +7,7 @@ import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 import { composePrivateTerminalRuntime } from "./runtime-composition.js";
+import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -26,7 +27,20 @@ const executionIntentStore = new SqliteExecutionIntentStore(absolutePath(
   process.env.NARYX_API_EXECUTION_INTENT_DB ?? "/tmp/naryx-local/execution-intents.db",
   "NARYX_API_EXECUTION_INTENT_DB",
 ));
-const orderRuntime = createLocalAtomicOrderRuntime();
+const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
+const manifestRuntime = environmentManifestPath === undefined
+  ? undefined
+  : await loadSolanaLocalEnvironmentRuntime(
+    absolutePath(environmentManifestPath, "NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST"),
+    process.env.NARYX_SOLANA_LOCAL_SOLVER_ID ?? "",
+  );
+const orderRuntime = manifestRuntime === undefined
+  ? createLocalAtomicOrderRuntime()
+  : createLocalAtomicOrderRuntime(
+    manifestRuntime.manifest.runtime.catalog,
+    () => manifestRuntime.initialSlot,
+    manifestRuntime.readSlot,
+  );
 const solverClient = new HttpInternalSolverQuoteClient(
   process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
 );
@@ -47,6 +61,7 @@ const server = createPrivateTerminalServer(
   executionIntentStore,
   localExecutionCoordinator,
   runtime.health,
+  manifestRuntime === undefined ? "PHASE4_FIXTURE" : "MANIFEST_VALIDATED",
 );
 
 function shutdown(): void {

@@ -24,18 +24,16 @@ function gcd(left: bigint, right: bigint): bigint {
 }
 
 function bindings(catalog: LocalAtomicMarketCatalog): readonly RouteAccountBindingInput[] {
-  const venue = catalog.programs.conformanceVenue;
-  const core = catalog.programs.core;
   return Object.freeze([
-    { routeBindingId: 'trader', accountIdentity: core, authorityIdentity: core },
-    { routeBindingId: 'market', adapter: catalog.adapter, adapterBindingId: 'market', accountIdentity: venue },
-    { routeBindingId: 'position', adapter: catalog.adapter, adapterBindingId: 'position', accountIdentity: core },
-    { routeBindingId: 'trader-base', adapter: catalog.adapter, adapterBindingId: 'trader-base', accountIdentity: core },
-    { routeBindingId: 'trader-quote', adapter: catalog.adapter, adapterBindingId: 'trader-quote', accountIdentity: core },
-    { routeBindingId: 'spot-base-vault', adapter: catalog.adapter, adapterBindingId: 'spot-base-vault', accountIdentity: venue },
-    { routeBindingId: 'spot-quote-vault', adapter: catalog.adapter, adapterBindingId: 'spot-quote-vault', accountIdentity: venue },
-    { routeBindingId: 'perp-quote-vault', adapter: catalog.adapter, adapterBindingId: 'perp-quote-vault', accountIdentity: venue },
-    { routeBindingId: 'conformance-program', adapter: catalog.adapter, adapterBindingId: 'program', accountIdentity: venue, codeIdentity: venue },
+    { routeBindingId: 'trader', accountIdentity: catalog.accounts.trader, authorityIdentity: catalog.accounts.trader },
+    { routeBindingId: 'market', adapter: catalog.adapter, adapterBindingId: 'market', accountIdentity: catalog.accounts.market },
+    { routeBindingId: 'position', adapter: catalog.adapter, adapterBindingId: 'position', accountIdentity: catalog.accounts.position },
+    { routeBindingId: 'trader-base', adapter: catalog.adapter, adapterBindingId: 'trader-base', accountIdentity: catalog.accounts.traderBase },
+    { routeBindingId: 'trader-quote', adapter: catalog.adapter, adapterBindingId: 'trader-quote', accountIdentity: catalog.accounts.traderQuote },
+    { routeBindingId: 'spot-base-vault', adapter: catalog.adapter, adapterBindingId: 'spot-base-vault', accountIdentity: catalog.accounts.spotBaseVault },
+    { routeBindingId: 'spot-quote-vault', adapter: catalog.adapter, adapterBindingId: 'spot-quote-vault', accountIdentity: catalog.accounts.spotQuoteVault },
+    { routeBindingId: 'perp-quote-vault', adapter: catalog.adapter, adapterBindingId: 'perp-quote-vault', accountIdentity: catalog.accounts.perpQuoteVault },
+    { routeBindingId: 'conformance-program', adapter: catalog.adapter, adapterBindingId: 'program', accountIdentity: catalog.programs.conformanceVenue, codeIdentity: catalog.programs.conformanceVenue },
   ]);
 }
 

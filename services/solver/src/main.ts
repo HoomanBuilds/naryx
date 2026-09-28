@@ -9,6 +9,7 @@ import {
   createInternalAtomicQuoteServer,
   createLocalAtomicMarketRuntime,
 } from './index.js';
+import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 
 const ED25519_SPKI_PREFIX_BYTES = 12;
 
@@ -64,7 +65,30 @@ if (signerPath === undefined || signerPath.length === 0) {
   throw new Error('NARYX_SOLVER_ED25519_KEY_PATH is required');
 }
 
-const runtime = createLocalAtomicMarketRuntime(LOCAL_ATOMIC_MARKET_CATALOG_V1);
+const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
+const manifestRuntime = environmentManifestPath === undefined
+  ? undefined
+  : await loadSolanaLocalEnvironmentRuntime(
+    absolutePath(environmentManifestPath, 'NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST'),
+    process.env.NARYX_SOLANA_LOCAL_SOLVER_ID ?? '',
+  );
+let validatorSlot = manifestRuntime?.initialSlot;
+const runtime = createLocalAtomicMarketRuntime(
+  manifestRuntime?.manifest.runtime.catalog ?? LOCAL_ATOMIC_MARKET_CATALOG_V1,
+  undefined,
+  manifestRuntime === undefined
+    ? undefined
+    : () => {
+      if (validatorSlot === undefined) throw new Error('validator clock is unavailable');
+      return validatorSlot;
+    },
+);
+const clockRefresh = manifestRuntime === undefined
+  ? undefined
+  : setInterval(() => {
+    void manifestRuntime.readSlot().then((slot) => { validatorSlot = slot; }).catch(() => { validatorSlot = undefined; });
+  }, 250);
+clockRefresh?.unref();
 const orderProvider = new HttpInternalOrderProvider(apiOrigin);
 const store = new SqliteInternalAtomicQuoteStore(quoteDbPath);
 const coordinator = createInternalAtomicQuoteCoordinator({
@@ -77,6 +101,7 @@ const coordinator = createInternalAtomicQuoteCoordinator({
 const server = createInternalAtomicQuoteServer(coordinator);
 
 function shutdown(): void {
+  if (clockRefresh !== undefined) clearInterval(clockRefresh);
   server.close(() => {
     store.close();
     process.exitCode = 0;
@@ -86,5 +111,6 @@ function shutdown(): void {
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
 server.listen(listenPort, host, () => {
-  process.stdout.write(`Internal solver listening on http://${host}:${listenPort}\n`);
+  const mode = manifestRuntime === undefined ? 'PHASE4_FIXTURE' : 'MANIFEST_VALIDATED';
+  process.stdout.write(`Internal solver listening on http://${host}:${listenPort} runtime=${mode}\n`);
 });
