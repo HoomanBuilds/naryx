@@ -506,3 +506,25 @@ export {
   type DomainRegistryRecordInput,
   type DomainRegistryRecord,
 } from './domain-registry-record.js';
+
+export {
+  PACKAGE_LIFECYCLE_VERSION,
+  PACKAGE_LIFECYCLE_STATE,
+  PACKAGE_EVIDENCE_GRADE,
+  isTerminalPackageLifecycleState,
+  assertPackageLifecycleTransition,
+  packageLifecycleEventIntent,
+  encodePackageLifecycleEventIntent,
+  packageLifecycleEventIntentBytes,
+  packageLifecycleEventIntentCommitment,
+  packageLifecycleReceipt,
+  encodePackageLifecycleReceipt,
+  packageLifecycleReceiptBytes,
+  packageLifecycleReceiptHash,
+  type PackageLifecycleState,
+  type PackageEvidenceGrade,
+  type PackageLifecycleEventIntentInput,
+  type PackageLifecycleEventIntent,
+  type PackageLifecycleReceiptInput,
+  type PackageLifecycleReceipt,
+} from './package-lifecycle.js';

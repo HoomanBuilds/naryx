@@ -90,6 +90,10 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/settlement-class-identity',
         'CON/v1/cash-carry-series-identity',
         'CON/v1/cash-carry-series-binding',
+        'CON/v1/async-bonded-authorization',
+        'CON/v1/async-bonded-transition',
+        'CON/v1/package-lifecycle-intent',
+        'CON/v1/package-lifecycle-receipt',
       ],
     );
   });

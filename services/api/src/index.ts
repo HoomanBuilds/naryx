@@ -31,6 +31,16 @@ export {
   type InternalOrderStore,
 } from "./internal-order-store.js";
 export {
+  PackageLifecycleEventConflictError,
+  PackageLifecycleStoreError,
+  SqlitePackageLifecycleStore,
+  type PackageLifecycleAttempt,
+  type PackageLifecycleClock,
+  type PackageLifecycleRecordResult,
+  type PackageLifecycleStore,
+  type PackageLifecycleStoreOptions,
+} from "./package-lifecycle-store.js";
+export {
   InternalOrderCoordinator,
   TerminalOrderValidationError,
   type InternalOrderClockPort,
