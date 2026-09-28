@@ -520,7 +520,10 @@ test('serves idempotent signed quotes over the loopback-only internal boundary',
   assert.equal(signatureCount, 1);
   assert.match(first.solverQuoteBytes, /^[0-9a-f]+$/);
   assert.equal(first.quoteHash.length, 64);
-  assert.equal((first.quote as { validUntilValue: string }).validUntilValue, '300000');
+  assert.deepEqual((first.quote as { validUntilValue: unknown }).validUntilValue, {
+    $naryxType: 'bigint',
+    value: '300000',
+  });
   await assert.rejects(
     port.quote({ orderHash: 'ff'.repeat(32), idempotencyKey: request.idempotencyKey }),
     (error: unknown) => {

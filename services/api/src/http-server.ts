@@ -540,7 +540,8 @@ export function createPrivateTerminalRequestHandler(
       const orderHash = quoteMatch[1] as string;
       try {
         const coordinator = new InternalOrderCoordinator(orderPorts);
-        if (coordinator.getOrder(orderHash) === undefined) {
+        const orderRecord = coordinator.getOrder(orderHash);
+        if (orderRecord === undefined) {
           reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
           return;
         }
@@ -554,7 +555,16 @@ export function createPrivateTerminalRequestHandler(
           orderHash,
           idempotencyKey: (raw as Record<string, unknown>).idempotencyKey,
         });
-        sendJson(response, 200, await solverQuotePort.quote(quoteRequest));
+        const canonicalOrder = orderPorts.store.getCanonicalOrderByHash(orderHash);
+        const context = orderPorts.contexts(orderRecord.contextId);
+        if (canonicalOrder === undefined || context === undefined) {
+          reject(response, 409, "ORDER_CONTEXT_UNAVAILABLE", "Canonical order context is unavailable.");
+          return;
+        }
+        const currentClock = await orderPorts.clock.currentClock(context);
+        const quoteResponse = await solverQuotePort.quote(quoteRequest);
+        solverQuotePort.verify?.(quoteResponse, canonicalOrder, currentClock);
+        sendJson(response, 200, quoteResponse);
       } catch (error) {
         if (error instanceof SolverQuoteClientError) {
           reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);

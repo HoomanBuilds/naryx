@@ -144,7 +144,9 @@ export {
   SolverQuoteClientError,
   parseSolverAtomicQuoteRequest,
   validateSolverAtomicQuoteResponse,
+  verifySolverAtomicQuoteResponse,
   type SolverAtomicQuotePort,
   type SolverAtomicQuoteRequest,
   type SolverAtomicQuoteResponse,
+  type VerifiedSolverAtomicQuote,
 } from "./solver-quote-client.js";

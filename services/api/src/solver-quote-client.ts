@@ -1,6 +1,5 @@
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const BYTE_HEX = /^(?:[0-9a-f]{2})+$/;
-const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
 
 export interface SolverAtomicQuoteRequest {
@@ -24,6 +23,16 @@ export interface SolverAtomicQuoteResponse {
 
 export interface SolverAtomicQuotePort {
   quote(request: SolverAtomicQuoteRequest): Promise<SolverAtomicQuoteResponse>;
+  verify?(
+    response: SolverAtomicQuoteResponse,
+    order: PackageOrder,
+    currentClock: bigint,
+  ): VerifiedSolverAtomicQuote;
+}
+
+export interface VerifiedSolverAtomicQuote {
+  readonly route: RoutePayload;
+  readonly quote: SolverQuote;
 }
 
 export class SolverQuoteClientError extends Error {
@@ -96,16 +105,75 @@ export function validateSolverAtomicQuoteResponse(
     || !isRecord(value.route) || !isRecord(value.quote)) {
     throw new SolverQuoteClientError("INVALID_RESPONSE", "solver response evidence is invalid");
   }
-  if (value.route.orderHash !== request.orderHash
-    || value.quote.orderHash !== request.orderHash
-    || value.quote.routeHash !== value.routeHash
-    || value.quote.solverSignatureScheme !== "ED25519"
-    || value.quote.quoteMode !== "EXECUTION_COMMITMENT"
-    || typeof value.quote.signature !== "string"
-    || !SIGNATURE_HEX.test(value.quote.signature)) {
-    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver quote payload binding is invalid");
-  }
   return value as unknown as SolverAtomicQuoteResponse;
+}
+
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+function hex(value: Uint8Array): string {
+  return Buffer.from(value).toString("hex");
+}
+
+export function verifySolverAtomicQuoteResponse(
+  response: SolverAtomicQuoteResponse,
+  order: PackageOrder,
+  currentClock: bigint,
+): VerifiedSolverAtomicQuote {
+  let route: RoutePayload;
+  let quote: SolverQuote;
+  try {
+    route = routePayload(fromProtocolJson(response.route, "solver.route") as RoutePayloadInput);
+    quote = solverQuote(fromProtocolJson(response.quote, "solver.quote") as SolverQuoteInput);
+  } catch {
+    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver route or quote is malformed");
+  }
+  const orderHash = packageOrderHash(order);
+  const computedRouteHash = routeHash(route);
+  const computedQuoteHash = quoteHash(quote);
+  const digest = solverSignatureDigest(quote);
+  if (response.orderHash !== hex(orderHash)
+    || response.routeHash !== hex(computedRouteHash)
+    || response.quoteHash !== hex(computedQuoteHash)
+    || response.solverSignatureDigest !== hex(digest)
+    || response.routeBytes !== hex(routePayloadBytes(route))
+    || response.solverQuoteBytes !== hex(solverQuoteBytes(quote))
+    || !bytesEqual(route.orderHash, orderHash)
+    || !bytesEqual(quote.orderHash, orderHash)
+    || !bytesEqual(quote.routeHash, computedRouteHash)) {
+    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver evidence does not match canonical bytes");
+  }
+  if (route.environment !== order.environment
+    || quote.environment !== order.environment
+    || route.routeExpiryUnit !== order.expiryUnit
+    || quote.validUntilUnit !== order.expiryUnit
+    || route.routeExpiryValue !== quote.validUntilValue
+    || route.routeExpiryValue > order.expiryValue
+    || typeof currentClock !== "bigint"
+    || currentClock <= 0n
+    || currentClock >= quote.validUntilValue) {
+    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver quote freshness or environment is invalid");
+  }
+  if (quote.solverSignatureScheme !== "ED25519"
+    || quote.quoteMode !== "EXECUTION_COMMITMENT"
+    || quote.solverVerificationKey.length !== 32
+    || quote.signature.length !== 64) {
+    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver signature shape is invalid");
+  }
+  let signatureValid = false;
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(quote.solverVerificationKey)]),
+      format: "der",
+      type: "spki",
+    });
+    signatureValid = verify(null, Buffer.from(digest), publicKey, Buffer.from(quote.signature));
+  } catch {
+    signatureValid = false;
+  }
+  if (!signatureValid) {
+    throw new SolverQuoteClientError("INVALID_RESPONSE", "solver signature verification failed");
+  }
+  return Object.freeze({ route, quote });
 }
 
 function requireLoopbackEndpoint(endpoint: string): string {
@@ -154,4 +222,30 @@ export class HttpInternalSolverQuoteClient implements SolverAtomicQuotePort {
     }
     return validateSolverAtomicQuoteResponse(await response.json(), request);
   }
+
+  verify(
+    response: SolverAtomicQuoteResponse,
+    order: PackageOrder,
+    currentClock: bigint,
+  ): VerifiedSolverAtomicQuote {
+    return verifySolverAtomicQuoteResponse(response, order, currentClock);
+  }
 }
+import { createPublicKey, verify } from "node:crypto";
+import {
+  bytesEqual,
+  fromProtocolJson,
+  packageOrderHash,
+  quoteHash,
+  routeHash,
+  routePayload,
+  routePayloadBytes,
+  solverQuote,
+  solverQuoteBytes,
+  solverSignatureDigest,
+  type PackageOrder,
+  type RoutePayload,
+  type RoutePayloadInput,
+  type SolverQuote,
+  type SolverQuoteInput,
+} from "@naryx/protocol-types";

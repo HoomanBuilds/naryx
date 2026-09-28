@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { packageOrderHash, validatePackageOrderProfile } from '@naryx/protocol-types';
-import type { Hash32, PackageOrder } from '@naryx/protocol-types';
+import { packageOrderHash, toProtocolJson, validatePackageOrderProfile } from '@naryx/protocol-types';
+import type { Hash32, PackageOrder, ProtocolJsonValue } from '@naryx/protocol-types';
 import {
   planAtomicEntryRoute,
   type AtomicRouteCandidateProvider,
@@ -15,8 +15,6 @@ import {
 const MAX_BODY_BYTES = 4_096;
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
-
-type JsonValue = null | boolean | string | JsonValue[] | { readonly [key: string]: JsonValue };
 
 export interface InternalAtomicQuoteRequest {
   readonly orderHash: string;
@@ -33,8 +31,8 @@ export interface InternalAtomicQuoteResponse {
   readonly solverSignatureDigest: string;
   readonly routeBytes: string;
   readonly solverQuoteBytes: string;
-  readonly route: JsonValue;
-  readonly quote: JsonValue;
+  readonly route: ProtocolJsonValue;
+  readonly quote: ProtocolJsonValue;
 }
 
 export type InternalAtomicQuoteOrderProvider = (
@@ -136,22 +134,6 @@ function parseRequest(value: unknown): InternalAtomicQuoteRequest {
   return Object.freeze({ orderHash: record.orderHash, idempotencyKey: record.idempotencyKey });
 }
 
-function jsonSafe(value: unknown): JsonValue {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'bigint') return value.toString(10);
-  if (typeof value === 'number' && Number.isSafeInteger(value)) return value.toString(10);
-  if (value instanceof Uint8Array) return hex(value);
-  if (Array.isArray(value)) return value.map(jsonSafe);
-  if (typeof value === 'object') {
-    const output: Record<string, JsonValue> = {};
-    for (const [key, entry] of Object.entries(value)) {
-      if (entry !== undefined) output[key] = jsonSafe(entry);
-    }
-    return output;
-  }
-  throw new Error('quote response contains a non-JSON value');
-}
-
 export function createInternalAtomicQuoteCoordinator(
   dependencies: InternalAtomicQuoteDependencies,
 ): InternalAtomicQuotePort {
@@ -220,8 +202,8 @@ export function createInternalAtomicQuoteCoordinator(
           solverSignatureDigest: hex(signed.solverSignatureDigest),
           routeBytes: hex(decision.routeBytes),
           solverQuoteBytes: hex(signed.solverQuoteBytes),
-          route: jsonSafe(decision.route),
-          quote: jsonSafe(signed.quote),
+          route: toProtocolJson(decision.route, 'route'),
+          quote: toProtocolJson(signed.quote, 'quote'),
         });
       })();
       pending.set(request.idempotencyKey, { orderHash: request.orderHash, promise: task });
