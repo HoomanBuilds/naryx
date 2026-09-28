@@ -17,7 +17,10 @@ import {
 } from '@naryx/protocol-types';
 import type { PackageOrderInput, RoutePayloadInput } from '@naryx/protocol-types';
 import {
+  InternalAtomicQuoteError,
   SignedAtomicEntryQuoteError,
+  createInternalAtomicQuoteCoordinator,
+  createInternalAtomicQuoteServer,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
 } from '../src/index.js';
@@ -351,4 +354,79 @@ test('signs a canonical atomic ENTRY quote and rejects fee-cap and wrong-digest 
       return true;
     },
   );
+});
+
+test('serves idempotent signed quotes over the loopback-only internal boundary', async (context) => {
+  const input = orderInput();
+  const order = validatePackageOrderProfile(input);
+  const orderHash = packageOrderHash(input);
+  const orderHashHex = Buffer.from(orderHash).toString('hex');
+  const route = routeInput(orderHash);
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  let signatureCount = 0;
+  const port = createInternalAtomicQuoteCoordinator({
+    orders: (requestedHash) => bytesEqual(requestedHash, orderHash) ? order : undefined,
+    candidates: () => [{
+      candidateId: 'candidate-a',
+      active: true,
+      capacityBaseAtoms: 1_000_000n,
+      expectedNetPackageOutcomeQuoteAtoms: 1_000n,
+      expectedTotalFeesQuoteAtoms: 100n,
+      evidenceGrade: 'SIMULATED',
+      route,
+    }],
+    terms: () => quoteTerms(),
+    signer: {
+      verificationKey: Uint8Array.from(spki.subarray(spki.length - 32)),
+      signDigest: (digest) => {
+        signatureCount += 1;
+        return Uint8Array.from(sign(null, Buffer.from(digest), privateKey));
+      },
+    },
+  });
+  const request = { orderHash: orderHashHex, idempotencyKey: 'quote-test-key-0001' };
+  const first = await port.quote(request);
+  const replay = await port.quote(request);
+  assert.deepEqual(replay, first);
+  assert.equal(signatureCount, 1);
+  assert.match(first.solverQuoteBytes, /^[0-9a-f]+$/);
+  assert.equal(first.quoteHash.length, 64);
+  assert.equal((first.quote as { validUntilValue: string }).validUntilValue, '300000');
+  await assert.rejects(
+    port.quote({ orderHash: 'ff'.repeat(32), idempotencyKey: request.idempotencyKey }),
+    (error: unknown) => {
+      assert.ok(error instanceof InternalAtomicQuoteError);
+      assert.equal(error.code, 'IDEMPOTENCY_CONFLICT');
+      return true;
+    },
+  );
+
+  const server = createInternalAtomicQuoteServer(port);
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  context.after(() => server.close());
+  const address = server.address();
+  assert.notEqual(address, null);
+  assert.equal(typeof address, 'object');
+  if (address === null || typeof address === 'string') throw new Error('unexpected server address');
+  const url = `http://127.0.0.1:${address.port}/internal/quotes/atomic-entry`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), first);
+  const malformed = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...request, route: 'client-controlled-route' }),
+  });
+  assert.equal(malformed.status, 400);
+  const method = await fetch(url);
+  assert.equal(method.status, 405);
 });

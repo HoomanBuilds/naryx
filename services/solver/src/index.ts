@@ -648,6 +648,18 @@ export {
   type SignedAtomicEntryQuoteInput,
 } from './signed-atomic-entry-quote.js';
 export {
+  InternalAtomicQuoteError,
+  createInternalAtomicQuoteCoordinator,
+  createInternalAtomicQuoteRequestHandler,
+  createInternalAtomicQuoteServer,
+  type InternalAtomicQuoteDependencies,
+  type InternalAtomicQuoteOrderProvider,
+  type InternalAtomicQuotePort,
+  type InternalAtomicQuoteRequest,
+  type InternalAtomicQuoteResponse,
+  type InternalAtomicQuoteTermsProvider,
+} from './internal-atomic-quote-server.js';
+export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,
   type HyperliquidTestnetPackageSubmissionPort,
