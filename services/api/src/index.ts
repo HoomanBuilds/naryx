@@ -22,6 +22,7 @@ export {
   type SolanaSignatureStatus,
 } from "./solana-devnet-runtime-ports.js";
 export { SolanaDevnetLifecycleStoreRecorder } from "./solana-devnet-lifecycle-recorder.js";
+export { SqlitePreparedSolanaDevnetStore } from "./solana-devnet-prepared-store.js";
 export {
   ReadOnlySolanaDevnetPostconditionVerifier,
   type SolanaDevnetPostconditionRpc,

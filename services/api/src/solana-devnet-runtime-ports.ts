@@ -201,6 +201,46 @@ function requireIdempotencyKey(value: unknown): string {
   return value;
 }
 
+function copyPostconditionBinding(value: SolanaDevnetPostconditionBinding): SolanaDevnetPostconditionBinding {
+  const addresses = [value.coreProgram, value.receiptAccount, value.openPackageAccount, value.entryReceiptAccount, value.trader, value.solver];
+  if (addresses.some((address) => !isAddress(address))) throw new Error("Postcondition binding contains an invalid Solana address.");
+  const isExit = value.receiptAccount !== value.entryReceiptAccount;
+  for (const [name, candidate, allowZero] of [
+    ["orderHashHex", value.orderHashHex, false],
+    ["quoteHashHex", value.quoteHashHex, false],
+    ["routeHashHex", value.routeHashHex, false],
+    ["resourceAdmissionCommitmentHex", value.resourceAdmissionCommitmentHex, false],
+    ["packageFillCommitmentHex", value.packageFillCommitmentHex, isExit],
+  ] as const) {
+    if (!HEX_32_PATTERN.test(candidate) || (!allowZero && /^0+$/.test(candidate))) {
+      throw new Error(`Postcondition binding ${name} is invalid.`);
+    }
+  }
+  const u64Max = (1n << 64n) - 1n;
+  for (const [name, candidate] of [
+    ["nonce", value.nonce],
+    ["spotQuantityAtoms", value.spotQuantityAtoms],
+    ["perpQuantityAtoms", value.perpQuantityAtoms],
+  ] as const) {
+    if (typeof candidate !== "bigint" || candidate < 0n || candidate > u64Max) {
+      throw new Error(`Postcondition binding ${name} is invalid.`);
+    }
+  }
+  let expectedOpenPackage: SolanaDevnetPostconditionBinding["expectedOpenPackage"];
+  if (value.expectedOpenPackage !== undefined) {
+    for (const [name, candidate] of Object.entries(value.expectedOpenPackage)) {
+      if (!HEX_32_PATTERN.test(candidate) || /^0+$/.test(candidate)) {
+        throw new Error(`Postcondition binding ${name} is invalid.`);
+      }
+    }
+    expectedOpenPackage = Object.freeze({ ...value.expectedOpenPackage });
+  }
+  return Object.freeze({
+    ...value,
+    ...(expectedOpenPackage === undefined ? {} : { expectedOpenPackage }),
+  });
+}
+
 function requestsEqual(
   left: NormalizedCashCarryExecutionRequest,
   right: NormalizedCashCarryExecutionRequest,
@@ -677,12 +717,7 @@ function copyRecord(record: {
     materialization: copyDto(record.materialization),
     lifecycleBinding: copyLifecycleBinding(record.lifecycleBinding),
     ...(record.postconditionBinding === undefined ? {} : {
-      postconditionBinding: Object.freeze({
-        ...record.postconditionBinding,
-        ...(record.postconditionBinding.expectedOpenPackage === undefined
-          ? {}
-          : { expectedOpenPackage: Object.freeze({ ...record.postconditionBinding.expectedOpenPackage }) }),
-      }),
+      postconditionBinding: copyPostconditionBinding(record.postconditionBinding),
     }),
     lastValidBlockHeight: record.lastValidBlockHeight,
     boundSignature: record.boundSignature,
@@ -839,12 +874,7 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
       materialization: checkedMaterialization,
       lifecycleBinding: copyLifecycleBinding(checkedBinding),
       ...(postconditionBinding === undefined ? {} : {
-        postconditionBinding: Object.freeze({
-          ...postconditionBinding,
-          ...(postconditionBinding.expectedOpenPackage === undefined
-            ? {}
-            : { expectedOpenPackage: Object.freeze({ ...postconditionBinding.expectedOpenPackage }) }),
-        }),
+        postconditionBinding: copyPostconditionBinding(postconditionBinding),
       }),
       lastValidBlockHeight: materialization.lastValidBlockHeight,
       boundSignature: undefined as string | undefined,

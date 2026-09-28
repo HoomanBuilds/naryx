@@ -17,6 +17,7 @@ import {
   InMemoryPreparedSolanaDevnetStore,
   SOLANA_DEVNET_GENESIS_HASH,
   SolanaDevnetLifecycleStoreRecorder,
+  SqlitePreparedSolanaDevnetStore,
   SqlitePackageLifecycleStore,
 } from "../src/index.js";
 
@@ -183,6 +184,64 @@ function withTempLifecycleStore(fn: (dbPath: string) => Promise<void>): Promise<
     }
   })();
 }
+
+test("prepared Solana attempts and bound signatures survive restart", async () => {
+  await withTempLifecycleStore(async (dbPath) => {
+    const { rawTrader, trader, privateKey } = setupTrader();
+    const domain = makeDomain();
+    const message = buildMessage(rawTrader, Buffer.alloc(32, 2));
+    const signature = bs58.encode(sign(null, message, privateKey));
+    const transactionBase64 = buildTransaction(message).toString("base64");
+    const blockhash = bs58.encode(Buffer.alloc(32, 2));
+    const store = new SqlitePreparedSolanaDevnetStore(dbPath);
+    const ports = createSolanaDevnetExecutionPorts({
+      contextProvider: () => ({
+        admission: makeEntryAdmission(domain, entryOrderHex()),
+        binding: makeEntryBinding(domain),
+      }),
+      materializer: makeMaterializer(
+        trader,
+        message,
+        transactionBase64,
+        message.toString("base64"),
+        blockhash,
+        message,
+        transactionBase64,
+        message.toString("base64"),
+        blockhash,
+      ),
+      store,
+      rpc: {
+        getGenesisHash: async () => SOLANA_DEVNET_GENESIS_HASH,
+        getSignatureStatus: async () => ({ slot: 300, confirmationStatus: "finalized", err: null }),
+        getBlockHeight: async () => 100,
+      },
+    });
+    const idempotencyKey = "test-durable-solana-prepared-attempt";
+    await ports.preparation!.prepare({
+      domain: "svm:devnet",
+      mode: "entry",
+      sizeAtoms: "1000000",
+      slippageBps: 10,
+      quoteMode: "coordinated_limits",
+      traderPublicKey: trader,
+      idempotencyKey,
+    } as never);
+    await ports.observation!.observe({ idempotencyKey, signature });
+    store.close();
+
+    const reopened = new SqlitePreparedSolanaDevnetStore(dbPath);
+    try {
+      const restored = reopened.get(idempotencyKey)!;
+      assert.equal(restored.boundSignature, signature);
+      assert.equal(restored.lifecycleBinding.attemptId, `solana-cash-carry-${entryOrderHex()}`);
+      assert.equal(restored.materialization.transactionBase64, transactionBase64);
+      assert.throws(() => reopened.bindSignature(idempotencyKey, bs58.encode(Buffer.alloc(64, 9))));
+    } finally {
+      reopened.close();
+    }
+  });
+});
 
 test("entry prepare creates two receipts with durable attempt id", async () => {
   await withTempLifecycleStore(async (dbPath) => {
