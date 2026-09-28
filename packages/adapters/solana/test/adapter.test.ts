@@ -182,7 +182,13 @@ test('binds the execution digest to nonce and core accounts', async () => {
 
 test('accepts an externally produced execution signature without invoking the provider', async () => {
   const compiler = adapter(undefined, async () => { throw new Error('provider must not run'); });
+  const authorization = compiler.compileAuthorizationPayload(admission());
+  assert.equal(authorization.programId, coreIdl.address);
+  assert.equal(authorization.solver, solver.toBase58());
+  assert.equal(authorization.nonce, 7n);
+  assert.equal(authorization.expirySlot, 480n);
   const compiled = await compiler.compileAuthenticated(admission(), executionSignature);
+  assert.deepEqual(authorization.executionDigest, compiled.payload.executionDigest);
   assert.deepEqual(Array.from(compiled.payload.instructions[0]!.data.subarray(48, 112)), Array.from(executionSignature));
   await assert.rejects(compiler.compileAuthenticated(admission(), new Uint8Array(63)), /solver execution signature must be 64 bytes/);
 });

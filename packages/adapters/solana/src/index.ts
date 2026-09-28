@@ -76,6 +76,14 @@ export interface AuthenticatedConformanceExecution {
   readonly coreInstruction: TransactionInstruction;
 }
 
+export interface ConformanceExecutionAuthorizationPayload {
+  readonly executionDigest: Uint8Array;
+  readonly programId: string;
+  readonly solver: string;
+  readonly nonce: bigint;
+  readonly expirySlot: bigint;
+}
+
 export type ConformanceExecutionSignatureProvider = (
   executionDigest: Uint8Array,
   admission: PackageAdmission,
@@ -264,6 +272,24 @@ export class SolanaConformanceAdapter implements ExecutionAdapter<AuthenticatedC
     solverSignature: Uint8Array,
   ): Promise<CompiledExecution<AuthenticatedConformanceExecution>> {
     return this.#authenticatedPlan(this.#compileCore(admission), solverSignature);
+  }
+
+  compileAuthorizationPayload(
+    admission: PackageAdmission,
+  ): ConformanceExecutionAuthorizationPayload {
+    const compiled = this.#compileCore(admission);
+    const expirySlot = [
+      admission.order.expiryValue,
+      admission.quote.validUntilValue,
+      admission.route.routeExpiryValue,
+    ].reduce((left, right) => left < right ? left : right);
+    return Object.freeze({
+      executionDigest: Uint8Array.from(compiled.executionDigest),
+      programId: compiled.coreInstruction.programId.toBase58(),
+      solver: compiled.solver.toBase58(),
+      nonce: admission.order.nonce,
+      expirySlot,
+    });
   }
 
   #compileCore(admission: PackageAdmission): CompiledConformanceCore {
