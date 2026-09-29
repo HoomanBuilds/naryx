@@ -128,12 +128,14 @@ export async function validateEnvironment(environment) {
   if (domain[0] !== manifest.domain.domainId || Number(domain[1]) !== manifest.domain.manifestVersion || domain[2] !== manifest.domain.manifestHash) {
     throw new Error("EVM local domain mismatch");
   }
-  const activeSolver = await client.readContract({
+  const activeSolvers = await client.readContract({
     address: manifest.contracts.registry.address,
     abi: artifacts.registry.abi,
-    functionName: "activeSolver",
+    functionName: "activeSolvers",
   });
-  if (activeSolver.toLowerCase() !== manifest.identities.solver.toLowerCase()) throw new Error("EVM local solver mismatch");
+  if (activeSolvers.length !== 1 || activeSolvers[0].toLowerCase() !== manifest.identities.solver.toLowerCase()) {
+    throw new Error("EVM local solver mismatch");
+  }
   const paused = await client.readContract({
     address: manifest.contracts.config.address,
     abi: artifacts.config.abi,
@@ -199,7 +201,9 @@ export async function withLocalEvmEnvironment(callback) {
     await write(wallets.proposer, client, config, artifacts.config.abi, "scheduleUnpause");
     await client.request({ method: "evm_increaseTime", params: [Number(delaySeconds + 1n)] });
     await client.request({ method: "evm_mine", params: [] });
-    await write(wallets.governanceExecutor, client, registry, artifacts.registry.abi, "activateSolver");
+    await write(wallets.governanceExecutor, client, registry, artifacts.registry.abi, "activateSolver", [accounts.solver.address]);
+    // The bootstrap solver only seeds the set; the local environment settles with one solver.
+    await write(wallets.pauser, client, registry, artifacts.registry.abi, "removeSolver", [accounts.bootstrapSolver.address]);
     await write(wallets.governanceExecutor, client, config, artifacts.config.abi, "activateUnpause");
 
     const venueSeed = parseEther("1000");
