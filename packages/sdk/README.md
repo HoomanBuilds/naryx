@@ -32,6 +32,7 @@ Orders and terminal evidence are covered end to end:
 - `getReceipt` and `verifyTerminalEvidence` re-hash the evidence manifest, terminal outcome, and receipt, require all of them to name the requested order, require a receipt exactly for successful terminal states, check the outcome-to-receipt link, and, given the accepted quote's fee terms, check that the receipt charged nothing outside them.
 - `getOutcome` and `verifyOutcomeEvidence` verify an outcome without its receipt and accept only the receipt hash the outcome itself links.
 - `getCurve`, `getSeriesIndex`, and `getOpportunities` require every requested size to be answered with the right `EXECUTABLE`, `INDICATIVE`, or `OBSERVED` label, reject a price for depth that is not there, check that each spread is ask minus bid, and check the feed's spread ordering.
+- `getQualification` and `getQualificationHistory` re-hash every record, require it to name the requested object, check that a current record governs at its served time, and replay the history's chain, object, time-order, and never-loosen-by-monitor rules locally.
 - `getExecutionQuality` requires the `OBSERVED` label and a methodology, and checks that state counts sum to the outcome total, basis points stay in range, and percentiles are ordered.
 - `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it.
 

@@ -16,9 +16,13 @@ import {
   packageReceiptHash,
   privateRfqEnvelopeHash,
   ProtocolError,
+  QUALIFICATION_OBJECT_TYPE,
+  qualificationRecord,
+  qualificationRecordHash,
   replayRouteDecision,
   replaySealedAuction,
   requiresSuccessfulReceipt,
+  verifyQualificationHistory,
   sealedAuctionHash,
   TERMINAL_STATE,
   terminalOutcomeHash,
@@ -43,6 +47,9 @@ import {
   type PackageReceiptInput,
   type PackageTakerOrderInput,
   type PrivateRfqEnvelopeInput,
+  type QualificationObjectType,
+  type QualificationRecord,
+  type QualificationRecordInput,
   type SealedAuctionDefinitionInput,
   type SealedAuctionEvent,
   type RfqDecision,
@@ -267,6 +274,15 @@ export interface PackageOpportunity {
   readonly lastTrade?: ObservedTrade;
 }
 
+export interface VerifiedQualificationRecord {
+  readonly record: QualificationRecord;
+  readonly recordHash: string;
+}
+
+export type QualificationView =
+  | { readonly objectType: QualificationObjectType; readonly objectId: string; readonly asOfValue: bigint; readonly current: VerifiedQualificationRecord }
+  | { readonly objectType: QualificationObjectType; readonly objectId: string; readonly unavailable: 'NOT_YET_EFFECTIVE' | 'EXPIRED' | 'TIME_UNIT_UNSUPPORTED' };
+
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 /** Bitcoin-alphabet base58, the encoding the order intake expects for Ed25519 signatures. */
@@ -379,6 +395,20 @@ function observedTrade(value: unknown, context: string): ObservedTrade | undefin
     allocationHash: hashHex(trade.allocationHash, `${context}.allocationHash`),
     label: 'OBSERVED' as const,
   });
+}
+
+function verifiedQualification(value: unknown, hash: unknown, objectType: string, objectId: string, context: string): VerifiedQualificationRecord {
+  let record: QualificationRecord;
+  let recordHash: string;
+  try {
+    record = qualificationRecord(value as QualificationRecordInput);
+    recordHash = toHex(qualificationRecordHash(value as QualificationRecordInput));
+  } catch (error) {
+    throw new NaryxEvidenceError(`${context} is malformed: ${(error as Error).message}`);
+  }
+  if (hash !== recordHash) throw new NaryxEvidenceError(`${context} does not hash to its served hash`);
+  if (record.objectType !== objectType || record.objectId !== objectId) throw new NaryxEvidenceError(`${context} is for another object`);
+  return Object.freeze({ record, recordHash });
 }
 
 function sizesQuery(sizes: readonly bigint[]): string {
@@ -813,6 +843,48 @@ export class NaryxClient {
         });
       }),
     );
+  }
+
+  /**
+   * The qualification record governing an object now. The record must hash to its served hash and
+   * name the requested object; an expired or not yet effective record governs nothing.
+   */
+  async getQualification(objectType: QualificationObjectType, objectId: string): Promise<QualificationView> {
+    if (!Object.hasOwn(QUALIFICATION_OBJECT_TYPE, objectType)) throw new TypeError('unknown qualification object type');
+    checkId(objectId, 'object id');
+    const body = record(await this.#request('GET', `/v1/qualification/${objectType}/${objectId}`), 'qualification');
+    if (body.objectType !== objectType || body.objectId !== objectId) throw new NaryxEvidenceError('qualification is for another object');
+    if (body.unavailable !== undefined) {
+      if (body.unavailable !== 'NOT_YET_EFFECTIVE' && body.unavailable !== 'EXPIRED' && body.unavailable !== 'TIME_UNIT_UNSUPPORTED') {
+        throw new NaryxEvidenceError('qualification unavailability is unknown');
+      }
+      return Object.freeze({ objectType, objectId, unavailable: body.unavailable });
+    }
+    const current = verifiedQualification(body.record, body.recordHash, objectType, objectId, 'qualification.record');
+    const asOfValue = big(body.asOfValue, 'asOfValue');
+    if (current.record.effectiveAtValue > asOfValue || (current.record.expiresAtValue !== undefined && asOfValue >= current.record.expiresAtValue)) {
+      throw new NaryxEvidenceError('the served record does not govern at its own time');
+    }
+    return Object.freeze({ objectType, objectId, asOfValue, current });
+  }
+
+  /**
+   * The full append-only history of an object. Each record is re-hashed, must chain to the one
+   * before it, and must obey the kernel rules: a monitor never loosens qualification.
+   */
+  async getQualificationHistory(objectType: QualificationObjectType, objectId: string): Promise<readonly VerifiedQualificationRecord[]> {
+    if (!Object.hasOwn(QUALIFICATION_OBJECT_TYPE, objectType)) throw new TypeError('unknown qualification object type');
+    checkId(objectId, 'object id');
+    const body = record(await this.#request('GET', `/v1/qualification/${objectType}/${objectId}/history`), 'qualification history');
+    if (body.objectType !== objectType || body.objectId !== objectId) throw new NaryxEvidenceError('history is for another object');
+    const records = list(body.records, 'records').map((entry, index) => {
+      const served = record(entry, `records[${index}]`);
+      return verifiedQualification(served.record, served.recordHash, objectType, objectId, `records[${index}]`);
+    });
+    // The activation delay is server policy; the chain, object, time order, and loosening rules are not.
+    const verdict = verifyQualificationHistory(records.map((entry) => entry.record), 0n);
+    if (!verdict.valid) throw new NaryxEvidenceError(`qualification history breaks at record ${verdict.index}: ${verdict.reason}`);
+    return Object.freeze(records);
   }
 
   /** Measured execution quality; every figure comes from stored outcomes and receipts. */

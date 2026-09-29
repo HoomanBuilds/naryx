@@ -10,6 +10,8 @@ export {
   type CandlePage,
   type ObservedTrade,
   type PackageOpportunity,
+  type QualificationView,
+  type VerifiedQualificationRecord,
   type SeriesCurve,
   type SeriesCurvePoint,
   type SizeQuoteView,

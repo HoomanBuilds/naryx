@@ -52,6 +52,7 @@ The private solver handoff is GET `/internal/solver/hyperliquid-testnet/attempts
 | `GET /v1/opportunities?size=` | open, unhalted markets with direct executable depth at the size on at least one side, with series, executable bid and ask at size, spread at size, and last trade; tightest spread first |
 | `POST /v1/orders` | signed order intake (`SqliteEvidenceStore`, `NARYX_EVIDENCE_DB`): the owner's Ed25519 signature over the exact canonical order bytes, one order per owner nonce; intake is not execution |
 | `GET /v1/orders/{orderHash}`, `/v1/outcomes/{orderHash}`, `/v1/receipts/{orderHash}` | the signed order and status, the terminal outcome with its evidence manifest, and the successful receipt; every record is served with its hash and re-hashed on read |
+| `GET /v1/qualification/{objectType}/{objectId}`, `.../history` | the record governing an instrument, venue, adapter, template, settlement class, delivery path, solver, or execution class now, and its full append-only history, each with its hash (`SqliteQualificationStore`, `NARYX_QUALIFICATION_DB`); an expired or not yet effective record is reported as governing nothing |
 | `GET /v1/analytics/execution-quality?solverId=` | counts of stored terminal outcomes and receipts, labeled `OBSERVED`, with nearest-rank time-unhedged percentiles and receipt field evidence grades |
 | `GET /v1/package-book/{id}/implied-provenance` | live implied entries with solver, evidence grade, derivation depth, and leg sources |
 | `GET /v1/allocations/{takerOrderId}` | full allocation evidence and its matching policy; possession of the taker order id is the read capability |
@@ -71,6 +72,8 @@ Query parameters are whitelisted, POST bodies are protocol JSON of at most 64 Ki
 | `GET /v1/solver/settlements/{quoteHash}` | the caller's own settled receipts for one quote, with order, terminal state, outcome, and receipt hashes |
 
 Public reads add `GET /v1/markets/{id}/quotes` (live shard levels with quote mode, settlement class, and reference; killed shards, stale heartbeats, and expired levels are excluded) and `GET /v1/solvers/{id}/capacity`.
+
+`SqliteQualificationStore`, enabled by `NARYX_QUALIFICATION_DB` with `NARYX_QUALIFICATION_AUTHORITIES` (comma-separated `keyId:base58Ed25519Key` pairs) and `NARYX_QUALIFICATION_ACTIVATION_DELAY` (in the records' time unit), appends a qualification record only with a valid authority signature over its hash and only when the kernel accepts it as the next link of that object's chain: a monitor tightens at once, and anything that loosens qualification is a reviewed activation with two reviewers taking effect no earlier than the delay. No HTTP route appends; operators append through the store.
 
 `SqlitePrivateDeliveryStore`, enabled by `NARYX_PRIVATE_DELIVERY_DB` together with the solver API, backs the private RFQ relay and the sealed-auction coordinator.
 

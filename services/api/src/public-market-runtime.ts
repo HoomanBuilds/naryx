@@ -13,6 +13,8 @@ import { createSolverApiHandler } from "./solver-api.js";
 import { SqliteSolverApiStore } from "./solver-api-store.js";
 import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
+import { SqliteQualificationStore } from "./qualification-store.js";
+import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
 const DEFAULT_REQUESTS_PER_MINUTE = 120;
@@ -101,6 +103,35 @@ function loadSupport(path: string): {
   };
 }
 
+/** `keyId:base58Ed25519Key` pairs, comma separated: the keys allowed to sign qualification records. */
+function qualificationAuthorities(value: string | undefined): ReadonlyMap<string, Uint8Array> {
+  if (value === undefined || value.trim() === "") {
+    throw new PublicMarketConfigError("NARYX_QUALIFICATION_DB requires NARYX_QUALIFICATION_AUTHORITIES.");
+  }
+  const authorities = new Map<string, Uint8Array>();
+  for (const entry of value.split(",").map((part) => part.trim()).filter((part) => part !== "")) {
+    const [keyId, encoded, extra] = entry.split(":");
+    let key: Uint8Array | undefined;
+    try {
+      key = encoded === undefined ? undefined : bs58.decode(encoded);
+    } catch {
+      key = undefined;
+    }
+    if (extra !== undefined || keyId === undefined || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId) || key?.length !== 32 || authorities.has(keyId)) {
+      throw new PublicMarketConfigError("NARYX_QUALIFICATION_AUTHORITIES must list distinct keyId:base58 Ed25519 keys.");
+    }
+    authorities.set(keyId, key);
+  }
+  return authorities;
+}
+
+function activationDelay(value: string | undefined): bigint {
+  if (value === undefined || !/^(0|[1-9]\d{0,18})$/.test(value)) {
+    throw new PublicMarketConfigError("NARYX_QUALIFICATION_DB requires NARYX_QUALIFICATION_ACTIVATION_DELAY in the records' time unit.");
+  }
+  return BigInt(value);
+}
+
 /**
  * Loads the public v1 API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly "true", and
  * then requires an absolute exchange database path and support manifest; NARYX_REGISTRY_DB, when
@@ -159,6 +190,14 @@ export function loadPublicMarketRuntime(
     const evidencePath = optional(environment.NARYX_EVIDENCE_DB);
     const evidence = evidencePath === undefined ? undefined : new SqliteEvidenceStore(absolute(evidencePath, "NARYX_EVIDENCE_DB"));
     if (evidence !== undefined) opened.push(evidence);
+    const qualificationPath = optional(environment.NARYX_QUALIFICATION_DB);
+    const qualification = qualificationPath === undefined
+      ? undefined
+      : new SqliteQualificationStore(absolute(qualificationPath, "NARYX_QUALIFICATION_DB"), {
+        authorities: qualificationAuthorities(environment.NARYX_QUALIFICATION_AUTHORITIES),
+        minimumActivationDelay: activationDelay(environment.NARYX_QUALIFICATION_ACTIVATION_DELAY),
+      });
+    if (qualification !== undefined) opened.push(qualification);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -170,6 +209,7 @@ export function loadPublicMarketRuntime(
       ...(solverState === undefined ? {} : { solverState }),
       ...(delivery === undefined ? {} : { delivery, pinnedSuiteIds }),
       ...(evidence === undefined ? {} : { evidence }),
+      ...(qualification === undefined ? {} : { qualification }),
       nowValue,
       rateLimit,
       clockMs,

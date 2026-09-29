@@ -176,6 +176,14 @@ test("the runtime is off by default and validates its configuration", () => {
     const separate = loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_PORT: "8788", NARYX_PUBLIC_API_HOST: "0.0.0.0" });
     assert.deepEqual(separate?.listener, { host: "0.0.0.0", port: 8788 });
     separate?.close();
+    const qualificationDb = { ...env, NARYX_QUALIFICATION_DB: join(dir, "qualification.sqlite") };
+    assert.throws(() => loadPublicMarketRuntime(qualificationDb), /requires NARYX_QUALIFICATION_AUTHORITIES/);
+    const key = "4".repeat(44);
+    assert.throws(() => loadPublicMarketRuntime({ ...qualificationDb, NARYX_QUALIFICATION_AUTHORITIES: "key-1:not-a-key", NARYX_QUALIFICATION_ACTIVATION_DELAY: "10" }), /distinct keyId:base58/);
+    assert.throws(() => loadPublicMarketRuntime({ ...qualificationDb, NARYX_QUALIFICATION_AUTHORITIES: `key-1:${key}` }), /ACTIVATION_DELAY/);
+    const qualified = loadPublicMarketRuntime({ ...qualificationDb, NARYX_QUALIFICATION_AUTHORITIES: `key-1:${key}`, NARYX_QUALIFICATION_ACTIVATION_DELAY: "10" });
+    assert.ok(qualified);
+    qualified?.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

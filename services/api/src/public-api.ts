@@ -9,6 +9,7 @@ import {
   executablePackageIndex,
   fromProtocolJson,
   MARKET_DATA_METHODOLOGY_VERSION,
+  QUALIFICATION_OBJECT_TYPE,
   matchPackageOrder,
   packageBookLevels,
   packageOrderHash,
@@ -21,6 +22,7 @@ import {
   validatePackageOrderProfile,
 } from "@naryx/protocol-types";
 import type {
+  QualificationObjectType,
   CandleInterval,
   DeRiskPolicy,
   NormalizedPositionInput,
@@ -40,6 +42,7 @@ import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
+import type { SqliteQualificationStore } from "./qualification-store.js";
 import { verifyEd25519 } from "./ed25519.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -92,6 +95,8 @@ export interface PublicApiOptions {
   readonly pinnedSuiteIds?: readonly string[];
   /** Optional: order intake, order and receipt reads, and execution analytics answer 503 without it. */
   readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality">;
+  /** Optional: qualification reads answer 503 without it. Records are appended by operators, never here. */
+  readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -364,6 +369,27 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, ["solverId"]);
       const solverId = url.searchParams.get("solverId");
       return requireEvidence().executionQuality(solverId === null ? {} : { solverId: id(solverId, "Solver id") });
+    }
+    if ((match = /^\/v1\/qualification\/([A-Z_]{1,32})\/([^/]+)(\/history)?$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const objectType = match[1] as QualificationObjectType;
+      if (!Object.hasOwn(QUALIFICATION_OBJECT_TYPE, objectType)) throw new RequestError(400, "INVALID_REQUEST", "Unknown qualification object type.");
+      const objectId = id(match[2], "Object id");
+      if (options.qualification === undefined) throw new RequestError(503, "QUALIFICATION_UNAVAILABLE", "No qualification store is configured on this server.");
+      if (match[3] !== undefined) {
+        return {
+          objectType,
+          objectId,
+          records: options.qualification.history(objectType, objectId).map((entry) => ({ record: entry.record, recordHash: entry.recordHashHex, recordedAtMs: entry.recordedAtMs })),
+        };
+      }
+      const verdict = options.qualification.current(objectType, objectId, nowIn);
+      if ("unavailable" in verdict) {
+        if (verdict.unavailable === "NO_RECORD") throw new RequestError(404, "QUALIFICATION_NOT_FOUND", "No qualification record exists for this object.");
+        // An expired or not yet effective record governs nothing; execution treats the object as unqualified.
+        return { objectType, objectId, unavailable: verdict.unavailable };
+      }
+      return { objectType, objectId, asOfValue: verdict.asOfValue, record: verdict.current.record, recordHash: verdict.current.recordHashHex };
     }
     if (path === "/v1/instruments") {
       onlyParams(url, []);

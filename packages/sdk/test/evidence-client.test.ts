@@ -12,6 +12,7 @@ import {
   packageOrderHash,
   packageReceiptHash,
   privateRfqEnvelopeHash,
+  qualificationRecordHash,
   terminalOutcomeHash,
   toHex,
   toProtocolJson,
@@ -20,6 +21,7 @@ import {
   type PackageOrderInput,
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
+  type QualificationRecordInput,
   type TerminalOutcomeInput,
 } from '@naryx/protocol-types';
 import { NaryxClient, NaryxSolverClient, base58Encode, type FetchLike } from '../src/index.js';
@@ -389,6 +391,61 @@ describe('order intake and terminal evidence', () => {
     const wrongSpread = { ...feed, opportunities: [{ ...feed.opportunities[0], spreadAtSizeTicks: 1n }] };
     await assert.rejects(client({ [feedPath]: { body: wrongSpread } }).getOpportunities(10n), /ask minus its bid/);
     await assert.rejects(client({ [feedPath]: { body: { ...feed, size: 20n } } }).getOpportunities(10n), /requested size/);
+  });
+
+  test('qualification reads re-hash every record and reject a history a monitor loosened', async () => {
+    const base: QualificationRecordInput = {
+      recordVersion: 1,
+      environment: 'testnet',
+      objectType: 'VENUE',
+      objectId: 'phoenix-sol-usdc',
+      domain,
+      state: 'ACTIVE',
+      effectiveLimits: { maximumNotionalQuoteAtoms: 1_000n, maximumOpenPackages: 5 },
+      evidenceRefs: [hash(21)],
+      triggerCodes: [],
+      timeUnit: 'EVM_UNIX_SECONDS',
+      observedAtValue: 100n,
+      effectiveAtValue: 200n,
+      authorityKind: 'REVIEWED_ACTIVATION',
+      authority: 'qualification-key-1',
+      reviewerIds: ['reviewer-a', 'reviewer-b'],
+      signature: new Uint8Array(64),
+    };
+    const downgrade: QualificationRecordInput = {
+      ...base,
+      state: 'EXIT_ONLY',
+      observedAtValue: 300n,
+      effectiveAtValue: 300n,
+      authorityKind: 'AUTOMATED_MONITOR',
+      reviewerIds: [],
+      previousRecordHash: qualificationRecordHash(base),
+    };
+    const entry = (value: QualificationRecordInput) => ({ record: value, recordHash: toHex(qualificationRecordHash(value)), recordedAtMs: 1 });
+    const historyPath = 'GET /v1/qualification/VENUE/phoenix-sol-usdc/history';
+    const history = await client({ [historyPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', records: [entry(base), entry(downgrade)] } } })
+      .getQualificationHistory('VENUE', 'phoenix-sol-usdc');
+    assert.deepEqual(history.map((value) => value.record.state), ['ACTIVE', 'EXIT_ONLY']);
+
+    const loosened: QualificationRecordInput = { ...downgrade, state: 'ACTIVE', observedAtValue: 400n, effectiveAtValue: 400n, previousRecordHash: qualificationRecordHash(downgrade) };
+    await assert.rejects(
+      client({ [historyPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', records: [entry(base), entry(downgrade), entry(loosened)] } } }).getQualificationHistory('VENUE', 'phoenix-sol-usdc'),
+      /breaks at record 2: MONITOR_CANNOT_LOOSEN/,
+    );
+    await assert.rejects(
+      client({ [historyPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', records: [{ ...entry(base), recordHash: 'ab'.repeat(32) }] } } }).getQualificationHistory('VENUE', 'phoenix-sol-usdc'),
+      /does not hash/,
+    );
+
+    const currentPath = 'GET /v1/qualification/VENUE/phoenix-sol-usdc';
+    const current = await client({ [currentPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', asOfValue: 350n, ...entry(downgrade) } } }).getQualification('VENUE', 'phoenix-sol-usdc');
+    assert.ok('current' in current && current.current.record.state === 'EXIT_ONLY');
+    await assert.rejects(
+      client({ [currentPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', asOfValue: 250n, ...entry(downgrade) } } }).getQualification('VENUE', 'phoenix-sol-usdc'),
+      /does not govern/,
+    );
+    const expired = await client({ [currentPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', unavailable: 'EXPIRED' } } }).getQualification('VENUE', 'phoenix-sol-usdc');
+    assert.deepEqual(expired, { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', unavailable: 'EXPIRED' });
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {
