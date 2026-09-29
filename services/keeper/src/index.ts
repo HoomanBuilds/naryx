@@ -32,6 +32,7 @@ export * from './hyperliquid-evidence-collector.js';
 export * from './hyperliquid-testnet-evidence-runtime.js';
 export * from './hyperliquid-testnet-evidence-http.js';
 export * from './hyperliquid-mainnet-shadow.js';
+export * from './dependency-incident-engine.js';
 
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const CLIENT_ORDER_ID_PATTERN = /^0x[0-9a-fA-F]{32}$/;
