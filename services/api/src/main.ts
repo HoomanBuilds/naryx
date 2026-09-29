@@ -12,6 +12,11 @@ import {
   createViemBaseSepoliaReadClient,
   loadBaseSepoliaRuntimeManifest,
 } from "./base-sepolia-runtime.js";
+import {
+  createArbitrumSepoliaRuntime,
+  createViemArbitrumSepoliaReadClient,
+  loadArbitrumSepoliaRuntimeManifest,
+} from "./arbitrum-sepolia-runtime-client.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
 import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
 import { Connection } from "@solana/web3.js";
@@ -113,13 +118,38 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
     baseRuntimeError = error;
   }
 }
+let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
+let arbitrumRuntimeError: unknown;
+if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
+  try {
+    const arbitrumManifestPath = absolutePath(
+      process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
+      "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
+    );
+    const arbitrumRpcUrl = process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? "";
+    arbitrumRuntime = await createArbitrumSepoliaRuntime({
+      manifest: loadArbitrumSepoliaRuntimeManifest(arbitrumManifestPath),
+      intents: executionIntentStore,
+      orders: orderStore,
+      client: createViemArbitrumSepoliaReadClient(arbitrumRpcUrl),
+    });
+  } catch (error) {
+    arbitrumRuntimeError = error;
+  }
+}
 const runtime = composePrivateTerminalRuntime(process.env, baseRuntime === undefined && baseRuntimeError === undefined
+    && arbitrumRuntime === undefined && arbitrumRuntimeError === undefined
   ? {}
   : {
       evmTestnet: () => {
         if (baseRuntimeError !== undefined) throw baseRuntimeError;
         if (baseRuntime === undefined) throw new Error("Base Sepolia runtime is unavailable.");
         return baseRuntime;
+      },
+      arbitrumTestnetAsync: () => {
+        if (arbitrumRuntimeError !== undefined) throw arbitrumRuntimeError;
+        if (arbitrumRuntime === undefined) throw new Error("Arbitrum Sepolia runtime is unavailable.");
+        return arbitrumRuntime;
       },
     });
 const server = createPrivateTerminalServer(

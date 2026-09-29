@@ -164,6 +164,7 @@ export {
   ARBITRUM_SEPOLIA_GMX_DEPENDENCIES,
   ArbitrumSepoliaAsyncContextError,
   createArbitrumSepoliaAsyncContextProvider,
+  validateArbitrumSepoliaAsyncDeploymentConfiguration,
   type ArbitrumSepoliaAsyncAttemptEvidence,
   type ArbitrumSepoliaAsyncContextProviderOptions,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
@@ -172,6 +173,15 @@ export {
   createArbitrumSepoliaAsyncRuntimeFactory,
   type ArbitrumSepoliaAsyncRuntimeFactoryOptions,
 } from "./arbitrum-sepolia-async-runtime.js";
+export {
+  createArbitrumSepoliaRuntime,
+  createViemArbitrumSepoliaReadClient,
+  loadArbitrumSepoliaRuntimeManifest,
+  type ArbitrumSepoliaAttemptBinding,
+  type ArbitrumSepoliaLiveReadClient,
+  type ArbitrumSepoliaRuntimeManifest,
+  type ArbitrumSepoliaRuntimeOptions,
+} from "./arbitrum-sepolia-runtime-client.js";
 export {
   createEvmTestnetAsyncObservationPort,
   createEvmTestnetTerminalPorts,

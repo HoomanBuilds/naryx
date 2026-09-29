@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { domainManifest, domainRefFromManifest, type Hash32 } from "@naryx/protocol-types";
 import { EVM_RUNTIME_IDENTITY } from "@naryx/adapter-evm";
-import type { Address, Hex } from "viem";
+import { keccak256, stringToHex, type Address, type Hex } from "viem";
 import {
   ARBITRUM_SEPOLIA_GMX_DEPENDENCIES,
   ArbitrumSepoliaAsyncContextError,
   composePrivateTerminalRuntime,
   createArbitrumSepoliaAsyncContextProvider,
   createArbitrumSepoliaAsyncRuntimeFactory,
+  createArbitrumSepoliaRuntime,
+  loadArbitrumSepoliaRuntimeManifest,
+  type ArbitrumSepoliaLiveReadClient,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
   type ExecutionIntentStore,
   type InternalOrderStore,
@@ -67,6 +70,7 @@ function configuration(
       stateReferenceSchemaHash: hash(33),
       receiptSchemaHash: hash(34),
       outcomeSchemaHash: hash(35),
+      coordinatorEvidenceSchemaHash: hash(36),
     },
     bounds: {
       maximumRouteExpiryValue: 2_000n,
@@ -80,7 +84,7 @@ function configuration(
   };
 }
 
-test("Arbitrum async provider rejects a deployment outside the durable attempt domain", () => {
+test("Arbitrum async provider rejects a deployment outside the durable attempt domain", async () => {
   const orderManifest = manifest(1);
   const deploymentManifest = manifest(2);
   const domain = domainRefFromManifest(orderManifest);
@@ -123,10 +127,115 @@ test("Arbitrum async provider rejects a deployment outside the durable attempt d
     }),
     currentUnixSeconds: () => 1n,
   });
-  assert.throws(
-    () => provider(attempt.attemptId),
+  await assert.rejects(
+    provider(attempt.attemptId),
     (error: unknown) => error instanceof ArbitrumSepoliaAsyncContextError
       && error.code === "DEPLOYMENT_NOT_FOUND",
+  );
+});
+
+function liveClient(
+  deployment: ArbitrumSepoliaAsyncDeploymentConfiguration,
+  chainId = 421_614n,
+  wrongCodeAddress?: Address,
+): ArbitrumSepoliaLiveReadClient {
+  const hashes = new Map<string, Hex>();
+  const identities = [
+    deployment.protocolConfig,
+    deployment.coordinator,
+    deployment.isolatedAccount,
+    deployment.entryAdapter,
+    deployment.orderVerifier,
+    deployment.market,
+    deployment.collateralToken,
+    ...Object.values(deployment.gmx),
+  ];
+  for (const identity of identities) hashes.set(identity.address.toLowerCase(), identity.expectedCodeHash);
+  return {
+    chainId: async () => chainId,
+    codeHash: async (address) => address.toLowerCase() === wrongCodeAddress?.toLowerCase()
+      ? `0x${"ff".repeat(32)}`
+      : hashes.get(address.toLowerCase()),
+    transactionReceipt: async () => null,
+    chainHead: async () => ({ latestBlock: 1n, finalizedBlock: 1n }),
+    attemptEvidence: async () => undefined,
+    readContract: async (read) => {
+      switch (read.functionName) {
+        case "config": return deployment.protocolConfig.address;
+        case "bondToken": return deployment.collateralToken.address;
+        case "deploymentChainId": return 421_614n;
+        case "deploymentDomainIdHash": return keccak256(stringToHex("eip155:421614"));
+        case "executionClassManifestHash": return `0x${Buffer.from(deployment.executionClassManifestHash).toString("hex")}`;
+        case "admissions": return {
+          handler: deployment.entryAdapter.address,
+          adapterCodeHash: deployment.entryAdapter.expectedCodeHash,
+          handlerCodeHash: deployment.entryAdapter.expectedCodeHash,
+          active: true,
+          generation: 1n,
+        };
+        case "entryController": return deployment.entryAdapter.address;
+        case "entryControllerCodeHash": return deployment.entryAdapter.expectedCodeHash;
+        case "isolatedAccount": return deployment.isolatedAccount.address;
+        default: throw new Error(`unexpected read ${read.functionName}`);
+      }
+    },
+  };
+}
+
+test("Arbitrum live runtime composes only after exact signerless validation", async () => {
+  const deployment = configuration(manifest(1));
+  const runtimePort = await createArbitrumSepoliaRuntime({
+    manifest: {
+      schemaVersion: 1,
+      activationState: "ACTIVE",
+      observationStartBlock: 100n,
+      deployment,
+    },
+    intents: {} as ExecutionIntentStore,
+    orders: {} as InternalOrderStore,
+    client: liveClient(deployment),
+  });
+  const runtime = composePrivateTerminalRuntime({
+    NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED: "true",
+  }, { arbitrumTestnetAsync: () => runtimePort });
+  assert.equal(runtime.evmTestnet.asyncObservation, runtimePort);
+  assert.deepEqual(runtime.health.arbitrumTestnetAsync, { available: true, reason: null });
+
+  await assert.rejects(
+    createArbitrumSepoliaRuntime({
+      manifest: { schemaVersion: 1, activationState: "ACTIVE", observationStartBlock: 100n, deployment },
+      intents: {} as ExecutionIntentStore,
+      orders: {} as InternalOrderStore,
+      client: liveClient(deployment, 1n),
+    }),
+    /chain ID does not match/,
+  );
+  await assert.rejects(
+    createArbitrumSepoliaRuntime({
+      manifest: { schemaVersion: 1, activationState: "ACTIVE", observationStartBlock: 100n, deployment },
+      intents: {} as ExecutionIntentStore,
+      orders: {} as InternalOrderStore,
+      client: liveClient(deployment, 421_614n, deployment.coordinator.address),
+    }),
+    /deployed code does not match/,
+  );
+  await assert.rejects(
+    createArbitrumSepoliaRuntime({
+      manifest: {
+        schemaVersion: 1,
+        activationState: "ALL_PAUSED",
+        observationStartBlock: 100n,
+        deployment,
+      } as unknown as Parameters<typeof createArbitrumSepoliaRuntime>[0]["manifest"],
+      intents: {} as ExecutionIntentStore,
+      orders: {} as InternalOrderStore,
+      client: liveClient(deployment),
+    }),
+    /schema version 1 and ACTIVE/,
+  );
+  assert.throws(
+    () => loadArbitrumSepoliaRuntimeManifest("relative/arbitrum-runtime.json"),
+    /path must be absolute/,
   );
 });
 

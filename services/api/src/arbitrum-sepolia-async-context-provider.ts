@@ -65,6 +65,7 @@ export interface ArbitrumSepoliaAsyncDeploymentConfiguration {
     stateReferenceSchemaHash: Hash32;
     receiptSchemaHash: Hash32;
     outcomeSchemaHash: Hash32;
+    coordinatorEvidenceSchemaHash: Hash32;
     seriesIdentityKey: Hash32;
     seriesBindingVersion: number;
     seriesBindingHash: Hash32;
@@ -91,7 +92,9 @@ export interface ArbitrumSepoliaAsyncContextProviderOptions {
   readonly intents: ExecutionIntentStore;
   readonly orders: InternalOrderStore;
   readonly deployments: readonly ArbitrumSepoliaAsyncDeploymentConfiguration[];
-  readonly evidence: (attemptId: string) => ArbitrumSepoliaAsyncAttemptEvidence | undefined;
+  readonly evidence: (
+    attemptId: string,
+  ) => Promise<ArbitrumSepoliaAsyncAttemptEvidence | undefined> | ArbitrumSepoliaAsyncAttemptEvidence | undefined;
   readonly currentUnixSeconds: () => bigint;
 }
 
@@ -138,7 +141,9 @@ function deploymentFor(
   return matches[0] as ArbitrumSepoliaAsyncDeploymentConfiguration;
 }
 
-function validateDeployment(configuration: ArbitrumSepoliaAsyncDeploymentConfiguration): void {
+export function validateArbitrumSepoliaAsyncDeploymentConfiguration(
+  configuration: ArbitrumSepoliaAsyncDeploymentConfiguration,
+): void {
   const manifest = configuration.domainManifest;
   if (manifest.environment !== "testnet" || manifest.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
     || manifest.chainNamespace !== EVM_RUNTIME_IDENTITY.chainNamespace
@@ -176,6 +181,7 @@ function validateDeployment(configuration: ArbitrumSepoliaAsyncDeploymentConfigu
   hash32(`0x${toHex(configuration.route.stateReferenceSchemaHash)}`, "stateReferenceSchemaHash");
   hash32(`0x${toHex(configuration.route.receiptSchemaHash)}`, "receiptSchemaHash");
   hash32(`0x${toHex(configuration.route.outcomeSchemaHash)}`, "outcomeSchemaHash");
+  hash32(`0x${toHex(configuration.route.coordinatorEvidenceSchemaHash)}`, "coordinatorEvidenceSchemaHash");
   if (configuration.bounds.maximumRouteExpiryValue <= 0n
     || configuration.bounds.maximumRecoveryDeadlineValue <= 0n
     || configuration.bounds.maximumPackageQuantityAtoms <= 0n) {
@@ -202,15 +208,15 @@ function checkedKeys(evidence: ArbitrumSepoliaAsyncAttemptEvidence, attemptId: s
 
 export function createArbitrumSepoliaAsyncContextProvider(
   options: ArbitrumSepoliaAsyncContextProviderOptions,
-): (attemptId: string) => EvmTestnetAsyncAttemptContext {
+): (attemptId: string) => Promise<EvmTestnetAsyncAttemptContext> {
   if (typeof options.evidence !== "function" || typeof options.currentUnixSeconds !== "function") {
     throw new Error("Arbitrum Sepolia async context provider requires trusted evidence and clock ports.");
   }
   if (!Array.isArray(options.deployments) || options.deployments.length === 0) {
     throw new Error("Arbitrum Sepolia async context provider requires reviewed deployment configuration.");
   }
-  for (const deployment of options.deployments) validateDeployment(deployment);
-  return (attemptId: string): EvmTestnetAsyncAttemptContext => {
+  for (const deployment of options.deployments) validateArbitrumSepoliaAsyncDeploymentConfiguration(deployment);
+  return async (attemptId: string): Promise<EvmTestnetAsyncAttemptContext> => {
     let attempt;
     try {
       attempt = options.intents.getAttempt(attemptId);
@@ -224,7 +230,7 @@ export function createArbitrumSepoliaAsyncContextProvider(
     const record = options.orders.getByOrderHash(attempt.orderHash);
     const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
     const selected = options.intents.getSelectedQuote(attemptId);
-    const evidence = options.evidence(attemptId);
+    const evidence = await options.evidence(attemptId);
     if (record === undefined || order === undefined || selected === undefined || evidence === undefined) {
       fail("ATTEMPT_EVIDENCE_MISSING", "Selected attempt order, signed quote, or async evidence is missing.");
     }
@@ -239,7 +245,7 @@ export function createArbitrumSepoliaAsyncContextProvider(
       fail("ATTEMPT_EVIDENCE_MISMATCH", "Selected Arbitrum attempt evidence is inconsistent.");
     }
     const configuration = deploymentFor(order.domain, options.deployments);
-    validateDeployment(configuration);
+    validateArbitrumSepoliaAsyncDeploymentConfiguration(configuration);
     const currentUnixSeconds = options.currentUnixSeconds();
     if (typeof currentUnixSeconds !== "bigint" || currentUnixSeconds <= 0n) {
       fail("INVALID_CLOCK", "Current Arbitrum Sepolia Unix time must be positive.");
