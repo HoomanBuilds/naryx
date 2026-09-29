@@ -714,3 +714,11 @@ export {
   type HyperliquidTestnetStructuralEvidencePort,
   type NotSubmittedSubmission,
 } from './hyperliquid-testnet-runtime.js';
+export {
+  HyperliquidTestnetHttpStructuralEvidence,
+  SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
+  SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
+  createHyperliquidTestnetLoopbackCoordinator,
+  type HyperliquidTestnetEvidenceHttpOptions,
+  type HyperliquidTestnetLoopbackCoordinatorOptions,
+} from './hyperliquid-testnet-evidence-http.js';
