@@ -5,7 +5,8 @@
   "main": "src/environment.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:environment": "node --test test/environment.test.js"
+    "test:environment": "node --test test/environment.test.js",
+    "test:scenario": "node --test test/scenario.test.js"
   },
   "keywords": [],
   "author": "",
