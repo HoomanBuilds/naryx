@@ -75,6 +75,7 @@ export {
   type ExecutionAuthorization,
   type ExecutionIntentStore,
   type ExecutionSelectionKind,
+  type ArbitrumSelectedExecutionAttempt,
   type BaseSelectedExecutionAttempt,
   type LocalSelectedExecutionAttempt,
   type SelectedExecutionAttempt,
@@ -157,6 +158,22 @@ export {
   type BaseSepoliaRuntimeOptions,
 } from "./base-sepolia-runtime.js";
 export {
+  ARBITRUM_ASYNC_SETTLEMENT_CLASS,
+  ARBITRUM_SEPOLIA_CHAIN_REFERENCE,
+  ARBITRUM_SEPOLIA_DOMAIN_ID,
+  ARBITRUM_SEPOLIA_GMX_DEPENDENCIES,
+  ArbitrumSepoliaAsyncContextError,
+  createArbitrumSepoliaAsyncContextProvider,
+  type ArbitrumSepoliaAsyncAttemptEvidence,
+  type ArbitrumSepoliaAsyncContextProviderOptions,
+  type ArbitrumSepoliaAsyncDeploymentConfiguration,
+} from "./arbitrum-sepolia-async-context-provider.js";
+export {
+  createArbitrumSepoliaAsyncRuntimeFactory,
+  type ArbitrumSepoliaAsyncRuntimeFactoryOptions,
+} from "./arbitrum-sepolia-async-runtime.js";
+export {
+  createEvmTestnetAsyncObservationPort,
   createEvmTestnetTerminalPorts,
   BASE_SEPOLIA_CHAIN_REFERENCE,
   BASE_SEPOLIA_DOMAIN_ID,
@@ -174,6 +191,8 @@ export {
   type EvmTestnetAsyncAttemptContext,
   type EvmTestnetAsyncContextProvider,
   type EvmTestnetAsyncObservationDto,
+  type EvmTestnetAsyncObservationPort,
+  type EvmTestnetAsyncObservationPortOptions,
   type EvmTestnetAtomicAttemptContext,
   type EvmTestnetAtomicAuthorizationDto,
   type EvmTestnetAtomicAuthorizationPort,

@@ -304,6 +304,21 @@ export type EvmTestnetAsyncAttemptContext = Readonly<{
   domainManifest: DomainManifest;
   binding: EvmAsyncObservationBinding;
   keys: EvmAsyncObservationKeys;
+  requirements?: Readonly<{
+    settlementClass: "ASYNC_BONDED_SOLVER";
+    executionPlanKind: "EVM_ASYNC_REQUEST";
+    seriesIdentityKey: Hex;
+    seriesBindingVersion: number;
+    seriesBindingHash: Hex;
+    maximumRouteExpiryValue: bigint;
+    maximumRecoveryDeadlineValue: bigint;
+    maximumPackageQuantityAtoms: bigint;
+    finality: EvmFinalityPolicy;
+    evidenceProfileId: string;
+    stateReferenceSchemaHash: Hex;
+    receiptSchemaHash: Hex;
+    outcomeSchemaHash: Hex;
+  }>;
 }>;
 
 export type EvmTestnetAtomicContextProvider = (
@@ -339,6 +354,11 @@ export type EvmTestnetRuntimePortsOptions = Readonly<{
   atomicReadPort: EvmReadPort;
   asyncReadPort: EvmReadPort;
   store: PreparedEvmTestnetAtomicStore;
+}>;
+
+export type EvmTestnetAsyncObservationPortOptions = Readonly<{
+  contextProvider: EvmTestnetAsyncContextProvider;
+  readPort: EvmReadPort;
 }>;
 
 export class EvmTestnetTerminalValidationError extends Error {
@@ -1637,6 +1657,73 @@ function sanitizeAsyncObservation(
   return validateEvmTestnetAsyncObservation(candidate, request);
 }
 
+export function createEvmTestnetAsyncObservationPort(
+  options: EvmTestnetAsyncObservationPortOptions,
+): EvmTestnetAsyncObservationPort {
+  const asyncContextProvider = options.contextProvider;
+  const asyncReadPort = options.readPort;
+  if (typeof asyncContextProvider !== "function") throw new Error("Async context provider must be a function.");
+  if (typeof asyncReadPort?.chainId !== "function" || typeof asyncReadPort?.readContract !== "function") {
+    throw new Error("Async read port must expose chainId and contract reads.");
+  }
+  return Object.freeze({
+    observe: async (request: EvmTestnetObserveAsyncRequest) => {
+      const attemptId = requireBrowserId(request.attemptId, "attemptId");
+      const idempotencyKey = requireIdempotencyKey(request.idempotencyKey);
+      const context = await asyncContextProvider(attemptId);
+      if (!isRecord(context as unknown)) throw new Error("Async context provider returned an invalid context.");
+      const asyncContext = context as EvmTestnetAsyncAttemptContext;
+      const checked = requireAsyncDomainManifest(
+        (asyncContext as unknown as { domainManifest: unknown }).domainManifest,
+      );
+      const domain = checked.domain;
+      const binding = asyncContext.binding;
+      const keys = asyncContext.keys;
+      if (!isRecord(binding as unknown) || !isRecord(keys as unknown)) {
+        throw new Error("Async context must carry binding and keys.");
+      }
+      const boundChain = assertEvmChainReference(binding.chainReference, "binding.chainReference");
+      if (boundChain !== BigInt(checked.manifest.chainReference)) {
+        throw new Error("Async binding chain reference does not match server context.");
+      }
+      const boundDomainIdHash = assertEvmHash32(binding.domainIdHash, "binding.domainIdHash");
+      const expectedDomainIdHash = keccak256(stringToHex(domain.domainId));
+      if (!equalEvmHash(boundDomainIdHash, expectedDomainIdHash as Hex)) {
+        throw new Error("Async binding domain does not match server context.");
+      }
+      if (binding.domainManifestVersion !== domain.domainManifestVersion) {
+        throw new Error("Async binding domain version mismatch.");
+      }
+      const boundManifestHash = assertEvmHash32(binding.domainManifestHash, "binding.domainManifestHash");
+      const expectedManifestHash = toHex0x(domain.domainManifestHash, "domainManifestHash") as Hex;
+      if (!equalEvmHash(boundManifestHash, expectedManifestHash)) {
+        throw new Error("Async binding domain hash mismatch.");
+      }
+      for (const field of ["orderHash", "quoteHash", "routeHash"] as const) {
+        const checkedHash = assertEvmHash32(binding[field], `binding.${field}`);
+        if (/^0x0+$/.test(checkedHash)) throw new Error(`Async binding ${field} must be nonzero.`);
+      }
+      const observed = await observeAsyncBondedPackage(asyncReadPort, binding, keys);
+      return sanitizeAsyncObservation(
+        observed as unknown as {
+          lifecycle: string;
+          evidenceGrade: string;
+          chainReference: bigint;
+          packageId: Hex;
+          coordinator: Record<string, unknown> | null;
+          entry: Record<string, unknown> | null;
+          exit: Record<string, unknown> | null;
+          finalReceipt: Record<string, unknown> | null;
+          exitCompleted: boolean;
+          reason: string | null;
+        },
+        { attemptId, idempotencyKey },
+        domain,
+      );
+    },
+  });
+}
+
 export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOptions): EvmTestnetTerminalPorts {
   const atomicContextProvider = options.atomicContextProvider;
   const asyncContextProvider = options.asyncContextProvider;
@@ -1932,61 +2019,9 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
         );
       },
     }),
-    asyncObservation: Object.freeze({
-      observe: async (request: EvmTestnetObserveAsyncRequest) => {
-        const attemptId = requireBrowserId(request.attemptId, "attemptId");
-        const idempotencyKey = requireIdempotencyKey(request.idempotencyKey);
-        const context = await asyncContextProvider(attemptId);
-        if (!isRecord(context as unknown)) throw new Error("Async context provider returned an invalid context.");
-        const asyncContext = context as EvmTestnetAsyncAttemptContext;
-        const checked = requireAsyncDomainManifest(
-          (asyncContext as unknown as { domainManifest: unknown }).domainManifest,
-        );
-        const domain = checked.domain;
-        const binding = asyncContext.binding;
-        const keys = asyncContext.keys;
-        if (!isRecord(binding as unknown) || !isRecord(keys as unknown)) {
-          throw new Error("Async context must carry binding and keys.");
-        }
-        const boundChain = assertEvmChainReference(binding.chainReference, "binding.chainReference");
-        if (boundChain !== BigInt(checked.manifest.chainReference)) {
-          throw new Error("Async binding chain reference does not match server context.");
-        }
-        const boundDomainIdHash = assertEvmHash32(binding.domainIdHash, "binding.domainIdHash");
-        const expectedDomainIdHash = keccak256(stringToHex(domain.domainId));
-        if (!equalEvmHash(boundDomainIdHash, expectedDomainIdHash as Hex)) {
-          throw new Error("Async binding domain does not match server context.");
-        }
-        if (binding.domainManifestVersion !== domain.domainManifestVersion) {
-          throw new Error("Async binding domain version mismatch.");
-        }
-        const boundManifestHash = assertEvmHash32(binding.domainManifestHash, "binding.domainManifestHash");
-        const expectedManifestHash = toHex0x(domain.domainManifestHash, "domainManifestHash") as Hex;
-        if (!equalEvmHash(boundManifestHash, expectedManifestHash)) {
-          throw new Error("Async binding domain hash mismatch.");
-        }
-        for (const field of ["orderHash", "quoteHash", "routeHash"] as const) {
-          const checkedHash = assertEvmHash32(binding[field], `binding.${field}`);
-          if (/^0x0+$/.test(checkedHash)) throw new Error(`Async binding ${field} must be nonzero.`);
-        }
-        const observed = await observeAsyncBondedPackage(asyncReadPort, binding, keys);
-        return sanitizeAsyncObservation(
-          observed as unknown as {
-            lifecycle: string;
-            evidenceGrade: string;
-            chainReference: bigint;
-            packageId: Hex;
-            coordinator: Record<string, unknown> | null;
-            entry: Record<string, unknown> | null;
-            exit: Record<string, unknown> | null;
-            finalReceipt: Record<string, unknown> | null;
-            exitCompleted: boolean;
-            reason: string | null;
-          },
-          { attemptId, idempotencyKey },
-          domain,
-        );
-      },
+    asyncObservation: createEvmTestnetAsyncObservationPort({
+      contextProvider: asyncContextProvider,
+      readPort: asyncReadPort,
     }),
   });
 }

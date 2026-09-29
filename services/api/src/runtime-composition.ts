@@ -1,4 +1,4 @@
-import type { EvmTestnetTerminalPorts } from "./evm-testnet-runtime-ports.js";
+import type { EvmTestnetAsyncObservationPort, EvmTestnetTerminalPorts } from "./evm-testnet-runtime-ports.js";
 import type { HyperliquidTestnetTerminalExecutionPort } from "./hyperliquid-testnet-terminal.js";
 import type { HyperliquidTestnetEvidenceRuntime } from "./hyperliquid-testnet-runtime-client.js";
 import type { PrivateTerminalExecutionPorts } from "./terminal-execution.js";
@@ -24,6 +24,7 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
 export type PrivateTerminalRuntimeFactories = Readonly<{
   solanaDevnet?: () => PrivateTerminalExecutionPorts;
   evmTestnet?: () => EvmTestnetTerminalPorts;
+  arbitrumTestnetAsync?: () => EvmTestnetAsyncObservationPort;
   hyperliquidTestnet?: () => HyperliquidTestnetTerminalExecutionPort;
   hyperliquidTestnetEvidence?: () => HyperliquidTestnetEvidenceRuntime;
 }>;
@@ -120,7 +121,19 @@ export function composePrivateTerminalRuntime(
 
   let arbitrumHealth = health(false, "DISABLED_BY_CONFIGURATION");
   if (arbitrumEnabled) {
-    if (factories.evmTestnet === undefined) {
+    if (factories.arbitrumTestnetAsync !== undefined) {
+      try {
+        const candidate = factories.arbitrumTestnetAsync();
+        if (typeof candidate?.observe === "function") {
+          evmTestnet.asyncObservation = candidate;
+          arbitrumHealth = health(true, null);
+        } else {
+          arbitrumHealth = health(false, "REQUIRED_PORTS_MISSING");
+        }
+      } catch {
+        arbitrumHealth = health(false, "RUNTIME_INITIALIZATION_FAILED");
+      }
+    } else if (factories.evmTestnet === undefined) {
       arbitrumHealth = health(false, "RUNTIME_FACTORY_NOT_INJECTED");
     } else if (evmInitializationFailed) {
       arbitrumHealth = health(false, "RUNTIME_INITIALIZATION_FAILED");

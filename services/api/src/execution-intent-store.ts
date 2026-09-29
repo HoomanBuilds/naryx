@@ -14,7 +14,9 @@ import {
 const HASH = /^[0-9a-f]{64}$/;
 const LOCAL_ATTEMPT_ID = /^local-atomic-[0-9a-f]{64}$/;
 const BASE_ATTEMPT_ID = /^base-atomic-[0-9a-f]{52}$/;
+const ARBITRUM_ATTEMPT_ID = /^arbitrum-async-[0-9a-f]{48}$/;
 const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia";
+const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 export interface ExecutionAuthorization {
@@ -45,11 +47,24 @@ export interface BaseSelectedExecutionAttempt {
   readonly domainManifestHash: string;
 }
 
+export interface ArbitrumSelectedExecutionAttempt {
+  readonly attemptId: string;
+  readonly orderHash: string;
+  readonly routeHash: string;
+  readonly quoteHash: string;
+  readonly status: "ARBITRUM_ASYNC_QUOTE_SELECTED";
+  readonly selectedAtMs: number;
+  readonly domainId: "eip155:421614";
+  readonly domainManifestVersion: number;
+  readonly domainManifestHash: string;
+}
+
 export type SelectedExecutionAttempt =
   | LocalSelectedExecutionAttempt
-  | BaseSelectedExecutionAttempt;
+  | BaseSelectedExecutionAttempt
+  | ArbitrumSelectedExecutionAttempt;
 
-export type ExecutionSelectionKind = "SOLANA_AUTHORIZED" | "BASE_ATOMIC";
+export type ExecutionSelectionKind = "SOLANA_AUTHORIZED" | "BASE_ATOMIC" | "ARBITRUM_ASYNC";
 
 export interface ExecutionIntentStore {
   authorize(order: InternalOrderRecord, signature: string): ExecutionAuthorization;
@@ -179,6 +194,25 @@ function baseAttemptId(
   return `base-atomic-${digest.slice(0, 52)}`;
 }
 
+function arbitrumAttemptId(
+  order: InternalOrderRecord,
+  routeHash: string,
+  quoteHash: string,
+): string {
+  const version = Buffer.alloc(8);
+  version.writeBigUInt64BE(BigInt(order.domainManifestVersion));
+  const digest = createHash("sha256")
+    .update("NARYX/arbitrum-async-execution-attempt/v1", "ascii")
+    .update(Buffer.from(order.domainId, "ascii"))
+    .update(version)
+    .update(Buffer.from(order.domainManifestHashHex, "hex"))
+    .update(Buffer.from(order.orderHashHex, "hex"))
+    .update(Buffer.from(routeHash, "hex"))
+    .update(Buffer.from(quoteHash, "hex"))
+    .digest("hex");
+  return `arbitrum-async-${digest.slice(0, 48)}`;
+}
+
 function domainHashHex(domain: DomainRef): string {
   const hash = Buffer.from(domain.domainManifestHash).toString("hex");
   if (!HASH.test(hash) || /^0+$/.test(hash)) {
@@ -201,6 +235,7 @@ export function executionSelectionKind(
     );
   }
   if (order.domainId === BASE_SEPOLIA_DOMAIN_ID) return "BASE_ATOMIC";
+  if (order.domainId === ARBITRUM_SEPOLIA_DOMAIN_ID) return "ARBITRUM_ASYNC";
   if (order.domainId.startsWith("evm:")) {
     throw new ExecutionIntentStoreError(
       "UNSUPPORTED_ORDER_DOMAIN",
@@ -253,6 +288,18 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
         domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
         domain_manifest_hash TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status = 'BASE_ATOMIC_QUOTE_SELECTED'),
+        selected_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
+      );
+      CREATE TABLE IF NOT EXISTS selected_arbitrum_async_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        order_hash TEXT NOT NULL UNIQUE,
+        route_hash TEXT NOT NULL,
+        quote_hash TEXT NOT NULL UNIQUE,
+        domain_id TEXT NOT NULL CHECK (domain_id = 'eip155:421614'),
+        domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
+        domain_manifest_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status = 'ARBITRUM_ASYNC_QUOTE_SELECTED'),
         selected_at_ms INTEGER NOT NULL,
         FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
       );
@@ -361,13 +408,16 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
     if (quote === undefined || typeof quote.route_hash !== "string" || !HASH.test(quote.route_hash)) {
       throw new ExecutionIntentStoreError("QUOTE_NOT_FOUND", "Quote is not recorded for this order.");
     }
-    const id = baseAttemptId(order, quote.route_hash, quoteHash);
+    const async = kind === "ARBITRUM_ASYNC";
+    const id = async
+      ? arbitrumAttemptId(order, quote.route_hash, quoteHash)
+      : baseAttemptId(order, quote.route_hash, quoteHash);
     const now = Date.now();
     this.#db.prepare(`
-      INSERT INTO selected_base_atomic_attempts
+      INSERT INTO ${async ? "selected_arbitrum_async_attempts" : "selected_base_atomic_attempts"}
         (attempt_id, order_hash, route_hash, quote_hash, domain_id, domain_manifest_version,
          domain_manifest_hash, status, selected_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'BASE_ATOMIC_QUOTE_SELECTED', ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(order_hash) DO NOTHING
     `).run(
       id,
@@ -377,6 +427,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       order.domainId,
       order.domainManifestVersion,
       order.domainManifestHashHex,
+      async ? "ARBITRUM_ASYNC_QUOTE_SELECTED" : "BASE_ATOMIC_QUOTE_SELECTED",
       now,
     );
     const stored = this.getAttempt(id);
@@ -388,6 +439,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
 
   getAttempt(id: string): SelectedExecutionAttempt | undefined {
     if (BASE_ATTEMPT_ID.test(id)) return this.#getBaseAttempt(id);
+    if (ARBITRUM_ATTEMPT_ID.test(id)) return this.#getArbitrumAttempt(id);
     if (!LOCAL_ATTEMPT_ID.test(id)) throw new ExecutionIntentStoreError("INVALID_ATTEMPT_ID", "Attempt ID is invalid.");
     const row = this.#db.prepare(`
       SELECT attempt_id, order_hash, route_hash, quote_hash, status, selected_at_ms
@@ -438,6 +490,38 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       status: "BASE_ATOMIC_QUOTE_SELECTED",
       selectedAtMs: row.selected_at_ms,
       domainId: BASE_SEPOLIA_DOMAIN_ID,
+      domainManifestVersion: row.domain_manifest_version,
+      domainManifestHash: row.domain_manifest_hash,
+    });
+  }
+
+  #getArbitrumAttempt(id: string): ArbitrumSelectedExecutionAttempt | undefined {
+    const row = this.#db.prepare(`
+      SELECT attempt_id, order_hash, route_hash, quote_hash, domain_id,
+        domain_manifest_version, domain_manifest_hash, status, selected_at_ms
+      FROM selected_arbitrum_async_attempts WHERE attempt_id = ?
+    `).get(id) as Record<string, unknown> | undefined;
+    if (row === undefined) return undefined;
+    if (row.attempt_id !== id || typeof row.order_hash !== "string" || !HASH.test(row.order_hash)
+      || typeof row.route_hash !== "string" || !HASH.test(row.route_hash)
+      || typeof row.quote_hash !== "string" || !HASH.test(row.quote_hash)
+      || row.domain_id !== ARBITRUM_SEPOLIA_DOMAIN_ID
+      || typeof row.domain_manifest_version !== "number"
+      || !Number.isSafeInteger(row.domain_manifest_version) || row.domain_manifest_version < 1
+      || typeof row.domain_manifest_hash !== "string" || !HASH.test(row.domain_manifest_hash)
+      || /^0+$/.test(row.domain_manifest_hash)
+      || row.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED"
+      || typeof row.selected_at_ms !== "number" || !Number.isSafeInteger(row.selected_at_ms)) {
+      throw new ExecutionIntentStoreError("CORRUPT_ROW", "Stored Arbitrum async attempt is invalid.");
+    }
+    return Object.freeze({
+      attemptId: id,
+      orderHash: row.order_hash,
+      routeHash: row.route_hash,
+      quoteHash: row.quote_hash,
+      status: "ARBITRUM_ASYNC_QUOTE_SELECTED",
+      selectedAtMs: row.selected_at_ms,
+      domainId: ARBITRUM_SEPOLIA_DOMAIN_ID,
       domainManifestVersion: row.domain_manifest_version,
       domainManifestHash: row.domain_manifest_hash,
     });

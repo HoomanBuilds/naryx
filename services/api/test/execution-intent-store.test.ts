@@ -177,7 +177,7 @@ test("durably selects a Base Sepolia quote before trader permit authorization", 
   }
 });
 
-test("rejects authorization bypass for Solana and unrecognized EVM domains", () => {
+test("durably selects Arbitrum Sepolia async quotes and rejects domain mismatches", () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-domain-selection-"));
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const local = createLocalAtomicOrderRuntime(undefined, () => 5_000n);
@@ -186,7 +186,7 @@ test("rejects authorization bypass for Solana and unrecognized EVM domains", () 
   const arbitrumContext = Object.freeze({
     ...localContext,
     contextId: "arbitrum-sepolia-atomic-v1",
-    domain: domainRef("evm:arbitrum-sepolia", 1, "91".repeat(32)),
+    domain: domainRef("eip155:421614", 1, "91".repeat(32)),
     environment: "testnet",
     expiryUnit: "EVM_UNIX_SECONDS" as const,
   });
@@ -201,14 +201,19 @@ test("rejects authorization bypass for Solana and unrecognized EVM domains", () 
       () => intents.selectQuoteForOrder(solanaOrder, localContext.domain, solanaQuote.quoteHash),
       /authorization is required/i,
     );
-    assert.throws(
-      () => intents.selectQuoteForOrder(arbitrumOrder, arbitrumContext.domain, arbitrumQuote.quoteHash),
-      /only Base Sepolia/i,
+    const attempt = intents.selectQuoteForOrder(
+      arbitrumOrder,
+      arbitrumContext.domain,
+      arbitrumQuote.quoteHash,
     );
+    assert.match(attempt.attemptId, /^arbitrum-async-[0-9a-f]{48}$/);
+    assert.equal(attempt.status, "ARBITRUM_ASYNC_QUOTE_SELECTED");
+    assert.deepEqual(intents.getAttempt(attempt.attemptId), attempt);
+    assert.deepEqual(intents.getSelectedQuote(attempt.attemptId), arbitrumQuote);
     assert.throws(
       () => intents.selectQuoteForOrder(
         arbitrumOrder,
-        domainRef("evm:arbitrum-sepolia", 1, "92".repeat(32)),
+        domainRef("eip155:421614", 1, "92".repeat(32)),
         arbitrumQuote.quoteHash,
       ),
       /recognized manifest identity/i,
