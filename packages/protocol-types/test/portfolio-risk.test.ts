@@ -177,6 +177,14 @@ describe('conditional margin offsets', () => {
     assert.deepEqual(failed([spot, perp], {}, { riskDomainGrossCapQuoteAtoms: 2_999_999_999n }), ['RISK_DOMAIN_CAP']);
     assert.deepEqual(failed([spot, perp], {}, { maximumTimeToUnwindMs: 399n }), ['INSUFFICIENT_EXECUTABLE_LIQUIDITY']);
   });
+
+  test('a policy with missing limits or haircut categories is rejected, not silently permissive', () => {
+    const { maximumStalenessMs: _staleness, ...noStaleness } = policy;
+    assert.throws(() => evaluateMarginOffset([spot, perp], noStaleness as MarginOffsetPolicy, context, USD), /maximumStalenessMs/);
+    const { maximumTimeToUnwindMs: _unwind, ...noUnwind } = policy;
+    assert.throws(() => evaluateMarginOffset([spot, perp], noUnwind as MarginOffsetPolicy, context, USD), /maximumTimeToUnwindMs/);
+    assert.throws(() => evaluateMarginOffset([spot, perp], { ...policy, haircutsBps: {} as MarginOffsetPolicy['haircutsBps'] }, context, USD), /expected exactly/);
+  });
 });
 
 describe('coordinated de-risking', () => {

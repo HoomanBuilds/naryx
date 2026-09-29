@@ -381,6 +381,8 @@ export function stressPortfolio(
 
 // ------------------------------------------------------------------ conditional margin offsets
 
+const MARGIN_HAIRCUT_KEYS = ['basis', 'bridge', 'issuer', 'latency', 'liquidity', 'oracle', 'recovery', 'venue'] as const;
+
 export interface MarginOffsetPolicy {
   readonly riskDomainId: string;
   readonly offsetRateBps: bigint;
@@ -444,7 +446,14 @@ export function evaluateMarginOffset(
   object(policy, 'evaluateMarginOffset.policy');
   object(context, 'evaluateMarginOffset.context');
   const riskDomainId = protocolId(policy.riskDomainId, 'evaluateMarginOffset.policy.riskDomainId');
-  const haircut = Object.entries(policy.haircutsBps).reduce((sum, [name, value]) => sum + bps(value, `evaluateMarginOffset.policy.haircutsBps.${name}`), 0n);
+  object(policy.haircutsBps, 'evaluateMarginOffset.policy.haircutsBps');
+  const haircutKeys = Object.keys(policy.haircutsBps).sort();
+  if (haircutKeys.length !== MARGIN_HAIRCUT_KEYS.length || haircutKeys.some((key, index) => key !== MARGIN_HAIRCUT_KEYS[index])) {
+    throw new MalformedInputError('evaluateMarginOffset.policy.haircutsBps', `expected exactly ${MARGIN_HAIRCUT_KEYS.join(', ')}`);
+  }
+  const haircut = MARGIN_HAIRCUT_KEYS.reduce((sum, name) => sum + bps(policy.haircutsBps[name], `evaluateMarginOffset.policy.haircutsBps.${name}`), 0n);
+  const maximumStalenessMs = unsigned(policy.maximumStalenessMs, U64_BITS, 'evaluateMarginOffset.policy.maximumStalenessMs');
+  const maximumTimeToUnwindMs = unsigned(policy.maximumTimeToUnwindMs, U64_BITS, 'evaluateMarginOffset.policy.maximumTimeToUnwindMs');
   const now = unsigned(context.nowMs, U64_BITS, 'evaluateMarginOffset.context.nowMs');
   const failed = new Set(idSet(context.failedDependencyIds, 'evaluateMarginOffset.context.failedDependencyIds'));
   const floor = unsigned(policy.absoluteFloorQuoteAtoms, U128_BITS, 'evaluateMarginOffset.policy.absoluteFloorQuoteAtoms');
@@ -454,7 +463,7 @@ export function evaluateMarginOffset(
   let venueRequirements = 0n;
   let gross = 0n;
   for (const leg of legs) {
-    if (leg.maintenanceRequirementQuoteAtoms === undefined || now - leg.observedAtMs > policy.maximumStalenessMs || leg.observedAtMs > now) {
+    if (leg.maintenanceRequirementQuoteAtoms === undefined || leg.observedAtMs > now || now - leg.observedAtMs > maximumStalenessMs) {
       conditions.add('STALE_OR_UNKNOWN_STATE');
     }
     venueRequirements += leg.maintenanceRequirementQuoteAtoms ?? 0n;
@@ -463,7 +472,7 @@ export function evaluateMarginOffset(
     if (leg.dependencyIds.some((id) => failed.has(id))) conditions.add('FAILED_DEPENDENCY');
     if (leg.riskDomainId !== riskDomainId) conditions.add('OUTSIDE_RISK_DOMAIN');
     const close = estimateCloseCost(leg, [...failed]);
-    if (!close.complete || close.timeToUnwindMs > policy.maximumTimeToUnwindMs) conditions.add('INSUFFICIENT_EXECUTABLE_LIQUIDITY');
+    if (!close.complete || close.timeToUnwindMs > maximumTimeToUnwindMs) conditions.add('INSUFFICIENT_EXECUTABLE_LIQUIDITY');
   }
   // One tested unwind: every leg must be fully closable inside one shared rollback boundary.
   const groups = legs.map(
@@ -484,7 +493,9 @@ export function evaluateMarginOffset(
 
   const byUnderlying = new Map<ProtocolId, { long: bigint; short: bigint }>();
   for (const leg of legs) {
-    const notional = positionNotional(leg);
+    // The hedged benefit reduces a requirement, so notionals round toward zero here: rounding
+    // away from zero would overstate the offset in the requester's favor.
+    const notional = mulDiv(leg.quantityBaseAtoms, leg.markPrice.quoteAtoms, leg.markPrice.baseAtoms, ROUNDING.TOWARD_ZERO);
     const line = byUnderlying.get(leg.underlyingId) ?? { long: 0n, short: 0n };
     if (notional > 0n) line.long += notional;
     else line.short -= notional;

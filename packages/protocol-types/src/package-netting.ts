@@ -226,7 +226,11 @@ export function netObligations(obligations: readonly NettingObligation[], quanti
   });
 }
 
-/** Recomputes the conservation equations for a netting result; any violation rejects. */
+/**
+ * Recomputes the conservation equations for a netting result; any violation rejects. Every
+ * underlying that appears in an allocation needs exactly one summary, and each summary's gross
+ * and matched figures are recomputed from the allocations rather than trusted.
+ */
 export function verifyNetting(allocations: readonly NettingAllocation[], summaries: readonly NettingUnderlyingSummary[]): void {
   for (const allocation of allocations) {
     const { signedQuantityAtoms: gross, internalQuantityAtoms: inside, externalQuantityAtoms: outside } = allocation;
@@ -234,15 +238,31 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
     if (inside !== 0n && (inside > 0n) !== (gross > 0n)) throw new MalformedInputError('verifyNetting', 'an internal share flips direction');
     if (absBigInt(inside) > absBigInt(gross)) throw new MalformedInputError('verifyNetting', 'an internal share exceeds its obligation');
   }
+  const underlyings = new Set<string>(allocations.map((allocation) => allocation.underlyingId));
+  const summarized = new Set<string>();
+  for (const summary of summaries) {
+    if (summarized.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} is summarized twice`);
+    summarized.add(summary.underlyingId);
+    if (!underlyings.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} has no allocations`);
+  }
+  for (const underlyingId of underlyings) {
+    if (!summarized.has(underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${underlyingId} has no summary`);
+  }
   for (const summary of summaries) {
     const lines = allocations.filter((allocation) => allocation.underlyingId === summary.underlyingId);
+    const grossBuy = lines.filter((line) => line.signedQuantityAtoms > 0n).reduce((sum, line) => sum + line.signedQuantityAtoms, 0n);
+    const grossSell = lines.filter((line) => line.signedQuantityAtoms < 0n).reduce((sum, line) => sum - line.signedQuantityAtoms, 0n);
+    const matched = grossBuy < grossSell ? grossBuy : grossSell;
+    if (summary.grossBuyAtoms !== grossBuy || summary.grossSellAtoms !== grossSell || summary.internalMatchedAtoms !== matched) {
+      throw new MalformedInputError('verifyNetting', 'gross or matched quantities do not follow from the allocations');
+    }
     const buyInside = lines.filter((line) => line.internalQuantityAtoms > 0n).reduce((sum, line) => sum + line.internalQuantityAtoms, 0n);
     const sellInside = lines.filter((line) => line.internalQuantityAtoms < 0n).reduce((sum, line) => sum - line.internalQuantityAtoms, 0n);
     const external = lines.reduce((sum, line) => sum + line.externalQuantityAtoms, 0n);
-    if (buyInside !== summary.internalMatchedAtoms || sellInside !== summary.internalMatchedAtoms) {
+    if (buyInside !== matched || sellInside !== matched) {
       throw new MalformedInputError('verifyNetting', 'internal crossing is unbalanced');
     }
-    if (external !== summary.externalNetAtoms || summary.grossBuyAtoms - summary.grossSellAtoms !== summary.externalNetAtoms) {
+    if (external !== summary.externalNetAtoms || grossBuy - grossSell !== summary.externalNetAtoms) {
       throw new MalformedInputError('verifyNetting', 'external net does not equal the gross imbalance');
     }
   }

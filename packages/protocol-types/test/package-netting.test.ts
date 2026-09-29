@@ -69,6 +69,15 @@ describe('cross-user netting', () => {
     assert.throws(() => verifyNetting([flipped, ...rest], result.underlyings), /exceeds its obligation/);
   });
 
+  test('every netted underlying needs one summary recomputed from its allocations', () => {
+    const result = netObligations(book, 10n);
+    assert.throws(() => verifyNetting(result.allocations, []), /has no summary/);
+    assert.throws(() => verifyNetting(result.allocations, result.underlyings.slice(1)), /has no summary/);
+    assert.throws(() => verifyNetting(result.allocations, [...result.underlyings, result.underlyings[0]!]), /summarized twice/);
+    const inflated = result.underlyings.map((summary) => ({ ...summary, grossBuyAtoms: summary.grossBuyAtoms + 5n, grossSellAtoms: summary.grossSellAtoms + 5n }));
+    assert.throws(() => verifyNetting(result.allocations, inflated), /do not follow from the allocations/);
+  });
+
   test('malformed obligation sets reject', () => {
     assert.throws(() => netObligations([obligation(1, 'alice', 15n)], 10n), /increment lattice/);
     assert.throws(() => netObligations([obligation(1, 'alice', 10n), obligation(1, 'bob', -10n)], 10n), /repeat/);
