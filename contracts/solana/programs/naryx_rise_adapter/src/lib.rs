@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("7USHejoffnm7UgDhSJeF6mjT2gpEAwqRjyVmYXWx1TzP");
+declare_id!("9FAYFVXcJYqxcpw7bf6eK6iY6SkwYx6T4PT7NF3VjfzQ");
 
 #[program]
 pub mod naryx_rise_adapter {

@@ -7,7 +7,7 @@ use anchor_lang::prelude::*;
 pub use constants::*;
 pub use instructions::*;
 
-declare_id!("J3kJZ6SP1dGW2TLNYfGJrujmecsfkGkeUzcGbR6EJs5w");
+declare_id!("Ao5mbjTPVAoM4SVobYMyaQwPRKruk9Rd7CF1ENL1xjUU");
 
 #[program]
 pub mod naryx_orca_adapter {

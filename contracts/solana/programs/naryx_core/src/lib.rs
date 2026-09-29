@@ -15,7 +15,7 @@ pub use {
     wire::*,
 };
 
-declare_id!("8qmA9VuQwAAqQ3F93CAfLNFB3P8M8ygXgvn9xCnZXa2i");
+declare_id!("GpwzEWfFySnTdRp8iTPYz9AmsbePDeeC5ThGhMV5PxPq");
 
 #[cfg(not(feature = "conformance"))]
 #[program]
