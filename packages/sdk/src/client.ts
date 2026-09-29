@@ -19,6 +19,11 @@ import {
   QUALIFICATION_OBJECT_TYPE,
   qualificationRecord,
   qualificationRecordHash,
+  quoteHash as solverQuoteHash,
+  routeHash,
+  routePayload,
+  solverQuote,
+  solverSignatureDigest,
   replayRouteDecision,
   replaySealedAuction,
   requiresSuccessfulReceipt,
@@ -50,6 +55,10 @@ import {
   type QualificationObjectType,
   type QualificationRecord,
   type QualificationRecordInput,
+  type RoutePayload,
+  type RoutePayloadInput,
+  type SolverQuote,
+  type SolverQuoteInput,
   type SealedAuctionDefinitionInput,
   type SealedAuctionEvent,
   type RfqDecision,
@@ -283,6 +292,19 @@ export type QualificationView =
   | { readonly objectType: QualificationObjectType; readonly objectId: string; readonly asOfValue: bigint; readonly current: VerifiedQualificationRecord }
   | { readonly objectType: QualificationObjectType; readonly objectId: string; readonly unavailable: 'NOT_YET_EFFECTIVE' | 'EXPIRED' | 'TIME_UNIT_UNSUPPORTED' };
 
+export interface VerifiedOrderQuote {
+  readonly quoteHash: string;
+  readonly routeHash: string;
+  readonly quote: SolverQuote;
+  readonly route: RoutePayload;
+  readonly receivedAtMs: number;
+  /**
+   * True when this runtime verified the solver's Ed25519 signature over the quote locally. False
+   * only when the runtime has no Ed25519 support; a signature that fails to verify is rejected.
+   */
+  readonly signatureVerified: boolean;
+}
+
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 /** Bitcoin-alphabet base58, the encoding the order intake expects for Ed25519 signatures. */
@@ -409,6 +431,19 @@ function verifiedQualification(value: unknown, hash: unknown, objectType: string
   if (hash !== recordHash) throw new NaryxEvidenceError(`${context} does not hash to its served hash`);
   if (record.objectType !== objectType || record.objectId !== objectId) throw new NaryxEvidenceError(`${context} is for another object`);
   return Object.freeze({ record, recordHash });
+}
+
+/** Verifies an Ed25519 signature with Web Crypto; undefined when the runtime lacks Ed25519. */
+async function webCryptoEd25519(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): Promise<boolean | undefined> {
+  const subtle = (globalThis as { crypto?: { subtle?: { importKey: Function; verify: Function } } }).crypto?.subtle;
+  if (subtle === undefined) return undefined;
+  let key: unknown;
+  try {
+    key = await subtle.importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify']);
+  } catch {
+    return undefined;
+  }
+  return (await subtle.verify({ name: 'Ed25519' }, key, signature, message)) as boolean;
 }
 
 function sizesQuery(sizes: readonly bigint[]): string {
@@ -885,6 +920,45 @@ export class NaryxClient {
     const verdict = verifyQualificationHistory(records.map((entry) => entry.record), 0n);
     if (!verdict.valid) throw new NaryxEvidenceError(`qualification history breaks at record ${verdict.index}: ${verdict.reason}`);
     return Object.freeze(records);
+  }
+
+  /**
+   * Live signed solver quotes for a public order, each with the route it binds. Every quote must
+   * re-hash to its served hash, bind the served route and the requested order, and carry its own
+   * quote mode; Ed25519 signatures are verified locally wherever the runtime supports Ed25519.
+   */
+  async getOrderQuotes(orderHash: string): Promise<readonly VerifiedOrderQuote[]> {
+    const requested = hashHex(orderHash, 'order hash');
+    const body = record(await this.#request('GET', `/v1/orders/${requested}/quotes`), 'order quotes');
+    if (body.orderHash !== requested) throw new NaryxEvidenceError('quotes are for another order');
+    const quotes: VerifiedOrderQuote[] = [];
+    for (const [index, entry] of list(body.quotes, 'quotes').entries()) {
+      const served = record(entry, `quotes[${index}]`);
+      let quote: SolverQuote;
+      let route: RoutePayload;
+      let computedQuoteHash: string;
+      let computedRouteHash: string;
+      try {
+        quote = solverQuote(served.quote as SolverQuoteInput);
+        route = routePayload(served.route as RoutePayloadInput);
+        computedQuoteHash = toHex(solverQuoteHash(served.quote as SolverQuoteInput));
+        computedRouteHash = toHex(routeHash(served.route as RoutePayloadInput));
+      } catch (error) {
+        throw new NaryxEvidenceError(`quotes[${index}] is malformed: ${(error as Error).message}`);
+      }
+      if (served.quoteHash !== computedQuoteHash || served.routeHash !== computedRouteHash) throw new NaryxEvidenceError(`quotes[${index}] does not hash to its served hashes`);
+      if (toHex(quote.routeHash) !== computedRouteHash) throw new NaryxEvidenceError(`quotes[${index}] does not bind its served route`);
+      if (toHex(quote.orderHash) !== requested || toHex(route.orderHash) !== requested) throw new NaryxEvidenceError(`quotes[${index}] is for another order`);
+      if (served.quoteMode !== quote.quoteMode || served.solverId !== quote.solverId) throw new NaryxEvidenceError(`quotes[${index}] labels differ from the signed quote`);
+      let signatureVerified = false;
+      if (quote.solverSignatureScheme === 'ED25519') {
+        const verdict = await webCryptoEd25519(quote.solverVerificationKey, solverSignatureDigest(served.quote as SolverQuoteInput), quote.signature);
+        if (verdict === false) throw new NaryxEvidenceError(`quotes[${index}] signature does not verify`);
+        signatureVerified = verdict === true;
+      }
+      quotes.push(Object.freeze({ quoteHash: computedQuoteHash, routeHash: computedRouteHash, quote, route, receivedAtMs: count(served.receivedAtMs, 'receivedAtMs'), signatureVerified }));
+    }
+    return Object.freeze(quotes);
   }
 
   /** Measured execution quality; every figure comes from stored outcomes and receipts. */

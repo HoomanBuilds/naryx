@@ -1,0 +1,669 @@
+{
+  "quote": {
+    "domain": {
+      "domainId": "svm:testnet",
+      "domainManifestHash": {
+        "$naryxType": "bytes",
+        "value": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "domainManifestVersion": 1
+    },
+    "environment": "testnet",
+    "expectedBaseAssetFee": {
+      "asset": {
+        "assetId": "svm:test-domain-1:sol",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "decimals": 9
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "1000"
+      }
+    },
+    "expectedBuilderFeesByAsset": [
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "decimals": 9
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "0"
+        }
+      },
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "decimals": 6
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "5000"
+        }
+      }
+    ],
+    "expectedGrossSpotQuantity": {
+      "asset": {
+        "assetId": "svm:test-domain-1:sol",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "decimals": 9
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "1000000000"
+      }
+    },
+    "expectedMarginDelta": {
+      "asset": {
+        "assetId": "svm:test-domain-1:usdc",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "decimals": 6
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "20000000"
+      }
+    },
+    "expectedNetSpotQuantity": {
+      "asset": {
+        "assetId": "svm:test-domain-1:sol",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "decimals": 9
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "999999000"
+      }
+    },
+    "expectedNormalizedVenueFeesByAsset": [
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "decimals": 9
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "1000"
+        }
+      },
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "decimals": 6
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "25000"
+        }
+      }
+    ],
+    "expectedPerpNotional": {
+      "asset": {
+        "assetId": "svm:test-domain-1:usdc",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "decimals": 6
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "99500000"
+      }
+    },
+    "expectedPriorityFee": {
+      "asset": {
+        "assetId": "svm:test-domain-1:sol",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "decimals": 9
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "5000"
+      }
+    },
+    "expectedRawFillFeesByAsset": [
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "decimals": 9
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "1000"
+        }
+      },
+      {
+        "asset": {
+          "assetId": "svm:test-domain-1:usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "decimals": 6
+        },
+        "atoms": {
+          "$naryxType": "bigint",
+          "value": "30000"
+        }
+      }
+    ],
+    "expectedSpotNotional": {
+      "asset": {
+        "assetId": "svm:test-domain-1:usdc",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "decimals": 6
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "100000000"
+      }
+    },
+    "feePolicyManifestHash": "7777777777777777777777777777777777777777777777777777777777777777",
+    "feePolicyVersion": 1,
+    "maxRecoveryCostAtomsByAsset": [],
+    "orderHash": "8ac3585d1be24f2b3bf7a3c6dae82e7f35a424a9f1db212cfbd30b3924cea849",
+    "protocolFee": {
+      "asset": {
+        "assetId": "svm:test-domain-1:usdc",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "decimals": 6
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "0"
+      }
+    },
+    "quoteMode": "EXECUTION_COMMITMENT",
+    "quoteNonce": {
+      "$naryxType": "bigint",
+      "value": "1"
+    },
+    "quotedOutcome": {
+      "entrySpread": {
+        "baseAsset": {
+          "assetId": "svm:test-domain-1:sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "decimals": 9
+        },
+        "baseAtoms": {
+          "$naryxType": "bigint",
+          "value": "1"
+        },
+        "quoteAsset": {
+          "assetId": "svm:test-domain-1:usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "decimals": 6
+        },
+        "quoteAtoms": {
+          "$naryxType": "bigint",
+          "value": "-5"
+        },
+        "roundingDirection": "TOWARD_ZERO"
+      },
+      "kind": "ENTRY_SPREAD"
+    },
+    "routeHash": {
+      "$naryxType": "bytes",
+      "value": "7e3b6c3a5da1f42075d0a6c0f2df10f7e07e5d1ff9fe29ef4c3c8cbeab459619"
+    },
+    "signature": {
+      "$naryxType": "bytes",
+      "value": "f037757861da7cc2e6d2a25e41af430f534ee3b5f8c5f8cda114ae72c7c4ba08cdb993f6d8783ce57bb7f96405aec10b9d456a91c118832ff1b430e541f0b00f"
+    },
+    "solverCapabilityManifestHash": "5555555555555555555555555555555555555555555555555555555555555555",
+    "solverFee": {
+      "asset": {
+        "assetId": "svm:test-domain-1:usdc",
+        "assetManifestHash": {
+          "$naryxType": "bytes",
+          "value": "5555555555555555555555555555555555555555555555555555555555555555"
+        },
+        "decimals": 6
+      },
+      "atoms": {
+        "$naryxType": "bigint",
+        "value": "10000"
+      }
+    },
+    "solverId": "solver-a",
+    "solverSignatureScheme": "ED25519",
+    "solverVerificationKey": {
+      "$naryxType": "bytes",
+      "value": "b0bcd1abae704ab595d836dc6ca48ae07fb018091b283be6d1715df6c15150f5"
+    },
+    "validUntilUnit": "EVM_UNIX_SECONDS",
+    "validUntilValue": {
+      "$naryxType": "bigint",
+      "value": "1900000000"
+    },
+    "version": 1
+  },
+  "route": {
+    "accountBindings": [
+      {
+        "accountIdentity": "trader-wallet",
+        "authorityIdentity": "trader-wallet",
+        "routeBindingId": "trader-authority"
+      },
+      {
+        "accountIdentity": "phoenix-program",
+        "adapter": {
+          "adapterId": "phoenix-spot",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "adapterManifestVersion": 1
+        },
+        "adapterBindingId": "market-program",
+        "codeIdentity": "phoenix-code-v1",
+        "routeBindingId": "spot-program"
+      },
+      {
+        "accountIdentity": "phoenix-perp-program",
+        "adapter": {
+          "adapterId": "phoenix-perp",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "adapterManifestVersion": 1
+        },
+        "adapterBindingId": "market-program",
+        "codeIdentity": "phoenix-perp-code-v1",
+        "routeBindingId": "perp-program"
+      }
+    ],
+    "action": "ENTRY",
+    "actions": [
+      {
+        "accountMetas": [
+          {
+            "isSigner": false,
+            "isWritable": false,
+            "routeBindingId": "spot-program"
+          },
+          {
+            "isSigner": true,
+            "isWritable": true,
+            "routeBindingId": "trader-authority"
+          }
+        ],
+        "actionClassId": "svm-cpi-spot-v1",
+        "adapter": {
+          "adapterId": "phoenix-spot",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "adapterManifestVersion": 1
+        },
+        "authorityBindingId": "trader-authority",
+        "legIndex": 0,
+        "payload": {
+          "codecId": "svm-instruction-v1",
+          "lateBoundFields": [],
+          "templateHash": {
+            "$naryxType": "bytes",
+            "value": "06df4f7e1394f1c57cc6583fba4d8060a5a66f4f4771c14aeff6b9af8a28c9b3"
+          },
+          "templateLength": 3
+        },
+        "sequence": 0,
+        "targetBindingId": "spot-program"
+      },
+      {
+        "accountMetas": [
+          {
+            "isSigner": false,
+            "isWritable": false,
+            "routeBindingId": "perp-program"
+          },
+          {
+            "isSigner": true,
+            "isWritable": true,
+            "routeBindingId": "trader-authority"
+          }
+        ],
+        "actionClassId": "svm-cpi-perp-v1",
+        "adapter": {
+          "adapterId": "phoenix-perp",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "adapterManifestVersion": 1
+        },
+        "authorityBindingId": "trader-authority",
+        "legIndex": 1,
+        "payload": {
+          "codecId": "svm-instruction-v1",
+          "lateBoundFields": [],
+          "templateHash": {
+            "$naryxType": "bytes",
+            "value": "1e608cb573babbef9691341f1d69e99b51cdc65fd0117c5a78925cf5b5adac1b"
+          },
+          "templateLength": 3
+        },
+        "sequence": 1,
+        "targetBindingId": "perp-program"
+      }
+    ],
+    "direction": "LONG_SPOT_SHORT_PERP",
+    "domain": {
+      "domainId": "svm:testnet",
+      "domainManifestHash": {
+        "$naryxType": "bytes",
+        "value": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "domainManifestVersion": 1
+    },
+    "environment": "testnet",
+    "evidenceRequirements": {
+      "outcomeSchemaHash": "0100000000000000000000000000000000000000000000000000000000000000",
+      "profileId": "svm-atomic-evidence-v1",
+      "receiptSchemaHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "requiredActionEvidenceTypeIds": [
+        "cpi-result"
+      ],
+      "requiredPostStateComponentIds": [
+        "perp-position-state"
+      ],
+      "requiredPreStateComponentIds": [
+        "authority-state"
+      ],
+      "schemaVersion": 1,
+      "stateReferenceSchemaHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "executionPlanKind": "SVM_ATOMIC_CPI",
+    "feePolicyManifestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "feePolicyVersion": 2,
+    "legs": [
+      {
+        "actionSequence": 0,
+        "adapter": {
+          "adapterId": "phoenix-spot",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "adapterManifestVersion": 1
+        },
+        "baseAsset": {
+          "assetId": "sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "decimals": 9
+        },
+        "legIndex": 0,
+        "legRole": "SPOT",
+        "limitPrice": {
+          "baseAsset": {
+            "assetId": "sol",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "decimals": 9
+          },
+          "baseAtoms": {
+            "$naryxType": "bigint",
+            "value": "2"
+          },
+          "quoteAsset": {
+            "assetId": "usdc",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "decimals": 6
+          },
+          "quoteAtoms": {
+            "$naryxType": "bigint",
+            "value": "3"
+          },
+          "roundingDirection": "CEIL"
+        },
+        "market": {
+          "manifestHash": {
+            "$naryxType": "bytes",
+            "value": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "manifestVersion": 1,
+          "subjectId": "sol-usdc-spot"
+        },
+        "quantity": {
+          "asset": {
+            "assetId": "sol",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "decimals": 9
+          },
+          "atoms": {
+            "$naryxType": "bigint",
+            "value": "1000000000"
+          }
+        },
+        "quoteAsset": {
+          "assetId": "usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "decimals": 6
+        },
+        "reduceOnly": false,
+        "side": "BUY",
+        "timeInForce": "FOK",
+        "venue": {
+          "manifestHash": {
+            "$naryxType": "bytes",
+            "value": "6666666666666666666666666666666666666666666666666666666666666666"
+          },
+          "manifestVersion": 1,
+          "subjectId": "phoenix"
+        }
+      },
+      {
+        "actionSequence": 1,
+        "adapter": {
+          "adapterId": "phoenix-perp",
+          "adapterManifestHash": {
+            "$naryxType": "bytes",
+            "value": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "adapterManifestVersion": 1
+        },
+        "baseAsset": {
+          "assetId": "sol",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "decimals": 9
+        },
+        "legIndex": 1,
+        "legRole": "PERPETUAL",
+        "limitPrice": {
+          "baseAsset": {
+            "assetId": "sol",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "decimals": 9
+          },
+          "baseAtoms": {
+            "$naryxType": "bigint",
+            "value": "2"
+          },
+          "quoteAsset": {
+            "assetId": "usdc",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "decimals": 6
+          },
+          "quoteAtoms": {
+            "$naryxType": "bigint",
+            "value": "3"
+          },
+          "roundingDirection": "CEIL"
+        },
+        "market": {
+          "manifestHash": {
+            "$naryxType": "bytes",
+            "value": "9999999999999999999999999999999999999999999999999999999999999999"
+          },
+          "manifestVersion": 1,
+          "subjectId": "sol-usdc-perp"
+        },
+        "quantity": {
+          "asset": {
+            "assetId": "sol",
+            "assetManifestHash": {
+              "$naryxType": "bytes",
+              "value": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "decimals": 9
+          },
+          "atoms": {
+            "$naryxType": "bigint",
+            "value": "1000000000"
+          }
+        },
+        "quoteAsset": {
+          "assetId": "usdc",
+          "assetManifestHash": {
+            "$naryxType": "bytes",
+            "value": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "decimals": 6
+        },
+        "reduceOnly": false,
+        "side": "SELL",
+        "timeInForce": "FOK",
+        "venue": {
+          "manifestHash": {
+            "$naryxType": "bytes",
+            "value": "7777777777777777777777777777777777777777777777777777777777777777"
+          },
+          "manifestVersion": 1,
+          "subjectId": "phoenix-perps"
+        }
+      }
+    ],
+    "orderHash": "8ac3585d1be24f2b3bf7a3c6dae82e7f35a424a9f1db212cfbd30b3924cea849",
+    "owner": "trader-wallet",
+    "packageTemplateManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "partialFillPolicy": "EXACT_ALL_LEGS",
+    "postconditions": [
+      {
+        "accountBindingId": "perp-program",
+        "comparator": "EQ",
+        "componentId": "base-position-delta",
+        "constraintId": "post-perp-position",
+        "evidenceRequirementId": "perp-position-state",
+        "ruleId": "position-delta-v1",
+        "value": {
+          "kind": "SIGNED_ASSET_AMOUNT",
+          "value": {
+            "asset": {
+              "assetId": "sol",
+              "assetManifestHash": {
+                "$naryxType": "bytes",
+                "value": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              "decimals": 9
+            },
+            "atoms": {
+              "$naryxType": "bigint",
+              "value": "-1000000000"
+            }
+          }
+        }
+      }
+    ],
+    "preconditions": [
+      {
+        "accountBindingId": "trader-authority",
+        "comparator": "EQ",
+        "componentId": "is-authorized",
+        "constraintId": "pre-trader-authorized",
+        "evidenceRequirementId": "authority-state",
+        "ruleId": "authority-equals-owner-v1",
+        "value": {
+          "kind": "BOOLEAN",
+          "value": true
+        }
+      }
+    ],
+    "quantityPolicyClass": "EXACT_ATOMIC",
+    "routeExpiryUnit": "SOLANA_SLOT",
+    "routeExpiryValue": {
+      "$naryxType": "bigint",
+      "value": "500000"
+    },
+    "serviceCharges": [],
+    "settlementAccount": "strategy-account-1",
+    "settlementClass": "ATOMIC_POSTCONDITION",
+    "solver": "solver-a",
+    "templateId": "cash-and-carry-v1",
+    "templateRegistryRecordHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "templateVersion": 1,
+    "version": 1
+  }
+}

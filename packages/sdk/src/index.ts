@@ -15,6 +15,7 @@ export {
   type SeriesCurve,
   type SeriesCurvePoint,
   type SizeQuoteView,
+  type VerifiedOrderQuote,
   type VerifiedOutcome,
   type ExecutionQualityView,
   type FetchLike,

@@ -11,6 +11,8 @@ import {
   type ImpliedPackageQuoteInput,
   type PackageOrder,
   type PackageOrderInput,
+  type RoutePayloadInput,
+  type SolverQuoteInput,
   type PackageQuoteShardInput,
   type SolverCapabilityManifestInput,
   type SolverCapacityCommitmentInput,
@@ -168,6 +170,14 @@ export class NaryxSolverClient {
   postQuotes(packageMarketId: string, quotes: readonly { readonly quote: ImpliedPackageQuoteInput; readonly expiresAtValue: bigint }[]) {
     if (!Array.isArray(quotes) || quotes.length === 0 || quotes.length > 16) throw new TypeError('post 1 to 16 quotes');
     return this.#call('POST', '/v1/solver/quotes/batch', { packageMarketId, quotes });
+  }
+
+  /**
+   * Answers a public order with a quote this solver signed over `solverSignatureDigest`, and the
+   * exact route the quote binds. Outside production a reserved quote must be FIRM_SIMULATED.
+   */
+  postOrderQuote(quote: SolverQuoteInput, route: RoutePayloadInput) {
+    return this.#call('POST', '/v1/solver/order-quotes', { quote, route });
   }
 
   /** This solver's settled receipts for one of its quotes. */

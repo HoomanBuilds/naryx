@@ -13,6 +13,8 @@ import {
   packageReceiptHash,
   privateRfqEnvelopeHash,
   qualificationRecordHash,
+  quoteHash,
+  routeHash,
   terminalOutcomeHash,
   toHex,
   toProtocolJson,
@@ -22,6 +24,8 @@ import {
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
   type QualificationRecordInput,
+  type RoutePayloadInput,
+  type SolverQuoteInput,
   type TerminalOutcomeInput,
 } from '@naryx/protocol-types';
 import { NaryxClient, NaryxSolverClient, base58Encode, type FetchLike } from '../src/index.js';
@@ -30,6 +34,9 @@ const ORDER = fromProtocolJson(
   JSON.parse(readFileSync(new URL('../../test/fixtures/solana-entry-order.json', import.meta.url), 'utf8')),
 ) as PackageOrderInput;
 const ORDER_HASH = toHex(packageOrderHash(ORDER));
+const ORDER_QUOTE = fromProtocolJson(
+  JSON.parse(readFileSync(new URL('../../test/fixtures/order-quote.json', import.meta.url), 'utf8')),
+) as { quote: SolverQuoteInput; route: RoutePayloadInput };
 
 const hash = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
 const domain = domainRef('svm:testnet', 1, '11'.repeat(32));
@@ -446,6 +453,31 @@ describe('order intake and terminal evidence', () => {
     );
     const expired = await client({ [currentPath]: { body: { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', unavailable: 'EXPIRED' } } }).getQualification('VENUE', 'phoenix-sol-usdc');
     assert.deepEqual(expired, { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', unavailable: 'EXPIRED' });
+  });
+
+  test('order quotes must re-hash, bind their route and order, and carry a verifying signature', async () => {
+    const { quote, route } = ORDER_QUOTE;
+    const entry = (overrides: Record<string, unknown> = {}) => ({
+      quoteHash: toHex(quoteHash(quote)),
+      routeHash: toHex(routeHash(route)),
+      quoteMode: quote.quoteMode,
+      solverId: quote.solverId,
+      quote,
+      route,
+      receivedAtMs: 5,
+      ...overrides,
+    });
+    const path = `GET /v1/orders/${ORDER_HASH}/quotes`;
+    const read = (quotes: unknown[]) => client({ [path]: { body: { orderHash: ORDER_HASH, quotes } } }).getOrderQuotes(ORDER_HASH);
+    const [verified] = await read([entry()]);
+    assert.equal(verified?.quoteHash, toHex(quoteHash(quote)));
+    // Node ships Ed25519 in Web Crypto, so the solver signature is checked locally here.
+    assert.equal(verified?.signatureVerified, true);
+    await assert.rejects(read([entry({ quote: { ...quote, signature: new Uint8Array(64).fill(1) } })]), /signature does not verify/);
+    await assert.rejects(read([entry({ quoteHash: 'ab'.repeat(32) })]), /served hashes/);
+    await assert.rejects(read([entry({ quoteMode: 'FIRM_ONCHAIN' })]), /labels differ/);
+    const otherRoute = { ...route, routeExpiryValue: route.routeExpiryValue + 1n };
+    await assert.rejects(read([entry({ route: otherRoute, routeHash: toHex(routeHash(otherRoute)) })]), /does not bind its served route/);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {

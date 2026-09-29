@@ -94,7 +94,7 @@ export interface PublicApiOptions {
   /** Encryption suites a reviewed release has pinned; with none, private RFQ fails closed. */
   readonly pinnedSuiteIds?: readonly string[];
   /** Optional: order intake, order and receipt reads, and execution analytics answer 503 without it. */
-  readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality">;
+  readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality" | "quotesFor">;
   /** Optional: qualification reads answer 503 without it. Records are appended by operators, never here. */
   readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
@@ -313,6 +313,30 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === "/v1/domains") {
       onlyParams(url, []);
       return { domains: requireRegistry().list("DOMAIN") };
+    }
+    if ((match = /^\/v1\/orders\/([0-9a-f]{64})\/quotes$/.exec(path)) !== null) {
+      // Signed solver quotes for a public order that are still valid, each with the route it binds
+      // and its quote mode, so a taker can verify and compare them before authorizing one.
+      onlyParams(url, []);
+      const hash = match[1] as string;
+      const store = requireEvidence();
+      if (store.getOrder(hash) === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "No such order.");
+      const quotes = store.quotesFor(hash, (unit, validUntilValue) => {
+        const now = nowIn(unit);
+        return now !== undefined && now < validUntilValue;
+      });
+      return {
+        orderHash: hash,
+        quotes: quotes.map((entry) => ({
+          quoteHash: entry.quoteHashHex,
+          routeHash: entry.routeHashHex,
+          quoteMode: entry.quote.quoteMode,
+          solverId: entry.quote.solverId,
+          quote: entry.quote,
+          route: entry.route,
+          receivedAtMs: entry.receivedAtMs,
+        })),
+      };
     }
     if ((match = /^\/v1\/orders\/([^/]+)$/.exec(path)) !== null && match[1] !== "validate") {
       onlyParams(url, []);

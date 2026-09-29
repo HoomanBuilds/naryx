@@ -1,5 +1,8 @@
-import { assetAmount, assetRef, domainRef, evidenceManifestHash } from "@naryx/protocol-types";
-import type { AcceptedQuoteFeeTerms, EvidenceManifestInput, PackageReceiptInput, TerminalOutcomeInput } from "@naryx/protocol-types";
+import { generateKeyPairSync, sign } from "node:crypto";
+import bs58 from "bs58";
+import { adapterRef, assetAmount, assetRef, domainRef, evidenceManifestHash, exactPrice, exactSignedRate, packageOrderBytes, toHex } from "@naryx/protocol-types";
+import type { AcceptedQuoteFeeTerms, EvidenceManifestInput, PackageOrderInput, PackageReceiptInput, TerminalOutcomeInput } from "@naryx/protocol-types";
+import { createCanonicalEntryOrder, type ActiveOrderContext } from "../src/index.js";
 
 export const hash = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
 export const domain = domainRef("svm:testnet", 1, "11".repeat(32));
@@ -113,3 +116,55 @@ export const terms: AcceptedQuoteFeeTerms = {
   feePolicyManifestHash: hash(6),
   maxRecoveryCostByAsset: [],
 };
+
+export function context(): ActiveOrderContext {
+  return Object.freeze({
+    contextId: "evidence-context",
+    state: "ACTIVE",
+    capturedAtClock: 1_000_000n,
+    maxStaleness: 1_000_000n,
+    domain,
+    environment: "testnet",
+    orderVersion: 1,
+    templateId: "cash-and-carry-v1",
+    templateVersion: 1,
+    packageTemplateManifestHash: "44".repeat(32),
+    baseAsset: sol,
+    quoteAsset: usdc,
+    spotAdapters: Object.freeze([adapterRef({ adapterId: "spot-adapter-v1", adapterManifestVersion: 1, adapterManifestHash: "55".repeat(32) })]),
+    perpAdapters: Object.freeze([adapterRef({ adapterId: "perp-adapter-v1", adapterManifestVersion: 1, adapterManifestHash: "66".repeat(32) })]),
+    settlementClass: "ATOMIC_POSTCONDITION",
+    expiryUnit: "SOLANA_SLOT",
+    expiryTtl: 1_000n,
+    spotReferencePrice: exactPrice({ baseAsset: sol, quoteAsset: usdc, quoteAtoms: 3n, baseAtoms: 20n, roundingDirection: "CEIL" }),
+    maxEntrySpread: exactSignedRate({ baseAsset: sol, quoteAsset: usdc, quoteAtoms: 1n, baseAtoms: 400n, roundingDirection: "CEIL" }),
+    maximumQuantityAtoms: 10_000_000_000n,
+    maxSlippageBps: 100,
+    maxVenueFeeAtomsByAsset: Object.freeze([]),
+    maxMarginAddedAtoms: 20_000_000n,
+    maxProtocolFeeAtoms: 100_000n,
+    maxSolverFeeAtoms: 100_000n,
+    maxPriorityFeeAtoms: 100_000n,
+    minVenueReserveReturnedAtoms: 0n,
+    minWalletQuoteBalanceDeltaAtoms: 0n,
+    maxResidualBaseQuantityAtoms: 0n,
+  });
+}
+
+export function signedOrder(idempotencyKey = "evidence-order-0001") {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const raw = (publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32);
+  const owner = bs58.encode(raw);
+  const active = context();
+  const created = createCanonicalEntryOrder((contextId) => (contextId === active.contextId ? active : undefined), {
+    contextId: active.contextId,
+    owner,
+    settlementAccount: owner,
+    sizeAtoms: 1_000_000_000n,
+    slippageBps: 10,
+    idempotencyKey,
+    currentClock: 1_000_500n,
+  });
+  const signOrder = (order: PackageOrderInput) => bs58.encode(sign(null, Buffer.from(packageOrderBytes(order)), privateKey));
+  return { order: created.order as PackageOrderInput, orderHashHex: toHex(created.orderHash), signature: signOrder(created.order), signOrder };
+}

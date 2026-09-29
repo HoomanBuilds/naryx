@@ -34,7 +34,8 @@ Orders and terminal evidence are covered end to end:
 - `getCurve`, `getSeriesIndex`, and `getOpportunities` require every requested size to be answered with the right `EXECUTABLE`, `INDICATIVE`, or `OBSERVED` label, reject a price for depth that is not there, check that each spread is ask minus bid, and check the feed's spread ordering.
 - `getQualification` and `getQualificationHistory` re-hash every record, require it to name the requested object, check that a current record governs at its served time, and replay the history's chain, object, time-order, and never-loosen-by-monitor rules locally.
 - `getExecutionQuality` requires the `OBSERVED` label and a methodology, and checks that state counts sum to the outcome total, basis points stay in range, and percentiles are ordered.
-- `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it.
+- `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it, and `postOrderQuote` answers one with a signed quote and the route it binds.
+- `getOrderQuotes` re-hashes every served quote and route, requires both to bind the requested order and each other, requires the served labels to match the signed quote, and verifies the solver's Ed25519 signature locally through Web Crypto; a signature that fails is rejected, and `signatureVerified` is false only where the runtime has no Ed25519.
 
 No terminal-internal route is wrapped.
 

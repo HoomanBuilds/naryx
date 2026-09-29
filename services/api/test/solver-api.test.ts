@@ -34,7 +34,8 @@ import {
 } from "../src/index.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } from "./exchange-fixtures.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
-import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, terms } from "./evidence-fixtures.js";
+import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, signedOrder, terms } from "./evidence-fixtures.js";
+import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
 
 const NOW_MS = 1_900_000_000_000;
 const RFQ_SUITE = "hpke-x25519-sha256-aes256gcm";
@@ -326,6 +327,54 @@ test("implied quotes post atomically in batches and a solver reads only its own 
     );
     assert.equal((await api.call("GET", `/v1/solver/settlements/${"ab".repeat(32)}`)).status, 404);
     assert.equal((await api.call("GET", "/v1/solver/settlements/not-a-hash")).status, 404);
+  });
+});
+
+test("solvers answer public orders with signed quotes that takers read back with their routes", async () => {
+  await withSolverApi(async (api) => {
+    const { order, orderHashHex, signature } = signedOrder();
+    api.evidence.submitOrder(order, signature);
+    const manifestHash = ((await api.plain("GET", "/v1/solvers/solver-a")).body as { manifestHash: string }).manifestHash;
+    const route = routeFor(orderHashHex, order.domain, order.environment);
+    const quote = (overrides: Partial<Parameters<typeof signedQuoteFor>[0]> = {}) => signedQuoteFor({
+      orderHash: orderHashHex,
+      route,
+      environment: order.environment,
+      domain: order.domain,
+      solverId: "solver-a",
+      manifestHash,
+      quoteKey: api.solverKey,
+      validUntilUnit: "EVM_UNIX_SECONDS",
+      validUntilValue: NOW_S + 60n,
+      ...overrides,
+    });
+    const post = (body: Record<string, unknown>) => api.call("POST", "/v1/solver/order-quotes", body);
+    const errorCode = (response: { body: Record<string, unknown> }) => (response.body.error as { code: string }).code;
+
+    const accepted = await post({ quote: quote(), route });
+    assert.equal(accepted.status, 200, JSON.stringify(toProtocolJson(accepted.body)));
+    assert.equal(accepted.body.replayed, false);
+    assert.equal((await post({ quote: quote(), route })).body.replayed, true);
+
+    // Only the authenticated solver's own, validly signed, honestly labeled, live quote is accepted.
+    const tampered = { ...quote(), signature: new Uint8Array(64).fill(3) };
+    assert.equal(errorCode(await post({ quote: tampered, route })), "INVALID_QUOTE_SIGNATURE");
+    assert.equal(errorCode(await post({ quote: quote({ solverId: "solver-b" }), route })), "SOLVER_MISMATCH");
+    assert.equal(errorCode(await post({ quote: quote({ manifestHash: "ab".repeat(32) }), route })), "MANIFEST_MISMATCH");
+    assert.equal(errorCode(await post({ quote: quote({ quoteMode: "FIRM_ONCHAIN", reservationId: "cd".repeat(32), quoteNonce: 9n }), route })), "QUOTE_MODE_MISLABELED");
+    assert.equal(errorCode(await post({ quote: quote({ validUntilValue: NOW_S, quoteNonce: 11n }), route })), "QUOTE_EXPIRED");
+    const otherRoute = routeFor(orderHashHex, order.domain, order.environment, { routeExpiryValue: 600_000n });
+    assert.equal(errorCode(await post({ quote: quote({ quoteNonce: 12n }), route: otherRoute })), "ROUTE_MISMATCH");
+    const stranger = signedOrder("evidence-order-0009");
+    const strangerRoute = routeFor(stranger.orderHashHex, order.domain, order.environment);
+    assert.equal(errorCode(await post({ quote: quote({ orderHash: stranger.orderHashHex, route: strangerRoute }), route: strangerRoute })), "ORDER_NOT_FOUND");
+
+    const listed = (await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly { quoteHash: string; quoteMode: string; solverId: string; routeHash: string }[] };
+    assert.deepEqual(listed.quotes.map((entry) => [entry.quoteHash, entry.quoteMode, entry.solverId]), [[accepted.body.quoteHashHex, "EXECUTION_COMMITMENT", "solver-a"]]);
+    // Expired quotes drop out of the taker's view.
+    api.setClock(Number(NOW_S + 60n) * 1_000);
+    assert.deepEqual(((await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly unknown[] }).quotes, []);
+    assert.equal((await api.plain("GET", `/v1/orders/${"ee".repeat(32)}/quotes`)).status, 404);
   });
 });
 

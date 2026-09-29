@@ -3,6 +3,10 @@ import type Database from "better-sqlite3";
 import bs58 from "bs58";
 import {
   evidenceManifest,
+  quoteHash as solverQuoteHash,
+  routeHash,
+  routePayload,
+  solverQuote,
   evidenceManifestHash,
   packageOrderBytes,
   packageOrderHash,
@@ -24,6 +28,9 @@ import type {
   PackageOrder,
   PackageOrderInput,
   PackageReceiptInput,
+  RoutePayloadInput,
+  SolverQuote,
+  SolverQuoteInput,
   TerminalOutcomeInput,
   TerminalState,
 } from "@naryx/protocol-types";
@@ -38,6 +45,9 @@ export class EvidenceStoreError extends Error {
     this.code = code;
   }
 }
+
+/** Quotes one public order may collect, so a quote flood cannot grow storage without bound. */
+export const MAX_QUOTES_PER_ORDER = 64;
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -66,6 +76,20 @@ CREATE TABLE IF NOT EXISTS terminal_outcomes (
   manifest_hash BLOB NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS order_quotes (
+  cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+  quote_hash BLOB NOT NULL UNIQUE,
+  order_hash BLOB NOT NULL REFERENCES public_orders(order_hash),
+  solver_id TEXT NOT NULL,
+  quote_json TEXT NOT NULL,
+  route_json TEXT NOT NULL,
+  valid_until_unit TEXT NOT NULL,
+  valid_until_value TEXT NOT NULL,
+  received_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS order_quotes_by_order ON order_quotes(order_hash, cursor);
+CREATE TRIGGER IF NOT EXISTS reject_order_quote_change BEFORE UPDATE ON order_quotes BEGIN SELECT RAISE(ABORT, 'quotes are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_order_quote_delete BEFORE DELETE ON order_quotes BEGIN SELECT RAISE(ABORT, 'quotes are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_public_order_change BEFORE UPDATE ON public_orders BEGIN SELECT RAISE(ABORT, 'orders are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_public_order_delete BEFORE DELETE ON public_orders BEGIN SELECT RAISE(ABORT, 'orders are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_outcome_change BEFORE UPDATE ON terminal_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are append-only'); END;
@@ -92,6 +116,14 @@ export interface StoredOutcome {
   readonly evidenceManifest: EvidenceManifestInput;
   readonly evidenceManifestHashHex: string;
   readonly recordedAtMs: number;
+}
+
+export interface StoredOrderQuote {
+  readonly quoteHashHex: string;
+  readonly routeHashHex: string;
+  readonly quote: SolverQuote;
+  readonly route: RoutePayloadInput;
+  readonly receivedAtMs: number;
 }
 
 export interface ExecutionQualitySummary {
@@ -234,6 +266,73 @@ export class SqliteEvidenceStore {
       )
       .all(afterCursor, Math.max(1, Math.min(limit, 200))) as Parameters<SqliteEvidenceStore["decodeOrder"]>[0][];
     return Object.freeze(rows.map((row) => this.decodeOrder(row)));
+  }
+
+  /**
+   * Records a solver's quote for an open public order together with the route it binds. The caller
+   * has already authenticated the solver and verified the quote signature; the store checks that
+   * the quote names a stored order without a terminal outcome and that the route hashes to the
+   * quote's route hash. A repeat of the same quote is idempotent.
+   */
+  recordQuote(quoteInput: SolverQuoteInput, routeInput: RoutePayloadInput): { readonly quoteHashHex: string; readonly replayed: boolean } {
+    const quote = guarded("INVALID_QUOTE", "The quote failed validation.", () => solverQuote(quoteInput));
+    const route = guarded("INVALID_ROUTE", "The route failed validation.", () => routePayload(routeInput));
+    if (toHex(routeHash(routeInput)) !== toHex(quote.routeHash)) throw new EvidenceStoreError("ROUTE_MISMATCH", "The route does not hash to the quote's route hash.");
+    if (toHex(route.orderHash) !== toHex(quote.orderHash)) throw new EvidenceStoreError("ROUTE_MISMATCH", "The route is for another order.");
+    const hash = solverQuoteHash(quoteInput);
+    return this.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM order_quotes WHERE quote_hash = ?").get(hash) !== undefined) return { quoteHashHex: toHex(hash), replayed: true };
+      const orderRow = this.db.prepare("SELECT order_json FROM public_orders WHERE order_hash = ?").get(quote.orderHash) as { order_json: string } | undefined;
+      if (orderRow === undefined) throw new EvidenceStoreError("ORDER_NOT_FOUND", "The quote names no stored public order.");
+      const order = parseProtocolJson(orderRow.order_json) as PackageOrderInput;
+      if (order.environment !== quote.environment || order.domain.domainId !== quote.domain.domainId || route.environment !== quote.environment) {
+        throw new EvidenceStoreError("ENVIRONMENT_MISMATCH", "The quote, route, and order name different environments or domains.");
+      }
+      if (this.db.prepare("SELECT 1 FROM terminal_outcomes WHERE order_hash = ?").get(quote.orderHash) !== undefined) {
+        throw new EvidenceStoreError("ORDER_TERMINAL", "The order already has a terminal outcome.");
+      }
+      const count = this.db.prepare("SELECT COUNT(*) AS count FROM order_quotes WHERE order_hash = ?").get(quote.orderHash) as { count: number };
+      if (count.count >= MAX_QUOTES_PER_ORDER) throw new EvidenceStoreError("QUOTES_FULL", "This order has collected the maximum number of quotes.");
+      this.db
+        .prepare(
+          `INSERT INTO order_quotes (quote_hash, order_hash, solver_id, quote_json, route_json, valid_until_unit, valid_until_value, received_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(hash, quote.orderHash, quote.solverId, stringifyProtocolJson(quoteInput), stringifyProtocolJson(routeInput), quote.validUntilUnit, quote.validUntilValue.toString(), this.clock());
+      return { quoteHashHex: toHex(hash), replayed: false };
+    });
+  }
+
+  /** Quotes for an order, oldest first, re-hashed on read; `stillValid` filters by each quote's own time unit. */
+  quotesFor(orderHashHex: string, stillValid: (unit: string, validUntilValue: bigint) => boolean): readonly StoredOrderQuote[] {
+    const rows = this.db
+      .prepare("SELECT quote_hash, quote_json, route_json, valid_until_unit, valid_until_value, received_at_ms FROM order_quotes WHERE order_hash = ? ORDER BY cursor")
+      .all(Buffer.from(orderHashHex, "hex")) as {
+      quote_hash: Uint8Array;
+      quote_json: string;
+      route_json: string;
+      valid_until_unit: string;
+      valid_until_value: string;
+      received_at_ms: number;
+    }[];
+    return Object.freeze(
+      rows
+        .filter((row) => stillValid(row.valid_until_unit, BigInt(row.valid_until_value)))
+        .map((row) => {
+          const quoteInput = parseProtocolJson(row.quote_json) as SolverQuoteInput;
+          const route = parseProtocolJson(row.route_json) as RoutePayloadInput;
+          if (toHex(solverQuoteHash(quoteInput)) !== toHex(row.quote_hash) || toHex(routeHash(route)) !== toHex(solverQuote(quoteInput).routeHash)) {
+            throw new EvidenceStoreError("CORRUPT_ROW", "A stored quote does not match its hashes.");
+          }
+          return Object.freeze({
+            quoteHashHex: toHex(row.quote_hash),
+            routeHashHex: toHex(routeHash(route)),
+            quote: solverQuote(quoteInput),
+            route,
+            receivedAtMs: row.received_at_ms,
+          });
+        }),
+    );
   }
 
   /**

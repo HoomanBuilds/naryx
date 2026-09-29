@@ -7,7 +7,10 @@ import {
   packageQuoteShard,
   packageQuoteShardHash,
   ProtocolError,
+  bytesEqual,
+  solverQuote,
   solverRequestDigest,
+  solverSignatureDigest,
   toHex,
   toProtocolJson,
   verifyPrivateRfqResponse,
@@ -18,7 +21,10 @@ import type {
   ImpliedPackageQuoteInput,
   PackageQuoteShard,
   PackageQuoteShardInput,
+  RoutePayloadInput,
   SolverCapabilityManifestInput,
+  SolverQuote,
+  SolverQuoteInput,
   SolverCapacityCommitmentInput,
   SolverCapacityRecordInput,
   SolverRequestMethod,
@@ -28,7 +34,7 @@ import { MAX_IMPLIED_BATCH, PackageExchangeStoreError, type SqlitePackageExchang
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
-import type { SqliteEvidenceStore } from "./evidence-store.js";
+import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 
 const MAX_BODY_BYTES = 65_536;
@@ -44,7 +50,7 @@ export interface SolverApiOptions {
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "cancelEntry">;
   /** Optional: the open order feed answers 503 without it. */
-  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote">;
+  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote">;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -358,6 +364,41 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         })),
       };
     }
+    if (method === "POST" && path === "/v1/solver/order-quotes") {
+      // A signed quote answering a public order. Only the authenticated solver's own quote, signed
+      // by one of its valid registered keys under its current manifest, is accepted, and a quote is
+      // stored with the exact route it binds.
+      if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
+      const body = decodeBody(raw);
+      const quoteInput = requireObject(body.quote, "quote") as unknown as SolverQuoteInput;
+      const routeInput = requireObject(body.route, "route") as unknown as RoutePayloadInput;
+      let quote: SolverQuote;
+      try {
+        quote = solverQuote(quoteInput);
+      } catch (error) {
+        throw new SolverRequestError(400, "INVALID_QUOTE", `The quote failed validation: ${(error as Error).message}`);
+      }
+      if (quote.solverId !== solverId) throw new SolverRequestError(403, "SOLVER_MISMATCH", "A solver can submit only its own quotes.");
+      const registered = registry.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
+      if (registered === undefined || registered.documentHashHex !== toHex(quote.solverCapabilityManifestHash)) {
+        throw new SolverRequestError(409, "MANIFEST_MISMATCH", "The quote does not bind the solver's current capability manifest.");
+      }
+      if (quote.solverSignatureScheme !== "ED25519") throw new SolverRequestError(400, "UNSUPPORTED_SIGNATURE_SCHEME", "Public quotes are signed with Ed25519.");
+      const keys = validQuoteKeys(manifest, manifestNow(manifest, clockMs()));
+      if (!keys.some((key) => bytesEqual(key.verificationKey, quote.solverVerificationKey))) {
+        throw new SolverRequestError(400, "KEY_NOT_VALID", "The quote key is not a currently valid registered quote key.");
+      }
+      if (!verifyEd25519(quote.solverVerificationKey, solverSignatureDigest(quoteInput), quote.signature)) {
+        throw new SolverRequestError(400, "INVALID_QUOTE_SIGNATURE", "The quote signature does not verify.");
+      }
+      // Firmness labels are honest: the kernel already requires a firm quote to name its
+      // reservation, and outside production no quote may claim onchain firmness.
+      if (quote.quoteMode === "FIRM_ONCHAIN" && quote.environment !== "mainnet") {
+        throw new SolverRequestError(400, "QUOTE_MODE_MISLABELED", "Outside production a reserved quote is FIRM_SIMULATED, never FIRM_ONCHAIN.");
+      }
+      if (wallClockIn(quote.validUntilUnit) >= quote.validUntilValue) throw new SolverRequestError(400, "QUOTE_EXPIRED", "The quote has already expired.");
+      return { ...options.evidence.recordQuote(quoteInput, routeInput), quoteMode: quote.quoteMode };
+    }
     if (method === "GET" && path === "/v1/solver/orders") {
       // Signed public orders without a terminal outcome, oldest first, paged by cursor.
       if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
@@ -440,6 +481,10 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         if (error instanceof SolverApiStoreError) return reply(error.code === "NOT_OWNER" ? 403 : 400, error.code, error.message);
         if (error instanceof PackageExchangeStoreError) return reply(error.code === "BOOK_NOT_FOUND" ? 404 : 409, error.code, error.message);
         if (error instanceof PrivateDeliveryStoreError) return reply(error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message);
+        if (error instanceof EvidenceStoreError) {
+          const status = ["INVALID_QUOTE", "INVALID_ROUTE", "ROUTE_MISMATCH"].includes(error.code) ? 400 : error.code === "ORDER_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return reply(status, error.code, error.message);
+        }
         return reply(500, "INTERNAL_ERROR", "Solver request failed.");
       });
     return true;
