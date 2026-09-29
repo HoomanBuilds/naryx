@@ -127,6 +127,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/package-quote-shard',
         'CON/v1/reconciliation-report',
         'CON/v1/solver-request',
+        'CON/v1/quote-reference-state',
       ],
     );
   });

@@ -188,6 +188,94 @@ export function packageQuoteShardHash(input: PackageQuoteShardInput): Commitment
   return commitmentHash(domainHash(HASH_DOMAIN.PACKAGE_QUOTE_SHARD, unsignedPackageQuoteShardBytes(input)), 'packageQuoteShardHash');
 }
 
+// ------------------------------------------------------------------ reference state
+
+export const QUOTE_REFERENCE_STATE_VERSION = 1;
+
+/** What a shard's levels are offsets from: spot-perpetual basis, a funding curve, or volatility. */
+export const QUOTE_REFERENCE_KIND = Object.freeze({ BASIS: 1, FUNDING_CURVE: 2, VOLATILITY: 3 } as const);
+export type QuoteReferenceKind = keyof typeof QUOTE_REFERENCE_KIND;
+
+/**
+ * One versioned reference observation. Its hash is the `referenceStateHash` a shard signs, so the
+ * reference price a level settles against is the one the solver committed to, never a value the
+ * settling party supplies.
+ */
+export interface QuoteReferenceStateInput {
+  readonly referenceVersion: number;
+  readonly environment: string;
+  readonly marketGroupId: string;
+  readonly referenceKind: QuoteReferenceKind;
+  readonly referenceSequence: bigint;
+  /** The reference value in the levels' price ticks; level prices are this plus their offsets. */
+  readonly referencePriceTicks: bigint;
+  /** Commitment to the source observations the reference value was derived from. */
+  readonly sourceEvidenceHash: Uint8Array | string;
+  readonly observedAtUnit: ExpiryUnit;
+  readonly observedAtValue: bigint;
+}
+
+export interface QuoteReferenceState {
+  readonly referenceVersion: number;
+  readonly environment: ProtocolId;
+  readonly marketGroupId: ProtocolId;
+  readonly referenceKind: QuoteReferenceKind;
+  readonly referenceSequence: bigint;
+  readonly referencePriceTicks: bigint;
+  readonly sourceEvidenceHash: CommitmentHash;
+  readonly observedAtUnit: ExpiryUnit;
+  readonly observedAtValue: bigint;
+}
+
+export function quoteReferenceState(input: QuoteReferenceStateInput, context = 'quoteReferenceState'): QuoteReferenceState {
+  object(input, context);
+  if (input.referenceVersion !== QUOTE_REFERENCE_STATE_VERSION) {
+    throw new MalformedInputError(`${context}.referenceVersion`, `version must equal ${QUOTE_REFERENCE_STATE_VERSION}`);
+  }
+  if (typeof input.referencePriceTicks !== 'bigint') throw new MalformedInputError(`${context}.referencePriceTicks`, 'expected a bigint');
+  return Object.freeze({
+    referenceVersion: QUOTE_REFERENCE_STATE_VERSION,
+    environment: protocolId(input.environment, `${context}.environment`),
+    marketGroupId: protocolId(input.marketGroupId, `${context}.marketGroupId`),
+    referenceKind: variant(QUOTE_REFERENCE_KIND, input.referenceKind, `${context}.referenceKind`),
+    referenceSequence: unsigned(input.referenceSequence, U64_BITS, `${context}.referenceSequence`),
+    referencePriceTicks: checkedSigned(input.referencePriceTicks, I128_BITS, `${context}.referencePriceTicks`),
+    sourceEvidenceHash: commitmentHash(input.sourceEvidenceHash, `${context}.sourceEvidenceHash`),
+    observedAtUnit: variant(EXPIRY_UNIT, input.observedAtUnit, `${context}.observedAtUnit`),
+    observedAtValue: unsigned(input.observedAtValue, U64_BITS, `${context}.observedAtValue`),
+  });
+}
+
+export function quoteReferenceStateBytes(input: QuoteReferenceStateInput): Uint8Array {
+  const state = quoteReferenceState(input);
+  return canonicalBytes((writer) => {
+    writer.writeU32(state.referenceVersion, 'referenceVersion');
+    encodeProtocolId(writer, state.environment, 'environment');
+    encodeProtocolId(writer, state.marketGroupId, 'marketGroupId');
+    writer.writeEnum(QUOTE_REFERENCE_KIND, state.referenceKind, 'referenceKind');
+    writer.writeU64(state.referenceSequence, 'referenceSequence');
+    writer.writeI128(state.referencePriceTicks, 'referencePriceTicks');
+    encodeCommitmentHash(writer, state.sourceEvidenceHash, 'sourceEvidenceHash');
+    writer.writeEnum(EXPIRY_UNIT, state.observedAtUnit, 'observedAtUnit');
+    writer.writeU64(state.observedAtValue, 'observedAtValue');
+  });
+}
+
+/** `sha256("CON/v1/quote-reference-state" || canonicalEncode(QuoteReferenceState))`. */
+export function quoteReferenceStateHash(input: QuoteReferenceStateInput): CommitmentHash {
+  return commitmentHash(domainHash(HASH_DOMAIN.QUOTE_REFERENCE_STATE, quoteReferenceStateBytes(input)), 'quoteReferenceStateHash');
+}
+
+/** True when the reference state is the one the shard is signed over, in its environment and market group. */
+function referenceBindsShard(shard: PackageQuoteShard, state: QuoteReferenceState, stateHash: CommitmentHash): boolean {
+  return (
+    state.environment === shard.environment &&
+    state.marketGroupId === shard.marketGroupId &&
+    state.referenceSequence === shard.referenceSequence &&
+    compareBytes(stateHash, shard.referenceStateHash) === 0
+  );
+}
+
 // ------------------------------------------------------------------ maker operations
 
 export type ShardOperation =
@@ -232,13 +320,20 @@ function nextShard(shard: PackageQuoteShard, changes: Partial<PackageQuoteShardI
   return next;
 }
 
-/** Moves every level to a new reference state in one update; offsets are unchanged. */
-export function prepareShardReprice(input: PackageQuoteShardInput, referenceStateHash: Uint8Array | string, referenceSequence: bigint): PackageQuoteShardInput {
+/**
+ * Moves every level to a new reference state in one update; offsets are unchanged. The state must
+ * be for the shard's environment and market group and must advance the reference sequence.
+ */
+export function prepareShardReprice(input: PackageQuoteShardInput, referenceStateInput: QuoteReferenceStateInput): PackageQuoteShardInput {
   const shard = packageQuoteShard(input);
-  if (unsigned(referenceSequence, U64_BITS, 'prepareShardReprice.referenceSequence') <= shard.referenceSequence) {
+  const state = quoteReferenceState(referenceStateInput, 'prepareShardReprice.referenceState');
+  if (state.environment !== shard.environment || state.marketGroupId !== shard.marketGroupId) {
+    throw new MalformedInputError('prepareShardReprice.referenceState', 'reference state is for another environment or market group');
+  }
+  if (state.referenceSequence <= shard.referenceSequence) {
     throw new MalformedInputError('prepareShardReprice.referenceSequence', 'reference sequence must increase');
   }
-  return nextShard(shard, { referenceStateHash: commitmentHash(referenceStateHash, 'prepareShardReprice.referenceStateHash'), referenceSequence });
+  return nextShard(shard, { referenceStateHash: quoteReferenceStateHash(state), referenceSequence: state.referenceSequence });
 }
 
 export function prepareShardHeartbeat(input: PackageQuoteShardInput, heartbeatExpiry: bigint): PackageQuoteShardInput {
@@ -294,10 +389,8 @@ export function admitShardUpdate(
 
 export interface ShardSettlementRequest {
   readonly boundShardHash: Uint8Array | string;
-  readonly referenceStateHash: Uint8Array | string;
-  readonly referenceSequence: bigint;
-  /** The reference price the bound reference state implies, in the level's price ticks. */
-  readonly referencePriceTicks: bigint;
+  /** The full reference state; it must hash to the shard's signed `referenceStateHash`. */
+  readonly referenceState: QuoteReferenceStateInput;
   readonly levelId: bigint;
   /** The taker's side: a BUY may only lift an ASK level and a SELL may only hit a BID level. */
   readonly takerSide: 'BUY' | 'SELL';
@@ -320,7 +413,8 @@ export type ShardSettlementRejection =
 
 /**
  * The settlement-time check: the exact shard, reference, level, size, fee, heartbeat, kill switch,
- * and capacity must all hold. The executable price is the reference price plus the level offset.
+ * and capacity must all hold. The executable price is the committed reference price plus the level
+ * offset; a reference state that does not hash to the shard's signed reference is refused.
  */
 export function checkShardSettlement(
   input: PackageQuoteShardInput,
@@ -333,12 +427,8 @@ export function checkShardSettlement(
   if (compareBytes(commitmentHash(request.boundShardHash, 'checkShardSettlement.boundShardHash'), packageQuoteShardHash(shard)) !== 0) return reject('SHARD_CHANGED');
   if (shard.killSwitchState === 'ACTIVE') return reject('KILL_SWITCH_ACTIVE');
   if (at >= shard.heartbeatExpiry) return reject('STALE_HEARTBEAT');
-  if (
-    compareBytes(commitmentHash(request.referenceStateHash, 'checkShardSettlement.referenceStateHash'), shard.referenceStateHash) !== 0 ||
-    unsigned(request.referenceSequence, U64_BITS, 'checkShardSettlement.referenceSequence') !== shard.referenceSequence
-  ) {
-    return reject('REFERENCE_CHANGED');
-  }
+  const reference = quoteReferenceState(request.referenceState, 'checkShardSettlement.referenceState');
+  if (!referenceBindsShard(shard, reference, quoteReferenceStateHash(reference))) return reject('REFERENCE_CHANGED');
   const level = shard.quoteLevels.find((value) => value.levelId === unsigned(request.levelId, U64_BITS, 'checkShardSettlement.levelId'));
   if (level === undefined) return reject('LEVEL_UNKNOWN');
   if (request.takerSide !== 'BUY' && request.takerSide !== 'SELL') throw new MalformedInputError('checkShardSettlement.takerSide', 'expected BUY or SELL');
@@ -348,10 +438,10 @@ export function checkShardSettlement(
   if (size === 0n || size > level.size) return reject('SIZE_ABOVE_LEVEL');
   if (unsigned(request.fee, U128_BITS, 'checkShardSettlement.fee') > level.maximumFee) return reject('FEE_ABOVE_MAXIMUM');
   if (shard.reservedCapacity + size > shard.inventoryCap) return reject('CAPACITY_UNAVAILABLE');
-  if (typeof request.referencePriceTicks !== 'bigint') throw new MalformedInputError('checkShardSettlement.referencePriceTicks', 'expected a bigint');
   return Object.freeze({
     executable: true as const,
-    priceTicks: checkedSigned(request.referencePriceTicks + level.referenceOffset, I128_BITS, 'checkShardSettlement.priceTicks'),
+    // The price comes from the committed reference state, never from the settling party.
+    priceTicks: checkedSigned(reference.referencePriceTicks + level.referenceOffset, I128_BITS, 'checkShardSettlement.priceTicks'),
     direction: level.direction,
     quoteMode: level.quoteMode,
   });

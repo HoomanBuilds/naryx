@@ -73,6 +73,7 @@ export const HASH_DOMAIN = Object.freeze({
   PACKAGE_QUOTE_SHARD: 'CON/v1/package-quote-shard',
   RECONCILIATION_REPORT: 'CON/v1/reconciliation-report',
   SOLVER_REQUEST: 'CON/v1/solver-request',
+  QUOTE_REFERENCE_STATE: 'CON/v1/quote-reference-state',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

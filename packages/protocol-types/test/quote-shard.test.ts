@@ -10,11 +10,26 @@ import {
   prepareShardHeartbeat,
   prepareShardKillSwitch,
   prepareShardReprice,
+  quoteReferenceStateHash,
   toHex,
   type PackageQuoteLevel,
   type PackageQuoteShardInput,
+  type QuoteReferenceStateInput,
   type ShardSettlementRequest,
 } from '../src/index.js';
+
+const reference = (overrides: Partial<QuoteReferenceStateInput> = {}): QuoteReferenceStateInput => ({
+  referenceVersion: 1,
+  environment: 'local',
+  marketGroupId: 'sol-carry',
+  referenceKind: 'BASIS',
+  referenceSequence: 1n,
+  referencePriceTicks: 1_000n,
+  sourceEvidenceHash: '41'.repeat(32),
+  observedAtUnit: 'EVM_UNIX_SECONDS',
+  observedAtValue: 90n,
+  ...overrides,
+});
 
 const level = (levelId: bigint, direction: 'BID' | 'ASK', referenceOffset: bigint, size = 10n): PackageQuoteLevel => ({
   levelId,
@@ -36,7 +51,7 @@ const shard: PackageQuoteShardInput = {
   solverId: 'solver-a',
   templateId: 'cash-and-carry-v1',
   marketGroupId: 'sol-carry',
-  referenceStateHash: '31'.repeat(32),
+  referenceStateHash: quoteReferenceStateHash(reference()),
   referenceSequence: 1n,
   quoteLevels: [level(1n, 'BID', -5n), level(2n, 'ASK', 5n)],
   inventoryCap: 100n,
@@ -49,9 +64,7 @@ const shard: PackageQuoteShardInput = {
 
 const settle = (overrides: Partial<ShardSettlementRequest> = {}): ShardSettlementRequest => ({
   boundShardHash: packageQuoteShardHash(shard),
-  referenceStateHash: '31'.repeat(32),
-  referenceSequence: 1n,
-  referencePriceTicks: 1_000n,
+  referenceState: reference(),
   levelId: 2n,
   takerSide: 'BUY',
   size: 10n,
@@ -91,9 +104,11 @@ describe('package quote shard', () => {
     assert.ok(repeat.accepted && repeat.duplicate);
     assert.deepEqual(admitShardUpdate(next, { ...next, heartbeatExpiry: 950n }), { accepted: false, reason: 'SEQUENCE_REUSED' });
     assert.deepEqual(admitShardUpdate(next, shard), { accepted: false, reason: 'SEQUENCE_NOT_INCREASING' });
-    const repriced = prepareShardReprice(next, '32'.repeat(32), 2n);
+    const repriced = prepareShardReprice(next, reference({ referenceSequence: 2n, referencePriceTicks: 1_010n }));
+    assert.equal(toHex(packageQuoteShard(repriced).referenceStateHash), toHex(quoteReferenceStateHash(reference({ referenceSequence: 2n, referencePriceTicks: 1_010n }))));
     assert.deepEqual(admitShardUpdate(repriced, { ...repriced, shardSequence: 4n, referenceSequence: 1n }), { accepted: false, reason: 'REFERENCE_REGRESSED' });
-    assert.throws(() => prepareShardReprice(next, '32'.repeat(32), 1n), /must increase/);
+    assert.throws(() => prepareShardReprice(next, reference()), /must increase/);
+    assert.throws(() => prepareShardReprice(next, reference({ referenceSequence: 2n, marketGroupId: 'eth-carry' })), /another environment or market group/);
     assert.throws(() => prepareShardHeartbeat(next, 900n), /must extend/);
   });
 
@@ -103,8 +118,11 @@ describe('package quote shard', () => {
     const cases: [Partial<ShardSettlementRequest>, string][] = [
       [{ boundShardHash: packageQuoteShardHash({ ...shard, heartbeatExpiry: 600n }) }, 'SHARD_CHANGED'],
       [{ atValue: 500n }, 'STALE_HEARTBEAT'],
-      [{ referenceSequence: 2n }, 'REFERENCE_CHANGED'],
-      [{ referenceStateHash: '33'.repeat(32) }, 'REFERENCE_CHANGED'],
+      [{ referenceState: reference({ referenceSequence: 2n }) }, 'REFERENCE_CHANGED'],
+      // The settling party cannot move the price: any other reference value is a different state.
+      [{ referenceState: reference({ referencePriceTicks: 900n }) }, 'REFERENCE_CHANGED'],
+      [{ referenceState: reference({ sourceEvidenceHash: '42'.repeat(32) }) }, 'REFERENCE_CHANGED'],
+      [{ referenceState: reference({ environment: 'testnet' }) }, 'REFERENCE_CHANGED'],
       [{ levelId: 9n }, 'LEVEL_UNKNOWN'],
       [{ levelId: 1n }, 'SIDE_MISMATCH'],
       [{ takerSide: 'SELL' }, 'SIDE_MISMATCH'],

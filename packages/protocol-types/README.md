@@ -351,7 +351,7 @@ suspicion rather than a finding.
 template and market group, each a signed offset from a versioned reference state with its own
 size, maximum fee, settlement class, quote mode, expiry, and reservation policy. A shard that
 crosses itself, repeats a level, or reserves more than its inventory cap rejects.
-`packageQuoteShardHash` covers every field except the signature, under `CON/v1/package-quote-shard`.
+`packageQuoteShardHash` covers every field except the signature, under `CON/v1/package-quote-shard`. A shard's `referenceStateHash` is `quoteReferenceStateHash` of a versioned `QuoteReferenceState` (basis, funding curve, or volatility; sequence, reference price in ticks, source evidence hash, observation time) under `CON/v1/quote-reference-state`. `checkShardSettlement` takes the full reference state, refuses one that does not hash to the shard's signed reference in its environment and market group, and prices the level from that committed state, so the settling party can never supply the reference price.
 
 Maker operations return the next unsigned shard at the next sequence for the solver to sign:
 `prepareShardBatch` applies place, replace, cancel, and cancel-all in order and rejects the whole
