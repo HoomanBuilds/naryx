@@ -462,6 +462,24 @@ test(
             undefined,
             "MANIFEST_VALIDATED",
             execution,
+            undefined,
+            undefined,
+            {
+              authorize: (scope) => ({
+                handoff: scope.handoff,
+                attemptId: scope.attemptId,
+                idempotencyKey: scope.idempotencyKey,
+                fundedOperationManifestHash: "11".repeat(32),
+                readinessDecisionHash: "22".repeat(32),
+              }),
+            },
+            {
+              resolve: (handoff, request) => ({
+                handoff,
+                attemptId: request.attemptId ?? request.idempotencyKey,
+                idempotencyKey: request.idempotencyKey,
+              }),
+            },
           );
           await listen(api, apiPort);
           await listen(solver, solverPort);
