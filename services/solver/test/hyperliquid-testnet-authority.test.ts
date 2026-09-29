@@ -9,6 +9,7 @@ import type { PackageAdmission } from '@naryx/protocol-types';
 import {
   HyperliquidAuthorityFenceStore,
   HyperliquidTestnetAuthorityPreflight,
+  type HyperliquidAuthorityClearancePort,
   type HyperliquidSubmissionAccount,
   type HyperliquidTestnetAuthorityConfig,
   type HyperliquidTestnetAuthorityReadPort,
@@ -19,7 +20,6 @@ const nowMs = 1_800_000_000_000;
 const agent = `0x${'11'.repeat(20)}` as const;
 const master = `0x${'22'.repeat(20)}` as const;
 const trading = `0x${'33'.repeat(20)}` as const;
-const unexpected = `0x${'44'.repeat(20)}` as const;
 
 const account: HyperliquidSubmissionAccount = Object.freeze({
   masterAccount: master,
@@ -36,6 +36,7 @@ const config: HyperliquidTestnetAuthorityConfig = Object.freeze({
   allowedSpotTokenIndices: Object.freeze([0, 7]),
   allowedPerpetualCoins: Object.freeze(['BTC']),
   maxSnapshotAgeMs: 5_000,
+  maxClearanceAgeMs: 5_000,
 });
 
 function admission(recoveryDeadline = nowMs + 120_000): PackageAdmission {
@@ -124,8 +125,40 @@ async function withStore(
   }
 }
 
-test('activates only for the exact authority and account inventory', async () => {
+const reconciliationCommitment = `0x${'aa'.repeat(32)}` as const;
+const evidenceCommitment = `0x${'bb'.repeat(32)}` as const;
+const firstReviewerRoleCommitment = `0x${'cc'.repeat(32)}` as const;
+const secondReviewerRoleCommitment = `0x${'dd'.repeat(32)}` as const;
+
+function clearance(requestedAtMs = nowMs - 10): HyperliquidAuthorityClearancePort {
+  return {
+    environment: 'testnet',
+    apiUrl: TESTNET_API_URL,
+    async read() {
+      return {
+        environment: 'testnet',
+        apiUrl: TESTNET_API_URL,
+        requestedAtMs,
+        receivedAtMs: nowMs,
+        unexpectedOpenOrders: 0,
+        unexpectedPositions: 0,
+        reconciliationCommitment,
+        evidenceCommitment,
+      };
+    },
+  };
+}
+
+const clearanceInput = Object.freeze({
+  reconciliationCommitment,
+  evidenceCommitment,
+  firstReviewerRoleCommitment,
+  secondReviewerRoleCommitment,
+});
+
+test('activates INITIALIZING only for the exact authority inventory', async () => {
   await withStore(async (store) => {
+    assert.equal(store.state(), 'INITIALIZING');
     const preflight = new HyperliquidTestnetAuthorityPreflight(
       reader(snapshot()), store, config, () => nowMs,
     );
@@ -134,7 +167,7 @@ test('activates only for the exact authority and account inventory', async () =>
   });
 });
 
-test('moves active authority to fence-pending when approval misses recovery horizon', async () => {
+test('incident lock cannot auto-reopen after a later exact inventory', async () => {
   await withStore(async (store) => {
     const valid = new HyperliquidTestnetAuthorityPreflight(
       reader(snapshot()), store, config, () => nowMs,
@@ -151,51 +184,67 @@ test('moves active authority to fence-pending when approval misses recovery hori
       ).qualify(admission()),
       /expires before package recovery and incident horizon/,
     );
-    assert.equal(store.state(), 'FENCE_PENDING');
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
+    await assert.rejects(valid.qualify(admission()), /durable authority fence blocks/);
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
   });
 });
 
-test('rejects an unexpected active agent and fences submissions', async () => {
+test('rejects the same incident reviewer commitment twice', async () => {
   await withStore(async (store) => {
-    const inventory = snapshot([
-      { address: agent, name: 'naryx-testnet', validUntil: nowMs + 300_000 },
-      { address: unexpected, name: 'unknown', validUntil: null },
-    ]);
-    await assert.rejects(
-      new HyperliquidTestnetAuthorityPreflight(
-        reader(inventory), store, config, () => nowMs,
-      ).qualify(admission()),
-      /unexpected active agent approval/,
+    store.incidentLock();
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader(snapshot()), store, config, () => nowMs, clearance(),
     );
-    assert.equal(store.state(), 'FENCE_PENDING');
+    await assert.rejects(
+      preflight.clearIncident({
+        ...clearanceInput,
+        secondReviewerRoleCommitment: firstReviewerRoleCommitment,
+      }),
+      /reviewers must be distinct/,
+    );
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
   });
 });
 
-test('persists terminal authority fencing across restart', async () => {
+test('rejects stale signerless clearance evidence', async () => {
+  await withStore(async (store) => {
+    store.incidentLock();
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader(snapshot()), store, config, () => nowMs, clearance(nowMs - 5_001),
+    );
+    await assert.rejects(preflight.clearIncident(clearanceInput), /clearance observation is stale/);
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
+  });
+});
+
+test('valid fresh evidence and dual review explicitly clear an incident lock', async () => {
+  await withStore(async (store) => {
+    store.incidentLock();
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader(snapshot()), store, config, () => nowMs, clearance(),
+    );
+    await preflight.clearIncident(clearanceInput);
+    assert.equal(store.state(), 'ACTIVE');
+    assert.deepEqual(store.clearanceRecord(), { ...clearanceInput, clearedAtMs: nowMs });
+  });
+});
+
+test('persists incident lock and clearance record across restart', async () => {
   await withStore(async (store, databasePath) => {
-    assert.equal(store.fenced(), 'FENCED');
+    assert.equal(store.incidentLock(), 'INCIDENT_LOCKED');
     store.close();
     const restarted = new HyperliquidAuthorityFenceStore(databasePath);
+    assert.equal(restarted.state(), 'INCIDENT_LOCKED');
+    assert.equal(restarted.activate(), 'INCIDENT_LOCKED');
+    restarted.clearIncident({ ...clearanceInput, clearedAtMs: nowMs });
+    restarted.close();
+    const cleared = new HyperliquidAuthorityFenceStore(databasePath);
     try {
-      assert.equal(restarted.state(), 'FENCED');
-      assert.equal(restarted.activate(), 'FENCED');
-      assert.equal(restarted.manualTakeover(), 'MANUAL_TAKEOVER');
-      assert.equal(restarted.manualTakeover(), 'MANUAL_TAKEOVER');
+      assert.equal(cleared.state(), 'ACTIVE');
+      assert.deepEqual(cleared.clearanceRecord(), { ...clearanceInput, clearedAtMs: nowMs });
     } finally {
-      restarted.close();
+      cleared.close();
     }
-  });
-});
-
-test('blocks submission preflight without reading inventory after durable fence', async () => {
-  await withStore(async (store) => {
-    store.fenced();
-    let reads = 0;
-    const preflight = new HyperliquidTestnetAuthorityPreflight(
-      reader(snapshot(), () => { reads += 1; }), store, config, () => nowMs,
-    );
-    await assert.rejects(preflight.qualify(admission()), /durable authority fence blocks/);
-    assert.equal(reads, 0);
-    assert.equal(store.state(), 'FENCED');
   });
 });

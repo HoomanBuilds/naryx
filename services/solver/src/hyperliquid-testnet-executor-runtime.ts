@@ -28,6 +28,8 @@ import {
   HyperliquidAuthorityFenceStore,
   HyperliquidSdkTestnetAuthorityReader,
   HyperliquidTestnetAuthorityPreflight,
+  type HyperliquidAuthorityClearanceInput,
+  type HyperliquidAuthorityClearancePort,
   type HyperliquidTestnetAuthorityReadPort,
 } from './hyperliquid-testnet-authority.js';
 import {
@@ -54,6 +56,7 @@ export type HyperliquidTestnetExecutorRuntimeStatus = Readonly<{
 export type LoadedHyperliquidTestnetExecutorRuntime = Readonly<{
   status: HyperliquidTestnetExecutorRuntimeStatus;
   runtimeFactory: HyperliquidTestnetExecutorRuntimeFactory | undefined;
+  clearAuthorityIncident(input: HyperliquidAuthorityClearanceInput): Promise<void>;
   close(): void;
 }>;
 
@@ -65,6 +68,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly currentTimeMs?: () => number;
   readonly marketReader?: HyperliquidTestnetMarketReadPort;
   readonly authorityReader?: HyperliquidTestnetAuthorityReadPort;
+  readonly authorityClearance?: HyperliquidAuthorityClearancePort;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -245,6 +249,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         account: null,
       }),
       runtimeFactory: undefined,
+      async clearAuthorityIncident() {
+        throw new Error('Hyperliquid Testnet authority clearance is unavailable');
+      },
       close() {},
     });
   }
@@ -307,8 +314,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         maxSnapshotAgeMs: positiveInteger(
           environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_SNAPSHOT_AGE_MS', 60_000,
         ),
+        maxClearanceAgeMs: positiveInteger(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_CLEARANCE_AGE_MS', 60_000,
+        ),
       }),
       currentTimeMs,
+      dependencies.authorityClearance,
     );
     const marketPreflight = new HyperliquidTestnetMarketPreflight(
       dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient(),
@@ -392,6 +403,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         account: expectedAccount,
       }),
       runtimeFactory: () => runtime,
+      clearAuthorityIncident: (input) => authorityPreflight.clearIncident(input),
       close: () => {
         authorityStore.close();
         journal.close();

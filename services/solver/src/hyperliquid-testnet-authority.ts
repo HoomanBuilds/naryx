@@ -17,9 +17,38 @@ const DECIMAL = /^-?(0|[1-9][0-9]*)(?:\.([0-9]+))?$/;
 
 export type HyperliquidAuthorityFenceState =
   | 'ACTIVE'
-  | 'FENCE_PENDING'
+  | 'INITIALIZING'
+  | 'INCIDENT_LOCKED'
   | 'FENCED'
   | 'MANUAL_TAKEOVER';
+
+export interface HyperliquidAuthorityClearanceSnapshot {
+  readonly environment: 'testnet';
+  readonly apiUrl: typeof TESTNET_API_URL;
+  readonly requestedAtMs: number;
+  readonly receivedAtMs: number;
+  readonly unexpectedOpenOrders: number;
+  readonly unexpectedPositions: number;
+  readonly reconciliationCommitment: `0x${string}`;
+  readonly evidenceCommitment: `0x${string}`;
+}
+
+export interface HyperliquidAuthorityClearancePort {
+  readonly environment: 'testnet';
+  readonly apiUrl: typeof TESTNET_API_URL;
+  read(account: HyperliquidSubmissionAccount): Promise<HyperliquidAuthorityClearanceSnapshot>;
+}
+
+export interface HyperliquidAuthorityClearanceInput {
+  readonly reconciliationCommitment: `0x${string}`;
+  readonly evidenceCommitment: `0x${string}`;
+  readonly firstReviewerRoleCommitment: `0x${string}`;
+  readonly secondReviewerRoleCommitment: `0x${string}`;
+}
+
+export interface HyperliquidAuthorityClearanceRecord extends HyperliquidAuthorityClearanceInput {
+  readonly clearedAtMs: number;
+}
 
 export interface HyperliquidTestnetAuthoritySnapshot {
   readonly environment: 'testnet';
@@ -55,11 +84,20 @@ export interface HyperliquidTestnetAuthorityConfig {
   readonly allowedSpotTokenIndices: readonly number[];
   readonly allowedPerpetualCoins: readonly string[];
   readonly maxSnapshotAgeMs: number;
+  readonly maxClearanceAgeMs: number;
 }
 
 interface AuthorityRow {
   readonly state: string;
   readonly revision: number;
+}
+
+interface ClearanceRow {
+  readonly reconciliation_commitment: string | null;
+  readonly evidence_commitment: string | null;
+  readonly first_reviewer_role_commitment: string | null;
+  readonly second_reviewer_role_commitment: string | null;
+  readonly cleared_at_ms: number | null;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -79,7 +117,7 @@ function isNonZeroDecimal(value: string, name: string): boolean {
 }
 
 function validState(value: string): HyperliquidAuthorityFenceState {
-  if (value === 'ACTIVE' || value === 'FENCE_PENDING'
+  if (value === 'ACTIVE' || value === 'INITIALIZING' || value === 'INCIDENT_LOCKED'
     || value === 'FENCED' || value === 'MANUAL_TAKEOVER') return value;
   throw new Error('stored Hyperliquid authority fence state is invalid');
 }
@@ -92,15 +130,7 @@ export class HyperliquidAuthorityFenceStore {
     this.#database = new Database(databasePath);
     this.#database.pragma('journal_mode = WAL');
     this.#database.pragma('synchronous = FULL');
-    this.#database.exec(`
-      CREATE TABLE IF NOT EXISTS hyperliquid_authority_fence (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'FENCE_PENDING', 'FENCED', 'MANUAL_TAKEOVER')),
-        revision INTEGER NOT NULL CHECK (revision >= 0)
-      );
-      INSERT OR IGNORE INTO hyperliquid_authority_fence (singleton, state, revision)
-      VALUES (1, 'FENCE_PENDING', 0);
-    `);
+    this.#initializeSchema();
   }
 
   state(): HyperliquidAuthorityFenceState {
@@ -116,23 +146,23 @@ export class HyperliquidAuthorityFenceStore {
   activate(): HyperliquidAuthorityFenceState {
     const state = this.state();
     if (state === 'ACTIVE') return state;
-    if (state !== 'FENCE_PENDING') return state;
-    this.#transition('FENCE_PENDING', 'ACTIVE');
+    if (state !== 'INITIALIZING') return state;
+    this.#transition('INITIALIZING', 'ACTIVE');
     return 'ACTIVE';
   }
 
-  fencePending(): HyperliquidAuthorityFenceState {
+  incidentLock(): HyperliquidAuthorityFenceState {
     const state = this.state();
-    if (state === 'FENCE_PENDING' || state === 'FENCED' || state === 'MANUAL_TAKEOVER') return state;
-    this.#transition('ACTIVE', 'FENCE_PENDING');
-    return 'FENCE_PENDING';
+    if (state === 'INCIDENT_LOCKED' || state === 'FENCED' || state === 'MANUAL_TAKEOVER') return state;
+    this.#transition(state, 'INCIDENT_LOCKED');
+    return 'INCIDENT_LOCKED';
   }
 
   fenced(): HyperliquidAuthorityFenceState {
     const state = this.state();
     if (state === 'FENCED' || state === 'MANUAL_TAKEOVER') return state;
-    if (state !== 'FENCE_PENDING') throw new Error('authority must be fence-pending before fenced');
-    this.#transition('FENCE_PENDING', 'FENCED');
+    if (state !== 'INCIDENT_LOCKED') throw new Error('authority must be incident-locked before fenced');
+    this.#transition('INCIDENT_LOCKED', 'FENCED');
     return 'FENCED';
   }
 
@@ -147,6 +177,46 @@ export class HyperliquidAuthorityFenceStore {
     this.#database.close();
   }
 
+  clearIncident(record: HyperliquidAuthorityClearanceRecord): HyperliquidAuthorityFenceState {
+    if (this.state() !== 'INCIDENT_LOCKED') {
+      throw new Error('only an incident-locked authority can be cleared');
+    }
+    const result = this.#database.prepare(`
+      UPDATE hyperliquid_authority_fence
+      SET state = 'ACTIVE', revision = revision + 1,
+          reconciliation_commitment = ?, evidence_commitment = ?,
+          first_reviewer_role_commitment = ?, second_reviewer_role_commitment = ?,
+          cleared_at_ms = ?
+      WHERE singleton = 1 AND state = 'INCIDENT_LOCKED'
+    `).run(
+      record.reconciliationCommitment,
+      record.evidenceCommitment,
+      record.firstReviewerRoleCommitment,
+      record.secondReviewerRoleCommitment,
+      record.clearedAtMs,
+    );
+    if (result.changes !== 1) throw new Error('concurrent Hyperliquid authority clearance');
+    return 'ACTIVE';
+  }
+
+  clearanceRecord(): HyperliquidAuthorityClearanceRecord | null {
+    const row = this.#database.prepare<[], ClearanceRow>(`
+      SELECT reconciliation_commitment, evidence_commitment,
+             first_reviewer_role_commitment, second_reviewer_role_commitment, cleared_at_ms
+      FROM hyperliquid_authority_fence WHERE singleton = 1
+    `).get();
+    if (row === undefined || row.reconciliation_commitment === null
+      || row.evidence_commitment === null || row.first_reviewer_role_commitment === null
+      || row.second_reviewer_role_commitment === null || row.cleared_at_ms === null) return null;
+    return Object.freeze({
+      reconciliationCommitment: row.reconciliation_commitment as `0x${string}`,
+      evidenceCommitment: row.evidence_commitment as `0x${string}`,
+      firstReviewerRoleCommitment: row.first_reviewer_role_commitment as `0x${string}`,
+      secondReviewerRoleCommitment: row.second_reviewer_role_commitment as `0x${string}`,
+      clearedAtMs: row.cleared_at_ms,
+    });
+  }
+
   #transition(from: HyperliquidAuthorityFenceState, to: HyperliquidAuthorityFenceState): void {
     const result = this.#database.prepare(`
       UPDATE hyperliquid_authority_fence
@@ -154,6 +224,52 @@ export class HyperliquidAuthorityFenceStore {
       WHERE singleton = 1 AND state = ?
     `).run(to, from);
     if (result.changes !== 1) throw new Error('concurrent Hyperliquid authority fence transition');
+  }
+
+  #initializeSchema(): void {
+    const existing = this.#database.prepare<[], { sql: string }>(`
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hyperliquid_authority_fence'
+    `).get();
+    if (existing !== undefined && !existing.sql.includes('INITIALIZING')) {
+      this.#database.transaction(() => {
+        this.#database.exec('ALTER TABLE hyperliquid_authority_fence RENAME TO hyperliquid_authority_fence_v1');
+        this.#createTable();
+        this.#database.exec(`
+          INSERT INTO hyperliquid_authority_fence (singleton, state, revision)
+          SELECT singleton,
+            CASE state
+              WHEN 'ACTIVE' THEN 'ACTIVE'
+              WHEN 'FENCE_PENDING' THEN 'INCIDENT_LOCKED'
+              WHEN 'FENCED' THEN 'FENCED'
+              ELSE 'MANUAL_TAKEOVER'
+            END,
+            revision
+          FROM hyperliquid_authority_fence_v1;
+          DROP TABLE hyperliquid_authority_fence_v1;
+        `);
+      })();
+      return;
+    }
+    this.#createTable();
+    this.#database.prepare(`
+      INSERT OR IGNORE INTO hyperliquid_authority_fence (singleton, state, revision)
+      VALUES (1, 'INITIALIZING', 0)
+    `).run();
+  }
+
+  #createTable(): void {
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS hyperliquid_authority_fence (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        state TEXT NOT NULL CHECK (state IN ('ACTIVE', 'INITIALIZING', 'INCIDENT_LOCKED', 'FENCED', 'MANUAL_TAKEOVER')),
+        revision INTEGER NOT NULL CHECK (revision >= 0),
+        reconciliation_commitment TEXT,
+        evidence_commitment TEXT,
+        first_reviewer_role_commitment TEXT,
+        second_reviewer_role_commitment TEXT,
+        cleared_at_ms INTEGER
+      )
+    `);
   }
 }
 
@@ -207,12 +323,14 @@ export class HyperliquidTestnetAuthorityPreflight {
   readonly #store: HyperliquidAuthorityFenceStore;
   readonly #config: HyperliquidTestnetAuthorityConfig;
   readonly #currentTimeMs: () => number;
+  readonly #clearance?: HyperliquidAuthorityClearancePort;
 
   constructor(
     reader: HyperliquidTestnetAuthorityReadPort,
     store: HyperliquidAuthorityFenceStore,
     config: HyperliquidTestnetAuthorityConfig,
     currentTimeMs: () => number = Date.now,
+    clearance?: HyperliquidAuthorityClearancePort,
   ) {
     requireCondition(reader.environment === 'testnet' && reader.apiUrl === TESTNET_API_URL,
       'authority reader is not exact Hyperliquid Testnet');
@@ -220,11 +338,16 @@ export class HyperliquidTestnetAuthorityPreflight {
     this.#store = store;
     this.#config = config;
     this.#currentTimeMs = currentTimeMs;
+    if (clearance !== undefined) {
+      requireCondition(clearance.environment === 'testnet' && clearance.apiUrl === TESTNET_API_URL,
+        'clearance reader is not exact Hyperliquid Testnet');
+      this.#clearance = clearance;
+    }
   }
 
   async qualify(admission: PackageAdmission): Promise<void> {
     try {
-      requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'FENCE_PENDING',
+      requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'INITIALIZING',
         'durable authority fence blocks new submissions');
       const nowMs = this.#currentTimeMs();
       requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
@@ -237,9 +360,41 @@ export class HyperliquidTestnetAuthorityPreflight {
       requireCondition(this.#store.activate() === 'ACTIVE',
         'durable authority fence is not active');
     } catch (error) {
-      this.#store.fencePending();
+      this.#store.incidentLock();
       throw error;
     }
+  }
+
+  async clearIncident(input: HyperliquidAuthorityClearanceInput): Promise<void> {
+    requireCondition(this.#store.state() === 'INCIDENT_LOCKED',
+      'authority is not incident-locked');
+    requireCondition(this.#clearance !== undefined, 'signerless clearance reader is unavailable');
+    const commitments = [
+      input.reconciliationCommitment,
+      input.evidenceCommitment,
+      input.firstReviewerRoleCommitment,
+      input.secondReviewerRoleCommitment,
+    ];
+    requireCondition(commitments.every((value) => /^0x[0-9a-f]{64}$/.test(value)
+      && !/^0x0+$/.test(value)), 'clearance commitments must be nonzero 32-byte hashes');
+    requireCondition(input.firstReviewerRoleCommitment !== input.secondReviewerRoleCommitment,
+      'incident reviewers must be distinct');
+    const nowMs = this.#currentTimeMs();
+    const snapshot = await this.#clearance.read(this.#config.account);
+    requireCondition(snapshot.environment === 'testnet' && snapshot.apiUrl === TESTNET_API_URL,
+      'clearance source is not exact Hyperliquid Testnet');
+    requireCondition(Number.isSafeInteger(snapshot.requestedAtMs)
+      && Number.isSafeInteger(snapshot.receivedAtMs)
+      && snapshot.requestedAtMs <= snapshot.receivedAtMs
+      && snapshot.receivedAtMs <= nowMs
+      && nowMs - snapshot.requestedAtMs <= this.#config.maxClearanceAgeMs,
+    'clearance observation is stale or has invalid timing');
+    requireCondition(snapshot.unexpectedOpenOrders === 0 && snapshot.unexpectedPositions === 0,
+      'clearance observation still has unexpected orders or positions');
+    requireCondition(snapshot.reconciliationCommitment === input.reconciliationCommitment
+      && snapshot.evidenceCommitment === input.evidenceCommitment,
+    'clearance evidence commitments do not match the observation');
+    this.#store.clearIncident(Object.freeze({ ...input, clearedAtMs: nowMs }));
   }
 
   #validateSnapshot(
