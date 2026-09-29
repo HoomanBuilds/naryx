@@ -1,0 +1,190 @@
+.involved {
+  padding: clamp(40px, 5vw, 80px) 0 clamp(40px, 5vw, 70px);
+  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  color: #000;
+}
+
+.title {
+  margin: 0 0 28px;
+  font-size: clamp(40px, 5vw, 80px);
+}
+
+/* The link grid: hairline cells, a label pinned to the bottom of each */
+.cells {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid #000;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 220px;
+  padding: 18px;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.cell + .cell {
+  border-left: 1px solid #000;
+}
+
+.cell :global(.mono) {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.note {
+  flex: 1;
+  max-width: 260px;
+  font-size: 14px;
+  opacity: 0.8;
+}
+
+.label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.label svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.4s var(--ease-out);
+}
+
+.cell:hover {
+  background: #000;
+  color: var(--yellow);
+}
+
+.cell:hover .label svg {
+  transform: translate(3px, -3px);
+}
+
+/* the black panel of glyph figures */
+.panel {
+  display: grid;
+  place-items: center;
+  margin-top: 18px;
+  padding: clamp(36px, 5vw, 70px) 20px;
+  border-radius: 16px;
+  background: #000;
+}
+
+.figures {
+  display: flex;
+  gap: clamp(18px, 5vw, 90px);
+}
+
+.figure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--yellow);
+  transition: transform 0.5s var(--ease-out);
+}
+
+.figure:hover {
+  transform: translateY(-14px);
+}
+
+.head {
+  width: clamp(26px, 4vw, 52px);
+  aspect-ratio: 1;
+  border: clamp(5px, 0.7vw, 10px) solid var(--yellow);
+  border-radius: 50%;
+}
+
+/* the glyph, cut out of solid yellow */
+.body {
+  width: clamp(40px, 6.4vw, 96px);
+  aspect-ratio: 1;
+  background: var(--yellow);
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+}
+
+.figure :global(.mono) {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* the tagline bar */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 12px 12px 12px 18px;
+  border-radius: 12px;
+  background: #000;
+  color: var(--yellow);
+}
+
+.bar p {
+  margin: 0;
+  font-size: clamp(20px, 2.2vw, 30px);
+}
+
+.signup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 6px 0 16px;
+  border: 1px solid var(--yellow);
+  border-radius: 999px;
+  font-family: var(--font-display), sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.signup span {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--yellow);
+  color: #000;
+}
+
+.signup:hover {
+  background: var(--cyan);
+  border-color: var(--cyan);
+  color: #000;
+}
+
+@media (max-width: 900px) {
+  .cells {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cell:nth-child(3) {
+    border-left: 0;
+  }
+
+  .cell:nth-child(n + 3) {
+    border-top: 1px solid #000;
+  }
+
+  .bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

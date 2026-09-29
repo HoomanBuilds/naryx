@@ -1,0 +1,40 @@
+.cursor {
+  position: fixed;
+  top: -5px;
+  left: -5px;
+  z-index: 99;
+  display: none;
+  width: 10px;
+  height: 10px;
+  background: #fff;
+  mix-blend-mode: difference;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    width 0.35s var(--ease-out),
+    height 0.35s var(--ease-out),
+    top 0.35s var(--ease-out),
+    left 0.35s var(--ease-out),
+    background-color 0.25s,
+    opacity 0.3s;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cursor {
+    display: block;
+  }
+}
+
+.cursor[data-visible] {
+  opacity: 1;
+}
+
+.cursor[data-link] {
+  top: -18px;
+  left: -18px;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}

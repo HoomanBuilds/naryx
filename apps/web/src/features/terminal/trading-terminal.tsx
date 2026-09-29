@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
@@ -228,13 +229,13 @@ function TopNavigation({
 
   return (
     <header className={styles.topNavigation}>
-      <div className={styles.brand}>
+      <Link className={styles.brand} href="/" aria-label="Naryx home">
         <BrandMark />
         <div>
           <strong>Naryx</strong>
           <span>Private terminal</span>
         </div>
-      </div>
+      </Link>
 
       <div
         className={styles.environmentBadge}

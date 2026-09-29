@@ -1,0 +1,161 @@
+/* Black, yellow type, and a dot grid drawn as faint yellow points */
+.shielded {
+  position: relative;
+  padding: clamp(96px, 12vw, 180px) 0 clamp(80px, 10vw, 140px);
+  background: #000 radial-gradient(circle, rgba(255, 255, 0, 0.16) 1px, transparent 1.5px) 0 0 / 43px 43px;
+  color: var(--yellow);
+}
+
+.intro {
+  max-width: 1040px;
+  margin: 28px 0 clamp(72px, 9vw, 140px);
+  font-family: var(--font-display), sans-serif;
+  font-size: clamp(28px, 3.3vw, 52px);
+  font-weight: 300;
+  line-height: 1.18;
+  letter-spacing: -0.01em;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(32px, 6vw, 100px);
+  align-items: start;
+}
+
+.sticky {
+  position: sticky;
+  top: 12vh;
+  display: grid;
+  place-items: center;
+  height: 76vh;
+}
+
+.honeycomb {
+  width: min(100%, 560px);
+  height: auto;
+  overflow: visible;
+}
+
+.honeycomb polygon {
+  fill: #000;
+  stroke: var(--yellow);
+  stroke-width: 1.4;
+  transition:
+    fill 0.45s var(--ease-out),
+    stroke 0.45s;
+}
+
+.honeycomb image {
+  filter: url(#to-yellow);
+  opacity: 0.85;
+  transition: opacity 0.3s;
+}
+
+.honeycomb [data-on] polygon {
+  fill: var(--yellow);
+}
+
+.honeycomb [data-on] image {
+  filter: url(#to-black);
+  opacity: 1;
+}
+
+.centre polygon {
+  fill: var(--yellow);
+  stroke: var(--yellow);
+}
+
+.centre text {
+  fill: #000;
+  font-family: var(--font-display), sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+/* The numbered timeline */
+.features {
+  position: relative;
+  margin: 0;
+  padding: 0 0 0 64px;
+  list-style: none;
+}
+
+.features::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 0;
+  left: 14px;
+  width: 1px;
+  background: linear-gradient(rgba(255, 255, 0, 0.5), rgba(255, 255, 0, 0.05));
+}
+
+.feature {
+  position: relative;
+  min-height: 62vh;
+  padding-top: 6px;
+  opacity: 0.35;
+  transition: opacity 0.5s;
+}
+
+.feature[data-active] {
+  opacity: 1;
+}
+
+.number {
+  position: absolute;
+  top: 0;
+  left: -64px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--yellow);
+  border-radius: 50%;
+  background: #000;
+  font-size: 11px;
+  transition:
+    background-color 0.4s,
+    color 0.4s;
+}
+
+.feature[data-active] .number {
+  background: var(--yellow);
+  color: #000;
+}
+
+.feature h3 {
+  margin: 0 0 18px;
+  font-size: clamp(32px, 3.4vw, 52px);
+}
+
+.feature p {
+  max-width: 460px;
+  margin: 0 0 14px;
+  color: rgba(255, 255, 0, 0.72);
+  font-size: 16px;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sticky {
+    top: 64px;
+    z-index: 1;
+    height: auto;
+    padding: 16px 0;
+    background: linear-gradient(#000 80%, transparent);
+  }
+
+  .honeycomb {
+    width: min(64vw, 300px);
+  }
+
+  .feature {
+    min-height: 48vh;
+  }
+}

@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   description: "Private cash-and-carry package preparation terminal.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: LayoutProps<"/trade">) {
   return (
     <html
       lang="en"

@@ -1,0 +1,58 @@
+.button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 20px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-family: var(--font-display), sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition:
+    background-color 0.3s,
+    color 0.3s,
+    border-color 0.3s;
+}
+
+.button:active {
+  translate: 0 1px;
+}
+
+.yellow {
+  background: var(--yellow);
+  color: var(--black);
+}
+
+.ink {
+  background: var(--black);
+  color: var(--yellow);
+}
+
+.outline {
+  border-color: currentColor;
+  background: transparent;
+}
+
+.button:hover {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: var(--black);
+}
+
+.arrow {
+  width: 11px;
+  height: 11px;
+  transition: transform 0.4s var(--ease-out);
+}
+
+.button:hover .arrow {
+  transform: translate(2px, -2px);
+}

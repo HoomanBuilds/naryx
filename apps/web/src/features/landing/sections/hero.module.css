@@ -1,0 +1,210 @@
+.hero {
+  position: relative;
+  height: 280svh;
+  background: var(--black);
+}
+
+.stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Shade where the type sits, so it reads over the mosaic */
+.scrim {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.55) 34%, transparent 62%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.7) 0%, transparent 32%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, transparent 18%);
+  pointer-events: none;
+}
+
+.content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 40px;
+  padding-bottom: clamp(72px, 12vh, 120px);
+  pointer-events: none;
+}
+
+.copy {
+  pointer-events: auto;
+}
+
+.kicker {
+  margin: 0 0 clamp(18px, 3vh, 28px);
+}
+
+.title {
+  margin: 0;
+  font-size: clamp(52px, 8.4vw, 148px);
+  font-weight: 400;
+  line-height: 0.9;
+  letter-spacing: -0.035em;
+}
+
+.title [data-line] {
+  display: block;
+  white-space: nowrap;
+}
+
+/* A solid block behind the copy, so it reads over any part of the mosaic */
+.side {
+  width: min(400px, 32vw);
+  padding: 20px;
+  border-radius: var(--radius);
+  background: #000;
+  pointer-events: auto;
+}
+
+.side p {
+  margin: 0 0 20px;
+  color: rgba(248, 248, 255, 0.86);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.scroll {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  translate: -50% 0;
+  color: rgba(248, 248, 255, 0.7);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+
+/* The chart overlays, positioned from the field's geometry */
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.midline {
+  position: absolute;
+  left: calc(var(--mid-x) - 1px);
+  top: calc(var(--top-y) - 90px);
+  width: 2px;
+  height: calc(var(--base-y) - var(--top-y) + 90px);
+  background: var(--glint);
+  transform: scaleY(0);
+  transform-origin: bottom;
+}
+
+.midLabel {
+  position: absolute;
+  left: var(--mid-x);
+  top: calc(var(--top-y) - 132px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  translate: -50% 0;
+  opacity: 0;
+}
+
+.midLabel strong {
+  font-size: 22px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 20px rgba(0, 0, 0, 0.9);
+}
+
+.axis {
+  position: absolute;
+  top: calc(var(--base-y) + 14px);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0;
+}
+
+.bids {
+  left: var(--chart-left);
+  color: var(--yellow);
+}
+
+.asks {
+  right: calc(100% - var(--chart-right));
+  color: var(--cyan);
+}
+
+.caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: clamp(90px, 13vh, 130px);
+  margin: 0;
+  text-align: center;
+  font-size: clamp(30px, 4vw, 64px);
+  font-weight: 300;
+  opacity: 0;
+  pointer-events: none;
+}
+
+
+@media (max-width: 900px) {
+  .content {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 22px;
+    padding-bottom: 84px;
+  }
+
+  .title {
+    font-size: clamp(40px, 11.5vw, 84px);
+  }
+
+  .side {
+    width: 100%;
+    max-width: 440px;
+  }
+
+  .side p {
+    font-size: 15px;
+  }
+
+  .scrim {
+    background:
+      linear-gradient(0deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.6) 55%, transparent 80%),
+      linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, transparent 18%);
+  }
+
+  .caption {
+    padding-inline: var(--gutter);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero {
+    height: auto;
+  }
+}

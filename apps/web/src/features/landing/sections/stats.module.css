@@ -1,0 +1,116 @@
+/* Yellow, with its own dot grid */
+.stats {
+  padding: clamp(96px, 11vw, 160px) 0;
+  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  color: #000;
+}
+
+.inner {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(40px, 6vw, 110px);
+  align-items: center;
+}
+
+.title {
+  margin: 24px 0 24px;
+  font-size: clamp(44px, 5.6vw, 92px);
+  font-weight: 400;
+}
+
+.lede {
+  max-width: 420px;
+  margin: 0 0 30px;
+  font-size: 17px;
+}
+
+/* Tiles: square-ish, number top-left, label bottom-left */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  aspect-ratio: 1.12;
+  padding: clamp(18px, 2vw, 28px);
+  overflow: hidden;
+  background-size: cover;
+  background-position: 50% 100%;
+  transition:
+    background-position 1.6s var(--ease-out),
+    transform 0.6s var(--ease-out);
+}
+
+.tile:hover {
+  background-position: 50% 70%;
+  transform: translateY(-4px);
+}
+
+.tile strong {
+  font-family: var(--font-display), sans-serif;
+  font-size: clamp(44px, 5vw, 84px);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  font-family: var(--font-mono), monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.blue {
+  background-image: url(/landing/pattern-blue.webp);
+  color: #fff;
+}
+
+.light {
+  background-image: url(/landing/pattern-light.webp);
+  background-color: #fff;
+  color: var(--blue);
+}
+
+.dark {
+  background-image: url(/landing/pattern-dark.webp);
+  color: #fff;
+}
+
+.ink {
+  background: #000;
+  color: var(--yellow);
+}
+
+/* The last tile's pattern: a band of glyphs in yellow, masked from the PNGs */
+.ink::after {
+  content: "";
+  position: absolute;
+  inset: 52% 0 0;
+  background: var(--yellow);
+  -webkit-mask: url(/landing/glyphs/glyph-05.png) 0 0 / 20px 20px space, url(/landing/glyphs/glyph-08.png) 14px 14px / 20px 20px space;
+  mask: url(/landing/glyphs/glyph-05.png) 0 0 / 20px 20px space, url(/landing/glyphs/glyph-08.png) 14px 14px / 20px 20px space;
+  opacity: 0.16;
+}
+
+@media (max-width: 900px) {
+  .inner {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .tiles {
+    gap: 8px;
+  }
+
+  .label {
+    font-size: 10px;
+  }
+}

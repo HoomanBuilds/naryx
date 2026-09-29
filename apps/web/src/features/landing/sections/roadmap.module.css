@@ -1,0 +1,154 @@
+.roadmap {
+  padding: clamp(96px, 11vw, 160px) 0 clamp(60px, 7vw, 100px);
+  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  color: #000;
+}
+
+/* The heavy lifecycle title */
+.title {
+  margin: 0;
+  font-family: var(--font-display), sans-serif;
+  font-size: clamp(64px, 11vw, 190px);
+  font-weight: 700;
+  line-height: 0.82;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
+
+/* The path climbs to the right, so it can rise up beside the title */
+.map {
+  position: relative;
+  margin-top: clamp(-230px, -15vw, -60px);
+}
+
+.map svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.track,
+.line {
+  fill: none;
+  stroke-width: 10;
+  stroke-linejoin: miter;
+  stroke-linecap: square;
+}
+
+.track {
+  stroke: rgba(0, 0, 0, 0.12);
+}
+
+.line {
+  stroke: #000;
+}
+
+.sprinkle {
+  filter: brightness(0);
+  opacity: 0.2;
+}
+
+.runner rect {
+  fill: #000;
+}
+
+.stop {
+  position: absolute;
+  translate: -18px -18px;
+}
+
+.dot {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 3px solid #000;
+  border-radius: 50%;
+  background: var(--yellow);
+  font-size: 12px;
+  font-variation-settings: "wght" 700;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.stop[data-on] .dot {
+  background: #000;
+  color: var(--yellow);
+}
+
+/* Labels sit above or below their stop, wherever the line leaves room */
+.label {
+  position: absolute;
+  left: -2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: max-content;
+  max-width: 210px;
+}
+
+.stop[data-place~="above"] .label {
+  bottom: calc(100% + 12px);
+}
+
+.stop[data-place~="below"] .label {
+  top: calc(100% + 12px);
+}
+
+.stop[data-place~="end"] .label {
+  left: auto;
+  right: -2px;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.label strong {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.05;
+}
+
+.label :global(.mono) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+
+@media (max-width: 760px) {
+  .map svg {
+    display: none;
+  }
+
+  .map {
+    display: flex;
+    flex-direction: column;
+    gap: 34px;
+    margin-top: 40px;
+    padding-left: 18px;
+    border-left: 6px solid #000;
+    margin-left: 12px;
+  }
+
+  .stop {
+    position: relative;
+    inset: auto !important;
+    translate: -40px 0;
+  }
+
+  .label,
+  .stop[data-place] .label {
+    left: 52px;
+    right: auto;
+    bottom: auto;
+    top: -2px;
+    align-items: flex-start;
+    max-width: 240px;
+    text-align: left;
+  }
+}

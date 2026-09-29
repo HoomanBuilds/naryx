@@ -1,0 +1,47 @@
+.loader {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: var(--yellow);
+  color: var(--black);
+}
+
+.loader[data-dissolving] {
+  background: none;
+  pointer-events: none;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.word {
+  position: relative;
+  display: flex;
+  gap: 0.9em;
+  margin: 0;
+  font-family: var(--font-display), sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.slot {
+  display: grid;
+  place-items: center;
+  width: 0.8em;
+  height: 1em;
+}
+
+.slot img {
+  width: 0.85em;
+  height: 0.85em;
+  object-fit: contain;
+  /* the glyphs are white; the loader draws them in ink */
+  filter: brightness(0);
+}

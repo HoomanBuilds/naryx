@@ -1,0 +1,134 @@
+.use {
+  padding: clamp(96px, 11vw, 160px) 0 clamp(120px, 13vw, 200px);
+  background: #000;
+  color: var(--yellow);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(14px, 2vw, 28px);
+  margin-top: 36px;
+}
+
+/* The cards step down the page */
+.card:nth-child(2) {
+  translate: 0 36px;
+}
+
+.card:nth-child(3) {
+  translate: 0 72px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  padding: clamp(18px, 1.8vw, 26px);
+  border: 1px solid var(--yellow);
+  border-radius: 14px;
+  color: #000;
+  transition: transform 0.6s var(--ease-out);
+}
+
+.card:hover {
+  transform: translateY(-6px);
+}
+
+.yellow {
+  background: var(--yellow);
+}
+
+.cyan {
+  border-color: var(--cyan);
+  background: var(--cyan);
+}
+
+.outline {
+  background: #000;
+  color: var(--yellow);
+}
+
+.art {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1.5;
+  margin-bottom: 20px;
+}
+
+.pictogram {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+  width: min(62%, 220px);
+}
+
+.pictogram img,
+.pictogram span {
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.pictogram img {
+  object-fit: contain;
+  filter: brightness(0);
+}
+
+.layers {
+  width: 78%;
+  height: auto;
+  border-radius: 8px;
+  mix-blend-mode: lighten;
+}
+
+.card h3 {
+  margin: 0 0 12px;
+  font-size: clamp(30px, 2.8vw, 44px);
+  font-weight: 400;
+}
+
+.card p {
+  flex: 1;
+  margin: 0 0 24px;
+  font-size: 15px;
+}
+
+.outline p {
+  color: rgba(255, 255, 0, 0.75);
+}
+
+/* the full-width button along the bottom */
+.action {
+  display: grid;
+  place-items: center;
+  height: 42px;
+  border-radius: 6px;
+  background: #000;
+  color: var(--yellow);
+  font-family: var(--font-display), sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.outline .action {
+  border: 1px solid var(--yellow);
+}
+
+.action:hover {
+  background: var(--cyan);
+  color: #000;
+}
+
+@media (max-width: 900px) {
+  .cards {
+    grid-template-columns: 1fr;
+    max-width: 480px;
+  }
+
+  .card:nth-child(n) {
+    translate: none;
+  }
+}

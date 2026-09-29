@@ -1,0 +1,264 @@
+.header {
+  --fg: var(--yellow);
+  --bg: #000;
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 60;
+  color: var(--fg);
+  transition:
+    transform 0.7s var(--ease-out),
+    color 0.4s;
+}
+
+.header[data-hidden] {
+  transform: translateY(-100%);
+}
+
+.header[data-waiting] {
+  visibility: hidden;
+}
+
+.header[data-tone="yellow"] {
+  --fg: #000;
+  --bg: var(--yellow);
+}
+
+/* the ticker along the very top */
+.ticker {
+  display: block;
+  height: 30px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--yellow);
+  background: #000;
+  color: var(--yellow);
+  font-size: 11px;
+  line-height: 30px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  transition: color 0.3s;
+}
+
+.ticker:hover {
+  color: var(--cyan);
+}
+
+.tickerTrack {
+  display: flex;
+  width: max-content;
+  animation: ticker 30s linear infinite;
+}
+
+.tickerTrack span {
+  padding: 0 22px;
+}
+
+.tickerTrack span::after {
+  content: "■";
+  margin-left: 22px;
+  font-size: 7px;
+  vertical-align: 2px;
+}
+
+@keyframes ticker {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 64px;
+  background: linear-gradient(var(--bg) 30%, transparent);
+  transition: background 0.4s;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-right: auto;
+}
+
+/* the mark: a solid square with the X glyph cut out */
+.mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: currentColor;
+  -webkit-mask:
+    url(/landing/glyphs/glyph-05.png) center / 16px 16px no-repeat exclude,
+    linear-gradient(#000, #000);
+  mask:
+    url(/landing/glyphs/glyph-05.png) center / 16px 16px no-repeat exclude,
+    linear-gradient(#000, #000);
+}
+
+.word {
+  display: flex;
+  gap: 0.7em;
+  font-family: var(--font-display), sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.slot {
+  display: grid;
+  place-items: center;
+  width: 0.72em;
+}
+
+.slot i {
+  width: 0.8em;
+  height: 0.8em;
+  background: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+}
+
+.nav {
+  display: flex;
+  gap: 6px;
+}
+
+.nav a {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  font-family: var(--font-display), sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* The caret: two strokes that open up on hover */
+.caret {
+  position: relative;
+  width: 16px;
+  height: 8px;
+}
+
+.caret span {
+  position: absolute;
+  top: 2px;
+  width: 1px;
+  height: 7px;
+  background: currentColor;
+  transition: transform 0.3s;
+}
+
+.caret span:first-child {
+  left: 5px;
+  transform: rotate(-45deg);
+}
+
+.caret span:last-child {
+  left: 10px;
+  transform: rotate(45deg);
+}
+
+.nav a:hover .caret span:first-child {
+  transform: rotate(45deg);
+}
+
+.nav a:hover .caret span:last-child {
+  transform: rotate(-45deg);
+}
+
+.cta {
+  display: grid;
+  place-items: center;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: var(--radius);
+  background: var(--fg);
+  color: var(--bg);
+  font-family: var(--font-display), sans-serif;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition:
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.cta:hover {
+  background: var(--cyan);
+  color: #000;
+}
+
+/* The menu button: six squares */
+.menuButton {
+  display: none;
+  grid-template-columns: repeat(3, 10px);
+  gap: 3px;
+  padding: 6px;
+  border: 0;
+  background: none;
+}
+
+.menuButton span {
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  transition: transform 0.3s var(--ease-out);
+}
+
+.menuButton[aria-expanded="true"] span:nth-child(odd) {
+  transform: scale(0.5);
+}
+
+.menu {
+  position: fixed;
+  inset: 94px 12px auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-radius: 14px;
+  background: var(--yellow);
+  color: #000;
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+  transition:
+    opacity 0.3s,
+    transform 0.5s var(--ease-out);
+}
+
+.menu[data-open] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.menu a {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 12px 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+  font-family: var(--font-display), sans-serif;
+  font-size: 32px;
+  text-transform: uppercase;
+}
+
+.menu a:last-child {
+  border-bottom: 0;
+}
+
+.menu :global(.mono) {
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .nav,
+  .cta {
+    display: none;
+  }
+
+  .menuButton {
+    display: grid;
+  }
+}

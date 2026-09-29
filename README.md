@@ -54,7 +54,7 @@ The repository keeps compile-time imports, deployment artifacts, network calls, 
 | `services/api` | Private terminal API, durable orders, quote selection, readiness gating, unsigned transaction materialization, and lifecycle reads. |
 | `services/solver` | Signed package quote generation and the isolated Hyperliquid Testnet executor boundary. |
 | `services/keeper` | Hyperliquid evidence, recovery reconciliation, signerless mainnet shadow reads, and dependency incident state. |
-| `apps/web` | Trading terminal for package construction, quote review, wallet authorization, readiness, execution progress, recovery state, and receipts. |
+| `apps/web` | Public landing page at `/` and the trading terminal at `/trade` for package construction, quote review, wallet authorization, readiness, execution progress, recovery state, and receipts. |
 | `deployments` | Published IDLs, ABIs, identities, and reviewed deployment evidence. It contains no executable logic or secrets. |
 | `tests` | Cross-workspace local lifecycle, fork qualification, and conformance evidence. |
 | `packages/sdk`, `services/indexer` | Defined future boundaries. They are not claimed as completed public products. |
@@ -86,6 +86,8 @@ Adding another instance of an implemented runtime family is manifest registratio
 | Any mainnet write | No deployment, approval, transfer, bridge, deposit, order, recovery, or signed payload for later broadcast is allowed. | Prohibited until explicit authorization and all readiness gates pass. |
 
 Public program identities are not deployment claims. Published conformance IDLs and ABIs identify local test dependencies, not live venue integrations.
+
+The landing page uses third-party fonts under `apps/web/src/features/landing/fonts` and third-party artwork under `apps/web/public/landing` as local design material. Their licenses are unverified, so they must be verified or replaced with assets Naryx can ship before any public release of `apps/web`.
 
 ## Safety model
 
@@ -141,7 +143,7 @@ npm test --prefix tests/evm-local
 npm test --prefix tests/arbitrum-local
 ```
 
-Terminal:
+Web application, with the landing page at `/` and the terminal at `/trade`:
 
 ```bash
 npm run lint --prefix apps/web

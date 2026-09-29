@@ -1,0 +1,154 @@
+@import "tailwindcss";
+@import "lenis/dist/lenis.css";
+
+:root {
+  --yellow: #ffff00;
+  --cyan: #00ffff;
+  --black: #000;
+
+  --graphite: #111111;
+  --graphite-2: #181818;
+  --line: #262626;
+  --smoke: #8a8a8a;
+
+  --violet: #9a0dff;
+  --pink: #ff4fe9;
+  --umbra: #332840;
+  --glint: #f8f8ff;
+
+  --blue: #0048ff;
+
+  --gutter: clamp(16px, 2.4vw, 36px);
+  --radius: 8px;
+  --ease-out: cubic-bezier(0.19, 1, 0.22, 1);
+}
+
+html {
+  background: var(--black);
+  color: var(--glint);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html.is-loading,
+html.is-loading body {
+  overflow: hidden;
+}
+
+body {
+  background: var(--black);
+  font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 350;
+  line-height: 1.5;
+  overflow-x: clip;
+}
+
+/* Animated film grain, over everything */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: url(/landing/noise.gif) 0 0 / 200px 200px;
+  opacity: 0.06;
+  pointer-events: none;
+}
+
+::selection {
+  background: var(--yellow);
+  color: var(--black);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  max-width: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+.container {
+  width: 100%;
+  max-width: 1560px;
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* The uppercase display */
+.display {
+  font-family: var(--font-display), sans-serif;
+  font-weight: 300;
+  line-height: 0.98;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.mono {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variation-settings: "wght" 400;
+}
+
+/* The small tag: mono caps on a solid chip */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 2px;
+  background: var(--yellow);
+  color: var(--black);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  font-variation-settings: "wght" 600;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Lines that rise into place; GSAP marks them data-revealed as they play */
+[data-reveal]:not([data-revealed]) {
+  opacity: 0;
+  transform: translateY(24px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal]:not([data-revealed]) {
+    opacity: 1;
+    transform: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-play-state: paused !important;
+  }
+}
