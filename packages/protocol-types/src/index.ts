@@ -968,3 +968,18 @@ export {
   type ShardSettlementRequest,
   type ShardSettlementRejection,
 } from './quote-shard.js';
+
+export {
+  MARKET_DATA_METHODOLOGY_VERSION,
+  DATA_LABEL,
+  CANDLE_INTERVAL_MS,
+  aggregateCandles,
+  executablePackageIndex,
+  type DataLabel,
+  type CandleInterval,
+  type TapeTrade,
+  type PackageCandle,
+  type CandleSeries,
+  type SizeQuote,
+  type ExecutablePackageIndex,
+} from './market-data.js';
