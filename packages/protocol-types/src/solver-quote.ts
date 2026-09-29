@@ -286,7 +286,7 @@ function bytesToBigInt(bytes: Uint8Array): bigint {
   return value;
 }
 
-function checkedSignatureMaterial(
+export function checkedSignatureMaterial(
   scheme: SolverSignatureScheme,
   verificationKey: Uint8Array,
   signature: Uint8Array,

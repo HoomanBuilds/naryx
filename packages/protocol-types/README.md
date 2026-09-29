@@ -217,6 +217,33 @@ sequences, price, source, and time priority, taker limits, and single source con
 allocation is hashed under `CON/v1/package-allocation`. `packageBookState` revalidates any stored or
 caller-supplied book against its policy.
 
+## Solver network
+
+`SolverCapabilityManifest` binds a solver identity and common-control group to its operator
+identity key, purpose-scoped quote and RFQ keys with non-overlapping validity intervals, and the
+exact domains, templates, quote modes, per-market notional caps, and endpoints it serves. The
+operator signs `solverCapabilityManifestHash`, which excludes the signature. `authorizeSolverQuote`
+checks scope only and returns one deterministic rejection reason; the caller verifies the signature.
+
+`SolverCapacityRecord` states evidence-scoped available capacity and recovery capacity for one
+solver, domain, and asset. A capacity ledger debits commitments against that evidence, refuses a
+firm commitment unless the evidence is onchain, and reports an order-independent outstanding
+commitment root. When commitments exceed refreshed evidence or the evidence expires, the ledger is
+reduce-only: new commitments stop while releases continue. Qualification evaluation reads raw
+metrics, can only keep or lower a solver's state, and never hides them in a composite score.
+Promotion requires two distinct reviewers.
+
+`decideRfq` turns multi-dealer responses into a replayable decision hashed under
+`CON/v1/rfq-decision`. Each response is ranked inside its settlement and risk class by fee-complete
+net outcome, then firmness, arrival, and quote hash, or excluded with one reason. Firm responses
+need active capacity. `independentOrganizations` counts common-control groups, not keys.
+
+`generateMakerQuotes` prices a maker quote surface from one reference in constant time per level,
+skews against inventory, clips each side so fills cannot breach the inventory limit, and returns
+nothing under a market or portfolio kill switch. Performance bonds cover only named objective
+faults, claim each fault evidence hash once, cap payouts per claim and in aggregate, pay after an
+undisputed window or an explicit resolution, and release the unpaid remainder once after expiry.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
@@ -305,7 +332,8 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`,
 `fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
 `fixtures/package-order-atomic.json`, `fixtures/package-order-hyperliquid-exit.json`, and
-`fixtures/solver-quote.json`, and `fixtures/package-matching-policy.json` hold
+`fixtures/solver-quote.json`, `fixtures/package-matching-policy.json`, and
+`fixtures/solver-capability-manifest.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

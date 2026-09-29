@@ -104,6 +104,10 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/package-matching-policy',
         'CON/v1/implied-package-quote',
         'CON/v1/package-allocation',
+        'CON/v1/solver-capacity-record',
+        'CON/v1/solver-commitment-root',
+        'CON/v1/rfq-decision',
+        'CON/v1/performance-bond',
       ],
     );
   });
