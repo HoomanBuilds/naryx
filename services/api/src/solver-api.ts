@@ -317,13 +317,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       return { cancelled: true };
     }
     if (method === "GET" && path === "/v1/solver/private-rfqs") {
-      const pending = requireDelivery().pendingFor(solverId, (envelope) => {
-        try {
-          return wallClockIn(envelope.expiresAtUnit) >= envelope.expiresAtValue;
-        } catch {
-          return true;
-        }
-      });
+      const pending = requireDelivery().pendingFor(solverId, clockMs());
       return { envelopes: pending.map((entry) => ({ envelopeHash: entry.envelopeHashHex, envelope: entry.envelope, ciphertext: entry.ciphertext })) };
     }
     if ((match = /^\/v1\/solver\/private-rfqs\/([0-9a-f]{64})\/(ack|response)$/.exec(path)) !== null && method === "POST") {

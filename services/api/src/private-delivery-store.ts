@@ -35,6 +35,8 @@ export class PrivateDeliveryStoreError extends Error {
 }
 
 const MAX_AUCTION_EVENTS = 256;
+/** Unacknowledged, unexpired envelopes one recipient may hold before new ones are refused. */
+export const MAX_PENDING_ENVELOPES_PER_RECIPIENT = 1_000;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS rfq_envelopes (
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS rfq_envelopes (
   envelope_json TEXT NOT NULL,
   ciphertext BLOB NOT NULL,
   expires_at_value TEXT NOT NULL,
+  expires_at_ms INTEGER NOT NULL DEFAULT 0,
   received_at_ms INTEGER NOT NULL,
   UNIQUE (sender_key_id, envelope_nonce, recipient_solver_id)
 ) STRICT;
@@ -96,6 +99,12 @@ export class SqlitePrivateDeliveryStore {
 
   constructor(dbPath: string, options: { readonly clock?: () => number } = {}) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new PrivateDeliveryStoreError(code, message));
+    // Stores created before expiry was kept in milliseconds gain the column; their rows read as expired.
+    const columns = this.db.prepare("PRAGMA table_info(rfq_envelopes)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "expires_at_ms")) {
+      this.db.exec("ALTER TABLE rfq_envelopes ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0");
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS rfq_envelopes_pending ON rfq_envelopes(recipient_solver_id, expires_at_ms, received_at_ms)");
     this.clock = options.clock ?? Date.now;
   }
 
@@ -117,24 +126,56 @@ export class SqlitePrivateDeliveryStore {
     );
   }
 
-  /** Stores an envelope the caller already admitted; a repeat of the same envelope is idempotent. */
-  storeEnvelope(envelopeInput: PrivateRfqEnvelopeInput, ciphertext: Uint8Array): { readonly envelopeHashHex: string; readonly created: boolean } {
-    const envelope = privateRfqEnvelope(envelopeInput);
-    const hash = privateRfqEnvelopeHash(envelope);
-    return this.transaction(() => {
-      const existing = this.db.prepare("SELECT 1 FROM rfq_envelopes WHERE envelope_hash = ?").get(hash);
-      if (existing !== undefined) return { envelopeHashHex: toHex(hash), created: false };
-      try {
-        this.db
-          .prepare(
-            "INSERT INTO rfq_envelopes (envelope_hash, recipient_solver_id, sender_key_id, envelope_nonce, envelope_json, ciphertext, expires_at_value, received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          )
-          .run(hash, envelope.recipientSolverId, envelope.senderKeyId, envelope.envelopeNonce.toString(), stringifyProtocolJson(envelope), ciphertext, envelope.expiresAtValue.toString(), this.clock());
-      } catch {
-        throw new PrivateDeliveryStoreError("REPLAY", "The sender already used this nonce for this recipient.");
+  /**
+   * Stores envelopes the caller already admitted, all in one transaction: either every entry is
+   * recorded or none is. A repeat of the same envelope is idempotent. `expiresAtMs` is the
+   * envelope's expiry on the server wall clock, used to hide expired envelopes from the inbox.
+   */
+  storeEnvelopes(
+    items: readonly { readonly envelope: PrivateRfqEnvelopeInput; readonly ciphertext: Uint8Array; readonly expiresAtMs: number }[],
+  ): readonly { readonly envelopeHashHex: string; readonly created: boolean }[] {
+    const prepared = items.map((item) => {
+      const envelope = privateRfqEnvelope(item.envelope);
+      if (!Number.isSafeInteger(item.expiresAtMs) || item.expiresAtMs <= 0) {
+        throw new PrivateDeliveryStoreError("INVALID_EXPIRY", "Envelope expiry must be a positive millisecond time.");
       }
-      return { envelopeHashHex: toHex(hash), created: true };
+      return { envelope, hash: privateRfqEnvelopeHash(envelope), ciphertext: item.ciphertext, expiresAtMs: item.expiresAtMs };
     });
+    return this.transaction(() => {
+      const now = this.clock();
+      return prepared.map(({ envelope, hash, ciphertext, expiresAtMs }) => {
+        const existing = this.db.prepare("SELECT 1 FROM rfq_envelopes WHERE envelope_hash = ?").get(hash);
+        if (existing !== undefined) return { envelopeHashHex: toHex(hash), created: false };
+        const pending = this.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM rfq_envelopes e LEFT JOIN rfq_acknowledgements a ON a.envelope_hash = e.envelope_hash
+             WHERE e.recipient_solver_id = ? AND a.envelope_hash IS NULL AND e.expires_at_ms > ?`,
+          )
+          .get(envelope.recipientSolverId, now) as { count: number };
+        if (pending.count >= MAX_PENDING_ENVELOPES_PER_RECIPIENT) {
+          throw new PrivateDeliveryStoreError("INBOX_FULL", "The recipient has too many undelivered envelopes; retry later.");
+        }
+        try {
+          this.db
+            .prepare(
+              "INSERT INTO rfq_envelopes (envelope_hash, recipient_solver_id, sender_key_id, envelope_nonce, envelope_json, ciphertext, expires_at_value, expires_at_ms, received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .run(hash, envelope.recipientSolverId, envelope.senderKeyId, envelope.envelopeNonce.toString(), stringifyProtocolJson(envelope), ciphertext, envelope.expiresAtValue.toString(), expiresAtMs, now);
+        } catch (error) {
+          // Only the sender, nonce, and recipient uniqueness constraint means a replay.
+          if ((error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+            throw new PrivateDeliveryStoreError("REPLAY", "The sender already used this nonce for this recipient.");
+          }
+          throw error;
+        }
+        return { envelopeHashHex: toHex(hash), created: true };
+      });
+    });
+  }
+
+  /** Single-envelope form of storeEnvelopes. */
+  storeEnvelope(envelopeInput: PrivateRfqEnvelopeInput, ciphertext: Uint8Array, expiresAtMs: number): { readonly envelopeHashHex: string; readonly created: boolean } {
+    return this.storeEnvelopes([{ envelope: envelopeInput, ciphertext, expiresAtMs }])[0] as { envelopeHashHex: string; created: boolean };
   }
 
   private decodeEnvelope(row: { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array }): StoredEnvelope {
@@ -163,16 +204,20 @@ export class SqlitePrivateDeliveryStore {
     return row === undefined ? undefined : this.decodeEnvelope(row);
   }
 
-  /** Unacknowledged, unexpired envelopes addressed to one solver, oldest first. */
-  pendingFor(solverId: string, isExpired: (envelope: PrivateRfqEnvelope) => boolean, limit = 50): readonly StoredEnvelope[] {
+  /**
+   * Unacknowledged, unexpired envelopes addressed to one solver, oldest first. Expiry is filtered
+   * in SQL, so any number of expired envelopes can never hide a live one.
+   */
+  pendingFor(solverId: string, nowMs: number, limit = 50): readonly StoredEnvelope[] {
     const rows = this.db
       .prepare(
         `SELECT e.envelope_hash, e.envelope_json, e.ciphertext FROM rfq_envelopes e
          LEFT JOIN rfq_acknowledgements a ON a.envelope_hash = e.envelope_hash
-         WHERE e.recipient_solver_id = ? AND a.envelope_hash IS NULL ORDER BY e.received_at_ms LIMIT 500`,
+         WHERE e.recipient_solver_id = ? AND a.envelope_hash IS NULL AND e.expires_at_ms > ?
+         ORDER BY e.received_at_ms LIMIT ?`,
       )
-      .all(solverId) as { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array }[];
-    return Object.freeze(rows.map((row) => this.decodeEnvelope(row)).filter((entry) => !isExpired(entry.envelope)).slice(0, limit));
+      .all(solverId, nowMs, Math.max(1, Math.min(limit, 200))) as { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array }[];
+    return Object.freeze(rows.map((row) => this.decodeEnvelope(row)));
   }
 
   acknowledge(envelopeHashHex: string, solverId: string): void {

@@ -69,7 +69,7 @@ export interface PublicApiOptions {
   /** Optional: solver quote and capacity routes answer 503 without it. */
   readonly solverState?: PublicSolverState;
   /** Optional: private RFQ relay and sealed auction routes answer 503 without it. */
-  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "nonceSeen" | "storeEnvelope" | "getEnvelope" | "createAuction" | "auctionView" | "auctionDefinition">;
+  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "nonceSeen" | "storeEnvelopes" | "getEnvelope" | "createAuction" | "auctionView" | "auctionDefinition">;
   /** Encryption suites a reviewed release has pinned; with none, private RFQ fails closed. */
   readonly pinnedSuiteIds?: readonly string[];
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
@@ -506,12 +506,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       const entries = body.envelopes;
       if (!Array.isArray(entries) || entries.length === 0 || entries.length > 16) throw new RequestError(400, "INVALID_REQUEST", "envelopes must hold 1 to 16 entries.");
-      const results = entries.map((entry: unknown) => {
+      // Every entry is validated before anything is stored, so a rejected batch delivers nothing.
+      const decided = entries.map((entry: unknown) => {
         const item = object(entry, "envelope entry");
-        const envelope = item.envelope as PrivateRfqEnvelopeInput;
+        const envelope = object(item.envelope, "envelope") as unknown as PrivateRfqEnvelopeInput;
         if (!(item.ciphertext instanceof Uint8Array) || item.ciphertext.length === 0) throw new RequestError(400, "INVALID_REQUEST", "ciphertext must be bytes.");
         const recipient = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", String((envelope as { recipientSolverId?: unknown }).recipientSolverId));
-        if (recipient === undefined) return { admitted: false, reason: "RECIPIENT_MISMATCH" };
+        if (recipient === undefined) return { admission: { admitted: false as const, reason: "RECIPIENT_MISMATCH" } };
         const admission = admitPrivateRfqEnvelope(envelope, {
           environment: recipient.document.environment,
           pinnedSuiteIds,
@@ -520,14 +521,21 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           nonceSeen: relay.nonceSeen(envelope),
           receivedCiphertextHash: new Uint8Array(createHash("sha256").update(item.ciphertext).digest()),
         });
-        if (!admission.admitted) return admission;
-        return { admitted: true, ...relay.storeEnvelope(envelope, item.ciphertext) };
+        if (!admission.admitted) return { admission };
+        const expiresAtMs = envelope.expiresAtUnit === "EVM_UNIX_SECONDS"
+          ? Number(envelope.expiresAtValue) * 1_000
+          : Number(envelope.expiresAtValue);
+        if (!Number.isSafeInteger(expiresAtMs)) throw new RequestError(400, "INVALID_REQUEST", "Envelope expiry is out of range.");
+        return { admission, store: { envelope, ciphertext: item.ciphertext, expiresAtMs } };
       });
+      const toStore = decided.flatMap((entry) => (entry.store === undefined ? [] : [entry.store]));
+      const stored = toStore.length === 0 ? [] : [...relay.storeEnvelopes(toStore)];
+      const results = decided.map((entry) => (entry.store === undefined ? entry.admission : { admitted: true, ...stored.shift() }));
       // Stored is not delivered: private success is reported only after a recipient acknowledges.
       return { results, deliveryStatusRoute: "/v1/rfqs/private/{envelopeHash}" };
     }
     if (path === "/v1/auctions/sealed") {
-      const definition = body.definition as SealedAuctionDefinitionInput;
+      const definition = object(body.definition, "definition") as unknown as SealedAuctionDefinitionInput;
       wallClockIn(String((definition as { timeUnit?: unknown }).timeUnit));
       const eligible = (definition as { eligibleSolverIds?: unknown }).eligibleSolverIds;
       if (!Array.isArray(eligible) || eligible.some((solverId) => typeof solverId !== "string" || requireRegistry().latest("SOLVER_CAPABILITY", solverId) === undefined)) {
@@ -573,7 +581,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PackageExchangeStoreError && error.code === "BOOK_NOT_FOUND") return fail(response, 404, "BOOK_NOT_FOUND", "Package market is not open.");
         if (error instanceof PackageExchangeStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
         if (error instanceof RegistryStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
-        if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message);
+        if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });
     return true;

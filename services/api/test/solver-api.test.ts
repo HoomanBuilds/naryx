@@ -300,6 +300,50 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
   });
 });
 
+test("expired envelopes cannot starve the inbox and a rejected batch delivers nothing", async () => {
+  const ciphertext = new Uint8Array(Buffer.from("sealed-order"));
+  const envelope = (nonce: bigint, expiresInSeconds: bigint) => ({
+    envelopeVersion: 1,
+    environment: "testnet",
+    domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)),
+    templateId: "cash-and-carry-v1",
+    templateVersion: 1,
+    packageTemplateManifestHash: "44".repeat(32),
+    orderHash: "55".repeat(32),
+    senderKeyId: "spam-key",
+    responseEncryptionKey: new Uint8Array(32).fill(7),
+    recipientSolverId: "solver-a",
+    recipientEncryptionKeyId: "rfq-1",
+    encryptionSuiteId: RFQ_SUITE,
+    ciphertextHash: new Uint8Array(createHash("sha256").update(Buffer.from("sealed-order")).digest()),
+    createdAtUnit: "EVM_UNIX_SECONDS",
+    createdAtValue: NOW_S - 5n,
+    expiresAtUnit: "EVM_UNIX_SECONDS",
+    expiresAtValue: NOW_S + expiresInSeconds,
+    envelopeNonce: nonce,
+  });
+  await withSolverApi(async (api) => {
+    // More short-lived envelopes than one inbox page, then one that stays live.
+    for (let batch = 0; batch < 40; batch += 1) {
+      const envelopes = Array.from({ length: 16 }, (_, index) => ({ envelope: envelope(BigInt(batch * 16 + index + 1), 2n), ciphertext }));
+      assert.equal((await api.plain("POST", "/v1/rfqs/private", { envelopes })).status, 200);
+    }
+    const live = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: { ...envelope(10_000n, 600n), senderKeyId: "taker-key" }, ciphertext }] })).body as { results: readonly { envelopeHashHex?: string }[] };
+    api.setClock(Number(NOW_S + 10n) * 1_000);
+    const pending = (await api.call("GET", "/v1/solver/private-rfqs")).body as { envelopes: readonly { envelopeHash: string }[] };
+    assert.deepEqual(pending.envelopes.map((entry) => entry.envelopeHash), [live.results[0]?.envelopeHashHex]);
+
+    // A later malformed entry rejects the whole batch before the good entry is stored.
+    const good = { envelope: { ...envelope(20_000n, 600n), senderKeyId: "batch-key" }, ciphertext };
+    const rejected = await api.plain("POST", "/v1/rfqs/private", { envelopes: [good, { envelope: good.envelope, ciphertext: "not-bytes" }] });
+    assert.equal(rejected.status, 400);
+    const retried = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [good] })).body as { results: readonly { admitted: boolean }[] };
+    assert.equal(retried.results[0]?.admitted, true);
+    const missing = await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ ciphertext }] });
+    assert.equal(missing.status, 400);
+  });
+});
+
 test("a sealed auction accepts commits before its deadline, reveals after, and publishes a replayable result", async () => {
   await withSolverApi(async (api) => {
     const definition = {
