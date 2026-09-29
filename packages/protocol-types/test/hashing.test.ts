@@ -94,6 +94,13 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/async-bonded-transition',
         'CON/v1/package-lifecycle-intent',
         'CON/v1/package-lifecycle-receipt',
+        'CON/v1/authority-inventory',
+        'CON/v1/operation-cap-policy',
+        'CON/v1/funded-operation-manifest',
+        'CON/v1/security-finding-summary',
+        'CON/v1/readiness-evidence',
+        'CON/v1/readiness-decision',
+        'CON/v1/operation-ledger-record',
       ],
     );
   });
