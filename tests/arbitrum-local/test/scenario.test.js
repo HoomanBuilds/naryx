@@ -19,9 +19,10 @@ const spotBaseAtoms = 1_000_000n;
 const maxSpotQuoteAtoms = 3_000_000n;
 const sizeDeltaUsd = 4_000n * 10n ** 30n;
 
-async function write(environment, wallet, address, abi, functionName, args = [], value) {
+async function write(environment, wallet, address, abi, functionName, args = [], value, gas) {
   const request = { address, abi, functionName, args };
   if (value !== undefined) request.value = value;
+  if (gas !== undefined) request.gas = gas;
   const hash = await wallet.writeContract(request);
   return environment.client.waitForTransactionReceipt({ hash });
 }
@@ -32,6 +33,14 @@ function requestParameter() {
   );
   if (!item) throw new Error("submitRequest ABI missing");
   return item.inputs[2];
+}
+
+function activeSpotRegistrationParameter() {
+  const item = arbitrumLocalArtifacts.account.abi.find(
+    (candidate) => candidate.type === "function" && candidate.name === "activeSpotRegistration",
+  );
+  if (!item) throw new Error("activeSpotRegistration ABI missing");
+  return item.outputs[0];
 }
 
 async function buildRequest(environment) {
@@ -122,7 +131,7 @@ async function buildTerms(environment, request) {
   return terms;
 }
 
-test("rolls back a failed request creation then executes the admitted asynchronous entry", { timeout: 30_000 }, async () => {
+test("rolls back a failed entry then executes and closes the asynchronous package", { timeout: 30_000 }, async () => {
   await withLocalArbitrumEnvironment(async (environment) => {
     const { accounts, client, contracts, manifest, wallets } = environment;
     const a = arbitrumLocalArtifacts;
@@ -200,5 +209,129 @@ test("rolls back a failed request creation then executes the admitted asynchrono
     assert.equal(packageState.state, 4);
     assert.equal(packageState.requestKey, requestKey);
     assert.equal(packageState.terms.owner, manifest.identities.trader);
+
+    const registration = await client.readContract({
+      address: contracts.account,
+      abi: a.account.abi,
+      functionName: "activeSpotRegistration",
+    });
+    const block = await client.getBlock();
+    const authorization = {
+      packageId,
+      entryRequestKey: requestKey,
+      spotRegistrationHash: keccak256(encodeAbiParameters([activeSpotRegistrationParameter()], [registration])),
+      account: contracts.account,
+      owner: manifest.identities.trader,
+      receiver: manifest.identities.trader,
+      spotProceedsRecipient: manifest.identities.trader,
+      feePayer: manifest.identities.feePayer,
+      executionFeeRefundRecipient: manifest.identities.recovery,
+      market: contracts.market,
+      collateralToken: contracts.collateral,
+      isLong: false,
+      fullCloseSizeUsd: sizeDeltaUsd,
+      spotBaseAtoms,
+      spotMinQuoteAtoms: spotBaseAtoms,
+      packageNonce: request.packageNonce,
+      exitOrderHash: keccak256(stringToHex("arbitrum-local-exit-order")),
+      exitQuoteHash: keccak256(stringToHex("arbitrum-local-exit-quote")),
+      exitRouteHash: keccak256(stringToHex("arbitrum-local-exit-route")),
+      exitFillCommitment: keccak256(stringToHex("arbitrum-local-exit-fill")),
+      acceptablePrice: 2_400n * 10n ** 30n,
+      minOutputAmount: 1_000n * 10n ** 30n,
+      executionFeeWei: executionFee,
+      callbackGasLimit: 2_000_000n,
+      authorizationExpiry: block.timestamp + 100n,
+      cancelAfter: block.timestamp + 200n,
+      nonce: await client.readContract({
+        address: contracts.exitController,
+        abi: a.exitController.abi,
+        functionName: "nextNonce",
+      }),
+    };
+    const exitDigest = await client.readContract({
+      address: contracts.exitController,
+      abi: a.exitController.abi,
+      functionName: "exitDigest",
+      args: [authorization],
+    });
+    const exitSignature = await accounts.trader.sign({ hash: exitDigest });
+    assert.equal((await write(
+      environment,
+      wallets.feePayer,
+      contracts.exitController,
+      a.exitController.abi,
+      "submitFullClose",
+      [authorization, exitSignature],
+      executionFee,
+    )).status, "success");
+    const exitRequestKey = await client.readContract({
+      address: contracts.exitController,
+      abi: a.exitController.abi,
+      functionName: "activeExitRequestKey",
+    });
+    assert.notEqual(exitRequestKey, zeroHash);
+    assert.equal((await write(
+      environment,
+      wallets.deployer,
+      contracts.exchangeRouter,
+      a.exchangeRouter.abi,
+      "executeDecreaseOrder",
+      [exitRequestKey, 0n, collateralAtoms],
+      undefined,
+      8_000_000n,
+    )).status, "success");
+    const exitEvidence = await client.readContract({
+      address: contracts.exitController,
+      abi: a.exitController.abi,
+      functionName: "exitEvidence",
+      args: [exitRequestKey],
+    });
+    const finalReceipt = await client.readContract({
+      address: contracts.exitController,
+      abi: a.exitController.abi,
+      functionName: "finalPackageReceipt",
+      args: [exitRequestKey],
+    });
+    assert.equal(exitEvidence[0], 2);
+    assert.equal(exitEvidence[4], true);
+    assert.notEqual(finalReceipt.commitment, zeroHash);
+    assert.equal(finalReceipt.packageId, packageId);
+    assert.equal(finalReceipt.entryRequestKey, requestKey);
+    assert.equal(finalReceipt.exitRequestKey, exitRequestKey);
+    assert.equal(finalReceipt.terminalState, 1);
+    assert.equal(await client.readContract({
+      address: contracts.base,
+      abi: a.token.abi,
+      functionName: "balanceOf",
+      args: [contracts.account],
+    }), 0n);
+    assert.equal(await client.readContract({
+      address: contracts.collateral,
+      abi: a.token.abi,
+      functionName: "balanceOf",
+      args: [contracts.account],
+    }), 0n);
+    const beforeClose = await client.readContract({
+      address: contracts.coordinator,
+      abi: a.coordinator.abi,
+      functionName: "packageState",
+      args: [packageId],
+    });
+    assert.equal((await write(
+      environment,
+      wallets.deployer,
+      contracts.coordinator,
+      a.coordinator.abi,
+      "close",
+      [packageId, beforeClose.stateVersion],
+    )).status, "success");
+    const closed = await client.readContract({
+      address: contracts.coordinator,
+      abi: a.coordinator.abi,
+      functionName: "packageState",
+      args: [packageId],
+    });
+    assert.equal(closed.state, 10);
   });
 });
