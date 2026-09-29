@@ -1,0 +1,23 @@
+/** Canvas colors mirror the terminal tokens; canvas drawing cannot read CSS custom properties. */
+export const CHART_COLORS = {
+  background: "#101011",
+  text: "#6e6e73",
+  grid: "rgba(255, 255, 255, 0.035)",
+  border: "#232325",
+  label: "#2a2a2d",
+  crosshair: "#5a5a60",
+  priceLine: "#8a8a90",
+  up: "#1fc27e",
+  down: "#f0515f",
+  upVolume: "rgba(31, 194, 126, 0.28)",
+  downVolume: "rgba(240, 81, 95, 0.28)",
+  upFill: "rgba(31, 194, 126, 0.14)",
+  downFill: "rgba(240, 81, 95, 0.14)",
+  brand: "#ffff00",
+  brandFillTop: "rgba(255, 255, 0, 0.18)",
+  brandFillBottom: "rgba(255, 255, 0, 0)",
+  implied: "#a88bfa",
+  ma20: "#38bdf8",
+  ma50: "#a88bfa",
+  watermark: "rgba(244, 244, 245, 0.045)",
+} as const;

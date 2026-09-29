@@ -1,7 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { fixtureMarketFeed } from "./market-feed";
+import { ChartWorkspace } from "./pro/chart-workspace";
+import { InstrumentBar } from "./pro/instrument-bar";
+import { OrderBook } from "./pro/order-book";
+import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
 import type {
@@ -31,9 +36,7 @@ import {
   type SolanaWalletSession,
 } from "./solana-wallet-standard";
 import type {
-  BasisPoint,
   DomainId,
-  PackageLeg,
   PackageMode,
   ProviderConnection,
   QuoteMode,
@@ -48,12 +51,28 @@ import styles from "./trading-terminal.module.css";
 
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
-function formatCurrency(value: number) {
-  return value.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
+
+type BottomTab = WorkspaceTab | "route" | "readiness";
+
+/**
+ * Formats an exact decimal string as dollars with grouping. Digits are never rounded; trailing
+ * zeros beyond the cents are trimmed.
+ */
+function usd(value: string) {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value);
+  if (!match) return value;
+  const [, sign, whole, fraction = ""] = match;
+  const trimmed = fraction.replace(/0+$/, "").padEnd(2, "0");
+  return `${sign}$${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${trimmed}`;
+}
+
+/** Trims padded atom decimals in display text: "100.000000 SOL" becomes "100 SOL", "$148.388240" becomes "$148.38824". */
+function tidy(text: string) {
+  return text.replace(/(\$?)(\d[\d,]*)\.(\d+)/g, (_, dollar: string, whole: string, fraction: string) => {
+    const trimmed = fraction.replace(/0+$/, "");
+    const kept = dollar ? trimmed.padEnd(2, "0") : trimmed;
+    return kept === "" ? `${dollar}${whole}` : `${dollar}${whole}.${kept}`;
   });
 }
 
@@ -63,72 +82,40 @@ function sanitizeSize(value: string) {
   return decimals.length > 0 ? `${whole}.${decimals.join("")}` : whole;
 }
 
-function pointsFor(
-  points: BasisPoint[],
-  key: "spot" | "perp",
-  minimum: number,
-  range: number,
-) {
-  return points
-    .map((point, index) => {
-      const x = 36 + (index / (points.length - 1)) * 648;
-      const y = 190 - ((point[key] - minimum) / range) * 140;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-}
-
 function BrandMark() {
   return (
     <span className={styles.brandMark} aria-hidden="true">
-      <svg viewBox="0 0 28 28" fill="none">
-        <path d="M5 21V7h4.2l9.6 13V7H23v14h-4.2L9.2 8v13H5Z" />
-        <path d="M5 24h18" />
+      <svg viewBox="0 0 24 24">
+        <rect width="24" height="24" rx="5" />
+        <path d="M7.4 6h3.1l1.5 2.6L13.5 6h3.1l-3.1 5.9L16.8 18h-3.1L12 15l-1.7 3H7.2l3.3-6.1Z" />
       </svg>
     </span>
   );
 }
 
-function TopNavigation({
-  snapshot,
+function shortAddress(value: string, leading = 4, trailing = 4) {
+  return `${value.slice(0, leading)}...${value.slice(-trailing)}`;
+}
+
+function WalletControl({
   selectedDomain,
-  providerConnection,
   wallet,
   evmWallet,
-  onDomainChange,
 }: {
-  snapshot: TerminalViewModel;
   selectedDomain: DomainId;
-  providerConnection: ProviderConnection;
   wallet: SolanaWalletSession;
   evmWallet: InjectedEvmWalletSession;
-  onDomainChange: (domain: DomainId) => void;
 }) {
-  const providerLabel = providerConnection === "connected"
-    ? "Private service connected"
-    : providerConnection === "connecting"
-      ? "Checking private service"
-      : "Local fallback";
   const evmDomain = isEvmDomain(selectedDomain) ? selectedDomain : null;
   const expectedNetwork = evmDomain ? EVM_TESTNETS[evmDomain] : null;
   const evmNetworkMatches = Boolean(
     expectedNetwork && evmWallet.chainId === expectedNetwork.chainId,
   );
 
-  const walletControl = selectedDomain === "solana" ? (
-    <div className={styles.walletControl}>
-      <select
-        aria-label="Solana Devnet wallet"
-        value={wallet.selectedWallet?.name ?? ""}
-        onChange={(event) => wallet.selectWallet(event.target.value)}
-      >
-        <option value="">Select wallet</option>
-        {wallet.wallets.map((item) => (
-          <option key={item.name} value={item.name}>{item.name}</option>
-        ))}
-      </select>
-      {wallet.selectedAccount ? (
-        <>
+  if (selectedDomain === "solana") {
+    if (wallet.selectedAccount) {
+      return (
+        <div className={styles.walletControl}>
           {wallet.accounts.length > 1 ? (
             <select
               aria-label="Solana Devnet wallet account"
@@ -137,173 +124,173 @@ function TopNavigation({
             >
               {wallet.accounts.map((account) => (
                 <option key={account.address} value={account.address}>
-                  {account.label ?? `${account.address.slice(0, 4)}...${account.address.slice(-4)}`}
+                  {account.label ?? shortAddress(account.address)}
                 </option>
               ))}
             </select>
           ) : null}
-          <button type="button" onClick={() => void wallet.disconnect()}>
+          <span className={styles.walletAccount} title={wallet.selectedAccount.address}>
+            <i className={styles.dotLive} aria-hidden="true" />
+            {shortAddress(wallet.selectedAccount.address)}
+            <small>Devnet</small>
+          </span>
+          <button type="button" className={styles.navButton} onClick={() => void wallet.disconnect()}>
             Disconnect
           </button>
-        </>
-      ) : (
+        </div>
+      );
+    }
+    return (
+      <div className={styles.walletControl}>
+        <select
+          aria-label="Solana Devnet wallet"
+          value={wallet.selectedWallet?.name ?? ""}
+          onChange={(event) => wallet.selectWallet(event.target.value)}
+          title={wallet.error ?? "Wallet Standard wallets only"}
+        >
+          <option value="">{wallet.wallets.length === 0 ? "No wallet detected" : "Select wallet"}</option>
+          {wallet.wallets.map((item) => (
+            <option key={item.name} value={item.name}>{item.name}</option>
+          ))}
+        </select>
         <button
           type="button"
+          className={styles.connectButton}
           disabled={!wallet.selectedWallet || wallet.connecting}
           onClick={() => void wallet.connect()}
         >
           {wallet.connecting ? "Connecting" : "Connect Devnet"}
         </button>
-      )}
-    </div>
-  ) : evmDomain && expectedNetwork ? (
-    <div className={styles.walletControl}>
-      {!evmWallet.account ? (
-        <button
-          type="button"
-          disabled={!evmWallet.available || evmWallet.connecting}
-          onClick={() => void evmWallet.connect()}
-        >
-          {evmWallet.connecting ? "Connecting" : "Connect wallet"}
-        </button>
-      ) : !evmNetworkMatches ? (
-        <button
-          type="button"
-          className={styles.networkMismatch}
-          disabled={evmWallet.switching}
-          onClick={() => void evmWallet.switchNetwork(evmDomain)}
-        >
-          {evmWallet.switching ? "Switching" : `Switch to ${expectedNetwork.label}`}
-        </button>
-      ) : (
-        <button type="button" onClick={evmWallet.disconnect}>
-          Disconnect
-        </button>
-      )}
-    </div>
-  ) : (
-    <div className={styles.serviceBadge}>Testnet service</div>
-  );
+      </div>
+    );
+  }
 
-  const sessionStatus = selectedDomain === "solana" ? (
-    <>
-      <span className={wallet.selectedAccount ? styles.statusDot : styles.offlineDot} />
-      <div>
-        <span>{wallet.selectedAccount ? "Devnet wallet ready" : "Wallet offline"}</span>
-        <small>
-          {wallet.selectedAccount
-            ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}`
-            : wallet.error ?? "Wallet Standard only"}
-        </small>
+  if (evmDomain && expectedNetwork) {
+    return (
+      <div className={styles.walletControl}>
+        {evmWallet.account ? (
+          <span
+            className={evmNetworkMatches ? styles.walletAccount : `${styles.walletAccount} ${styles.walletWarn}`}
+            title={evmWallet.error ?? evmWallet.account}
+          >
+            <i className={evmNetworkMatches ? styles.dotLive : styles.dotWarn} aria-hidden="true" />
+            {shortAddress(evmWallet.account, 6, 4)}
+            <small>{evmNetworkMatches ? expectedNetwork.label : "Wrong network"}</small>
+          </span>
+        ) : null}
+        {!evmWallet.account ? (
+          <button
+            type="button"
+            className={styles.connectButton}
+            disabled={!evmWallet.available || evmWallet.connecting}
+            title={evmWallet.error ?? (evmWallet.available ? "Manual connection only" : "Injected wallet unavailable")}
+            onClick={() => void evmWallet.connect()}
+          >
+            {evmWallet.connecting ? "Connecting" : evmWallet.available ? "Connect wallet" : "No EVM wallet"}
+          </button>
+        ) : !evmNetworkMatches ? (
+          <button
+            type="button"
+            className={styles.connectButton}
+            disabled={evmWallet.switching}
+            onClick={() => void evmWallet.switchNetwork(evmDomain)}
+          >
+            {evmWallet.switching ? "Switching" : `Switch to ${expectedNetwork.label}`}
+          </button>
+        ) : (
+          <button type="button" className={styles.navButton} onClick={evmWallet.disconnect}>
+            Disconnect
+          </button>
+        )}
       </div>
-    </>
-  ) : evmDomain && expectedNetwork ? (
-    <>
-      <span className={evmWallet.account && evmNetworkMatches ? styles.statusDot : styles.offlineDot} />
-      <div>
-        <span>
-          {!evmWallet.account
-            ? "EVM wallet offline"
-            : evmNetworkMatches
-              ? `${expectedNetwork.label} ready`
-              : "Wrong network"}
-        </span>
-        <small className={evmWallet.error ? styles.walletError : undefined}>
-          {evmWallet.error ?? (evmWallet.account
-            ? `${evmWallet.account.slice(0, 6)}...${evmWallet.account.slice(-4)}`
-            : evmWallet.available
-              ? "Manual connection only"
-              : "Injected wallet unavailable")}
-        </small>
-      </div>
-    </>
-  ) : (
-    <>
-      <span className={styles.offlineDot} />
-      <div>
-        <span>No browser wallet</span>
-        <small>Hyperliquid testnet service</small>
-      </div>
-    </>
+    );
+  }
+
+  return (
+    <div className={styles.walletControl}>
+      <span className={styles.walletAccount} title="Hyperliquid Testnet runs through the configured service account gate. No browser wallet is used.">
+        <i className={styles.dotIdle} aria-hidden="true" />
+        Service account gate
+        <small>No browser wallet</small>
+      </span>
+    </div>
   );
+}
+
+const NAV_VIEWS: readonly { tab: BottomTab; label: string }[] = [
+  { tab: "positions", label: "Portfolio" },
+  { tab: "receipts", label: "Receipts" },
+  { tab: "readiness", label: "Readiness" },
+];
+
+function TopNavigation({
+  snapshot,
+  selectedDomain,
+  providerConnection,
+  wallet,
+  evmWallet,
+  onDomainChange,
+  onOpenView,
+}: {
+  snapshot: TerminalViewModel;
+  selectedDomain: DomainId;
+  providerConnection: ProviderConnection;
+  wallet: SolanaWalletSession;
+  evmWallet: InjectedEvmWalletSession;
+  onDomainChange: (domain: DomainId) => void;
+  onOpenView: (tab: BottomTab) => void;
+}) {
+  const providerLabel = providerConnection === "connected"
+    ? "Service connected"
+    : providerConnection === "connecting"
+      ? "Checking service"
+      : "Local fallback";
 
   return (
     <header className={styles.topNavigation}>
       <Link className={styles.brand} href="/" aria-label="Naryx home">
         <BrandMark />
-        <div>
-          <strong>Naryx</strong>
-          <span>Private terminal</span>
-        </div>
+        <span className={styles.wordmark}>NARYX</span>
       </Link>
 
-      <div
-        className={styles.environmentBadge}
-        title={`${snapshot.environment.title}. ${snapshot.environment.detail} Captured ${snapshot.environment.capturedAt}.`}
-      >
-        <span className={styles.statusDot} />
-        <span>{snapshot.environment.label}</span>
-        <small>{providerLabel}</small>
-      </div>
-
-      <nav className={styles.domainSelector} aria-label="Execution domain preview">
-        {snapshot.domains.map((domain) => (
-          <button
-            key={domain.id}
-            type="button"
-            className={
-              selectedDomain === domain.id ? styles.domainActive : undefined
-            }
-            aria-pressed={selectedDomain === domain.id}
-            title={`${domain.runtime}. ${domain.state} data.`}
-            onClick={() => onDomainChange(domain.id)}
-          >
-            {domain.label}
+      <nav className={styles.primaryNav} aria-label="Terminal">
+        <span className={styles.primaryNavActive} aria-current="page">Trade</span>
+        {NAV_VIEWS.map((view) => (
+          <button key={view.tab} type="button" onClick={() => onOpenView(view.tab)}>
+            {view.label}
           </button>
         ))}
       </nav>
 
-      {walletControl}
+      <div className={styles.navEnd}>
+        <div
+          className={styles.environmentChip}
+          title={`${snapshot.environment.title}. ${snapshot.environment.detail} Captured ${snapshot.environment.capturedAt}.`}
+        >
+          <i className={providerConnection === "connected" ? styles.dotLive : providerConnection === "connecting" ? styles.dotWarn : styles.dotFixture} aria-hidden="true" />
+          <span>{snapshot.environment.label.replace(/_/g, " ")}</span>
+          <small>{providerLabel}</small>
+        </div>
 
-      <div className={styles.sessionStatus}>
-        {sessionStatus}
+        <div className={styles.domainSelector} role="group" aria-label="Execution domain">
+          {snapshot.domains.map((domain) => (
+            <button
+              key={domain.id}
+              type="button"
+              className={selectedDomain === domain.id ? styles.domainActive : undefined}
+              aria-pressed={selectedDomain === domain.id}
+              title={`${domain.label}: ${domain.runtime}. ${domain.state} data.`}
+              onClick={() => onDomainChange(domain.id)}
+            >
+              <span className={styles.domainGlyph} data-domain={domain.id} aria-hidden="true" />
+              {domain.label}
+            </button>
+          ))}
+        </div>
+
+        <WalletControl selectedDomain={selectedDomain} wallet={wallet} evmWallet={evmWallet} />
       </div>
     </header>
-  );
-}
-
-function MarketHeader({ snapshot }: { snapshot: TerminalViewModel }) {
-  return (
-    <section className={styles.marketHeader} aria-label="Package market overview">
-      <div className={styles.marketIdentity}>
-        <div className={styles.assetMark}>{snapshot.market.base.slice(0, 1)}</div>
-        <div>
-          <div className={styles.pairLine}>
-            <h1>
-              {snapshot.market.base}
-              <span>/</span>
-              {snapshot.market.quote}
-            </h1>
-            <span className={styles.packageTag}>Package</span>
-          </div>
-          <p>
-            {snapshot.market.strategy} <span>{snapshot.market.packageId}</span>
-          </p>
-        </div>
-      </div>
-
-      <div className={styles.metricsRail}>
-        {snapshot.market.metrics.map((metric) => (
-          <div className={styles.metric} key={metric.label}>
-            <span>{metric.label}</span>
-            <strong className={metric.accent ? styles.accentValue : undefined}>
-              {metric.value}
-            </strong>
-            {metric.detail ? <small>{metric.detail}</small> : null}
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 
@@ -380,6 +367,16 @@ function readinessBlocker(
   return "Runtime unavailable. No testnet execution.";
 }
 
+function readinessStatus(
+  hasService: boolean,
+  providerConnection: ProviderConnection,
+  health: RuntimeBoundaryHealth | null,
+): "Available" | "Checking" | "Unavailable" | "Disabled" {
+  if (!hasService) return "Disabled";
+  if (!health) return providerConnection === "connecting" ? "Checking" : "Unavailable";
+  return health.available ? "Available" : "Unavailable";
+}
+
 function ExecutionReadiness({
   snapshot,
   selectedDomain,
@@ -417,41 +414,91 @@ function ExecutionReadiness({
     : !runtimeHealth
       ? providerConnection === "connecting" ? "Checking service" : "Health unavailable"
       : providerConnection === "connected" ? "Service health current" : "Service health stale";
+  const stages = [
+    { label: "Local verification", state: localVerified ? "VERIFIED" : "UNKNOWN", tone: localVerified ? styles.stageDone : styles.stageUnknown },
+    { label: "Public testnet", state: "DEPLOYMENT DEFERRED", tone: styles.stageDeferred },
+    { label: "Pinned fork", state: "HARNESS READY, RPC DEPENDENT", tone: styles.stageConditional },
+    { label: "Mainnet shadow", state: "SIGNERLESS READ ONLY", tone: styles.stageConditional },
+    { label: "Mainnet writes", state: "PROHIBITED", tone: styles.stageProhibited },
+  ];
   return (
     <section className={styles.readinessPanel} aria-labelledby="readiness-title">
-      <div className={styles.readinessHeader}>
-        <div>
-          <div className={styles.eyebrow}>Execution readiness</div>
-          <h2 id="readiness-title">Evidence and promotion boundary</h2>
-          <p>Observed controls and evidence only. Missing proof remains unavailable.</p>
-        </div>
-        <span className={styles.readinessService} role="status">{serviceNote}</span>
+      <div className={styles.sectionBar}>
+        <h2 id="readiness-title">Evidence and promotion boundary</h2>
+        <p>Observed controls and evidence only. Missing proof remains unavailable.</p>
+        <span className={styles.chipNeutral} role="status">{serviceNote}</span>
       </div>
 
-      <ol className={styles.assuranceRail} aria-label="Environment promotion boundary">
-        <li className={localVerified ? styles.assuranceVerified : styles.assuranceUnknown}>
-          <span>01</span><div><strong>Local verification</strong><small>{localVerified ? "VERIFIED" : "UNKNOWN"}</small></div>
-        </li>
-        <li className={styles.assuranceDeferred}>
-          <span>02</span><div><strong>Public testnet</strong><small>DEPLOYMENT DEFERRED</small></div>
-        </li>
-        <li className={styles.assuranceConditional}>
-          <span>03</span><div><strong>Pinned fork</strong><small>HARNESS READY, RPC DEPENDENT</small></div>
-        </li>
-        <li className={styles.assuranceConditional}>
-          <span>04</span><div><strong>Mainnet shadow</strong><small>SIGNERLESS READ ONLY</small></div>
-        </li>
-        <li className={styles.assuranceProhibited}>
-          <span>05</span><div><strong>Mainnet writes</strong><small>PROHIBITED</small></div>
-        </li>
+      <ol className={styles.stageRail} aria-label="Environment promotion boundary">
+        {stages.map((stage, index) => (
+          <li key={stage.label} className={stage.tone}>
+            <span className={styles.stageIndex}>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{stage.label}</strong>
+            <small>{stage.state}</small>
+          </li>
+        ))}
       </ol>
 
-      <div className={styles.evidenceLedger} aria-label={`${READINESS_FALLBACK[selectedDomain].label} evidence ledger`}>
-        <div className={styles.evidenceLedgerTitle}>
-          <span>Selected domain evidence</span>
-          <strong>{READINESS_FALLBACK[selectedDomain].label}</strong>
+      <div className={styles.readinessBody}>
+        <div className={styles.tableWrap}>
+        <table className={styles.dataTable} aria-label="Domain execution readiness">
+          <thead>
+            <tr>
+              <th scope="col">Domain</th>
+              <th scope="col">Runtime</th>
+              <th scope="col">Network</th>
+              <th scope="col">Mode</th>
+              <th scope="col">Settlement class</th>
+              <th scope="col">Status</th>
+              <th scope="col">Execution</th>
+            </tr>
+          </thead>
+          <tbody>
+            {READINESS_ORDER.map((domain) => {
+              const model = snapshot.domains.find((item) => item.id === domain);
+              const fallback = READINESS_FALLBACK[domain];
+              const meta = READINESS_META[domain];
+              const health = readinessHealthFor(domain, runtimeHealth);
+              const status = readinessStatus(hasService, providerConnection, health);
+              const blocker = readinessBlocker(hasService, providerConnection, health, domain);
+              const selected = selectedDomain === domain;
+              return (
+                <tr key={domain} className={selected ? styles.rowSelected : undefined}>
+                  <td>
+                    <button
+                      type="button"
+                      className={styles.rowSelect}
+                      aria-pressed={selected}
+                      aria-label={`${model?.label ?? fallback.label} domain, ${status}. ${blocker} ${selected ? "Selected." : "Select."}`}
+                      onClick={() => onSelect(domain)}
+                    >
+                      <span className={styles.domainGlyph} data-domain={domain} aria-hidden="true" />
+                      {model?.label ?? fallback.label}
+                    </button>
+                  </td>
+                  <td>{model?.runtime ?? fallback.runtime}</td>
+                  <td>{meta.testNetwork}</td>
+                  <td>{meta.executionMode}</td>
+                  <td className={styles.monoCell}>{meta.settlementClass}</td>
+                  <td>
+                    <span className={status === "Available" ? styles.statusOk : styles.statusOff}>
+                      <i className={status === "Available" ? styles.dotLive : styles.dotIdle} aria-hidden="true" />
+                      {status}
+                    </span>
+                  </td>
+                  <td className={styles.noteCell} title={blocker}>{blocker}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
         </div>
-        <dl>
+
+        <dl className={styles.ledger} aria-label={`${READINESS_FALLBACK[selectedDomain].label} evidence ledger`}>
+          <div className={styles.ledgerTitle}>
+            <dt>Selected domain</dt>
+            <dd>{READINESS_FALLBACK[selectedDomain].label}</dd>
+          </div>
           <div><dt>Settlement class</dt><dd title={selectedMeta.settlementClass}>{selectedMeta.settlementClass}</dd></div>
           <div><dt>Route evidence</dt><dd>{routeEvidence}</dd></div>
           <div><dt>Funded operation hash</dt><dd>NOT AVAILABLE</dd></div>
@@ -459,171 +506,9 @@ function ExecutionReadiness({
           <div><dt>Authority fence</dt><dd>{authorityFence}</dd></div>
           <div><dt>Dependencies</dt><dd title={dependencyStatus}>{dependencyStatus}</dd></div>
           <div><dt>Incident state</dt><dd>UNKNOWN</dd></div>
-          <div><dt>Execution</dt><dd>{readinessBlocker(hasService, providerConnection, selectedHealth, selectedDomain)}</dd></div>
         </dl>
       </div>
-
-      <ul className={styles.readinessGrid} aria-label="Domain execution readiness">
-        {READINESS_ORDER.map((domain) => {
-          const model = snapshot.domains.find((item) => item.id === domain);
-          const fallback = READINESS_FALLBACK[domain];
-          const meta = READINESS_META[domain];
-          const health = readinessHealthFor(domain, runtimeHealth);
-          const status = !hasService
-            ? "Disabled"
-            : !health
-              ? providerConnection === "connecting" ? "Checking" : "Unavailable"
-              : health.available ? "Available" : "Unavailable";
-          const blocker = readinessBlocker(hasService, providerConnection, health, domain);
-          const selected = selectedDomain === domain;
-          return (
-            <li key={domain}>
-              <button
-                type="button"
-                className={selected ? `${styles.readinessCard} ${styles.readinessSelected}` : styles.readinessCard}
-                aria-pressed={selected}
-                aria-label={`${model?.label ?? fallback.label} domain, ${status}. ${blocker} ${selected ? "Selected." : "Select."}`}
-                title={blocker}
-                onClick={() => onSelect(domain)}
-              >
-                <span className={styles.readinessTop}>
-                  <strong>{model?.label ?? fallback.label}{selected ? " - Selected" : ""}</strong>
-                  <span className={status === "Available" ? styles.readinessAvailable : styles.readinessUnavailable}>
-                    <span className={status === "Available" ? styles.statusDot : styles.offlineDot} aria-hidden="true" />
-                    {status}
-                  </span>
-                </span>
-                <span className={styles.readinessFacts}>
-                  <span><span>Runtime</span><strong>{model?.runtime ?? fallback.runtime}</strong></span>
-                  <span><span>Network</span><strong>{meta.testNetwork}</strong></span>
-                  <span><span>Mode</span><strong>{meta.executionMode}</strong></span>
-                  <span><span>Settlement</span><strong title={meta.settlementClass}>{meta.settlementClass}</strong></span>
-                </span>
-                <span className={styles.readinessBlocker}>{blocker}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
     </section>
-  );
-}
-
-function BasisChart({ snapshot }: { snapshot: TerminalViewModel }) {
-  const values = snapshot.chart.points.flatMap((point) => [point.spot, point.perp]);
-  const minimum = Math.min(...values) - 0.12;
-  const maximum = Math.max(...values) + 0.12;
-  const range = maximum - minimum;
-  const spotPoints = pointsFor(snapshot.chart.points, "spot", minimum, range);
-  const perpPoints = pointsFor(snapshot.chart.points, "perp", minimum, range);
-  const areaPoints = `${spotPoints} ${perpPoints.split(" ").reverse().join(" ")}`;
-
-  return (
-    <section className={styles.panel} aria-labelledby="basis-chart-title">
-      <div className={styles.panelHeader}>
-        <div>
-          <div className={styles.eyebrow}>Spread monitor</div>
-          <h2 id="basis-chart-title">{snapshot.chart.title}</h2>
-          <p>{snapshot.chart.subtitle}</p>
-        </div>
-        <div className={styles.chartLegend} aria-label="Chart legend">
-          <span>
-            <i className={styles.spotKey} /> Spot
-          </span>
-          <span>
-            <i className={styles.perpKey} /> Perpetual
-          </span>
-          <span className={styles.timeframe}>1H</span>
-        </div>
-      </div>
-
-      <div className={styles.chartFrame}>
-        <svg
-          className={styles.chart}
-          viewBox="0 0 720 220"
-          role="img"
-          aria-labelledby="chart-title chart-description"
-        >
-          <title id="chart-title">Spot and perpetual reference prices</title>
-          <desc id="chart-description">
-            Deterministic conformance prices with the perpetual above spot across the
-            captured window.
-          </desc>
-          {[50, 96.7, 143.3, 190].map((y) => (
-            <line
-              className={styles.gridLine}
-              key={y}
-              x1="36"
-              x2="684"
-              y1={y}
-              y2={y}
-            />
-          ))}
-          <polygon className={styles.basisArea} points={areaPoints} />
-          <polyline className={styles.spotLine} points={spotPoints} />
-          <polyline className={styles.perpLine} points={perpPoints} />
-          <circle className={styles.spotPoint} cx="684" cy={spotPoints.split(" ").at(-1)?.split(",")[1]} r="4" />
-          <circle className={styles.perpPoint} cx="684" cy={perpPoints.split(" ").at(-1)?.split(",")[1]} r="4" />
-          <text className={styles.axisLabel} x="36" y="211">
-            {snapshot.chart.points.at(0)?.label}
-          </text>
-          <text className={styles.axisLabel} x="684" y="211" textAnchor="end">
-            {snapshot.chart.points.at(-1)?.label}
-          </text>
-          <text className={styles.axisLabel} x="36" y="39">
-            {formatCurrency(maximum)}
-          </text>
-          <text className={styles.axisLabel} x="36" y="185">
-            {formatCurrency(minimum)}
-          </text>
-        </svg>
-
-        <div className={styles.basisStrip} aria-label="Basis in basis points">
-          <div className={styles.basisStripLabel}>
-            <span>Basis profile</span>
-            <strong>{snapshot.chart.points.at(-1)?.basisBps.toFixed(1)} bps</strong>
-          </div>
-          <div className={styles.basisBars}>
-            {snapshot.chart.points.map((point) => (
-              <span
-                key={point.label}
-                title={`${point.label}: ${point.basisBps.toFixed(1)} bps`}
-                style={{ height: `${Math.max(24, point.basisBps)}%` }}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function LegCard({ leg }: { leg: PackageLeg }) {
-  return (
-    <article className={styles.legCard}>
-      <div className={styles.legTopline}>
-        <span className={styles.legSequence}>0{leg.sequence}</span>
-        <span className={styles.legState}>{leg.state}</span>
-      </div>
-      <div className={styles.legTitle}>
-        <div>
-          <span>{leg.action}</span>
-          <h3>{leg.instrument}</h3>
-        </div>
-        <strong>{leg.quantity}</strong>
-      </div>
-      <p className={styles.legVenue}>{leg.venue}</p>
-      <div className={styles.legDetails}>
-        <div>
-          <span>{leg.limitLabel}</span>
-          <strong>{leg.limit}</strong>
-        </div>
-        <div>
-          <span>Dependency</span>
-          <strong>{leg.dependency}</strong>
-        </div>
-      </div>
-    </article>
   );
 }
 
@@ -640,24 +525,42 @@ function PackageSequence({
   const legs = preview?.mode === mode ? preview.legs : plan.legs;
 
   return (
-    <section className={`${styles.panel} ${styles.sequencePanel}`} aria-labelledby="sequence-title">
-      <div className={styles.panelHeader}>
-        <div>
-          <div className={styles.eyebrow}>Isolated package plan</div>
-          <h2 id="sequence-title">{plan.label}</h2>
-          <p>{plan.description}</p>
-        </div>
-        <span className={styles.sequencePolicy}>Fail closed</span>
+    <section className={styles.routePanel} aria-labelledby="sequence-title">
+      <div className={styles.sectionBar}>
+        <h2 id="sequence-title">{plan.label}</h2>
+        <p>{plan.description}</p>
+        <span className={styles.chipDanger}>Fail closed</span>
       </div>
-      <div className={styles.legs}>
-        <LegCard leg={legs[0]} />
-        <div className={styles.dependencyConnector} aria-hidden="true">
-          <span />
-          <b>then</b>
-          <span />
-        </div>
-        <LegCard leg={legs[1]} />
-      </div>
+      <table className={styles.dataTable}>
+        <thead>
+          <tr>
+            <th scope="col">Leg</th>
+            <th scope="col">Action</th>
+            <th scope="col">Instrument</th>
+            <th scope="col">Venue</th>
+            <th scope="col" className={styles.numericColumn}>Quantity</th>
+            <th scope="col">Limit</th>
+            <th scope="col" className={styles.numericColumn}>Price</th>
+            <th scope="col">State</th>
+            <th scope="col">Dependency</th>
+          </tr>
+        </thead>
+        <tbody>
+          {legs.map((leg) => (
+            <tr key={leg.sequence}>
+              <td className={styles.monoCell}>{String(leg.sequence).padStart(2, "0")}</td>
+              <td className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>{leg.action}</td>
+              <td>{leg.instrument}</td>
+              <td className={styles.dimCell}>{leg.venue}</td>
+              <td className={`${styles.monoCell} ${styles.numericColumn}`}>{tidy(leg.quantity)}</td>
+              <td className={styles.dimCell}>{leg.limitLabel}</td>
+              <td className={`${styles.monoCell} ${styles.numericColumn}`}>{tidy(leg.limit)}</td>
+              <td><span className={styles.chipNeutral}>{leg.state}</span></td>
+              <td className={styles.dimCell}>{leg.dependency}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </section>
   );
 }
@@ -1014,11 +917,11 @@ function ExecutionReviewPanel({
         </div>
         <div>
           <span>Bound</span>
-          <strong>{preview ? `$${preview.bound.value}` : "-"}</strong>
+          <strong>{preview ? usd(preview.bound.value) : "-"}</strong>
         </div>
         <div>
           <span>Fees</span>
-          <strong>{preview ? `$${preview.totalFee.value}` : "-"}</strong>
+          <strong>{preview ? usd(preview.totalFee.value) : "-"}</strong>
         </div>
       </div>
       {(preview?.legs ?? []).map((leg) => (
@@ -1146,6 +1049,7 @@ function Ticket({
   size,
   slippage,
   quoteMode,
+  accountLabel,
   localFlow,
   localFlowEnabled,
   localCanSignMessage,
@@ -1176,6 +1080,7 @@ function Ticket({
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
+  accountLabel: string;
   localFlow: LocalFlowState | null;
   localFlowEnabled: boolean;
   localCanSignMessage: boolean;
@@ -1199,65 +1104,91 @@ function Ticket({
   onPrepareExecution: () => void;
   onRetryObservation: () => void;
 }) {
-  return (
-    <aside className={`${styles.panel} ${styles.ticket}`} aria-labelledby="ticket-title">
-      <div className={styles.ticketHeader}>
-        <div>
-          <div className={styles.eyebrow}>Package ticket</div>
-          <h2 id="ticket-title">Prepare route</h2>
-        </div>
-        <span className={styles.previewPill}>Preview</span>
-      </div>
+  const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
+  const legs = preview?.mode === mode ? preview.legs : plan.legs;
+  const flowState = selectedDomain === "hyperliquid"
+    ? hyperliquidFlow?.execution?.status ?? (hyperliquidFlow?.attempt ? "SELECTED" : hyperliquidFlow?.quote ? "QUOTE REVIEW" : hyperliquidFlow?.order ? "ORDER CREATED" : hyperliquidFlow?.context ? "GATE READY" : "DISCOVERING")
+    : localFlow?.lifecycle?.attempt.state ?? (localFlow?.attempt ? "SELECTED" : localFlow?.quote ? "QUOTE REVIEW" : localFlow?.order ? "UNSIGNED" : "READY");
 
-      <div className={styles.modeSwitch} aria-label="Package mode">
+  return (
+    <aside className={styles.ticket} aria-labelledby="ticket-title">
+      <h2 id="ticket-title" className={styles.visuallyHidden}>Package ticket</h2>
+
+      <div className={styles.sideSwitch} role="group" aria-label="Package mode">
         {(["entry", "exit"] as const).map((item) => (
           <button
             key={item}
             type="button"
-            className={mode === item ? styles.modeActive : undefined}
+            className={mode === item ? (item === "entry" ? styles.sideEntryActive : styles.sideExitActive) : undefined}
             aria-pressed={mode === item}
             onClick={() => onModeChange(item)}
           >
-            {item === "entry" ? "Entry" : "Exit"}
+            {item === "entry" ? "Enter package" : "Exit package"}
           </button>
         ))}
       </div>
 
-      <label className={styles.fieldLabel} htmlFor="package-size">
-        <span>Package size</span>
-        <small>Fixture reference: {snapshot.ticket.defaultSize} SOL</small>
-      </label>
-      <div className={styles.amountInput}>
+      <div className={styles.orderTypes} role="group" aria-label="Quote mode">
+        {snapshot.ticket.quoteModes.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            aria-pressed={quoteMode === item.id}
+            className={quoteMode === item.id ? styles.orderTypeActive : undefined}
+            onClick={() => onQuoteModeChange(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <dl className={styles.ticketFacts}>
+        <div><dt>Account</dt><dd>{accountLabel}</dd></div>
+        <div><dt>Package</dt><dd>{snapshot.market.packageId}</dd></div>
+        <div><dt>Evidence</dt><dd className={styles.fixtureText}>{preview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</dd></div>
+      </dl>
+
+      <div className={styles.sizeBox}>
+        <label htmlFor="package-size">Package size</label>
         <input
           id="package-size"
           inputMode="decimal"
           autoComplete="off"
           value={size}
+          placeholder="0"
           onChange={(event) => onSizeChange(sanitizeSize(event.target.value))}
           aria-describedby="size-context"
         />
-        <span>{snapshot.ticket.sizeSymbol}</span>
-      </div>
-      <p id="size-context" className={styles.fieldContext}>
-        Conformance calculation only. No balance has been loaded.
-      </p>
-
-      <div className={styles.boundaryRow}>
-        <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
-        <div>
-          <strong>{preview ? `$${preview.bound.value}` : "Unavailable"}</strong>
-          <small>USDC conformance estimate</small>
+        <div className={styles.sizeMeta}>
+          <span className={styles.symbolChip}>{snapshot.ticket.sizeSymbol}</span>
+          <span id="size-context">
+            {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
+          </span>
         </div>
       </div>
 
-      <div className={styles.ticketField}>
-        <span>Slippage</span>
-        <div className={styles.segmentedControl}>
+      <div className={styles.presets} role="group" aria-label="Size presets">
+        {SIZE_PRESETS.map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            aria-pressed={size === preset}
+            className={size === preset ? styles.presetActive : undefined}
+            onClick={() => onSizeChange(preset)}
+          >
+            {preset}
+          </button>
+        ))}
+      </div>
+
+      <div className={styles.ticketRow}>
+        <span>Slippage tolerance</span>
+        <div className={styles.miniSegment} role="group" aria-label="Slippage">
           {SLIPPAGE_OPTIONS.map((option) => (
             <button
               type="button"
               key={option}
-              className={slippage === option ? styles.segmentActive : undefined}
+              className={slippage === option ? styles.miniSegmentActive : undefined}
               aria-pressed={slippage === option}
               onClick={() => onSlippageChange(option)}
             >
@@ -1267,62 +1198,99 @@ function Ticket({
         </div>
       </div>
 
-      <label className={styles.ticketField} htmlFor="quote-mode">
-        <span>Quote mode</span>
-        <select
-          id="quote-mode"
-          value={quoteMode}
-          onChange={(event) => onQuoteModeChange(event.target.value as QuoteMode)}
-        >
-          {snapshot.ticket.quoteModes.map((item) => (
-            <option key={item.id} value={item.id}>{item.label}</option>
-          ))}
-        </select>
-      </label>
+      <ol className={styles.legList} aria-label="Package legs">
+        {legs.map((leg) => (
+          <li key={leg.sequence}>
+            <span className={styles.legIndex}>{leg.sequence}</span>
+            <div>
+              <strong className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>{leg.action}</strong>
+              <small>{leg.instrument} / {leg.venue}</small>
+            </div>
+            <div className={styles.legNumbers}>
+              <strong>{tidy(leg.quantity)}</strong>
+              <small title={`${leg.limitLabel} ${leg.limit}`}>{/max/i.test(leg.limitLabel) ? "max" : "min"} {tidy(leg.limit)}</small>
+            </div>
+          </li>
+        ))}
+      </ol>
 
-      <section className={styles.evidenceBox} aria-labelledby="route-evidence-title">
-        <div className={styles.evidenceHeading}>
-          <h3 id="route-evidence-title">Route evidence</h3>
-          <span>Unverified</span>
+      {selectedDomain !== "hyperliquid" ? (
+        <div className={styles.actionArea}>
+          <button
+            className={styles.primaryCta}
+            type="button"
+            disabled={actionDisabled || actionBusy}
+            aria-describedby="execution-note"
+            onClick={onExecutionAction}
+          >
+            {confirming ? "Confirm in wallet" : actionBusy ? "Preparing Devnet review" : actionLabel}
+          </button>
+          <button
+            className={styles.secondaryCta}
+            type="button"
+            disabled={prepareDisabled || actionBusy}
+            onClick={onPrepareExecution}
+          >
+            {executionReview ? "Refresh Devnet review" : "Prepare Devnet review"}
+          </button>
+          <p id="execution-note" role="status">
+            {actionReason}
+          </p>
         </div>
+      ) : null}
+
+      <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
+        <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
+        <div className={styles.summaryRow}>
+          <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
+          <strong>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
+        </div>
+        {(preview?.fees ?? []).map((row) => (
+          <div className={styles.summaryRow} key={row.label}>
+            <span>{row.label}</span>
+            <strong>{usd(row.value)}</strong>
+          </div>
+        ))}
+        <div className={`${styles.summaryRow} ${styles.summaryTotal}`}>
+          <span>Estimated fees</span>
+          <strong>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
+        </div>
+        <div className={styles.summaryDivider} />
         {snapshot.ticket.evidence.map((row) => (
           <div className={styles.summaryRow} key={row.label}>
             <span>{row.label}</span>
             <strong>{row.value}</strong>
           </div>
         ))}
+        <p className={styles.summaryNote}>USDC conformance estimate. No balance has been loaded.</p>
       </section>
 
-      {selectedDomain === "hyperliquid" ? (
-        <HyperliquidTestnetPanel
-          flow={hyperliquidFlow}
-          enabled={hyperliquidFlowEnabled}
-          size={size}
-          slippage={slippage}
-          onStep={onHyperliquidStep}
-        />
-      ) : (
-        <LocalExecutionPanel
-          flow={localFlow}
-          enabled={localFlowEnabled}
-          canSignMessage={localCanSignMessage}
-          onStep={onLocalStep}
-        />
-      )}
-
-      <section className={styles.feeSummary} aria-labelledby="fee-summary-title">
-        <h3 id="fee-summary-title">Fee summary</h3>
-        {(preview?.fees ?? []).map((row) => (
-          <div className={styles.summaryRow} key={row.label}>
-            <span>{row.label}</span>
-            <strong>${row.value}</strong>
-          </div>
-        ))}
-        <div className={`${styles.summaryRow} ${styles.totalRow}`}>
-          <span>Estimated total</span>
-          <strong>{preview ? `$${preview.totalFee.value}` : "Unavailable"}</strong>
-        </div>
-      </section>
+      <details
+        key={selectedDomain}
+        className={styles.flowDetails}
+        open={selectedDomain === "hyperliquid"}
+      >
+        <summary>
+          <span>{selectedDomain === "hyperliquid" ? "Hyperliquid Testnet flow" : "Local conformance lifecycle"}</span>
+          <span className={styles.chipNeutral}>{flowState}</span>
+        </summary>
+        {selectedDomain === "hyperliquid" ? (
+          <HyperliquidTestnetPanel
+            flow={hyperliquidFlow}
+            enabled={hyperliquidFlowEnabled}
+            size={size}
+            slippage={slippage}
+            onStep={onHyperliquidStep}
+          />
+        ) : (
+          <LocalExecutionPanel
+            flow={localFlow}
+            enabled={localFlowEnabled}
+            canSignMessage={localCanSignMessage}
+            onStep={onLocalStep}
+          />
+        )}
+      </details>
 
       {executionReview ? (
         <ExecutionReviewPanel
@@ -1333,32 +1301,20 @@ function Ticket({
           onRetryObservation={onRetryObservation}
         />
       ) : null}
-
-      {selectedDomain !== "hyperliquid" ? <div className={styles.actionArea}>
-        <button
-          className={styles.secondaryAction}
-          type="button"
-          disabled={prepareDisabled || actionBusy}
-          onClick={onPrepareExecution}
-        >
-          {executionReview ? "Refresh Devnet review" : "Prepare Devnet review"}
-        </button>
-        <button
-          className={styles.primaryAction}
-          type="button"
-          disabled={actionDisabled || actionBusy}
-          aria-describedby="execution-note"
-          onClick={onExecutionAction}
-        >
-          {confirming ? "Confirm in wallet" : actionBusy ? "Preparing Devnet review" : actionLabel}
-        </button>
-        <p id="execution-note" role="status">
-          {actionReason}
-        </p>
-      </div> : null}
     </aside>
   );
 }
+
+// Durable lifecycle receipts are state transitions, not network receipts, so they carry their own
+// columns instead of the snapshot's leg, block, and finality headers.
+const LIFECYCLE_RECEIPT_COLUMNS: readonly { label: string; numeric?: boolean }[] = [
+  { label: "Receipt" },
+  { label: "Domain" },
+  { label: "Transition" },
+  { label: "Revision", numeric: true },
+  { label: "Evidence grade" },
+  { label: "Enforcement" },
+];
 
 function BottomWorkspace({
   snapshot,
@@ -1370,6 +1326,10 @@ function BottomWorkspace({
   lifecycleUnavailable,
   onRetryObservation,
   onRetryLifecycle,
+  activeTab,
+  onTabChange,
+  routePlan,
+  readiness,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
@@ -1380,8 +1340,12 @@ function BottomWorkspace({
   lifecycleUnavailable: boolean;
   onRetryObservation: () => void;
   onRetryLifecycle: () => void;
+  activeTab: BottomTab;
+  onTabChange: (tab: BottomTab) => void;
+  routePlan: ReactNode;
+  readiness: ReactNode;
 }) {
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("positions");
+  const extraPanel = activeTab === "route" ? routePlan : activeTab === "readiness" ? readiness : null;
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
@@ -1394,31 +1358,45 @@ function BottomWorkspace({
   const showNetworkEvidence = showReceipts && submission !== null;
   const needsRetry = showNetworkEvidence && submission !== null &&
     submission.observationUnavailable && !isObservationTerminal(submission.observation);
+  const tabs: readonly { tab: BottomTab; label: string; count?: number }[] = [
+    ...snapshot.workspaces.map((workspace) => ({
+      tab: workspace.tab,
+      label: workspace.label,
+      count: workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count,
+    })),
+    { tab: "route", label: "Route plan" },
+    { tab: "readiness", label: "Readiness" },
+  ];
 
   return (
-    <section className={`${styles.panel} ${styles.bottomWorkspace}`} aria-label="Trading workspace">
+    <section id="terminal-workspace" className={styles.bottomWorkspace} aria-label="Trading workspace">
       <div className={styles.workspaceTabs} role="tablist" aria-label="Account data">
-        {snapshot.workspaces.map((workspace) => (
+        {tabs.map((entry) => (
           <button
-            id={`tab-${workspace.tab}`}
-            key={workspace.tab}
+            id={`tab-${entry.tab}`}
+            key={entry.tab}
             type="button"
             role="tab"
-            aria-selected={activeTab === workspace.tab}
-            aria-controls={`panel-${workspace.tab}`}
-            className={activeTab === workspace.tab ? styles.workspaceTabActive : undefined}
-            onClick={() => setActiveTab(workspace.tab)}
+            aria-selected={activeTab === entry.tab}
+            aria-controls={`panel-${entry.tab}`}
+            className={activeTab === entry.tab ? styles.workspaceTabActive : undefined}
+            onClick={() => onTabChange(entry.tab)}
           >
-            {workspace.label}
-            {workspace.count !== undefined ? <span>{workspace.count}</span> : null}
+            {entry.label}
+            {entry.count !== undefined ? <span>({entry.count})</span> : null}
           </button>
         ))}
         <div className={styles.workspaceStatus}>
-          <span className={providerConnection === "connected" ? styles.statusDot : styles.offlineDot} />
+          <i className={providerConnection === "connected" ? styles.dotLive : styles.dotIdle} aria-hidden="true" />
           {providerLabel}
         </div>
       </div>
 
+      {extraPanel !== null ? (
+        <div id={`panel-${activeTab}`} role="tabpanel" aria-labelledby={`tab-${activeTab}`} className={styles.tableScroller}>
+          {extraPanel}
+        </div>
+      ) : (
       <div
         id={`panel-${activeWorkspace.tab}`}
         role="tabpanel"
@@ -1450,7 +1428,7 @@ function BottomWorkspace({
           </div>
         ) : null}
         {showReceipts && lifecycleUnavailable ? (
-          <p className={styles.lifecycleUnavailable} role="status">
+          <p className={styles.inlineNotice} role="status">
             Durable lifecycle is temporarily unavailable.
             <button type="button" className={styles.inlineRetry} onClick={onRetryLifecycle}>
               Retry lifecycle
@@ -1458,10 +1436,10 @@ function BottomWorkspace({
           </p>
         ) : null}
         {showReceipts && lifecycleLoading && !lifecycle ? (
-          <p className={styles.receiptsNote} role="status">Loading durable lifecycle receipts.</p>
+          <p className={styles.inlineNotice} role="status">Loading durable lifecycle receipts.</p>
         ) : null}
         {showNetworkEvidence && submission ? (
-          <p className={styles.networkEvidence} role="status">
+          <p className={styles.inlineNotice} role="status">
             <span>
               Network evidence only: {observationNetworkLabel(submission)} on Solana Devnet for the {attemptMode} transaction. {observationEvidenceLabel(submission)}.
             </span>
@@ -1472,10 +1450,10 @@ function BottomWorkspace({
             ) : null}
           </p>
         ) : null}
-        <table className={styles.workspaceTable}>
+        <table className={styles.dataTable}>
           <thead>
             <tr>
-              {activeWorkspace.columns.map((column) => (
+              {(showReceipts && lifecycle ? LIFECYCLE_RECEIPT_COLUMNS : activeWorkspace.columns).map((column) => (
                 <th
                   key={column.label}
                   className={column.numeric ? styles.numericColumn : undefined}
@@ -1490,33 +1468,30 @@ function BottomWorkspace({
             {showReceipts && lifecycle ? (
               lifecycle.receipts.map((receipt) => (
                 <tr key={receipt.receiptHashHex}>
-                  <td className={styles.receiptsCell} title={receipt.receiptHashHex}>
+                  <td className={styles.monoCell} title={receipt.receiptHashHex}>
                     {compact(receipt.receiptHashHex, 10, 8)}
                   </td>
-                  <td className={styles.receiptsCell} title={receipt.domain.domainManifestHashHex}>
+                  <td title={receipt.domain.domainManifestHashHex}>
                     {receipt.domain.domainId}
                   </td>
-                  <td className={styles.receiptsCell}>
+                  <td className={styles.monoCell}>
                     {receipt.priorState ?? "START"} &gt; {receipt.nextState}
                   </td>
-                  <td className={`${styles.receiptsCell} ${styles.receiptsCellNumeric}`}>
+                  <td className={`${styles.monoCell} ${styles.numericColumn}`}>
                     {receipt.revision}
                   </td>
-                  <td className={styles.receiptsCell}>{receipt.evidenceGrade}</td>
-                  <td className={styles.receiptsCell}>
+                  <td className={styles.monoCell}>{receipt.evidenceGrade}</td>
+                  <td>
                     {receipt.onchainEnforced ? "Onchain" : "Controller"}
                   </td>
                 </tr>
               ))
             ) : (
-              <tr>
+              <tr className={styles.emptyRow}>
                 <td colSpan={activeWorkspace.columns.length}>
                   <div className={styles.emptyState}>
-                    <span className={styles.emptyGlyph} aria-hidden="true" />
-                    <div>
-                      <strong>{activeWorkspace.emptyTitle}</strong>
-                      <p>{activeWorkspace.emptyDetail}</p>
-                    </div>
+                    <strong>{activeWorkspace.emptyTitle}</strong>
+                    <p>{activeWorkspace.emptyDetail}</p>
                   </div>
                 </td>
               </tr>
@@ -1524,6 +1499,7 @@ function BottomWorkspace({
           </tbody>
         </table>
       </div>
+      )}
     </section>
   );
 }
@@ -1546,6 +1522,8 @@ export function TradingTerminal({
     initialSnapshot.ticket.defaultSlippageBps,
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
+  const [workspaceTab, setWorkspaceTab] = useState<BottomTab>("positions");
+  const feed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
   const wallet = useSolanaDevnetWallet();
   const evmWallet = useInjectedEvmWallet();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
@@ -2220,89 +2198,119 @@ export function TradingTerminal({
     preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
+  const accountLabel = selectedDomain === "solana"
+    ? wallet.selectedAccount ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}` : "Wallet not connected"
+    : selectedDomain === "hyperliquid"
+      ? "Service account gate"
+      : evmWallet.account ? `${evmWallet.account.slice(0, 6)}...${evmWallet.account.slice(-4)}` : "Wallet not connected";
+
+  function openView(tab: BottomTab) {
+    setWorkspaceTab(tab);
+    document.getElementById("terminal-workspace")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function changeDomain(domain: DomainId) {
+    setSelectedDomain(domain);
+    if (privateProvider) {
+      setProviderConnection("connecting");
+    }
+  }
+
   return (
-    <main className={styles.terminalShell}>
+    <div className={styles.terminalShell}>
       <TopNavigation
         snapshot={snapshot}
         selectedDomain={selectedDomain}
         providerConnection={providerConnection}
         wallet={wallet}
         evmWallet={evmWallet}
-        onDomainChange={(domain) => {
-          setSelectedDomain(domain);
-          if (privateProvider) {
-            setProviderConnection("connecting");
-          }
-        }}
+        onDomainChange={changeDomain}
+        onOpenView={openView}
       />
-      <div className={styles.domainContext} role="status">
-        <span>{selectedDomainModel?.label}</span>
-        <span>{selectedDomainModel?.runtime}</span>
-        <span>{selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state} data only`}</span>
-      </div>
-      <MarketHeader snapshot={snapshot} />
-      <ExecutionReadiness
-        snapshot={snapshot}
-        selectedDomain={selectedDomain}
-        providerConnection={providerConnection}
-        runtimeHealth={runtimeHealth}
-        lifecycle={displayedLifecycle}
-        hasService={privateProvider !== null}
-        onSelect={(domain) => {
-          setSelectedDomain(domain);
-          if (privateProvider) {
-            setProviderConnection("connecting");
-          }
-        }}
-      />
-      <div className={styles.contentGrid}>
-        <div className={styles.marketWorkspace}>
-          <BasisChart snapshot={snapshot} />
-          <PackageSequence snapshot={snapshot} mode={mode} preview={preview} />
+      <main className={styles.terminalGrid}>
+        <div className={styles.areaInstrument}>
+          <InstrumentBar snapshot={snapshot} feed={feed} />
         </div>
-        <Ticket
-          snapshot={snapshot}
-          selectedDomain={selectedDomain}
-          mode={mode}
-          preview={preview}
-          size={size}
-          slippage={slippage}
-          quoteMode={quoteMode}
-          localFlow={currentLocalFlow}
-          localFlowEnabled={localFlowEnabled}
-          localCanSignMessage={wallet.canSignMessage}
-          hyperliquidFlow={currentHyperliquidFlow}
-          hyperliquidFlowEnabled={hyperliquidFlowEnabled}
-          executionReview={currentExecutionReview}
-          submission={currentSubmission}
-          confirming={confirmingInWallet}
-          actionLabel={actionState.label}
-          actionReason={confirmingInWallet && !currentSubmission ? "Confirm in wallet. Approve the exact reviewed Devnet transaction." : (currentExecutionError ?? actionState.reason)}
-          actionDisabled={actionState.disabled}
-          actionBusy={executionBusy}
-          prepareDisabled={prepareDisabled}
-          onModeChange={setMode}
-          onSizeChange={setSize}
-          onSlippageChange={setSlippage}
-          onQuoteModeChange={setQuoteMode}
-          onLocalStep={(step) => void handleLocalStep(step)}
-          onHyperliquidStep={(step) => void handleHyperliquidStep(step)}
-          onExecutionAction={() => void handleExecutionAction()}
-          onPrepareExecution={() => void handlePrepareExecution()}
-          onRetryObservation={handleRetryObservation}
-        />
-      </div>
-      <BottomWorkspace
+        <div className={styles.areaChart}>
+          <ChartWorkspace
+            feed={feed}
+            snapshot={snapshot}
+            preview={preview}
+            size={size}
+          />
+        </div>
+        <div className={styles.areaBook}>
+          <OrderBook feed={feed} unit="bps" />
+        </div>
+        <div className={styles.areaTicket}>
+          <Ticket
+            snapshot={snapshot}
+            selectedDomain={selectedDomain}
+            mode={mode}
+            preview={preview}
+            size={size}
+            slippage={slippage}
+            quoteMode={quoteMode}
+            accountLabel={accountLabel}
+            localFlow={currentLocalFlow}
+            localFlowEnabled={localFlowEnabled}
+            localCanSignMessage={wallet.canSignMessage}
+            hyperliquidFlow={currentHyperliquidFlow}
+            hyperliquidFlowEnabled={hyperliquidFlowEnabled}
+            executionReview={currentExecutionReview}
+            submission={currentSubmission}
+            confirming={confirmingInWallet}
+            actionLabel={actionState.label}
+            actionReason={confirmingInWallet && !currentSubmission ? "Confirm in wallet. Approve the exact reviewed Devnet transaction." : (currentExecutionError ?? actionState.reason)}
+            actionDisabled={actionState.disabled}
+            actionBusy={executionBusy}
+            prepareDisabled={prepareDisabled}
+            onModeChange={setMode}
+            onSizeChange={setSize}
+            onSlippageChange={setSlippage}
+            onQuoteModeChange={setQuoteMode}
+            onLocalStep={(step) => void handleLocalStep(step)}
+            onHyperliquidStep={(step) => void handleHyperliquidStep(step)}
+            onExecutionAction={() => void handleExecutionAction()}
+            onPrepareExecution={() => void handlePrepareExecution()}
+            onRetryObservation={handleRetryObservation}
+          />
+        </div>
+        <div className={styles.areaBottom}>
+          <BottomWorkspace
+            snapshot={snapshot}
+            providerConnection={providerConnection}
+            submission={currentSubmission}
+            attemptMode={mode}
+            lifecycle={displayedLifecycle}
+            lifecycleLoading={currentLocalFlow ? false : currentLifecycle?.loading ?? false}
+            lifecycleUnavailable={currentLocalFlow ? false : currentLifecycle?.unavailable ?? false}
+            onRetryObservation={handleRetryObservation}
+            onRetryLifecycle={handleRetryLifecycle}
+            activeTab={workspaceTab}
+            onTabChange={setWorkspaceTab}
+            routePlan={<PackageSequence snapshot={snapshot} mode={mode} preview={preview} />}
+            readiness={
+              <ExecutionReadiness
+                snapshot={snapshot}
+                selectedDomain={selectedDomain}
+                providerConnection={providerConnection}
+                runtimeHealth={runtimeHealth}
+                lifecycle={displayedLifecycle}
+                hasService={privateProvider !== null}
+                onSelect={changeDomain}
+              />
+            }
+          />
+        </div>
+      </main>
+      <StatusBar
         snapshot={snapshot}
         providerConnection={providerConnection}
-        submission={currentSubmission}
-        attemptMode={mode}
-        lifecycle={displayedLifecycle}
-        lifecycleLoading={currentLocalFlow ? false : currentLifecycle?.loading ?? false}
-        lifecycleUnavailable={currentLocalFlow ? false : currentLifecycle?.unavailable ?? false}
-        onRetryObservation={handleRetryObservation}
-        onRetryLifecycle={handleRetryLifecycle}
+        feedLabel={feed.label}
+        domainLabel={selectedDomainModel?.label ?? selectedDomain}
+        domainNote={selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state ?? "Fixture"} data only`}
       />
-    </main>
+    </div>
   );
 }

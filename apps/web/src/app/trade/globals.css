@@ -1,23 +1,47 @@
 @import "tailwindcss";
 
+/*
+ * Terminal design tokens. Neutral graphite surfaces, Naryx yellow for brand and primary actions
+ * only, green and red strictly for side, purple for implied liquidity, and orange for data that is
+ * a fixture and not an observation.
+ */
 :root {
   color-scheme: dark;
-  --background: #080b0f;
-  --foreground: #edf2f6;
-  --terminal-bg: #080b0f;
-  --terminal-bg-raised: #0a0e13;
-  --surface: #0c1117;
-  --surface-muted: #10171f;
-  --surface-hover: #16202a;
-  --border: #1b2732;
-  --border-strong: #293846;
-  --border-subtle: #15202a;
-  --text-primary: #edf2f6;
-  --text-secondary: #9cabb8;
-  --text-dim: #62717e;
-  --brand: #87ddb9;
-  --chart-spot: #a7b4bf;
-  --chart-grid: #18232d;
+  --canvas: #070707;
+  --panel: #101011;
+  --panel-raised: #161617;
+  --field: #1a1a1c;
+  --hover: #1f1f22;
+  --line: #232325;
+  --line-soft: #1a1a1c;
+  --line-strong: #323235;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1a6;
+  --text-dim: #6e6e73;
+  --text-faint: #4a4a4f;
+  --yellow: #ffff00;
+  --yellow-ink: #0a0a0a;
+  --up: #1fc27e;
+  --up-strong: #16a86b;
+  --down: #f0515f;
+  --down-strong: #d63d4b;
+  --implied: #a88bfa;
+  --fixture: #ff9d3d;
+  --info: #7cb4ff;
+  --radius: 6px;
+  --radius-small: 4px;
+
+  /* Aliases kept for components that predate the token rename. */
+  --background: var(--canvas);
+  --foreground: var(--text-primary);
+  --terminal-bg: var(--panel);
+  --terminal-bg-raised: var(--panel);
+  --surface: var(--field);
+  --surface-hover: var(--hover);
+  --border: var(--line);
+  --border-subtle: var(--line-soft);
+  --border-strong: var(--line-strong);
+  --brand: var(--yellow);
 }
 
 @theme inline {
@@ -32,15 +56,16 @@
 }
 
 html {
-  background: var(--background);
+  background: var(--canvas);
 }
 
 body {
   min-width: 320px;
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), sans-serif;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -52,8 +77,13 @@ select {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--brand) 28%, transparent);
+  background: rgba(255, 255, 0, 0.24);
   color: var(--text-primary);
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
 }
 
 ::-webkit-scrollbar {
@@ -67,12 +97,22 @@ select {
 
 ::-webkit-scrollbar-thumb {
   border-radius: 3px;
-  background: var(--border-strong);
+  background: var(--line-strong);
 }
 
 @media (max-width: 860px) {
   input,
   select {
     font-size: 16px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
