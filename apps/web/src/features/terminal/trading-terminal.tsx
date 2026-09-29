@@ -11,6 +11,7 @@ import type {
   LocalSolverQuote,
   PackageLifecycleResponse,
   PrivateTerminalRuntimeHealth,
+  RuntimeBoundaryHealth,
   SolanaExecutionObservation,
 } from "./private-http-terminal-provider";
 import {
@@ -296,6 +297,133 @@ function MarketHeader({ snapshot }: { snapshot: TerminalViewModel }) {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+const READINESS_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
+
+const READINESS_META: Record<DomainId, { testNetwork: string; executionMode: string }> = {
+  solana: { testNetwork: "Solana Devnet", executionMode: "Solana atomic" },
+  base: { testNetwork: "Base Sepolia", executionMode: "Base atomic" },
+  arbitrum: { testNetwork: "Arbitrum Sepolia", executionMode: "Arbitrum bonded async" },
+  hyperliquid: { testNetwork: "Hyperliquid testnet", executionMode: "Hyperliquid coordinated testnet" },
+};
+
+const READINESS_FALLBACK: Record<DomainId, { label: string; runtime: string }> = {
+  solana: { label: "Solana", runtime: "SVM" },
+  base: { label: "Base", runtime: "EVM" },
+  arbitrum: { label: "Arbitrum", runtime: "EVM" },
+  hyperliquid: { label: "Hyperliquid", runtime: "HyperCore" },
+};
+
+function readinessHealthFor(
+  domain: DomainId,
+  health: PrivateTerminalRuntimeHealth | null,
+): RuntimeBoundaryHealth | null {
+  if (!health) return null;
+  if (domain === "solana") return health.solanaDevnet;
+  if (domain === "base") return health.baseTestnetAtomic;
+  if (domain === "arbitrum") return health.arbitrumTestnetAsync;
+  return health.hyperliquidTestnet;
+}
+
+function readinessBlocker(
+  hasService: boolean,
+  providerConnection: ProviderConnection,
+  health: RuntimeBoundaryHealth | null,
+  domain: DomainId,
+): string {
+  if (!hasService) return "Private service not configured. Local fixture data only.";
+  if (!health) {
+    return providerConnection === "connecting"
+      ? "Checking private service health."
+      : "Health unavailable. Local fixture data only.";
+  }
+  if (health.available) {
+    return domain === "solana"
+      ? "Ready. Review required before any Devnet signature."
+      : "Runtime ready. This ticket executes Solana Devnet only.";
+  }
+  if (health.reason === "DISABLED_BY_CONFIGURATION") return "Disabled in service config. No testnet execution.";
+  if (health.reason === "RUNTIME_FACTORY_NOT_INJECTED") return "Runtime not wired in service. No testnet execution.";
+  if (health.reason === "RUNTIME_INITIALIZATION_FAILED") return "Runtime failed to start. No testnet execution.";
+  if (health.reason === "REQUIRED_PORTS_MISSING") return "Service ports missing. No testnet execution.";
+  return "Runtime unavailable. No testnet execution.";
+}
+
+function ExecutionReadiness({
+  snapshot,
+  selectedDomain,
+  providerConnection,
+  runtimeHealth,
+  hasService,
+  onSelect,
+}: {
+  snapshot: TerminalViewModel;
+  selectedDomain: DomainId;
+  providerConnection: ProviderConnection;
+  runtimeHealth: PrivateTerminalRuntimeHealth | null;
+  hasService: boolean;
+  onSelect: (domain: DomainId) => void;
+}) {
+  const serviceNote = !hasService
+    ? "Local fixture only"
+    : !runtimeHealth
+      ? providerConnection === "connecting" ? "Checking service" : "Health unavailable"
+      : providerConnection === "connected" ? "Service health current" : "Service health stale";
+  return (
+    <section className={styles.readinessPanel} aria-labelledby="readiness-title">
+      <div className={styles.readinessHeader}>
+        <div>
+          <div className={styles.eyebrow}>Execution readiness</div>
+          <h2 id="readiness-title">Testnet readiness</h2>
+          <p>Read-only runtime status. Execution stays gated in the ticket panel.</p>
+        </div>
+        <span className={styles.readinessService} role="status">{serviceNote}</span>
+      </div>
+      <ul className={styles.readinessGrid} aria-label="Domain execution readiness">
+        {READINESS_ORDER.map((domain) => {
+          const model = snapshot.domains.find((item) => item.id === domain);
+          const fallback = READINESS_FALLBACK[domain];
+          const meta = READINESS_META[domain];
+          const health = readinessHealthFor(domain, runtimeHealth);
+          const status = !hasService
+            ? "Disabled"
+            : !health
+              ? providerConnection === "connecting" ? "Checking" : "Unavailable"
+              : health.available ? "Available" : "Unavailable";
+          const blocker = readinessBlocker(hasService, providerConnection, health, domain);
+          const selected = selectedDomain === domain;
+          return (
+            <li key={domain}>
+              <button
+                type="button"
+                className={selected ? `${styles.readinessCard} ${styles.readinessSelected}` : styles.readinessCard}
+                aria-pressed={selected}
+                aria-label={`${model?.label ?? fallback.label} domain, ${status}. ${blocker} ${selected ? "Selected." : "Select."}`}
+                title={blocker}
+                onClick={() => onSelect(domain)}
+              >
+                <span className={styles.readinessTop}>
+                  <strong>{model?.label ?? fallback.label}{selected ? " - Selected" : ""}</strong>
+                  <span className={status === "Available" ? styles.readinessAvailable : styles.readinessUnavailable}>
+                    <span className={status === "Available" ? styles.statusDot : styles.offlineDot} aria-hidden="true" />
+                    {status}
+                  </span>
+                </span>
+                <span className={styles.readinessFacts}>
+                  <span><span>Runtime</span><strong>{model?.runtime ?? fallback.runtime}</strong></span>
+                  <span><span>Network</span><strong>{meta.testNetwork}</strong></span>
+                  <span><span>Mode</span><strong>{meta.executionMode}</strong></span>
+                  <span><span>Evidence</span><strong>{status === "Available" ? "No package evidence" : "Fixture unattested"}</strong></span>
+                </span>
+                <span className={styles.readinessBlocker}>{blocker}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
@@ -1802,6 +1930,19 @@ export function TradingTerminal({
         <span>{selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state} data only`}</span>
       </div>
       <MarketHeader snapshot={snapshot} />
+      <ExecutionReadiness
+        snapshot={snapshot}
+        selectedDomain={selectedDomain}
+        providerConnection={providerConnection}
+        runtimeHealth={runtimeHealth}
+        hasService={privateProvider !== null}
+        onSelect={(domain) => {
+          setSelectedDomain(domain);
+          if (privateProvider) {
+            setProviderConnection("connecting");
+          }
+        }}
+      />
       <div className={styles.contentGrid}>
         <div className={styles.marketWorkspace}>
           <BasisChart snapshot={snapshot} />
