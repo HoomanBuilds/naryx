@@ -149,6 +149,38 @@
   }
 }
 
+.chartEmpty {
+  position: absolute;
+  z-index: 2;
+  inset: 40px 72px 32px 16px;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  text-align: center;
+  pointer-events: none;
+  animation: chartEmptyIn 240ms var(--ease-out, ease-out) both;
+}
+
+.chartEmpty strong {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chartEmpty span {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+@keyframes chartEmptyIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chartEmpty { animation: none; }
+}
+
 .chartSkeleton {
   position: absolute;
   inset: 40px 72px 32px 16px;

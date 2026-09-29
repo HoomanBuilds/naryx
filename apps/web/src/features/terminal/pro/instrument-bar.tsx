@@ -35,6 +35,7 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
     };
   }, [feed]);
   const tone = stats === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
+  const { unit, precision } = feed.seriesMeta("basis");
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const metrics = snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
 
@@ -57,21 +58,21 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
         <span className={styles.instrumentKind}>Package</span>
       </div>
       <div className={styles.instrumentPrice}>
-        <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(1)}</strong>
-        <span>Basis bps</span>
+        <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(precision)}</strong>
+        <span>{unit === "bps" ? "Basis bps" : `Package ${unit}`}</span>
       </div>
       <dl className={styles.instrumentStats}>
         <div>
           <dt>24h change</dt>
-          <dd className={tone}>{stats === null ? "-" : `${stats.change >= 0 ? "+" : ""}${stats.change.toFixed(1)} bps`}</dd>
+          <dd className={tone}>{stats === null ? "-" : `${stats.change >= 0 ? "+" : ""}${stats.change.toFixed(precision)} ${unit}`}</dd>
         </div>
         <div>
           <dt>24h high</dt>
-          <dd>{stats === null ? "-" : stats.high.toFixed(1)}</dd>
+          <dd>{stats === null ? "-" : stats.high.toFixed(precision)}</dd>
         </div>
         <div>
           <dt>24h low</dt>
-          <dd>{stats === null ? "-" : stats.low.toFixed(1)}</dd>
+          <dd>{stats === null ? "-" : stats.low.toFixed(precision)}</dd>
         </div>
         <div>
           <dt>24h volume</dt>

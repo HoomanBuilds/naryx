@@ -14,12 +14,18 @@ export default async function Home() {
   ]);
   const privateApiBaseUrl =
     process.env.NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL ?? null;
+  // The public v1 market API and the package market it shows. Without both, market data stays
+  // on the labeled fixture.
+  const publicApiBaseUrl = process.env.NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL ?? null;
+  const packageMarketId = process.env.NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID ?? null;
 
   return (
     <TradingTerminal
       initialSnapshot={snapshot}
       initialPreview={preview}
       privateApiBaseUrl={privateApiBaseUrl}
+      publicApiBaseUrl={publicApiBaseUrl}
+      packageMarketId={packageMarketId}
     />
   );
 }

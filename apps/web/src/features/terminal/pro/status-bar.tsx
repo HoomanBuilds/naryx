@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { PublicFeedStatus } from "../public-market-feed";
 import type { ProviderConnection, TerminalViewModel } from "../terminal-view-model";
 import styles from "./pro.module.css";
 
@@ -20,12 +21,15 @@ export function StatusBar({
   snapshot,
   providerConnection,
   feedLabel,
+  feedStatus = null,
   domainLabel,
   domainNote,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
   feedLabel: string;
+  /** Present when a public market API is configured. */
+  feedStatus?: PublicFeedStatus | null;
   domainLabel: string;
   domainNote: string;
 }) {
@@ -38,7 +42,16 @@ export function StatusBar({
       </span>
       <span className={styles.statusItem}>{domainLabel} <em>{domainNote}</em></span>
       <span className={styles.statusItem}>Evidence <em>{snapshot.environment.evidenceGrade}</em></span>
-      <span className={styles.statusItem}>Market data <em className={feedLabel === "FIXTURE" ? styles.statusFixture : undefined}>{feedLabel}</em></span>
+      <span className={styles.statusItem} title={feedStatus?.detail}>
+        Market data <em className={feedLabel === "FIXTURE" ? styles.statusFixture : undefined}>{feedLabel}</em>
+        {feedStatus === null ? null : (
+          <i
+            className={feedStatus.state === "live" ? styles.dotOk : feedStatus.state === "unavailable" ? styles.dotOff : styles.dotWarn}
+            aria-label={`Public market feed ${feedStatus.state}`}
+            role="img"
+          />
+        )}
+      </span>
       <span className={styles.statusSpacer} />
       <span className={styles.statusWarn}>Public deployment deferred</span>
       <span className={styles.statusDanger}>Mainnet writes prohibited</span>

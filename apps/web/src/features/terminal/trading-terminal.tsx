@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { fixtureMarketFeed } from "./market-feed";
+import { usePublicMarketFeed } from "./public-market-feed";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
@@ -1516,10 +1517,15 @@ export function TradingTerminal({
   initialSnapshot,
   initialPreview,
   privateApiBaseUrl,
+  publicApiBaseUrl = null,
+  packageMarketId = null,
 }: {
   initialSnapshot: TerminalViewModel;
   initialPreview: TerminalPreview;
   privateApiBaseUrl: string | null;
+  /** The public v1 market API; without it, or until it answers, market data stays labeled FIXTURE. */
+  publicApiBaseUrl?: string | null;
+  packageMarketId?: string | null;
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [preview, setPreview] = useState<TerminalPreview | null>(initialPreview);
@@ -1536,7 +1542,8 @@ export function TradingTerminal({
     ["positions", "orders", "history", "receipts", "route", "readiness"],
   );
   const [workspaceAttention, setWorkspaceAttention] = useState(0);
-  const feed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
+  const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
+  const { feed, status: feedStatus } = usePublicMarketFeed(publicApiBaseUrl, packageMarketId, fixtureFeed);
   const wallet = useSolanaDevnetWallet();
   const evmWallet = useInjectedEvmWallet();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
@@ -2261,7 +2268,7 @@ export function TradingTerminal({
           />
         </div>
         <div className={styles.areaBook}>
-          <OrderBook feed={feed} unit="bps" />
+          <OrderBook key={feed.label} feed={feed} />
         </div>
         <div id="package-ticket" className={styles.areaTicket}>
           <Ticket
@@ -2334,6 +2341,7 @@ export function TradingTerminal({
         snapshot={snapshot}
         providerConnection={providerConnection}
         feedLabel={feed.label}
+        feedStatus={feedStatus}
         domainLabel={selectedDomainModel?.label ?? selectedDomain}
         domainNote={selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state ?? "Fixture"} data only`}
       />

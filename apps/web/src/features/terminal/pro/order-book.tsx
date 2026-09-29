@@ -60,7 +60,8 @@ function SideIcon({ side }: { side: BookSide }) {
  * size is derived from leg sources and is shown in its own column and never merged into direct
  * size. Depth bars scale with cumulative direct size only.
  */
-export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
+export function OrderBook({ feed }: { feed: MarketFeed }) {
+  const { unit, precision } = feed.seriesMeta("basis");
   const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades"]);
   const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
   const book = useMemo(() => feed.depth(), [feed]);
@@ -105,7 +106,7 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
         style={{ width: `${Math.min(100, (level.cumulative / visibleMax) * 100)}%` }}
         aria-hidden="true"
       />
-      <span role="cell" className={side === "bid" ? styles.up : styles.down}>{level.price.toFixed(1)}</span>
+      <span role="cell" className={side === "bid" ? styles.up : styles.down}>{level.price.toFixed(precision)}</span>
       <span role="cell">{level.direct > 0 ? level.direct.toLocaleString("en-US") : <span className={styles.dimCell}>-</span>}</span>
       <span role="cell" className={styles.impliedCell}>{level.implied > 0 ? level.implied.toLocaleString("en-US") : <span className={styles.dimCell}>-</span>}</span>
       <span role="cell">{level.cumulative.toLocaleString("en-US")}</span>
@@ -139,7 +140,7 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
             <label className={styles.stepSelect}>
               <span className={styles.visuallyHidden}>Price grouping</span>
               <select value={step} onChange={(event) => setStep(Number(event.target.value))}>
-                {steps.map((value) => <option key={value} value={value}>{value.toFixed(1)}</option>)}
+                {steps.map((value) => <option key={value} value={value}>{value.toFixed(precision)}</option>)}
               </select>
             </label>
           </div>
@@ -156,9 +157,9 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
               </div>
             ) : null}
             <div className={styles.spreadRow} role="row">
-              <strong role="cell" title="Mid of best direct bid and ask">{mid === undefined ? "-" : mid.toFixed(2)}</strong>
+              <strong role="cell" title="Mid of best direct bid and ask">{mid === undefined ? "-" : mid.toFixed(Number.isInteger(mid * 10 ** precision) ? precision : precision + 1)}</strong>
               <span role="cell">Spread</span>
-              <span role="cell">{spread === undefined ? "-" : `${spread.toFixed(1)} ${unit}`}</span>
+              <span role="cell">{spread === undefined ? "-" : `${spread.toFixed(precision)} ${unit}`}</span>
             </div>
             {sideFilter !== "asks" ? (
               <div className={sideFilter === "bids" ? styles.bookSideFull : styles.bookBids}>
@@ -177,14 +178,14 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
         </div>
       ) : (
         <div key="trades" className={styles.viewFade}>
-          <TradeTape trades={trades} unit={unit} />
+          <TradeTape trades={trades} unit={unit} precision={precision} />
         </div>
       )}
     </section>
   );
 }
 
-function TradeTape({ trades, unit }: { trades: readonly TapeTrade[]; unit: string }) {
+function TradeTape({ trades, unit, precision }: { trades: readonly TapeTrade[]; unit: string; precision: number }) {
   return (
     <>
       <div className={styles.tapeHeader} role="row">
@@ -196,7 +197,7 @@ function TradeTape({ trades, unit }: { trades: readonly TapeTrade[]; unit: strin
       <div className={styles.tapeBody} role="table" aria-label="Recent package trades">
         {trades.map((trade) => (
           <div key={trade.id} className={styles.tapeRow} role="row">
-            <span role="cell" className={trade.side === "BID" ? styles.up : styles.down}>{trade.price.toFixed(1)}</span>
+            <span role="cell" className={trade.side === "BID" ? styles.up : styles.down}>{trade.price.toFixed(precision)}</span>
             <span role="cell">{trade.size.toLocaleString("en-US")}</span>
             <span role="cell" className={trade.source === "IMPLIED" ? styles.impliedCell : styles.dimCell}>{trade.source === "IMPLIED" ? "Implied" : "Direct"}</span>
             <span role="cell" className={styles.dimCell}>{time(trade.time)}</span>

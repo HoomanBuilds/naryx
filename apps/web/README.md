@@ -1,36 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# apps/web
 
-## Getting Started
-
-First, run the development server:
+The Naryx web application: the public landing page at `/` and the package trading terminal at `/trade`, on the Next.js App Router.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run dev      # development server
+npm run lint
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The web app talks to Naryx services over HTTP only. It holds no signing authority or service credentials; wallets sign in the browser through their own extensions.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Configuration
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variable | Effect |
+|---|---|
+| `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` | The private terminal service for previews, order preparation, lifecycle, and receipts. Without it the terminal runs on the local conformance provider and says so. |
+| `NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL` | The public v1 market API. |
+| `NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID` | The package market (execution class) the terminal shows from the public API. |
 
-## Learn More
+With both public API variables set, the terminal polls executable package depth and the observed package tape every few seconds, rebuilds candles from observed trades only, and labels its market data `OBSERVED`. Leg prices are not public market data, so the spot and perpetual series say so rather than showing a model. Without the variables, or until the API first answers, market data stays on the deterministic fixture under its `FIXTURE` label and chart watermark. After a failed poll the last observed data stays on screen and the status bar marks the feed stale with the reason.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The terminal never presents fixture, modeled, or indicative values as executable market data, and it shows the public deployment and mainnet-write restrictions in its status bar.
