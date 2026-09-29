@@ -1,0 +1,445 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  aggregateCandles,
+  CANDLE_INTERVAL_MS,
+  decideRfq,
+  executablePackageIndex,
+  fromProtocolJson,
+  matchPackageOrder,
+  packageBookLevels,
+  packageOrderHash,
+  planCoordinatedDeRisk,
+  ProtocolError,
+  replayRouteDecision,
+  toHex,
+  toProtocolJson,
+  validatePackageOrderProfile,
+} from "@naryx/protocol-types";
+import type {
+  CandleInterval,
+  DeRiskPolicy,
+  NormalizedPositionInput,
+  PackageOrderInput,
+  PackageTakerOrderInput,
+  RfqRequest,
+  RfqResponse,
+  RfqSolverCapacity,
+  RouteDecisionInput,
+  SolverCapabilityManifestInput,
+} from "@naryx/protocol-types";
+import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
+import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
+
+const ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const HASH_HEX = /^[0-9a-f]{64}$/;
+const CURSOR = /^(0|[1-9]\d{0,15})$/;
+const LIMIT = /^[1-9]\d{0,2}$/;
+const MILLIS = /^(0|[1-9]\d{0,15})$/;
+const VERSION = /^[1-9]\d{0,9}$/;
+const MAX_BODY_BYTES = 65_536;
+const MAX_CANDLE_TRADES = 50_000;
+const MAX_CANDLES_PER_REQUEST = 1_000;
+
+export type PublicExchangeStore = Pick<
+  SqlitePackageExchangeStore,
+  | "getBook"
+  | "getMatchingPolicy"
+  | "getAllocation"
+  | "allocationTape"
+  | "allocationsBetween"
+  | "listBooks"
+  | "listSeries"
+  | "listExecutionClasses"
+>;
+
+export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest">;
+
+export interface PublicApiOptions {
+  readonly exchange: PublicExchangeStore;
+  /** Optional: registry routes answer 503 when no registry is configured. */
+  readonly registry?: PublicRegistryStore;
+  /** Current time in the books' expiry unit, so expired entries never appear as depth. */
+  readonly nowValue: () => bigint;
+  readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
+  readonly clockMs?: () => number;
+}
+
+class RequestError extends Error {
+  readonly status: number;
+  readonly code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function send(response: ServerResponse, status: number, body: unknown): void {
+  response.statusCode = status;
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.end(JSON.stringify(toProtocolJson(body)));
+}
+
+function fail(response: ServerResponse, status: number, code: string, message: string): void {
+  send(response, status, { error: { code, message } });
+}
+
+function onlyParams(url: URL, allowed: readonly string[]): void {
+  const keys = [...url.searchParams.keys()];
+  if (!keys.every((key) => allowed.includes(key)) || new Set(keys).size !== keys.length) {
+    throw new RequestError(400, "INVALID_REQUEST", `Only these query parameters are accepted: ${allowed.join(", ") || "none"}.`);
+  }
+}
+
+function id(value: string | undefined, name: string): string {
+  if (value === undefined || !ID.test(value)) throw new RequestError(400, "INVALID_REQUEST", `${name} is malformed.`);
+  return value;
+}
+
+function object(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RequestError(400, "INVALID_REQUEST", `${name} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+async function readProtocolBody(request: IncomingMessage): Promise<unknown> {
+  const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim();
+  if (contentType !== "application/json") throw new RequestError(415, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.");
+  const declared = Number(request.headers["content-length"] ?? "0");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MAX_BODY_BYTES) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
+    chunks.push(buffer);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new RequestError(400, "INVALID_JSON", "Request body must be valid JSON.");
+  }
+  try {
+    return fromProtocolJson(parsed);
+  } catch (error) {
+    throw new RequestError(400, "INVALID_PROTOCOL_JSON", error instanceof Error ? error.message : "Request body is not protocol JSON.");
+  }
+}
+
+/** Public solver fields only; the manifest signature and operator key stay verifiable but are not reshaped. */
+function solverSummary(entry: { documentHashHex: string; subjectVersion: number; document: unknown }) {
+  const manifest = entry.document as SolverCapabilityManifestInput;
+  return {
+    solverId: manifest.solverId,
+    commonControlGroupId: manifest.commonControlGroupId,
+    environment: manifest.environment,
+    manifestHash: entry.documentHashHex,
+    manifestNonce: entry.subjectVersion,
+    supportedDomains: manifest.supportedDomains,
+    supportedTemplateIds: manifest.supportedTemplateIds,
+    supportedQuoteModes: manifest.supportedQuoteModes,
+    maximumNotionalByMarket: manifest.maximumNotionalByMarket,
+    quoteVerificationKeys: manifest.quoteVerificationKeys,
+    rfqEncryptionKeys: manifest.rfqEncryptionKeys,
+    rfqEndpoints: manifest.rfqEndpoints,
+    validityUnit: manifest.validityUnit,
+    validUntilValue: manifest.validUntilValue,
+  };
+}
+
+/**
+ * The public, read-only v1 API: registries, strategy series, package markets with depth, tape,
+ * candles, and an executable index, allocation evidence by capability, and side-effect-free
+ * compute routes. It holds no signer, persists nothing on POST, keeps direct and implied
+ * liquidity apart, omits taker and participant identities from the tape, and labels every
+ * derived market number. It returns false for paths it does not own, including /v1/solver/.
+ */
+export function createPublicApiHandler(options: PublicApiOptions) {
+  const { exchange, registry, nowValue } = options;
+  const { windowMs, maxRequests } = options.rateLimit;
+  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || !Number.isSafeInteger(maxRequests) || maxRequests < 1) {
+    throw new Error("Public API rate limit must be positive.");
+  }
+  const clockMs = options.clockMs ?? Date.now;
+  const windows = new Map<string, { start: number; count: number }>();
+
+  function limited(request: IncomingMessage): boolean {
+    const key = request.socket.remoteAddress ?? "unknown";
+    const now = clockMs();
+    const window = windows.get(key);
+    if (window === undefined || now - window.start >= windowMs) {
+      if (window === undefined && windows.size >= 10_000) {
+        for (const [entryKey, entry] of windows) if (now - entry.start >= windowMs) windows.delete(entryKey);
+        if (windows.size >= 10_000) return true;
+      }
+      windows.set(key, { start: now, count: 1 });
+      return false;
+    }
+    window.count += 1;
+    return window.count > maxRequests;
+  }
+
+  function requireRegistry(): PublicRegistryStore {
+    if (registry === undefined) throw new RequestError(503, "REGISTRY_UNAVAILABLE", "No registry is configured on this server.");
+    return registry;
+  }
+
+  function book(classId: string) {
+    const state = exchange.getBook(classId);
+    if (state === undefined) throw new RequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
+    return state;
+  }
+
+  function readRoutes(url: URL): unknown {
+    const path = url.pathname;
+    let match: RegExpExecArray | null;
+    if (path === "/v1/domains") {
+      onlyParams(url, []);
+      return { domains: requireRegistry().list("DOMAIN") };
+    }
+    if (path === "/v1/instruments") {
+      onlyParams(url, []);
+      return { instruments: requireRegistry().list("MARKET") };
+    }
+    if ((match = /^\/v1\/instruments\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const instrument = requireRegistry().latest("MARKET", id(match[1], "Instrument id"));
+      if (instrument === undefined) throw new RequestError(404, "NOT_FOUND", "No such instrument.");
+      return instrument;
+    }
+    if (path === "/v1/package-templates") {
+      onlyParams(url, []);
+      return { templates: requireRegistry().list("PACKAGE_TEMPLATE") };
+    }
+    if ((match = /^\/v1\/package-templates\/([^/]+)\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (match[2] === undefined || !VERSION.test(match[2])) throw new RequestError(400, "INVALID_REQUEST", "Template version is malformed.");
+      const template = requireRegistry().latest("PACKAGE_TEMPLATE", id(match[1], "Template id"), Number(match[2]));
+      if (template === undefined) throw new RequestError(404, "NOT_FOUND", "No such template version.");
+      return template;
+    }
+    if (path === "/v1/solvers") {
+      onlyParams(url, []);
+      return { solvers: requireRegistry().list("SOLVER_CAPABILITY").map(solverSummary) };
+    }
+    if ((match = /^\/v1\/solvers\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const solver = requireRegistry().latest("SOLVER_CAPABILITY", id(match[1], "Solver id"));
+      if (solver === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver.");
+      return solverSummary(solver);
+    }
+    if (path === "/v1/strategy-series") {
+      onlyParams(url, []);
+      return { series: exchange.listSeries() };
+    }
+    if ((match = /^\/v1\/strategy-series\/([^/]+)\/execution-classes$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      return { executionClasses: exchange.listExecutionClasses(id(match[1], "Series id")) };
+    }
+    if (path === "/v1/markets" || path === "/v1/package-book") {
+      onlyParams(url, []);
+      const now = nowValue();
+      const markets = exchange.listBooks().map((entry) => {
+        const state = book(entry.executionClassId);
+        const index = executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), [1n]);
+        return {
+          packageMarketId: entry.executionClassId,
+          halted: entry.halted,
+          matchingPolicyHash: toHex(state.matchingPolicyHash),
+          bestBidTicks: index.bestBidTicks,
+          bestAskTicks: index.bestAskTicks,
+          spreadTicks: index.spreadTicks,
+          label: "EXECUTABLE",
+        };
+      });
+      return { asOfValue: now, markets };
+    }
+    if ((match = /^\/v1\/package-book\/([^/]+)\/implied-provenance$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const state = book(id(match[1], "Package market id"));
+      const now = nowValue();
+      return {
+        packageMarketId: state.executionClassId,
+        asOfValue: now,
+        implied: state.entries
+          .filter((entry) => entry.source === "IMPLIED" && (entry.expiresAtValue === undefined || entry.expiresAtValue > now))
+          .map((entry) => ({
+            entryId: toHex(entry.entryId),
+            side: entry.side,
+            priceTicks: entry.priceTicks,
+            quantity: entry.quantity,
+            solverId: entry.participantId,
+            evidence: entry.implied?.evidence,
+            derivationDepth: entry.implied?.derivationDepth,
+            sources: entry.implied?.sources,
+            label: entry.implied?.evidence === "SOLVER_BACKED_IMPLIED" || entry.implied?.evidence === "RESERVATION_BACKED_IMPLIED" ? "EXECUTABLE" : "INDICATIVE",
+          })),
+      };
+    }
+    if ((match = /^\/v1\/markets\/([^/]+)\/package-depth$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const state = book(id(match[1], "Package market id"));
+      const now = nowValue();
+      return {
+        packageMarketId: state.executionClassId,
+        matchingPolicyHash: toHex(state.matchingPolicyHash),
+        halted: state.halted,
+        asOfValue: now,
+        bids: packageBookLevels(state, "BID", now),
+        asks: packageBookLevels(state, "ASK", now),
+      };
+    }
+    if ((match = /^\/v1\/markets\/([^/]+)\/package-tape$/.exec(path)) !== null) {
+      onlyParams(url, ["after", "limit"]);
+      const classId = id(match[1], "Package market id");
+      const after = url.searchParams.get("after") ?? "0";
+      const limit = url.searchParams.get("limit") ?? "50";
+      if (!CURSOR.test(after) || !LIMIT.test(limit) || Number(limit) > MAX_TAPE_PAGE) throw new RequestError(400, "INVALID_REQUEST", "Tape cursor or limit is malformed.");
+      const records = exchange.allocationTape(classId, Number(after), Number(limit));
+      return {
+        packageMarketId: classId,
+        trades: records.map((record) => ({
+          cursor: record.cursor,
+          allocationHash: record.allocationHashHex,
+          takerSide: record.allocation.takerSide,
+          recordedAtMs: record.recordedAtMs,
+          fills: record.allocation.fills.map((fill) => ({ fillSequence: fill.fillSequence, priceTicks: fill.priceTicks, quantity: fill.quantity, makerSource: fill.makerSource })),
+        })),
+        nextCursor: records.length === 0 ? Number(after) : (records[records.length - 1] as { cursor: number }).cursor,
+      };
+    }
+    if ((match = /^\/v1\/markets\/([^/]+)\/candles$/.exec(path)) !== null) {
+      onlyParams(url, ["interval", "from", "to"]);
+      const classId = id(match[1], "Package market id");
+      const interval = (url.searchParams.get("interval") ?? "1h") as CandleInterval;
+      if (!Object.hasOwn(CANDLE_INTERVAL_MS, interval)) throw new RequestError(400, "INVALID_REQUEST", "Unknown candle interval.");
+      const width = CANDLE_INTERVAL_MS[interval];
+      const toText = url.searchParams.get("to");
+      const fromText = url.searchParams.get("from");
+      if ((toText !== null && !MILLIS.test(toText)) || (fromText !== null && !MILLIS.test(fromText))) {
+        throw new RequestError(400, "INVALID_REQUEST", "from and to must be millisecond timestamps.");
+      }
+      const to = toText === null ? clockMs() : Number(toText);
+      const from = fromText === null ? Math.max(0, to - width * 300) : Number(fromText);
+      if (to <= from || (to - from) / width > MAX_CANDLES_PER_REQUEST) {
+        throw new RequestError(400, "INVALID_REQUEST", `The window must be nonempty and span at most ${MAX_CANDLES_PER_REQUEST} candles.`);
+      }
+      const records = exchange.allocationsBetween(classId, from, to, MAX_CANDLE_TRADES);
+      const trades = records.flatMap((record) => record.allocation.fills.map((fill) => ({ timeMs: record.recordedAtMs, priceTicks: fill.priceTicks, quantity: fill.quantity })));
+      const series = aggregateCandles(trades, interval, "OBSERVED", { fromMs: from, toMs: to });
+      return { packageMarketId: classId, fromMs: from, toMs: to, truncated: records.length === MAX_CANDLE_TRADES, ...series };
+    }
+    if ((match = /^\/v1\/markets\/([^/]+)\/index$/.exec(path)) !== null) {
+      onlyParams(url, ["sizes"]);
+      const state = book(id(match[1], "Package market id"));
+      const sizesText = url.searchParams.get("sizes") ?? "1";
+      const parts = sizesText.split(",");
+      if (parts.length > 16 || parts.some((part) => !/^[1-9]\d{0,30}$/.test(part))) throw new RequestError(400, "INVALID_REQUEST", "sizes must be up to 16 positive integers.");
+      const now = nowValue();
+      return {
+        packageMarketId: state.executionClassId,
+        asOfValue: now,
+        ...executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), parts.map((part) => BigInt(part))),
+      };
+    }
+    if ((match = /^\/v1\/allocations\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const orderId = match[1];
+      if (orderId === undefined || !HASH_HEX.test(orderId)) throw new RequestError(400, "INVALID_REQUEST", "Order id must be 32 bytes of lowercase hex.");
+      const allocation = exchange.getAllocation(orderId);
+      const policy = allocation === undefined ? undefined : exchange.getMatchingPolicy(allocation.matchingPolicyHash);
+      if (allocation === undefined || policy === undefined) throw new RequestError(404, "ALLOCATION_NOT_FOUND", "No allocation exists for this order.");
+      return { allocation, matchingPolicy: policy };
+    }
+    throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
+  }
+
+  async function computeRoutes(request: IncomingMessage, url: URL): Promise<unknown> {
+    onlyParams(url, []);
+    const path = url.pathname;
+    if (![
+      "/v1/orders/validate",
+      "/v1/routes/replay-decision",
+      "/v1/routes/compare",
+      "/v1/clearing/simulate",
+      "/v1/de-risk/validate",
+    ].includes(path)) {
+      throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
+    }
+    const body = object(await readProtocolBody(request), "Request body");
+    if (path === "/v1/orders/validate") {
+      try {
+        const order = validatePackageOrderProfile(body.order as PackageOrderInput);
+        return { valid: true, orderHash: toHex(packageOrderHash(order)) };
+      } catch (error) {
+        if (error instanceof ProtocolError) return { valid: false, error: { code: error.code, context: error.context, detail: error.detail } };
+        throw error;
+      }
+    }
+    if (path === "/v1/routes/replay-decision") return replayRouteDecision(body.decision as RouteDecisionInput);
+    if (path === "/v1/routes/compare") {
+      const responses = body.responses as readonly RfqResponse[];
+      if (!Array.isArray(responses)) throw new RequestError(400, "INVALID_REQUEST", "responses must be an array.");
+      // Solver scope comes from the registry, never from the caller.
+      const manifests = [...new Set(responses.map((response) => String((response as { solverId?: unknown }).solverId)))]
+        .map((solverId) => (ID.test(solverId) ? requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId)?.document : undefined))
+        .filter((manifest): manifest is SolverCapabilityManifestInput => manifest !== undefined);
+      return decideRfq(body.request as RfqRequest, responses, manifests, (body.capacities ?? []) as readonly RfqSolverCapacity[]);
+    }
+    if (path === "/v1/clearing/simulate") {
+      const classId = id(typeof body.packageMarketId === "string" ? body.packageMarketId : undefined, "packageMarketId");
+      const state = book(classId);
+      const policy = exchange.getMatchingPolicy(state.matchingPolicyHash);
+      if (policy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
+      // Runs against the current book in memory only; nothing is persisted or reserved.
+      const result = matchPackageOrder(policy, state, body.order as PackageTakerOrderInput, nowValue());
+      return result.accepted ? { accepted: true, simulated: true, allocation: result.allocation } : { accepted: false, simulated: true, rejection: result.rejection };
+    }
+    const positions = body.positions as readonly NormalizedPositionInput[];
+    const openOrders = (body.openRiskIncreasingOrderIds ?? []) as readonly string[];
+    if (typeof body.stateCertain !== "boolean") throw new RequestError(400, "INVALID_REQUEST", "stateCertain must be a boolean.");
+    return { actions: planCoordinatedDeRisk(positions, body.policy as DeRiskPolicy, body.stateCertain, openOrders) };
+  }
+
+  /** Returns false when the path is not a public v1 route, so the host server continues routing. */
+  return (request: IncomingMessage, response: ServerResponse): boolean => {
+    const url = new URL(request.url ?? "/", "http://public-api.local");
+    if (!url.pathname.startsWith("/v1/") || url.pathname.startsWith("/v1/solver/")) return false;
+    if (request.method === "OPTIONS") {
+      response.statusCode = 204;
+      response.setHeader("Access-Control-Allow-Origin", "*");
+      response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      response.setHeader("Access-Control-Max-Age", "600");
+      response.end();
+      return true;
+    }
+    if (request.method !== "GET" && request.method !== "POST") {
+      response.setHeader("Allow", "GET, POST, OPTIONS");
+      fail(response, 405, "METHOD_NOT_ALLOWED", "Only GET and POST are supported.");
+      return true;
+    }
+    if (limited(request)) {
+      fail(response, 429, "RATE_LIMITED", "Too many requests.");
+      return true;
+    }
+    const run = async () => (request.method === "GET" ? readRoutes(url) : computeRoutes(request, url));
+    run()
+      .then((body) => send(response, 200, body))
+      .catch((error: unknown) => {
+        if (response.headersSent) return response.destroy();
+        if (error instanceof RequestError) return fail(response, error.status, error.code, error.message);
+        if (error instanceof ProtocolError) return fail(response, 400, "INVALID_REQUEST", `${error.context}: ${error.detail}`);
+        if (error instanceof PackageExchangeStoreError && error.code === "BOOK_NOT_FOUND") return fail(response, 404, "BOOK_NOT_FOUND", "Package market is not open.");
+        if (error instanceof PackageExchangeStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
+        if (error instanceof RegistryStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
+        return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
+      });
+    return true;
+  };
+}

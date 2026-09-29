@@ -158,6 +158,7 @@ CREATE TRIGGER IF NOT EXISTS reject_consumed_source_change
 CREATE TRIGGER IF NOT EXISTS reject_consumed_source_delete
   BEFORE DELETE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
+CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 `;
 
 interface DocumentRow {
@@ -336,6 +337,53 @@ export class SqlitePackageExchangeStore {
   getExecutionClass(executionClassId: string, executionClassVersion: number): SeriesExecutionClass | undefined {
     const row = this.documentBySubject("EXECUTION_CLASS", executionClassId, executionClassVersion);
     return row === undefined ? undefined : this.loadExecutionClass(row);
+  }
+
+  /** Every open book with its halt state, ordered by execution class. */
+  listBooks(): readonly { readonly executionClassId: string; readonly halted: boolean }[] {
+    const rows = this.db
+      .prepare("SELECT execution_class_id, halted FROM package_books ORDER BY execution_class_id LIMIT 500")
+      .all() as { execution_class_id: unknown; halted: unknown }[];
+    return Object.freeze(rows.map((row) => Object.freeze({ executionClassId: jsonText(row.execution_class_id, "execution_class_id"), halted: row.halted === 1 })));
+  }
+
+  /** The highest registered version of every strategy series, revalidated against its hash. */
+  listSeries(): readonly EconomicStrategySeries[] {
+    return Object.freeze(this.latestSubjects("SERIES").map((row) => this.loadSeries(row)));
+  }
+
+  /** The highest version of every execution class bound to one strategy series. */
+  listExecutionClasses(seriesId: string): readonly SeriesExecutionClass[] {
+    return Object.freeze(
+      this.latestSubjects("EXECUTION_CLASS")
+        .map((row) => this.loadExecutionClass(row))
+        .filter((executionClass) => executionClass.seriesId === seriesId),
+    );
+  }
+
+  /** Allocations recorded in a half-open time window, oldest first, for candle aggregation. */
+  allocationsBetween(executionClassId: string, fromMs: number, toMs: number, limit: number): readonly PackageTapeRecord[] {
+    if (!Number.isSafeInteger(fromMs) || !Number.isSafeInteger(toMs) || fromMs < 0 || toMs <= fromMs || !Number.isSafeInteger(limit) || limit < 1 || limit > 50_000) {
+      throw new PackageExchangeStoreError("INVALID_INPUT", "Window must be nonempty and limit between 1 and 50000.");
+    }
+    if (this.getBook(executionClassId) === undefined) throw new PackageExchangeStoreError("BOOK_NOT_FOUND", "Package book is not open.");
+    const rows = this.db
+      .prepare(
+        "SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations WHERE execution_class_id = ? AND recorded_at_ms >= ? AND recorded_at_ms < ? ORDER BY recorded_at_ms, rowid LIMIT ?",
+      )
+      .all(executionClassId, fromMs, toMs, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
+    return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
+  }
+
+  private latestSubjects(kind: ExchangeDocumentKind): readonly DocumentRow[] {
+    return this.db
+      .prepare(
+        `SELECT d.document_hash, d.canonical_bytes, d.document_json FROM exchange_documents d
+         JOIN (SELECT subject_id, MAX(subject_version) AS version FROM exchange_documents WHERE kind = ? GROUP BY subject_id) m
+           ON d.subject_id = m.subject_id AND d.subject_version = m.version
+         WHERE d.kind = ? ORDER BY d.subject_id LIMIT 500`,
+      )
+      .all(kind, kind) as DocumentRow[];
   }
 
   getMatchingPolicy(policyHash: Uint8Array | string): PackageMatchingPolicy | undefined {
@@ -521,18 +569,22 @@ export class SqlitePackageExchangeStore {
         "SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations WHERE execution_class_id = ? AND rowid > ? ORDER BY rowid LIMIT ?",
       )
       .all(executionClassId, afterCursor, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
-    return Object.freeze(
-      rows.map((row) => {
-        if (typeof row.cursor !== "number" || typeof row.recorded_at_ms !== "number") {
-          throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored tape row is invalid.");
-        }
-        const allocation = this.decodeAllocation(executionClassId, row.allocation_json);
-        if (!bytesEqual(packageAllocationHash(allocation), hashBytes(row.allocation_hash, "allocation_hash"))) {
-          throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored allocation hash does not match its content.");
-        }
-        return Object.freeze({ cursor: row.cursor, allocation, allocationHashHex: toHex(packageAllocationHash(allocation)), recordedAtMs: row.recorded_at_ms });
-      }),
-    );
+    return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
+  }
+
+  private tapeRecord(
+    executionClassId: string,
+    row: { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown },
+  ): PackageTapeRecord {
+    if (typeof row.cursor !== "number" || typeof row.recorded_at_ms !== "number") {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored tape row is invalid.");
+    }
+    const allocation = this.decodeAllocation(executionClassId, row.allocation_json);
+    const allocationHash = packageAllocationHash(allocation);
+    if (!bytesEqual(allocationHash, hashBytes(row.allocation_hash, "allocation_hash"))) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored allocation hash does not match its content.");
+    }
+    return Object.freeze({ cursor: row.cursor, allocation, allocationHashHex: toHex(allocationHash), recordedAtMs: row.recorded_at_ms });
   }
 
   // ---------------------------------------------------------------- internals

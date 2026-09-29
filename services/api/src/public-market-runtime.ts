@@ -7,7 +7,8 @@ import type {
   SeriesExecutionClassSupportInput,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
-import { createPublicMarketRequestHandler } from "./public-market-api.js";
+import { createPublicApiHandler } from "./public-api.js";
+import { SqliteRegistryStore } from "./registry-store.js";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
 const DEFAULT_REQUESTS_PER_MINUTE = 120;
@@ -91,9 +92,10 @@ function loadSupport(path: string): {
 }
 
 /**
- * Loads the read-only public market API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly
- * "true", and then requires an absolute exchange database path and support manifest. It opens the
- * exchange store and serves reads only; it never registers documents or accepts orders.
+ * Loads the public v1 API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly "true", and
+ * then requires an absolute exchange database path and support manifest; NARYX_REGISTRY_DB, when
+ * set, enables the registry routes. It serves reads and side-effect-free computation only; it
+ * never registers documents or accepts orders.
  */
 export function loadPublicMarketRuntime(
   environment: NodeJS.ProcessEnv = process.env,
@@ -109,22 +111,34 @@ export function loadPublicMarketRuntime(
     throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE must be between 1 and 10000.");
   }
   const requestsPerMinute = Number(rawRate);
+  const registryPath = environment.NARYX_REGISTRY_DB;
   const store = new SqlitePackageExchangeStore(databasePath, {
     seriesSupport: support.seriesSupport,
     executionClassSupport: support.executionClassSupport,
   });
+  let registry: SqliteRegistryStore | undefined;
+  try {
+    registry = registryPath === undefined || registryPath === "" ? undefined : new SqliteRegistryStore(absolute(registryPath, "NARYX_REGISTRY_DB"));
+  } catch (error) {
+    store.close();
+    throw error;
+  }
   const nowValue = support.clockUnit === "UNIX_SECONDS"
     ? () => BigInt(Math.floor(clockMs() / 1_000))
     : () => BigInt(Math.floor(clockMs()));
   return Object.freeze({
-    handler: createPublicMarketRequestHandler({
-      store,
+    handler: createPublicApiHandler({
+      exchange: store,
+      ...(registry === undefined ? {} : { registry }),
       nowValue,
       rateLimit: { windowMs: 60_000, maxRequests: requestsPerMinute },
       clockMs,
     }),
     clockUnit: support.clockUnit,
     requestsPerMinute,
-    close: () => store.close(),
+    close: () => {
+      store.close();
+      registry?.close();
+    },
   });
 }

@@ -1,20 +1,27 @@
 export {
   NaryxApiError,
+  NaryxClient,
   NaryxEvidenceError,
-  NaryxMarketClient,
+  candlesFromTape,
   verifyAllocationEvidence,
+  type CandlePage,
   type FetchLike,
-  type NaryxMarketClientOptions,
+  type NaryxClientOptions,
   type PackageBookLevelView,
-  type PackageBookSnapshot,
+  type PackageDepth,
+  type PackageMarketSummary,
   type PackageTapePage,
   type PackageTapeTrade,
+  type RegisteredDocumentView,
   type VerifiedAllocation,
-} from './market-client.js';
+} from './client.js';
 
 // Evidence verifiers an integrator can run without any Naryx service in the loop.
 export {
+  aggregateCandles,
+  executablePackageIndex,
   packageAllocationHash,
+  privacyProfile,
   replayRouteDecision,
   replaySealedAuction,
   strategyStateHash,

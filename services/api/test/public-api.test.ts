@@ -1,0 +1,302 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import {
+  fromProtocolJson,
+  toProtocolJson,
+  packageAllocationHash,
+  packageMatchingPolicy,
+  toHex,
+  verifyPackageAllocation,
+  type PackageAllocation,
+  type PackageMatchingPolicy,
+} from "@naryx/protocol-types";
+import {
+  createPrivateTerminalServer,
+  createPublicApiHandler,
+  loadPublicMarketRuntime,
+  PublicMarketConfigError,
+  SqlitePackageExchangeStore,
+  SqliteRegistryStore,
+  type PublicApiOptions,
+} from "../src/index.js";
+import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
+import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll } from "./exchange-fixtures.js";
+
+async function withMarket(
+  run: (get: (path: string, init?: RequestInit) => Promise<{ status: number; body: unknown; text: string }>, store: SqlitePackageExchangeStore) => Promise<void>,
+  overrides: Partial<PublicApiOptions> = {},
+): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-market-"));
+  const store = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+  const handler = createPublicApiHandler({ exchange: store, nowValue: () => NOW, rateLimit: { windowMs: 60_000, maxRequests: 1_000 }, ...overrides });
+  const server = createServer((request, response) => {
+    if (!handler(request, response)) {
+      response.statusCode = 418;
+      response.end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const get = async (path: string, init?: RequestInit) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, init);
+    const text = await response.text();
+    return { status: response.status, body: text === "" ? undefined : fromProtocolJson(JSON.parse(text)), text };
+  };
+  try {
+    await run(get, store);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("depth keeps direct and implied quantity apart within a level", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
+    const { status, body } = await get(`/v1/markets/${CLASS}/package-depth`);
+    assert.equal(status, 200);
+    const book = body as { halted: boolean; asks: readonly { priceTicks: bigint; directQuantity: bigint; impliedQuantity: bigint }[]; bids: readonly unknown[] };
+    assert.equal(book.halted, false);
+    assert.deepEqual(book.bids, []);
+    assert.deepEqual(book.asks, [{ priceTicks: 100n, directQuantity: 10n, impliedQuantity: 20n }]);
+    assert.equal((await get("/v1/markets/unknown-class/package-depth")).status, 404);
+  });
+});
+
+test("the tape pages by cursor and omits participant and taker order identities", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    const first = await get(`/v1/markets/${CLASS}/package-tape?limit=1`);
+    assert.equal(first.status, 200);
+    const tape = first.body as { trades: readonly { cursor: number; allocationHash: string; fills: readonly unknown[] }[]; nextCursor: number };
+    assert.equal(tape.trades.length, 1);
+    for (const hidden of ["maker-1", "maker-2", "group-1", id(1), id(2), "participantId", "consumedSourceKeys"]) {
+      assert.equal(first.text.includes(hidden), false, hidden);
+    }
+    const next = await get(`/v1/markets/${CLASS}/package-tape?after=${tape.nextCursor}&limit=1`);
+    const page = next.body as { trades: readonly unknown[]; nextCursor: number };
+    assert.equal(page.trades.length, 1);
+    const rest = await get(`/v1/markets/${CLASS}/package-tape?after=${page.nextCursor}`);
+    assert.deepEqual((rest.body as { trades: readonly unknown[] }).trades, []);
+    assert.equal((await get("/v1/markets/unknown-class/package-tape")).status, 404);
+  });
+});
+
+test("allocation evidence verifies independently against the served policy", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    const { status, body } = await get(`/v1/allocations/${id(2)}`);
+    assert.equal(status, 200);
+    const { allocation, matchingPolicy } = body as { allocation: PackageAllocation; matchingPolicy: PackageMatchingPolicy };
+    verifyPackageAllocation(packageMatchingPolicy(matchingPolicy), allocation);
+    const tape = (await get(`/v1/markets/${CLASS}/package-tape`)).body as { trades: readonly { allocationHash: string }[] };
+    assert.ok(tape.trades.some((trade) => trade.allocationHash === toHex(packageAllocationHash(allocation))));
+    assert.equal((await get(`/v1/allocations/${id(77)}`)).status, 404);
+  });
+});
+
+test("writes, malformed requests, and unknown parameters are refused", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    assert.equal((await get(`/v1/markets/${CLASS}/package-depth`, { method: "PUT" })).status, 405);
+    assert.equal((await get(`/v1/markets/${CLASS}/package-depth`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 404);
+    for (const path of [
+      `/v1/markets/${CLASS}/package-depth?side=BID`,
+      `/v1/markets/${CLASS}/package-tape?limit=101`,
+      `/v1/markets/${CLASS}/package-tape?after=-1`,
+      `/v1/markets/${CLASS}/package-tape?after=1&after=2`,
+      "/v1/markets/bad%20id/package-depth",
+      "/v1/allocations/XYZ",
+    ]) {
+      assert.equal((await get(path)).status, 400, path);
+    }
+    assert.equal((await get("/v1/other")).status, 404);
+    assert.equal((await get("/internal/healthz")).status, 418);
+  });
+});
+
+test("requests are rate limited per client window", async () => {
+  let now = 0;
+  await withMarket(
+    async (get, store) => {
+      registerAll(store);
+      assert.equal((await get(`/v1/markets/${CLASS}/package-depth`)).status, 200);
+      assert.equal((await get(`/v1/markets/${CLASS}/package-depth`)).status, 200);
+      assert.equal((await get(`/v1/markets/${CLASS}/package-depth`)).status, 429);
+      now = 1_000;
+      assert.equal((await get(`/v1/markets/${CLASS}/package-depth`)).status, 200);
+    },
+    { rateLimit: { windowMs: 1_000, maxRequests: 2 }, clockMs: () => now },
+  );
+});
+
+test("the runtime is off by default and validates its configuration", () => {
+  assert.equal(loadPublicMarketRuntime({}), undefined);
+  assert.throws(() => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "yes" }), PublicMarketConfigError);
+  assert.throws(() => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "true" }), /NARYX_EXCHANGE_DB is required/);
+  assert.throws(
+    () => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "true", NARYX_EXCHANGE_DB: "relative.db" }),
+    /absolute path/,
+  );
+  const dir = mkdtempSync(join(tmpdir(), "naryx-market-config-"));
+  try {
+    const manifest = join(dir, "support.json");
+    const env = { NARYX_PUBLIC_MARKET_ENABLED: "true", NARYX_EXCHANGE_DB: join(dir, "exchange.sqlite"), NARYX_EXCHANGE_SUPPORT_MANIFEST: manifest };
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "SOLANA_SLOT", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+    assert.throws(() => loadPublicMarketRuntime(env), /slot source/);
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT, extra: true }));
+    assert.throws(() => loadPublicMarketRuntime(env), /exactly clockUnit/);
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+    assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE: "0" }), /between 1 and 10000/);
+    const runtime = loadPublicMarketRuntime(env);
+    assert.ok(runtime);
+    assert.equal(runtime.clockUnit, "UNIX_SECONDS");
+    assert.equal(runtime.requestsPerMinute, 120);
+    runtime.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the private terminal server answers public market routes before its origin policy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-market-mount-"));
+  const manifest = join(dir, "support.json");
+  writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+  const runtime = loadPublicMarketRuntime({
+    NARYX_PUBLIC_MARKET_ENABLED: "true",
+    NARYX_EXCHANGE_DB: join(dir, "exchange.sqlite"),
+    NARYX_EXCHANGE_SUPPORT_MANIFEST: manifest,
+  });
+  assert.ok(runtime);
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, runtime.handler,
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const book = await fetch(`http://127.0.0.1:${port}/v1/markets/${CLASS}/package-depth`, { headers: { Origin: "https://reader.example" } });
+    assert.equal(book.status, 404);
+    assert.equal(book.headers.get("access-control-allow-origin"), "*");
+    const privateRoute = await fetch(`http://127.0.0.1:${port}/internal/healthz`, { headers: { Origin: "https://reader.example" } });
+    assert.equal(privateRoute.status, 403);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/internal/healthz`)).status, 200);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    runtime.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const post = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(toProtocolJson(body)),
+});
+
+test("registries, strategy series, and package markets are listed from their stores", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-public-registry-"));
+  const registry = new SqliteRegistryStore(join(dir, "registry.sqlite"));
+  try {
+    registry.registerDomain(DOMAIN_MANIFEST);
+    registry.registerSolverManifest(signedSolverManifest(operatorKeys()));
+    await withMarket(
+      async (get, store) => {
+        registerAll(store);
+        store.submitOrder(CLASS, order(1), NOW);
+        const domains = (await get("/v1/domains")).body as { domains: readonly { subjectId: string }[] };
+        assert.deepEqual(domains.domains.map((entry) => entry.subjectId), [DOMAIN_MANIFEST.domainId]);
+        const solver = (await get("/v1/solvers/solver-a")).body as { solverId: string; manifestNonce: number; quoteVerificationKeys: readonly unknown[] };
+        assert.equal(solver.solverId, "solver-a");
+        assert.equal(solver.manifestNonce, 1);
+        assert.equal((await get("/v1/solvers/solver-z")).status, 404);
+        const series = (await get("/v1/strategy-series")).body as { series: readonly { seriesId: string }[] };
+        assert.deepEqual(series.series.map((entry) => entry.seriesId), [SERIES.seriesId]);
+        const classes = (await get(`/v1/strategy-series/${SERIES.seriesId}/execution-classes`)).body as { executionClasses: readonly { executionClassId: string }[] };
+        assert.deepEqual(classes.executionClasses.map((entry) => entry.executionClassId), [CLASS]);
+        const markets = (await get("/v1/markets")).body as { markets: readonly { packageMarketId: string; bestAskTicks?: bigint; label: string }[] };
+        assert.deepEqual(markets.markets.map((market) => [market.packageMarketId, market.bestAskTicks, market.label]), [[CLASS, 100n, "EXECUTABLE"]]);
+      },
+      { registry },
+    );
+    await withMarket(async (get) => {
+      assert.equal((await get("/v1/domains")).status, 503);
+    });
+  } finally {
+    registry.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("candles are built only from recorded trades and the index keeps executable depth separate", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    const to = Date.now() + 60_000;
+    const candles = (await get(`/v1/markets/${CLASS}/candles?interval=1h&from=${to - 86_400_000}&to=${to}`)).body as {
+      label: string;
+      candles: readonly { open: bigint; close: bigint; volume: bigint; tradeCount: number }[];
+    };
+    assert.equal(candles.label, "OBSERVED");
+    assert.deepEqual(candles.candles.map((candle) => [candle.open, candle.close, candle.volume, candle.tradeCount]), [[100n, 100n, 10n, 1]]);
+    assert.equal((await get(`/v1/markets/${CLASS}/candles?interval=2m`)).status, 400);
+    assert.equal((await get(`/v1/markets/${CLASS}/candles?interval=1m&from=0&to=${to}`)).status, 400);
+    store.submitOrder(CLASS, order(3), NOW);
+    store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
+    const index = (await get(`/v1/markets/${CLASS}/index?sizes=10,30`)).body as {
+      executable: { asks: readonly { averagePriceTicks?: bigint; label: string }[] };
+      withImplied: { asks: readonly { averagePriceTicks?: bigint; label: string }[] };
+    };
+    assert.deepEqual(index.executable.asks.map((quote) => [quote.averagePriceTicks, quote.label]), [[100n, "EXECUTABLE"], [undefined, "EXECUTABLE"]]);
+    assert.deepEqual(index.withImplied.asks.map((quote) => [quote.averagePriceTicks, quote.label]), [[100n, "INDICATIVE"], [100n, "INDICATIVE"]]);
+    const provenance = (await get(`/v1/package-book/${CLASS}/implied-provenance`)).body as {
+      implied: readonly { solverId: string; evidence: string; sources: readonly unknown[]; label: string }[];
+    };
+    assert.equal(provenance.implied.length, 1);
+    assert.deepEqual([provenance.implied[0]?.solverId, provenance.implied[0]?.evidence, provenance.implied[0]?.label], ["solver-a", "RESERVATION_BACKED_IMPLIED", "EXECUTABLE"]);
+    assert.equal(provenance.implied[0]?.sources.length, 2);
+  });
+});
+
+test("compute routes validate, simulate without persisting, and reject malformed bodies", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    const simulated = (await get("/v1/clearing/simulate", post({ packageMarketId: CLASS, order: order(9, { side: "BID", timeInForce: "IOC" }) }))).body as {
+      accepted: boolean;
+      simulated: boolean;
+      allocation: { fills: readonly unknown[] };
+    };
+    assert.deepEqual([simulated.accepted, simulated.simulated, simulated.allocation.fills.length], [true, true, 1]);
+    assert.equal(store.getBook(CLASS)?.entries.length, 1);
+    assert.equal(store.getAllocation(id(9)), undefined);
+    const invalid = (await get("/v1/orders/validate", post({ order: { version: 99 } }))).body as { valid: boolean; error: { code: string } };
+    assert.equal(invalid.valid, false);
+    assert.equal(typeof invalid.error.code, "string");
+    const plan = (await get("/v1/de-risk/validate", post({ positions: [], policy: { triggerLiquidationDistanceBps: 500n, reductionBps: 2_500n }, stateCertain: true }))).body as { actions: readonly unknown[] };
+    assert.ok(Array.isArray(plan.actions));
+    assert.equal((await get("/v1/orders/validate", { method: "POST", headers: { "Content-Type": "text/plain" }, body: "{}" })).status, 415);
+    assert.equal((await get("/v1/orders/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{not json" })).status, 400);
+    assert.equal((await get("/v1/orders/validate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ padding: "x".repeat(70_000) }) })).status, 413);
+    const preflight = await fetchOptions(get);
+    assert.equal(preflight, 204);
+  });
+});
+
+async function fetchOptions(get: (path: string, init?: RequestInit) => Promise<{ status: number }>): Promise<number> {
+  return (await get("/v1/orders/validate", { method: "OPTIONS" })).status;
+}

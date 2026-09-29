@@ -69,10 +69,17 @@ export {
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";
 export {
-  createPublicMarketRequestHandler,
-  type PublicMarketApiOptions,
-  type PublicMarketStore,
-} from "./public-market-api.js";
+  createPublicApiHandler,
+  type PublicApiOptions,
+  type PublicExchangeStore,
+  type PublicRegistryStore,
+} from "./public-api.js";
+export {
+  RegistryStoreError,
+  SqliteRegistryStore,
+  type RegisteredDocument,
+  type RegistryKind,
+} from "./registry-store.js";
 export {
   loadPublicMarketRuntime,
   PublicMarketConfigError,
