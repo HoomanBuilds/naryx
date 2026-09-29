@@ -15,6 +15,7 @@ import {
   toProtocolJson,
   validatePackageOrderProfile,
   verifyPackageAllocation,
+  verifySealedAuctionResult,
   type CandleInterval,
   type CandleSeries,
   type ExecutablePackageIndex,
@@ -22,6 +23,9 @@ import {
   type PackageMatchingPolicy,
   type PackageOrderInput,
   type PackageTakerOrderInput,
+  type PrivateRfqEnvelopeInput,
+  type SealedAuctionDefinitionInput,
+  type SealedAuctionEvent,
   type RfqDecision,
   type RfqRequest,
   type RfqResponse,
@@ -439,6 +443,48 @@ export class NaryxClient {
     if (!HASH_HEX.test(takerOrderId)) throw new TypeError('taker order id must be 32 bytes of lowercase hex');
     const body = record(await this.#request('GET', `/v1/allocations/${takerOrderId}`), 'allocation response');
     return verifyAllocationEvidence(takerOrderId, body.allocation, body.matchingPolicy);
+  }
+
+  // ---------------------------------------------------------------- private delivery
+
+  /**
+   * Submits envelopes the caller encrypted with the pinned suite. The relay stores ciphertext and
+   * canonical metadata only; being stored is not being delivered.
+   */
+  async submitPrivateRfq(envelopes: readonly { readonly envelope: PrivateRfqEnvelopeInput; readonly ciphertext: Uint8Array }[]): Promise<readonly Record<string, unknown>[]> {
+    if (envelopes.length === 0 || envelopes.length > 16) throw new TypeError('submit 1 to 16 envelopes');
+    return list(record(await this.#request('POST', '/v1/rfqs/private', { envelopes }), 'rfq').results, 'results').map((entry, index) => record(entry, `results[${index}]`));
+  }
+
+  /** Delivery counts only once the recipient acknowledged; the response is ciphertext for the taker. */
+  async getPrivateRfqStatus(envelopeHash: string): Promise<{ readonly acknowledged: boolean; readonly response?: unknown }> {
+    const body = record(await this.#request('GET', `/v1/rfqs/private/${hashHex(envelopeHash, 'envelope hash')}`), 'rfq status');
+    if (body.envelopeHash !== envelopeHash || typeof body.acknowledged !== 'boolean') throw new NaryxEvidenceError('rfq status is malformed');
+    return Object.freeze({ acknowledged: body.acknowledged, ...(body.response === undefined ? {} : { response: body.response }) });
+  }
+
+  async createSealedAuction(definition: SealedAuctionDefinitionInput): Promise<string> {
+    return hashHex(record(await this.#request('POST', '/v1/auctions/sealed', { definition }), 'auction').auctionHashHex, 'auctionHashHex');
+  }
+
+  /**
+   * Reads an auction. Before close only the phase and commitment count are public. After close
+   * the result is recomputed locally from the published event log and must match exactly.
+   */
+  async getSealedAuction(auctionHash: string): Promise<Record<string, unknown>> {
+    const body = record(await this.#request('GET', `/v1/auctions/sealed/${hashHex(auctionHash, 'auction hash')}`), 'auction');
+    if (body.phase !== 'CLOSED') return body;
+    const definition = body.definition as SealedAuctionDefinitionInput;
+    const result = record(body.result, 'auction.result');
+    const events = list(body.events, 'auction.events') as readonly SealedAuctionEvent[];
+    let matches = false;
+    try {
+      matches = verifySealedAuctionResult(definition, events, definition.revealDeadlineValue, result.resultHash as Uint8Array);
+    } catch {
+      matches = false;
+    }
+    if (!matches) throw new NaryxEvidenceError('the published auction result does not replay from its event log');
+    return body;
   }
 
   // ---------------------------------------------------------------- computation

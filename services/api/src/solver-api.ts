@@ -10,6 +10,7 @@ import {
   solverRequestDigest,
   toHex,
   toProtocolJson,
+  verifyPrivateRfqResponse,
 } from "@naryx/protocol-types";
 import type {
   AssetRef,
@@ -26,6 +27,7 @@ import { verifyEd25519 } from "./ed25519.js";
 import { PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
+import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 
 const MAX_BODY_BYTES = 65_536;
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -39,6 +41,8 @@ export interface SolverApiOptions {
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidity" | "cancelEntry">;
+  /** Optional: private RFQ and sealed auction routes answer 503 without it. */
+  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
   readonly nowValue: () => bigint;
   readonly clockMs?: () => number;
@@ -113,7 +117,7 @@ function validQuoteKeys(manifest: SolverCapabilityManifestInput, now: bigint) {
  * and book entries. Shard contents must also be signed by a valid quote key over the shard hash.
  */
 export function createSolverApiHandler(options: SolverApiOptions) {
-  const { store, registry, exchange, nowValue } = options;
+  const { store, registry, exchange, delivery, nowValue } = options;
   const clockMs = options.clockMs ?? Date.now;
   const maxSkew = options.maxClockSkewMs ?? 30_000;
   const { windowMs, maxRequests } = options.rateLimit;
@@ -202,6 +206,18 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     if (strip(current) !== strip(packageQuoteShard(next))) {
       throw new SolverRequestError(400, "UNEXPECTED_CHANGE", `This operation may change only: ${fields.join(", ") || "nothing"}.`);
     }
+  }
+
+  function requireDelivery() {
+    if (delivery === undefined) throw new SolverRequestError(503, "PRIVATE_DELIVERY_UNAVAILABLE", "No private delivery relay is configured on this server.");
+    return delivery;
+  }
+
+  /** Server time in an object's own unit; slot-timed objects cannot be judged against wall-clock time. */
+  function wallClockIn(unit: string): bigint {
+    if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
+    if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
+    throw new SolverRequestError(400, "TIME_UNIT_UNSUPPORTED", "Slot-timed objects cannot be judged against wall-clock time here.");
   }
 
   function requireExchange() {
@@ -299,6 +315,53 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       requireExchange().cancelEntry(classId, body.entryId, solverId);
       return { cancelled: true };
     }
+    if (method === "GET" && path === "/v1/solver/private-rfqs") {
+      const pending = requireDelivery().pendingFor(solverId, (envelope) => {
+        try {
+          return wallClockIn(envelope.expiresAtUnit) >= envelope.expiresAtValue;
+        } catch {
+          return true;
+        }
+      });
+      return { envelopes: pending.map((entry) => ({ envelopeHash: entry.envelopeHashHex, envelope: entry.envelope, ciphertext: entry.ciphertext })) };
+    }
+    if ((match = /^\/v1\/solver\/private-rfqs\/([0-9a-f]{64})\/(ack|response)$/.exec(path)) !== null && method === "POST") {
+      const relay = requireDelivery();
+      const envelopeHash = match[1] as string;
+      if (match[2] === "ack") {
+        relay.acknowledge(envelopeHash, solverId);
+        return { acknowledged: true };
+      }
+      const stored = relay.getEnvelope(envelopeHash);
+      if (stored === undefined || stored.envelope.recipientSolverId !== solverId) throw new SolverRequestError(404, "NOT_FOUND", "No such envelope for this solver.");
+      const body = decodeBody(raw);
+      if (!(body.responseCiphertext instanceof Uint8Array) || body.responseCiphertext.length === 0) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "responseCiphertext must be bytes.");
+      }
+      const verified = verifyPrivateRfqResponse(stored.envelope, {
+        envelopeHash,
+        solverId,
+        quoteHash: body.quoteHash as string,
+        quoteOrderHash: body.quoteOrderHash as string,
+        responseEncryptionKey: body.responseEncryptionKey as Uint8Array,
+        responseCiphertextHash: new Uint8Array(createHash("sha256").update(body.responseCiphertext).digest()),
+      });
+      if (!verified.valid) throw new SolverRequestError(409, verified.reason, "The encrypted response does not bind to this envelope.");
+      relay.storeResponse(envelopeHash, verified.responseHash, { quoteHash: body.quoteHash, quoteOrderHash: body.quoteOrderHash }, body.responseCiphertext);
+      return { responseHash: toHex(verified.responseHash) };
+    }
+    if ((match = /^\/v1\/solver\/auctions\/([0-9a-f]{64})\/(commit|reveal)$/.exec(path)) !== null && method === "POST") {
+      const relay = requireDelivery();
+      const auctionHash = match[1] as string;
+      const atValue = wallClockIn(relay.auctionDefinition(auctionHash).timeUnit);
+      const body = decodeBody(raw);
+      const event = match[2] === "commit"
+        ? { kind: "COMMIT" as const, solverId, commitment: body.commitment as string, atValue }
+        : { kind: "REVEAL" as const, solverId, quoteHash: body.quoteHash as string, netOutcomeAtoms: body.netOutcomeAtoms as bigint, salt: body.salt as Uint8Array, atValue };
+      const result = relay.appendAuctionEvent(auctionHash, event);
+      if (!result.accepted) throw new SolverRequestError(409, result.reason, "The auction event was rejected.");
+      return { accepted: true };
+    }
     throw new SolverRequestError(404, "NOT_FOUND", "Unknown solver route.");
   }
 
@@ -320,6 +383,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         if (error instanceof RegistryStoreError) return reply(error.code === "DOCUMENT_CONFLICT" ? 409 : 400, error.code, error.message);
         if (error instanceof SolverApiStoreError) return reply(error.code === "NOT_OWNER" ? 403 : 400, error.code, error.message);
         if (error instanceof PackageExchangeStoreError) return reply(error.code === "BOOK_NOT_FOUND" ? 404 : 409, error.code, error.message);
+        if (error instanceof PrivateDeliveryStoreError) return reply(error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message);
         return reply(500, "INTERNAL_ERROR", "Solver request failed.");
       });
     return true;

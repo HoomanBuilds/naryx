@@ -23,6 +23,8 @@ The package also re-exports kernel verifiers an integrator can run with no Naryx
 
 `NaryxSolverClient` covers the authenticated solver API: manifest registration, quote shards (put, replace, heartbeat, cancel-all, kill switch), capacity evidence and reservations, and book quotes. It signs every request over `solverRequestDigest` with a fresh random nonce through a caller-supplied `sign` function, so the quote key stays in the solver's own signer and never enters the SDK. `NaryxClient` also reads live market quotes, rejecting any quote without a known quote mode, and solver capacity.
 
+Private delivery is covered on both sides: `NaryxClient` submits caller-encrypted RFQ envelopes, reads delivery status, creates sealed auctions, and reads them, recomputing a closed auction's result from its published event log and rejecting any mismatch; `NaryxSolverClient` pulls, acknowledges, and answers envelopes and commits and reveals sealed quotes. The SDK does not implement the encryption suite; a reviewed library must be pinned first.
+
 Order submission, receipt, and outcome calls are added as the API exposes them; no terminal-internal route is wrapped.
 
 ```sh

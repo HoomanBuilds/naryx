@@ -149,6 +149,28 @@ export class NaryxSolverClient {
     return this.#call('POST', '/v1/solver/quotes', { packageMarketId, quote, ...(expiresAtValue === undefined ? {} : { expiresAtValue }) });
   }
 
+  /** Envelopes addressed to this solver that are neither acknowledged nor expired. */
+  pendingPrivateRfqs() {
+    return this.#call('GET', '/v1/solver/private-rfqs');
+  }
+
+  acknowledgePrivateRfq(envelopeHash: string) {
+    return this.#call('POST', `/v1/solver/private-rfqs/${envelopeHash}/ack`);
+  }
+
+  /** The quote must be encrypted to the envelope's response key; the relay verifies the binding, not the content. */
+  respondPrivateRfq(envelopeHash: string, response: { readonly quoteHash: string; readonly quoteOrderHash: string; readonly responseEncryptionKey: Uint8Array; readonly responseCiphertext: Uint8Array }) {
+    return this.#call('POST', `/v1/solver/private-rfqs/${envelopeHash}/response`, response);
+  }
+
+  commitSealedQuote(auctionHash: string, commitment: string) {
+    return this.#call('POST', `/v1/solver/auctions/${auctionHash}/commit`, { commitment });
+  }
+
+  revealSealedQuote(auctionHash: string, opening: { readonly quoteHash: string; readonly netOutcomeAtoms: bigint; readonly salt: Uint8Array }) {
+    return this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
+  }
+
   cancelQuote(packageMarketId: string, entryId: string) {
     return this.#call('POST', '/v1/solver/quotes/cancel', { packageMarketId, entryId });
   }

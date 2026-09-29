@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  admitPrivateRfqEnvelope,
   aggregateCandles,
   CANDLE_INTERVAL_MS,
   decideRfq,
@@ -21,6 +23,8 @@ import type {
   NormalizedPositionInput,
   PackageOrderInput,
   PackageTakerOrderInput,
+  PrivateRfqEnvelopeInput,
+  SealedAuctionDefinitionInput,
   RfqRequest,
   RfqResponse,
   RfqSolverCapacity,
@@ -30,6 +34,7 @@ import type {
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import type { SqliteSolverApiStore } from "./solver-api-store.js";
+import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
@@ -63,6 +68,10 @@ export interface PublicApiOptions {
   readonly registry?: PublicRegistryStore;
   /** Optional: solver quote and capacity routes answer 503 without it. */
   readonly solverState?: PublicSolverState;
+  /** Optional: private RFQ relay and sealed auction routes answer 503 without it. */
+  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "nonceSeen" | "storeEnvelope" | "getEnvelope" | "createAuction" | "auctionView" | "auctionDefinition">;
+  /** Encryption suites a reviewed release has pinned; with none, private RFQ fails closed. */
+  readonly pinnedSuiteIds?: readonly string[];
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -165,7 +174,8 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
  * derived market number. It returns false for paths it does not own, including /v1/solver/.
  */
 export function createPublicApiHandler(options: PublicApiOptions) {
-  const { exchange, registry, solverState, nowValue } = options;
+  const { exchange, registry, solverState, delivery, nowValue } = options;
+  const pinnedSuiteIds = options.pinnedSuiteIds ?? [];
   const { windowMs, maxRequests } = options.rateLimit;
   if (!Number.isSafeInteger(windowMs) || windowMs < 1 || !Number.isSafeInteger(maxRequests) || maxRequests < 1) {
     throw new Error("Public API rate limit must be positive.");
@@ -204,6 +214,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
     if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
     return undefined;
+  }
+
+  function requireDelivery() {
+    if (delivery === undefined) throw new RequestError(503, "PRIVATE_DELIVERY_UNAVAILABLE", "No private delivery relay is configured on this server.");
+    return delivery;
+  }
+
+  function wallClockIn(unit: string): bigint {
+    const now = nowIn(unit);
+    if (now === undefined) throw new RequestError(400, "TIME_UNIT_UNSUPPORTED", "Slot-timed objects cannot be judged against wall-clock time here.");
+    return now;
   }
 
   function book(classId: string) {
@@ -405,6 +426,24 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         ...executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), parts.map((part) => BigInt(part))),
       };
     }
+    if ((match = /^\/v1\/rfqs\/private\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const stored = requireDelivery().getEnvelope(match[1] as string);
+      if (stored === undefined) throw new RequestError(404, "NOT_FOUND", "No such envelope.");
+      return {
+        envelopeHash: stored.envelopeHashHex,
+        recipientSolverId: stored.envelope.recipientSolverId,
+        acknowledged: stored.acknowledged,
+        // The response is ciphertext encrypted to the taker's response key; the relay cannot read it.
+        response: stored.response,
+      };
+    }
+    if ((match = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const store = requireDelivery();
+      const hash = match[1] as string;
+      return store.auctionView(hash, wallClockIn(store.auctionDefinition(hash).timeUnit));
+    }
     if ((match = /^\/v1\/allocations\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);
       const orderId = match[1];
@@ -426,6 +465,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/compare",
       "/v1/clearing/simulate",
       "/v1/de-risk/validate",
+      "/v1/rfqs/private",
+      "/v1/auctions/sealed",
     ].includes(path)) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
@@ -457,6 +498,42 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // Runs against the current book in memory only; nothing is persisted or reserved.
       const result = matchPackageOrder(policy, state, body.order as PackageTakerOrderInput, nowValue());
       return result.accepted ? { accepted: true, simulated: true, allocation: result.allocation } : { accepted: false, simulated: true, rejection: result.rejection };
+    }
+    if (path === "/v1/rfqs/private") {
+      const relay = requireDelivery();
+      if (pinnedSuiteIds.length === 0) {
+        throw new RequestError(503, "PRIVATE_PATH_UNAVAILABLE", "No encryption suite is pinned; use a visibly labeled public RFQ instead.");
+      }
+      const entries = body.envelopes;
+      if (!Array.isArray(entries) || entries.length === 0 || entries.length > 16) throw new RequestError(400, "INVALID_REQUEST", "envelopes must hold 1 to 16 entries.");
+      const results = entries.map((entry: unknown) => {
+        const item = object(entry, "envelope entry");
+        const envelope = item.envelope as PrivateRfqEnvelopeInput;
+        if (!(item.ciphertext instanceof Uint8Array) || item.ciphertext.length === 0) throw new RequestError(400, "INVALID_REQUEST", "ciphertext must be bytes.");
+        const recipient = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", String((envelope as { recipientSolverId?: unknown }).recipientSolverId));
+        if (recipient === undefined) return { admitted: false, reason: "RECIPIENT_MISMATCH" };
+        const admission = admitPrivateRfqEnvelope(envelope, {
+          environment: recipient.document.environment,
+          pinnedSuiteIds,
+          recipientManifest: recipient.document,
+          atValue: wallClockIn(envelope.createdAtUnit),
+          nonceSeen: relay.nonceSeen(envelope),
+          receivedCiphertextHash: new Uint8Array(createHash("sha256").update(item.ciphertext).digest()),
+        });
+        if (!admission.admitted) return admission;
+        return { admitted: true, ...relay.storeEnvelope(envelope, item.ciphertext) };
+      });
+      // Stored is not delivered: private success is reported only after a recipient acknowledges.
+      return { results, deliveryStatusRoute: "/v1/rfqs/private/{envelopeHash}" };
+    }
+    if (path === "/v1/auctions/sealed") {
+      const definition = body.definition as SealedAuctionDefinitionInput;
+      wallClockIn(String((definition as { timeUnit?: unknown }).timeUnit));
+      const eligible = (definition as { eligibleSolverIds?: unknown }).eligibleSolverIds;
+      if (!Array.isArray(eligible) || eligible.some((solverId) => typeof solverId !== "string" || requireRegistry().latest("SOLVER_CAPABILITY", solverId) === undefined)) {
+        throw new RequestError(400, "INVALID_REQUEST", "Every eligible solver must be registered.");
+      }
+      return requireDelivery().createAuction(definition);
     }
     const positions = body.positions as readonly NormalizedPositionInput[];
     const openOrders = (body.openRiskIncreasingOrderIds ?? []) as readonly string[];
@@ -496,6 +573,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PackageExchangeStoreError && error.code === "BOOK_NOT_FOUND") return fail(response, 404, "BOOK_NOT_FOUND", "Package market is not open.");
         if (error instanceof PackageExchangeStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
         if (error instanceof RegistryStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
+        if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message);
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });
     return true;

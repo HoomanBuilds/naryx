@@ -11,7 +11,9 @@ import {
   domainRef,
   fromProtocolJson,
   packageQuoteShardHash,
+  sealedQuoteCommitment,
   solverRequestDigest,
+  toHex,
   toProtocolJson,
   type PackageQuoteLevel,
   type PackageQuoteShardInput,
@@ -21,6 +23,7 @@ import {
   createPublicApiHandler,
   createSolverApiHandler,
   SqlitePackageExchangeStore,
+  SqlitePrivateDeliveryStore,
   SqliteRegistryStore,
   SqliteSolverApiStore,
 } from "../src/index.js";
@@ -28,6 +31,7 @@ import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } fr
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 
 const NOW_MS = 1_900_000_000_000;
+const RFQ_SUITE = "hpke-x25519-sha256-aes256gcm";
 const NOW_S = BigInt(NOW_MS / 1_000);
 const FAR = NOW_S + 86_400n;
 
@@ -56,23 +60,30 @@ interface Harness {
   shard(overrides?: Partial<PackageQuoteShardInput>): PackageQuoteShardInput;
   exchange: SqlitePackageExchangeStore;
   solverKey: KeyObject;
+  setClock(ms: number): void;
 }
 
-async function withSolverApi(run: (harness: Harness) => Promise<void>): Promise<void> {
+async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSuiteIds: readonly string[] = [RFQ_SUITE]): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "naryx-solver-api-"));
+  let clock = NOW_MS;
   const registry = new SqliteRegistryStore(join(dir, "registry.sqlite"));
-  const solverState = new SqliteSolverApiStore(join(dir, "solver.sqlite"), { clock: () => NOW_MS });
+  const solverState = new SqliteSolverApiStore(join(dir, "solver.sqlite"), { clock: () => clock });
+  const delivery = new SqlitePrivateDeliveryStore(join(dir, "delivery.sqlite"), { clock: () => clock });
   const exchange = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
   registerAll(exchange);
   const operator = operatorKeys();
   const key = quoteKey();
   registry.registerDomain(DOMAIN_MANIFEST);
   registry.registerSolverManifest(
-    signedSolverManifest(operator, { quoteVerificationKeys: [{ keyId: "q-1", scheme: "ED25519", verificationKey: key.raw, validFromValue: 0n, validUntilValue: FAR }], validUntilValue: FAR }),
+    signedSolverManifest(operator, {
+      quoteVerificationKeys: [{ keyId: "q-1", scheme: "ED25519", verificationKey: key.raw, validFromValue: 0n, validUntilValue: FAR }],
+      rfqEncryptionKeys: [{ keyId: "rfq-1", encryptionSuiteId: RFQ_SUITE, publicKey: new Uint8Array(32).fill(8), validFromValue: 0n, validUntilValue: FAR }],
+      validUntilValue: FAR,
+    }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, nowValue: () => NOW, clockMs: () => NOW_MS, rateLimit });
-  const publicApi = createPublicApiHandler({ exchange, registry, solverState, nowValue: () => NOW, clockMs: () => NOW_MS, rateLimit });
+  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
       response.statusCode = 418;
@@ -85,10 +96,13 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>): Promise<
   const harness: Harness = {
     exchange,
     solverKey: key.privateKey,
+    setClock(ms) {
+      clock = ms;
+    },
     async call(method, path, body, tweak = {}) {
       const text = body === undefined ? "" : JSON.stringify(toProtocolJson(body));
       const nonce = tweak.nonce ?? randomBytes(32).toString("hex");
-      const timestampMs = tweak.timestampMs ?? NOW_MS;
+      const timestampMs = tweak.timestampMs ?? clock;
       const solverId = tweak.solverId ?? "solver-a";
       const keyId = tweak.keyId ?? "q-1";
       const digest = solverRequestDigest({
@@ -152,6 +166,7 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>): Promise<
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     exchange.close();
+    delivery.close();
     solverState.close();
     registry.close();
     rmSync(dir, { recursive: true, force: true });
@@ -232,5 +247,86 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
     const cancelled = await api.call("POST", "/v1/solver/quotes/cancel", { packageMarketId: CLASS, entryId });
     assert.equal(cancelled.status, 200);
     assert.equal(api.exchange.getBook(CLASS)?.entries.length, 0);
+  });
+});
+
+test("the private RFQ relay stores ciphertext only, fails closed without a pinned suite, and binds responses", async () => {
+  const envelope = (overrides: Record<string, unknown> = {}) => ({
+    envelopeVersion: 1,
+    environment: "testnet",
+    domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)),
+    templateId: "cash-and-carry-v1",
+    templateVersion: 1,
+    packageTemplateManifestHash: "44".repeat(32),
+    orderHash: "55".repeat(32),
+    senderKeyId: "taker-key-1",
+    responseEncryptionKey: new Uint8Array(32).fill(7),
+    recipientSolverId: "solver-a",
+    recipientEncryptionKeyId: "rfq-1",
+    encryptionSuiteId: RFQ_SUITE,
+    ciphertextHash: new Uint8Array(createHash("sha256").update(Buffer.from("sealed-order")).digest()),
+    createdAtUnit: "EVM_UNIX_SECONDS",
+    createdAtValue: NOW_S - 5n,
+    expiresAtUnit: "EVM_UNIX_SECONDS",
+    expiresAtValue: NOW_S + 60n,
+    envelopeNonce: 1n,
+    ...overrides,
+  });
+  const ciphertext = new Uint8Array(Buffer.from("sealed-order"));
+  await withSolverApi(async (api) => {
+    const closed = await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] });
+    assert.equal((closed.body.error as { code: string }).code, "PRIVATE_PATH_UNAVAILABLE");
+  }, []);
+  await withSolverApi(async (api) => {
+    const submitted = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] })).body as { results: readonly { admitted: boolean; envelopeHashHex?: string }[] };
+    assert.equal(submitted.results[0]?.admitted, true);
+    const hash = submitted.results[0]?.envelopeHashHex as string;
+    const replay = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] })).body as { results: readonly { reason?: string }[] };
+    assert.equal(replay.results[0]?.reason, "REPLAY");
+    const mutated = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope({ envelopeNonce: 2n }), ciphertext: new Uint8Array([1, 2, 3]) }] })).body as { results: readonly { reason?: string }[] };
+    assert.equal(mutated.results[0]?.reason, "CIPHERTEXT_MUTATED");
+
+    const pending = (await api.call("GET", "/v1/solver/private-rfqs")).body as { envelopes: readonly { envelopeHash: string; ciphertext: Uint8Array }[] };
+    assert.deepEqual(pending.envelopes.map((entry) => entry.envelopeHash), [hash]);
+    assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, false);
+    assert.equal((await api.call("POST", `/v1/solver/private-rfqs/${hash}/ack`)).status, 200);
+    assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, true);
+    const response = (key: Uint8Array) => ({ quoteHash: "66".repeat(32), quoteOrderHash: "55".repeat(32), responseEncryptionKey: key, responseCiphertext: new Uint8Array([9, 9, 9]) });
+    const substituted = await api.call("POST", `/v1/solver/private-rfqs/${hash}/response`, response(new Uint8Array(32).fill(6)));
+    assert.equal((substituted.body.error as { code: string }).code, "RESPONSE_KEY_SUBSTITUTED");
+    assert.equal((await api.call("POST", `/v1/solver/private-rfqs/${hash}/response`, response(new Uint8Array(32).fill(7)))).status, 200);
+    const status = (await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { response?: { responseCiphertext: Uint8Array } };
+    assert.deepEqual([...(status.response?.responseCiphertext ?? [])], [9, 9, 9]);
+  });
+});
+
+test("a sealed auction accepts commits before its deadline, reveals after, and publishes a replayable result", async () => {
+  await withSolverApi(async (api) => {
+    const definition = {
+      version: 1,
+      auctionId: "auction-1",
+      environment: "testnet",
+      orderHash: "55".repeat(32),
+      eligibleSolverIds: ["solver-a"],
+      timeUnit: "EVM_UNIX_SECONDS",
+      commitDeadlineValue: NOW_S + 10n,
+      revealDeadlineValue: NOW_S + 20n,
+      settlementDeadlineValue: NOW_S + 30n,
+      minimumValidReveals: 1,
+    };
+    const created = (await api.plain("POST", "/v1/auctions/sealed", { definition })).body as { auctionHashHex: string };
+    const hash = created.auctionHashHex;
+    const salt = new Uint8Array(32).fill(4);
+    const opening = { solverId: "solver-a", quoteHash: "77".repeat(32), netOutcomeAtoms: 500n, salt };
+    const commitment = sealedQuoteCommitment(hash, opening);
+    assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/commit`, { commitment: toHex(commitment) })).status, 200);
+    const early = await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt });
+    assert.equal((early.body.error as { code: string }).code, "EARLY_REVEAL");
+    assert.deepEqual(((await api.plain("GET", `/v1/auctions/sealed/${hash}`)).body as { phase: string; commitmentCount: number }).commitmentCount, 1);
+    api.setClock(NOW_MS + 11_000);
+    assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt })).status, 200);
+    const view = (await api.plain("GET", `/v1/auctions/sealed/${hash}`)).body as { phase: string; result: { outcome: string; winner: { solverId: string } }; events: readonly unknown[] };
+    assert.deepEqual([view.phase, view.result.outcome, view.result.winner.solverId, view.events.length], ["CLOSED", "AWARDED", "solver-a", 2]);
+    assert.equal((await api.plain("POST", "/v1/auctions/sealed", { definition: { ...definition, eligibleSolverIds: ["solver-x"] } })).status, 400);
   });
 });

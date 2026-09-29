@@ -153,5 +153,33 @@ describe('public API client', () => {
       /not marked as a simulation/,
     );
   });
+
+  test('a closed sealed auction must replay from its published events', async () => {
+    const { openSealedAuction, sealedAuctionHash, sealedQuoteCommitment, replaySealedAuction } = await import('@naryx/protocol-types');
+    const definition = {
+      version: 1, auctionId: 'a-1', environment: 'local', orderHash: '55'.repeat(32), eligibleSolverIds: ['solver-a', 'solver-b'], timeUnit: 'EVM_UNIX_SECONDS' as const,
+      commitDeadlineValue: 100n, revealDeadlineValue: 200n, settlementDeadlineValue: 300n, minimumValidReveals: 1,
+    };
+    const hash = sealedAuctionHash(definition);
+    const opening = (solverId: string, net: bigint, fill: number) => ({ solverId, quoteHash: new Uint8Array(32).fill(fill), netOutcomeAtoms: net, salt: new Uint8Array(32).fill(fill + 1) });
+    const events = [
+      { kind: 'COMMIT' as const, solverId: 'solver-a', commitment: sealedQuoteCommitment(hash, opening('solver-a', 10n, 1)), atValue: 10n },
+      { kind: 'COMMIT' as const, solverId: 'solver-b', commitment: sealedQuoteCommitment(hash, opening('solver-b', 20n, 2)), atValue: 11n },
+      { kind: 'REVEAL' as const, ...opening('solver-a', 10n, 1), atValue: 110n },
+      { kind: 'REVEAL' as const, ...opening('solver-b', 20n, 2), atValue: 111n },
+    ];
+    const { result } = replaySealedAuction(definition, events, 200n);
+    assert.equal(openSealedAuction(definition).commitments.length, 0);
+    const path = `/v1/auctions/sealed/${toHexString(hash)}`;
+    const honest = await client({ [path]: { body: { phase: 'CLOSED', definition, result, events } } }).getSealedAuction(toHexString(hash));
+    assert.equal(honest.phase, 'CLOSED');
+    const swapped = { ...result, winner: result.ranked[1] };
+    const forgedHash = replaySealedAuction(definition, events.slice(0, 3), 200n).result.resultHash;
+    await assert.rejects(client({ [path]: { body: { phase: 'CLOSED', definition, result: { ...swapped, resultHash: forgedHash }, events } } }).getSealedAuction(toHexString(hash)), /does not replay/);
+  });
 });
+
+function toHexString(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
