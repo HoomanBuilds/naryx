@@ -74,6 +74,10 @@ export const HASH_DOMAIN = Object.freeze({
   RECONCILIATION_REPORT: 'CON/v1/reconciliation-report',
   SOLVER_REQUEST: 'CON/v1/solver-request',
   QUOTE_REFERENCE_STATE: 'CON/v1/quote-reference-state',
+  ACTIVATION_CONDITION: 'CON/v1/activation-condition',
+  EXECUTION_SCHEDULE: 'CON/v1/execution-schedule',
+  STRATEGY_HEALTH: 'CON/v1/strategy-health',
+  KEEPER_ACTION: 'CON/v1/keeper-action',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

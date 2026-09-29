@@ -307,6 +307,17 @@ delegation, split, merge, novation, venue migration, increase, and baseline adop
 Each accepted transition returns a receipt hashed under `CON/v1/strategy-transition` that binds the
 operation, actor, prior and next state hashes, time, and whether any external venue position moved.
 
+## Lifecycle automation
+
+`lifecycle-automation.ts` holds the objects a package order's `activationConditionHash` and `executionScheduleHash` bind, and the bounds a keeper works under.
+
+- `ActivationCondition` (`CON/v1/activation-condition`) compares one metric (time, package price, basis, funding, volatility, inventory, margin health, or liquidation distance) against a signed threshold. `evaluateActivationCondition` needs a fresh observation of exactly that metric; a missing, stale, or future observation never satisfies it, and a time condition can only wait forward.
+- `ExecutionSchedule` (`CON/v1/execution-schedule`) fixes the start, slice interval, slice count, aggregate quantity limit, per-slice cap, and stop rule. `nextScheduleSlice` returns only the slice whose window contains the current time, so a missed slice is skipped rather than doubled, and no slice can carry the schedule past its aggregate limit. A package TWAP also signs an aggregate limit price, and `twapSliceWithinLimit` keeps the running average inside it.
+- `activatePackageOrder` turns a signed order into the quantity it may execute now. An immediate order binds neither object and executes in full; a conditional order executes only under the exact condition it signed; a scheduled order or TWAP executes only the due slice of the exact schedule it signed, never more than the order quantity. The package book then matches the result as a plain limit order.
+- `StrategyHealthSnapshot` (`CON/v1/strategy-health`) records delta, gross notional, leverage, margin health, liquidation distance, basis, funding, volatility, residual, loss bound, dependency state, and recovery capacity against the exact strategy state hash.
+- `KeeperActionAuthorization` (`CON/v1/keeper-action`) is what an owner signs for one kind of keeper action: strategy, template, lifecycle graph, condition, cost bound, resulting risk bound, reward (never above the cost bound), permitted keepers, expiry, and nonce. `authorizeKeeperAction` rejects expiry, manual takeover, nonce replay, an unlisted keeper, another strategy or graph, a state that moved since the snapshot, a different or unmet condition, cost or reward above bound, a resulting state outside the risk bound, and anything but recovery or emergency risk reduction while a dependency is halted.
+- `isRiskReducing` is the proof a risk-reducing authorization requires: the projected state increases none of leverage, gross notional, loss bound, or absolute delta, and grants no new authority.
+
 ## Private delivery and execution quality
 
 `privateRfqEnvelope` validates the specified `PrivateRfqEnvelope`. `privateRfqAssociatedData` is
