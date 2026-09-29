@@ -307,6 +307,44 @@ delegation, split, merge, novation, venue migration, increase, and baseline adop
 Each accepted transition returns a receipt hashed under `CON/v1/strategy-transition` that binds the
 operation, actor, prior and next state hashes, time, and whether any external venue position moved.
 
+## Private delivery and execution quality
+
+`privateRfqEnvelope` validates the specified `PrivateRfqEnvelope`. `privateRfqAssociatedData` is
+the canonical header the pinned encryption suite authenticates; this package performs no
+cryptography. `admitPrivateRfqEnvelope` rejects cross-environment delivery, an unpinned suite,
+recipient or key substitution, a key outside its validity, an expired or replayed envelope, and a
+mutated ciphertext before any decryption. `verifyPrivateRfqResponse` binds the encrypted quote to
+the envelope, recipient, response key, and order. `resolvePrivateDelivery` reports private success
+only after an eligible solver acknowledges, and falls back to a visibly labeled public RFQ with no
+privacy claim only with the user's consent.
+
+The sealed batch auction hashes every deadline into `CON/v1/sealed-auction`. Solvers commit a
+salted hash of quote and net outcome before the commit deadline; reveals open only after it, and
+the public view shows the phase and commitment count until close. The best net outcome wins, exact
+ties break by commitment hash, committed solvers that never reveal are recorded as faults, and too
+few valid reveals is a no-fill. The result depends only on the event log, so a restarted
+coordinator recomputes the same result hash and `verifySealedAuctionResult` detects a substituted
+winner. A settlement failure falls back to the next ranked reveal until the settlement deadline.
+
+`privacyProfile` derives the pre-trade and post-trade visibility of ten subjects to the relay,
+selected solvers, unselected solvers, and the public, the metadata that still leaks, and the only
+privacy labels the interface may show. Settlement runs on public domains, so wallet, collateral,
+venue positions, and executed legs are always public after the trade and post-trade privacy is
+never claimed. Selective disclosure commits every receipt field with a 32-byte salt under
+`CON/v1/disclosure-field` and `CON/v1/disclosure-root`; an auditor verifies exactly the disclosed
+subset, and disclosure rules release fields per audience after a delay.
+
+`replayRouteDecision` recomputes a solver decision from its declared candidate set, exclusion
+reasons, objective, and state snapshots. It flags stale, future, or skewed state, a misclassified
+candidate, and a selected route that is not eligible or not the winner. It proves the declared
+selection, never global optimality. `measureExecutionQuality` computes pre-inclusion movement,
+slippage, maker markouts, shortfall, inclusion latency, and unhedged time, rounding every cost up.
+MEV attribution is a fact only with direct same-actor ordering evidence; otherwise it is labeled
+inferred. `deliveryPathEvidence` records requested and actual path, fallback, inclusion, and
+violations; a private relay is labeled reduced exposure, only a domain-proven path is labeled
+protected, any public-mempool attempt forfeits the label, and missed inclusion is a censorship
+suspicion rather than a finding.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,

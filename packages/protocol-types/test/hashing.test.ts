@@ -111,6 +111,18 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/netting-proof',
         'CON/v1/strategy-state',
         'CON/v1/strategy-transition',
+        'CON/v1/private-rfq-response',
+        'CON/v1/sealed-auction',
+        'CON/v1/sealed-commitment',
+        'CON/v1/sealed-auction-result',
+        'CON/v1/disclosure-field',
+        'CON/v1/disclosure-root',
+        'CON/v1/privacy-profile',
+        'CON/v1/route-candidate-set',
+        'CON/v1/route-selection-objective',
+        'CON/v1/route-decision',
+        'CON/v1/execution-quality',
+        'CON/v1/delivery-evidence',
       ],
     );
   });

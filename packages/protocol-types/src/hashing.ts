@@ -57,6 +57,18 @@ export const HASH_DOMAIN = Object.freeze({
   NETTING_PROOF: 'CON/v1/netting-proof',
   STRATEGY_STATE: 'CON/v1/strategy-state',
   STRATEGY_TRANSITION: 'CON/v1/strategy-transition',
+  PRIVATE_RFQ_RESPONSE: 'CON/v1/private-rfq-response',
+  SEALED_AUCTION: 'CON/v1/sealed-auction',
+  SEALED_COMMITMENT: 'CON/v1/sealed-commitment',
+  SEALED_AUCTION_RESULT: 'CON/v1/sealed-auction-result',
+  DISCLOSURE_FIELD: 'CON/v1/disclosure-field',
+  DISCLOSURE_ROOT: 'CON/v1/disclosure-root',
+  PRIVACY_PROFILE: 'CON/v1/privacy-profile',
+  ROUTE_CANDIDATE_SET: 'CON/v1/route-candidate-set',
+  ROUTE_SELECTION_OBJECTIVE: 'CON/v1/route-selection-objective',
+  ROUTE_DECISION: 'CON/v1/route-decision',
+  EXECUTION_QUALITY: 'CON/v1/execution-quality',
+  DELIVERY_EVIDENCE: 'CON/v1/delivery-evidence',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];
