@@ -544,6 +544,14 @@ export function compileEvmAtomicPackage(
 }
 
 export { NARYX_STRATEGY_ACCOUNT_ABI } from './abi.js';
+export { ATOMIC_PACKAGE_EXECUTOR_ABI } from './abi.js';
+export type {
+  EvmLocalAtomicBinding,
+  EvmLocalAtomicBounds,
+  EvmLocalAtomicExecution,
+  EvmLocalAtomicPayload,
+} from './localConformance.js';
+export { compileEvmLocalAtomicExecution } from './localConformance.js';
 export {
   ASYNC_COORDINATOR_OBSERVATION_ABI,
   GMX_ENTRY_ADAPTER_OBSERVATION_ABI,

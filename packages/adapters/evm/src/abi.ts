@@ -337,3 +337,53 @@ export const GMX_EXIT_CONTROLLER_OBSERVATION_ABI: Abi = [
     outputs: [{ name: '', type: 'tuple', components: exitFinalReceipt }],
   },
 ];
+
+const localAtomicExecution = [
+  { name: 'domainIdHash', type: 'bytes32' },
+  { name: 'domainManifestVersion', type: 'uint32' },
+  { name: 'domainManifestHash', type: 'bytes32' },
+  { name: 'orderHash', type: 'bytes32' },
+  { name: 'quoteHash', type: 'bytes32' },
+  { name: 'routeHash', type: 'bytes32' },
+  { name: 'action', type: 'uint8' },
+  { name: 'quantity', type: 'uint256' },
+  { name: 'limitQuote', type: 'uint256' },
+  { name: 'collateral', type: 'uint256' },
+  { name: 'trader', type: 'address' },
+  { name: 'recipient', type: 'address' },
+  { name: 'solver', type: 'address' },
+  { name: 'venue', type: 'address' },
+  { name: 'executor', type: 'address' },
+  { name: 'chainId', type: 'uint256' },
+  { name: 'entryReceiptHash', type: 'bytes32' },
+  { name: 'nonce', type: 'uint256' },
+  { name: 'deadline', type: 'uint256' },
+] as const satisfies readonly AbiParameter[];
+
+export const ATOMIC_PACKAGE_EXECUTOR_ABI: Abi = [
+  {
+    type: 'function',
+    name: 'execute',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'execution', type: 'tuple', components: localAtomicExecution },
+      { name: 'traderSignature', type: 'bytes' },
+      { name: 'solverSignature', type: 'bytes' },
+    ],
+    outputs: [{ name: 'receiptHash', type: 'bytes32' }],
+  },
+  {
+    type: 'function',
+    name: 'traderPermitDigest',
+    stateMutability: 'view',
+    inputs: [{ name: 'execution', type: 'tuple', components: localAtomicExecution }],
+    outputs: [{ name: 'digest', type: 'bytes32' }],
+  },
+  {
+    type: 'function',
+    name: 'solverAuthorizationDigest',
+    stateMutability: 'view',
+    inputs: [{ name: 'execution', type: 'tuple', components: localAtomicExecution }],
+    outputs: [{ name: 'digest', type: 'bytes32' }],
+  },
+];
