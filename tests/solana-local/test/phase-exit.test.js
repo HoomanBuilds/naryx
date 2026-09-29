@@ -224,6 +224,21 @@ function buildExitQuote({
       ...entryRoute.accountBindings,
       { routeBindingId: "entry-receipt", accountIdentity: entryReceiptAddress },
     ],
+    actions: entryRoute.actions.map((action, index) =>
+      index === 0
+        ? {
+            ...action,
+            accountMetas: [
+              ...action.accountMetas,
+              {
+                routeBindingId: "entry-receipt",
+                isSigner: false,
+                isWritable: false,
+              },
+            ],
+          }
+        : action,
+    ),
     legs: entryRoute.legs.map((leg) => ({
       ...leg,
       side: leg.legRole === "SPOT" ? "SELL" : "BUY",
@@ -263,8 +278,6 @@ function buildExitQuote({
     expectedGrossSpotQuantity: order.quantity,
     expectedNetSpotQuantity: order.quantity,
     expectedBaseAssetFee: zeroBase,
-    expectedTerminalResidualBaseQuantity: zeroBase,
-    expectedTerminalResidualQuoteValue: { asset: quoteAsset, atoms: 0n },
     expectedMarginDelta: { asset: quoteAsset, atoms: 0n },
     expectedRawFillFeesByAsset: [zeroBase],
     expectedBuilderFeesByAsset: [zeroBase],
@@ -469,7 +482,7 @@ test(
           stores = undefined;
         };
 
-        const createEntryAttempt = async (suffix) => {
+        const createEntryAttempt = async (suffix, size = "1") => {
           activeSlot = BigInt(
             await environment.connection.getSlot("confirmed"),
           );
@@ -477,7 +490,7 @@ test(
             contextId: manifest.runtime.catalog.contextId,
             owner: manifest.identities.trader,
             settlementAccount: manifest.accounts.position,
-            size: "1",
+            size,
             slippageBps:
               manifest.runtime.catalog.orderLimits.maximumSlippageBps,
             idempotencyKey: `phase5-entry-${suffix}`,
@@ -580,7 +593,10 @@ test(
 
           const beforeFailure = await tokenBalances(environment);
           const beforeFailurePosition = openPosition;
-          const failing = await createEntryAttempt("00000002");
+          // Size 10 fills the venue perp cap when added to the open 1-unit
+          // position, so the spot leg succeeds but the perp leg fails and the
+          // whole transaction rolls back atomically.
+          const failing = await createEntryAttempt("00000002", "10");
           const failingPrepared = await json(
             apiOrigin,
             `/internal/terminal/attempts/${failing.attemptId}/solana-local/prepare`,
