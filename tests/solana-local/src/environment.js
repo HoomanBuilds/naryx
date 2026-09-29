@@ -388,16 +388,14 @@ async function provision(runDir, rpcUrl, connection, identities, keyPaths) {
     [programIds.core.toBuffer()],
     loaderId,
   );
-  const domainManifestHash = Array.from(
-    localDomain(await connection.getGenesisHash()).domainManifestHash,
-  );
+  const domain = localDomain(await connection.getGenesisHash());
 
   await core.methods
     .initialize(
       "local-conformance",
-      "solana-local",
-      1,
-      domainManifestHash,
+      domain.domainId,
+      domain.domainManifestVersion,
+      Array.from(domain.domainManifestHash),
       new BN(delaySlots),
       {
         proposer: identities.governanceProposer.publicKey,
@@ -725,6 +723,16 @@ export async function validateEnvironment(environment) {
   );
   const position = await provisioned.venue.account.perpPosition.fetch(
     provisioned.addresses.position,
+  );
+  assertEqual(
+    config.domain.domainId,
+    manifest.runtime.catalog.domain.domainId,
+    "Core domain ID does not match the generated canonical manifest",
+  );
+  assertEqual(
+    config.domain.domainManifestVersion,
+    manifest.runtime.catalog.domain.domainManifestVersion,
+    "Core domain manifest version does not match the generated canonical manifest",
   );
   assertEqual(
     Buffer.from(config.domain.domainManifestHash).toString("hex"),
