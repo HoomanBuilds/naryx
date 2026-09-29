@@ -131,6 +131,14 @@ export {
   type BaseSepoliaAtomicDeploymentConfiguration,
 } from "./base-sepolia-atomic-context-provider.js";
 export {
+  createBaseSepoliaRuntime,
+  createViemBaseSepoliaReadClient,
+  loadBaseSepoliaRuntimeManifest,
+  type BaseSepoliaLiveReadClient,
+  type BaseSepoliaRuntimeManifest,
+  type BaseSepoliaRuntimeOptions,
+} from "./base-sepolia-runtime.js";
+export {
   createEvmTestnetTerminalPorts,
   BASE_SEPOLIA_CHAIN_REFERENCE,
   BASE_SEPOLIA_DOMAIN_ID,

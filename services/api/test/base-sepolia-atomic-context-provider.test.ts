@@ -42,10 +42,14 @@ import {
   BaseSepoliaAtomicContextError,
   SqliteExecutionIntentStore,
   SqliteInternalOrderStore,
+  composePrivateTerminalRuntime,
+  createBaseSepoliaRuntime,
   createBaseSepoliaAtomicContextProvider,
   createCanonicalEntryOrder,
   type ActiveOrderContext,
   type BaseSepoliaAtomicDeploymentConfiguration,
+  type BaseSepoliaLiveReadClient,
+  type BaseSepoliaRuntimeManifest,
   type SolverAtomicQuoteResponse,
 } from "../src/index.js";
 
@@ -787,6 +791,109 @@ test("rejects selected solver evidence with a mismatched signature digest", () =
       () => provider(attempt.attemptId),
       (error: unknown) => error instanceof BaseSepoliaAtomicContextError
         && error.code === "SIGNED_EVIDENCE_MISMATCH",
+    );
+  } finally {
+    intents.close();
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+function liveClient(
+  configuration: BaseSepoliaAtomicDeploymentConfiguration,
+  chainId = 84_532n,
+  wrongAddress?: Address,
+): BaseSepoliaLiveReadClient {
+  const deployment = configuration.deployment;
+  const identities = [
+    deployment.strategyAccount,
+    deployment.packageVerifier,
+    deployment.spot.adapter,
+    deployment.spot.market,
+    deployment.spot.venue,
+    deployment.perpetual.adapter,
+    deployment.perpetual.market,
+    deployment.perpetual.venue,
+    deployment.perpetualObserver,
+    deployment.baseAsset,
+    deployment.quoteAsset,
+  ];
+  const hashes = new Map(identities.map((identity) => [identity.address.toLowerCase(), identity.expectedCodeHash]));
+  return {
+    chainId: async () => chainId,
+    codeHash: async (localAddress) => localAddress.toLowerCase() === wrongAddress?.toLowerCase()
+      ? hashHex(99)
+      : hashes.get(localAddress.toLowerCase()),
+    transactionReceipt: async () => null,
+    readContract: async () => { throw new Error("unexpected contract read"); },
+    chainHead: async () => ({ latestBlock: 1n, finalizedBlock: 1n }),
+  };
+}
+
+test("composes the active Base Sepolia runtime after live chain and code verification", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-"));
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  try {
+    const fixture = setupPackage();
+    const manifest: BaseSepoliaRuntimeManifest = {
+      schemaVersion: 1,
+      activationState: "ACTIVE",
+      deployment: fixture.configuration,
+    };
+    const ports = await createBaseSepoliaRuntime({
+      manifest,
+      intents,
+      orders,
+      client: liveClient(fixture.configuration),
+      currentUnixSeconds: () => 1_500n,
+    });
+    const runtime = composePrivateTerminalRuntime({
+      NARYX_BASE_TESTNET_RUNTIME_ENABLED: "true",
+    }, { evmTestnet: () => ports });
+    assert.equal(typeof runtime.evmTestnet.authorization?.prepare, "function");
+    assert.equal(typeof runtime.evmTestnet.preparation?.prepare, "function");
+    assert.equal(typeof runtime.evmTestnet.atomicObservation?.observe, "function");
+    assert.deepEqual(runtime.health.baseTestnetAtomic, { available: true, reason: null });
+  } finally {
+    intents.close();
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("rejects wrong Base chain, deployed code, and activation state", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-reject-"));
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  try {
+    const fixture = setupPackage();
+    const manifest: BaseSepoliaRuntimeManifest = {
+      schemaVersion: 1,
+      activationState: "ACTIVE",
+      deployment: fixture.configuration,
+    };
+    await assert.rejects(
+      createBaseSepoliaRuntime({ manifest, intents, orders, client: liveClient(fixture.configuration, 1n) }),
+      /chain ID does not match/,
+    );
+    await assert.rejects(
+      createBaseSepoliaRuntime({
+        manifest,
+        intents,
+        orders,
+        client: liveClient(fixture.configuration, 84_532n, packageVerifier),
+      }),
+      /deployed code does not match/,
+    );
+    await assert.rejects(
+      createBaseSepoliaRuntime({
+        manifest: { ...manifest, activationState: "ALL_PAUSED" } as unknown as BaseSepoliaRuntimeManifest,
+        intents,
+        orders,
+        client: liveClient(fixture.configuration),
+      }),
+      /must be schema version 1 and ACTIVE/,
     );
   } finally {
     intents.close();

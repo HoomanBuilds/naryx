@@ -7,6 +7,11 @@ import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 import { composePrivateTerminalRuntime } from "./runtime-composition.js";
+import {
+  createBaseSepoliaRuntime,
+  createViemBaseSepoliaReadClient,
+  loadBaseSepoliaRuntimeManifest,
+} from "./base-sepolia-runtime.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
 import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
 import { Connection } from "@solana/web3.js";
@@ -89,7 +94,34 @@ const solanaLocalExecution = manifestRuntime === undefined
     lifecycle: localExecutionCoordinator,
     validateLive: manifestRuntime.validateLive,
   });
-const runtime = composePrivateTerminalRuntime();
+let baseRuntime: Awaited<ReturnType<typeof createBaseSepoliaRuntime>> | undefined;
+let baseRuntimeError: unknown;
+if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
+  try {
+    const baseManifestPath = absolutePath(
+      process.env.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST ?? "",
+      "NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST",
+    );
+    const baseRpcUrl = process.env.NARYX_BASE_SEPOLIA_RPC_URL ?? "";
+    baseRuntime = await createBaseSepoliaRuntime({
+      manifest: loadBaseSepoliaRuntimeManifest(baseManifestPath),
+      intents: executionIntentStore,
+      orders: orderStore,
+      client: createViemBaseSepoliaReadClient(baseRpcUrl),
+    });
+  } catch (error) {
+    baseRuntimeError = error;
+  }
+}
+const runtime = composePrivateTerminalRuntime(process.env, baseRuntime === undefined && baseRuntimeError === undefined
+  ? {}
+  : {
+      evmTestnet: () => {
+        if (baseRuntimeError !== undefined) throw baseRuntimeError;
+        if (baseRuntime === undefined) throw new Error("Base Sepolia runtime is unavailable.");
+        return baseRuntime;
+      },
+    });
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,

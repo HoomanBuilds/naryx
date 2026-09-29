@@ -122,7 +122,7 @@ function deploymentFor(
   return matches[0] as BaseSepoliaAtomicDeploymentConfiguration;
 }
 
-function validateDeploymentConfiguration(
+export function validateBaseSepoliaAtomicDeploymentConfiguration(
   configuration: BaseSepoliaAtomicDeploymentConfiguration,
 ): void {
   const deployment = configuration.deployment;
@@ -206,7 +206,7 @@ export function createBaseSepoliaAtomicContextProvider(
 
     const orderDomain = order.domain;
     const configuration = deploymentFor(orderDomain, options.deployments);
-    validateDeploymentConfiguration(configuration);
+    validateBaseSepoliaAtomicDeploymentConfiguration(configuration);
     const currentUnixSeconds = requireClock(options.currentUnixSeconds());
     let admission;
     try {
