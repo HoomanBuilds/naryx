@@ -640,11 +640,17 @@ export function createPrivateTerminalRequestHandler(
       try {
         const coordinator = new InternalOrderCoordinator(orderPorts);
         const result = await coordinator.createOrder(await readJson(request));
+        const selectionKind = executionSelectionKind(
+          result.record,
+          orderPorts.contexts(result.record.contextId)!.domain,
+        );
         sendJson(response, result.created ? 201 : 200, {
           status: "UNSIGNED_CREATED",
           created: result.created,
           order: result.record,
-          traderAuthorization: "REQUIRED",
+          traderAuthorization: selectionKind === "HYPERLIQUID_TESTNET"
+            ? "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED"
+            : "REQUIRED",
           solverQuoting: "REQUIRED",
           note: "Unsigned order stored. Trader authorization and solver quoting are still required. No signing, quoting, or submission was performed.",
         });
@@ -677,6 +683,20 @@ export function createPrivateTerminalRequestHandler(
         const order = orderPorts.store.getByOrderHash(authorizeMatch[1] as string);
         if (order === undefined) {
           reject(response, 404, "ORDER_NOT_FOUND", "Order was not found.");
+          return;
+        }
+        const context = orderPorts.contexts(order.contextId);
+        if (context === undefined) {
+          reject(response, 409, "ORDER_CONTEXT_UNAVAILABLE", "Canonical order context is unavailable.");
+          return;
+        }
+        if (executionSelectionKind(order, context.domain) === "HYPERLIQUID_TESTNET") {
+          reject(
+            response,
+            409,
+            "EXTERNAL_ACCOUNT_AUTHORIZATION_REQUIRED",
+            "Hyperliquid Testnet authorization is enforced by the configured account and solver executor boundary.",
+          );
           return;
         }
         const body = await readJson(request);
@@ -809,7 +829,7 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
-    const attemptMatch = /^\/internal\/terminal\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52}))$/.exec(url.pathname);
+    const attemptMatch = /^\/internal\/terminal\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52})|(?:hyperliquid-testnet-[0-9a-f]{48}))$/.exec(url.pathname);
     if (attemptMatch !== null) {
       if (request.method !== "GET") {
         response.setHeader("Allow", "GET, OPTIONS");

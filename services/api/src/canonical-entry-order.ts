@@ -18,6 +18,8 @@ import type {
   Hash32,
   PackageOrder,
   PackageOrderInput,
+  QuantityPolicyClass,
+  RecoveryAction,
   RegistryState,
   SettlementClass,
 } from "@naryx/protocol-types";
@@ -56,6 +58,25 @@ export interface ActiveOrderContext {
   readonly minVenueReserveReturnedAtoms: bigint;
   readonly minWalletQuoteBalanceDeltaAtoms: bigint;
   readonly maxResidualBaseQuantityAtoms: bigint;
+  readonly requiredOwner?: string;
+  readonly requiredSettlementAccount?: string;
+  readonly hyperliquidQuantityPolicy?: Exclude<QuantityPolicyClass, "EXACT_ATOMIC">;
+  readonly hyperliquidMaxNetSpotShortfallAtoms?: bigint;
+  readonly hyperliquidMaxNetSpotExcessAtoms?: bigint;
+  readonly hyperliquidMaxTerminalResidualBaseQuantityAtoms?: bigint;
+  readonly hyperliquidMaxTerminalResidualQuoteValueAtoms?: bigint;
+  readonly hyperliquidResidualValuationReferencePrice?: ExactPrice;
+  readonly hyperliquidMinPerpSellPrice?: ExactPrice;
+  readonly hyperliquidRecoveryExpiryTtl?: bigint;
+  readonly hyperliquidRecoveryDeadlineTtl?: bigint;
+  readonly hyperliquidMinRecoveryWindowMs?: bigint;
+  readonly maxRecoverySpotBuyPrice?: ExactPrice;
+  readonly minRecoverySpotSellPrice?: ExactPrice;
+  readonly minRecoveryPerpSellPrice?: ExactPrice;
+  readonly maxRecoveryPerpBuyPrice?: ExactPrice;
+  readonly maxRecoveryCostAtomsByAsset?: readonly FeeCap[];
+  readonly maxAggregateRecoveryLossQuoteAtoms?: bigint;
+  readonly allowedRecoveryActions?: readonly RecoveryAction[];
 }
 
 export interface CanonicalEntryRequest {
@@ -222,14 +243,17 @@ function loadContext(
   if (context.state !== "ACTIVE") {
     throw new EntryOrderValidationError("INACTIVE_CONTEXT", "Order context is not active.");
   }
-  if (context.settlementClass !== "ATOMIC_POSTCONDITION") {
+  if (context.settlementClass !== "ATOMIC_POSTCONDITION"
+      && context.settlementClass !== "BATCHED_IOC_WITH_RECOVERY") {
     throw new EntryOrderValidationError(
       "UNSUPPORTED_SETTLEMENT",
-      "Only ATOMIC_POSTCONDITION entry is supported.",
+      "Settlement class is unsupported for entry.",
     );
   }
-  if (context.expiryUnit !== "SOLANA_SLOT" && context.expiryUnit !== "EVM_UNIX_SECONDS") {
-    throw new EntryOrderValidationError("UNSAFE_EXPIRY", "Atomic entry requires a Solana or EVM clock.");
+  const hyperliquid = context.settlementClass === "BATCHED_IOC_WITH_RECOVERY";
+  if ((!hyperliquid && context.expiryUnit !== "SOLANA_SLOT" && context.expiryUnit !== "EVM_UNIX_SECONDS")
+      || (hyperliquid && context.expiryUnit !== "HYPERLIQUID_UNIX_MILLISECONDS")) {
+    throw new EntryOrderValidationError("UNSAFE_EXPIRY", "Settlement clock does not match its profile.");
   }
   if (typeof context.expiryTtl !== "bigint" || context.expiryTtl <= 0n || context.expiryTtl > U64_MAX) {
     throw new EntryOrderValidationError("UNSAFE_EXPIRY", "Expiry TTL must be a positive u64.");
@@ -259,6 +283,14 @@ function loadContext(
   }
   if (request.slippageBps > context.maxSlippageBps) {
     throw new EntryOrderValidationError("EXCESS_SLIPPAGE", "Slippage exceeds the active context maximum.");
+  }
+  if ((context.requiredOwner !== undefined && request.owner !== context.requiredOwner)
+      || (context.requiredSettlementAccount !== undefined
+        && request.settlementAccount !== context.requiredSettlementAccount)) {
+    throw new EntryOrderValidationError(
+      "ACCOUNT_MISMATCH",
+      "Owner and settlement account must match the configured hosted account.",
+    );
   }
   requireU32Version(context.orderVersion, "INVALID_CONTEXT", "Order version is invalid.");
   requireU32Version(context.templateVersion, "INVALID_CONTEXT", "Template version is invalid.");
@@ -335,6 +367,17 @@ export function createCanonicalEntryOrder(
     "requestCommitment",
   );
   const nonce = hashToNonce(requestCommitment);
+  const hyperliquid = context.settlementClass === "BATCHED_IOC_WITH_RECOVERY";
+  const maxNetSpotShortfall = context.hyperliquidMaxNetSpotShortfallAtoms ?? 0n;
+  if (maxNetSpotShortfall > parsed.sizeAtoms) {
+    throw new EntryOrderValidationError(
+      "INVALID_CONTEXT",
+      "Hyperliquid net spot shortfall cannot exceed package quantity.",
+    );
+  }
+  const minNetSpotDelta = parsed.sizeAtoms - maxNetSpotShortfall;
+  const maxNetSpotDelta = parsed.sizeAtoms
+    + (context.hyperliquidMaxNetSpotExcessAtoms ?? 0n);
   const input: PackageOrderInput = {
     version: context.orderVersion,
     environment: context.environment,
@@ -350,9 +393,40 @@ export function createCanonicalEntryOrder(
     direction: "LONG_SPOT_SHORT_PERP",
     action: "ENTRY",
     packageOrderType: "MARKETABLE_LIMIT",
-    packageTimeInForce: "FOK",
+    packageTimeInForce: hyperliquid ? "IOC" : "FOK",
     partialFillPolicy: "EXACT_ALL_LEGS",
     quantity: { asset: context.baseAsset, atoms: parsed.sizeAtoms },
+    ...(hyperliquid ? {
+      hyperliquidQuantityPolicy: context.hyperliquidQuantityPolicy,
+      hyperliquidGrossSpotQuantity: { asset: context.baseAsset, atoms: parsed.sizeAtoms },
+      hyperliquidMinNetSpotDelta: { asset: context.baseAsset, atoms: minNetSpotDelta },
+      hyperliquidMaxNetSpotDelta: { asset: context.baseAsset, atoms: maxNetSpotDelta },
+      hyperliquidMaxTerminalResidualBaseQuantity: {
+        asset: context.baseAsset,
+        atoms: context.hyperliquidMaxTerminalResidualBaseQuantityAtoms ?? 0n,
+      },
+      ...(context.hyperliquidQuantityPolicy === "BOUNDED_NET" ? {
+        hyperliquidResidualValuationSchemaVersion: 1,
+        hyperliquidResidualValuationReferencePrice:
+          context.hyperliquidResidualValuationReferencePrice,
+      } : {}),
+      hyperliquidMaxTerminalResidualQuoteValue: {
+        asset: context.quoteAsset,
+        atoms: context.hyperliquidMaxTerminalResidualQuoteValueAtoms ?? 0n,
+      },
+      expectedPreStrategySpotQuantity: { asset: context.baseAsset, atoms: 0n },
+      hyperliquidRecoveryExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS" as const,
+      hyperliquidMaxRecoveryActionExpiryValue:
+        parsed.currentClock + (context.hyperliquidRecoveryExpiryTtl ?? 0n),
+      hyperliquidRecoveryDeadlineValue:
+        parsed.currentClock + (context.hyperliquidRecoveryDeadlineTtl ?? 0n),
+      hyperliquidMinRecoveryWindowMs: context.hyperliquidMinRecoveryWindowMs,
+      hyperliquidMinPerpSellPrice: context.hyperliquidMinPerpSellPrice,
+      maxRecoverySpotBuyPrice: context.maxRecoverySpotBuyPrice,
+      minRecoverySpotSellPrice: context.minRecoverySpotSellPrice,
+      minRecoveryPerpSellPrice: context.minRecoveryPerpSellPrice,
+      maxRecoveryPerpBuyPrice: context.maxRecoveryPerpBuyPrice,
+    } : {}),
     exitOutcomeSchemaVersion: 0,
     expectedPrePositionSize: { asset: context.baseAsset, atoms: 0n },
     expectedPrePositionEntryNotional: { asset: context.quoteAsset, atoms: 0n },
@@ -368,13 +442,18 @@ export function createCanonicalEntryOrder(
     maxProtocolFee: { asset: context.quoteAsset, atoms: context.maxProtocolFeeAtoms },
     maxSolverFee: { asset: context.quoteAsset, atoms: context.maxSolverFeeAtoms },
     maxPriorityFee: { asset: context.quoteAsset, atoms: context.maxPriorityFeeAtoms },
-    maxRecoveryCostAtomsByAsset: [],
+    maxRecoveryCostAtomsByAsset: hyperliquid
+      ? [...(context.maxRecoveryCostAtomsByAsset ?? [])]
+      : [],
     permittedSpotAdapters: [...context.spotAdapters],
     permittedPerpAdapters: [...context.perpAdapters],
-    settlementClass: "ATOMIC_POSTCONDITION",
-    maxAggregateRecoveryLossQuote: { asset: context.quoteAsset, atoms: 0n },
+    settlementClass: context.settlementClass,
+    maxAggregateRecoveryLossQuote: {
+      asset: context.quoteAsset,
+      atoms: hyperliquid ? context.maxAggregateRecoveryLossQuoteAtoms ?? 0n : 0n,
+    },
     maxResidualBaseQuantity: { asset: context.baseAsset, atoms: context.maxResidualBaseQuantityAtoms },
-    allowedRecoveryActions: [],
+    allowedRecoveryActions: hyperliquid ? [...(context.allowedRecoveryActions ?? [])] : [],
   };
   const order = validatePackageOrderProfile(input, "packageOrder");
   const orderBytes = packageOrderBytes(input);

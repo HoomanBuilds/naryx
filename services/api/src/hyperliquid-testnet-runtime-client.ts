@@ -1,11 +1,21 @@
 import {
+  adapterRef,
+  assetRef,
   domainRef,
+  exactPrice,
+  exactSignedRate,
+  feeCap,
   fromProtocolJson,
   fromHex,
   parseProtocolJson,
   stringifyProtocolJson,
   toHex,
   type DomainRef,
+  type ExactPrice,
+  type ExactSignedRate,
+  type FeeCap,
+  type AssetRef,
+  type AdapterRef,
   type PackageAdmission,
   type RoutePayload,
 } from "@naryx/protocol-types";
@@ -113,6 +123,49 @@ export type HyperliquidTestnetRuntimeConfig = Readonly<{
   solverVerificationKey: string;
   market: HyperliquidTestnetMarketMetadata;
   bounds: HyperliquidTestnetExecutionBounds;
+  orderContext?: HyperliquidTestnetOrderContextConfig;
+}>;
+
+export type HyperliquidTestnetOrderContextConfig = Readonly<{
+  contextId: string;
+  tradingAccount: string;
+  orderVersion: number;
+  templateId: string;
+  templateVersion: number;
+  packageTemplateManifestHash: string;
+  baseAsset: AssetRef;
+  quoteAsset: AssetRef;
+  spotAdapter: AdapterRef;
+  perpetualAdapter: AdapterRef;
+  maxStalenessMs: bigint;
+  expiryTtlMs: bigint;
+  recoveryActionExpiryTtlMs: bigint;
+  recoveryDeadlineTtlMs: bigint;
+  minRecoveryWindowMs: bigint;
+  spotReferencePrice: ExactPrice;
+  maxEntrySpread: ExactSignedRate;
+  minPerpSellPrice: ExactPrice;
+  maxRecoverySpotBuyPrice: ExactPrice;
+  minRecoverySpotSellPrice: ExactPrice;
+  minRecoveryPerpSellPrice: ExactPrice;
+  maxRecoveryPerpBuyPrice: ExactPrice;
+  maximumQuantityAtoms: bigint;
+  maxSlippageBps: number;
+  maxNetSpotShortfallAtoms: bigint;
+  maxNetSpotExcessAtoms: bigint;
+  maxTerminalResidualBaseQuantityAtoms: bigint;
+  maxTerminalResidualQuoteValueAtoms: bigint;
+  residualValuationReferencePrice: ExactPrice;
+  maxVenueFeeAtomsByAsset: readonly FeeCap[];
+  maxMarginAddedAtoms: bigint;
+  maxProtocolFeeAtoms: bigint;
+  maxSolverFeeAtoms: bigint;
+  maxPriorityFeeAtoms: bigint;
+  minVenueReserveReturnedAtoms: bigint;
+  minWalletQuoteBalanceDeltaAtoms: bigint;
+  maxResidualBaseQuantityAtoms: bigint;
+  maxRecoveryCostAtomsByAsset: readonly FeeCap[];
+  maxAggregateRecoveryLossQuoteAtoms: bigint;
 }>;
 
 export class HyperliquidTestnetRuntimeClientError extends Error {
@@ -264,6 +317,144 @@ function exactObject(value: unknown, keys: readonly string[], name: string): Rec
   return record;
 }
 
+function orderContext(value: unknown): HyperliquidTestnetOrderContextConfig {
+  const keys = [
+    "baseAsset", "contextId", "expiryTtlMs", "maxAggregateRecoveryLossQuoteAtoms",
+    "maxEntrySpread", "maxMarginAddedAtoms", "maxNetSpotExcessAtoms",
+    "maxPriorityFeeAtoms", "maxProtocolFeeAtoms", "maxRecoveryCostAtomsByAsset",
+    "maxRecoveryPerpBuyPrice", "maxRecoverySpotBuyPrice", "maxResidualBaseQuantityAtoms",
+    "maxSlippageBps", "maxSolverFeeAtoms", "maxStalenessMs",
+    "maxTerminalResidualBaseQuantityAtoms", "maxTerminalResidualQuoteValueAtoms",
+    "maxVenueFeeAtomsByAsset", "maximumQuantityAtoms", "maxNetSpotShortfallAtoms",
+    "minPerpSellPrice", "minRecoveryPerpSellPrice", "minRecoverySpotSellPrice",
+    "minRecoveryWindowMs", "minVenueReserveReturnedAtoms", "minWalletQuoteBalanceDeltaAtoms",
+    "orderVersion", "packageTemplateManifestHash", "perpetualAdapter", "quoteAsset",
+    "recoveryActionExpiryTtlMs", "recoveryDeadlineTtlMs", "residualValuationReferencePrice",
+    "spotAdapter", "spotReferencePrice", "templateId", "templateVersion", "tradingAccount",
+  ];
+  const raw = exactObject(value, keys, "orderContext");
+  const bounded = (candidate: unknown, name: string): string => {
+    if (typeof candidate !== "string" || candidate.length < 1 || candidate.length > 128) {
+      fail("INVALID_CONFIGURATION", `${name} is invalid`);
+    }
+    return candidate;
+  };
+  const atom = (candidate: unknown, name: string, positive = false): bigint => {
+    if (typeof candidate !== "bigint" || candidate < 0n || (positive && candidate === 0n)) {
+      fail("INVALID_CONFIGURATION", `${name} is invalid`);
+    }
+    return candidate;
+  };
+  const asset = (candidate: unknown, name: string): AssetRef => {
+    const entry = exactObject(candidate, ["assetId", "assetManifestHash", "decimals"], name);
+    try {
+      return assetRef(entry.assetId as string, entry.assetManifestHash as string, entry.decimals as number);
+    } catch {
+      fail("INVALID_CONFIGURATION", `${name} is invalid`);
+    }
+  };
+  const adapter = (candidate: unknown, name: string): AdapterRef => {
+    const entry = exactObject(candidate, ["adapterId", "adapterManifestHash", "adapterManifestVersion"], name);
+    try {
+      return adapterRef(entry as never, name);
+    } catch {
+      fail("INVALID_CONFIGURATION", `${name} is invalid`);
+    }
+  };
+  const price = (candidate: unknown, name: string): ExactPrice => {
+    const entry = exactObject(
+      candidate,
+      ["baseAsset", "baseAtoms", "quoteAsset", "quoteAtoms", "roundingDirection"],
+      name,
+    );
+    try {
+      return exactPrice({
+        ...entry,
+        baseAsset: asset(entry.baseAsset, `${name}.baseAsset`),
+        quoteAsset: asset(entry.quoteAsset, `${name}.quoteAsset`),
+      } as never, name);
+    } catch { fail("INVALID_CONFIGURATION", `${name} is invalid`); }
+  };
+  const rate = (candidate: unknown, name: string): ExactSignedRate => {
+    const entry = exactObject(
+      candidate,
+      ["baseAsset", "baseAtoms", "quoteAsset", "quoteAtoms", "roundingDirection"],
+      name,
+    );
+    try {
+      return exactSignedRate({
+        ...entry,
+        baseAsset: asset(entry.baseAsset, `${name}.baseAsset`),
+        quoteAsset: asset(entry.quoteAsset, `${name}.quoteAsset`),
+      } as never, name);
+    } catch { fail("INVALID_CONFIGURATION", `${name} is invalid`); }
+  };
+  const fees = (candidate: unknown, name: string): readonly FeeCap[] => {
+    if (!Array.isArray(candidate) || candidate.length === 0) fail("INVALID_CONFIGURATION", `${name} is invalid`);
+    try {
+      return Object.freeze(candidate.map((entry, index) => {
+        const checked = exactObject(entry, ["asset", "maxAtoms"], `${name}[${index}]`);
+        return feeCap({
+          asset: asset(checked.asset, `${name}[${index}].asset`),
+          maxAtoms: checked.maxAtoms,
+        } as never, `${name}[${index}]`);
+      }));
+    }
+    catch { fail("INVALID_CONFIGURATION", `${name} is invalid`); }
+  };
+  const baseAsset = asset(raw.baseAsset, "orderContext.baseAsset");
+  const quoteAsset = asset(raw.quoteAsset, "orderContext.quoteAsset");
+  const context = Object.freeze({
+    contextId: bounded(raw.contextId, "orderContext.contextId"),
+    tradingAccount: bounded(raw.tradingAccount, "orderContext.tradingAccount"),
+    orderVersion: requirePositiveInteger(raw.orderVersion, "orderContext.orderVersion"),
+    templateId: bounded(raw.templateId, "orderContext.templateId"),
+    templateVersion: requirePositiveInteger(raw.templateVersion, "orderContext.templateVersion"),
+    packageTemplateManifestHash: checkedSolverKey(raw.packageTemplateManifestHash as string),
+    baseAsset,
+    quoteAsset,
+    spotAdapter: adapter(raw.spotAdapter, "orderContext.spotAdapter"),
+    perpetualAdapter: adapter(raw.perpetualAdapter, "orderContext.perpetualAdapter"),
+    maxStalenessMs: atom(raw.maxStalenessMs, "orderContext.maxStalenessMs"),
+    expiryTtlMs: atom(raw.expiryTtlMs, "orderContext.expiryTtlMs", true),
+    recoveryActionExpiryTtlMs: atom(raw.recoveryActionExpiryTtlMs, "orderContext.recoveryActionExpiryTtlMs", true),
+    recoveryDeadlineTtlMs: atom(raw.recoveryDeadlineTtlMs, "orderContext.recoveryDeadlineTtlMs", true),
+    minRecoveryWindowMs: atom(raw.minRecoveryWindowMs, "orderContext.minRecoveryWindowMs", true),
+    spotReferencePrice: price(raw.spotReferencePrice, "orderContext.spotReferencePrice"),
+    maxEntrySpread: rate(raw.maxEntrySpread, "orderContext.maxEntrySpread"),
+    minPerpSellPrice: price(raw.minPerpSellPrice, "orderContext.minPerpSellPrice"),
+    maxRecoverySpotBuyPrice: price(raw.maxRecoverySpotBuyPrice, "orderContext.maxRecoverySpotBuyPrice"),
+    minRecoverySpotSellPrice: price(raw.minRecoverySpotSellPrice, "orderContext.minRecoverySpotSellPrice"),
+    minRecoveryPerpSellPrice: price(raw.minRecoveryPerpSellPrice, "orderContext.minRecoveryPerpSellPrice"),
+    maxRecoveryPerpBuyPrice: price(raw.maxRecoveryPerpBuyPrice, "orderContext.maxRecoveryPerpBuyPrice"),
+    maximumQuantityAtoms: atom(raw.maximumQuantityAtoms, "orderContext.maximumQuantityAtoms", true),
+    maxSlippageBps: requirePositiveInteger(raw.maxSlippageBps, "orderContext.maxSlippageBps"),
+    maxNetSpotShortfallAtoms: atom(raw.maxNetSpotShortfallAtoms, "orderContext.maxNetSpotShortfallAtoms"),
+    maxNetSpotExcessAtoms: atom(raw.maxNetSpotExcessAtoms, "orderContext.maxNetSpotExcessAtoms"),
+    maxTerminalResidualBaseQuantityAtoms: atom(raw.maxTerminalResidualBaseQuantityAtoms, "orderContext.maxTerminalResidualBaseQuantityAtoms"),
+    maxTerminalResidualQuoteValueAtoms: atom(raw.maxTerminalResidualQuoteValueAtoms, "orderContext.maxTerminalResidualQuoteValueAtoms"),
+    residualValuationReferencePrice: price(raw.residualValuationReferencePrice, "orderContext.residualValuationReferencePrice"),
+    maxVenueFeeAtomsByAsset: fees(raw.maxVenueFeeAtomsByAsset, "orderContext.maxVenueFeeAtomsByAsset"),
+    maxMarginAddedAtoms: atom(raw.maxMarginAddedAtoms, "orderContext.maxMarginAddedAtoms"),
+    maxProtocolFeeAtoms: atom(raw.maxProtocolFeeAtoms, "orderContext.maxProtocolFeeAtoms"),
+    maxSolverFeeAtoms: atom(raw.maxSolverFeeAtoms, "orderContext.maxSolverFeeAtoms"),
+    maxPriorityFeeAtoms: atom(raw.maxPriorityFeeAtoms, "orderContext.maxPriorityFeeAtoms"),
+    minVenueReserveReturnedAtoms: atom(raw.minVenueReserveReturnedAtoms, "orderContext.minVenueReserveReturnedAtoms"),
+    minWalletQuoteBalanceDeltaAtoms: atom(raw.minWalletQuoteBalanceDeltaAtoms, "orderContext.minWalletQuoteBalanceDeltaAtoms"),
+    maxResidualBaseQuantityAtoms: atom(raw.maxResidualBaseQuantityAtoms, "orderContext.maxResidualBaseQuantityAtoms"),
+    maxRecoveryCostAtomsByAsset: fees(raw.maxRecoveryCostAtomsByAsset, "orderContext.maxRecoveryCostAtomsByAsset"),
+    maxAggregateRecoveryLossQuoteAtoms: atom(raw.maxAggregateRecoveryLossQuoteAtoms, "orderContext.maxAggregateRecoveryLossQuoteAtoms"),
+  });
+  if (context.maxSlippageBps > 10_000
+      || !/^0x[0-9a-f]{40}$/.test(context.tradingAccount)
+      || context.recoveryActionExpiryTtlMs >= context.recoveryDeadlineTtlMs
+      || context.expiryTtlMs + context.minRecoveryWindowMs > context.recoveryDeadlineTtlMs
+      || context.maxNetSpotShortfallAtoms > context.maximumQuantityAtoms) {
+    fail("INVALID_CONFIGURATION", "Hyperliquid order bounds are inconsistent");
+  }
+  return context;
+}
+
 export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTestnetRuntimeConfig {
   if (!isAbsolute(path)) {
     fail("INVALID_CONFIGURATION", "Hyperliquid runtime config path must be absolute");
@@ -277,10 +468,14 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
   } catch {
     fail("INVALID_CONFIGURATION", "Hyperliquid runtime config is not strict protocol JSON");
   }
-  const root = exactObject(parsed, [
+  const rootRecord = parsed as Record<string, unknown>;
+  const rootKeys = [
     "bounds", "domain", "environment", "executionClassManifestHash", "market",
     "seriesManifestHash", "solverId", "solverVerificationKey", "version",
-  ], "runtime config");
+    ...(typeof rootRecord === "object" && rootRecord !== null && "orderContext" in rootRecord
+      ? ["orderContext"] : []),
+  ];
+  const root = exactObject(parsed, rootKeys, "runtime config");
   if (root.version !== 1 || root.environment !== "TESTNET") {
     fail("INVALID_CONFIGURATION", "Hyperliquid runtime config must be version 1 TESTNET");
   }
@@ -334,18 +529,32 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
     ["maxEvidenceAgeMs", "maxFillPages", "maxSnapshotSkewMs"],
     "bounds",
   );
+  const checkedMarket = marketMetadata({
+    spot,
+    perpetual,
+    quoteTokenIndex: market.quoteTokenIndex,
+  } as HyperliquidTestnetMarketMetadata);
+  const checkedOrderContext = root.orderContext === undefined ? undefined : orderContext(root.orderContext);
+  if (checkedOrderContext !== undefined
+      && (checkedOrderContext.spotAdapter.adapterId !== checkedMarket.spot.adapterId
+        || checkedOrderContext.spotAdapter.adapterManifestVersion !== checkedMarket.spot.adapterManifestVersion
+        || toHex(checkedOrderContext.spotAdapter.adapterManifestHash) !== checkedMarket.spot.adapterManifestHash
+        || checkedOrderContext.perpetualAdapter.adapterId !== checkedMarket.perpetual.adapterId
+        || checkedOrderContext.perpetualAdapter.adapterManifestVersion !== checkedMarket.perpetual.adapterManifestVersion
+        || toHex(checkedOrderContext.perpetualAdapter.adapterManifestHash) !== checkedMarket.perpetual.adapterManifestHash
+        || checkedOrderContext.baseAsset.decimals !== checkedMarket.spot.sizeDecimals
+        || checkedOrderContext.baseAsset.decimals !== checkedMarket.perpetual.sizeDecimals)) {
+    fail("INVALID_CONFIGURATION", "Hyperliquid order context does not match configured market metadata");
+  }
   return Object.freeze({
     domain: checkedDomain,
     seriesManifestHash: checkedSolverKey(root.seriesManifestHash),
     executionClassManifestHash: checkedSolverKey(root.executionClassManifestHash),
     solverId: root.solverId,
     solverVerificationKey: checkedSolverKey(root.solverVerificationKey),
-    market: marketMetadata({
-      spot,
-      perpetual,
-      quoteTokenIndex: market.quoteTokenIndex,
-    } as HyperliquidTestnetMarketMetadata),
+    market: checkedMarket,
     bounds: executionBounds(bounds as HyperliquidTestnetExecutionBounds),
+    ...(checkedOrderContext === undefined ? {} : { orderContext: checkedOrderContext }),
   });
 }
 

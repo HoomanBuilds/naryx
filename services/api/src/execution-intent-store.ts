@@ -15,8 +15,10 @@ const HASH = /^[0-9a-f]{64}$/;
 const LOCAL_ATTEMPT_ID = /^local-atomic-[0-9a-f]{64}$/;
 const BASE_ATTEMPT_ID = /^base-atomic-[0-9a-f]{52}$/;
 const ARBITRUM_ATTEMPT_ID = /^arbitrum-async-[0-9a-f]{48}$/;
+const HYPERLIQUID_ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia";
 const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614";
+const HYPERLIQUID_TESTNET_DOMAIN_ID = "hypercore:testnet";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 export interface ExecutionAuthorization {
@@ -59,12 +61,26 @@ export interface ArbitrumSelectedExecutionAttempt {
   readonly domainManifestHash: string;
 }
 
+export interface HyperliquidSelectedExecutionAttempt {
+  readonly attemptId: string;
+  readonly orderHash: string;
+  readonly routeHash: string;
+  readonly quoteHash: string;
+  readonly status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED";
+  readonly selectedAtMs: number;
+  readonly domainId: "hypercore:testnet";
+  readonly domainManifestVersion: number;
+  readonly domainManifestHash: string;
+}
+
 export type SelectedExecutionAttempt =
   | LocalSelectedExecutionAttempt
   | BaseSelectedExecutionAttempt
-  | ArbitrumSelectedExecutionAttempt;
+  | ArbitrumSelectedExecutionAttempt
+  | HyperliquidSelectedExecutionAttempt;
 
-export type ExecutionSelectionKind = "SOLANA_AUTHORIZED" | "BASE_ATOMIC" | "ARBITRUM_ASYNC";
+export type ExecutionSelectionKind = "SOLANA_AUTHORIZED" | "BASE_ATOMIC" | "ARBITRUM_ASYNC" |
+  "HYPERLIQUID_TESTNET";
 
 export interface ExecutionIntentStore {
   authorize(order: InternalOrderRecord, signature: string): ExecutionAuthorization;
@@ -214,6 +230,25 @@ function arbitrumAttemptId(
   return `arbitrum-async-${digest.slice(0, 48)}`;
 }
 
+function hyperliquidAttemptId(
+  order: InternalOrderRecord,
+  routeHash: string,
+  quoteHash: string,
+): string {
+  const version = Buffer.alloc(8);
+  version.writeBigUInt64BE(BigInt(order.domainManifestVersion));
+  const digest = createHash("sha256")
+    .update("NARYX/hyperliquid-testnet-execution-attempt/v1", "ascii")
+    .update(Buffer.from(order.domainId, "ascii"))
+    .update(version)
+    .update(Buffer.from(order.domainManifestHashHex, "hex"))
+    .update(Buffer.from(order.orderHashHex, "hex"))
+    .update(Buffer.from(routeHash, "hex"))
+    .update(Buffer.from(quoteHash, "hex"))
+    .digest("hex");
+  return `hyperliquid-testnet-${digest.slice(0, 48)}`;
+}
+
 function domainHashHex(domain: DomainRef): string {
   const hash = Buffer.from(domain.domainManifestHash).toString("hex");
   if (!HASH.test(hash) || /^0+$/.test(hash)) {
@@ -237,6 +272,7 @@ export function executionSelectionKind(
   }
   if (order.domainId === BASE_SEPOLIA_DOMAIN_ID) return "BASE_ATOMIC";
   if (order.domainId === ARBITRUM_SEPOLIA_DOMAIN_ID) return "ARBITRUM_ASYNC";
+  if (order.domainId === HYPERLIQUID_TESTNET_DOMAIN_ID) return "HYPERLIQUID_TESTNET";
   if (order.domainId.startsWith("evm:")) {
     throw new ExecutionIntentStoreError(
       "UNSUPPORTED_ORDER_DOMAIN",
@@ -301,6 +337,18 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
         domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
         domain_manifest_hash TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status = 'ARBITRUM_ASYNC_QUOTE_SELECTED'),
+        selected_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
+      );
+      CREATE TABLE IF NOT EXISTS selected_hyperliquid_testnet_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        order_hash TEXT NOT NULL UNIQUE,
+        route_hash TEXT NOT NULL,
+        quote_hash TEXT NOT NULL UNIQUE,
+        domain_id TEXT NOT NULL CHECK (domain_id = 'hypercore:testnet'),
+        domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
+        domain_manifest_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status = 'HYPERLIQUID_TESTNET_QUOTE_SELECTED'),
         selected_at_ms INTEGER NOT NULL,
         FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
       );
@@ -410,12 +458,18 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       throw new ExecutionIntentStoreError("QUOTE_NOT_FOUND", "Quote is not recorded for this order.");
     }
     const async = kind === "ARBITRUM_ASYNC";
-    const id = async
-      ? arbitrumAttemptId(order, quote.route_hash, quoteHash)
-      : baseAttemptId(order, quote.route_hash, quoteHash);
+    const hyperliquid = kind === "HYPERLIQUID_TESTNET";
+    const id = hyperliquid
+      ? hyperliquidAttemptId(order, quote.route_hash, quoteHash)
+      : async ? arbitrumAttemptId(order, quote.route_hash, quoteHash)
+        : baseAttemptId(order, quote.route_hash, quoteHash);
+    const table = hyperliquid ? "selected_hyperliquid_testnet_attempts"
+      : async ? "selected_arbitrum_async_attempts" : "selected_base_atomic_attempts";
+    const status = hyperliquid ? "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
+      : async ? "ARBITRUM_ASYNC_QUOTE_SELECTED" : "BASE_ATOMIC_QUOTE_SELECTED";
     const now = Date.now();
     this.#db.prepare(`
-      INSERT INTO ${async ? "selected_arbitrum_async_attempts" : "selected_base_atomic_attempts"}
+      INSERT INTO ${table}
         (attempt_id, order_hash, route_hash, quote_hash, domain_id, domain_manifest_version,
          domain_manifest_hash, status, selected_at_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -428,7 +482,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       order.domainId,
       order.domainManifestVersion,
       order.domainManifestHashHex,
-      async ? "ARBITRUM_ASYNC_QUOTE_SELECTED" : "BASE_ATOMIC_QUOTE_SELECTED",
+      status,
       now,
     );
     const stored = this.getAttempt(id);
@@ -441,6 +495,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
   getAttempt(id: string): SelectedExecutionAttempt | undefined {
     if (BASE_ATTEMPT_ID.test(id)) return this.#getBaseAttempt(id);
     if (ARBITRUM_ATTEMPT_ID.test(id)) return this.#getArbitrumAttempt(id);
+    if (HYPERLIQUID_ATTEMPT_ID.test(id)) return this.#getHyperliquidAttempt(id);
     if (!LOCAL_ATTEMPT_ID.test(id)) throw new ExecutionIntentStoreError("INVALID_ATTEMPT_ID", "Attempt ID is invalid.");
     const row = this.#db.prepare(`
       SELECT attempt_id, order_hash, route_hash, quote_hash, status, selected_at_ms
@@ -472,6 +527,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       this.#db.prepare("SELECT attempt_id FROM selected_execution_attempts WHERE order_hash = ?").get(orderHash),
       this.#db.prepare("SELECT attempt_id FROM selected_base_atomic_attempts WHERE order_hash = ?").get(orderHash),
       this.#db.prepare("SELECT attempt_id FROM selected_arbitrum_async_attempts WHERE order_hash = ?").get(orderHash),
+      this.#db.prepare("SELECT attempt_id FROM selected_hyperliquid_testnet_attempts WHERE order_hash = ?").get(orderHash),
     ].filter((row): row is { attempt_id: string } =>
       typeof (row as { attempt_id?: unknown } | undefined)?.attempt_id === "string");
     if (rows.length === 0) return undefined;
@@ -540,6 +596,38 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       status: "ARBITRUM_ASYNC_QUOTE_SELECTED",
       selectedAtMs: row.selected_at_ms,
       domainId: ARBITRUM_SEPOLIA_DOMAIN_ID,
+      domainManifestVersion: row.domain_manifest_version,
+      domainManifestHash: row.domain_manifest_hash,
+    });
+  }
+
+  #getHyperliquidAttempt(id: string): HyperliquidSelectedExecutionAttempt | undefined {
+    const row = this.#db.prepare(`
+      SELECT attempt_id, order_hash, route_hash, quote_hash, domain_id,
+        domain_manifest_version, domain_manifest_hash, status, selected_at_ms
+      FROM selected_hyperliquid_testnet_attempts WHERE attempt_id = ?
+    `).get(id) as Record<string, unknown> | undefined;
+    if (row === undefined) return undefined;
+    if (row.attempt_id !== id || typeof row.order_hash !== "string" || !HASH.test(row.order_hash)
+      || typeof row.route_hash !== "string" || !HASH.test(row.route_hash)
+      || typeof row.quote_hash !== "string" || !HASH.test(row.quote_hash)
+      || row.domain_id !== HYPERLIQUID_TESTNET_DOMAIN_ID
+      || typeof row.domain_manifest_version !== "number"
+      || !Number.isSafeInteger(row.domain_manifest_version) || row.domain_manifest_version < 1
+      || typeof row.domain_manifest_hash !== "string" || !HASH.test(row.domain_manifest_hash)
+      || /^0+$/.test(row.domain_manifest_hash)
+      || row.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
+      || typeof row.selected_at_ms !== "number" || !Number.isSafeInteger(row.selected_at_ms)) {
+      throw new ExecutionIntentStoreError("CORRUPT_ROW", "Stored Hyperliquid Testnet attempt is invalid.");
+    }
+    return Object.freeze({
+      attemptId: id,
+      orderHash: row.order_hash,
+      routeHash: row.route_hash,
+      quoteHash: row.quote_hash,
+      status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+      selectedAtMs: row.selected_at_ms,
+      domainId: HYPERLIQUID_TESTNET_DOMAIN_ID,
       domainManifestVersion: row.domain_manifest_version,
       domainManifestHash: row.domain_manifest_hash,
     });

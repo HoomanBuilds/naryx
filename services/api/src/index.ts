@@ -69,6 +69,10 @@ export {
   type LocalAtomicOrderRuntime,
 } from "./local-atomic-order-context.js";
 export {
+  createHyperliquidTestnetOrderRuntime,
+  type HyperliquidTestnetOrderRuntime,
+} from "./hyperliquid-testnet-order-context.js";
+export {
   executionSelectionKind,
   ExecutionIntentStoreError,
   SqliteExecutionIntentStore,
@@ -78,6 +82,7 @@ export {
   type ArbitrumSelectedExecutionAttempt,
   type BaseSelectedExecutionAttempt,
   type LocalSelectedExecutionAttempt,
+  type HyperliquidSelectedExecutionAttempt,
   type SelectedExecutionAttempt,
 } from "./execution-intent-store.js";
 export {
@@ -143,6 +148,7 @@ export {
   type HyperliquidTestnetMarketLegMetadata,
   type HyperliquidTestnetPreparationPort,
   type HyperliquidTestnetRuntimeConfig,
+  type HyperliquidTestnetOrderContextConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 export {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,

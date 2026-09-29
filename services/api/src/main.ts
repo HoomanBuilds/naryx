@@ -37,7 +37,9 @@ import {
 import {
   createHyperliquidTestnetEvidenceRuntime,
   loadHyperliquidTestnetRuntimeConfig,
+  type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
+import { createHyperliquidTestnetOrderRuntime } from "./hyperliquid-testnet-order-context.js";
 import {
   DurableHyperliquidTestnetTerminalExecutionPort,
   HttpHyperliquidTestnetAttemptExecutor,
@@ -193,17 +195,35 @@ const hyperliquidEvidenceEnabled = explicitlyEnabled(
 const hyperliquidExecutorClientEnabled = explicitlyEnabled(
   "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED",
 );
-let hyperliquidEvidenceRuntime: ReturnType<typeof createHyperliquidTestnetEvidenceRuntime> | undefined;
-let hyperliquidEvidenceRuntimeError: unknown;
-if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
+let hyperliquidConfig: HyperliquidTestnetRuntimeConfig | undefined;
+let hyperliquidConfigError: unknown;
+if (hyperliquidRuntimeEnabled) {
   try {
     if (process.env.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== "TESTNET") {
       throw new Error("NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.");
     }
-    const hyperliquidConfig = loadHyperliquidTestnetRuntimeConfig(absolutePath(
+    hyperliquidConfig = loadHyperliquidTestnetRuntimeConfig(absolutePath(
       process.env.NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG ?? "",
       "NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG",
     ));
+  } catch (error) {
+    hyperliquidConfigError = error;
+  }
+}
+let hyperliquidOrderRuntime: ReturnType<typeof createHyperliquidTestnetOrderRuntime> | undefined;
+if (hyperliquidConfig !== undefined) {
+  try {
+    hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig);
+  } catch (error) {
+    hyperliquidConfigError = error;
+  }
+}
+let hyperliquidEvidenceRuntime: ReturnType<typeof createHyperliquidTestnetEvidenceRuntime> | undefined;
+let hyperliquidEvidenceRuntimeError: unknown;
+if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
+  try {
+    if (hyperliquidConfigError !== undefined) throw hyperliquidConfigError;
+    if (hyperliquidConfig === undefined) throw new Error("Hyperliquid Testnet runtime config is unavailable.");
     hyperliquidEvidenceRuntime = createHyperliquidTestnetEvidenceRuntime({
       ...hyperliquidConfig,
       intents: executionIntentStore,
@@ -278,10 +298,20 @@ const factories: PrivateTerminalRuntimeFactories = {
       } : {}),
     };
 const runtime = composePrivateTerminalRuntime(process.env, factories);
+const orderContexts = (contextId: string) =>
+  orderRuntime.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId);
+const orderClock = Object.freeze({
+  currentClock: async (context: Parameters<typeof orderRuntime.clock.currentClock>[0]) => {
+    const hyperliquidContext = hyperliquidOrderRuntime?.contexts(context.contextId);
+    return hyperliquidContext === undefined
+      ? orderRuntime.clock.currentClock(context)
+      : hyperliquidOrderRuntime!.clock.currentClock(context);
+  },
+});
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
-  { contexts: orderRuntime.contexts, store: orderStore, clock: orderRuntime.clock },
+  { contexts: orderContexts, store: orderStore, clock: orderClock },
   runtime.hyperliquidTestnet,
   runtime.evmTestnet,
   lifecycleStore,
