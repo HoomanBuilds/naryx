@@ -21,6 +21,8 @@ Reverted, expired, and recovered packages are indexed and reported, not only suc
 
 `packageRecord` builds the normalized package record from canonical events and committed fills only, hashed under `CON/v1/indexed-package-record`. Each domain leg is judged separately: a settled leg beside a failed leg is `PARTIAL_EXPOSURE` until recovery; contradictory terminal evidence on one domain, or two attempts with effect, is `CONFLICTING_EVIDENCE` for manual review. Reverted, dropped, and expired attempts are indexed and reported. The record's finality is the weakest finality of any contributing event, and its evidence grade is the weakest grade supplied; the indexer never upgrades either. Because only canonical evidence contributes, deleting the index and re-ingesting the canonical chain reproduces the same record hash.
 
+`reconciliationReport` turns package records into an audit and accounting report for a period. Every package is kept, including failed, partial, conflicting, and unresolved ones; partial exposure, recovery in progress, and contradictory evidence are listed as requiring attention, and terminal outcomes that are not yet final are listed as provisional. Each row's fields are committed with caller-supplied random salts, and the report hash under `CON/v1/reconciliation-report` covers the period, the counts, and the row roots only, so the hash can be shared while `discloseReportRow` reveals chosen fields of one row to an auditor, who checks them with `verifySelectiveDisclosure`. `verifyReportHash` recomputes the hash and checks that the counts cover every row. `accountingCsv` is a deterministic export with fixed columns, printable ASCII cells, and CRLF rows.
+
 ```sh
 npm test
 ```

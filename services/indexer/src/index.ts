@@ -22,3 +22,15 @@ export {
   type ObservedChainEvent,
   type ObservedVenueFill,
 } from "./receipt-index.js";
+export {
+  REPORT_OUTCOMES,
+  REPORT_ROW_FIELDS,
+  accountingCsv,
+  discloseReportRow,
+  reconciliationReport,
+  verifyReportHash,
+  type ReconciliationReport,
+  type ReportOptions,
+  type ReportRow,
+  type ReportRowField,
+} from "./reconciliation-report.js";
