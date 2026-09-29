@@ -345,6 +345,24 @@ violations; a private relay is labeled reduced exposure, only a domain-proven pa
 protected, any public-mempool attempt forfeits the label, and missed inclusion is a censorship
 suspicion rather than a finding.
 
+## Package quote shards
+
+`packageQuoteShard` validates the specified `PackageQuoteShard`: one solver's levels for one
+template and market group, each a signed offset from a versioned reference state with its own
+size, maximum fee, settlement class, quote mode, expiry, and reservation policy. A shard that
+crosses itself, repeats a level, or reserves more than its inventory cap rejects.
+`packageQuoteShardHash` covers every field except the signature, under `CON/v1/package-quote-shard`.
+
+Maker operations return the next unsigned shard at the next sequence for the solver to sign:
+`prepareShardBatch` applies place, replace, cancel, and cancel-all in order and rejects the whole
+batch on any invalid step; `prepareShardReprice` moves every level to a new reference in one
+update; `prepareShardHeartbeat` extends liveness; `prepareShardKillSwitch` halts the whole shard
+without any authority over positions. `admitShardUpdate` accepts only the owning shard identity
+with an advancing sequence, treats an identical repeat as idempotent, and rejects a different
+update at a used sequence or a regressed reference. `checkShardSettlement` binds the exact shard
+hash, reference state and sequence, level, size, fee, heartbeat, kill switch, and capacity, and
+prices the fill at the reference price plus the level offset.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,

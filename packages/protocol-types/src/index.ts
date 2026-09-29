@@ -943,3 +943,28 @@ export {
   type DeliveryViolation,
   type DeliveryEvidence,
 } from './execution-quality.js';
+
+export {
+  QUOTE_SHARD_VERSION,
+  QUOTE_SHARD_MAX_LEVELS,
+  KILL_SWITCH_STATE,
+  RESERVATION_POLICY,
+  packageQuoteShard,
+  unsignedPackageQuoteShardBytes,
+  packageQuoteShardHash,
+  prepareShardBatch,
+  prepareShardReprice,
+  prepareShardHeartbeat,
+  prepareShardKillSwitch,
+  admitShardUpdate,
+  checkShardSettlement,
+  type KillSwitchState,
+  type ReservationPolicy,
+  type PackageQuoteLevel,
+  type PackageQuoteShardInput,
+  type PackageQuoteShard,
+  type ShardOperation,
+  type ShardUpdateRejection,
+  type ShardSettlementRequest,
+  type ShardSettlementRejection,
+} from './quote-shard.js';
