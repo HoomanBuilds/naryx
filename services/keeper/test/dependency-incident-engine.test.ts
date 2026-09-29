@@ -37,6 +37,7 @@ const readyDecision = {
   schemaVersion: 1,
   decisionVersion: 7,
   environment: protocolId('testnet'),
+  releaseHash: manifestHash('24'.repeat(32)),
   evaluatedAt: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: nowMs },
   authorityInventoryHash: manifestHash('20'.repeat(32)),
   capPolicyHash: manifestHash('21'.repeat(32)),
@@ -81,6 +82,9 @@ function reviewer(
       publicIdentityCommitment: commitmentByte.repeat(32),
       custodyPolicyHash: '55'.repeat(32),
     }],
+    forbiddenCollisions: [
+      { leftClass: 'INCIDENT_OWNER', rightClass: 'SECURITY_REVIEWER', forbidIdentityCollision: true, forbidCustodyCollision: true },
+    ],
   }).roles[0]!;
 }
 
