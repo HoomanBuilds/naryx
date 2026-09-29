@@ -735,3 +735,15 @@ export type {
   EvmAsyncObservationKeys,
 } from './asyncObservation.js';
 export { COORDINATOR_STATE_LABELS, VENUE_STATUS_LABELS, observeAsyncBondedPackage } from './asyncObservation.js';
+export type {
+  EvmDeploymentActivationState,
+  EvmDeploymentAuthorityBinding,
+  EvmDeploymentAuthorityPolicy,
+  EvmDeploymentAuthorityReadPort,
+  EvmDeploymentAuthorityRole,
+  EvmDeploymentCapPolicy,
+  EvmDeploymentShapePolicy,
+  EvmObservedDeploymentAuthorityEvidence,
+  QualifiedEvmDeploymentAuthority,
+} from './authorityQualification.js';
+export { EVM_DEPLOYMENT_AUTHORITY_ROLES, qualifyEvmDeploymentAuthority } from './authorityQualification.js';
