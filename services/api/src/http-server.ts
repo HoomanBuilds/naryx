@@ -62,6 +62,7 @@ import {
   HyperliquidTestnetRuntimeClientError,
   type HyperliquidTestnetPreparationPort,
 } from "./hyperliquid-testnet-runtime-client.js";
+import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -194,6 +195,7 @@ export function createPrivateTerminalRequestHandler(
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
+  hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -343,6 +345,20 @@ export function createPrivateTerminalRequestHandler(
         solanaLocalExecutionAvailable: solanaLocalExecution !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/hyperliquid-testnet/context") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (hyperliquidTestnetContext === undefined) {
+        reject(response, 503, "CONTEXT_UNAVAILABLE", "Hyperliquid Testnet order context is unavailable.");
+        return;
+      }
+      sendJson(response, 200, hyperliquidTestnetContext);
       return;
     }
 
@@ -972,6 +988,7 @@ export function createPrivateTerminalServer(
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
+  hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -987,6 +1004,7 @@ export function createPrivateTerminalServer(
     localAtomicRuntimeMode,
     solanaLocalExecution,
     hyperliquidTestnetPreparationPort,
+    hyperliquidTestnetContext,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

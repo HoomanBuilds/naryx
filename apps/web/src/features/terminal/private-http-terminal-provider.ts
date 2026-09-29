@@ -28,6 +28,8 @@ const EVM_HASH_PATTERN = /^0x[0-9a-f]{64}$/;
 const EVM_SIGNATURE_PATTERN = /^0x[0-9a-f]{130}$/;
 const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 const EVM_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/;
+const HYPERLIQUID_ATTEMPT_ID_PATTERN = /^hyperliquid-testnet-[0-9a-f]{48}$/;
+const HYPERLIQUID_DOMAIN_ID = "hypercore:testnet" as const;
 
 export type SolanaExecutionObservationRequest = Readonly<{
   idempotencyKey: string;
@@ -403,6 +405,76 @@ export type LocalExecutionResult = Readonly<{
   lifecycle: PackageLifecycleResponse;
 }>;
 
+export type HyperliquidTestnetContext = Readonly<{
+  contextId: string;
+  tradingAccount: string;
+  domain: Readonly<{
+    domainId: typeof HYPERLIQUID_DOMAIN_ID;
+    domainManifestVersion: number;
+    domainManifestHash: string;
+  }>;
+  environment: "TESTNET";
+  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE";
+}>;
+
+export type HyperliquidOrderRecord = Readonly<{
+  idempotencyKey: string;
+  requestCommitmentHex: string;
+  orderHashHex: string;
+  orderBase64: string;
+  contextId: string;
+  domainId: typeof HYPERLIQUID_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHashHex: string;
+  owner: string;
+  settlementAccount: string;
+  nonceDecimal: string;
+  status: "UNSIGNED_CREATED";
+  createdAtMs: number;
+  orderBytes: Uint8Array;
+}>;
+
+export type HyperliquidOrderCreateResponse = Readonly<{
+  status: "UNSIGNED_CREATED";
+  created: boolean;
+  order: HyperliquidOrderRecord;
+  traderAuthorization: "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED";
+  solverQuoting: "REQUIRED";
+  note: string;
+}>;
+
+export type HyperliquidSolverQuote = LocalSolverQuote;
+
+export type HyperliquidSelectedAttempt = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  routeHash: string;
+  quoteHash: string;
+  status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED";
+  selectedAtMs: number;
+  domainId: typeof HYPERLIQUID_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+}>;
+
+export type HyperliquidTerminalExecutionResult = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  domain: typeof HYPERLIQUID_DOMAIN_ID;
+  environment: "TESTNET";
+  status: string;
+  submissionStatus?: "ACKNOWLEDGED" | "REJECTED" | "AMBIGUOUS";
+  packageStatus?: "NO_EFFECT" | "COMPLETED_EXACT" | "COMPLETED_BOUNDED" |
+    "RECOVERY_REQUIRED" | "MANUAL_INTERVENTION" | "RECONCILING";
+  evidenceStatus?: "PRECONDITION_REJECTED" | "JOURNAL_REJECTED";
+  reasons?: readonly string[];
+  reason?: string;
+  actionCommitment?: string | null;
+  requestCommitment?: string | null;
+  errorCommitment?: string;
+  rawEvidenceCommitments?: readonly string[];
+}>;
+
 const PACKAGE_LIFECYCLE_STATES = new Set<PackageLifecycleState>([
   "PACKAGE_CREATED",
   "ENTRY_PREPARED",
@@ -696,6 +768,110 @@ function requireLocalOrderCreateResponse(
   });
 }
 
+function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
+  if (!isRecord(value)) throw new Error("Hyperliquid Testnet context is invalid.");
+  requireExactKeys(
+    value,
+    ["authorizationMode", "contextId", "domain", "environment", "tradingAccount"],
+    "Hyperliquid Testnet context",
+  );
+  if (!isRecord(value.domain)) throw new Error("Hyperliquid Testnet domain is invalid.");
+  requireExactKeys(
+    value.domain,
+    ["domainId", "domainManifestHash", "domainManifestVersion"],
+    "Hyperliquid Testnet domain",
+  );
+  const domainManifestVersion = requireInteger(
+    value.domain.domainManifestVersion,
+    "Hyperliquid domain manifest version",
+  );
+  if (value.environment !== "TESTNET" ||
+      value.authorizationMode !== "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE" ||
+      value.domain.domainId !== HYPERLIQUID_DOMAIN_ID || domainManifestVersion === 0) {
+    throw new Error("Hyperliquid Testnet context binding is invalid.");
+  }
+  const tradingAccount = requireString(value.tradingAccount, "Hyperliquid trading account");
+  if (!/^0x[0-9a-f]{40}$/.test(tradingAccount)) {
+    throw new Error("Hyperliquid trading account is invalid.");
+  }
+  return Object.freeze({
+    contextId: requireProtocolId(value.contextId, "Hyperliquid context id"),
+    tradingAccount,
+    domain: Object.freeze({
+      domainId: HYPERLIQUID_DOMAIN_ID,
+      domainManifestVersion,
+      domainManifestHash: requireHex32(
+        value.domain.domainManifestHash,
+        "Hyperliquid domain manifest hash",
+      ),
+    }),
+    environment: "TESTNET",
+    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+  });
+}
+
+function requireHyperliquidOrderCreateResponse(
+  value: unknown,
+  context: HyperliquidTestnetContext,
+  idempotencyKey: string,
+): HyperliquidOrderCreateResponse {
+  if (!isRecord(value)) throw new Error("Hyperliquid canonical order response is invalid.");
+  requireExactKeys(
+    value,
+    ["created", "note", "order", "solverQuoting", "status", "traderAuthorization"],
+    "Hyperliquid canonical order response",
+  );
+  if (value.status !== "UNSIGNED_CREATED" || typeof value.created !== "boolean" ||
+      value.traderAuthorization !== "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED" ||
+      value.solverQuoting !== "REQUIRED" || !isRecord(value.order)) {
+    throw new Error("Hyperliquid canonical order status is invalid.");
+  }
+  requireExactKeys(value.order, [
+    "idempotencyKey", "requestCommitmentHex", "orderHashHex", "orderBase64", "contextId",
+    "domainId", "domainManifestVersion", "domainManifestHashHex", "owner",
+    "settlementAccount", "nonceDecimal", "status", "createdAtMs",
+  ], "Hyperliquid canonical order");
+  const order = value.order;
+  const domainManifestVersion = requireInteger(
+    order.domainManifestVersion,
+    "Hyperliquid order domain manifest version",
+  );
+  const createdAtMs = requireInteger(order.createdAtMs, "Hyperliquid order creation time");
+  if (order.idempotencyKey !== idempotencyKey || order.contextId !== context.contextId ||
+      order.domainId !== HYPERLIQUID_DOMAIN_ID ||
+      domainManifestVersion !== context.domain.domainManifestVersion ||
+      order.domainManifestHashHex !== context.domain.domainManifestHash ||
+      order.owner !== context.tradingAccount || order.settlementAccount !== context.tradingAccount ||
+      order.status !== "UNSIGNED_CREATED" || createdAtMs === 0) {
+    throw new Error("Hyperliquid canonical order does not match the active account gate.");
+  }
+  const orderBytes = decodeCanonicalBase64(order.orderBase64, "Hyperliquid canonical order bytes");
+  if (orderBytes.length === 0) throw new Error("Hyperliquid canonical order bytes are empty.");
+  return Object.freeze({
+    status: "UNSIGNED_CREATED",
+    created: value.created,
+    order: Object.freeze({
+      idempotencyKey,
+      requestCommitmentHex: requireHex32(order.requestCommitmentHex, "Hyperliquid order request commitment"),
+      orderHashHex: requireHex32(order.orderHashHex, "Hyperliquid order hash"),
+      orderBase64: order.orderBase64 as string,
+      contextId: context.contextId,
+      domainId: HYPERLIQUID_DOMAIN_ID,
+      domainManifestVersion,
+      domainManifestHashHex: context.domain.domainManifestHash,
+      owner: context.tradingAccount,
+      settlementAccount: context.tradingAccount,
+      nonceDecimal: requireCanonicalUnsigned(order.nonceDecimal, "Hyperliquid order nonce", true),
+      status: "UNSIGNED_CREATED",
+      createdAtMs,
+      orderBytes,
+    }),
+    traderAuthorization: "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED",
+    solverQuoting: "REQUIRED",
+    note: requireString(value.note, "Hyperliquid canonical order note"),
+  });
+}
+
 function requireLocalAuthorization(
   value: unknown,
   order: LocalOrderRecord,
@@ -726,10 +902,12 @@ function requireLocalAuthorization(
   });
 }
 
-function requireLocalSolverQuote(
+function requireSolverQuote(
   value: unknown,
   orderHash: string,
   idempotencyKey: string,
+  environment: "local" | "testnet",
+  settlementClass: "ATOMIC_POSTCONDITION" | "BATCHED_IOC_WITH_RECOVERY",
 ): LocalSolverQuote {
   if (!isRecord(value)) throw new Error("Solver quote response is invalid.");
   requireExactKeys(value, [
@@ -758,9 +936,9 @@ function requireLocalSolverQuote(
     "protocolFee", "expectedPriorityFee", "maxRecoveryCostAtomsByAsset", "feePolicyVersion",
     "feePolicyManifestHash", "validUntilUnit", "validUntilValue", "quoteNonce", "signature",
   ], ["expectedTerminalResidualBaseQuantity", "expectedTerminalResidualQuoteValue", "reservationId"], "Solver quote");
-  if (value.route.version !== 1 || value.route.environment !== "local" ||
-      value.route.settlementClass !== "ATOMIC_POSTCONDITION" ||
-      value.quote.version !== 1 || value.quote.environment !== "local" ||
+  if (value.route.version !== 1 || value.route.environment !== environment ||
+      value.route.settlementClass !== settlementClass ||
+      value.quote.version !== 1 || value.quote.environment !== environment ||
       value.quote.solverSignatureScheme !== "ED25519" ||
       value.quote.quoteMode !== "EXECUTION_COMMITMENT" ||
       typeof value.quote.solverId !== "string" || value.quote.solverId.length === 0 ||
@@ -807,6 +985,33 @@ function requireLocalSolverQuote(
   });
 }
 
+function requireLocalSolverQuote(
+  value: unknown,
+  orderHash: string,
+  idempotencyKey: string,
+): LocalSolverQuote {
+  return requireSolverQuote(value, orderHash, idempotencyKey, "local", "ATOMIC_POSTCONDITION");
+}
+
+function requireHyperliquidSolverQuote(
+  value: unknown,
+  orderHash: string,
+  idempotencyKey: string,
+): HyperliquidSolverQuote {
+  const quote = requireSolverQuote(
+    value,
+    orderHash,
+    idempotencyKey,
+    "testnet",
+    "BATCHED_IOC_WITH_RECOVERY",
+  );
+  if (quote.route.routeExpiryUnit !== "HYPERLIQUID_UNIX_MILLISECONDS" ||
+      quote.quote.validUntilUnit !== "HYPERLIQUID_UNIX_MILLISECONDS") {
+    throw new Error("Hyperliquid quote expiry unit is invalid.");
+  }
+  return quote;
+}
+
 function requireLocalSelectedAttempt(value: unknown, quote: LocalSolverQuote): LocalSelectedAttempt {
   if (!isRecord(value)) throw new Error("Quote selection response is invalid.");
   requireExactKeys(value, ["status", "attempt"], "Quote selection response");
@@ -833,6 +1038,157 @@ function requireLocalSelectedAttempt(value: unknown, quote: LocalSolverQuote): L
     status: "AUTHORIZED_QUOTE_SELECTED",
     selectedAtMs,
   });
+}
+
+function requireHyperliquidSelectedAttempt(
+  value: unknown,
+  quote: HyperliquidSolverQuote,
+  context: HyperliquidTestnetContext,
+): HyperliquidSelectedAttempt {
+  if (!isRecord(value)) throw new Error("Hyperliquid quote selection response is invalid.");
+  requireExactKeys(value, ["attempt", "status"], "Hyperliquid quote selection response");
+  if (value.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED" || !isRecord(value.attempt)) {
+    throw new Error("Hyperliquid quote selection status is invalid.");
+  }
+  requireExactKeys(value.attempt, [
+    "attemptId", "domainId", "domainManifestHash", "domainManifestVersion", "orderHash",
+    "quoteHash", "routeHash", "selectedAtMs", "status",
+  ], "Hyperliquid selected attempt");
+  const attempt = value.attempt;
+  const selectedAtMs = requireInteger(attempt.selectedAtMs, "Hyperliquid selection time");
+  if (attempt.orderHash !== quote.orderHash || attempt.routeHash !== quote.routeHash ||
+      attempt.quoteHash !== quote.quoteHash ||
+      attempt.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED" ||
+      attempt.domainId !== HYPERLIQUID_DOMAIN_ID ||
+      attempt.domainManifestVersion !== context.domain.domainManifestVersion ||
+      attempt.domainManifestHash !== context.domain.domainManifestHash || selectedAtMs === 0 ||
+      typeof attempt.attemptId !== "string" ||
+      !HYPERLIQUID_ATTEMPT_ID_PATTERN.test(attempt.attemptId)) {
+    throw new Error("Hyperliquid selected attempt binding is invalid.");
+  }
+  return Object.freeze({
+    attemptId: attempt.attemptId,
+    orderHash: quote.orderHash,
+    routeHash: quote.routeHash,
+    quoteHash: quote.quoteHash,
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs,
+    domainId: HYPERLIQUID_DOMAIN_ID,
+    domainManifestVersion: context.domain.domainManifestVersion,
+    domainManifestHash: context.domain.domainManifestHash,
+  });
+}
+
+const HYPERLIQUID_RESULT_KEYS: Record<string, readonly string[]> = {
+  CHECKPOINT_INCOMPLETE: ["rawEvidenceCommitments", "reasons"],
+  CHECKPOINT_FAILED: ["errorCommitment"],
+  NOT_SUBMITTED: ["actionCommitment", "errorCommitment", "evidenceStatus", "requestCommitment"],
+  SUBMISSION_CALL_FAILED: ["errorCommitment"],
+  SUBMISSION_RESULT_INVALID: ["errorCommitment"],
+  RECONCILIATION_DEFERRED: ["actionCommitment", "errorCommitment", "requestCommitment", "submissionStatus"],
+  RECONCILIATION_INCOMPLETE: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
+  RECONCILED: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
+  HANDOFF_REJECTED: ["actionCommitment", "reason", "requestCommitment"],
+};
+
+function requireHyperliquidCommitment(value: unknown, name: string): string {
+  const commitment = requireString(value, name);
+  if (!/^0x[0-9a-f]{64}$/.test(commitment) || /^0x0+$/.test(commitment)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return commitment;
+}
+
+function requireHyperliquidReasons(value: unknown, allowEmpty: boolean): readonly string[] {
+  if (!Array.isArray(value) || value.length > 8 || (!allowEmpty && value.length === 0)) {
+    throw new Error("Hyperliquid execution reasons are invalid.");
+  }
+  const reasons = value.map((reason) => {
+    if (typeof reason !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(reason)) {
+      throw new Error("Hyperliquid execution reason is invalid.");
+    }
+    return reason;
+  });
+  if (new Set(reasons).size !== reasons.length) {
+    throw new Error("Hyperliquid execution reasons repeat.");
+  }
+  return Object.freeze(reasons);
+}
+
+function requireHyperliquidExecutionResult(
+  value: unknown,
+  attempt: HyperliquidSelectedAttempt,
+  idempotencyKey: string,
+): HyperliquidTerminalExecutionResult {
+  if (!isRecord(value) || typeof value.status !== "string") {
+    throw new Error("Hyperliquid execution response is invalid.");
+  }
+  const variantKeys = HYPERLIQUID_RESULT_KEYS[value.status];
+  if (!variantKeys) throw new Error("Hyperliquid execution status is unsupported.");
+  requireExactKeys(
+    value,
+    ["attemptId", "domain", "environment", "idempotencyKey", "status", ...variantKeys],
+    "Hyperliquid execution response",
+  );
+  if (value.attemptId !== attempt.attemptId || value.idempotencyKey !== idempotencyKey ||
+      value.domain !== HYPERLIQUID_DOMAIN_ID || value.environment !== "TESTNET") {
+    throw new Error("Hyperliquid execution response binding is invalid.");
+  }
+  const result: Record<string, unknown> = {
+    attemptId: attempt.attemptId,
+    idempotencyKey,
+    domain: HYPERLIQUID_DOMAIN_ID,
+    environment: "TESTNET",
+    status: value.status,
+  };
+  if ("submissionStatus" in value) {
+    if (value.submissionStatus !== "ACKNOWLEDGED" && value.submissionStatus !== "REJECTED" &&
+        value.submissionStatus !== "AMBIGUOUS") {
+      throw new Error("Hyperliquid submission status is invalid.");
+    }
+    result.submissionStatus = value.submissionStatus;
+  }
+  if ("packageStatus" in value) {
+    const allowed = value.status === "RECONCILIATION_INCOMPLETE"
+      ? ["RECONCILING"]
+      : ["NO_EFFECT", "COMPLETED_EXACT", "COMPLETED_BOUNDED", "RECOVERY_REQUIRED", "MANUAL_INTERVENTION"];
+    if (typeof value.packageStatus !== "string" || !allowed.includes(value.packageStatus)) {
+      throw new Error("Hyperliquid package status is invalid.");
+    }
+    result.packageStatus = value.packageStatus;
+  }
+  if ("evidenceStatus" in value) {
+    if (value.evidenceStatus !== "PRECONDITION_REJECTED" && value.evidenceStatus !== "JOURNAL_REJECTED") {
+      throw new Error("Hyperliquid evidence status is invalid.");
+    }
+    result.evidenceStatus = value.evidenceStatus;
+  }
+  if ("reasons" in value) {
+    const allowEmpty = value.status === "RECONCILED" &&
+      (value.packageStatus === "NO_EFFECT" || value.packageStatus === "COMPLETED_EXACT" ||
+        value.packageStatus === "COMPLETED_BOUNDED");
+    result.reasons = requireHyperliquidReasons(value.reasons, allowEmpty);
+  }
+  if ("reason" in value) {
+    result.reason = requireHyperliquidReasons([value.reason], false)[0];
+  }
+  for (const key of ["actionCommitment", "requestCommitment"] as const) {
+    if (key in value) {
+      result[key] = value[key] === null ? null : requireHyperliquidCommitment(value[key], key);
+    }
+  }
+  if ("errorCommitment" in value) {
+    result.errorCommitment = requireHyperliquidCommitment(value.errorCommitment, "errorCommitment");
+  }
+  if ("rawEvidenceCommitments" in value) {
+    if (!Array.isArray(value.rawEvidenceCommitments) || value.rawEvidenceCommitments.length > 64) {
+      throw new Error("Hyperliquid evidence commitments are invalid.");
+    }
+    result.rawEvidenceCommitments = Object.freeze(value.rawEvidenceCommitments.map(
+      (commitment) => requireHyperliquidCommitment(commitment, "raw evidence commitment"),
+    ));
+  }
+  return Object.freeze(result) as HyperliquidTerminalExecutionResult;
 }
 
 function requireTaggedScalar(value: unknown, type: "bigint" | "bytes", name: string): string {
@@ -2058,6 +2414,119 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw new Error(`Private terminal preview failed with ${response.status}.`);
     return requirePreview(await response.json() as unknown);
+  }
+
+  async getHyperliquidTestnetContext(signal?: AbortSignal): Promise<HyperliquidTestnetContext> {
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/hyperliquid-testnet/context`,
+      {
+        method: "GET",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Hyperliquid context discovery failed with ${response.status}.`);
+    return requireHyperliquidContext(await response.json() as unknown);
+  }
+
+  async createHyperliquidOrder(
+    context: HyperliquidTestnetContext,
+    input: Readonly<{ size: string; slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidOrderCreateResponse> {
+    const request = {
+      contextId: requireProtocolId(context.contextId, "Hyperliquid context id"),
+      owner: context.tradingAccount,
+      settlementAccount: context.tradingAccount,
+      size: requireString(input.size, "Hyperliquid order size"),
+      slippageBps: requireInteger(input.slippageBps, "Hyperliquid order slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    if (request.slippageBps === 0 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(request.size)) {
+      throw new Error("Hyperliquid order limits are invalid.");
+    }
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Hyperliquid canonical order creation failed with ${response.status}.`);
+    return requireHyperliquidOrderCreateResponse(
+      await response.json() as unknown,
+      context,
+      request.idempotencyKey,
+    );
+  }
+
+  async requestHyperliquidQuote(
+    order: HyperliquidOrderRecord,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidSolverQuote> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/orders/${order.orderHashHex}/quote`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: key }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Hyperliquid quote request failed with ${response.status}.`);
+    return requireHyperliquidSolverQuote(await response.json() as unknown, order.orderHashHex, key);
+  }
+
+  async selectHyperliquidQuote(
+    context: HyperliquidTestnetContext,
+    quote: HyperliquidSolverQuote,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidSelectedAttempt> {
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/orders/${quote.orderHash}/select`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash: quote.quoteHash }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Hyperliquid quote selection failed with ${response.status}.`);
+    return requireHyperliquidSelectedAttempt(await response.json() as unknown, quote, context);
+  }
+
+  async executeHyperliquidTestnet(
+    attempt: HyperliquidSelectedAttempt,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidTerminalExecutionResult> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/hyperliquid-testnet/execute`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attemptId: attempt.attemptId, idempotencyKey: key }),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Hyperliquid Testnet execution failed with ${response.status}.`);
+    return requireHyperliquidExecutionResult(await response.json() as unknown, attempt, key);
   }
 
   async createLocalOrder(

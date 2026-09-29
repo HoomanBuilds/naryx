@@ -116,6 +116,17 @@ test("Hyperliquid Testnet context creates bounded canonical orders and rejects a
   const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-order-"));
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const runtime = createHyperliquidTestnetOrderRuntime(config(), () => 1_000_000);
+  assert.deepEqual(runtime.terminalContext, {
+    contextId: "hyperliquid:testnet:btc-carry-v1",
+    tradingAccount: ACCOUNT,
+    domain: {
+      domainId: "hypercore:testnet",
+      domainManifestVersion: 1,
+      domainManifestHash: "11".repeat(32),
+    },
+    environment: "TESTNET",
+    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+  });
   const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
   const request = {
     contextId: "hyperliquid:testnet:btc-carry-v1",

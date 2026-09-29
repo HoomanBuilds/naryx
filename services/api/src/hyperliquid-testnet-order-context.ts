@@ -5,6 +5,19 @@ import type { InternalOrderClockPort } from "./terminal-orders.js";
 export type HyperliquidTestnetOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
+  terminalContext: HyperliquidTestnetTerminalContext;
+}>;
+
+export type HyperliquidTestnetTerminalContext = Readonly<{
+  contextId: string;
+  tradingAccount: string;
+  domain: Readonly<{
+    domainId: string;
+    domainManifestVersion: number;
+    domainManifestHash: string;
+  }>;
+  environment: "TESTNET";
+  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE";
 }>;
 
 export function createHyperliquidTestnetOrderRuntime(
@@ -90,5 +103,16 @@ export function createHyperliquidTestnetOrderRuntime(
       return readClock();
     },
   });
-  return Object.freeze({ contexts, clock });
+  const terminalContext: HyperliquidTestnetTerminalContext = Object.freeze({
+    contextId: order.contextId,
+    tradingAccount: order.tradingAccount,
+    domain: Object.freeze({
+      domainId: config.domain.domainId,
+      domainManifestVersion: config.domain.domainManifestVersion,
+      domainManifestHash: Buffer.from(config.domain.domainManifestHash).toString("hex"),
+    }),
+    environment: "TESTNET",
+    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+  });
+  return Object.freeze({ contexts, clock, terminalContext });
 }

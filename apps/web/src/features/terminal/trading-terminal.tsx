@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
 import type {
+  HyperliquidOrderCreateResponse,
+  HyperliquidSelectedAttempt,
+  HyperliquidSolverQuote,
+  HyperliquidTerminalExecutionResult,
+  HyperliquidTestnetContext,
   LocalAuthorization,
   LocalExecutionAction,
   LocalOrderCreateResponse,
@@ -341,9 +346,11 @@ function readinessBlocker(
       : "Health unavailable. Local fixture data only.";
   }
   if (health.available) {
-    return domain === "solana"
-      ? "Ready. Review required before any Devnet signature."
-      : "Runtime ready. This ticket executes Solana Devnet only.";
+    if (domain === "solana") return "Ready. Review required before any Devnet signature.";
+    if (domain === "hyperliquid") {
+      return "Ready. The configured dedicated Testnet account gate is available for explicit review and execution.";
+    }
+    return "Runtime ready. This ticket executes Solana Devnet only.";
   }
   if (health.reason === "DISABLED_BY_CONFIGURATION") return "Disabled in service config. No testnet execution.";
   if (health.reason === "RUNTIME_FACTORY_NOT_INJECTED") return "Runtime not wired in service. No testnet execution.";
@@ -616,6 +623,17 @@ type LocalFlowState = {
   error: string | null;
 };
 
+type HyperliquidFlowState = {
+  ticketKey: string;
+  context: HyperliquidTestnetContext | null;
+  order: HyperliquidOrderCreateResponse | null;
+  quote: HyperliquidSolverQuote | null;
+  attempt: HyperliquidSelectedAttempt | null;
+  execution: HyperliquidTerminalExecutionResult | null;
+  busy: string | null;
+  error: string | null;
+};
+
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
 
@@ -747,6 +765,113 @@ function LocalExecutionPanel({
         {flow?.error ?? (flow?.busy ? `${flow.busy}.` : canSignMessage
           ? "Each transition is explicit and refreshes the durable authoritative receipt chain."
           : "The selected wallet must advertise SolanaSignMessage to authorize exact order bytes.")}
+      </p>
+    </section>
+  );
+}
+
+function HyperliquidTestnetPanel({
+  flow,
+  enabled,
+  size,
+  slippage,
+  onStep,
+}: {
+  flow: HyperliquidFlowState | null;
+  enabled: boolean;
+  size: string;
+  slippage: SlippageBps;
+  onStep: (step: "create" | "quote" | "select" | "execute") => void;
+}) {
+  const context = flow?.context ?? null;
+  const order = flow?.order?.order ?? null;
+  const quote = flow?.quote ?? null;
+  const attempt = flow?.attempt ?? null;
+  const execution = flow?.execution ?? null;
+  const busy = flow?.busy !== null && flow?.busy !== undefined;
+  const commitments = execution
+    ? [
+      execution.actionCommitment,
+      execution.requestCommitment,
+      execution.errorCommitment,
+      ...(execution.rawEvidenceCommitments ?? []),
+    ].filter((value): value is string => typeof value === "string")
+    : [];
+  return (
+    <section className={styles.executionReview} aria-labelledby="hyperliquid-execution-title">
+      <div className={styles.evidenceHeading}>
+        <h3 id="hyperliquid-execution-title">Hyperliquid Testnet action flow</h3>
+        <span>{execution?.status ?? (attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : order ? "ORDER CREATED" : context ? "GATE READY" : "DISCOVERING")}</span>
+      </div>
+      <p className={styles.reviewNotice}>
+        The configured dedicated Testnet account gate authorizes this flow. No user-wallet authorization or signer is present in the browser.
+      </p>
+      {context ? (
+        <div className={styles.reviewGrid}>
+          <span>Account gate</span><strong title={context.tradingAccount}>{compact(context.tradingAccount, 10, 8)}</strong>
+          <span>Context</span><strong title={context.contextId}>{context.contextId}</strong>
+          <span>Domain</span><strong>{context.domain.domainId}</strong>
+          <span>Manifest</span><strong title={context.domain.domainManifestHash}>v{context.domain.domainManifestVersion} / {compact(context.domain.domainManifestHash)}</strong>
+          <span>Environment</span><strong>{context.environment}</strong>
+          <span>Authorization</span><strong>Dedicated Testnet account gate</strong>
+          <span>Requested size</span><strong>{size} {"BTC"}</strong>
+          <span>Slippage limit</span><strong>{slippage} bps</strong>
+        </div>
+      ) : null}
+      {order ? (
+        <div className={styles.reviewGrid}>
+          <span>Order hash</span><strong title={order.orderHashHex}>{compact(order.orderHashHex, 12, 10)}</strong>
+          <span>Canonical bytes</span><strong>{order.orderBytes.length} B</strong>
+          <span>Owner</span><strong title={order.owner}>{compact(order.owner, 10, 8)}</strong>
+          <span>Settlement account</span><strong title={order.settlementAccount}>{compact(order.settlementAccount, 10, 8)}</strong>
+          <span>Order gate</span><strong>Configured account only</strong>
+          <span>Solver quote</span><strong>{flow?.order?.solverQuoting}</strong>
+        </div>
+      ) : null}
+      {quote ? (
+        <div className={styles.reviewGrid}>
+          <span>Quote status</span><strong>{quote.status}</strong>
+          <span>Solver</span><strong>{protocolScalar(quote.quote.solverId)}</strong>
+          <span>Valid until</span><strong>{protocolScalar(quote.quote.validUntilValue)} ms</strong>
+          <span>Quote hash</span><strong title={quote.quoteHash}>{compact(quote.quoteHash, 12, 10)}</strong>
+          <span>Route hash</span><strong title={quote.routeHash}>{compact(quote.routeHash, 12, 10)}</strong>
+          <span>Solver fee atoms</span><strong>{quoteAmount(quote, "solverFee")}</strong>
+          <span>Protocol fee atoms</span><strong>{quoteAmount(quote, "protocolFee")}</strong>
+          <span>Recovery cap entries</span><strong>{Array.isArray(quote.quote.maxRecoveryCostAtomsByAsset) ? quote.quote.maxRecoveryCostAtomsByAsset.length : 0}</strong>
+        </div>
+      ) : null}
+      {attempt ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Selected Testnet attempt</span>
+          <strong title={attempt.attemptId}>{compact(attempt.attemptId, 20, 12)}</strong>
+          <small>Quote selection records the dedicated account gate. It is not a browser wallet signature.</small>
+        </div>
+      ) : null}
+      {execution ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Checkpoint and reconciliation</span>
+          <strong>{execution.status}{execution.packageStatus ? ` / ${execution.packageStatus}` : ""}</strong>
+          <small>
+            Submission: {execution.submissionStatus ?? "not submitted or unavailable"}.
+            {execution.reasons?.length ? ` Reasons: ${execution.reasons.join(", ")}.` : ""}
+          </small>
+          {commitments.map((commitment) => (
+            <small key={commitment} title={commitment}>Evidence: {compact(commitment, 14, 12)}</small>
+          ))}
+        </div>
+      ) : null}
+      <div className={styles.localActions}>
+        <button type="button" className={styles.secondaryAction} disabled={!enabled || !context || busy || Boolean(order)} onClick={() => onStep("create")}>Create canonical order</button>
+        <button type="button" className={styles.secondaryAction} disabled={!order || busy || Boolean(quote)} onClick={() => onStep("quote")}>Request signed quote</button>
+        <button type="button" className={styles.primaryAction} disabled={!quote || busy || Boolean(attempt)} onClick={() => onStep("select")}>Select reviewed quote</button>
+        <button type="button" className={styles.primaryAction} disabled={!attempt || busy || Boolean(execution)} onClick={() => onStep("execute")}>Execute on Testnet</button>
+      </div>
+      <p className={styles.fieldContext} role="status">
+        {flow?.error ?? (flow?.busy ? `${flow.busy}.` : !enabled
+          ? "Hyperliquid Testnet runtime readiness is required. Execution remains disabled in API configuration by default."
+          : context
+            ? "Review the configured account and package limits before each explicit action."
+            : "Discovering the active Hyperliquid Testnet order context.")}
       </p>
     </section>
   );
@@ -941,6 +1066,7 @@ function ExecutionReviewPanel({
 
 function Ticket({
   snapshot,
+  selectedDomain,
   mode,
   preview,
   size,
@@ -949,6 +1075,8 @@ function Ticket({
   localFlow,
   localFlowEnabled,
   localCanSignMessage,
+  hyperliquidFlow,
+  hyperliquidFlowEnabled,
   executionReview,
   submission,
   confirming,
@@ -962,11 +1090,13 @@ function Ticket({
   onSlippageChange,
   onQuoteModeChange,
   onLocalStep,
+  onHyperliquidStep,
   onExecutionAction,
   onPrepareExecution,
   onRetryObservation,
 }: {
   snapshot: TerminalViewModel;
+  selectedDomain: DomainId;
   mode: PackageMode;
   preview: TerminalPreview | null;
   size: string;
@@ -975,6 +1105,8 @@ function Ticket({
   localFlow: LocalFlowState | null;
   localFlowEnabled: boolean;
   localCanSignMessage: boolean;
+  hyperliquidFlow: HyperliquidFlowState | null;
+  hyperliquidFlowEnabled: boolean;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
   confirming: boolean;
@@ -988,6 +1120,7 @@ function Ticket({
   onSlippageChange: (slippage: SlippageBps) => void;
   onQuoteModeChange: (quoteMode: QuoteMode) => void;
   onLocalStep: (step: "create" | "authorize" | "quote" | "select" | LocalExecutionAction) => void;
+  onHyperliquidStep: (step: "create" | "quote" | "select" | "execute") => void;
   onExecutionAction: () => void;
   onPrepareExecution: () => void;
   onRetryObservation: () => void;
@@ -1086,12 +1219,22 @@ function Ticket({
         ))}
       </section>
 
-      <LocalExecutionPanel
-        flow={localFlow}
-        enabled={localFlowEnabled}
-        canSignMessage={localCanSignMessage}
-        onStep={onLocalStep}
-      />
+      {selectedDomain === "hyperliquid" ? (
+        <HyperliquidTestnetPanel
+          flow={hyperliquidFlow}
+          enabled={hyperliquidFlowEnabled}
+          size={size}
+          slippage={slippage}
+          onStep={onHyperliquidStep}
+        />
+      ) : (
+        <LocalExecutionPanel
+          flow={localFlow}
+          enabled={localFlowEnabled}
+          canSignMessage={localCanSignMessage}
+          onStep={onLocalStep}
+        />
+      )}
 
       <section className={styles.feeSummary} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title">Fee summary</h3>
@@ -1117,7 +1260,7 @@ function Ticket({
         />
       ) : null}
 
-      <div className={styles.actionArea}>
+      {selectedDomain !== "hyperliquid" ? <div className={styles.actionArea}>
         <button
           className={styles.secondaryAction}
           type="button"
@@ -1138,7 +1281,7 @@ function Ticket({
         <p id="execution-note" role="status">
           {actionReason}
         </p>
-      </div>
+      </div> : null}
     </aside>
   );
 }
@@ -1332,6 +1475,7 @@ export function TradingTerminal({
   const wallet = useSolanaDevnetWallet();
   const evmWallet = useInjectedEvmWallet();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
+  const [hyperliquidFlow, setHyperliquidFlow] = useState<HyperliquidFlowState | null>(null);
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
   const [lifecycleView, setLifecycleView] = useState<LifecycleViewState | null>(null);
@@ -1375,6 +1519,9 @@ export function TradingTerminal({
     : null;
   const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
   const currentLocalFlow = localFlow?.ticketKey === ticketKey ? localFlow : null;
+  const currentHyperliquidFlow = hyperliquidFlow?.ticketKey === ticketKey
+    ? hyperliquidFlow
+    : null;
   const currentLifecycle = lifecycleView?.ticketKey === ticketKey &&
     lifecycleView.attemptId === currentExecutionReview?.preparation.lifecycleAttemptId
     ? lifecycleView
@@ -1445,6 +1592,44 @@ export function TradingTerminal({
       controller.abort();
     };
   }, [privateProvider]);
+
+  useEffect(() => {
+    if (!privateProvider || selectedDomain !== "hyperliquid" ||
+        providerConnection !== "connected" || !runtimeHealth?.hyperliquidTestnet.available) return;
+    const controller = new AbortController();
+    let active = true;
+    privateProvider.getHyperliquidTestnetContext(controller.signal)
+      .then((context) => {
+        if (!active) return;
+        setHyperliquidFlow({
+          ticketKey,
+          context,
+          order: null,
+          quote: null,
+          attempt: null,
+          execution: null,
+          busy: null,
+          error: null,
+        });
+      })
+      .catch((cause) => {
+        if (!active || controller.signal.aborted) return;
+        setHyperliquidFlow({
+          ticketKey,
+          context: null,
+          order: null,
+          quote: null,
+          attempt: null,
+          execution: null,
+          busy: null,
+          error: cause instanceof Error ? cause.message : "Hyperliquid context discovery failed.",
+        });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [privateProvider, providerConnection, runtimeHealth?.hyperliquidTestnet.available, selectedDomain, ticketKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1897,6 +2082,54 @@ export function TradingTerminal({
     }
   }
 
+  async function handleHyperliquidStep(
+    step: "create" | "quote" | "select" | "execute",
+  ) {
+    if (!privateProvider || !currentHyperliquidFlow?.context ||
+        !runtimeHealth?.hyperliquidTestnet.available) return;
+    const base = currentHyperliquidFlow;
+    const context = currentHyperliquidFlow.context;
+    setHyperliquidFlow({ ...base, busy: step, error: null });
+    try {
+      if (step === "create") {
+        const order = await privateProvider.createHyperliquidOrder(context, {
+          size,
+          slippageBps: slippage,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        setHyperliquidFlow({ ...base, order, busy: null, error: null });
+        return;
+      }
+      if (!base.order) throw new Error("Create the Hyperliquid canonical order first.");
+      if (step === "quote") {
+        const quote = await privateProvider.requestHyperliquidQuote(
+          base.order.order,
+          crypto.randomUUID(),
+        );
+        setHyperliquidFlow({ ...base, quote, busy: null, error: null });
+        return;
+      }
+      if (!base.quote) throw new Error("Request and review a signed Hyperliquid quote first.");
+      if (step === "select") {
+        const attempt = await privateProvider.selectHyperliquidQuote(context, base.quote);
+        setHyperliquidFlow({ ...base, attempt, busy: null, error: null });
+        return;
+      }
+      if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");
+      const execution = await privateProvider.executeHyperliquidTestnet(
+        base.attempt,
+        crypto.randomUUID(),
+      );
+      setHyperliquidFlow({ ...base, execution, busy: null, error: null });
+    } catch (cause) {
+      setHyperliquidFlow({
+        ...base,
+        busy: null,
+        error: cause instanceof Error ? cause.message : "Hyperliquid Testnet action failed.",
+      });
+    }
+  }
+
   const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
     providerConnection !== "connected" || !wallet.selectedAccount ||
     !runtimeHealth?.solanaDevnet.available ||
@@ -1907,6 +2140,10 @@ export function TradingTerminal({
     privateProvider !== null && providerConnection === "connected" &&
     wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
     quoteMode === "coordinated_limits";
+  const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" && mode === "entry" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    runtimeHealth?.hyperliquidTestnet.available === true &&
+    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
   return (
@@ -1950,6 +2187,7 @@ export function TradingTerminal({
         </div>
         <Ticket
           snapshot={snapshot}
+          selectedDomain={selectedDomain}
           mode={mode}
           preview={preview}
           size={size}
@@ -1958,6 +2196,8 @@ export function TradingTerminal({
           localFlow={currentLocalFlow}
           localFlowEnabled={localFlowEnabled}
           localCanSignMessage={wallet.canSignMessage}
+          hyperliquidFlow={currentHyperliquidFlow}
+          hyperliquidFlowEnabled={hyperliquidFlowEnabled}
           executionReview={currentExecutionReview}
           submission={currentSubmission}
           confirming={confirmingInWallet}
@@ -1971,6 +2211,7 @@ export function TradingTerminal({
           onSlippageChange={setSlippage}
           onQuoteModeChange={setQuoteMode}
           onLocalStep={(step) => void handleLocalStep(step)}
+          onHyperliquidStep={(step) => void handleHyperliquidStep(step)}
           onExecutionAction={() => void handleExecutionAction()}
           onPrepareExecution={() => void handlePrepareExecution()}
           onRetryObservation={handleRetryObservation}

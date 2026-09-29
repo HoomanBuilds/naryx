@@ -71,6 +71,7 @@ export {
 export {
   createHyperliquidTestnetOrderRuntime,
   type HyperliquidTestnetOrderRuntime,
+  type HyperliquidTestnetTerminalContext,
 } from "./hyperliquid-testnet-order-context.js";
 export {
   executionSelectionKind,

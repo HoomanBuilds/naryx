@@ -322,6 +322,7 @@ const server = createPrivateTerminalServer(
   manifestRuntime === undefined ? "PHASE4_FIXTURE" : "MANIFEST_VALIDATED",
   solanaLocalExecution,
   runtime.hyperliquidTestnetEvidence?.preparation,
+  hyperliquidOrderRuntime?.terminalContext,
 );
 
 function shutdown(): void {

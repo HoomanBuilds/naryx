@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import {
   createPrivateTerminalServer,
+  type HyperliquidTestnetTerminalContext,
   type HyperliquidTestnetTerminalExecutionPort,
   type HyperliquidTestnetTerminalExecutionResult,
 } from "../src/index.js";
@@ -14,6 +15,18 @@ const REQUEST = `0x${"bb".repeat(32)}`;
 const ERROR = `0x${"cc".repeat(32)}`;
 const EVIDENCE = `0x${"dd".repeat(32)}`;
 const ENDPOINT = "/internal/terminal/hyperliquid-testnet/execute";
+const CONTEXT_ENDPOINT = "/internal/terminal/hyperliquid-testnet/context";
+const TERMINAL_CONTEXT: HyperliquidTestnetTerminalContext = Object.freeze({
+  contextId: "hyperliquid:testnet:btc-carry-v1",
+  tradingAccount: "0x1111111111111111111111111111111111111111",
+  domain: Object.freeze({
+    domainId: "hypercore:testnet",
+    domainManifestVersion: 1,
+    domainManifestHash: "11".repeat(32),
+  }),
+  environment: "TESTNET",
+  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+});
 
 async function listen(server: ReturnType<typeof createPrivateTerminalServer>): Promise<string> {
   await new Promise<void>((resolve, reject) => {
@@ -283,6 +296,56 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
     } finally {
       await close(throwing);
     }
+  } finally {
+    await close(server);
+  }
+});
+
+test("hyperliquid terminal context exposes only the active dedicated Testnet account gate", async () => {
+  const origin = "http://127.0.0.1:3000";
+  const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
+  const unavailable = createPrivateTerminalServer(config);
+  const unavailableUrl = await listen(unavailable);
+  try {
+    const response = await fetch(`${unavailableUrl}${CONTEXT_ENDPOINT}`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(response.status, 503);
+  } finally {
+    await close(unavailable);
+  }
+
+  const server = createPrivateTerminalServer(
+    config,
+    {},
+    undefined,
+    undefined,
+    {},
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "PHASE4_FIXTURE",
+    undefined,
+    undefined,
+    TERMINAL_CONTEXT,
+  );
+  const serverUrl = await listen(server);
+  try {
+    const response = await fetch(`${serverUrl}${CONTEXT_ENDPOINT}`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), TERMINAL_CONTEXT);
+
+    const wrongMethod = await fetch(`${serverUrl}${CONTEXT_ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: "{}",
+    });
+    assert.equal(wrongMethod.status, 405);
   } finally {
     await close(server);
   }
