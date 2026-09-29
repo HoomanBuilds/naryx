@@ -69,6 +69,7 @@ export const HASH_DOMAIN = Object.freeze({
   ROUTE_DECISION: 'CON/v1/route-decision',
   EXECUTION_QUALITY: 'CON/v1/execution-quality',
   DELIVERY_EVIDENCE: 'CON/v1/delivery-evidence',
+  INDEXED_PACKAGE_RECORD: 'CON/v1/indexed-package-record',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

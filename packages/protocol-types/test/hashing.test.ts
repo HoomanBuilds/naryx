@@ -123,6 +123,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/route-decision',
         'CON/v1/execution-quality',
         'CON/v1/delivery-evidence',
+        'CON/v1/indexed-package-record',
       ],
     );
   });
