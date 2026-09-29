@@ -308,11 +308,31 @@ function MarketHeader({ snapshot }: { snapshot: TerminalViewModel }) {
 
 const READINESS_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
 
-const READINESS_META: Record<DomainId, { testNetwork: string; executionMode: string }> = {
-  solana: { testNetwork: "Solana Devnet", executionMode: "Solana atomic" },
-  base: { testNetwork: "Base Sepolia", executionMode: "Base atomic" },
-  arbitrum: { testNetwork: "Arbitrum Sepolia", executionMode: "Arbitrum bonded async" },
-  hyperliquid: { testNetwork: "Hyperliquid testnet", executionMode: "Hyperliquid coordinated testnet" },
+const READINESS_META: Record<DomainId, {
+  testNetwork: string;
+  executionMode: string;
+  settlementClass: string;
+}> = {
+  solana: {
+    testNetwork: "Solana Devnet",
+    executionMode: "Solana atomic",
+    settlementClass: "ATOMIC_POSTCONDITION",
+  },
+  base: {
+    testNetwork: "Base Sepolia",
+    executionMode: "Base atomic",
+    settlementClass: "ATOMIC_POSTCONDITION",
+  },
+  arbitrum: {
+    testNetwork: "Arbitrum Sepolia",
+    executionMode: "Arbitrum bonded async",
+    settlementClass: "ASYNC_BONDED_SOLVER",
+  },
+  hyperliquid: {
+    testNetwork: "Hyperliquid testnet",
+    executionMode: "Hyperliquid coordinated testnet",
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+  },
 };
 
 const READINESS_FALLBACK: Record<DomainId, { label: string; runtime: string }> = {
@@ -364,6 +384,7 @@ function ExecutionReadiness({
   selectedDomain,
   providerConnection,
   runtimeHealth,
+  lifecycle,
   hasService,
   onSelect,
 }: {
@@ -371,9 +392,25 @@ function ExecutionReadiness({
   selectedDomain: DomainId;
   providerConnection: ProviderConnection;
   runtimeHealth: PrivateTerminalRuntimeHealth | null;
+  lifecycle: PackageLifecycleResponse | null;
   hasService: boolean;
   onSelect: (domain: DomainId) => void;
 }) {
+  const selectedMeta = READINESS_META[selectedDomain];
+  const selectedHealth = readinessHealthFor(selectedDomain, runtimeHealth);
+  const latestReceipt = lifecycle?.receipts.at(-1) ?? null;
+  const routeEvidence = latestReceipt?.evidenceGrade ?? "NOT AVAILABLE";
+  const dependencyStatus = selectedHealth
+    ? selectedHealth.available ? "AVAILABLE" : selectedHealth.reason ?? "UNAVAILABLE"
+    : "UNKNOWN";
+  const authorityFence = runtimeHealth
+    ? runtimeHealth.controls.executionReadinessAvailable ? "ENFORCED AT HANDOFF" : "NOT CONFIGURED"
+    : "UNKNOWN";
+  const localVerified = runtimeHealth !== null &&
+    runtimeHealth.controls.localAtomicRuntimeMode === "MANIFEST_VALIDATED" &&
+    runtimeHealth.controls.localExecutionAvailable &&
+    runtimeHealth.controls.lifecycleReadAvailable &&
+    runtimeHealth.controls.solverQuotingAvailable;
   const serviceNote = !hasService
     ? "Local fixture only"
     : !runtimeHealth
@@ -384,11 +421,47 @@ function ExecutionReadiness({
       <div className={styles.readinessHeader}>
         <div>
           <div className={styles.eyebrow}>Execution readiness</div>
-          <h2 id="readiness-title">Testnet readiness</h2>
-          <p>Read-only runtime status. Execution stays gated in the ticket panel.</p>
+          <h2 id="readiness-title">Evidence and promotion boundary</h2>
+          <p>Observed controls and evidence only. Missing proof remains unavailable.</p>
         </div>
         <span className={styles.readinessService} role="status">{serviceNote}</span>
       </div>
+
+      <ol className={styles.assuranceRail} aria-label="Environment promotion boundary">
+        <li className={localVerified ? styles.assuranceVerified : styles.assuranceUnknown}>
+          <span>01</span><div><strong>Local verification</strong><small>{localVerified ? "VERIFIED" : "UNKNOWN"}</small></div>
+        </li>
+        <li className={styles.assuranceDeferred}>
+          <span>02</span><div><strong>Public testnet</strong><small>DEPLOYMENT DEFERRED</small></div>
+        </li>
+        <li className={styles.assuranceConditional}>
+          <span>03</span><div><strong>Pinned fork</strong><small>HARNESS READY, RPC DEPENDENT</small></div>
+        </li>
+        <li className={styles.assuranceConditional}>
+          <span>04</span><div><strong>Mainnet shadow</strong><small>SIGNERLESS READ ONLY</small></div>
+        </li>
+        <li className={styles.assuranceProhibited}>
+          <span>05</span><div><strong>Mainnet writes</strong><small>PROHIBITED</small></div>
+        </li>
+      </ol>
+
+      <div className={styles.evidenceLedger} aria-label={`${READINESS_FALLBACK[selectedDomain].label} evidence ledger`}>
+        <div className={styles.evidenceLedgerTitle}>
+          <span>Selected domain evidence</span>
+          <strong>{READINESS_FALLBACK[selectedDomain].label}</strong>
+        </div>
+        <dl>
+          <div><dt>Settlement class</dt><dd title={selectedMeta.settlementClass}>{selectedMeta.settlementClass}</dd></div>
+          <div><dt>Route evidence</dt><dd>{routeEvidence}</dd></div>
+          <div><dt>Funded operation hash</dt><dd>NOT AVAILABLE</dd></div>
+          <div><dt>Readiness decision hash</dt><dd>NOT AVAILABLE</dd></div>
+          <div><dt>Authority fence</dt><dd>{authorityFence}</dd></div>
+          <div><dt>Dependencies</dt><dd title={dependencyStatus}>{dependencyStatus}</dd></div>
+          <div><dt>Incident state</dt><dd>UNKNOWN</dd></div>
+          <div><dt>Execution</dt><dd>{readinessBlocker(hasService, providerConnection, selectedHealth, selectedDomain)}</dd></div>
+        </dl>
+      </div>
+
       <ul className={styles.readinessGrid} aria-label="Domain execution readiness">
         {READINESS_ORDER.map((domain) => {
           const model = snapshot.domains.find((item) => item.id === domain);
@@ -423,7 +496,7 @@ function ExecutionReadiness({
                   <span><span>Runtime</span><strong>{model?.runtime ?? fallback.runtime}</strong></span>
                   <span><span>Network</span><strong>{meta.testNetwork}</strong></span>
                   <span><span>Mode</span><strong>{meta.executionMode}</strong></span>
-                  <span><span>Evidence</span><strong>{status === "Available" ? "No package evidence" : "Fixture unattested"}</strong></span>
+                  <span><span>Settlement</span><strong title={meta.settlementClass}>{meta.settlementClass}</strong></span>
                 </span>
                 <span className={styles.readinessBlocker}>{blocker}</span>
               </button>
@@ -2172,6 +2245,7 @@ export function TradingTerminal({
         selectedDomain={selectedDomain}
         providerConnection={providerConnection}
         runtimeHealth={runtimeHealth}
+        lifecycle={displayedLifecycle}
         hasService={privateProvider !== null}
         onSelect={(domain) => {
           setSelectedDomain(domain);

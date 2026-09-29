@@ -51,6 +51,15 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   baseTestnetAtomic: RuntimeBoundaryHealth;
   arbitrumTestnetAsync: RuntimeBoundaryHealth;
   hyperliquidTestnet: RuntimeBoundaryHealth;
+  controls: Readonly<{
+    localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED";
+    executionReadinessAvailable: boolean;
+    lifecycleReadAvailable: boolean;
+    solverQuotingAvailable: boolean;
+    executionIntentAvailable: boolean;
+    localExecutionAvailable: boolean;
+    solanaLocalExecutionAvailable: boolean;
+  }>;
 }>;
 
 export type SolanaExecutionObservation =
@@ -530,7 +539,9 @@ function requireRuntimeBoundaryHealth(value: unknown, name: string): RuntimeBoun
   });
 }
 
-function requireRuntimeHealth(value: unknown): PrivateTerminalRuntimeHealth {
+function requireRuntimeHealth(
+  value: unknown,
+): Omit<PrivateTerminalRuntimeHealth, "controls"> {
   if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
   requireExactKeys(
     value,
@@ -542,6 +553,27 @@ function requireRuntimeHealth(value: unknown): PrivateTerminalRuntimeHealth {
     baseTestnetAtomic: requireRuntimeBoundaryHealth(value.baseTestnetAtomic, "Base Testnet health"),
     arbitrumTestnetAsync: requireRuntimeBoundaryHealth(value.arbitrumTestnetAsync, "Arbitrum Testnet health"),
     hyperliquidTestnet: requireRuntimeBoundaryHealth(value.hyperliquidTestnet, "Hyperliquid Testnet health"),
+  });
+}
+
+function requireHealthFlag(value: Record<string, unknown>, key: string): boolean {
+  if (typeof value[key] !== "boolean") throw new Error(`Private terminal ${key} is invalid.`);
+  return value[key];
+}
+
+function requireRuntimeControls(value: Record<string, unknown>): PrivateTerminalRuntimeHealth["controls"] {
+  if (value.localAtomicRuntimeMode !== "PHASE4_FIXTURE" &&
+      value.localAtomicRuntimeMode !== "MANIFEST_VALIDATED") {
+    throw new Error("Private terminal local runtime mode is invalid.");
+  }
+  return Object.freeze({
+    localAtomicRuntimeMode: value.localAtomicRuntimeMode,
+    executionReadinessAvailable: requireHealthFlag(value, "executionReadinessAvailable"),
+    lifecycleReadAvailable: requireHealthFlag(value, "lifecycleReadAvailable"),
+    solverQuotingAvailable: requireHealthFlag(value, "solverQuotingAvailable"),
+    executionIntentAvailable: requireHealthFlag(value, "executionIntentAvailable"),
+    localExecutionAvailable: requireHealthFlag(value, "localExecutionAvailable"),
+    solanaLocalExecutionAvailable: requireHealthFlag(value, "solanaLocalExecutionAvailable"),
   });
 }
 
@@ -2300,7 +2332,11 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     if (!isRecord(payload) || !("runtime" in payload)) {
       throw new Error("Private terminal runtime health is unavailable.");
     }
-    return requireRuntimeHealth(payload.runtime);
+    const runtime = requireRuntimeHealth(payload.runtime);
+    return Object.freeze({
+      ...runtime,
+      controls: requireRuntimeControls(payload),
+    });
   }
 
   async prepareBaseAtomicAuthorization(
