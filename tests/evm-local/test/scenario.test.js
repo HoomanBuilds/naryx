@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   encodeAbiParameters,
-  encodeFunctionData,
+  getAddress,
+  hexToBytes,
   keccak256,
   parseEther,
   parseEventLogs,
   stringToHex,
   toHex,
 } from "viem";
+import { EvmLocalExecutionAuthorizationService } from "@naryx/solver";
 import { evmLocalArtifacts, withLocalEvmEnvironment } from "../src/environment.js";
 
 const entryAction = 1;
@@ -39,22 +41,42 @@ function execution(environment, action, nonce, entryReceiptHash = `0x${"00".repe
   };
 }
 
-async function signatures(environment, value) {
-  const traderDigest = await environment.client.readContract({
-    address: environment.manifest.contracts.executor.address,
-    abi: evmLocalArtifacts.executor.abi,
-    functionName: "traderPermitDigest",
-    args: [value],
-  });
-  const solverDigest = await environment.client.readContract({
-    address: environment.manifest.contracts.executor.address,
-    abi: evmLocalArtifacts.executor.abi,
-    functionName: "solverAuthorizationDigest",
-    args: [value],
-  });
+function admission(environment, value) {
+  const { manifest } = environment;
+  const domain = {
+    domainId: manifest.domain.domainId,
+    domainManifestVersion: manifest.domain.manifestVersion,
+    domainManifestHash: hexToBytes(manifest.domain.manifestHash),
+  };
+  const base = { assetId: "nBASE", assetManifestHash: hexToBytes(keccak256(stringToHex("nBASE"))), decimals: 18 };
+  const quote = { assetId: "nQUOTE", assetManifestHash: hexToBytes(keccak256(stringToHex("nQUOTE"))), decimals: 18 };
+  const actionBound = value.action === entryAction
+    ? { maxSpotQuoteIn: { asset: quote, atoms: value.limitQuote } }
+    : { minSpotQuoteOut: { asset: quote, atoms: value.limitQuote }, entryReceiptHash: hexToBytes(value.entryReceiptHash) };
   return {
-    trader: await environment.accounts.trader.sign({ hash: traderDigest }),
-    solver: await environment.accounts.solver.sign({ hash: solverDigest }),
+    orderHash: hexToBytes(value.orderHash),
+    quoteHash: hexToBytes(value.quoteHash),
+    routeHash: hexToBytes(value.routeHash),
+    order: {
+      environment: "local",
+      domain,
+      owner: value.trader,
+      settlementAccount: value.executor,
+      action: value.action === entryAction ? "ENTRY" : "EXIT",
+      quantity: { asset: base, atoms: value.quantity },
+      nonce: value.nonce,
+      ...actionBound,
+    },
+    quote: {
+      environment: "local",
+      domain,
+      solverVerificationKey: hexToBytes(value.solver),
+    },
+    route: {
+      environment: "local",
+      domain,
+      action: value.action === entryAction ? "ENTRY" : "EXIT",
+    },
   };
 }
 
@@ -77,15 +99,62 @@ async function balances(environment) {
 }
 
 async function submit(environment, value) {
-  const signed = await signatures(environment, value);
-  const data = encodeFunctionData({
+  const { client, manifest } = environment;
+  const traderPermitDigest = await client.readContract({
+    address: manifest.contracts.executor.address,
     abi: evmLocalArtifacts.executor.abi,
-    functionName: "execute",
-    args: [value, signed.trader, signed.solver],
+    functionName: "traderPermitDigest",
+    args: [value],
+  });
+  const traderSignature = await environment.accounts.trader.sign({ hash: traderPermitDigest });
+  const service = new EvmLocalExecutionAuthorizationService({
+    chain: {
+      environment: "local",
+      mainnet: false,
+      chainReference: () => client.getChainId().then(BigInt),
+      traderPermitDigest: (execution) => client.readContract({
+        address: manifest.contracts.executor.address,
+        abi: evmLocalArtifacts.executor.abi,
+        functionName: "traderPermitDigest",
+        args: [execution],
+      }),
+      solverAuthorizationDigest: (execution) => client.readContract({
+        address: manifest.contracts.executor.address,
+        abi: evmLocalArtifacts.executor.abi,
+        functionName: "solverAuthorizationDigest",
+        args: [execution],
+      }),
+    },
+    signer: {
+      address: environment.accounts.solver.address,
+      signDigest: (digest) => environment.accounts.solver.sign({ hash: digest }),
+    },
+  });
+  const authorized = await service.authorize({
+    admission: admission(environment, value),
+    binding: {
+      chainReference: BigInt(manifest.chainId),
+      domain: admission(environment, value).order.domain,
+      executor: manifest.contracts.executor.address,
+      venue: manifest.contracts.venue.address,
+      solver: manifest.identities.solver,
+    },
+    bounds: {
+      recipient: value.recipient,
+      collateralAtoms: value.collateral,
+      nonce: value.nonce,
+      deadline: value.deadline,
+      traderSignature,
+    },
+  });
+  assert.deepEqual(authorized.compiled.payload.execution, {
+    ...value,
+    executor: getAddress(value.executor),
+    venue: getAddress(value.venue),
   });
   const hash = await environment.wallets.deployer.sendTransaction({
-    to: environment.manifest.contracts.executor.address,
-    data,
+    to: authorized.compiled.payload.to,
+    data: authorized.compiled.payload.data,
     gas: 3_000_000n,
   });
   return environment.client.waitForTransactionReceipt({ hash });

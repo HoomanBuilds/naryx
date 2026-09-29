@@ -12,6 +12,9 @@
   "license": "UNLICENSED",
   "type": "module",
   "dependencies": {
+    "@naryx/adapter-evm": "file:../../packages/adapters/evm",
+    "@naryx/protocol-types": "file:../../packages/protocol-types",
+    "@naryx/solver": "file:../../services/solver",
     "viem": "2.56.8"
   }
 }
