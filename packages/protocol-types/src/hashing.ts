@@ -40,6 +40,11 @@ export const HASH_DOMAIN = Object.freeze({
   ASYNC_BONDED_TRANSITION: 'CON/v1/async-bonded-transition',
   PACKAGE_LIFECYCLE_INTENT: 'CON/v1/package-lifecycle-intent',
   PACKAGE_LIFECYCLE_RECEIPT: 'CON/v1/package-lifecycle-receipt',
+  AUTHORITY_INVENTORY: 'CON/v1/authority-inventory',
+  OPERATION_CAP_POLICY: 'CON/v1/operation-cap-policy',
+  FUNDED_OPERATION_MANIFEST: 'CON/v1/funded-operation-manifest',
+  SECURITY_FINDING_SUMMARY: 'CON/v1/security-finding-summary',
+  READINESS_DECISION: 'CON/v1/readiness-decision',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

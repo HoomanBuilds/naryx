@@ -10,6 +10,11 @@ The protocol kernel and the bottom of the dependency graph.
 
 Depends on nothing else in this repository. Everything else may depend on it.
 
+Phase 8 readiness policy types provide canonical authority inventories, scoped integer-atom caps,
+funded-operation manifests, security finding summaries, and computed readiness decisions. A caller
+cannot assert readiness directly: required evidence, roles, caps, validity, and finding state are
+validated before the decision can become `READY`.
+
 Arithmetic is exact and integer-based. Rounding direction, overflow, zero quantity, expiry, and replay are behavior to be tested, not assumptions.
 
 ## Implemented so far
