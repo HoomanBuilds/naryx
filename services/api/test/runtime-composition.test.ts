@@ -5,6 +5,7 @@ import {
   composePrivateTerminalRuntime,
   createPrivateTerminalServer,
   type EvmTestnetTerminalPorts,
+  type HyperliquidTestnetEvidenceRuntime,
   type HyperliquidTestnetTerminalExecutionPort,
   type PrivateTerminalExecutionPorts,
 } from "../src/index.js";
@@ -67,6 +68,16 @@ test("runtime composition exposes only explicitly enabled complete boundaries", 
       return evmPorts;
     },
     hyperliquidTestnet: () => hyperliquidPort,
+    hyperliquidTestnetEvidence: () => ({
+      preparation: { prepare: () => ({}) },
+      evidence: { prepare: async () => ({}), reconcile: async () => ({}) },
+      readiness: {
+        preparationAvailable: true,
+        evidenceReconciliationAvailable: true,
+        executionSubmissionAvailable: false,
+        executionSubmissionReason: "SOLVER_EXECUTOR_BOUNDARY_NOT_AVAILABLE",
+      },
+    }) as unknown as HyperliquidTestnetEvidenceRuntime,
   });
   assert.equal(evmCalls, 1);
   assert.equal(enabled.solanaDevnet.preparation, solanaPorts.preparation);
@@ -76,6 +87,7 @@ test("runtime composition exposes only explicitly enabled complete boundaries", 
   assert.equal(enabled.evmTestnet.atomicObservation, evmPorts.atomicObservation);
   assert.equal(enabled.evmTestnet.asyncObservation, evmPorts.asyncObservation);
   assert.equal(enabled.hyperliquidTestnet, hyperliquidPort);
+  assert.equal(enabled.hyperliquidTestnetEvidence?.readiness.executionSubmissionAvailable, false);
   assert.deepEqual(enabled.health, {
     solanaDevnet: { available: true, reason: null },
     baseTestnetAtomic: { available: true, reason: null },
@@ -89,6 +101,7 @@ test("runtime composition fails closed when external prerequisites are absent or
   assert.deepEqual(absent.solanaDevnet, {});
   assert.deepEqual(absent.evmTestnet, {});
   assert.equal(absent.hyperliquidTestnet, undefined);
+  assert.equal(absent.hyperliquidTestnetEvidence, undefined);
   for (const boundary of Object.values(absent.health)) {
     assert.deepEqual(boundary, {
       available: false,

@@ -123,6 +123,24 @@ export {
   type TrustedHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
 export {
+  HYPERLIQUID_TESTNET_PREPARE_PATH,
+  HYPERLIQUID_TESTNET_RECONCILE_PATH,
+  HttpHyperliquidTestnetEvidenceClient,
+  HyperliquidTestnetRuntimeClientError,
+  createHyperliquidTestnetAttemptPreparationPort,
+  createHyperliquidTestnetEvidenceRuntime,
+  type HyperliquidTestnetAccountBinding,
+  type HyperliquidTestnetAttemptPreparation,
+  type HyperliquidTestnetAttemptPreparationOptions,
+  type HyperliquidTestnetEvidenceHttpOptions,
+  type HyperliquidTestnetEvidencePort,
+  type HyperliquidTestnetEvidenceRuntime,
+  type HyperliquidTestnetExecutionBounds,
+  type HyperliquidTestnetMarketMetadata,
+  type HyperliquidTestnetMarketLegMetadata,
+  type HyperliquidTestnetPreparationPort,
+} from "./hyperliquid-testnet-runtime-client.js";
+export {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
   BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
   BaseSepoliaAtomicContextError,

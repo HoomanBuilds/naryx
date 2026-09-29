@@ -1,5 +1,6 @@
 import type { EvmTestnetTerminalPorts } from "./evm-testnet-runtime-ports.js";
 import type { HyperliquidTestnetTerminalExecutionPort } from "./hyperliquid-testnet-terminal.js";
+import type { HyperliquidTestnetEvidenceRuntime } from "./hyperliquid-testnet-runtime-client.js";
 import type { PrivateTerminalExecutionPorts } from "./terminal-execution.js";
 
 const ENABLED_VALUES = new Set(["true", "false"]);
@@ -24,12 +25,14 @@ export type PrivateTerminalRuntimeFactories = Readonly<{
   solanaDevnet?: () => PrivateTerminalExecutionPorts;
   evmTestnet?: () => EvmTestnetTerminalPorts;
   hyperliquidTestnet?: () => HyperliquidTestnetTerminalExecutionPort;
+  hyperliquidTestnetEvidence?: () => HyperliquidTestnetEvidenceRuntime;
 }>;
 
 export type PrivateTerminalRuntimeComposition = Readonly<{
   solanaDevnet: PrivateTerminalExecutionPorts;
   evmTestnet: EvmTestnetTerminalPorts;
   hyperliquidTestnet: HyperliquidTestnetTerminalExecutionPort | undefined;
+  hyperliquidTestnetEvidence: HyperliquidTestnetEvidenceRuntime | undefined;
   health: PrivateTerminalRuntimeHealth;
 }>;
 
@@ -130,8 +133,24 @@ export function composePrivateTerminalRuntime(
   }
 
   let hyperliquidTestnet: HyperliquidTestnetTerminalExecutionPort | undefined;
+  let hyperliquidTestnetEvidence: HyperliquidTestnetEvidenceRuntime | undefined;
   let hyperliquidHealth = health(false, "DISABLED_BY_CONFIGURATION");
   if (hyperliquidEnabled) {
+    if (factories.hyperliquidTestnetEvidence !== undefined) {
+      try {
+        const candidate = factories.hyperliquidTestnetEvidence();
+        if (typeof candidate?.preparation?.prepare === "function"
+          && typeof candidate.evidence?.prepare === "function"
+          && typeof candidate.evidence.reconcile === "function"
+          && candidate.readiness.preparationAvailable === true
+          && candidate.readiness.evidenceReconciliationAvailable === true
+          && candidate.readiness.executionSubmissionAvailable === false) {
+          hyperliquidTestnetEvidence = candidate;
+        }
+      } catch {
+        hyperliquidTestnetEvidence = undefined;
+      }
+    }
     if (factories.hyperliquidTestnet === undefined) {
       hyperliquidHealth = health(false, "RUNTIME_FACTORY_NOT_INJECTED");
     } else {
@@ -153,6 +172,7 @@ export function composePrivateTerminalRuntime(
     solanaDevnet,
     evmTestnet: Object.freeze(evmTestnet),
     hyperliquidTestnet,
+    hyperliquidTestnetEvidence,
     health: Object.freeze({
       solanaDevnet: solanaHealth,
       baseTestnetAtomic: baseHealth,
