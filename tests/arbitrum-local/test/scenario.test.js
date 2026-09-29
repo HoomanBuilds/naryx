@@ -8,6 +8,7 @@ import {
   stringToHex,
   zeroHash,
 } from "viem";
+import { observeAsyncBondedPackage } from "@naryx/adapter-evm";
 import {
   arbitrumLocalArtifacts,
   withLocalArbitrumEnvironment,
@@ -333,5 +334,41 @@ test("rolls back a failed entry then executes and closes the asynchronous packag
       args: [packageId],
     });
     assert.equal(closed.state, 10);
+    const observation = await observeAsyncBondedPackage({
+      chainId: async () => BigInt(await client.getChainId()),
+      transactionReceipt: async () => null,
+      readContract: ({ address, abi, functionName, args }) => client.readContract({
+        address,
+        abi,
+        functionName,
+        ...(args === undefined ? {} : { args }),
+      }),
+      chainHead: async () => {
+        const latestBlock = await client.getBlockNumber();
+        return { latestBlock, finalizedBlock: latestBlock };
+      },
+    }, {
+      chainReference: BigInt(manifest.chainId),
+      coordinator: contracts.coordinator,
+      entryAdapter: contracts.adapter,
+      handler: contracts.adapter,
+      exitController: contracts.exitController,
+      owner: manifest.identities.trader,
+      orderHash: request.orderHash,
+      quoteHash: request.quoteHash,
+      routeHash: request.routeHash,
+      domainIdHash: terms.domain.domainIdHash,
+      domainManifestVersion: terms.domain.manifestVersion,
+      domainManifestHash: terms.domain.manifestHash,
+      executionClassManifestHash: terms.executionClassManifestHash,
+    }, {
+      packageId,
+      entryRequestKey: requestKey,
+      exitRequestKey,
+    });
+    assert.equal(observation.lifecycle, "CLOSED");
+    assert.equal(observation.evidenceGrade, "finalized-contract-receipt");
+    assert.equal(observation.exitCompleted, true);
+    assert.equal(observation.finalReceipt?.commitment, finalReceipt.commitment);
   });
 });

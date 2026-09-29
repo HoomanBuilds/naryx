@@ -13,6 +13,7 @@
   "license": "UNLICENSED",
   "type": "module",
   "dependencies": {
+    "@naryx/adapter-evm": "file:../../packages/adapters/evm",
     "viem": "2.56.8"
   }
 }
