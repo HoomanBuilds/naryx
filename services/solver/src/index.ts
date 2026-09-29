@@ -722,3 +722,16 @@ export {
   type HyperliquidTestnetEvidenceHttpOptions,
   type HyperliquidTestnetLoopbackCoordinatorOptions,
 } from './hyperliquid-testnet-evidence-http.js';
+export {
+  SOLVER_TESTNET_EXECUTE_PATH,
+  HyperliquidTestnetExecutorError,
+  createHyperliquidTestnetExecutor,
+  createHyperliquidTestnetExecutorRequestHandler,
+  createHyperliquidTestnetExecutorServer,
+  type HyperliquidTestnetExecutorPort,
+  type HyperliquidTestnetExecutorRequest,
+  type HyperliquidTestnetExecutorResult,
+  type HyperliquidTestnetExecutorRuntime,
+  type HyperliquidTestnetExecutorRuntimeFactory,
+  type HyperliquidTestnetTrustedAttemptProvider,
+} from './hyperliquid-testnet-executor-http.js';
