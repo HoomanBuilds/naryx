@@ -201,6 +201,7 @@ test("fails closed without an authorized selected attempt and serves narrow acti
       selectQuote: setup.intents.selectQuote.bind(setup.intents),
       selectQuoteForOrder: setup.intents.selectQuoteForOrder.bind(setup.intents),
       getAttempt: setup.intents.getAttempt.bind(setup.intents),
+      getAttemptForOrder: setup.intents.getAttemptForOrder.bind(setup.intents),
       getSelectedQuote: (attemptId) => {
         const quote = setup.intents.getSelectedQuote(attemptId);
         return quote === undefined ? undefined : { ...quote, routeHash: "99".repeat(32) };

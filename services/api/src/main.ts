@@ -17,6 +17,11 @@ import {
   createViemArbitrumSepoliaReadClient,
   loadArbitrumSepoliaRuntimeManifest,
 } from "./arbitrum-sepolia-runtime-client.js";
+import {
+  createSolanaDevnetRuntime,
+  HttpSolanaDevnetBindingSource,
+  loadSolanaDevnetRuntimeManifest,
+} from "./solana-devnet-runtime.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
 import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
 import { Connection } from "@solana/web3.js";
@@ -118,6 +123,33 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
     baseRuntimeError = error;
   }
 }
+let solanaDevnetRuntime: Awaited<ReturnType<typeof createSolanaDevnetRuntime>> | undefined;
+let solanaDevnetRuntimeError: unknown;
+if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
+  try {
+    const solanaDevnetManifestPath = absolutePath(
+      process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
+      "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
+    );
+    const solanaDevnetRpcUrl = process.env.NARYX_SOLANA_DEVNET_RPC_URL ?? "";
+    solanaDevnetRuntime = await createSolanaDevnetRuntime({
+      manifest: loadSolanaDevnetRuntimeManifest(solanaDevnetManifestPath),
+      rpcUrl: solanaDevnetRpcUrl,
+      preparedStorePath: absolutePath(
+        process.env.NARYX_SOLANA_DEVNET_PREPARATION_DB ?? "",
+        "NARYX_SOLANA_DEVNET_PREPARATION_DB",
+      ),
+      intents: executionIntentStore,
+      orders: orderStore,
+      lifecycle: lifecycleStore,
+      bindings: new HttpSolanaDevnetBindingSource(
+        process.env.NARYX_SOLANA_DEVNET_BINDING_ORIGIN ?? "",
+      ),
+    });
+  } catch (error) {
+    solanaDevnetRuntimeError = error;
+  }
+}
 let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
 let arbitrumRuntimeError: unknown;
 if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
@@ -137,10 +169,17 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
     arbitrumRuntimeError = error;
   }
 }
-const runtime = composePrivateTerminalRuntime(process.env, baseRuntime === undefined && baseRuntimeError === undefined
+const runtime = composePrivateTerminalRuntime(process.env, solanaDevnetRuntime === undefined
+    && solanaDevnetRuntimeError === undefined
+    && baseRuntime === undefined && baseRuntimeError === undefined
     && arbitrumRuntime === undefined && arbitrumRuntimeError === undefined
   ? {}
   : {
+      solanaDevnet: () => {
+        if (solanaDevnetRuntimeError !== undefined) throw solanaDevnetRuntimeError;
+        if (solanaDevnetRuntime === undefined) throw new Error("Solana Devnet runtime is unavailable.");
+        return solanaDevnetRuntime;
+      },
       evmTestnet: () => {
         if (baseRuntimeError !== undefined) throw baseRuntimeError;
         if (baseRuntime === undefined) throw new Error("Base Sepolia runtime is unavailable.");

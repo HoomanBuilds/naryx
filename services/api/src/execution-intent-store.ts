@@ -77,6 +77,7 @@ export interface ExecutionIntentStore {
     quoteHash: string,
   ): SelectedExecutionAttempt;
   getAttempt(attemptId: string): SelectedExecutionAttempt | undefined;
+  getAttemptForOrder(orderHash: string): SelectedExecutionAttempt | undefined;
   getSelectedQuote(attemptId: string): SolverAtomicQuoteResponse | undefined;
   close(): void;
 }
@@ -461,6 +462,23 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       status: "AUTHORIZED_QUOTE_SELECTED",
       selectedAtMs: row.selected_at_ms,
     });
+  }
+
+  getAttemptForOrder(orderHash: string): SelectedExecutionAttempt | undefined {
+    if (!HASH.test(orderHash)) {
+      throw new ExecutionIntentStoreError("INVALID_SELECTION", "Order hash is invalid.");
+    }
+    const rows = [
+      this.#db.prepare("SELECT attempt_id FROM selected_execution_attempts WHERE order_hash = ?").get(orderHash),
+      this.#db.prepare("SELECT attempt_id FROM selected_base_atomic_attempts WHERE order_hash = ?").get(orderHash),
+      this.#db.prepare("SELECT attempt_id FROM selected_arbitrum_async_attempts WHERE order_hash = ?").get(orderHash),
+    ].filter((row): row is { attempt_id: string } =>
+      typeof (row as { attempt_id?: unknown } | undefined)?.attempt_id === "string");
+    if (rows.length === 0) return undefined;
+    if (rows.length !== 1) {
+      throw new ExecutionIntentStoreError("CORRUPT_ROW", "Order is bound to multiple selected execution attempts.");
+    }
+    return this.getAttempt(rows[0]!.attempt_id);
   }
 
   #getBaseAttempt(id: string): BaseSelectedExecutionAttempt | undefined {

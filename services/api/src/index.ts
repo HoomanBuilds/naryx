@@ -231,6 +231,19 @@ export {
   type PrivateTerminalRuntimeHealth,
   type RuntimeBoundaryHealth,
 } from "./runtime-composition.js";
+export {
+  createSolanaDevnetContextProvider,
+  type SolanaDevnetContextConfiguration,
+  type SolanaDevnetContextProviderOptions,
+  type SolanaDevnetLiveBindingSource,
+} from "./solana-devnet-context-provider.js";
+export {
+  createSolanaDevnetRuntime,
+  HttpSolanaDevnetBindingSource,
+  loadSolanaDevnetRuntimeManifest,
+  type SolanaDevnetRuntimeManifest,
+  type SolanaDevnetRuntimeOptions,
+} from "./solana-devnet-runtime.js";
 export { PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 } from "./private-terminal-manifest.js";
 export {
   ExecutionValidationError,

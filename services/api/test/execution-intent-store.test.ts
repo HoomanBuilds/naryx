@@ -125,6 +125,7 @@ test("durably binds trader authorization and selected quote into one attempt", (
     intents.close();
     intents = new SqliteExecutionIntentStore(intentDb);
     assert.deepEqual(intents.getAttempt(attempt.attemptId), attempt);
+    assert.deepEqual(intents.getAttemptForOrder(created.orderHashHex), attempt);
     assert.deepEqual(intents.getSelectedQuote(attempt.attemptId), quote);
   } finally {
     intents.close();
