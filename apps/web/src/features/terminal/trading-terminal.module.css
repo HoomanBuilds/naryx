@@ -183,6 +183,28 @@
   cursor: not-allowed;
 }
 
+.walletControl .networkMismatch {
+  border-color: color-mix(in srgb, #d6a766 55%, var(--border));
+  color: #d6a766;
+}
+
+.serviceBadge {
+  display: flex;
+  height: 28px;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  padding: 0 8px;
+  color: var(--text-dim);
+  font-size: 9px;
+}
+
+.sessionStatus small.walletError {
+  color: #d6a766;
+}
+
 .sessionStatus span {
   color: var(--text-secondary);
   font-size: 11px;
@@ -1356,6 +1378,10 @@
     max-width: 104px;
   }
 
+  .walletControl button {
+    max-width: 180px;
+  }
+
   .contentGrid {
     grid-template-columns: minmax(0, 1fr) 336px;
   }
@@ -1467,6 +1493,15 @@
 }
 
 @media (max-width: 560px) {
+  .topNavigation {
+    gap: 8px;
+  }
+
+  .walletControl button,
+  .serviceBadge {
+    max-width: 156px;
+  }
+
   .environmentBadge {
     max-width: 184px;
   }

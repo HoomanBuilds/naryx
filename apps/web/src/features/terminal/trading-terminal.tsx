@@ -13,6 +13,12 @@ import type {
   SolanaExecutionObservation,
 } from "./private-http-terminal-provider";
 import {
+  EVM_TESTNETS,
+  isEvmDomain,
+  useInjectedEvmWallet,
+  type InjectedEvmWalletSession,
+} from "./injected-evm-wallet";
+import {
   useSolanaDevnetWallet,
   type SolanaWalletSession,
 } from "./solana-wallet-standard";
@@ -80,12 +86,14 @@ function TopNavigation({
   selectedDomain,
   providerConnection,
   wallet,
+  evmWallet,
   onDomainChange,
 }: {
   snapshot: TerminalViewModel;
   selectedDomain: DomainId;
   providerConnection: ProviderConnection;
   wallet: SolanaWalletSession;
+  evmWallet: InjectedEvmWalletSession;
   onDomainChange: (domain: DomainId) => void;
 }) {
   const providerLabel = providerConnection === "connected"
@@ -93,6 +101,123 @@ function TopNavigation({
     : providerConnection === "connecting"
       ? "Checking private service"
       : "Local fallback";
+  const evmDomain = isEvmDomain(selectedDomain) ? selectedDomain : null;
+  const expectedNetwork = evmDomain ? EVM_TESTNETS[evmDomain] : null;
+  const evmNetworkMatches = Boolean(
+    expectedNetwork && evmWallet.chainId === expectedNetwork.chainId,
+  );
+
+  const walletControl = selectedDomain === "solana" ? (
+    <div className={styles.walletControl}>
+      <select
+        aria-label="Solana Devnet wallet"
+        value={wallet.selectedWallet?.name ?? ""}
+        onChange={(event) => wallet.selectWallet(event.target.value)}
+      >
+        <option value="">Select wallet</option>
+        {wallet.wallets.map((item) => (
+          <option key={item.name} value={item.name}>{item.name}</option>
+        ))}
+      </select>
+      {wallet.selectedAccount ? (
+        <>
+          {wallet.accounts.length > 1 ? (
+            <select
+              aria-label="Solana Devnet wallet account"
+              value={wallet.selectedAccount.address}
+              onChange={(event) => wallet.selectAccount(event.target.value)}
+            >
+              {wallet.accounts.map((account) => (
+                <option key={account.address} value={account.address}>
+                  {account.label ?? `${account.address.slice(0, 4)}...${account.address.slice(-4)}`}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <button type="button" onClick={() => void wallet.disconnect()}>
+            Disconnect
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          disabled={!wallet.selectedWallet || wallet.connecting}
+          onClick={() => void wallet.connect()}
+        >
+          {wallet.connecting ? "Connecting" : "Connect Devnet"}
+        </button>
+      )}
+    </div>
+  ) : evmDomain && expectedNetwork ? (
+    <div className={styles.walletControl}>
+      {!evmWallet.account ? (
+        <button
+          type="button"
+          disabled={!evmWallet.available || evmWallet.connecting}
+          onClick={() => void evmWallet.connect()}
+        >
+          {evmWallet.connecting ? "Connecting" : "Connect wallet"}
+        </button>
+      ) : !evmNetworkMatches ? (
+        <button
+          type="button"
+          className={styles.networkMismatch}
+          disabled={evmWallet.switching}
+          onClick={() => void evmWallet.switchNetwork(evmDomain)}
+        >
+          {evmWallet.switching ? "Switching" : `Switch to ${expectedNetwork.label}`}
+        </button>
+      ) : (
+        <button type="button" onClick={evmWallet.disconnect}>
+          Disconnect
+        </button>
+      )}
+    </div>
+  ) : (
+    <div className={styles.serviceBadge}>Testnet service</div>
+  );
+
+  const sessionStatus = selectedDomain === "solana" ? (
+    <>
+      <span className={wallet.selectedAccount ? styles.statusDot : styles.offlineDot} />
+      <div>
+        <span>{wallet.selectedAccount ? "Devnet wallet ready" : "Wallet offline"}</span>
+        <small>
+          {wallet.selectedAccount
+            ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}`
+            : wallet.error ?? "Wallet Standard only"}
+        </small>
+      </div>
+    </>
+  ) : evmDomain && expectedNetwork ? (
+    <>
+      <span className={evmWallet.account && evmNetworkMatches ? styles.statusDot : styles.offlineDot} />
+      <div>
+        <span>
+          {!evmWallet.account
+            ? "EVM wallet offline"
+            : evmNetworkMatches
+              ? `${expectedNetwork.label} ready`
+              : "Wrong network"}
+        </span>
+        <small className={evmWallet.error ? styles.walletError : undefined}>
+          {evmWallet.error ?? (evmWallet.account
+            ? `${evmWallet.account.slice(0, 6)}...${evmWallet.account.slice(-4)}`
+            : evmWallet.available
+              ? "Manual connection only"
+              : "Injected wallet unavailable")}
+        </small>
+      </div>
+    </>
+  ) : (
+    <>
+      <span className={styles.offlineDot} />
+      <div>
+        <span>No browser wallet</span>
+        <small>Hyperliquid testnet service</small>
+      </div>
+    </>
+  );
 
   return (
     <header className={styles.topNavigation}>
@@ -130,57 +255,10 @@ function TopNavigation({
         ))}
       </nav>
 
-      <div className={styles.walletControl}>
-        <select
-          aria-label="Solana Devnet wallet"
-          value={wallet.selectedWallet?.name ?? ""}
-          onChange={(event) => wallet.selectWallet(event.target.value)}
-        >
-          <option value="">Select wallet</option>
-          {wallet.wallets.map((item) => (
-            <option key={item.name} value={item.name}>{item.name}</option>
-          ))}
-        </select>
-        {wallet.selectedAccount ? (
-          <>
-            {wallet.accounts.length > 1 ? (
-              <select
-                aria-label="Solana Devnet wallet account"
-                value={wallet.selectedAccount.address}
-                onChange={(event) => wallet.selectAccount(event.target.value)}
-              >
-                {wallet.accounts.map((account) => (
-                  <option key={account.address} value={account.address}>
-                    {account.label ?? `${account.address.slice(0, 4)}...${account.address.slice(-4)}`}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-            <button type="button" onClick={() => void wallet.disconnect()}>
-              Disconnect
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            disabled={!wallet.selectedWallet || wallet.connecting}
-            onClick={() => void wallet.connect()}
-          >
-            {wallet.connecting ? "Connecting" : "Connect Devnet"}
-          </button>
-        )}
-      </div>
+      {walletControl}
 
       <div className={styles.sessionStatus}>
-        <span className={wallet.selectedAccount ? styles.statusDot : styles.offlineDot} />
-        <div>
-          <span>{wallet.selectedAccount ? "Devnet wallet ready" : "Wallet offline"}</span>
-          <small>
-            {wallet.selectedAccount
-              ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}`
-              : wallet.error ?? "Wallet Standard only"}
-          </small>
-        </div>
+        {sessionStatus}
       </div>
     </header>
   );
@@ -1123,6 +1201,7 @@ export function TradingTerminal({
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
   const wallet = useSolanaDevnetWallet();
+  const evmWallet = useInjectedEvmWallet();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
@@ -1678,6 +1757,7 @@ export function TradingTerminal({
         selectedDomain={selectedDomain}
         providerConnection={providerConnection}
         wallet={wallet}
+        evmWallet={evmWallet}
         onDomainChange={(domain) => {
           setSelectedDomain(domain);
           if (privateProvider) {
