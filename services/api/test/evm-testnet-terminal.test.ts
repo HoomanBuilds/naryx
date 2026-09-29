@@ -30,7 +30,9 @@ import {
   createEvmTestnetTerminalPorts,
   createPrivateTerminalServer,
   InMemoryPreparedEvmTestnetAtomicStore,
+  type EvmTestnetTerminalPorts,
 } from "../src/index.js";
+import { executionReadinessFixtureGate, executionReadinessFixtureScopes } from "./execution-readiness-fixture.js";
 
 const hashBytes = (byte: number): Hash32 => new Uint8Array(32).fill(byte) as Hash32;
 const hashHex = (byte: number): Hex => `0x${byte.toString(16).padStart(2, "0").repeat(32)}` as Hex;
@@ -278,6 +280,17 @@ async function close(server: ReturnType<typeof createPrivateTerminalServer>): Pr
   await new Promise<void>((resolve, reject) => {
     server.close((error) => (error === undefined ? resolve() : reject(error)));
   });
+}
+
+function createGatedServer(
+  config: Parameters<typeof createPrivateTerminalServer>[0],
+  ports: EvmTestnetTerminalPorts,
+) {
+  return createPrivateTerminalServer(
+    config, {}, undefined, undefined, ports,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    executionReadinessFixtureGate, executionReadinessFixtureScopes,
+  );
 }
 
 test("evm testnet terminal unavailable defaults are 503 and health is false", async () => {
@@ -567,7 +580,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
     store,
   });
 
-  const server = createPrivateTerminalServer(config, {}, undefined, undefined, ports);
+  const server = createGatedServer(config, ports);
   const url = await listen(server);
   try {
     const health = (await (await fetch(`${url}/internal/healthz`)).json()) as Record<string, unknown>;
@@ -737,7 +750,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
       prepare: async () => ({ attemptId, idempotencyKey, environment: "TESTNET", extra: true }),
     },
   };
-  const badServer = createPrivateTerminalServer(config, {}, undefined, undefined, badPorts as never);
+  const badServer = createGatedServer(config, badPorts as never);
   const badUrl = await listen(badServer);
   try {
     const response = await fetch(`${badUrl}/internal/terminal/evm-testnet/prepare-atomic`, {
@@ -809,7 +822,7 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
     asyncReadPort: minimalReadPort,
     store: badStore,
   });
-  const badServer = createPrivateTerminalServer(config, {}, undefined, undefined, badPorts);
+  const badServer = createGatedServer(config, badPorts);
   const badUrl = await listen(badServer);
   try {
     const response = await fetch(`${badUrl}/internal/terminal/evm-testnet/prepare-atomic`, {
@@ -842,8 +855,8 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
     asyncReadPort: minimalReadPort,
     store: sharedStore,
   });
-  const goodServer = createPrivateTerminalServer(config, {}, undefined, undefined, goodPorts);
-  const badObserveServer = createPrivateTerminalServer(config, {}, undefined, undefined, badObservePorts);
+  const goodServer = createGatedServer(config, goodPorts);
+  const badObserveServer = createGatedServer(config, badObservePorts);
   const goodUrl = await listen(goodServer);
   const badObserveUrl = await listen(badObserveServer);
   try {
@@ -926,7 +939,7 @@ test("evm testnet rejects mismatched async domain-manifest chain reference", asy
     asyncReadPort: dummyReadPort,
     store,
   });
-  const server = createPrivateTerminalServer(config, {}, undefined, undefined, ports);
+  const server = createGatedServer(config, ports);
   const url = await listen(server);
   try {
     const response = await fetch(`${url}/internal/terminal/evm-testnet/observe-async`, {
@@ -976,7 +989,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
       }),
     },
   };
-  const atomicServer = createPrivateTerminalServer(config, {}, undefined, undefined, impossibleAtomicPorts as never);
+  const atomicServer = createGatedServer(config, impossibleAtomicPorts as never);
   const atomicUrl = await listen(atomicServer);
   try {
     const response = await fetch(`${atomicUrl}/internal/terminal/evm-testnet/observe-atomic`, {
@@ -1036,7 +1049,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
       }),
     },
   };
-  const arbitraryServer = createPrivateTerminalServer(config, {}, undefined, undefined, arbitraryStatusPorts as never);
+  const arbitraryServer = createGatedServer(config, arbitraryStatusPorts as never);
   const arbitraryUrl = await listen(arbitraryServer);
   try {
     const response = await fetch(`${arbitraryUrl}/internal/terminal/evm-testnet/observe-async`, {
@@ -1096,7 +1109,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
       }),
     },
   };
-  const exitServer = createPrivateTerminalServer(config, {}, undefined, undefined, exitCompletedPorts as never);
+  const exitServer = createGatedServer(config, exitCompletedPorts as never);
   const exitUrl = await listen(exitServer);
   try {
     const response = await fetch(`${exitUrl}/internal/terminal/evm-testnet/observe-async`, {
@@ -1131,7 +1144,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
       }),
     },
   };
-  const nullCoordinatorServer = createPrivateTerminalServer(config, {}, undefined, undefined, nullCoordinatorPorts as never);
+  const nullCoordinatorServer = createGatedServer(config, nullCoordinatorPorts as never);
   const nullCoordinatorUrl = await listen(nullCoordinatorServer);
   try {
     const response = await fetch(`${nullCoordinatorUrl}/internal/terminal/evm-testnet/observe-async`, {
@@ -1187,7 +1200,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
       }),
     },
   };
-  const receiptMismatchServer = createPrivateTerminalServer(config, {}, undefined, undefined, receiptMismatchPorts as never);
+  const receiptMismatchServer = createGatedServer(config, receiptMismatchPorts as never);
   const receiptMismatchUrl = await listen(receiptMismatchServer);
   try {
     const response = await fetch(`${receiptMismatchUrl}/internal/terminal/evm-testnet/observe-atomic`, {

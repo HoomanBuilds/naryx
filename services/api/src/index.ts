@@ -235,6 +235,19 @@ export {
   type PrivateTerminalServerConfig,
 } from "./http-server.js";
 export {
+  ExecutionReadinessError,
+  FileExecutionReadinessPolicyProvider,
+  ManifestExecutionReadinessGate,
+  SqliteExecutionReadinessEvidenceStore,
+  type ExecutionHandoff,
+  type ExecutionReadinessEvidenceStore,
+  type ExecutionReadinessGate,
+  type ExecutionReadinessPolicyProvider,
+  type ExecutionReadinessReceipt,
+  type ExecutionReadinessScope,
+  type ExecutionReadinessScopeResolver,
+} from "./execution-readiness-gate.js";
+export {
   composePrivateTerminalRuntime,
   type PrivateTerminalRuntimeComposition,
   type PrivateTerminalRuntimeFactories,

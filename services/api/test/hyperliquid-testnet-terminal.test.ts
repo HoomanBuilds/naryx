@@ -7,6 +7,7 @@ import {
   type HyperliquidTestnetTerminalExecutionPort,
   type HyperliquidTestnetTerminalExecutionResult,
 } from "../src/index.js";
+import { executionReadinessFixtureGate, executionReadinessFixtureScopes } from "./execution-readiness-fixture.js";
 
 const ATTEMPT_ID = "attempt-0123456789AB";
 const IDEMPOTENCY_KEY = "idem-0123456789ABCD";
@@ -41,6 +42,17 @@ async function close(server: ReturnType<typeof createPrivateTerminalServer>): Pr
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error === undefined ? resolve() : reject(error));
   });
+}
+
+function createGatedExecutionServer(
+  config: Parameters<typeof createPrivateTerminalServer>[0],
+  port: HyperliquidTestnetTerminalExecutionPort,
+) {
+  return createPrivateTerminalServer(
+    config, {}, undefined, port, {},
+    undefined, undefined, undefined, undefined, undefined, "PHASE4_FIXTURE", undefined, undefined, undefined,
+    executionReadinessFixtureGate, executionReadinessFixtureScopes,
+  );
 }
 
 function base(status: string): Record<string, unknown> {
@@ -167,7 +179,7 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
       return next as HyperliquidTestnetTerminalExecutionResult;
     },
   };
-  const server = createPrivateTerminalServer(config, {}, undefined, port);
+  const server = createGatedExecutionServer(config, port);
   const serverUrl = await listen(server);
   try {
     const health = await fetch(`${serverUrl}/internal/healthz`);
@@ -277,7 +289,7 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
     });
 
     next = { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: [], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] };
-    const throwing = createPrivateTerminalServer(config, {}, undefined, {
+    const throwing = createGatedExecutionServer(config, {
       execute: async () => {
         throw new Error("boom");
       },

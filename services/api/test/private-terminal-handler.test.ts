@@ -7,6 +7,7 @@ import {
   type NormalizedCashCarryExecutionRequest,
   type UnsignedSolanaDevnetMaterializationDto,
 } from "../src/index.js";
+import { executionReadinessFixtureGate, executionReadinessFixtureScopes } from "./execution-readiness-fixture.js";
 
 const TRADER_PUBLIC_KEY = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
 const RECENT_BLOCKHASH = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR";
@@ -146,7 +147,8 @@ test("private terminal validates previews and injected Devnet preparation", asyn
         return materialization;
       },
     },
-  });
+  }, undefined, undefined, {}, undefined, undefined, undefined, undefined, undefined, "PHASE4_FIXTURE",
+  undefined, undefined, undefined, executionReadinessFixtureGate, executionReadinessFixtureScopes);
   const executionUrl = await listen(executionServer);
   try {
     const accepted = await fetch(`${executionUrl}/internal/terminal/execution/prepare`, {

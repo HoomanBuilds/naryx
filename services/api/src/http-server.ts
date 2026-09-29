@@ -63,6 +63,12 @@ import {
   type HyperliquidTestnetPreparationPort,
 } from "./hyperliquid-testnet-runtime-client.js";
 import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
+import {
+  ExecutionReadinessError,
+  type ExecutionHandoff,
+  type ExecutionReadinessGate,
+  type ExecutionReadinessScopeResolver,
+} from "./execution-readiness-gate.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -196,7 +202,32 @@ export function createPrivateTerminalRequestHandler(
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
+  executionReadinessGate?: ExecutionReadinessGate,
+  executionReadinessScopes?: ExecutionReadinessScopeResolver,
 ) {
+  async function requireExecutionReadiness(
+    handoff: ExecutionHandoff,
+    request: Readonly<{ attemptId?: string; idempotencyKey: string }>,
+  ): Promise<void> {
+    if (executionReadinessGate === undefined || executionReadinessScopes === undefined) {
+      throw new ExecutionReadinessError("READINESS_UNAVAILABLE", "Execution readiness is not configured.");
+    }
+    const scope = await executionReadinessScopes.resolve(handoff, request);
+    if (scope.handoff !== handoff || scope.idempotencyKey !== request.idempotencyKey ||
+        (request.attemptId !== undefined && scope.attemptId !== request.attemptId)) {
+      throw new ExecutionReadinessError("READINESS_REJECTED", "Resolved execution scope does not match the handoff request.");
+    }
+    executionReadinessGate.authorize(scope);
+  }
+
+  function rejectReadiness(response: ServerResponse, error: unknown): boolean {
+    if (!(error instanceof ExecutionReadinessError)) return false;
+    reject(response, error.code === "READINESS_UNAVAILABLE" ? 503 : 409, error.code, error.message);
+    return true;
+  }
+
+  const executionReadinessAvailable = executionReadinessGate !== undefined && executionReadinessScopes !== undefined;
+
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
     const url = new URL(request.url ?? "/", "http://private-terminal.local");
@@ -331,13 +362,14 @@ export function createPrivateTerminalRequestHandler(
         scope: "private_terminal",
         environment: "LOCAL_CONFORMANCE",
         localAtomicRuntimeMode,
-        executionPreparationAvailable: executionPorts.preparation !== undefined,
+        executionPreparationAvailable: executionPorts.preparation !== undefined && executionReadinessAvailable,
         executionObservationAvailable: executionPorts.observation !== undefined,
-        hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined,
-        evmTestnetAtomicAuthorizationAvailable: evmTestnetPorts.authorization !== undefined,
-        evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined,
+        hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined && executionReadinessAvailable,
+        evmTestnetAtomicAuthorizationAvailable: evmTestnetPorts.authorization !== undefined && executionReadinessAvailable,
+        evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined && executionReadinessAvailable,
         evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
-        evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
+        evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined && executionReadinessAvailable,
+        executionReadinessAvailable,
         lifecycleReadAvailable: lifecycleStore !== undefined,
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,
@@ -451,6 +483,10 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const preparationRequest = parseExecutionPreparationRequest(await readJson(request));
+        await requireExecutionReadiness("SOLANA_DEVNET_PREPARE", {
+          attemptId: preparationRequest.idempotencyKey,
+          idempotencyKey: preparationRequest.idempotencyKey,
+        });
         const prepared = validateUnsignedSolanaDevnetMaterialization(
           await executionPorts.preparation.prepare(preparationRequest),
           preparationRequest,
@@ -462,6 +498,7 @@ export function createPrivateTerminalRequestHandler(
           ...prepared,
         });
       } catch (error) {
+        if (rejectReadiness(response, error)) return;
         if (error instanceof ExecutionValidationError || error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
           return;
@@ -515,12 +552,14 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseHyperliquidTestnetTerminalExecutionRequest(await readJson(request));
+        await requireExecutionReadiness("HYPERLIQUID_TESTNET_EXECUTE", terminalRequest);
         const sanitized = validateHyperliquidTestnetTerminalExecutionResult(
           await hyperliquidTestnetExecutionPort.execute(terminalRequest),
           terminalRequest,
         );
         sendJson(response, 200, sanitized);
       } catch (error) {
+        if (rejectReadiness(response, error)) return;
         if (error instanceof HyperliquidTestnetTerminalValidationError ||
             error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
@@ -543,12 +582,14 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetPrepareAtomicAuthorizationRequest(await readJson(request));
+        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_AUTHORIZE", terminalRequest);
         const sanitized = validateEvmTestnetAtomicAuthorization(
           await evmTestnetPorts.authorization.prepare(terminalRequest),
           terminalRequest,
         );
         sendJson(response, 200, sanitized);
       } catch (error) {
+        if (rejectReadiness(response, error)) return;
         if (error instanceof EvmTestnetTerminalValidationError ||
             error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
@@ -571,12 +612,14 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetPrepareAtomicRequest(await readJson(request));
+        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_PREPARE", terminalRequest);
         const sanitized = validateEvmTestnetAtomicPreparation(
           await evmTestnetPorts.preparation.prepare(terminalRequest),
           terminalRequest,
         );
         sendJson(response, 200, sanitized);
       } catch (error) {
+        if (rejectReadiness(response, error)) return;
         if (error instanceof EvmTestnetTerminalValidationError ||
             error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
@@ -627,12 +670,14 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetObserveAsyncRequest(await readJson(request));
+        await requireExecutionReadiness("ARBITRUM_TESTNET_ASYNC_HANDOFF", terminalRequest);
         const sanitized = validateEvmTestnetAsyncObservation(
           await evmTestnetPorts.asyncObservation.observe(terminalRequest),
           terminalRequest,
         );
         sendJson(response, 200, sanitized);
       } catch (error) {
+        if (rejectReadiness(response, error)) return;
         if (error instanceof EvmTestnetTerminalValidationError ||
             error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
@@ -926,16 +971,24 @@ export function createPrivateTerminalRequestHandler(
       const attemptId = solanaLocalActionMatch[1] as string;
       const action = solanaLocalActionMatch[2] as string;
       try {
+        const submission = action === "submit" ? await readJson(request) as {
+          signedTransactionBase64?: string;
+          signature?: string;
+        } : undefined;
+        if (action === "submit") {
+          await requireExecutionReadiness("SOLANA_LOCAL_SUBMIT", {
+            attemptId,
+            idempotencyKey: attemptId,
+          });
+        }
         const result = action === "prepare"
           ? await solanaLocalExecution.prepare(attemptId)
           : action === "reconcile"
             ? await solanaLocalExecution.reconcile(attemptId)
-            : await solanaLocalExecution.submit(attemptId, await readJson(request) as {
-              signedTransactionBase64?: string;
-              signature?: string;
-            });
+            : await solanaLocalExecution.submit(attemptId, submission!);
         sendJson(response, 200, result);
-      } catch {
+      } catch (error) {
+        if (rejectReadiness(response, error)) return;
         reject(response, 409, "SOLANA_LOCAL_EXECUTION_FAILED", "Manifest-validated local Solana execution failed closed.");
       }
       return;
@@ -989,6 +1042,8 @@ export function createPrivateTerminalServer(
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
+  executionReadinessGate?: ExecutionReadinessGate,
+  executionReadinessScopes?: ExecutionReadinessScopeResolver,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1005,6 +1060,8 @@ export function createPrivateTerminalServer(
     solanaLocalExecution,
     hyperliquidTestnetPreparationPort,
     hyperliquidTestnetContext,
+    executionReadinessGate,
+    executionReadinessScopes,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {
