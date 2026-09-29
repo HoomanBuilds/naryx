@@ -9,14 +9,15 @@ import {
   parseProtocolJson,
   readinessDecision,
   readinessDecisionHash,
+  readinessEvidenceHash,
   toHex,
   type DomainRef,
   type ExpiryUnit,
   type FundedOperationAction,
   type FundedOperationManifestInput,
-  type ManifestHash,
   type QuoteMode,
   type ReadinessDecisionInput,
+  type ReadinessEvidenceInput,
   type SettlementClass,
   type VersionedManifestRef,
 } from "@naryx/protocol-types";
@@ -41,17 +42,23 @@ export type ExecutionReadinessScope = Readonly<{
   sizeCohort: string;
   assetId: string;
   action: FundedOperationAction;
-  quantityAtoms: bigint;
-  notionalAtoms: bigint;
-  feeAtoms: bigint;
+  operationId: string;
+  sourceAccountCommitment: Uint8Array | string;
+  destinationAccountCommitment: Uint8Array | string;
+  unsignedPayloadHash: Uint8Array | string;
+  principalAtoms: bigint;
+  networkFeeAtoms: bigint;
+  protocolFeeAtoms: bigint;
+  slippageAtoms: bigint;
   marginAtoms: bigint;
   recoveryAtoms: bigint;
+  lossAtoms: bigint;
   nowUnit: ExpiryUnit;
   nowValue: bigint;
   runtimeCodeHash: Uint8Array | string;
   configurationManifestHash: Uint8Array | string;
   authorityInventoryHash: Uint8Array | string;
-  evidenceCommitments: readonly (Uint8Array | string)[];
+  evidence: readonly ReadinessEvidenceInput[];
   expectedFundedOperationManifestHash: Uint8Array | string;
   expectedReadinessDecisionHash: Uint8Array | string;
 }>;
@@ -116,14 +123,12 @@ function hashEqual(left: Uint8Array | string, right: Uint8Array | string): boole
   }
 }
 
-function exactEvidence(
-  expected: readonly Readonly<{ commitment: ManifestHash }>[],
-  actual: readonly (Uint8Array | string)[],
-): boolean {
+function exactEvidence(expected: readonly ReadinessEvidenceInput[], actual: readonly ReadinessEvidenceInput[]): boolean {
   if (expected.length !== actual.length) return false;
-  const expectedHashes = expected.map((item) => toHex(item.commitment)).sort();
-  const actualHashes = actual.map((item) => typeof item === "string" ? item.replace(/^0x/, "") : toHex(item)).sort();
-  return expectedHashes.every((hash, index) => hash === actualHashes[index]);
+  const identity = (item: ReadinessEvidenceInput) => `${item.kind}:${toHex(readinessEvidenceHash(item))}`;
+  const expectedRecords = expected.map(identity).sort();
+  const actualRecords = actual.map(identity).sort();
+  return expectedRecords.every((record, index) => record === actualRecords[index]);
 }
 
 function isMainnet(environment: string, domainId: string): boolean {
@@ -177,14 +182,18 @@ export class ManifestExecutionReadinessGate implements ExecutionReadinessGate {
     const decisionHash = readinessDecisionHash(input);
     if (!hashEqual(decisionHash, scope.expectedReadinessDecisionHash)) reject("Readiness decision hash mismatch.");
     if (!hashEqual(decision.authorityInventoryHash, scope.authorityInventoryHash)) reject("Authority inventory hash mismatch.");
-    if (!exactEvidence(decision.evidence, scope.evidenceCommitments)) reject("Readiness evidence commitments mismatch.");
+    if (!exactEvidence(input.evidence, scope.evidence)) reject("Readiness evidence records mismatch.");
 
     const candidates = input.fundedOperations.map((value) => fundedOperationManifest(value));
     const operation = candidates.find((candidate) =>
       candidate.environment === scope.environment && sameDomain(candidate.domain, scope.domain) &&
       sameManifest(candidate.template, scope.template) && candidate.settlementClass === scope.settlementClass &&
       candidate.quoteMode === scope.quoteMode && candidate.sizeCohort === scope.sizeCohort &&
-      candidate.assetId === scope.assetId && candidate.allowedActions.includes(scope.action));
+      candidate.assetId === scope.assetId && candidate.operationId === scope.operationId &&
+      candidate.allowedActions.includes(scope.action) &&
+      hashEqual(candidate.sourceAccountCommitment, scope.sourceAccountCommitment) &&
+      hashEqual(candidate.destinationAccountCommitment, scope.destinationAccountCommitment) &&
+      hashEqual(candidate.unsignedPayloadHash, scope.unsignedPayloadHash));
     if (operation === undefined) reject("No funded operation manifest exactly matches the execution scope.");
     if (operation.validFrom.unit !== scope.nowUnit || operation.validUntil.unit !== scope.nowUnit ||
         scope.nowValue < operation.validFrom.value || scope.nowValue >= operation.validUntil.value) {
@@ -200,11 +209,13 @@ export class ManifestExecutionReadinessGate implements ExecutionReadinessGate {
         !decision.fundedOperationHashes.some((hash) => bytesEqual(hash, manifestHash))) {
       reject("Funded operation manifest hash mismatch.");
     }
-    if (checkedAtoms(scope.quantityAtoms, "quantityAtoms") > operation.maxAssetMovementAtoms ||
-        checkedAtoms(scope.notionalAtoms, "notionalAtoms") > operation.maxAssetMovementAtoms ||
-        checkedAtoms(scope.feeAtoms, "feeAtoms") > operation.maxFeeAtoms ||
+    if (checkedAtoms(scope.principalAtoms, "principalAtoms") > operation.maxPrincipalAtoms ||
+        checkedAtoms(scope.networkFeeAtoms, "networkFeeAtoms") > operation.maxNetworkFeeAtoms ||
+        checkedAtoms(scope.protocolFeeAtoms, "protocolFeeAtoms") > operation.maxProtocolFeeAtoms ||
+        checkedAtoms(scope.slippageAtoms, "slippageAtoms") > operation.maxSlippageAtoms ||
         checkedAtoms(scope.marginAtoms, "marginAtoms") > operation.maxMarginAtoms ||
-        checkedAtoms(scope.recoveryAtoms, "recoveryAtoms") > operation.maxRecoveryAtoms) {
+        checkedAtoms(scope.recoveryAtoms, "recoveryAtoms") > operation.maxRecoveryAtoms ||
+        checkedAtoms(scope.lossAtoms, "lossAtoms") > operation.maxLossAtoms) {
       reject("Execution scope exceeds a funded operation cap.");
     }
     const receipt = Object.freeze({

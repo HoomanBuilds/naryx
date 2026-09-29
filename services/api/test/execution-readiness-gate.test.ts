@@ -20,6 +20,9 @@ import {
 const hash = (byte: number): Uint8Array => new Uint8Array(32).fill(byte);
 const domain = domainRef("hypercore:testnet", 1, hash(1));
 const template = versionedManifestRef("template:cash-carry", 1, hash(2));
+const releaseHash = hash(30);
+const sourceAccount = hash(21);
+const destinationAccount = hash(22);
 
 function inventory(environment = "testnet"): AuthorityInventoryInput {
   return {
@@ -39,6 +42,23 @@ function inventory(environment = "testnet"): AuthorityInventoryInput {
         publicIdentityCommitment: hash(5),
         custodyPolicyHash: hash(6),
       },
+      {
+        roleId: "role:reviewer",
+        authorityClass: "SECURITY_REVIEWER",
+        publicIdentityCommitment: hash(17),
+        custodyPolicyHash: hash(19),
+      },
+      {
+        roleId: "role:approver",
+        authorityClass: "RELEASE_APPROVER",
+        publicIdentityCommitment: hash(18),
+        custodyPolicyHash: hash(20),
+      },
+    ],
+    forbiddenCollisions: [
+      { leftClass: "EXECUTION_SIGNER", rightClass: "RELEASE_APPROVER", forbidIdentityCollision: true, forbidCustodyCollision: true },
+      { leftClass: "INCIDENT_OWNER", rightClass: "SECURITY_REVIEWER", forbidIdentityCollision: true, forbidCustodyCollision: true },
+      { leftClass: "SECURITY_REVIEWER", rightClass: "RELEASE_APPROVER", forbidIdentityCollision: true, forbidCustodyCollision: true },
     ],
   };
 }
@@ -55,16 +75,28 @@ function operation(environment = "testnet", operationDomain = domain): FundedOpe
     quoteMode: "EXECUTION_COMMITMENT",
     sizeCohort: "cohort:small",
     assetId: "asset:usdc",
-    maxAssetMovementAtoms: 1_000_000n,
-    maxFeeAtoms: 10_000n,
-    maxMarginAtoms: 500_000n,
-    maxRecoveryAtoms: 100_000n,
+    maxPrincipalAtoms: 900_000n,
+    maxNetworkFeeAtoms: 900n,
+    maxProtocolFeeAtoms: 9_000n,
+    maxSlippageAtoms: 19_000n,
+    maxMarginAtoms: 400_000n,
+    maxRecoveryAtoms: 90_000n,
+    maxLossAtoms: 40_000n,
+    operationId: "operation:one",
+    sourceAccountCommitment: sourceAccount,
+    destinationAccountCommitment: destinationAccount,
+    unsignedPayloadHash: hash(23),
     runtimeCodeHash: hash(7),
     configurationManifestHash: hash(8),
     authorityInventoryVersion: 1,
     authorityInventoryHash: authorityInventoryHash(authorities),
     signerRoleIds: ["role:executor"],
+    approverRoleCommitments: [{ roleId: "role:approver", identityCommitment: hash(18) }],
     allowedActions: ["EXECUTE"],
+    prerequisites: ["DOMAIN_QUALIFIED", "ADAPTER_QUALIFIED", "ACCOUNT_BALANCE_CONFIRMED", "ALLOWANCE_CONFIRMED", "SIMULATION_PASSED", "RECOVERY_PROVEN"],
+    stopConditions: ["PRINCIPAL_CAP_REACHED", "FEE_CAP_REACHED", "SLIPPAGE_CAP_REACHED", "LOSS_CAP_REACHED", "STALE_OBSERVATION", "DEPENDENCY_UNAVAILABLE", "RECONCILIATION_FAILED"],
+    simulationEvidenceHash: hash(24),
+    recoverabilityEvidenceHash: hash(25),
     validFromUnit: "EVM_UNIX_SECONDS",
     validFromValue: 100n,
     validUntilUnit: "EVM_UNIX_SECONDS",
@@ -74,12 +106,48 @@ function operation(environment = "testnet", operationDomain = domain): FundedOpe
   };
 }
 
+function aggregateCap() {
+  return {
+    assetId: "asset:usdc",
+    maxPrincipalAtoms: 1_000_000n,
+    maxNetworkFeeAtoms: 1_000n,
+    maxProtocolFeeAtoms: 10_000n,
+    maxSlippageAtoms: 20_000n,
+    maxMarginAtoms: 500_000n,
+    maxRecoveryAtoms: 100_000n,
+    maxLossAtoms: 50_000n,
+  };
+}
+
+function evidence(environment: string, fundedOperation: FundedOperationManifestInput) {
+  const manifestHash = fundedOperationManifestHash(fundedOperation);
+  const kinds = [
+    "BUILD", "FOCUSED_TESTS", "DEPLOYMENT_DRY_RUN", "AUTHORITY_REVIEW", "INCIDENT_RUNBOOK",
+    "MONITORING", "RECOVERY_DRILL", "SIGNER_INVENTORY", "STOP_CONDITION_DRILL", "RECONCILIATION",
+  ] as const;
+  return kinds.map((kind, index) => ({
+    kind,
+    releaseHash,
+    fundedOperationManifestHash: manifestHash,
+    reviewerRoleId: "role:approver",
+    reviewerIdentityCommitment: hash(18),
+    result: "PASS" as const,
+    environment,
+    observedAtUnit: "EVM_UNIX_SECONDS" as const,
+    observedAtValue: 120n,
+    expiresAtUnit: "EVM_UNIX_SECONDS" as const,
+    expiresAtValue: 190n,
+    signatureCommitment: hash(40 + index),
+  }));
+}
+
 function decision(environment = "testnet", fundedOperation = operation(environment)): ReadinessDecisionInput {
   const authorities = inventory(environment);
   return {
     schemaVersion: 1,
     decisionVersion: 1,
     environment,
+    releaseHash,
     evaluatedAtUnit: "EVM_UNIX_SECONDS",
     evaluatedAtValue: 150n,
     authorityInventory: authorities,
@@ -89,21 +157,39 @@ function decision(environment = "testnet", fundedOperation = operation(environme
       environment,
       caps: [{
         ...fundedOperation,
-        maxAssetMovementAtoms: 1_000_000n,
-        maxFeeAtoms: 10_000n,
+        maxPrincipalAtoms: 1_000_000n,
+        maxNetworkFeeAtoms: 1_000n,
+        maxProtocolFeeAtoms: 10_000n,
+        maxSlippageAtoms: 20_000n,
         maxMarginAtoms: 500_000n,
         maxRecoveryAtoms: 100_000n,
+        maxLossAtoms: 50_000n,
       }],
+      aggregateAssetCaps: [aggregateCap()],
+      aggregateAccountCaps: [
+        { ...aggregateCap(), accountCommitment: sourceAccount },
+        { ...aggregateCap(), accountCommitment: destinationAccount },
+      ],
     },
     fundedOperations: [fundedOperation],
-    findingSummary: { schemaVersion: 1, registerVersion: 1, findings: [] },
-    evidence: [
-      { kind: "BUILD", commitment: hash(10) },
-      { kind: "FOCUSED_TESTS", commitment: hash(11) },
-      { kind: "DEPLOYMENT_DRY_RUN", commitment: hash(12) },
-      { kind: "AUTHORITY_REVIEW", commitment: hash(13) },
-      { kind: "INCIDENT_RUNBOOK", commitment: hash(14) },
-    ],
+    findingSummary: {
+      schemaVersion: 1,
+      registerVersion: 1,
+      findings: [{ findingId: "finding:none-observed", severity: "INFORMATIONAL", status: "OPEN", evidenceHash: hash(26) }],
+      reviewAttestation: {
+        reviewScopeHash: releaseHash,
+        reviewerRoleId: "role:reviewer",
+        reviewerIdentityCommitment: hash(17),
+        result: "PASS",
+        environment,
+        completedAtUnit: "EVM_UNIX_SECONDS",
+        completedAtValue: 120n,
+        expiresAtUnit: "EVM_UNIX_SECONDS",
+        expiresAtValue: 190n,
+        signatureCommitment: hash(27),
+      },
+    },
+    evidence: evidence(environment, fundedOperation),
   };
 }
 
@@ -120,17 +206,23 @@ function scope(input = decision(), fundedOperation = input.fundedOperations[0] a
     sizeCohort: fundedOperation.sizeCohort,
     assetId: fundedOperation.assetId,
     action: "EXECUTE",
-    quantityAtoms: 900_000n,
-    notionalAtoms: 900_000n,
-    feeAtoms: 9_000n,
-    marginAtoms: 400_000n,
-    recoveryAtoms: 90_000n,
+    operationId: fundedOperation.operationId,
+    sourceAccountCommitment: fundedOperation.sourceAccountCommitment,
+    destinationAccountCommitment: fundedOperation.destinationAccountCommitment,
+    unsignedPayloadHash: fundedOperation.unsignedPayloadHash,
+    principalAtoms: 800_000n,
+    networkFeeAtoms: 800n,
+    protocolFeeAtoms: 8_000n,
+    slippageAtoms: 18_000n,
+    marginAtoms: 300_000n,
+    recoveryAtoms: 80_000n,
+    lossAtoms: 30_000n,
     nowUnit: "EVM_UNIX_SECONDS",
     nowValue: 150n,
     runtimeCodeHash: fundedOperation.runtimeCodeHash,
     configurationManifestHash: fundedOperation.configurationManifestHash,
     authorityInventoryHash: fundedOperation.authorityInventoryHash,
-    evidenceCommitments: input.evidence.map((item) => item.commitment),
+    evidence: input.evidence,
     expectedFundedOperationManifestHash: fundedOperationManifestHash(fundedOperation),
     expectedReadinessDecisionHash: readinessDecisionHash(input),
   };
@@ -161,9 +253,17 @@ test("readiness gate rejects an expired funded operation", () => {
   rejected(() => gate(input).authorize({ ...scope(input), nowValue: 200n }), /currently valid/i);
 });
 
-test("readiness gate rejects quantity, fee, margin, and recovery cap excess", () => {
+test("readiness gate rejects a separate network-fee budget excess", () => {
   const input = decision();
-  rejected(() => gate(input).authorize({ ...scope(input), notionalAtoms: 1_000_001n }), /exceeds/i);
+  rejected(() => gate(input).authorize({ ...scope(input), networkFeeAtoms: 901n }), /exceeds/i);
+});
+
+test("readiness gate rejects an exact evidence record mismatch", () => {
+  const input = decision();
+  const changed = input.evidence.map((item, index) => index === 0
+    ? { ...item, signatureCommitment: hash(99) }
+    : item);
+  rejected(() => gate(input).authorize({ ...scope(input), evidence: changed }), /evidence records/i);
 });
 
 test("readiness gate rejects manifest and decision hash mismatch", () => {
