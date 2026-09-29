@@ -23,6 +23,10 @@ Workspace-local unit tests stay in their own workspace:
 
 Only what crosses a workspace boundary belongs here.
 
+## Phase 10 local demo
+
+`phase10-demo` runs the existing Solana, Base, and Arbitrum local lifecycle scenarios and emits one machine-readable evidence report. It is a thin orchestrator and does not replace workspace-local tests.
+
 ## Rules
 
 - Every scenario is reproducible from a documented command without a mainnet signer and without real funds.

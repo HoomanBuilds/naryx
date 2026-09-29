@@ -1,0 +1,15 @@
+{
+  "name": "phase10-demo",
+  "version": "1.0.0",
+  "description": "Reproducible local-only Naryx Phase 10 evidence runner",
+  "main": "src/run-demo.js",
+  "scripts": {
+    "demo": "node src/run-demo.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module"
+}
