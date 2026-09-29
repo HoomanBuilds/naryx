@@ -338,3 +338,4 @@ export {
   type SolverAtomicQuoteResponse,
   type VerifiedSolverAtomicQuote,
 } from "./solver-quote-client.js";
+export { EvidenceStoreError, SqliteEvidenceStore, type ExecutionQualitySummary, type StoredOrder, type StoredOutcome } from "./evidence-store.js";

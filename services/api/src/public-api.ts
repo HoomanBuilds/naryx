@@ -36,6 +36,7 @@ import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.j
 import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
+import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
@@ -73,6 +74,8 @@ export interface PublicApiOptions {
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "nonceSeen" | "storeEnvelopes" | "getEnvelope" | "createAuction" | "auctionView" | "auctionDefinition">;
   /** Encryption suites a reviewed release has pinned; with none, private RFQ fails closed. */
   readonly pinnedSuiteIds?: readonly string[];
+  /** Optional: order intake, order and receipt reads, and execution analytics answer 503 without it. */
+  readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -193,6 +196,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return limiter(clientKey(request.socket.remoteAddress));
   }
 
+  function requireEvidence(): NonNullable<PublicApiOptions["evidence"]> {
+    if (options.evidence === undefined) throw new RequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
+    return options.evidence;
+  }
+
   function requireRegistry(): PublicRegistryStore {
     if (registry === undefined) throw new RequestError(503, "REGISTRY_UNAVAILABLE", "No registry is configured on this server.");
     return registry;
@@ -233,6 +241,45 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === "/v1/domains") {
       onlyParams(url, []);
       return { domains: requireRegistry().list("DOMAIN") };
+    }
+    if ((match = /^\/v1\/orders\/([^/]+)$/.exec(path)) !== null && match[1] !== "validate") {
+      onlyParams(url, []);
+      const hash = match[1] as string;
+      if (!HASH_HEX.test(hash)) throw new RequestError(400, "INVALID_REQUEST", "Order hash must be 64 lowercase hex characters.");
+      const store = requireEvidence();
+      const stored = store.getOrder(hash);
+      const outcome = store.getOutcome(hash);
+      if (stored === undefined && outcome === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "No such order.");
+      return {
+        orderHash: hash,
+        ...(stored === undefined ? {} : { order: stored.order, owner: stored.owner, authorizationSignature: stored.signature, receivedAtMs: stored.receivedAtMs }),
+        // Open means no terminal outcome is recorded yet; it is not a claim about execution.
+        status: outcome?.terminalState ?? "OPEN",
+        ...(outcome === undefined ? {} : { outcomeHash: outcome.outcomeHashHex, ...(outcome.receiptHashHex === undefined ? {} : { receiptHash: outcome.receiptHashHex }) }),
+      };
+    }
+    if ((match = /^\/v1\/receipts\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const hash = match[1] as string;
+      if (!HASH_HEX.test(hash)) throw new RequestError(400, "INVALID_REQUEST", "Order hash must be 64 lowercase hex characters.");
+      const outcome = requireEvidence().getOutcome(hash);
+      if (outcome === undefined) throw new RequestError(404, "OUTCOME_NOT_FOUND", "No terminal outcome is recorded for this order.");
+      // Every record is served with its hash so a client can recompute and link them itself.
+      return {
+        orderHash: hash,
+        terminalState: outcome.terminalState,
+        evidenceManifest: outcome.evidenceManifest,
+        evidenceManifestHash: outcome.evidenceManifestHashHex,
+        outcome: outcome.outcome,
+        outcomeHash: outcome.outcomeHashHex,
+        ...(outcome.receipt === undefined ? {} : { receipt: outcome.receipt, receiptHash: outcome.receiptHashHex }),
+        recordedAtMs: outcome.recordedAtMs,
+      };
+    }
+    if (path === "/v1/analytics/execution-quality") {
+      onlyParams(url, ["solverId"]);
+      const solverId = url.searchParams.get("solverId");
+      return requireEvidence().executionQuality(solverId === null ? {} : { solverId: id(solverId, "Solver id") });
     }
     if (path === "/v1/instruments") {
       onlyParams(url, []);
@@ -470,10 +517,20 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/de-risk/validate",
       "/v1/rfqs/private",
       "/v1/auctions/sealed",
+      "/v1/orders",
     ].includes(path)) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (path === "/v1/orders") {
+      // Intake only: the order is validated and its owner's signature over the exact canonical
+      // bytes is verified. Nothing is quoted, reserved, signed, or submitted to any network here.
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519") throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Only ED25519 order authorization is accepted here.");
+      const order = object(body.order, "order") as unknown as PackageOrderInput;
+      const result = requireEvidence().submitOrder(order, authorization.signature as string);
+      return { ...result, status: "ACCEPTED_FOR_QUOTING" };
+    }
     if (path === "/v1/orders/validate") {
       try {
         const order = validatePackageOrderProfile(body.order as PackageOrderInput);
@@ -585,6 +642,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PackageExchangeStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
         if (error instanceof RegistryStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
         if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
+        if (error instanceof EvidenceStoreError) {
+          const status = ["INVALID_ORDER", "INVALID_SIGNATURE", "UNSUPPORTED_AUTHORIZATION"].includes(error.code) ? 400 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });
     return true;

@@ -27,7 +27,8 @@ import { verifyEd25519 } from "./ed25519.js";
 import { PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
-import { createRateLimiter } from "./rate-limit.js";
+import { clientKey, createRateLimiter } from "./rate-limit.js";
+import type { SqliteEvidenceStore } from "./evidence-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 
 const MAX_BODY_BYTES = 65_536;
@@ -42,6 +43,8 @@ export interface SolverApiOptions {
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidity" | "cancelEntry">;
+  /** Optional: the open order feed answers 503 without it. */
+  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders">;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -333,6 +336,17 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       requireExchange().cancelEntry(classId, body.entryId, solverId);
       return { cancelled: true };
     }
+    if (method === "GET" && path === "/v1/solver/orders") {
+      // Signed public orders without a terminal outcome, oldest first, paged by cursor.
+      if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
+      const after = url.searchParams.get("after") ?? "0";
+      if (!/^(0|[1-9]\d{0,15})$/.test(after)) throw new SolverRequestError(400, "INVALID_REQUEST", "after must be a non-negative cursor.");
+      const orders = options.evidence.openOrders(Number(after), 100);
+      return {
+        orders: orders.map((entry) => ({ cursor: entry.cursor, orderHash: entry.orderHashHex, order: entry.order, receivedAtMs: entry.receivedAtMs })),
+        nextCursor: orders.length === 0 ? Number(after) : (orders[orders.length - 1] as { cursor: number }).cursor,
+      };
+    }
     if (method === "GET" && path === "/v1/solver/private-rfqs") {
       const pending = requireDelivery().pendingFor(solverId, clockMs());
       return { envelopes: pending.map((entry) => ({ envelopeHash: entry.envelopeHashHex, envelope: entry.envelope, ciphertext: entry.ciphertext })) };
@@ -381,7 +395,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   return (request: IncomingMessage, response: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://solver-api.local");
     if (!url.pathname.startsWith("/v1/solver/")) return false;
-    if (limited(request.socket.remoteAddress ?? "unknown")) {
+    if (limited(clientKey(request.socket.remoteAddress))) {
       send(response, 429, { error: { code: "RATE_LIMITED", message: "Too many requests." } });
       return true;
     }

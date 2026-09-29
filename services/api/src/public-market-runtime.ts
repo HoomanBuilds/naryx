@@ -12,6 +12,7 @@ import { SqliteRegistryStore } from "./registry-store.js";
 import { createSolverApiHandler } from "./solver-api.js";
 import { SqliteSolverApiStore } from "./solver-api-store.js";
 import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
+import { SqliteEvidenceStore } from "./evidence-store.js";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
 const DEFAULT_REQUESTS_PER_MINUTE = 120;
@@ -155,6 +156,9 @@ export function loadPublicMarketRuntime(
     }
     const delivery = deliveryPath === undefined ? undefined : new SqlitePrivateDeliveryStore(absolute(deliveryPath, "NARYX_PRIVATE_DELIVERY_DB"));
     if (delivery !== undefined) opened.push(delivery);
+    const evidencePath = optional(environment.NARYX_EVIDENCE_DB);
+    const evidence = evidencePath === undefined ? undefined : new SqliteEvidenceStore(absolute(evidencePath, "NARYX_EVIDENCE_DB"));
+    if (evidence !== undefined) opened.push(evidence);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -165,13 +169,23 @@ export function loadPublicMarketRuntime(
       ...(registry === undefined ? {} : { registry }),
       ...(solverState === undefined ? {} : { solverState }),
       ...(delivery === undefined ? {} : { delivery, pinnedSuiteIds }),
+      ...(evidence === undefined ? {} : { evidence }),
       nowValue,
       rateLimit,
       clockMs,
     });
     const solverHandler = solverState === undefined || registry === undefined
       ? undefined
-      : createSolverApiHandler({ store: solverState, registry, exchange: store, ...(delivery === undefined ? {} : { delivery }), nowValue, clockMs, rateLimit });
+      : createSolverApiHandler({
+        store: solverState,
+        registry,
+        exchange: store,
+        ...(delivery === undefined ? {} : { delivery }),
+        ...(evidence === undefined ? {} : { evidence }),
+        nowValue,
+        clockMs,
+        rateLimit,
+      });
     return Object.freeze({
       handler: (request: IncomingMessage, response: ServerResponse) =>
         (solverHandler?.(request, response) ?? false) || publicHandler(request, response),
