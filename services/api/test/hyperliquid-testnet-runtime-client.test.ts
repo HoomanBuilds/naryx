@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { domainRef, parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import {
@@ -10,6 +13,7 @@ import {
   HyperliquidTestnetRuntimeClientError,
   createHyperliquidTestnetAttemptPreparationPort,
   createHyperliquidTestnetEvidenceRuntime,
+  loadHyperliquidTestnetRuntimeConfig,
   type HyperliquidTestnetAttemptPreparation,
 } from "../src/index.js";
 
@@ -151,4 +155,39 @@ test("Hyperliquid evidence runtime reports preparation without enabling submissi
     executionSubmissionAvailable: false,
     executionSubmissionReason: "SOLVER_EXECUTOR_BOUNDARY_NOT_AVAILABLE",
   });
+});
+
+test("Hyperliquid runtime config requires exact Testnet identities", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-config-"));
+  const path = join(scratch, "runtime.json");
+  const options = preparationOptions();
+  const config = {
+    version: 1,
+    environment: "TESTNET",
+    domain: {
+      domainId: options.domain.domainId,
+      domainManifestVersion: options.domain.domainManifestVersion,
+      domainManifestHash: "11".repeat(32),
+    },
+    solverId: options.solverId,
+    solverVerificationKey: options.solverVerificationKey,
+    seriesManifestHash: options.seriesManifestHash,
+    executionClassManifestHash: options.executionClassManifestHash,
+    market: options.market,
+    bounds: options.bounds,
+  };
+  try {
+    writeFileSync(path, stringifyProtocolJson(config, "test.runtimeConfig"));
+    const loaded = loadHyperliquidTestnetRuntimeConfig(path);
+    assert.equal(loaded.domain.domainId, "hypercore:testnet");
+    assert.deepEqual(loaded.market, options.market);
+
+    writeFileSync(path, stringifyProtocolJson({ ...config, environment: "MAINNET" }, "test.invalid"));
+    assert.throws(
+      () => loadHyperliquidTestnetRuntimeConfig(path),
+      errorCode("INVALID_CONFIGURATION"),
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

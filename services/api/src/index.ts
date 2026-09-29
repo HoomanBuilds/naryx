@@ -120,7 +120,9 @@ export {
 } from "./hyperliquid-testnet-terminal.js";
 export {
   DurableHyperliquidTestnetTerminalExecutionPort,
+  HttpHyperliquidTestnetAttemptExecutor,
   HyperliquidTestnetTerminalExecutionStateError,
+  type HyperliquidTestnetExecutorHttpOptions,
   type TrustedHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
 export {
@@ -130,6 +132,7 @@ export {
   HyperliquidTestnetRuntimeClientError,
   createHyperliquidTestnetAttemptPreparationPort,
   createHyperliquidTestnetEvidenceRuntime,
+  loadHyperliquidTestnetRuntimeConfig,
   type HyperliquidTestnetAttemptPreparation,
   type HyperliquidTestnetAttemptPreparationOptions,
   type HyperliquidTestnetEvidenceHttpOptions,
@@ -139,6 +142,7 @@ export {
   type HyperliquidTestnetMarketMetadata,
   type HyperliquidTestnetMarketLegMetadata,
   type HyperliquidTestnetPreparationPort,
+  type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 export {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,

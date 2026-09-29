@@ -58,6 +58,10 @@ import {
 } from "./solver-quote-client.js";
 import type { PrivateTerminalRuntimeHealth } from "./runtime-composition.js";
 import type { SolanaLocalExecutionService } from "./solana-local-execution.js";
+import {
+  HyperliquidTestnetRuntimeClientError,
+  type HyperliquidTestnetPreparationPort,
+} from "./hyperliquid-testnet-runtime-client.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -189,6 +193,7 @@ export function createPrivateTerminalRequestHandler(
   runtimeHealth?: PrivateTerminalRuntimeHealth,
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
   solanaLocalExecution?: SolanaLocalExecutionService,
+  hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -279,6 +284,41 @@ export function createPrivateTerminalRequestHandler(
         });
       } catch {
         reject(response, 502, "ATTEMPT_RETRIEVAL_FAILED", "Selected attempt retrieval failed closed.");
+      }
+      return;
+    }
+
+    const hyperliquidAttemptMatch = url.search === ""
+      ? /^\/internal\/solver\/hyperliquid-testnet\/attempts\/([A-Za-z0-9_-]{16,64})$/.exec(url.pathname)
+      : null;
+    if (hyperliquidAttemptMatch !== null) {
+      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+        reject(response, 403, "LOOPBACK_REQUIRED", "Hyperliquid attempt access is loopback-only.");
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (hyperliquidTestnetPreparationPort === undefined) {
+        reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Hyperliquid attempt retrieval is unavailable.");
+        return;
+      }
+      const attemptId = hyperliquidAttemptMatch[1] as string;
+      try {
+        const attempt = hyperliquidTestnetPreparationPort.prepare(attemptId);
+        sendJson(response, 200, {
+          version: 1,
+          attempt: toProtocolJson(attempt, "hyperliquidTestnet.attempt"),
+        });
+      } catch (error) {
+        if (error instanceof HyperliquidTestnetRuntimeClientError
+          && error.code === "ATTEMPT_NOT_FOUND") {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Hyperliquid attempt was not found.");
+          return;
+        }
+        reject(response, 502, "ATTEMPT_RETRIEVAL_FAILED", "Hyperliquid attempt retrieval failed closed.");
       }
       return;
     }
@@ -911,6 +951,7 @@ export function createPrivateTerminalServer(
   runtimeHealth?: PrivateTerminalRuntimeHealth,
   localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
   solanaLocalExecution?: SolanaLocalExecutionService,
+  hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -925,6 +966,7 @@ export function createPrivateTerminalServer(
     runtimeHealth,
     localAtomicRuntimeMode,
     solanaLocalExecution,
+    hyperliquidTestnetPreparationPort,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {

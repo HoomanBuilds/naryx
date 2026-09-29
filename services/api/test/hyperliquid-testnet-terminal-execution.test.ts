@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import {
   DurableHyperliquidTestnetTerminalExecutionPort,
+  HttpHyperliquidTestnetAttemptExecutor,
   HyperliquidTestnetTerminalExecutionStateError,
   type HyperliquidTestnetTerminalExecutionRequest,
   type HyperliquidTestnetTerminalExecutionResult,
@@ -46,6 +50,36 @@ function stateError(code: HyperliquidTestnetTerminalExecutionStateError["code"])
   return (error) => error instanceof HyperliquidTestnetTerminalExecutionStateError &&
     error.code === code;
 }
+
+test("Hyperliquid executor client calls only the strict loopback executor boundary", async (context) => {
+  let received: unknown;
+  const server = createServer(async (request, response) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/internal/solver/hyperliquid-testnet/execute");
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received = parseProtocolJson(Buffer.concat(chunks).toString("utf8"), "test.executorRequest");
+    response.setHeader("content-type", "application/json; charset=utf-8");
+    response.end(stringifyProtocolJson(result(REQUEST), "test.executorResult"));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  context.after(() => server.close());
+  const port = (server.address() as AddressInfo).port;
+  const client = new HttpHyperliquidTestnetAttemptExecutor({
+    executorOrigin: `http://127.0.0.1:${port}`,
+  });
+  assert.deepEqual(await client.executeAttempt(REQUEST), result(REQUEST));
+  assert.deepEqual(received, REQUEST);
+  assert.throws(
+    () => new HttpHyperliquidTestnetAttemptExecutor({
+      executorOrigin: "https://solver.example.com",
+    }),
+    /loopback HTTP origin/,
+  );
+});
 
 test("durable Hyperliquid terminal execution replays one stored result across restart", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-"));

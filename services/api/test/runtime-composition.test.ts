@@ -113,6 +113,7 @@ test("runtime composition fails closed when external prerequisites are absent or
     solanaDevnet: () => ({ preparation: solanaPorts.preparation! }),
     evmTestnet: () => ({ preparation: evmPorts.preparation! }),
     hyperliquidTestnet: () => ({}) as HyperliquidTestnetTerminalExecutionPort,
+    hyperliquidTestnetEvidence: () => ({}) as HyperliquidTestnetEvidenceRuntime,
   });
   for (const boundary of Object.values(incomplete.health)) {
     assert.deepEqual(boundary, { available: false, reason: "REQUIRED_PORTS_MISSING" });
@@ -122,6 +123,7 @@ test("runtime composition fails closed when external prerequisites are absent or
     solanaDevnet: () => { throw new Error("missing manifest"); },
     evmTestnet: () => { throw new Error("missing deployment"); },
     hyperliquidTestnet: () => { throw new Error("missing signer"); },
+    hyperliquidTestnetEvidence: () => { throw new Error("missing evidence runtime"); },
   });
   for (const boundary of Object.values(failed.health)) {
     assert.deepEqual(boundary, { available: false, reason: "RUNTIME_INITIALIZATION_FAILED" });

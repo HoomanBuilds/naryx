@@ -149,28 +149,21 @@ export function composePrivateTerminalRuntime(
   let hyperliquidTestnetEvidence: HyperliquidTestnetEvidenceRuntime | undefined;
   let hyperliquidHealth = health(false, "DISABLED_BY_CONFIGURATION");
   if (hyperliquidEnabled) {
-    if (factories.hyperliquidTestnetEvidence !== undefined) {
-      try {
-        const candidate = factories.hyperliquidTestnetEvidence();
-        if (typeof candidate?.preparation?.prepare === "function"
-          && typeof candidate.evidence?.prepare === "function"
-          && typeof candidate.evidence.reconcile === "function"
-          && candidate.readiness.preparationAvailable === true
-          && candidate.readiness.evidenceReconciliationAvailable === true
-          && candidate.readiness.executionSubmissionAvailable === false) {
-          hyperliquidTestnetEvidence = candidate;
-        }
-      } catch {
-        hyperliquidTestnetEvidence = undefined;
-      }
-    }
-    if (factories.hyperliquidTestnet === undefined) {
+    if (factories.hyperliquidTestnet === undefined
+      || factories.hyperliquidTestnetEvidence === undefined) {
       hyperliquidHealth = health(false, "RUNTIME_FACTORY_NOT_INJECTED");
     } else {
       try {
-        const candidate = factories.hyperliquidTestnet();
-        if (typeof candidate?.execute === "function") {
-          hyperliquidTestnet = candidate;
+        const executionCandidate = factories.hyperliquidTestnet();
+        const evidenceCandidate = factories.hyperliquidTestnetEvidence();
+        if (typeof executionCandidate?.execute === "function"
+          && typeof evidenceCandidate?.preparation?.prepare === "function"
+          && typeof evidenceCandidate.evidence?.prepare === "function"
+          && typeof evidenceCandidate.evidence.reconcile === "function"
+          && evidenceCandidate.readiness.preparationAvailable === true
+          && evidenceCandidate.readiness.evidenceReconciliationAvailable === true) {
+          hyperliquidTestnet = executionCandidate;
+          hyperliquidTestnetEvidence = evidenceCandidate;
           hyperliquidHealth = health(true, null);
         } else {
           hyperliquidHealth = health(false, "REQUIRED_PORTS_MISSING");

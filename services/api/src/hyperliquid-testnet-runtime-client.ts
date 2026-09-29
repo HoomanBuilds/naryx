@@ -1,14 +1,16 @@
 import {
+  domainRef,
   fromProtocolJson,
   fromHex,
+  parseProtocolJson,
   stringifyProtocolJson,
   toHex,
   type DomainRef,
   type PackageAdmission,
-  type PackageOrder,
   type RoutePayload,
-  type SolverQuote,
 } from "@naryx/protocol-types";
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import { verifySolverAtomicQuoteResponse } from "./solver-quote-client.js";
@@ -19,7 +21,6 @@ export const HYPERLIQUID_TESTNET_RECONCILE_PATH =
   "/internal/solver/hyperliquid-testnet/reconcile";
 
 const HASH = /^[0-9a-f]{64}$/;
-const ADDRESS = /^0x[0-9a-f]{40}$/;
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 30_000;
@@ -102,6 +103,16 @@ export type HyperliquidTestnetEvidenceHttpOptions = Readonly<{
   solverOrigin: string;
   timeoutMs?: number;
   fetchImplementation?: typeof fetch;
+}>;
+
+export type HyperliquidTestnetRuntimeConfig = Readonly<{
+  domain: DomainRef;
+  seriesManifestHash: string;
+  executionClassManifestHash: string;
+  solverId: string;
+  solverVerificationKey: string;
+  market: HyperliquidTestnetMarketMetadata;
+  bounds: HyperliquidTestnetExecutionBounds;
 }>;
 
 export class HyperliquidTestnetRuntimeClientError extends Error {
@@ -238,6 +249,104 @@ function matchesLeg(
     && leg.market.subjectId === expected.marketId
     && leg.market.manifestVersion === expected.marketManifestVersion
     && toHex(leg.market.manifestHash) === expected.marketManifestHash;
+}
+
+function exactObject(value: unknown, keys: readonly string[], name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    fail("INVALID_CONFIGURATION", `${name} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || !actual.every((key, index) => key === expected[index])) {
+    fail("INVALID_CONFIGURATION", `${name} fields are invalid`);
+  }
+  return record;
+}
+
+export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTestnetRuntimeConfig {
+  if (!isAbsolute(path)) {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime config path must be absolute");
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseProtocolJson(
+      readFileSync(resolve(path), "utf8"),
+      "hyperliquidTestnet.runtimeConfig",
+    );
+  } catch {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime config is not strict protocol JSON");
+  }
+  const root = exactObject(parsed, [
+    "bounds", "domain", "environment", "executionClassManifestHash", "market",
+    "seriesManifestHash", "solverId", "solverVerificationKey", "version",
+  ], "runtime config");
+  if (root.version !== 1 || root.environment !== "TESTNET") {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime config must be version 1 TESTNET");
+  }
+  const domain = exactObject(
+    root.domain,
+    ["domainId", "domainManifestHash", "domainManifestVersion"],
+    "domain",
+  );
+  if (typeof domain.domainId !== "string" || typeof domain.domainManifestVersion !== "number"
+    || typeof domain.domainManifestHash !== "string") {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime domain is invalid");
+  }
+  let checkedDomain: DomainRef;
+  try {
+    checkedDomain = domainRef(
+      domain.domainId,
+      domain.domainManifestVersion,
+      domain.domainManifestHash,
+    );
+  } catch {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime domain is invalid");
+  }
+  domainBinding(checkedDomain);
+  if (typeof root.seriesManifestHash !== "string"
+    || typeof root.executionClassManifestHash !== "string"
+    || typeof root.solverId !== "string"
+    || typeof root.solverVerificationKey !== "string") {
+    fail("INVALID_CONFIGURATION", "Hyperliquid runtime identities are invalid");
+  }
+  if (root.solverId.length < 1 || root.solverId.length > 128) {
+    fail("INVALID_CONFIGURATION", "solver ID is invalid");
+  }
+  const market = exactObject(root.market, ["perpetual", "quoteTokenIndex", "spot"], "market");
+  const commonMarketFields = [
+    "adapterId", "adapterManifestHash", "adapterManifestVersion", "assetId", "marketId",
+    "marketManifestHash", "marketManifestVersion", "sizeDecimals", "venueId",
+    "venueManifestHash", "venueManifestVersion",
+  ];
+  const spot = exactObject(
+    market.spot,
+    [...commonMarketFields, "tokenIndex", "universeIndex"],
+    "market.spot",
+  );
+  const perpetual = exactObject(
+    market.perpetual,
+    [...commonMarketFields, "assetIndex"],
+    "market.perpetual",
+  );
+  const bounds = exactObject(
+    root.bounds,
+    ["maxEvidenceAgeMs", "maxFillPages", "maxSnapshotSkewMs"],
+    "bounds",
+  );
+  return Object.freeze({
+    domain: checkedDomain,
+    seriesManifestHash: checkedSolverKey(root.seriesManifestHash),
+    executionClassManifestHash: checkedSolverKey(root.executionClassManifestHash),
+    solverId: root.solverId,
+    solverVerificationKey: checkedSolverKey(root.solverVerificationKey),
+    market: marketMetadata({
+      spot,
+      perpetual,
+      quoteTokenIndex: market.quoteTokenIndex,
+    } as HyperliquidTestnetMarketMetadata),
+    bounds: executionBounds(bounds as HyperliquidTestnetExecutionBounds),
+  });
 }
 
 export function createHyperliquidTestnetAttemptPreparationPort(

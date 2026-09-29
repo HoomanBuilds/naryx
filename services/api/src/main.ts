@@ -6,7 +6,10 @@ import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
 import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
-import { composePrivateTerminalRuntime } from "./runtime-composition.js";
+import {
+  composePrivateTerminalRuntime,
+  type PrivateTerminalRuntimeFactories,
+} from "./runtime-composition.js";
 import {
   createBaseSepoliaRuntime,
   createViemBaseSepoliaReadClient,
@@ -31,10 +34,24 @@ import {
   SolanaLocalExecutionService,
   SqliteSolanaLocalPreparedExecutionStore,
 } from "./solana-local-execution.js";
+import {
+  createHyperliquidTestnetEvidenceRuntime,
+  loadHyperliquidTestnetRuntimeConfig,
+} from "./hyperliquid-testnet-runtime-client.js";
+import {
+  DurableHyperliquidTestnetTerminalExecutionPort,
+  HttpHyperliquidTestnetAttemptExecutor,
+} from "./hyperliquid-testnet-terminal-execution.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
   return resolve(value);
+}
+
+function explicitlyEnabled(name: string): boolean {
+  const value = process.env[name] ?? "false";
+  if (value !== "true" && value !== "false") throw new Error(`${name} must be true or false.`);
+  return value === "true";
 }
 
 const config = loadPrivateTerminalServerConfig();
@@ -169,28 +186,98 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
     arbitrumRuntimeError = error;
   }
 }
-const runtime = composePrivateTerminalRuntime(process.env, solanaDevnetRuntime === undefined
-    && solanaDevnetRuntimeError === undefined
-    && baseRuntime === undefined && baseRuntimeError === undefined
-    && arbitrumRuntime === undefined && arbitrumRuntimeError === undefined
-  ? {}
-  : {
+const hyperliquidRuntimeEnabled = process.env.NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED === "true";
+const hyperliquidEvidenceEnabled = explicitlyEnabled(
+  "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED",
+);
+const hyperliquidExecutorClientEnabled = explicitlyEnabled(
+  "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED",
+);
+let hyperliquidEvidenceRuntime: ReturnType<typeof createHyperliquidTestnetEvidenceRuntime> | undefined;
+let hyperliquidEvidenceRuntimeError: unknown;
+if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
+  try {
+    if (process.env.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== "TESTNET") {
+      throw new Error("NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.");
+    }
+    const hyperliquidConfig = loadHyperliquidTestnetRuntimeConfig(absolutePath(
+      process.env.NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG ?? "",
+      "NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG",
+    ));
+    hyperliquidEvidenceRuntime = createHyperliquidTestnetEvidenceRuntime({
+      ...hyperliquidConfig,
+      intents: executionIntentStore,
+      orders: orderStore,
+      currentTimeMs: Date.now,
+    }, {
+      solverOrigin: process.env.NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ORIGIN ?? "",
+    });
+  } catch (error) {
+    hyperliquidEvidenceRuntimeError = error;
+  }
+}
+let hyperliquidExecutionRuntime: DurableHyperliquidTestnetTerminalExecutionPort | undefined;
+let hyperliquidExecutionRuntimeError: unknown;
+if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
+  try {
+    if (process.env.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== "TESTNET") {
+      throw new Error("NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.");
+    }
+    hyperliquidExecutionRuntime = new DurableHyperliquidTestnetTerminalExecutionPort(
+      absolutePath(
+        process.env.NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB ?? "",
+        "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB",
+      ),
+      new HttpHyperliquidTestnetAttemptExecutor({
+        executorOrigin: process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? "",
+      }),
+    );
+  } catch (error) {
+    hyperliquidExecutionRuntimeError = error;
+  }
+}
+const factories: PrivateTerminalRuntimeFactories = {
+      ...(solanaDevnetRuntime !== undefined || solanaDevnetRuntimeError !== undefined ? {
       solanaDevnet: () => {
         if (solanaDevnetRuntimeError !== undefined) throw solanaDevnetRuntimeError;
         if (solanaDevnetRuntime === undefined) throw new Error("Solana Devnet runtime is unavailable.");
         return solanaDevnetRuntime;
       },
+      } : {}),
+      ...(baseRuntime !== undefined || baseRuntimeError !== undefined ? {
       evmTestnet: () => {
         if (baseRuntimeError !== undefined) throw baseRuntimeError;
         if (baseRuntime === undefined) throw new Error("Base Sepolia runtime is unavailable.");
         return baseRuntime;
       },
+      } : {}),
+      ...(arbitrumRuntime !== undefined || arbitrumRuntimeError !== undefined ? {
       arbitrumTestnetAsync: () => {
         if (arbitrumRuntimeError !== undefined) throw arbitrumRuntimeError;
         if (arbitrumRuntime === undefined) throw new Error("Arbitrum Sepolia runtime is unavailable.");
         return arbitrumRuntime;
       },
-    });
+      } : {}),
+      ...(hyperliquidEvidenceEnabled ? {
+        hyperliquidTestnetEvidence: () => {
+          if (hyperliquidEvidenceRuntimeError !== undefined) throw hyperliquidEvidenceRuntimeError;
+          if (hyperliquidEvidenceRuntime === undefined) {
+            throw new Error("Hyperliquid Testnet evidence runtime is unavailable.");
+          }
+          return hyperliquidEvidenceRuntime;
+        },
+      } : {}),
+      ...(hyperliquidExecutorClientEnabled ? {
+        hyperliquidTestnet: () => {
+          if (hyperliquidExecutionRuntimeError !== undefined) throw hyperliquidExecutionRuntimeError;
+          if (hyperliquidExecutionRuntime === undefined) {
+            throw new Error("Hyperliquid Testnet executor client is unavailable.");
+          }
+          return hyperliquidExecutionRuntime;
+        },
+      } : {}),
+    };
+const runtime = composePrivateTerminalRuntime(process.env, factories);
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -204,6 +291,7 @@ const server = createPrivateTerminalServer(
   runtime.health,
   manifestRuntime === undefined ? "PHASE4_FIXTURE" : "MANIFEST_VALIDATED",
   solanaLocalExecution,
+  runtime.hyperliquidTestnetEvidence?.preparation,
 );
 
 function shutdown(): void {
@@ -212,6 +300,7 @@ function shutdown(): void {
     lifecycleStore.close();
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
+    hyperliquidExecutionRuntime?.close();
     process.exitCode = 0;
   });
 }

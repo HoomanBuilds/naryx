@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import {
   validateHyperliquidTestnetTerminalExecutionResult,
   type HyperliquidTestnetTerminalExecutionPort,
@@ -10,6 +11,10 @@ import {
 } from "./hyperliquid-testnet-terminal.js";
 
 const SCHEMA_VERSION = 1;
+const EXECUTOR_PATH = "/internal/solver/hyperliquid-testnet/execute";
+const MAX_RESPONSE_BYTES = 65_536;
+const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_TIMEOUT_MS = 30_000;
 let cachedRepositoryRoot: string | undefined;
 
 type StoredExecutionRow = Readonly<{
@@ -23,6 +28,12 @@ export interface TrustedHyperliquidTestnetAttemptExecutor {
     request: HyperliquidTestnetTerminalExecutionRequest,
   ): Promise<HyperliquidTestnetTerminalExecutionResult>;
 }
+
+export type HyperliquidTestnetExecutorHttpOptions = Readonly<{
+  executorOrigin: string;
+  timeoutMs?: number;
+  fetchImplementation?: typeof fetch;
+}>;
 
 export class HyperliquidTestnetTerminalExecutionStateError extends Error {
   readonly code: "IDEMPOTENCY_CONFLICT" | "EXECUTION_OUTCOME_UNCERTAIN" | "STORE_CORRUPT";
@@ -65,6 +76,113 @@ function uncertain(): HyperliquidTestnetTerminalExecutionStateError {
     "EXECUTION_OUTCOME_UNCERTAIN",
     "Hyperliquid Testnet execution outcome is uncertain and must not be resubmitted.",
   );
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  if (hostname === "localhost" || hostname === "::1" || hostname === "[::1]") return true;
+  const octets = hostname.split(".");
+  return octets.length === 4 && octets[0] === "127" && octets.every((octet) => {
+    if (!/^\d{1,3}$/.test(octet)) return false;
+    const parsed = Number(octet);
+    return parsed >= 0 && parsed <= 255;
+  });
+}
+
+function executorOrigin(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Hyperliquid executor origin must be an absolute URL.");
+  }
+  if (url.protocol !== "http:" || !isLoopbackHostname(url.hostname)
+    || url.username !== "" || url.password !== "" || url.pathname !== "/"
+    || url.search !== "" || url.hash !== "") {
+    throw new Error("Hyperliquid executor origin must be a loopback HTTP origin.");
+  }
+  return url.origin;
+}
+
+function executorTimeout(value: number | undefined): number {
+  const checked = value ?? DEFAULT_TIMEOUT_MS;
+  if (!Number.isSafeInteger(checked) || checked < 1 || checked > MAX_TIMEOUT_MS) {
+    throw new Error("Hyperliquid executor timeout must be a bounded positive integer.");
+  }
+  return checked;
+}
+
+async function boundedProtocolJson(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+  const statedLength = response.headers.get("content-length");
+  if (contentType !== "application/json" || response.body === null
+    || (statedLength !== null && (!/^\d+$/.test(statedLength)
+      || Number(statedLength) > MAX_RESPONSE_BYTES))) {
+    throw new Error("Hyperliquid executor response is invalid.");
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  for (;;) {
+    const item = await reader.read();
+    if (item.done) break;
+    length += item.value.length;
+    if (length > MAX_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("Hyperliquid executor response is too large.");
+    }
+    chunks.push(item.value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  try {
+    return parseProtocolJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      "hyperliquidTestnet.executorResponse",
+    );
+  } catch {
+    throw new Error("Hyperliquid executor response is malformed.");
+  }
+}
+
+export class HttpHyperliquidTestnetAttemptExecutor
+implements TrustedHyperliquidTestnetAttemptExecutor {
+  readonly #origin: string;
+  readonly #timeoutMs: number;
+  readonly #fetch: typeof fetch;
+
+  constructor(options: HyperliquidTestnetExecutorHttpOptions) {
+    this.#origin = executorOrigin(options.executorOrigin);
+    this.#timeoutMs = executorTimeout(options.timeoutMs);
+    this.#fetch = options.fetchImplementation ?? fetch;
+  }
+
+  async executeAttempt(
+    request: HyperliquidTestnetTerminalExecutionRequest,
+  ): Promise<HyperliquidTestnetTerminalExecutionResult> {
+    let response: Response;
+    try {
+      response = await this.#fetch(`${this.#origin}${EXECUTOR_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: stringifyProtocolJson(request, "hyperliquidTestnet.executorRequest"),
+        redirect: "error",
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch {
+      throw new Error("Hyperliquid executor request failed.");
+    }
+    if (!response.ok) {
+      throw new Error(`Hyperliquid executor request failed with HTTP ${response.status}.`);
+    }
+    return validateHyperliquidTestnetTerminalExecutionResult(
+      await boundedProtocolJson(response),
+      request,
+    );
+  }
 }
 
 export class DurableHyperliquidTestnetTerminalExecutionPort
