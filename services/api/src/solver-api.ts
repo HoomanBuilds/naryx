@@ -27,6 +27,7 @@ import { verifyEd25519 } from "./ed25519.js";
 import { PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
+import { createRateLimiter } from "./rate-limit.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 
 const MAX_BODY_BYTES = 65_536;
@@ -126,25 +127,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   const clockMs = options.clockMs ?? Date.now;
   const maxSkew = options.maxClockSkewMs ?? 30_000;
   const { windowMs, maxRequests } = options.rateLimit;
-  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || !Number.isSafeInteger(maxRequests) || maxRequests < 1) {
-    throw new Error("Solver API rate limit must be positive.");
-  }
-  const windows = new Map<string, { start: number; count: number }>();
-
-  function limited(key: string): boolean {
-    const now = clockMs();
-    const window = windows.get(key);
-    if (window === undefined || now - window.start >= windowMs) {
-      if (window === undefined && windows.size >= 10_000) {
-        for (const [entryKey, entry] of windows) if (now - entry.start >= windowMs) windows.delete(entryKey);
-        if (windows.size >= 10_000) return true;
-      }
-      windows.set(key, { start: now, count: 1 });
-      return false;
-    }
-    window.count += 1;
-    return window.count > maxRequests;
-  }
+  const limited = createRateLimiter({ windowMs, maxRequests, clockMs });
 
   function manifestOf(solverId: string): SolverCapabilityManifestInput {
     const entry = registry.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);

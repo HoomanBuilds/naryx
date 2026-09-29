@@ -9,6 +9,7 @@ import {
   verifyPackageAllocation,
 } from "@naryx/protocol-types";
 import { PackageExchangeStoreError, SqlitePackageExchangeStore } from "../src/index.js";
+import { MAX_ENTRIES_PER_PARTICIPANT } from "../src/package-exchange-store.js";
 import {
   CLASS,
   CLASS_SUPPORT,
@@ -137,4 +138,20 @@ test("database paths must be absolute and outside the repository", () => {
   assert.throws(() => new SqlitePackageExchangeStore(":memory:", options), { code: "INVALID_PATH" });
   assert.throws(() => new SqlitePackageExchangeStore("relative.sqlite", options), { code: "INVALID_PATH" });
   assert.throws(() => new SqlitePackageExchangeStore(join(process.cwd(), "exchange.sqlite"), options), { code: "INVALID_PATH" });
+});
+
+test("one participant cannot grow a book past its entry cap, but can always cancel", () => {
+  withStore((store) => {
+    registerAll(store);
+    const resting = (n: number) => order(n, { participantId: "flooder", commonControlGroupId: "flood", limitPriceTicks: 100n + BigInt(n) });
+    for (let n = 1; n <= MAX_ENTRIES_PER_PARTICIPANT; n += 1) {
+      const result = store.submitOrder(CLASS, resting(n), NOW);
+      assert.equal(result.accepted, true);
+    }
+    assert.throws(() => store.submitOrder(CLASS, resting(MAX_ENTRIES_PER_PARTICIPANT + 1), NOW), { code: "PARTICIPANT_BOOK_LIMIT" });
+    assert.equal(store.getBook(CLASS)?.entries.length, MAX_ENTRIES_PER_PARTICIPANT);
+    store.cancelEntry(CLASS, id(1), "flooder");
+    assert.equal(store.getBook(CLASS)?.entries.length, MAX_ENTRIES_PER_PARTICIPANT - 1);
+    assert.equal(store.submitOrder(CLASS, order(9_999, { limitPriceTicks: 100n }), NOW).accepted, true);
+  });
 });

@@ -83,6 +83,10 @@ export interface PackageExchangeStoreOptions {
   readonly clock?: () => number;
 }
 
+/** Resting entries one package book may hold, and one participant within it. */
+export const MAX_BOOK_ENTRIES = 2_000;
+export const MAX_ENTRIES_PER_PARTICIPANT = 250;
+
 export class PackageExchangeStoreError extends Error {
   readonly code: string;
 
@@ -695,7 +699,7 @@ export class SqlitePackageExchangeStore {
       )
       .get(executionClassId) as DocumentRow | undefined;
     if (row === undefined) {
-      throw new PackageExchangeStoreError("UNKNOWN_BOOK", "No package book is open for this execution class.");
+      throw new PackageExchangeStoreError("BOOK_NOT_FOUND", "No package book is open for this execution class.");
     }
     const policy = this.policyForClass(this.loadExecutionClass(row));
     return { policy, book: this.loadBookWith(policy, executionClassId) };
@@ -731,16 +735,52 @@ export class SqlitePackageExchangeStore {
     );
   }
 
+  /**
+   * Writes a book state incrementally: only added, changed, or removed entries touch storage. A
+   * mutation that grows the book or one participant past its cap is refused inside the caller's
+   * transaction, while cancels and fills are always allowed.
+   */
   private writeBook(state: PackageBookState): void {
     const classId = state.executionClassId;
+    const stored = new Map<string, string>(
+      (this.db.prepare("SELECT entry_id, entry_json FROM package_book_entries WHERE execution_class_id = ?").all(classId) as {
+        entry_id: Uint8Array;
+        entry_json: string;
+      }[]).map((row) => [toHex(row.entry_id), row.entry_json]),
+    );
+    const participants = (entries: Iterable<{ participantId: string }>) => {
+      const counts = new Map<string, number>();
+      for (const entry of entries) counts.set(entry.participantId, (counts.get(entry.participantId) ?? 0) + 1);
+      return counts;
+    };
+    const before = participants([...stored.values()].map((json) => ({ participantId: String((JSON.parse(json) as { participantId?: unknown }).participantId) })));
+    const after = participants(state.entries);
+    if (state.entries.length > MAX_BOOK_ENTRIES && state.entries.length > stored.size) {
+      throw new PackageExchangeStoreError("BOOK_FULL", `A package book holds at most ${MAX_BOOK_ENTRIES} entries.`);
+    }
+    for (const [participantId, count] of after) {
+      if (count > MAX_ENTRIES_PER_PARTICIPANT && count > (before.get(participantId) ?? 0)) {
+        throw new PackageExchangeStoreError("PARTICIPANT_BOOK_LIMIT", `One participant may hold at most ${MAX_ENTRIES_PER_PARTICIPANT} entries in a book.`);
+      }
+    }
     this.db
       .prepare("UPDATE package_books SET halted = ?, next_sequence = ? WHERE execution_class_id = ?")
       .run(state.halted ? 1 : 0, sequenceText(state.nextSequence), classId);
-    this.db.prepare("DELETE FROM package_book_entries WHERE execution_class_id = ?").run(classId);
     const insert = this.db.prepare(
       "INSERT INTO package_book_entries (entry_id, execution_class_id, entry_json) VALUES (?, ?, ?)",
     );
-    for (const entry of state.entries) insert.run(entry.entryId, classId, stringifyProtocolJson(entry));
+    const update = this.db.prepare("UPDATE package_book_entries SET entry_json = ? WHERE entry_id = ? AND execution_class_id = ?");
+    const remove = this.db.prepare("DELETE FROM package_book_entries WHERE entry_id = ? AND execution_class_id = ?");
+    const kept = new Set<string>();
+    for (const entry of state.entries) {
+      const key = toHex(entry.entryId);
+      const json = stringifyProtocolJson(entry);
+      kept.add(key);
+      const previous = stored.get(key);
+      if (previous === undefined) insert.run(entry.entryId, classId, json);
+      else if (previous !== json) update.run(json, entry.entryId, classId);
+    }
+    for (const key of stored.keys()) if (!kept.has(key)) remove.run(Buffer.from(key, "hex"), classId);
   }
 
   private decodeAllocation(executionClassId: string, json: unknown): PackageAllocation {

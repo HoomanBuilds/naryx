@@ -35,6 +35,7 @@ import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeSto
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
+import { clientKey, createRateLimiter } from "./rate-limit.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
@@ -90,12 +91,20 @@ class RequestError extends Error {
 }
 
 function send(response: ServerResponse, status: number, body: unknown): void {
+  // A response that cannot be encoded is a server fault, never the caller's bad request.
+  let text: string;
+  try {
+    text = JSON.stringify(toProtocolJson(body));
+  } catch {
+    status = 500;
+    text = JSON.stringify({ error: { code: "INTERNAL_ERROR", message: "The response could not be encoded." } });
+  }
   response.statusCode = status;
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Access-Control-Allow-Origin", "*");
-  response.end(JSON.stringify(toProtocolJson(body)));
+  response.end(text);
 }
 
 function fail(response: ServerResponse, status: number, code: string, message: string): void {
@@ -177,26 +186,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   const { exchange, registry, solverState, delivery, nowValue } = options;
   const pinnedSuiteIds = options.pinnedSuiteIds ?? [];
   const { windowMs, maxRequests } = options.rateLimit;
-  if (!Number.isSafeInteger(windowMs) || windowMs < 1 || !Number.isSafeInteger(maxRequests) || maxRequests < 1) {
-    throw new Error("Public API rate limit must be positive.");
-  }
   const clockMs = options.clockMs ?? Date.now;
-  const windows = new Map<string, { start: number; count: number }>();
+  const limiter = createRateLimiter({ windowMs, maxRequests, clockMs });
 
   function limited(request: IncomingMessage): boolean {
-    const key = request.socket.remoteAddress ?? "unknown";
-    const now = clockMs();
-    const window = windows.get(key);
-    if (window === undefined || now - window.start >= windowMs) {
-      if (window === undefined && windows.size >= 10_000) {
-        for (const [entryKey, entry] of windows) if (now - entry.start >= windowMs) windows.delete(entryKey);
-        if (windows.size >= 10_000) return true;
-      }
-      windows.set(key, { start: now, count: 1 });
-      return false;
-    }
-    window.count += 1;
-    return window.count > maxRequests;
+    return limiter(clientKey(request.socket.remoteAddress));
   }
 
   function requireRegistry(): PublicRegistryStore {
@@ -411,8 +405,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if ((toText !== null && !MILLIS.test(toText)) || (fromText !== null && !MILLIS.test(fromText))) {
         throw new RequestError(400, "INVALID_REQUEST", "from and to must be millisecond timestamps.");
       }
-      const to = toText === null ? clockMs() : Number(toText);
-      const from = fromText === null ? Math.max(0, to - width * 300) : Number(fromText);
+      // Windows snap to candle boundaries so the first and last candles hold every trade in them.
+      const to = Math.ceil((toText === null ? clockMs() + 1 : Number(toText)) / width) * width;
+      const from = Math.floor((fromText === null ? Math.max(0, to - width * 300) : Number(fromText)) / width) * width;
       if (to <= from || (to - from) / width > MAX_CANDLES_PER_REQUEST) {
         throw new RequestError(400, "INVALID_REQUEST", `The window must be nonempty and span at most ${MAX_CANDLES_PER_REQUEST} candles.`);
       }
