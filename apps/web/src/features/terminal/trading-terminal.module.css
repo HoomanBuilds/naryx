@@ -58,7 +58,19 @@
 
 .dotLive {
   background: var(--up);
-  box-shadow: 0 0 6px rgba(31, 194, 126, 0.7);
+  box-shadow: 0 0 0 0 rgba(31, 194, 126, 0.55);
+  animation: livePulse 2.4s var(--ease-out) infinite;
+}
+
+@keyframes livePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(31, 194, 126, 0.55);
+  }
+
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px rgba(31, 194, 126, 0);
+  }
 }
 
 .dotWarn {
@@ -403,8 +415,75 @@
   background: var(--panel);
 }
 
+.areaInstrument,
+.areaChart,
+.areaBook,
+.areaTicket,
+.areaBottom {
+  animation: panelIn 0.42s var(--ease-out) both;
+}
+
 .areaInstrument {
   grid-area: instrument;
+}
+
+.areaChart {
+  animation-delay: 0.04s;
+}
+
+.areaBook {
+  animation-delay: 0.08s;
+}
+
+.areaTicket {
+  animation-delay: 0.12s;
+}
+
+.areaBottom {
+  animation-delay: 0.16s;
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.viewFade {
+  animation: viewIn 0.22s var(--ease-out) both;
+}
+
+@keyframes viewIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.flash {
+  border-radius: 2px;
+  animation: valueFlash 0.8s var(--ease-out);
+}
+
+@keyframes valueFlash {
+  from {
+    background-color: rgba(255, 255, 0, 0.16);
+  }
+
+  to {
+    background-color: transparent;
+  }
 }
 
 .areaChart {
@@ -476,7 +555,9 @@
     display: inline-block;
   }
 
+  /* The header wraps to several rows here, so it scrolls away instead of covering the ticket. */
   .topNavigation {
+    position: static;
     flex-wrap: wrap;
     height: auto;
     gap: 10px 16px;
@@ -540,6 +621,60 @@
   }
 }
 
+.mobileActions {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .terminalShell {
+    padding-bottom: 64px;
+  }
+
+  .mobileActions {
+    position: fixed;
+    z-index: 25;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    border-top: 1px solid var(--line);
+    background: rgba(16, 16, 17, 0.92);
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    backdrop-filter: blur(12px);
+    animation: panelIn 0.4s var(--ease-out) 0.2s both;
+  }
+
+  .mobileActions button {
+    height: 40px;
+    border: 0;
+    border-radius: var(--radius);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.12s var(--ease-out), filter 0.12s;
+  }
+
+  .mobileActions button:active {
+    transform: scale(0.98);
+  }
+
+  .mobileActions button:focus-visible {
+    outline: 1px solid var(--yellow);
+    outline-offset: 2px;
+  }
+
+  .mobileEntry {
+    background: var(--up-strong);
+  }
+
+  .mobileExit {
+    background: var(--down-strong);
+  }
+}
+
 /* ---------------------------------------------------------------- ticket */
 
 .ticket {
@@ -551,6 +686,7 @@
 }
 
 .sideSwitch {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 2px;
@@ -559,7 +695,30 @@
   padding: 2px;
 }
 
+.sidePill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 3px);
+  border-radius: var(--radius-small);
+  background: var(--up-strong);
+  box-shadow: 0 4px 14px rgba(22, 168, 107, 0.25);
+  transition:
+    transform 0.28s var(--ease-out),
+    background-color 0.28s var(--ease-out),
+    box-shadow 0.28s var(--ease-out);
+}
+
+.sideSwitch[data-mode="exit"] .sidePill {
+  transform: translateX(calc(100% + 2px));
+  background: var(--down-strong);
+  box-shadow: 0 4px 14px rgba(214, 61, 75, 0.25);
+}
+
 .sideSwitch button {
+  position: relative;
+  z-index: 1;
   height: 34px;
   border: 0;
   border-radius: var(--radius-small);
@@ -568,9 +727,7 @@
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition:
-    background-color 0.12s,
-    color 0.12s;
+  transition: color 0.2s var(--ease-out);
 }
 
 .sideSwitch button:hover {
@@ -578,14 +735,9 @@
 }
 
 .sideSwitch .sideEntryActive,
-.sideSwitch .sideEntryActive:hover {
-  background: var(--up-strong);
-  color: #ffffff;
-}
-
+.sideSwitch .sideEntryActive:hover,
 .sideSwitch .sideExitActive,
 .sideSwitch .sideExitActive:hover {
-  background: var(--down-strong);
   color: #ffffff;
 }
 
@@ -612,8 +764,10 @@
   bottom: -1px;
   left: 0;
   height: 2px;
-  background: transparent;
+  background: var(--yellow);
   content: "";
+  transform: scaleX(0);
+  transition: transform 0.24s var(--ease-out);
 }
 
 .orderTypes button:hover {
@@ -626,7 +780,7 @@
 }
 
 .orderTypes .orderTypeActive::after {
-  background: var(--yellow);
+  transform: scaleX(1);
 }
 
 .ticketFacts {
@@ -858,10 +1012,11 @@
   font-weight: 600;
   cursor: pointer;
   transition:
-    background-color 0.12s,
-    border-color 0.12s,
-    color 0.12s,
-    filter 0.12s;
+    background-color 0.16s,
+    border-color 0.16s,
+    color 0.16s,
+    filter 0.16s,
+    transform 0.12s var(--ease-out);
 }
 
 .primaryCta {
@@ -896,6 +1051,16 @@
 .secondaryCta:disabled {
   color: var(--text-faint);
   cursor: not-allowed;
+}
+
+.primaryCta:active:not(:disabled),
+.secondaryCta:active:not(:disabled),
+.presets button:active,
+.sideSwitch button:active,
+.connectButton:active:not(:disabled),
+.primaryAction:active:not(:disabled),
+.secondaryAction:active:not(:disabled) {
+  transform: scale(0.985);
 }
 
 .primaryCta:focus-visible,
@@ -1005,6 +1170,14 @@
 
 .flowDetails[open] > summary {
   border-bottom: 1px solid var(--line-soft);
+}
+
+.flowDetails[open] > :not(summary) {
+  animation: viewIn 0.24s var(--ease-out) both;
+}
+
+.flowDetails > summary > span:first-child::before {
+  transition: transform 0.2s var(--ease-out);
 }
 
 /* ---------------------------------------------------------------- execution flow panels */
@@ -1221,6 +1394,7 @@
 /* ---------------------------------------------------------------- bottom workspace */
 
 .bottomWorkspace {
+  position: relative;
   display: flex;
   height: 100%;
   min-height: 0;
@@ -1246,6 +1420,7 @@
 .workspaceTabs button {
   position: relative;
   flex: 0 0 auto;
+  transition: color 0.15s;
   border: 0;
   background: transparent;
   color: var(--text-dim);
@@ -1262,8 +1437,10 @@
   bottom: -1px;
   left: 0;
   height: 2px;
-  background: transparent;
+  background: var(--yellow);
   content: "";
+  transform: scaleX(0);
+  transition: transform 0.24s var(--ease-out);
 }
 
 .workspaceTabs button span {
@@ -1283,12 +1460,32 @@
 }
 
 .workspaceTabs .workspaceTabActive::after {
-  background: var(--yellow);
+  transform: scaleX(1);
 }
 
 .workspaceTabs button:focus-visible {
   outline: 1px solid var(--yellow);
   outline-offset: -2px;
+}
+
+.attentionRing {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid var(--yellow);
+  border-radius: var(--radius);
+  pointer-events: none;
+  animation: attention 1s var(--ease-out) forwards;
+}
+
+@keyframes attention {
+  from {
+    opacity: 0.9;
+  }
+
+  to {
+    opacity: 0;
+  }
 }
 
 .workspaceStatus {
@@ -1329,6 +1526,7 @@
 }
 
 .dataTable td {
+  transition: background-color 0.12s;
   border-bottom: 1px solid var(--line-soft);
   color: var(--text-secondary);
   padding: 8px 14px;

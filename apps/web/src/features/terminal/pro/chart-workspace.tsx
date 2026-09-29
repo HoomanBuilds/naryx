@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { MarketFeed } from "../market-feed";
 import type { TerminalPreview, TerminalViewModel } from "../terminal-view-model";
+import { handleTablistKeys, usePersistedSetting } from "../persisted-setting";
 import { CHART_COLORS } from "./chart-colors";
 import { PriceChart } from "./price-chart";
 import styles from "./pro.module.css";
@@ -291,10 +292,17 @@ export function ChartWorkspace({
   preview: TerminalPreview | null;
   size: string;
 }) {
-  const [view, setView] = useState<ChartView>("chart");
+  const [view, setView] = usePersistedSetting<ChartView>("chart.view", "chart", VIEWS.map((entry) => entry.id));
+  const panelRef = useRef<HTMLElement>(null);
+  function toggleFullscreen() {
+    const panel = panelRef.current;
+    if (panel === null) return;
+    if (document.fullscreenElement === panel) void document.exitFullscreen();
+    else void panel.requestFullscreen?.().catch(() => undefined);
+  }
   return (
-    <section className={styles.chartPanel} aria-label="Package chart">
-      <div className={styles.panelTabs} role="tablist" aria-label="Chart view">
+    <section ref={panelRef} className={styles.chartPanel} aria-label="Package chart">
+      <div className={styles.panelTabs} role="tablist" aria-label="Chart view" onKeyDown={handleTablistKeys}>
         {VIEWS.map((entry) => (
           <button
             key={entry.id}
@@ -308,10 +316,15 @@ export function ChartWorkspace({
           </button>
         ))}
         <span className={feed.label === "FIXTURE" ? styles.labelFixture : styles.labelObserved} title={feed.sourceNote}>{feed.label}</span>
+        <button type="button" className={styles.iconButton} aria-label="Toggle full screen" title="Full screen" onClick={toggleFullscreen}>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M10 2.5h3.5V6M6 13.5H2.5V10" /></svg>
+        </button>
       </div>
-      {view === "chart" ? <PriceChart feed={feed} /> : null}
-      {view === "depth" ? <div className={styles.chartBody}><DepthChart feed={feed} unit="bps" /></div> : null}
-      {view === "payoff" ? <div className={styles.chartBody}><PayoffChart feed={feed} snapshot={snapshot} preview={preview} size={size} /></div> : null}
+      <div key={view} className={styles.viewFade}>
+        {view === "chart" ? <PriceChart feed={feed} /> : null}
+        {view === "depth" ? <div className={styles.chartBody}><DepthChart feed={feed} unit="bps" /></div> : null}
+        {view === "payoff" ? <div className={styles.chartBody}><PayoffChart feed={feed} snapshot={snapshot} preview={preview} size={size} /></div> : null}
+      </div>
     </section>
   );
 }

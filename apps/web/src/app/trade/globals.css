@@ -30,6 +30,8 @@
   --info: #7cb4ff;
   --radius: 6px;
   --radius-small: 4px;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
   /* Aliases kept for components that predate the token rename. */
   --background: var(--canvas);

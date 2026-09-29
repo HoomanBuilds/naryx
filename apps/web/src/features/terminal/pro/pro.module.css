@@ -93,8 +93,10 @@
   bottom: -1px;
   left: 0;
   height: 2px;
-  background: transparent;
+  background: var(--yellow);
   content: "";
+  transform: scaleX(0);
+  transition: transform 0.24s var(--ease-out);
 }
 
 .panelTabs > button:hover {
@@ -107,11 +109,70 @@
 }
 
 .panelTabs > .tabActive::after {
-  background: var(--yellow);
+  transform: scaleX(1);
 }
 
 .panelTabs > span {
   margin-left: auto;
+}
+
+.panelTabs > .iconButton {
+  align-self: center;
+  margin-right: -6px;
+}
+
+.panelTabs > .iconButton::after {
+  display: none;
+}
+
+.chartPanel:fullscreen {
+  background: var(--panel);
+}
+
+.viewFade {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  animation: viewIn 0.22s var(--ease-out) both;
+}
+
+@keyframes viewIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chartSkeleton {
+  position: absolute;
+  inset: 40px 72px 32px 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.chartSkeleton i {
+  flex: 1 1 0;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #18181a 0%, #222225 40%, #18181a 80%);
+  background-size: 300% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
 }
 
 .panelTabs > button:focus-visible,
@@ -423,6 +484,22 @@
   color: var(--text-primary);
 }
 
+.menu[open] .menuPanel {
+  animation: popIn 0.16s var(--ease-out) both;
+}
+
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .menuPanel {
   position: fixed;
   z-index: 30;
@@ -610,6 +687,7 @@
 }
 
 .depthTooltip {
+  animation: popIn 0.12s var(--ease-out) both;
   position: absolute;
   z-index: 3;
   top: 40px;
@@ -806,6 +884,7 @@
   position: relative;
   flex: 0 0 auto;
   height: 21px;
+  transition: background-color 0.1s;
   align-items: center;
   color: var(--text-secondary);
 }
@@ -831,7 +910,19 @@
   right: 0;
   bottom: 1px;
   z-index: 0;
-  transition: width 0.2s;
+  transform-origin: right;
+  animation: barGrow 0.5s var(--ease-out) both;
+  transition: width 0.32s var(--ease-out);
+}
+
+@keyframes barGrow {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
 }
 
 .depthBarBid {
@@ -891,6 +982,7 @@
   display: block;
   height: 100%;
   border-radius: 2px;
+  transition: width 0.4s var(--ease-out);
 }
 
 .ratioBid {

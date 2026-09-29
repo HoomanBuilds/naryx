@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { fixtureMarketFeed } from "./market-feed";
+import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
@@ -248,7 +249,7 @@ function TopNavigation({
 
   return (
     <header className={styles.topNavigation}>
-      <Link className={styles.brand} href="/" aria-label="Naryx home">
+      <Link className={styles.brand} href="/" prefetch={false} aria-label="Naryx home">
         <BrandMark />
         <span className={styles.wordmark}>NARYX</span>
       </Link>
@@ -1114,7 +1115,8 @@ function Ticket({
     <aside className={styles.ticket} aria-labelledby="ticket-title">
       <h2 id="ticket-title" className={styles.visuallyHidden}>Package ticket</h2>
 
-      <div className={styles.sideSwitch} role="group" aria-label="Package mode">
+      <div className={styles.sideSwitch} role="group" aria-label="Package mode" data-mode={mode}>
+        <span className={styles.sidePill} aria-hidden="true" />
         {(["entry", "exit"] as const).map((item) => (
           <button
             key={item}
@@ -1162,7 +1164,9 @@ function Ticket({
         <div className={styles.sizeMeta}>
           <span className={styles.symbolChip}>{snapshot.ticket.sizeSymbol}</span>
           <span id="size-context">
-            {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
+            <span key={preview?.bound.value ?? "none"} className={styles.flash}>
+              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
+            </span>
           </span>
         </div>
       </div>
@@ -1243,17 +1247,17 @@ function Ticket({
         <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
         <div className={styles.summaryRow}>
           <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
-          <strong>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
+          <strong key={preview?.bound.value ?? "none"} className={styles.flash}>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
         </div>
         {(preview?.fees ?? []).map((row) => (
           <div className={styles.summaryRow} key={row.label}>
             <span>{row.label}</span>
-            <strong>{usd(row.value)}</strong>
+            <strong key={row.value} className={styles.flash}>{usd(row.value)}</strong>
           </div>
         ))}
         <div className={`${styles.summaryRow} ${styles.summaryTotal}`}>
           <span>Estimated fees</span>
-          <strong>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
+          <strong key={preview?.totalFee.value ?? "none"} className={styles.flash}>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
         </div>
         <div className={styles.summaryDivider} />
         {snapshot.ticket.evidence.map((row) => (
@@ -1328,6 +1332,7 @@ function BottomWorkspace({
   onRetryLifecycle,
   activeTab,
   onTabChange,
+  attentionKey,
   routePlan,
   readiness,
 }: {
@@ -1342,6 +1347,7 @@ function BottomWorkspace({
   onRetryLifecycle: () => void;
   activeTab: BottomTab;
   onTabChange: (tab: BottomTab) => void;
+  attentionKey: number;
   routePlan: ReactNode;
   readiness: ReactNode;
 }) {
@@ -1370,7 +1376,8 @@ function BottomWorkspace({
 
   return (
     <section id="terminal-workspace" className={styles.bottomWorkspace} aria-label="Trading workspace">
-      <div className={styles.workspaceTabs} role="tablist" aria-label="Account data">
+      {attentionKey > 0 ? <span key={attentionKey} className={styles.attentionRing} aria-hidden="true" /> : null}
+      <div className={styles.workspaceTabs} role="tablist" aria-label="Account data" onKeyDown={handleTablistKeys}>
         {tabs.map((entry) => (
           <button
             id={`tab-${entry.tab}`}
@@ -1393,15 +1400,16 @@ function BottomWorkspace({
       </div>
 
       {extraPanel !== null ? (
-        <div id={`panel-${activeTab}`} role="tabpanel" aria-labelledby={`tab-${activeTab}`} className={styles.tableScroller}>
+        <div key={activeTab} id={`panel-${activeTab}`} role="tabpanel" aria-labelledby={`tab-${activeTab}`} className={`${styles.tableScroller} ${styles.viewFade}`}>
           {extraPanel}
         </div>
       ) : (
       <div
+        key={activeWorkspace.tab}
         id={`panel-${activeWorkspace.tab}`}
         role="tabpanel"
         aria-labelledby={`tab-${activeWorkspace.tab}`}
-        className={styles.tableScroller}
+        className={`${styles.tableScroller} ${styles.viewFade}`}
       >
         {showReceipts && lifecycle ? (
           <div className={styles.lifecycleSummary} role="status">
@@ -1522,7 +1530,12 @@ export function TradingTerminal({
     initialSnapshot.ticket.defaultSlippageBps,
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
-  const [workspaceTab, setWorkspaceTab] = useState<BottomTab>("positions");
+  const [workspaceTab, setWorkspaceTab] = usePersistedSetting<BottomTab>(
+    "workspace.tab",
+    "positions",
+    ["positions", "orders", "history", "receipts", "route", "readiness"],
+  );
+  const [workspaceAttention, setWorkspaceAttention] = useState(0);
   const feed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
   const wallet = useSolanaDevnetWallet();
   const evmWallet = useInjectedEvmWallet();
@@ -2206,7 +2219,15 @@ export function TradingTerminal({
 
   function openView(tab: BottomTab) {
     setWorkspaceTab(tab);
-    document.getElementById("terminal-workspace")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setWorkspaceAttention((value) => value + 1);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("terminal-workspace")?.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  }
+
+  function jumpToTicket(nextMode: PackageMode) {
+    setMode(nextMode);
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("package-ticket")?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
   }
 
   function changeDomain(domain: DomainId) {
@@ -2242,7 +2263,7 @@ export function TradingTerminal({
         <div className={styles.areaBook}>
           <OrderBook feed={feed} unit="bps" />
         </div>
-        <div className={styles.areaTicket}>
+        <div id="package-ticket" className={styles.areaTicket}>
           <Ticket
             snapshot={snapshot}
             selectedDomain={selectedDomain}
@@ -2289,6 +2310,7 @@ export function TradingTerminal({
             onRetryLifecycle={handleRetryLifecycle}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
+            attentionKey={workspaceAttention}
             routePlan={<PackageSequence snapshot={snapshot} mode={mode} preview={preview} />}
             readiness={
               <ExecutionReadiness
@@ -2304,6 +2326,10 @@ export function TradingTerminal({
           />
         </div>
       </main>
+      <div className={styles.mobileActions} role="group" aria-label="Open package ticket">
+        <button type="button" className={styles.mobileEntry} onClick={() => jumpToTicket("entry")}>Enter package</button>
+        <button type="button" className={styles.mobileExit} onClick={() => jumpToTicket("exit")}>Exit package</button>
+      </div>
       <StatusBar
         snapshot={snapshot}
         providerConnection={providerConnection}

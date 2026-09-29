@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DepthLevel, MarketFeed, TapeTrade } from "../market-feed";
+import { handleTablistKeys, usePersistedSetting } from "../persisted-setting";
 import styles from "./pro.module.css";
 
 type BookView = "book" | "trades";
@@ -60,8 +61,8 @@ function SideIcon({ side }: { side: BookSide }) {
  * size. Depth bars scale with cumulative direct size only.
  */
 export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
-  const [view, setView] = useState<BookView>("book");
-  const [sideFilter, setSideFilter] = useState<BookSide>("both");
+  const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades"]);
+  const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
   const book = useMemo(() => feed.depth(), [feed]);
   const trades = useMemo(() => feed.tape(), [feed]);
   const steps = [book.tick, book.tick * 2, book.tick * 10];
@@ -113,12 +114,12 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
 
   return (
     <section className={styles.bookPanel} aria-label="Order book and trades">
-      <div className={styles.panelTabs} role="tablist" aria-label="Book view">
+      <div className={styles.panelTabs} role="tablist" aria-label="Book view" onKeyDown={handleTablistKeys}>
         <button type="button" role="tab" aria-selected={view === "book"} className={view === "book" ? styles.tabActive : undefined} onClick={() => setView("book")}>Order book</button>
         <button type="button" role="tab" aria-selected={view === "trades"} className={view === "trades" ? styles.tabActive : undefined} onClick={() => setView("trades")}>Trades</button>
       </div>
       {view === "book" ? (
-        <>
+        <div key="book" className={styles.viewFade}>
           <div className={styles.bookControls}>
             <div className={styles.iconGroup} role="group" aria-label="Book side">
               {(["both", "bids", "asks"] as const).map((entry) => (
@@ -173,9 +174,11 @@ export function OrderBook({ feed, unit }: { feed: MarketFeed; unit: string }) {
             </div>
             <span className={styles.down}>{(100 - bidShare).toFixed(0)}% S</span>
           </div>
-        </>
+        </div>
       ) : (
-        <TradeTape trades={trades} unit={unit} />
+        <div key="trades" className={styles.viewFade}>
+          <TradeTape trades={trades} unit={unit} />
+        </div>
       )}
     </section>
   );

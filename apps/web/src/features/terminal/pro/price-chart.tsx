@@ -13,6 +13,7 @@ import type {
   UTCTimestamp,
 } from "lightweight-charts";
 import { CHART_INTERVALS, type Candle, type ChartInterval, type ChartSeriesKey, type MarketFeed } from "../market-feed";
+import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
 import { CHART_COLORS } from "./chart-colors";
 import styles from "./pro.module.css";
 
@@ -101,12 +102,12 @@ interface Legend {
 export function PriceChart({ feed }: { feed: MarketFeed }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const [interval, setChartInterval] = useState<ChartInterval>("15m");
-  const [style, setStyle] = useState<ChartStyle>("candles");
-  const [seriesKey, setSeriesKey] = useState<ChartSeriesKey>("basis");
-  const [showVolume, setShowVolume] = useState(true);
-  const [showMa20, setShowMa20] = useState(true);
-  const [showMa50, setShowMa50] = useState(false);
+  const [interval, setChartInterval] = usePersistedSetting<ChartInterval>("chart.interval", "15m", CHART_INTERVALS.map((entry) => entry.id));
+  const [style, setStyle] = usePersistedSetting<ChartStyle>("chart.style", "candles", CHART_STYLES.map((entry) => entry.id));
+  const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>("chart.series", "basis", SERIES.map((entry) => entry.id));
+  const [showVolume, setShowVolume] = usePersistedFlag("chart.volume", true);
+  const [showMa20, setShowMa20] = usePersistedFlag("chart.ma20", true);
+  const [showMa50, setShowMa50] = usePersistedFlag("chart.ma50", false);
   const [legend, setLegend] = useState<Legend | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -274,8 +275,11 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
           </div>
         </details>
         <div className={styles.toolbarEnd}>
-          <button type="button" className={styles.iconButton} aria-label="Reset view" title="Reset view" onClick={() => chartRef.current?.timeScale().fitContent()}>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M10 2.5h3.5V6M6 13.5H2.5V10" /></svg>
+          <button type="button" className={styles.iconButton} aria-label="Fit all bars" title="Fit all bars" onClick={() => chartRef.current?.timeScale().fitContent()}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3v10M14 3v10M4.5 8h7M6.5 6 4.5 8l2 2M9.5 6l2 2-2 2" /></svg>
+          </button>
+          <button type="button" className={styles.iconButton} aria-label="Scroll to latest" title="Scroll to latest" onClick={() => chartRef.current?.timeScale().scrollToRealTime()}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4l4 4-4 4M8 4l4 4-4 4M14 3v10" /></svg>
           </button>
         </div>
       </div>
@@ -302,7 +306,13 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
           ) : null}
         </div>
         <div ref={containerRef} className={styles.chartCanvas} />
-        {ready ? null : <div className={styles.chartLoading} role="status">Loading chart</div>}
+        {ready ? null : (
+          <div className={styles.chartSkeleton} role="status" aria-label="Loading chart">
+            {Array.from({ length: 28 }, (_, index) => (
+              <i key={index} style={{ height: `${28 + ((index * 37) % 46)}%` }} />
+            ))}
+          </div>
+        )}
       </div>
     </>
   );
