@@ -37,11 +37,15 @@ describe('solver client', () => {
     await client.putCapacity({ solverId: 'solver-a', availableAtoms: 10n } as never);
     await client.cancelQuote('market-1', 'ab'.repeat(32));
     await client.getShard('cash-and-carry-v1.market-1');
+    await client.postQuotes('market-1', [{ quote: {} as never, expiresAtValue: 10n }]);
     assert.deepEqual(seen.map((entry) => [entry.method, entry.path, entry.verified]), [
       ['PUT', '/v1/solver/capacity', true],
       ['POST', '/v1/solver/quotes/cancel', true],
       ['GET', '/v1/solver/quote-shards/cash-and-carry-v1.market-1', true],
+      ['POST', '/v1/solver/quotes/batch', true],
     ]);
+    assert.throws(() => client.postQuotes('market-1', []), /1 to 16/);
+    await assert.rejects(client.settlements('not-a-hash'), /lowercase hex/);
   });
 
   test('a signer for another key is rejected, and a malformed signature never leaves the client', async () => {

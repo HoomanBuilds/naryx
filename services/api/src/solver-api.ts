@@ -24,7 +24,7 @@ import type {
   SolverRequestMethod,
 } from "@naryx/protocol-types";
 import { verifyEd25519 } from "./ed25519.js";
-import { PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
+import { MAX_IMPLIED_BATCH, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
@@ -42,9 +42,9 @@ export interface SolverApiOptions {
   readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
-  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidity" | "cancelEntry">;
+  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "cancelEntry">;
   /** Optional: the open order feed answers 503 without it. */
-  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders">;
+  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote">;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -281,32 +281,24 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       store.releaseCapacity(solverId, { domain: requireObject(body.domain, "domain") as unknown as DomainRef, asset: requireObject(body.asset, "asset") as unknown as AssetRef }, body.commitmentId as string);
       return { released: true };
     }
-    if (method === "POST" && path === "/v1/solver/quotes") {
+    if (method === "POST" && (path === "/v1/solver/quotes" || path === "/v1/solver/quotes/batch")) {
       const body = decodeBody(raw);
       const classId = typeof body.packageMarketId === "string" && ID.test(body.packageMarketId) ? body.packageMarketId : undefined;
       if (classId === undefined) throw new SolverRequestError(400, "INVALID_REQUEST", "packageMarketId is malformed.");
+      const batch = path === "/v1/solver/quotes/batch";
+      const items = batch ? body.quotes : [{ quote: body.quote, expiresAtValue: body.expiresAtValue }];
+      if (!Array.isArray(items) || items.length === 0 || items.length > MAX_IMPLIED_BATCH) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", `quotes must hold 1 to ${MAX_IMPLIED_BATCH} entries.`);
+      }
       const books = requireExchange();
       const book = books.getBook(classId);
       const policy = book === undefined ? undefined : books.getMatchingPolicy(book.matchingPolicyHash);
       if (book === undefined || policy === undefined) throw new SolverRequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
-      // The quote is derived here from its sources, so a solver cannot post a price its sources do not imply.
-      const quote = deriveImpliedPackageQuote(policy, body.quote as ImpliedPackageQuoteInput);
       const now = nowValue();
-      if (typeof body.expiresAtValue !== "bigint" || body.expiresAtValue <= now) {
-        throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
-      }
       // Executable depth must be backed by what this solver actually holds: every source
       // reservation, or the solver commitment, must be outstanding in a healthy capacity ledger,
-      // and none may already back another live entry in this book.
+      // and none may already back another live entry in this book or another quote in the batch.
       const outstanding = store.outstandingCommitments(solverId, now);
-      const backing = quote.evidence === "SOLVER_BACKED_IMPLIED"
-        ? [quote.solverCommitment]
-        : quote.sources.map((source) => source.reservationId);
-      for (const id of backing) {
-        const held = id === undefined ? undefined : outstanding.get(toHex(id));
-        if (held === undefined) throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A reservation or commitment is not outstanding for this solver.");
-        if (quote.evidence === "SOLVER_BACKED_IMPLIED" && !held.firm) throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Solver-backed implication needs a firm commitment.");
-      }
       const inUse = new Set(
         book.entries
           .filter((entry) => entry.implied !== undefined && (entry.expiresAtValue === undefined || entry.expiresAtValue > now))
@@ -315,17 +307,30 @@ export function createSolverApiHandler(options: SolverApiOptions) {
             ...(entry.implied?.sources ?? []).flatMap((source) => (source.reservationId === undefined ? [] : [toHex(source.reservationId)])),
           ]),
       );
-      if (backing.some((id) => id !== undefined && inUse.has(toHex(id)))) {
-        throw new SolverRequestError(409, "BACKING_IN_USE", "A reservation or commitment already backs live liquidity in this book.");
-      }
-      const entry = books.addImpliedLiquidity(classId, {
-        quote,
-        participantId: solverId,
-        commonControlGroupId: manifest.commonControlGroupId,
-        expiresAtValue: body.expiresAtValue,
-        nowValue: now,
+      const inputs = items.map((item: unknown) => {
+        const entry = requireObject(item, "quote entry");
+        // The quote is derived here from its sources, so a solver cannot post a price its sources do not imply.
+        const quote = deriveImpliedPackageQuote(policy, entry.quote as ImpliedPackageQuoteInput);
+        if (typeof entry.expiresAtValue !== "bigint" || entry.expiresAtValue <= now) {
+          throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
+        }
+        const backing = quote.evidence === "SOLVER_BACKED_IMPLIED"
+          ? [quote.solverCommitment]
+          : quote.sources.map((source) => source.reservationId);
+        for (const id of backing) {
+          const held = id === undefined ? undefined : outstanding.get(toHex(id));
+          if (held === undefined) throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A reservation or commitment is not outstanding for this solver.");
+          if (quote.evidence === "SOLVER_BACKED_IMPLIED" && !held.firm) throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Solver-backed implication needs a firm commitment.");
+          if (inUse.has(toHex(id as Uint8Array))) {
+            throw new SolverRequestError(409, "BACKING_IN_USE", "A reservation or commitment already backs live liquidity in this book.");
+          }
+          inUse.add(toHex(id as Uint8Array));
+        }
+        return { quote, participantId: solverId, commonControlGroupId: manifest.commonControlGroupId, expiresAtValue: entry.expiresAtValue, nowValue: now };
       });
-      return { entryId: toHex(entry.entryId), priceTicks: entry.priceTicks, quantity: entry.quantity };
+      const entries = books.addImpliedLiquidityBatch(classId, inputs);
+      const posted = entries.map((entry) => ({ entryId: toHex(entry.entryId), priceTicks: entry.priceTicks, quantity: entry.quantity }));
+      return batch ? { entries: posted } : posted[0];
     }
     if (method === "POST" && path === "/v1/solver/quotes/cancel") {
       const body = decodeBody(raw);
@@ -335,6 +340,23 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       }
       requireExchange().cancelEntry(classId, body.entryId, solverId);
       return { cancelled: true };
+    }
+    if (method === "GET" && (match = /^\/v1\/solver\/settlements\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      // Only this solver's own settled receipts for the quote are visible to it.
+      if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
+      const quoteHash = match[1] as string;
+      const settlements = options.evidence.settlementsForQuote(quoteHash, solverId);
+      if (settlements.length === 0) throw new SolverRequestError(404, "SETTLEMENT_NOT_FOUND", "No settled receipt names this quote for this solver.");
+      return {
+        quoteHash,
+        settlements: settlements.map((entry) => ({
+          orderHash: entry.orderHashHex,
+          terminalState: entry.terminalState,
+          outcomeHash: entry.outcomeHashHex,
+          receiptHash: entry.receiptHashHex,
+          recordedAtMs: entry.recordedAtMs,
+        })),
+      };
     }
     if (method === "GET" && path === "/v1/solver/orders") {
       // Signed public orders without a terminal outcome, oldest first, paged by cursor.

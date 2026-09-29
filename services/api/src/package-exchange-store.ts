@@ -85,6 +85,8 @@ export interface PackageExchangeStoreOptions {
 
 /** Resting entries one package book may hold, and one participant within it. */
 export const MAX_BOOK_ENTRIES = 2_000;
+/** Implied entries one batch may add. */
+export const MAX_IMPLIED_BATCH = 16;
 export const MAX_ENTRIES_PER_PARTICIPANT = 250;
 
 export class PackageExchangeStoreError extends Error {
@@ -474,26 +476,39 @@ export class SqlitePackageExchangeStore {
   }
 
   addImpliedLiquidity(executionClassId: string, input: ImpliedLiquidityInput): PackageBookEntry {
+    return this.addImpliedLiquidityBatch(executionClassId, [input])[0] as PackageBookEntry;
+  }
+
+  /**
+   * Adds several implied entries to one book in a single transaction: every entry is admitted in
+   * order against the book as it stands after the previous one, or none is.
+   */
+  addImpliedLiquidityBatch(executionClassId: string, inputs: readonly ImpliedLiquidityInput[]): readonly PackageBookEntry[] {
+    if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > MAX_IMPLIED_BATCH) {
+      throw new PackageExchangeStoreError("INVALID_INPUT", `A batch holds 1 to ${MAX_IMPLIED_BATCH} implied entries.`);
+    }
     return this.transaction(() => {
       const { policy, book } = this.policyAndBook(executionClassId);
       const versions = this.db.prepare("SELECT current_version FROM implied_source_versions WHERE source_id = ?");
-      for (const source of input.quote.sources) {
-        const row = versions.get(source.sourceId) as { current_version: unknown } | undefined;
-        if (row !== undefined && BigInt(jsonText(row.current_version, "current_version")) > source.sourceVersion) {
-          throw new PackageExchangeStoreError("STALE_SOURCE", `Implied source ${source.sourceId} was superseded.`);
-        }
-      }
       const consumed = this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?");
-      for (const source of input.quote.sources) {
-        if (source.reservationId !== undefined && consumed.get(source.reservationId) !== undefined) {
-          throw new PackageExchangeStoreError("SOURCE_ALREADY_CONSUMED", "A source reservation was already consumed.");
+      let state = book;
+      const entries: PackageBookEntry[] = [];
+      for (const input of inputs) {
+        for (const source of input.quote.sources) {
+          const row = versions.get(source.sourceId) as { current_version: unknown } | undefined;
+          if (row !== undefined && BigInt(jsonText(row.current_version, "current_version")) > source.sourceVersion) {
+            throw new PackageExchangeStoreError("STALE_SOURCE", `Implied source ${source.sourceId} was superseded.`);
+          }
+          if (source.reservationId !== undefined && consumed.get(source.reservationId) !== undefined) {
+            throw new PackageExchangeStoreError("SOURCE_ALREADY_CONSUMED", "A source reservation was already consumed.");
+          }
         }
+        const result = guarded("INVALID_INPUT", "Implied liquidity is invalid.", () => addImpliedLiquidity(policy, state, input));
+        state = result.state;
+        entries.push(result.entry);
       }
-      const result = guarded("INVALID_INPUT", "Implied liquidity is invalid.", () =>
-        addImpliedLiquidity(policy, book, input),
-      );
-      this.writeBook(result.state);
-      return result.entry;
+      this.writeBook(state);
+      return Object.freeze(entries);
     });
   }
 

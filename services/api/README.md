@@ -66,7 +66,9 @@ Query parameters are whitelisted, POST bodies are protocol JSON of at most 64 Ki
 | `PUT /v1/solver/quote-shards/{templateId.marketGroupId}`, `GET` the same | the shard must also be signed by a valid quote key over its hash, belong to the caller, and advance its sequence; an identical repeat is idempotent |
 | `POST .../replace`, `.../heartbeat`, `.../cancel-all`, `POST /v1/solver/kill-switch` | each may change only its own fields: levels and reference, heartbeat expiry, all levels removed, or the kill switch activated |
 | `PUT /v1/solver/capacity`, `POST /v1/solver/reservations`, `POST /v1/solver/reservations/release` | per-scope capacity ledgers; evidence only moves forward and commitments cannot exceed it |
-| `POST /v1/solver/quotes`, `POST /v1/solver/quotes/cancel` | implied liquidity is derived server-side from its leg sources, so a solver cannot post a price its sources do not imply; only the owner can cancel |
+| `POST /v1/solver/quotes`, `POST /v1/solver/quotes/batch`, `POST /v1/solver/quotes/cancel` | implied liquidity is derived server-side from its leg sources, so a solver cannot post a price its sources do not imply; every reservation or firm commitment behind a quote must be outstanding for the solver and back no other live entry or batch member; a batch of up to 16 quotes posts atomically; only the owner can cancel |
+| `GET /v1/solver/orders?after=` | signed public orders without a terminal outcome, oldest first, paged by cursor |
+| `GET /v1/solver/settlements/{quoteHash}` | the caller's own settled receipts for one quote, with order, terminal state, outcome, and receipt hashes |
 
 Public reads add `GET /v1/markets/{id}/quotes` (live shard levels with quote mode, settlement class, and reference; killed shards, stale heartbeats, and expired levels are excluded) and `GET /v1/solvers/{id}/capacity`.
 

@@ -162,6 +162,23 @@ export class NaryxSolverClient {
   }
 
   /**
+   * Posts up to 16 implied quotes to one book atomically: each is derived from its sources and must
+   * be backed by distinct outstanding commitments, or none is posted.
+   */
+  postQuotes(packageMarketId: string, quotes: readonly { readonly quote: ImpliedPackageQuoteInput; readonly expiresAtValue: bigint }[]) {
+    if (!Array.isArray(quotes) || quotes.length === 0 || quotes.length > 16) throw new TypeError('post 1 to 16 quotes');
+    return this.#call('POST', '/v1/solver/quotes/batch', { packageMarketId, quotes });
+  }
+
+  /** This solver's settled receipts for one of its quotes. */
+  async settlements(quoteHash: string) {
+    if (!/^[0-9a-f]{64}$/.test(quoteHash)) throw new TypeError('quote hash must be 32 bytes of lowercase hex');
+    const body = await this.#call('GET', `/v1/solver/settlements/${quoteHash}`);
+    if (body.quoteHash !== quoteHash || !Array.isArray(body.settlements)) throw new NaryxEvidenceError('settlement response is for another quote');
+    return body;
+  }
+
+  /**
    * Envelopes addressed to this solver that are neither acknowledged nor expired. Each carries the
    * sender key's Ed25519 signature over the envelope hash; the relay has checked it, and a solver
    * can check it again against the base58 key in `senderKeyId` before decrypting.

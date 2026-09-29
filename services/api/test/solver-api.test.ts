@@ -12,6 +12,7 @@ import {
   domainRef,
   fromProtocolJson,
   packageQuoteShardHash,
+  packageReceiptHash,
   privateRfqEnvelopeHash,
   sealedQuoteCommitment,
   solverRequestDigest,
@@ -25,6 +26,7 @@ import {
 import {
   createPublicApiHandler,
   createSolverApiHandler,
+  SqliteEvidenceStore,
   SqlitePackageExchangeStore,
   SqlitePrivateDeliveryStore,
   SqliteRegistryStore,
@@ -32,6 +34,7 @@ import {
 } from "../src/index.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } from "./exchange-fixtures.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
+import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, terms } from "./evidence-fixtures.js";
 
 const NOW_MS = 1_900_000_000_000;
 const RFQ_SUITE = "hpke-x25519-sha256-aes256gcm";
@@ -62,6 +65,7 @@ interface Harness {
   signShard(shard: PackageQuoteShardInput, key?: KeyObject): PackageQuoteShardInput;
   shard(overrides?: Partial<PackageQuoteShardInput>): PackageQuoteShardInput;
   exchange: SqlitePackageExchangeStore;
+  evidence: SqliteEvidenceStore;
   solverKey: KeyObject;
   setClock(ms: number): void;
 }
@@ -73,6 +77,7 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSui
   const solverState = new SqliteSolverApiStore(join(dir, "solver.sqlite"), { clock: () => clock });
   const delivery = new SqlitePrivateDeliveryStore(join(dir, "delivery.sqlite"), { clock: () => clock });
   const exchange = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+  const evidence = new SqliteEvidenceStore(join(dir, "evidence.sqlite"), { clock: () => clock });
   registerAll(exchange);
   const operator = operatorKeys();
   const key = quoteKey();
@@ -85,8 +90,8 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSui
     }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, nowValue: () => NOW, clockMs: () => clock, rateLimit });
-  const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, evidence, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
       response.statusCode = 418;
@@ -98,6 +103,7 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSui
   const decode = async (response: Response) => ({ status: response.status, body: fromProtocolJson(JSON.parse(await response.text())) as Record<string, unknown> });
   const harness: Harness = {
     exchange,
+    evidence,
     solverKey: key.privateKey,
     setClock(ms) {
       clock = ms;
@@ -169,6 +175,7 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSui
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     exchange.close();
+    evidence.close();
     delivery.close();
     solverState.close();
     registry.close();
@@ -268,6 +275,59 @@ function rfqSender() {
   const entry = (envelope: PrivateRfqEnvelopeInput, ciphertext: unknown) => ({ envelope, ciphertext, senderSignature: signEnvelope(envelope) });
   return { keyId, signEnvelope, entry };
 }
+
+test("implied quotes post atomically in batches and a solver reads only its own settlements", async () => {
+  await withSolverApi(async (api) => {
+    const scope = { domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)), asset: { assetId: "usdc", assetManifestHash: "33".repeat(32), decimals: 6 } };
+    const record = { version: 1, environment: "testnet", solverId: "solver-a", ...scope, availableAtoms: 100n, maximumConcurrentRecoveryAtoms: 50n, evidenceGrade: "ONCHAIN_AVAILABLE", evidenceCommitment: "44".repeat(32), observedAtValue: NOW_S - 10n, expiresAtValue: FAR };
+    assert.equal((await api.call("PUT", "/v1/solver/capacity", { record })).status, 200);
+    for (const n of [501, 901, 502, 902]) {
+      assert.equal((await api.call("POST", "/v1/solver/reservations", { ...scope, commitment: { commitmentId: id(n), atoms: 20n, recoveryAtoms: 0n, firm: true, atValue: NOW_S } })).status, 200);
+    }
+    const quote = (spot: number, perp: number, spotPrice: bigint) => ({
+      executionClassId: CLASS,
+      side: "ASK",
+      evidence: "RESERVATION_BACKED_IMPLIED",
+      legRatios: SERIES.economicLegRatios,
+      legSources: [
+        { sourceId: `spot-${spot}`, sourceVersion: 1n, side: "ASK", priceTicks: spotPrice, quantity: 20n, reservationId: id(spot) },
+        { sourceId: `perp-${perp}`, sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(perp) },
+      ],
+    });
+    const entry = (spot: number, perp: number, spotPrice: bigint) => ({ quote: quote(spot, perp, spotPrice), expiresAtValue: NOW + 60n });
+
+    // Reusing one reservation inside a batch rejects the whole batch; nothing is posted.
+    const conflicting = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: [entry(501, 901, 1_100n), entry(501, 902, 1_110n)] });
+    assert.equal((conflicting.body.error as { code: string }).code, "BACKING_IN_USE");
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 0);
+    const tooMany = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: Array.from({ length: 17 }, () => entry(501, 901, 1_100n)) });
+    assert.equal(tooMany.status, 400);
+
+    const posted = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: [entry(501, 901, 1_100n), entry(502, 902, 1_120n)] });
+    assert.equal(posted.status, 200, JSON.stringify(toProtocolJson(posted.body)));
+    assert.deepEqual((posted.body.entries as readonly { priceTicks: bigint }[]).map((value) => value.priceTicks), [100n, 120n]);
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 2);
+
+    // Settlements are read by quote hash, and only the solver named on the receipt sees them.
+    const orderHash = fill(1);
+    const settled = receiptFor(orderHash, { solver: "solver-a", quoteHash: fill(2) });
+    api.evidence.recordOutcome({
+      evidenceManifest: evidenceManifestFor(orderHash),
+      outcome: outcomeFor(orderHash, { terminalState: "FINALIZED_COMPLETE", successfulReceiptHash: packageReceiptHash(settled) }),
+      receipt: settled,
+      acceptedQuoteFeeTerms: terms,
+    });
+    const quoteHashHex = toHex(fill(2));
+    const settlement = await api.call("GET", `/v1/solver/settlements/${quoteHashHex}`);
+    assert.equal(settlement.status, 200);
+    assert.deepEqual(
+      (settlement.body.settlements as readonly { orderHash: string; terminalState: string; receiptHash: string }[]).map((value) => [value.orderHash, value.terminalState, value.receiptHash]),
+      [[toHex(orderHash), "FINALIZED_COMPLETE", toHex(packageReceiptHash(settled))]],
+    );
+    assert.equal((await api.call("GET", `/v1/solver/settlements/${"ab".repeat(32)}`)).status, 404);
+    assert.equal((await api.call("GET", "/v1/solver/settlements/not-a-hash")).status, 404);
+  });
+});
 
 test("the private RFQ relay stores ciphertext only, fails closed without a pinned suite, and binds responses", async () => {
   const taker = rfqSender();

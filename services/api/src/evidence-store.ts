@@ -166,6 +166,10 @@ export class SqliteEvidenceStore {
 
   constructor(dbPath: string, options: { readonly clock?: () => number } = {}) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new EvidenceStoreError(code, message));
+    // Stores created before settlements were indexed by quote gain the column; their rows stay unindexed.
+    const columns = this.db.prepare("PRAGMA table_info(terminal_outcomes)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "quote_hash")) this.db.exec("ALTER TABLE terminal_outcomes ADD COLUMN quote_hash BLOB");
+    this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_quote ON terminal_outcomes(quote_hash, solver_id)");
     this.clock = options.clock ?? Date.now;
   }
 
@@ -252,6 +256,7 @@ export class SqliteEvidenceStore {
     if (toHex(manifest.orderHash) !== toHex(outcome.orderHash)) throw new EvidenceStoreError("EVIDENCE_MISMATCH", "The manifest and outcome name different orders.");
     let receiptHash: Uint8Array | undefined;
     let solverId: string | undefined;
+    let quoteHash: Uint8Array | undefined;
     if (requiresSuccessfulReceipt(outcome.terminalState)) {
       if (input.receipt === undefined || input.acceptedQuoteFeeTerms === undefined) {
         throw new EvidenceStoreError("RECEIPT_REQUIRED", "A successful outcome is recorded with its receipt and the accepted quote's fee terms.");
@@ -263,6 +268,7 @@ export class SqliteEvidenceStore {
       if (!fees.valid) throw new EvidenceStoreError("FEE_VIOLATION", `The receipt charges outside the accepted quote: ${fees.violations.join(", ")}.`);
       receiptHash = packageReceiptHash(input.receipt);
       solverId = receipt.solver;
+      quoteHash = receipt.quoteHash;
     } else if (input.receipt !== undefined || input.acceptedQuoteFeeTerms !== undefined) {
       throw new EvidenceStoreError("RECEIPT_NOT_EXPECTED", `${outcome.terminalState} is not a successful outcome and has no receipt.`);
     }
@@ -278,13 +284,14 @@ export class SqliteEvidenceStore {
       }
       this.db
         .prepare(
-          `INSERT INTO terminal_outcomes (order_hash, terminal_state, solver_id, outcome_json, outcome_hash, receipt_json, receipt_hash, manifest_json, manifest_hash, recorded_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO terminal_outcomes (order_hash, terminal_state, solver_id, quote_hash, outcome_json, outcome_hash, receipt_json, receipt_hash, manifest_json, manifest_hash, recorded_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           outcome.orderHash,
           outcome.terminalState,
           solverId ?? null,
+          quoteHash ?? null,
           stringifyProtocolJson(input.outcome),
           outcomeHash,
           input.receipt === undefined ? null : stringifyProtocolJson(input.receipt),
@@ -336,6 +343,42 @@ export class SqliteEvidenceStore {
       evidenceManifestHashHex: toHex(row.manifest_hash),
       recordedAtMs: row.recorded_at_ms,
     });
+  }
+
+  /**
+   * Settled receipts of one solver quote, oldest first: the orders that quote settled and how.
+   * Only successful outcomes carry a receipt, and so a quote hash; other outcomes are not listed.
+   */
+  settlementsForQuote(quoteHashHex: string, solverId: string): readonly {
+    readonly orderHashHex: string;
+    readonly terminalState: TerminalState;
+    readonly outcomeHashHex: string;
+    readonly receiptHashHex: string;
+    readonly recordedAtMs: number;
+  }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT order_hash, terminal_state, outcome_hash, receipt_hash, recorded_at_ms FROM terminal_outcomes
+         WHERE quote_hash = ? AND solver_id = ? ORDER BY cursor LIMIT 100`,
+      )
+      .all(Buffer.from(quoteHashHex, "hex"), solverId) as {
+      order_hash: Uint8Array;
+      terminal_state: string;
+      outcome_hash: Uint8Array;
+      receipt_hash: Uint8Array;
+      recorded_at_ms: number;
+    }[];
+    return Object.freeze(
+      rows.map((row) =>
+        Object.freeze({
+          orderHashHex: toHex(row.order_hash),
+          terminalState: row.terminal_state as TerminalState,
+          outcomeHashHex: toHex(row.outcome_hash),
+          receiptHashHex: toHex(row.receipt_hash),
+          recordedAtMs: row.recorded_at_ms,
+        }),
+      ),
+    );
   }
 
   /**
