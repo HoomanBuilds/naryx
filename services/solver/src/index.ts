@@ -13,7 +13,7 @@ import {
 } from '@nktkas/hyperliquid/api/exchange';
 import {
   getWalletAddress,
-  type AbstractEthersV6Signer,
+  type AbstractWallet,
 } from '@nktkas/hyperliquid/signing';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
@@ -43,7 +43,7 @@ const CLOID = /^0x[0-9a-f]{32}$/;
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 
-export type HyperliquidServerSigner = AbstractEthersV6Signer & Readonly<{
+export type HyperliquidServerSigner = AbstractWallet & Readonly<{
   signerScope: typeof HYPERLIQUID_SERVER_SIGNER_SCOPE;
 }>;
 
@@ -728,6 +728,7 @@ export {
   createHyperliquidTestnetExecutor,
   createHyperliquidTestnetExecutorRequestHandler,
   createHyperliquidTestnetExecutorServer,
+  validateHyperliquidTestnetRuntimeAttempt,
   type HyperliquidTestnetExecutorPort,
   type HyperliquidTestnetExecutorRequest,
   type HyperliquidTestnetExecutorResult,
@@ -736,9 +737,15 @@ export {
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 export {
+  API_HYPERLIQUID_TESTNET_ATTEMPT_PATH,
+  HttpHyperliquidTestnetTrustedAttemptProvider,
+  type HyperliquidTestnetAttemptHttpOptions,
+} from './hyperliquid-testnet-attempt-http.js';
+export {
   HYPERLIQUID_TESTNET_EXECUTION_ENABLED_ENV,
   loadHyperliquidTestnetExecutorRuntime,
   type HyperliquidTestnetExecutorRuntimeDependencies,
   type HyperliquidTestnetExecutorRuntimeStatus,
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './hyperliquid-testnet-executor-runtime.js';
+export { loadHyperliquidTestnetAgentSigner } from './hyperliquid-testnet-agent-key.js';

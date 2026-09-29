@@ -1,18 +1,24 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import type { Server } from 'node:http';
 import { LOCAL_ATOMIC_MARKET_CATALOG_V1 } from '@naryx/adapter-core';
 import { SolanaConformanceAdapter } from '@naryx/adapter-solana';
 import { Connection } from '@solana/web3.js';
 import {
   HttpSelectedSolanaAdmissionProvider,
+  HttpHyperliquidTestnetTrustedAttemptProvider,
   HttpInternalOrderProvider,
   SolanaExecutionAuthorizationService,
   SqliteSolanaExecutionAuthorizationStore,
   SqliteInternalAtomicQuoteStore,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
+  createHyperliquidTestnetExecutorServer,
   createLocalAtomicMarketRuntime,
+  loadHyperliquidTestnetAgentSigner,
+  loadHyperliquidTestnetExecutorRuntime,
+  type LoadedHyperliquidTestnetExecutorRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 
@@ -23,12 +29,35 @@ function loopbackHost(value: string): string {
   throw new Error('NARYX_SOLVER_HOST must be loopback');
 }
 
-function port(value: string | undefined): number {
-  if (value === undefined) return 8_788;
-  if (!/^\d{1,5}$/.test(value)) throw new Error('NARYX_SOLVER_PORT must be a TCP port');
+function port(value: string | undefined, name = 'NARYX_SOLVER_PORT', fallback = 8_788): number {
+  if (value === undefined) return fallback;
+  if (!/^\d{1,5}$/.test(value)) throw new Error(`${name} must be a TCP port`);
   const parsed = Number(value);
-  if (parsed < 1 || parsed > 65_535) throw new Error('NARYX_SOLVER_PORT must be a TCP port');
+  if (parsed < 1 || parsed > 65_535) throw new Error(`${name} must be a TCP port`);
   return parsed;
+}
+
+function explicitBoolean(value: string | undefined, name: string): boolean {
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error(`${name} must be true or false`);
+}
+
+function listen(server: Server, listenPort: number, host: string): Promise<void> {
+  return new Promise((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(listenPort, host, () => {
+      server.off('error', reject);
+      resolveListen();
+    });
+  });
+}
+
+function close(server: Server | undefined): Promise<void> {
+  if (server === undefined || !server.listening) return Promise.resolve();
+  return new Promise((resolveClose, reject) => {
+    server.close((error) => error === undefined ? resolveClose() : reject(error));
+  });
 }
 
 function absolutePath(value: string, name: string): string {
@@ -126,20 +155,81 @@ const authorization = manifestRuntime === undefined || authorizationStore === un
     store: authorizationStore,
     readSlot: manifestRuntime.readSlot,
   });
-const server = createInternalAtomicQuoteServer(coordinator, authorization);
+const quoteServer = createInternalAtomicQuoteServer(coordinator, authorization);
+const executorEnabled = explicitBoolean(
+  process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
+  'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED',
+);
+let executorRuntime: LoadedHyperliquidTestnetExecutorRuntime | undefined;
+let executorServer: Server | undefined;
+let executorPort: number | undefined;
+if (executorEnabled) {
+  executorPort = port(
+    process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT,
+    'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT',
+    8_792,
+  );
+  if (executorPort === listenPort) {
+    throw new Error('Hyperliquid Testnet executor port must differ from the quote port');
+  }
+  const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
+  const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;
+  if (keyPath === undefined || keyPath.length === 0) {
+    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH is required');
+  }
+  if (expectedAgent === undefined || expectedAgent.length === 0) {
+    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS is required');
+  }
+  const hyperliquidSigner = loadHyperliquidTestnetAgentSigner(keyPath, expectedAgent);
+  executorRuntime = await loadHyperliquidTestnetExecutorRuntime({
+    ...process.env,
+    NARYX_HYPERLIQUID_TESTNET_EXECUTION_ENABLED: 'true',
+  }, {
+    attempts: new HttpHyperliquidTestnetTrustedAttemptProvider({ apiOrigin }),
+    signer: hyperliquidSigner,
+  });
+  if (executorRuntime.runtimeFactory === undefined) {
+    throw new Error('Hyperliquid Testnet executor runtime is unavailable');
+  }
+  executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory);
+}
 
+let shuttingDown = false;
 function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
-  server.close(() => {
+  void Promise.allSettled([close(quoteServer), close(executorServer)]).then((results) => {
+    executorRuntime?.close();
     store.close();
     authorizationStore?.close();
-    process.exitCode = 0;
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') {
+      const error = failed.reason;
+      process.stderr.write(`Solver shutdown failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
+      process.exitCode = 1;
+    } else {
+      process.exitCode = 0;
+    }
   });
 }
 
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
-server.listen(listenPort, host, () => {
-  const mode = manifestRuntime === undefined ? 'PHASE4_FIXTURE' : 'MANIFEST_VALIDATED';
-  process.stdout.write(`Internal solver listening on http://${host}:${listenPort} runtime=${mode}\n`);
-});
+try {
+  await listen(quoteServer, listenPort, host);
+  if (executorServer !== undefined && executorPort !== undefined) {
+    await listen(executorServer, executorPort, host);
+  }
+} catch (error) {
+  await Promise.allSettled([close(quoteServer), close(executorServer)]);
+  executorRuntime?.close();
+  store.close();
+  authorizationStore?.close();
+  throw error;
+}
+const mode = manifestRuntime === undefined ? 'PHASE4_FIXTURE' : 'MANIFEST_VALIDATED';
+process.stdout.write(`Internal solver listening on http://${host}:${listenPort} runtime=${mode}\n`);
+if (executorServer !== undefined && executorPort !== undefined) {
+  process.stdout.write(`Hyperliquid Testnet executor listening on http://${host}:${executorPort}\n`);
+}

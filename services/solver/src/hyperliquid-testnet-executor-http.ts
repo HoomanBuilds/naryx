@@ -250,16 +250,17 @@ function validatePlan(plan: HyperliquidExecutionPlan, input: HyperliquidTestnetR
   'INVALID_ATTEMPT', 'market binding does not match plan assets');
 }
 
-function validateAttempt(
-  request: HyperliquidTestnetExecutorRequest,
-  input: HyperliquidTestnetRuntimeCoordinatorInput,
+export function validateHyperliquidTestnetRuntimeAttempt(
+  expectedAttemptId: string,
+  value: unknown,
 ): HyperliquidTestnetRuntimeCoordinatorInput {
-  requireCondition(isRecord(input), 'INVALID_ATTEMPT', 'attempt provider returned an invalid attempt');
-  requireCondition(hasExactKeys(input, [
+  requireCondition(isRecord(value), 'INVALID_ATTEMPT', 'attempt provider returned an invalid attempt');
+  requireCondition(hasExactKeys(value, [
     'account', 'agentWallet', 'attemptId', 'binding', 'checkpointWindow', 'expectedVersion',
     'nonce', 'nowMs', 'plan', 'reconciliationWindow', 'signerLeaseId', 'vaultAddress',
   ]), 'INVALID_ATTEMPT', 'attempt provider fields are invalid');
-  requireCondition(input.attemptId === request.attemptId, 'ATTEMPT_IDENTITY_MISMATCH',
+  const input = value as unknown as HyperliquidTestnetRuntimeCoordinatorInput;
+  requireCondition(input.attemptId === expectedAttemptId, 'ATTEMPT_IDENTITY_MISMATCH',
     'resolved attempt identity does not match the request');
   safeBigint(input.expectedVersion, 'expectedVersion');
   safeBigint(input.nonce, 'nonce', true);
@@ -440,7 +441,7 @@ export function createHyperliquidTestnetExecutor(
       if (resolved === undefined) {
         throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
       }
-      const input = validateAttempt(request, resolved);
+      const input = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
       return sanitizeResult(request, await runtime.coordinator.execute(input));
     },
   });
