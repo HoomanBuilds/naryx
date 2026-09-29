@@ -14,6 +14,7 @@ import {
   packageOrderHash,
   packageReceipt,
   packageReceiptHash,
+  privateRfqEnvelopeHash,
   ProtocolError,
   replayRouteDecision,
   replaySealedAuction,
@@ -653,12 +654,32 @@ export class NaryxClient {
   // ---------------------------------------------------------------- private delivery
 
   /**
-   * Submits envelopes the caller encrypted with the pinned suite. The relay stores ciphertext and
+   * Submits envelopes the caller encrypted with the pinned suite. Each envelope's `senderKeyId` is
+   * the sender's base58 Ed25519 public key, and `signSender` signs each locally computed envelope
+   * hash with it, so no other party can spend the sender's nonces. The relay stores ciphertext and
    * canonical metadata only; being stored is not being delivered.
    */
-  async submitPrivateRfq(envelopes: readonly { readonly envelope: PrivateRfqEnvelopeInput; readonly ciphertext: Uint8Array }[]): Promise<readonly Record<string, unknown>[]> {
+  async submitPrivateRfq(
+    envelopes: readonly { readonly envelope: PrivateRfqEnvelopeInput; readonly ciphertext: Uint8Array }[],
+    signSender: (envelopeHash: Uint8Array) => Promise<Uint8Array>,
+  ): Promise<readonly Record<string, unknown>[]> {
     if (envelopes.length === 0 || envelopes.length > 16) throw new TypeError('submit 1 to 16 envelopes');
-    return list(record(await this.#request('POST', '/v1/rfqs/private', { envelopes }), 'rfq').results, 'results').map((entry, index) => record(entry, `results[${index}]`));
+    if (typeof signSender !== 'function') throw new TypeError('a sender signer is required');
+    const signed: { envelope: PrivateRfqEnvelopeInput; ciphertext: Uint8Array; senderSignature: Uint8Array }[] = [];
+    for (const entry of envelopes) {
+      const senderSignature = await signSender(privateRfqEnvelopeHash(entry.envelope));
+      if (!(senderSignature instanceof Uint8Array) || senderSignature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+      signed.push({ envelope: entry.envelope, ciphertext: entry.ciphertext, senderSignature });
+    }
+    const results = list(record(await this.#request('POST', '/v1/rfqs/private', { envelopes: signed }), 'rfq').results, 'results');
+    if (results.length !== signed.length) throw new NaryxEvidenceError('the relay answered a different number of envelopes');
+    return results.map((entry, index) => {
+      const result = record(entry, `results[${index}]`);
+      if (result.admitted === true && result.envelopeHashHex !== toHex(privateRfqEnvelopeHash((signed[index] as (typeof signed)[number]).envelope))) {
+        throw new NaryxEvidenceError(`results[${index}] names another envelope`);
+      }
+      return result;
+    });
   }
 
   /** Delivery counts only once the recipient acknowledged; the response is ciphertext for the taker. */

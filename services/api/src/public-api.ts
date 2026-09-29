@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import bs58 from "bs58";
 import {
   admitPrivateRfqEnvelope,
   aggregateCandles,
@@ -11,6 +12,7 @@ import {
   packageBookLevels,
   packageOrderHash,
   planCoordinatedDeRisk,
+  privateRfqEnvelopeHash,
   ProtocolError,
   replayRouteDecision,
   toHex,
@@ -37,8 +39,20 @@ import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
+import { verifyEd25519 } from "./ed25519.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** The raw key of a sender key id that is a canonical base58 Ed25519 public key, else undefined. */
+function senderPublicKey(senderKeyId: unknown): Uint8Array | undefined {
+  if (typeof senderKeyId !== "string") return undefined;
+  try {
+    const bytes = bs58.decode(senderKeyId);
+    return bytes.length === 32 && bs58.encode(bytes) === senderKeyId ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const CURSOR = /^(0|[1-9]\d{0,15})$/;
 const LIMIT = /^[1-9]\d{0,2}$/;
@@ -571,6 +585,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         const item = object(entry, "envelope entry");
         const envelope = object(item.envelope, "envelope") as unknown as PrivateRfqEnvelopeInput;
         if (!(item.ciphertext instanceof Uint8Array) || item.ciphertext.length === 0) throw new RequestError(400, "INVALID_REQUEST", "ciphertext must be bytes.");
+        // The sender key id is a self-certifying Ed25519 key, and the sender signs the envelope
+        // hash with it, so nobody else can spend that sender's nonces or learn whether one is used.
+        const senderKey = senderPublicKey((envelope as { senderKeyId?: unknown }).senderKeyId);
+        const senderSignature = item.senderSignature;
+        if (
+          senderKey === undefined ||
+          !(senderSignature instanceof Uint8Array) ||
+          !verifyEd25519(senderKey, privateRfqEnvelopeHash(envelope), senderSignature)
+        ) {
+          return { admission: { admitted: false as const, reason: "SENDER_UNAUTHENTICATED" } };
+        }
         const recipient = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", String((envelope as { recipientSolverId?: unknown }).recipientSolverId));
         if (recipient === undefined) return { admission: { admitted: false as const, reason: "RECIPIENT_MISMATCH" } };
         const admission = admitPrivateRfqEnvelope(envelope, {
@@ -586,7 +611,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           ? Number(envelope.expiresAtValue) * 1_000
           : Number(envelope.expiresAtValue);
         if (!Number.isSafeInteger(expiresAtMs)) throw new RequestError(400, "INVALID_REQUEST", "Envelope expiry is out of range.");
-        return { admission, store: { envelope, ciphertext: item.ciphertext, expiresAtMs } };
+        return { admission, store: { envelope, ciphertext: item.ciphertext, expiresAtMs, senderSignature } };
       });
       const toStore = decided.flatMap((entry) => (entry.store === undefined ? [] : [entry.store]));
       const stored = toStore.length === 0 ? [] : [...relay.storeEnvelopes(toStore)];

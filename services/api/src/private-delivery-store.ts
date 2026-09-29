@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS rfq_envelopes (
   ciphertext BLOB NOT NULL,
   expires_at_value TEXT NOT NULL,
   expires_at_ms INTEGER NOT NULL DEFAULT 0,
+  sender_signature BLOB,
   received_at_ms INTEGER NOT NULL,
   UNIQUE (sender_key_id, envelope_nonce, recipient_solver_id)
 ) STRICT;
@@ -85,7 +86,16 @@ export interface StoredEnvelope {
   readonly envelope: PrivateRfqEnvelope;
   readonly ciphertext: Uint8Array;
   readonly acknowledged: boolean;
+  /** The sender key's Ed25519 signature over the envelope hash; absent only on rows stored before sender authentication. */
+  readonly senderSignature?: Uint8Array;
   readonly response?: { readonly responseHashHex: string; readonly response: unknown; readonly responseCiphertext: Uint8Array };
+}
+
+interface EnvelopeRow {
+  readonly envelope_hash: Uint8Array;
+  readonly envelope_json: string;
+  readonly ciphertext: Uint8Array;
+  readonly sender_signature: Uint8Array | null;
 }
 
 /**
@@ -103,6 +113,10 @@ export class SqlitePrivateDeliveryStore {
     const columns = this.db.prepare("PRAGMA table_info(rfq_envelopes)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "expires_at_ms")) {
       this.db.exec("ALTER TABLE rfq_envelopes ADD COLUMN expires_at_ms INTEGER NOT NULL DEFAULT 0");
+    }
+    // Stores created before sender authentication gain the column; their rows carry no signature.
+    if (!columns.some((column) => column.name === "sender_signature")) {
+      this.db.exec("ALTER TABLE rfq_envelopes ADD COLUMN sender_signature BLOB");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS rfq_envelopes_pending ON rfq_envelopes(recipient_solver_id, expires_at_ms, received_at_ms)");
     this.clock = options.clock ?? Date.now;
@@ -130,20 +144,30 @@ export class SqlitePrivateDeliveryStore {
    * Stores envelopes the caller already admitted, all in one transaction: either every entry is
    * recorded or none is. A repeat of the same envelope is idempotent. `expiresAtMs` is the
    * envelope's expiry on the server wall clock, used to hide expired envelopes from the inbox.
+   * `senderSignature` is the sender key's signature over the envelope hash, which the caller has
+   * already verified; it is kept so the recipient can verify the sender itself.
    */
   storeEnvelopes(
-    items: readonly { readonly envelope: PrivateRfqEnvelopeInput; readonly ciphertext: Uint8Array; readonly expiresAtMs: number }[],
+    items: readonly {
+      readonly envelope: PrivateRfqEnvelopeInput;
+      readonly ciphertext: Uint8Array;
+      readonly expiresAtMs: number;
+      readonly senderSignature: Uint8Array;
+    }[],
   ): readonly { readonly envelopeHashHex: string; readonly created: boolean }[] {
     const prepared = items.map((item) => {
       const envelope = privateRfqEnvelope(item.envelope);
       if (!Number.isSafeInteger(item.expiresAtMs) || item.expiresAtMs <= 0) {
         throw new PrivateDeliveryStoreError("INVALID_EXPIRY", "Envelope expiry must be a positive millisecond time.");
       }
-      return { envelope, hash: privateRfqEnvelopeHash(envelope), ciphertext: item.ciphertext, expiresAtMs: item.expiresAtMs };
+      if (!(item.senderSignature instanceof Uint8Array) || item.senderSignature.length !== 64) {
+        throw new PrivateDeliveryStoreError("INVALID_SIGNATURE", "The sender signature must be 64 bytes.");
+      }
+      return { envelope, hash: privateRfqEnvelopeHash(envelope), ciphertext: item.ciphertext, expiresAtMs: item.expiresAtMs, senderSignature: item.senderSignature };
     });
     return this.transaction(() => {
       const now = this.clock();
-      return prepared.map(({ envelope, hash, ciphertext, expiresAtMs }) => {
+      return prepared.map(({ envelope, hash, ciphertext, expiresAtMs, senderSignature }) => {
         const existing = this.db.prepare("SELECT 1 FROM rfq_envelopes WHERE envelope_hash = ?").get(hash);
         if (existing !== undefined) return { envelopeHashHex: toHex(hash), created: false };
         const pending = this.db
@@ -158,9 +182,20 @@ export class SqlitePrivateDeliveryStore {
         try {
           this.db
             .prepare(
-              "INSERT INTO rfq_envelopes (envelope_hash, recipient_solver_id, sender_key_id, envelope_nonce, envelope_json, ciphertext, expires_at_value, expires_at_ms, received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              "INSERT INTO rfq_envelopes (envelope_hash, recipient_solver_id, sender_key_id, envelope_nonce, envelope_json, ciphertext, expires_at_value, expires_at_ms, sender_signature, received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .run(hash, envelope.recipientSolverId, envelope.senderKeyId, envelope.envelopeNonce.toString(), stringifyProtocolJson(envelope), ciphertext, envelope.expiresAtValue.toString(), expiresAtMs, now);
+            .run(
+              hash,
+              envelope.recipientSolverId,
+              envelope.senderKeyId,
+              envelope.envelopeNonce.toString(),
+              stringifyProtocolJson(envelope),
+              ciphertext,
+              envelope.expiresAtValue.toString(),
+              expiresAtMs,
+              senderSignature,
+              now,
+            );
         } catch (error) {
           // Only the sender, nonce, and recipient uniqueness constraint means a replay.
           if ((error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE") {
@@ -174,11 +209,16 @@ export class SqlitePrivateDeliveryStore {
   }
 
   /** Single-envelope form of storeEnvelopes. */
-  storeEnvelope(envelopeInput: PrivateRfqEnvelopeInput, ciphertext: Uint8Array, expiresAtMs: number): { readonly envelopeHashHex: string; readonly created: boolean } {
-    return this.storeEnvelopes([{ envelope: envelopeInput, ciphertext, expiresAtMs }])[0] as { envelopeHashHex: string; created: boolean };
+  storeEnvelope(
+    envelopeInput: PrivateRfqEnvelopeInput,
+    ciphertext: Uint8Array,
+    expiresAtMs: number,
+    senderSignature: Uint8Array,
+  ): { readonly envelopeHashHex: string; readonly created: boolean } {
+    return this.storeEnvelopes([{ envelope: envelopeInput, ciphertext, expiresAtMs, senderSignature }])[0] as { envelopeHashHex: string; created: boolean };
   }
 
-  private decodeEnvelope(row: { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array }): StoredEnvelope {
+  private decodeEnvelope(row: EnvelopeRow): StoredEnvelope {
     const hashHex = toHex(row.envelope_hash);
     const envelope = privateRfqEnvelope(parseProtocolJson(row.envelope_json) as PrivateRfqEnvelopeInput);
     if (toHex(privateRfqEnvelopeHash(envelope)) !== hashHex) throw new PrivateDeliveryStoreError("CORRUPT_ROW", "Stored envelope does not match its hash.");
@@ -191,6 +231,7 @@ export class SqlitePrivateDeliveryStore {
       envelope,
       ciphertext: Uint8Array.from(row.ciphertext),
       acknowledged,
+      ...(row.sender_signature === null ? {} : { senderSignature: Uint8Array.from(row.sender_signature) }),
       ...(response === undefined
         ? {}
         : { response: { responseHashHex: toHex(response.response_hash), response: parseProtocolJson(response.response_json), responseCiphertext: Uint8Array.from(response.response_ciphertext) } }),
@@ -199,8 +240,8 @@ export class SqlitePrivateDeliveryStore {
 
   getEnvelope(envelopeHashHex: string): StoredEnvelope | undefined {
     const row = this.db
-      .prepare("SELECT envelope_hash, envelope_json, ciphertext FROM rfq_envelopes WHERE envelope_hash = ?")
-      .get(Buffer.from(envelopeHashHex, "hex")) as { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array } | undefined;
+      .prepare("SELECT envelope_hash, envelope_json, ciphertext, sender_signature FROM rfq_envelopes WHERE envelope_hash = ?")
+      .get(Buffer.from(envelopeHashHex, "hex")) as EnvelopeRow | undefined;
     return row === undefined ? undefined : this.decodeEnvelope(row);
   }
 
@@ -211,12 +252,12 @@ export class SqlitePrivateDeliveryStore {
   pendingFor(solverId: string, nowMs: number, limit = 50): readonly StoredEnvelope[] {
     const rows = this.db
       .prepare(
-        `SELECT e.envelope_hash, e.envelope_json, e.ciphertext FROM rfq_envelopes e
+        `SELECT e.envelope_hash, e.envelope_json, e.ciphertext, e.sender_signature FROM rfq_envelopes e
          LEFT JOIN rfq_acknowledgements a ON a.envelope_hash = e.envelope_hash
          WHERE e.recipient_solver_id = ? AND a.envelope_hash IS NULL AND e.expires_at_ms > ?
          ORDER BY e.received_at_ms LIMIT ?`,
       )
-      .all(solverId, nowMs, Math.max(1, Math.min(limit, 200))) as { envelope_hash: Uint8Array; envelope_json: string; ciphertext: Uint8Array }[];
+      .all(solverId, nowMs, Math.max(1, Math.min(limit, 200))) as EnvelopeRow[];
     return Object.freeze(rows.map((row) => this.decodeEnvelope(row)));
   }
 

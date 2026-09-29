@@ -6,17 +6,20 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import bs58 from "bs58";
 import {
   domainManifestHash,
   domainRef,
   fromProtocolJson,
   packageQuoteShardHash,
+  privateRfqEnvelopeHash,
   sealedQuoteCommitment,
   solverRequestDigest,
   toHex,
   toProtocolJson,
   type PackageQuoteLevel,
   type PackageQuoteShardInput,
+  type PrivateRfqEnvelopeInput,
   type SolverRequestMethod,
 } from "@naryx/protocol-types";
 import {
@@ -257,8 +260,18 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
   });
 });
 
+/** A private RFQ sender whose key id is its base58 Ed25519 public key, signing envelope hashes. */
+function rfqSender() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const keyId = bs58.encode((publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32));
+  const signEnvelope = (envelope: PrivateRfqEnvelopeInput) => new Uint8Array(sign(null, privateRfqEnvelopeHash(envelope), privateKey));
+  const entry = (envelope: PrivateRfqEnvelopeInput, ciphertext: unknown) => ({ envelope, ciphertext, senderSignature: signEnvelope(envelope) });
+  return { keyId, signEnvelope, entry };
+}
+
 test("the private RFQ relay stores ciphertext only, fails closed without a pinned suite, and binds responses", async () => {
-  const envelope = (overrides: Record<string, unknown> = {}) => ({
+  const taker = rfqSender();
+  const envelope = (overrides: Record<string, unknown> = {}): PrivateRfqEnvelopeInput => ({
     envelopeVersion: 1,
     environment: "testnet",
     domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)),
@@ -266,7 +279,7 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
     templateVersion: 1,
     packageTemplateManifestHash: "44".repeat(32),
     orderHash: "55".repeat(32),
-    senderKeyId: "taker-key-1",
+    senderKeyId: taker.keyId,
     responseEncryptionKey: new Uint8Array(32).fill(7),
     recipientSolverId: "solver-a",
     recipientEncryptionKeyId: "rfq-1",
@@ -281,20 +294,33 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
   });
   const ciphertext = new Uint8Array(Buffer.from("sealed-order"));
   await withSolverApi(async (api) => {
-    const closed = await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] });
+    const closed = await api.plain("POST", "/v1/rfqs/private", { envelopes: [taker.entry(envelope(), ciphertext)] });
     assert.equal((closed.body.error as { code: string }).code, "PRIVATE_PATH_UNAVAILABLE");
   }, []);
   await withSolverApi(async (api) => {
-    const submitted = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] })).body as { results: readonly { admitted: boolean; envelopeHashHex?: string }[] };
+    type Results = { results: readonly { admitted: boolean; envelopeHashHex?: string; reason?: string }[] };
+    // Nobody but the sender key can spend its nonces: a squatter signing with its own key, an
+    // unsigned entry, and a key id that is not a key are all refused before any nonce is checked.
+    const squatter = rfqSender();
+    const squat = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext, senderSignature: squatter.signEnvelope(envelope()) }] })).body as Results;
+    assert.equal(squat.results[0]?.reason, "SENDER_UNAUTHENTICATED");
+    const unsigned = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] })).body as Results;
+    assert.equal(unsigned.results[0]?.reason, "SENDER_UNAUTHENTICATED");
+    const named = envelope({ senderKeyId: "taker-key-1" });
+    const notKey = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: named, ciphertext, senderSignature: taker.signEnvelope(named) }] })).body as Results;
+    assert.equal(notKey.results[0]?.reason, "SENDER_UNAUTHENTICATED");
+
+    const submitted = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [taker.entry(envelope(), ciphertext)] })).body as Results;
     assert.equal(submitted.results[0]?.admitted, true);
     const hash = submitted.results[0]?.envelopeHashHex as string;
-    const replay = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope(), ciphertext }] })).body as { results: readonly { reason?: string }[] };
+    const replay = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [taker.entry(envelope(), ciphertext)] })).body as Results;
     assert.equal(replay.results[0]?.reason, "REPLAY");
-    const mutated = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: envelope({ envelopeNonce: 2n }), ciphertext: new Uint8Array([1, 2, 3]) }] })).body as { results: readonly { reason?: string }[] };
+    const mutated = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [taker.entry(envelope({ envelopeNonce: 2n }), new Uint8Array([1, 2, 3]))] })).body as Results;
     assert.equal(mutated.results[0]?.reason, "CIPHERTEXT_MUTATED");
 
-    const pending = (await api.call("GET", "/v1/solver/private-rfqs")).body as { envelopes: readonly { envelopeHash: string; ciphertext: Uint8Array }[] };
+    const pending = (await api.call("GET", "/v1/solver/private-rfqs")).body as { envelopes: readonly { envelopeHash: string; ciphertext: Uint8Array; senderSignature?: Uint8Array }[] };
     assert.deepEqual(pending.envelopes.map((entry) => entry.envelopeHash), [hash]);
+    assert.deepEqual([...(pending.envelopes[0]?.senderSignature ?? [])], [...taker.signEnvelope(envelope())]);
     assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, false);
     assert.equal((await api.call("POST", `/v1/solver/private-rfqs/${hash}/ack`)).status, 200);
     assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, true);
@@ -309,7 +335,10 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
 
 test("expired envelopes cannot starve the inbox and a rejected batch delivers nothing", async () => {
   const ciphertext = new Uint8Array(Buffer.from("sealed-order"));
-  const envelope = (nonce: bigint, expiresInSeconds: bigint) => ({
+  const spammer = rfqSender();
+  const taker = rfqSender();
+  const batcher = rfqSender();
+  const envelope = (nonce: bigint, expiresInSeconds: bigint): PrivateRfqEnvelopeInput => ({
     envelopeVersion: 1,
     environment: "testnet",
     domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)),
@@ -317,7 +346,7 @@ test("expired envelopes cannot starve the inbox and a rejected batch delivers no
     templateVersion: 1,
     packageTemplateManifestHash: "44".repeat(32),
     orderHash: "55".repeat(32),
-    senderKeyId: "spam-key",
+    senderKeyId: spammer.keyId,
     responseEncryptionKey: new Uint8Array(32).fill(7),
     recipientSolverId: "solver-a",
     recipientEncryptionKeyId: "rfq-1",
@@ -332,17 +361,17 @@ test("expired envelopes cannot starve the inbox and a rejected batch delivers no
   await withSolverApi(async (api) => {
     // More short-lived envelopes than one inbox page, then one that stays live.
     for (let batch = 0; batch < 40; batch += 1) {
-      const envelopes = Array.from({ length: 16 }, (_, index) => ({ envelope: envelope(BigInt(batch * 16 + index + 1), 2n), ciphertext }));
+      const envelopes = Array.from({ length: 16 }, (_, index) => spammer.entry(envelope(BigInt(batch * 16 + index + 1), 2n), ciphertext));
       assert.equal((await api.plain("POST", "/v1/rfqs/private", { envelopes })).status, 200);
     }
-    const live = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [{ envelope: { ...envelope(10_000n, 600n), senderKeyId: "taker-key" }, ciphertext }] })).body as { results: readonly { envelopeHashHex?: string }[] };
+    const live = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [taker.entry({ ...envelope(10_000n, 600n), senderKeyId: taker.keyId }, ciphertext)] })).body as { results: readonly { envelopeHashHex?: string }[] };
     api.setClock(Number(NOW_S + 10n) * 1_000);
     const pending = (await api.call("GET", "/v1/solver/private-rfqs")).body as { envelopes: readonly { envelopeHash: string }[] };
     assert.deepEqual(pending.envelopes.map((entry) => entry.envelopeHash), [live.results[0]?.envelopeHashHex]);
 
     // A later malformed entry rejects the whole batch before the good entry is stored.
-    const good = { envelope: { ...envelope(20_000n, 600n), senderKeyId: "batch-key" }, ciphertext };
-    const rejected = await api.plain("POST", "/v1/rfqs/private", { envelopes: [good, { envelope: good.envelope, ciphertext: "not-bytes" }] });
+    const good = batcher.entry({ ...envelope(20_000n, 600n), senderKeyId: batcher.keyId }, ciphertext);
+    const rejected = await api.plain("POST", "/v1/rfqs/private", { envelopes: [good, { ...good, ciphertext: "not-bytes" }] });
     assert.equal(rejected.status, 400);
     const retried = (await api.plain("POST", "/v1/rfqs/private", { envelopes: [good] })).body as { results: readonly { admitted: boolean }[] };
     assert.equal(retried.results[0]?.admitted, true);

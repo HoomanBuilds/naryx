@@ -349,7 +349,15 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     }
     if (method === "GET" && path === "/v1/solver/private-rfqs") {
       const pending = requireDelivery().pendingFor(solverId, clockMs());
-      return { envelopes: pending.map((entry) => ({ envelopeHash: entry.envelopeHashHex, envelope: entry.envelope, ciphertext: entry.ciphertext })) };
+      // The sender signature travels with the envelope so the recipient can authenticate the sender itself.
+      return {
+        envelopes: pending.map((entry) => ({
+          envelopeHash: entry.envelopeHashHex,
+          envelope: entry.envelope,
+          ciphertext: entry.ciphertext,
+          ...(entry.senderSignature === undefined ? {} : { senderSignature: entry.senderSignature }),
+        })),
+      };
     }
     if ((match = /^\/v1\/solver\/private-rfqs\/([0-9a-f]{64})\/(ack|response)$/.exec(path)) !== null && method === "POST") {
       const relay = requireDelivery();

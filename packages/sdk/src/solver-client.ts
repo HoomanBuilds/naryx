@@ -161,7 +161,11 @@ export class NaryxSolverClient {
     return this.#call('POST', '/v1/solver/quotes', { packageMarketId, quote, ...(expiresAtValue === undefined ? {} : { expiresAtValue }) });
   }
 
-  /** Envelopes addressed to this solver that are neither acknowledged nor expired. */
+  /**
+   * Envelopes addressed to this solver that are neither acknowledged nor expired. Each carries the
+   * sender key's Ed25519 signature over the envelope hash; the relay has checked it, and a solver
+   * can check it again against the base58 key in `senderKeyId` before decrypting.
+   */
   pendingPrivateRfqs() {
     return this.#call('GET', '/v1/solver/private-rfqs');
   }

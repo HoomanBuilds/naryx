@@ -11,6 +11,7 @@ import {
   packageOrderBytes,
   packageOrderHash,
   packageReceiptHash,
+  privateRfqEnvelopeHash,
   terminalOutcomeHash,
   toHex,
   toProtocolJson,
@@ -18,6 +19,7 @@ import {
   type EvidenceManifestInput,
   type PackageOrderInput,
   type PackageReceiptInput,
+  type PrivateRfqEnvelopeInput,
   type TerminalOutcomeInput,
 } from '@naryx/protocol-types';
 import { NaryxClient, NaryxSolverClient, base58Encode, type FetchLike } from '../src/index.js';
@@ -285,6 +287,48 @@ describe('order intake and terminal evidence', () => {
       client({ [path]: { body: { ...body, timeUnhedgedMs: { median: 11n, p95: 10n, max: 10n } } } }).getExecutionQuality({ solverId: 'solver-a' }),
       /not ordered/,
     );
+  });
+
+  test('private RFQ envelopes are signed over their locally computed hash by the sender key', async () => {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const envelope: PrivateRfqEnvelopeInput = {
+      envelopeVersion: 1,
+      environment: 'testnet',
+      domain,
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: '44'.repeat(32),
+      orderHash: '55'.repeat(32),
+      senderKeyId: 'sender-key',
+      responseEncryptionKey: new Uint8Array(32).fill(7),
+      recipientSolverId: 'solver-a',
+      recipientEncryptionKeyId: 'rfq-1',
+      encryptionSuiteId: 'suite-1',
+      ciphertextHash: hash(8),
+      createdAtUnit: 'EVM_UNIX_SECONDS',
+      createdAtValue: 10n,
+      expiresAtUnit: 'EVM_UNIX_SECONDS',
+      expiresAtValue: 70n,
+      envelopeNonce: 1n,
+    };
+    const envelopeHash = privateRfqEnvelopeHash(envelope);
+    const signedHashes: Uint8Array[] = [];
+    const signer = async (digest: Uint8Array) => {
+      signedHashes.push(digest);
+      return new Uint8Array(sign(null, digest, privateKey));
+    };
+    const seen: { method: string; path: string; body?: unknown }[] = [];
+    const results = await client({ 'POST /v1/rfqs/private': { body: { results: [{ admitted: true, envelopeHashHex: toHex(envelopeHash), created: true }] } } }, seen)
+      .submitPrivateRfq([{ envelope, ciphertext: new Uint8Array([1]) }], signer);
+    assert.equal(results[0]?.admitted, true);
+    assert.deepEqual(signedHashes, [envelopeHash]);
+    const sent = (seen[0]?.body as { envelopes: { senderSignature: Uint8Array }[] }).envelopes[0];
+    assert.deepEqual(sent?.senderSignature, new Uint8Array(sign(null, envelopeHash, privateKey)));
+    await assert.rejects(
+      client({ 'POST /v1/rfqs/private': { body: { results: [{ admitted: true, envelopeHashHex: 'ab'.repeat(32) }] } } }).submitPrivateRfq([{ envelope, ciphertext: new Uint8Array([1]) }], signer),
+      /names another envelope/,
+    );
+    await assert.rejects(client({}).submitPrivateRfq([{ envelope, ciphertext: new Uint8Array([1]) }], async () => new Uint8Array(3)), /64-byte signature/);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {
