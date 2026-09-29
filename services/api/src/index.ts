@@ -123,6 +123,14 @@ export {
   type TrustedHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
 export {
+  BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
+  BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
+  BaseSepoliaAtomicContextError,
+  createBaseSepoliaAtomicContextProvider,
+  type BaseSepoliaAtomicContextProviderOptions,
+  type BaseSepoliaAtomicDeploymentConfiguration,
+} from "./base-sepolia-atomic-context-provider.js";
+export {
   createEvmTestnetTerminalPorts,
   BASE_SEPOLIA_CHAIN_REFERENCE,
   BASE_SEPOLIA_DOMAIN_ID,
