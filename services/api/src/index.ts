@@ -114,6 +114,11 @@ export {
   type HyperliquidTestnetTerminalExecutionResult,
 } from "./hyperliquid-testnet-terminal.js";
 export {
+  DurableHyperliquidTestnetTerminalExecutionPort,
+  HyperliquidTestnetTerminalExecutionStateError,
+  type TrustedHyperliquidTestnetAttemptExecutor,
+} from "./hyperliquid-testnet-terminal-execution.js";
+export {
   createEvmTestnetTerminalPorts,
   EVM_TESTNET_ENVIRONMENT,
   EvmTestnetTerminalValidationError,
