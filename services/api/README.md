@@ -44,9 +44,15 @@ The private solver handoff is GET `/internal/solver/hyperliquid-testnet/attempts
 | `GET /v1/strategy-series`, `/v1/strategy-series/{id}/execution-classes` | exchange store, revalidated against canonical hashes |
 | `GET /v1/markets` (alias `/v1/package-book`) | every open package market with best executable bid, ask, and spread |
 | `GET /v1/markets/{id}/package-depth` | live depth per price level, direct and implied quantity kept apart |
-| `GET /v1/markets/{id}/package-tape?after=&limit=` | trades with price, quantity, maker source, allocation hash; no participant, common-control, taker order, or reservation identities |
+| `GET /v1/markets/{id}/package-tape?after=&limit=` | trades (allocations with at least one fill; an order that only rested is never listed) with price, quantity, maker source, allocation hash; no participant, common-control, taker order, or reservation identities |
 | `GET /v1/markets/{id}/candles?interval=&from=&to=` | OHLCV candles aggregated from recorded trades only, labeled `OBSERVED`; empty buckets stay empty; at most 1000 candles per request |
 | `GET /v1/markets/{id}/index?sizes=` | executable average prices from direct liquidity (`EXECUTABLE`) and a separate series including implied liquidity (`INDICATIVE`) |
+| `GET /v1/indices/{seriesId}?sizes=` | the executable index of every execution class of a series, each with its settlement class, firmness class, and domains; an unopened class is marked `open: false` |
+| `GET /v1/curves/{seriesId}?sizes=` | the series curve across execution classes: `EXECUTABLE` average prices at each size and the last `OBSERVED` trade; nothing is interpolated or modeled, and funding or volatility curves are not served until an observation source exists |
+| `GET /v1/opportunities?size=` | open, unhalted markets with direct executable depth at the size on at least one side, with series, executable bid and ask at size, spread at size, and last trade; tightest spread first |
+| `POST /v1/orders` | signed order intake (`SqliteEvidenceStore`, `NARYX_EVIDENCE_DB`): the owner's Ed25519 signature over the exact canonical order bytes, one order per owner nonce; intake is not execution |
+| `GET /v1/orders/{orderHash}`, `/v1/outcomes/{orderHash}`, `/v1/receipts/{orderHash}` | the signed order and status, the terminal outcome with its evidence manifest, and the successful receipt; every record is served with its hash and re-hashed on read |
+| `GET /v1/analytics/execution-quality?solverId=` | counts of stored terminal outcomes and receipts, labeled `OBSERVED`, with nearest-rank time-unhedged percentiles and receipt field evidence grades |
 | `GET /v1/package-book/{id}/implied-provenance` | live implied entries with solver, evidence grade, derivation depth, and leg sources |
 | `GET /v1/allocations/{takerOrderId}` | full allocation evidence and its matching policy; possession of the taker order id is the read capability |
 | `POST /v1/orders/validate`, `/v1/routes/replay-decision`, `/v1/routes/compare`, `/v1/clearing/simulate`, `/v1/de-risk/validate` | side-effect-free kernel computation; route comparison takes solver scope from the registry, never from the caller; clearing simulation runs on an in-memory copy of the book |

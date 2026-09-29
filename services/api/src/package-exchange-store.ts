@@ -365,7 +365,7 @@ export class SqlitePackageExchangeStore {
     );
   }
 
-  /** Allocations recorded in a half-open time window, oldest first, for candle aggregation. */
+  /** Trades recorded in a half-open time window, oldest first, for candle aggregation; resting-only allocations are skipped. */
   allocationsBetween(executionClassId: string, fromMs: number, toMs: number, limit: number): readonly PackageTapeRecord[] {
     if (!Number.isSafeInteger(fromMs) || !Number.isSafeInteger(toMs) || fromMs < 0 || toMs <= fromMs || !Number.isSafeInteger(limit) || limit < 1 || limit > 50_000) {
       throw new PackageExchangeStoreError("INVALID_INPUT", "Window must be nonempty and limit between 1 and 50000.");
@@ -373,7 +373,9 @@ export class SqlitePackageExchangeStore {
     if (this.getBook(executionClassId) === undefined) throw new PackageExchangeStoreError("BOOK_NOT_FOUND", "Package book is not open.");
     const rows = this.db
       .prepare(
-        "SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations WHERE execution_class_id = ? AND recorded_at_ms >= ? AND recorded_at_ms < ? ORDER BY recorded_at_ms, rowid LIMIT ?",
+        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
+         WHERE execution_class_id = ? AND recorded_at_ms >= ? AND recorded_at_ms < ? AND json_array_length(allocation_json, '$.fills') > 0
+         ORDER BY recorded_at_ms, rowid LIMIT ?`,
       )
       .all(executionClassId, fromMs, toMs, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
     return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
@@ -558,8 +560,9 @@ export class SqlitePackageExchangeStore {
   }
 
   /**
-   * Allocations for one book in recorded order after an opaque cursor. The cursor is the storage
-   * row order, so a reader resumes exactly where it stopped and never sees an allocation twice.
+   * Trades for one book in recorded order after an opaque cursor: allocations with at least one
+   * fill. An order that only rested is not a trade and is never listed. The cursor is the storage
+   * row order, so a reader resumes exactly where it stopped and never sees a trade twice.
    */
   allocationTape(executionClassId: string, afterCursor: number, limit: number): readonly PackageTapeRecord[] {
     if (!Number.isSafeInteger(afterCursor) || afterCursor < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_TAPE_PAGE) {
@@ -570,10 +573,22 @@ export class SqlitePackageExchangeStore {
     }
     const rows = this.db
       .prepare(
-        "SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations WHERE execution_class_id = ? AND rowid > ? ORDER BY rowid LIMIT ?",
+        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
+         WHERE execution_class_id = ? AND rowid > ? AND json_array_length(allocation_json, '$.fills') > 0 ORDER BY rowid LIMIT ?`,
       )
       .all(executionClassId, afterCursor, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
     return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
+  }
+
+  /** The most recently recorded allocation of one book, or undefined when it has never traded. */
+  latestTrade(executionClassId: string): PackageTapeRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
+         WHERE execution_class_id = ? AND json_array_length(allocation_json, '$.fills') > 0 ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(executionClassId) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown } | undefined;
+    return row === undefined ? undefined : this.tapeRecord(executionClassId, row);
   }
 
   private tapeRecord(

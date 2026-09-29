@@ -295,6 +295,11 @@ test("public routes serve signed orders, recorded outcomes with their hashes, an
       assert.equal(receipts.body.terminalState, "NO_EFFECT");
       assert.equal(receipts.body.receipt, undefined);
       assert.equal(receipts.body.evidenceManifestHash, toHex(evidenceManifestHash(manifest(orderHash))));
+      const outcomeRead = await call("GET", `/v1/outcomes/${orderHashHex}`);
+      assert.equal(outcomeRead.body.terminalState, "NO_EFFECT");
+      assert.equal(outcomeRead.body.outcomeHash, receipts.body.outcomeHash);
+      assert.equal(outcomeRead.body.receipt, undefined);
+      assert.equal((await call("GET", `/v1/outcomes/${"cd".repeat(32)}`)).status, 404);
       const quality = await call("GET", "/v1/analytics/execution-quality");
       assert.equal(quality.body.label, "OBSERVED");
       assert.equal(quality.body.terminalOutcomes, 1);

@@ -211,6 +211,62 @@ export interface ExecutionQualityView {
   readonly receiptFieldEvidence: Readonly<Record<string, number>>;
 }
 
+export interface VerifiedOutcome {
+  readonly orderHash: string;
+  readonly terminalState: TerminalState;
+  readonly evidenceManifest: EvidenceManifest;
+  readonly evidenceManifestHash: string;
+  readonly outcome: TerminalOutcomeRecord;
+  readonly outcomeHash: string;
+  /** The receipt the outcome links; present exactly for successful terminal states. */
+  readonly receiptHash?: string;
+  readonly recordedAtMs: number;
+}
+
+export interface SizeQuoteView {
+  readonly size: bigint;
+  /** Absent when the book cannot fill the whole size. */
+  readonly averagePriceTicks?: bigint;
+  readonly fillableQuantity: bigint;
+  readonly label: 'EXECUTABLE' | 'INDICATIVE';
+}
+
+export interface ObservedTrade {
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+  readonly recordedAtMs: number;
+  readonly allocationHash: string;
+  readonly label: 'OBSERVED';
+}
+
+export interface SeriesCurvePoint {
+  readonly executionClassId: string;
+  readonly settlementClass: string;
+  readonly domains: readonly string[];
+  readonly open: boolean;
+  readonly halted?: boolean;
+  readonly executable?: { readonly bids: readonly SizeQuoteView[]; readonly asks: readonly SizeQuoteView[] };
+  readonly lastTrade?: ObservedTrade;
+}
+
+export interface SeriesCurve {
+  readonly seriesId: string;
+  readonly quoteAsset: string;
+  readonly quoteConvention: string;
+  readonly asOfValue: bigint;
+  readonly methodologyVersion: number;
+  readonly points: readonly SeriesCurvePoint[];
+}
+
+export interface PackageOpportunity {
+  readonly packageMarketId: string;
+  readonly seriesId?: string;
+  readonly bid?: SizeQuoteView;
+  readonly ask?: SizeQuoteView;
+  readonly spreadAtSizeTicks?: bigint;
+  readonly lastTrade?: ObservedTrade;
+}
+
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
 /** Bitcoin-alphabet base58, the encoding the order intake expects for Ed25519 signatures. */
@@ -289,6 +345,47 @@ function documents<T>(value: unknown, context: string): readonly RegisteredDocum
       return document as unknown as RegisteredDocumentView<T>;
     }),
   );
+}
+
+function sizeQuotes(value: unknown, sizes: readonly bigint[], label: 'EXECUTABLE' | 'INDICATIVE', context: string): readonly SizeQuoteView[] {
+  const quotes = list(value, context);
+  if (quotes.length !== sizes.length) throw new NaryxEvidenceError(`${context} does not answer every requested size`);
+  return Object.freeze(
+    quotes.map((entry, index) => {
+      const quote = record(entry, `${context}[${index}]`);
+      const size = big(quote.size, `${context}[${index}].size`);
+      if (size !== sizes[index]) throw new NaryxEvidenceError(`${context}[${index}] answers another size`);
+      if (quote.label !== label) throw new NaryxEvidenceError(`${context}[${index}] must be labeled ${label}`);
+      const fillableQuantity = big(quote.fillableQuantity, `${context}[${index}].fillableQuantity`);
+      const averagePriceTicks = optionalBig(quote.averagePriceTicks, `${context}[${index}].averagePriceTicks`);
+      if (fillableQuantity > size || (averagePriceTicks === undefined) !== (fillableQuantity < size)) {
+        throw new NaryxEvidenceError(`${context}[${index}] reports a price for depth it does not have`);
+      }
+      return Object.freeze({ size, fillableQuantity, label, ...(averagePriceTicks === undefined ? {} : { averagePriceTicks }) });
+    }),
+  );
+}
+
+function observedTrade(value: unknown, context: string): ObservedTrade | undefined {
+  if (value === undefined) return undefined;
+  const trade = record(value, context);
+  if (trade.label !== 'OBSERVED') throw new NaryxEvidenceError(`${context} must be labeled OBSERVED`);
+  const quantity = big(trade.quantity, `${context}.quantity`);
+  if (quantity <= 0n) throw new NaryxEvidenceError(`${context} has no traded quantity`);
+  return Object.freeze({
+    priceTicks: big(trade.priceTicks, `${context}.priceTicks`),
+    quantity,
+    recordedAtMs: count(trade.recordedAtMs, `${context}.recordedAtMs`),
+    allocationHash: hashHex(trade.allocationHash, `${context}.allocationHash`),
+    label: 'OBSERVED' as const,
+  });
+}
+
+function sizesQuery(sizes: readonly bigint[]): string {
+  if (!Array.isArray(sizes) || sizes.length === 0 || sizes.length > 16 || sizes.some((size) => typeof size !== 'bigint' || size <= 0n)) {
+    throw new TypeError('sizes must be 1 to 16 positive integers');
+  }
+  return sizes.join(',');
 }
 
 /**
@@ -606,6 +703,118 @@ export class NaryxClient {
     return verifyTerminalEvidence(requested, body, options.acceptedQuoteFeeTerms);
   }
 
+  /** Reads the terminal outcome of an order without its receipt, verified as `verifyOutcomeEvidence` does. */
+  async getOutcome(orderHash: string): Promise<VerifiedOutcome> {
+    const requested = hashHex(orderHash, 'order hash');
+    const body = record(await this.#request('GET', `/v1/outcomes/${requested}`), 'outcome');
+    if (body.orderHash !== requested) throw new NaryxEvidenceError('outcome response is for another order');
+    return verifyOutcomeEvidence(requested, body);
+  }
+
+  /**
+   * The series curve across its execution classes: executable prices at each size and the last
+   * observed trade. Every point must answer every requested size with the right label.
+   */
+  async getCurve(seriesId: string, sizes: readonly bigint[] = [1n]): Promise<SeriesCurve> {
+    checkId(seriesId, 'series id');
+    const body = record(await this.#request('GET', `/v1/curves/${seriesId}?sizes=${sizesQuery(sizes)}`), 'curve');
+    if (body.seriesId !== seriesId) throw new NaryxEvidenceError('curve is for another series');
+    if (typeof body.quoteAsset !== 'string' || typeof body.quoteConvention !== 'string') throw new NaryxEvidenceError('curve header is malformed');
+    const points = list(body.points, 'curve.points').map((entry, index) => {
+      const point = record(entry, `curve.points[${index}]`);
+      const context = `curve.points[${index}]`;
+      if (typeof point.executionClassId !== 'string' || typeof point.settlementClass !== 'string' || typeof point.open !== 'boolean') {
+        throw new NaryxEvidenceError(`${context} is malformed`);
+      }
+      const domains = list(point.domains, `${context}.domains`).map((domain) => {
+        if (typeof domain !== 'string') throw new NaryxEvidenceError(`${context}.domains is malformed`);
+        return domain;
+      });
+      if (!point.open) {
+        if (point.executable !== undefined || point.lastTrade !== undefined) throw new NaryxEvidenceError(`${context} is closed but carries market data`);
+        return Object.freeze({ executionClassId: point.executionClassId, settlementClass: point.settlementClass, domains: Object.freeze(domains), open: false });
+      }
+      if (typeof point.halted !== 'boolean') throw new NaryxEvidenceError(`${context}.halted is malformed`);
+      const executable = record(point.executable, `${context}.executable`);
+      const lastTrade = observedTrade(point.lastTrade, `${context}.lastTrade`);
+      return Object.freeze({
+        executionClassId: point.executionClassId,
+        settlementClass: point.settlementClass,
+        domains: Object.freeze(domains),
+        open: true,
+        halted: point.halted,
+        executable: Object.freeze({
+          bids: sizeQuotes(executable.bids, sizes, 'EXECUTABLE', `${context}.executable.bids`),
+          asks: sizeQuotes(executable.asks, sizes, 'EXECUTABLE', `${context}.executable.asks`),
+        }),
+        ...(lastTrade === undefined ? {} : { lastTrade }),
+      });
+    });
+    return Object.freeze({
+      seriesId,
+      quoteAsset: body.quoteAsset,
+      quoteConvention: body.quoteConvention,
+      asOfValue: big(body.asOfValue, 'asOfValue'),
+      methodologyVersion: count(body.methodologyVersion, 'methodologyVersion'),
+      points: Object.freeze(points),
+    });
+  }
+
+  /** The executable index of every execution class of a series; unopened classes are marked. */
+  async getSeriesIndex(seriesId: string, sizes: readonly bigint[] = [1n]): Promise<Record<string, unknown>> {
+    checkId(seriesId, 'series id');
+    const body = record(await this.#request('GET', `/v1/indices/${seriesId}?sizes=${sizesQuery(sizes)}`), 'series index');
+    if (body.seriesId !== seriesId) throw new NaryxEvidenceError('index is for another series');
+    for (const [index, entry] of list(body.executionClasses, 'executionClasses').entries()) {
+      const executionClass = record(entry, `executionClasses[${index}]`);
+      if (executionClass.open !== true) continue;
+      const served = record(executionClass.index, `executionClasses[${index}].index`);
+      const executable = record(served.executable, `executionClasses[${index}].index.executable`);
+      const implied = record(served.withImplied, `executionClasses[${index}].index.withImplied`);
+      sizeQuotes(executable.bids, sizes, 'EXECUTABLE', `executionClasses[${index}].executable.bids`);
+      sizeQuotes(executable.asks, sizes, 'EXECUTABLE', `executionClasses[${index}].executable.asks`);
+      sizeQuotes(implied.bids, sizes, 'INDICATIVE', `executionClasses[${index}].withImplied.bids`);
+      sizeQuotes(implied.asks, sizes, 'INDICATIVE', `executionClasses[${index}].withImplied.asks`);
+    }
+    return body;
+  }
+
+  /**
+   * Package markets with executable direct depth at the size on at least one side, tightest
+   * executable spread first. Every entry must answer the requested size as EXECUTABLE.
+   */
+  async getOpportunities(size = 1n): Promise<readonly PackageOpportunity[]> {
+    const body = record(await this.#request('GET', `/v1/opportunities?size=${sizesQuery([size])}`), 'opportunities');
+    if (body.label !== 'EXECUTABLE' || body.size !== size) throw new NaryxEvidenceError('the opportunity feed must be EXECUTABLE at the requested size');
+    let previousSpread: bigint | undefined;
+    let spreadEnded = false;
+    return Object.freeze(
+      list(body.opportunities, 'opportunities').map((entry, index) => {
+        const context = `opportunities[${index}]`;
+        const opportunity = record(entry, context);
+        if (typeof opportunity.packageMarketId !== 'string') throw new NaryxEvidenceError(`${context} is malformed`);
+        const [bid] = opportunity.bid === undefined ? [] : sizeQuotes([opportunity.bid], [size], 'EXECUTABLE', `${context}.bid`);
+        const [ask] = opportunity.ask === undefined ? [] : sizeQuotes([opportunity.ask], [size], 'EXECUTABLE', `${context}.ask`);
+        if (bid?.averagePriceTicks === undefined && ask?.averagePriceTicks === undefined) throw new NaryxEvidenceError(`${context} has no executable side at the size`);
+        const spread = optionalBig(opportunity.spreadAtSizeTicks, `${context}.spreadAtSizeTicks`);
+        const expected = bid?.averagePriceTicks !== undefined && ask?.averagePriceTicks !== undefined ? ask.averagePriceTicks - bid.averagePriceTicks : undefined;
+        if (spread !== expected) throw new NaryxEvidenceError(`${context} spread is not its ask minus its bid`);
+        if (spread === undefined) spreadEnded = true;
+        else if (spreadEnded || (previousSpread !== undefined && spread < previousSpread)) throw new NaryxEvidenceError('opportunities are not ordered by executable spread');
+        if (spread !== undefined) previousSpread = spread;
+        const lastTrade = observedTrade(opportunity.lastTrade, `${context}.lastTrade`);
+        return Object.freeze({
+          packageMarketId: opportunity.packageMarketId,
+          ...(typeof opportunity.seriesId === 'string' ? { seriesId: opportunity.seriesId } : {}),
+          ...(bid === undefined ? {} : { bid }),
+          ...(ask === undefined ? {} : { ask }),
+          ...(spread === undefined ? {} : { spreadAtSizeTicks: spread }),
+          ...(lastTrade === undefined ? {} : { lastTrade }),
+        });
+      }),
+    );
+  }
+
   /** Measured execution quality; every figure comes from stored outcomes and receipts. */
   async getExecutionQuality(filter: { readonly solverId?: string } = {}): Promise<ExecutionQualityView> {
     const query = filter.solverId === undefined ? '' : `?solverId=${checkId(filter.solverId, 'solver id')}`;
@@ -803,16 +1012,8 @@ export function verifyAllocationEvidence(takerOrderId: string, allocationInput: 
   return Object.freeze({ allocation, matchingPolicy: policy, allocationHash: toHex(packageAllocationHash(allocation)) });
 }
 
-/**
- * Verifies served terminal evidence without trusting the server: every record re-hashes to its
- * served hash, the manifest and outcome name the requested order, the outcome binds the manifest,
- * and a receipt is present exactly for successful states and links to the outcome both ways.
- */
-export function verifyTerminalEvidence(
-  orderHash: string,
-  served: Record<string, unknown>,
-  acceptedQuoteFeeTerms?: AcceptedQuoteFeeTerms,
-): VerifiedTerminalEvidence {
+/** Re-hashes a served manifest and outcome and checks they name the requested order and each other. */
+function verifiedOutcomeParts(orderHash: string, served: Record<string, unknown>) {
   const requested = hashHex(orderHash, 'order hash');
   let manifest: EvidenceManifest;
   let outcome: TerminalOutcomeRecord;
@@ -831,6 +1032,43 @@ export function verifyTerminalEvidence(
   if (toHex(manifest.orderHash) !== requested || toHex(outcome.orderHash) !== requested) throw new NaryxEvidenceError('the evidence names another order');
   if (toHex(outcome.evidenceManifestHash) !== manifestHash) throw new NaryxEvidenceError('the outcome does not bind the served evidence manifest');
   if (served.terminalState !== outcome.terminalState) throw new NaryxEvidenceError('the served terminal state is not the outcome state');
+  return { requested, manifest, manifestHash, outcome, outcomeHash };
+}
+
+/**
+ * Verifies a served terminal outcome without its receipt: the manifest and outcome re-hash to
+ * their served hashes and name the requested order, and a named receipt hash must be exactly the
+ * one the outcome links, present only for successful terminal states.
+ */
+export function verifyOutcomeEvidence(orderHash: string, served: Record<string, unknown>): VerifiedOutcome {
+  const { requested, manifest, manifestHash, outcome, outcomeHash } = verifiedOutcomeParts(orderHash, served);
+  const linked = outcome.successfulReceiptHash === undefined ? undefined : toHex(outcome.successfulReceiptHash);
+  if (requiresSuccessfulReceipt(outcome.terminalState) ? served.receiptHash !== linked : served.receiptHash !== undefined || linked !== undefined) {
+    throw new NaryxEvidenceError('the served receipt hash is not the one the outcome links');
+  }
+  return Object.freeze({
+    orderHash: requested,
+    terminalState: outcome.terminalState,
+    evidenceManifest: manifest,
+    evidenceManifestHash: manifestHash,
+    outcome,
+    outcomeHash,
+    ...(linked === undefined ? {} : { receiptHash: linked }),
+    recordedAtMs: count(served.recordedAtMs, 'recordedAtMs'),
+  });
+}
+
+/**
+ * Verifies served terminal evidence without trusting the server: every record re-hashes to its
+ * served hash, the manifest and outcome name the requested order, the outcome binds the manifest,
+ * and a receipt is present exactly for successful states and links to the outcome both ways.
+ */
+export function verifyTerminalEvidence(
+  orderHash: string,
+  served: Record<string, unknown>,
+  acceptedQuoteFeeTerms?: AcceptedQuoteFeeTerms,
+): VerifiedTerminalEvidence {
+  const { requested, manifest, manifestHash, outcome, outcomeHash } = verifiedOutcomeParts(orderHash, served);
   let receipt: PackageReceipt | undefined;
   let receiptHash: string | undefined;
   let feesVerified = false;

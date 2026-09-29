@@ -8,6 +8,7 @@ import {
   decideRfq,
   executablePackageIndex,
   fromProtocolJson,
+  MARKET_DATA_METHODOLOGY_VERSION,
   matchPackageOrder,
   packageBookLevels,
   packageOrderHash,
@@ -72,6 +73,7 @@ export type PublicExchangeStore = Pick<
   | "listBooks"
   | "listSeries"
   | "listExecutionClasses"
+  | "latestTrade"
 >;
 
 export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest">;
@@ -249,6 +251,57 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return state;
   }
 
+  function sizesParam(url: URL, name = "sizes"): bigint[] {
+    const parts = (url.searchParams.get(name) ?? "1").split(",");
+    if (parts.length > 16 || parts.some((part) => !/^[1-9]\d{0,30}$/.test(part))) throw new RequestError(400, "INVALID_REQUEST", `${name} must be up to 16 positive integers.`);
+    return parts.map((part) => BigInt(part));
+  }
+
+  function seriesOf(seriesId: string) {
+    const series = exchange.listSeries().find((entry) => entry.seriesId === seriesId);
+    if (series === undefined) throw new RequestError(404, "SERIES_NOT_FOUND", "No such strategy series.");
+    return series;
+  }
+
+  /** The last recorded trade of a book, labeled OBSERVED: the final fill price and the traded quantity. */
+  function lastTrade(classId: string) {
+    const record = exchange.latestTrade(classId);
+    const fills = record?.allocation.fills ?? [];
+    const last = fills[fills.length - 1];
+    if (record === undefined || last === undefined) return undefined;
+    return {
+      priceTicks: last.priceTicks,
+      quantity: fills.reduce((total, fill) => total + fill.quantity, 0n),
+      recordedAtMs: record.recordedAtMs,
+      allocationHash: record.allocationHashHex,
+      label: "OBSERVED" as const,
+    };
+  }
+
+  /** The executable index of every open book of a series, with each class's settlement terms. */
+  function seriesBooks(seriesId: string, sizes: readonly bigint[]) {
+    const now = nowValue();
+    return {
+      now,
+      classes: exchange.listExecutionClasses(seriesId).map((executionClass) => {
+        const state = exchange.getBook(executionClass.executionClassId);
+        const terms = {
+          executionClassId: executionClass.executionClassId,
+          settlementClass: executionClass.settlementClass,
+          firmnessClass: executionClass.firmnessClass,
+          domains: executionClass.domains.map((domain) => domain.domainId),
+        };
+        if (state === undefined) return { ...terms, open: false as const };
+        return {
+          ...terms,
+          open: true as const,
+          halted: state.halted,
+          index: executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), sizes),
+        };
+      }),
+    };
+  }
+
   function readRoutes(url: URL): unknown {
     const path = url.pathname;
     let match: RegExpExecArray | null;
@@ -270,6 +323,23 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         // Open means no terminal outcome is recorded yet; it is not a claim about execution.
         status: outcome?.terminalState ?? "OPEN",
         ...(outcome === undefined ? {} : { outcomeHash: outcome.outcomeHashHex, ...(outcome.receiptHashHex === undefined ? {} : { receiptHash: outcome.receiptHashHex }) }),
+      };
+    }
+    if ((match = /^\/v1\/outcomes\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const hash = match[1] as string;
+      if (!HASH_HEX.test(hash)) throw new RequestError(400, "INVALID_REQUEST", "Order hash must be 64 lowercase hex characters.");
+      const outcome = requireEvidence().getOutcome(hash);
+      if (outcome === undefined) throw new RequestError(404, "OUTCOME_NOT_FOUND", "No terminal outcome is recorded for this order.");
+      return {
+        orderHash: hash,
+        terminalState: outcome.terminalState,
+        evidenceManifest: outcome.evidenceManifest,
+        evidenceManifestHash: outcome.evidenceManifestHashHex,
+        outcome: outcome.outcome,
+        outcomeHash: outcome.outcomeHashHex,
+        ...(outcome.receiptHashHex === undefined ? {} : { receiptHash: outcome.receiptHashHex }),
+        recordedAtMs: outcome.recordedAtMs,
       };
     }
     if ((match = /^\/v1\/receipts\/([^/]+)$/.exec(path)) !== null) {
@@ -480,15 +550,85 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if ((match = /^\/v1\/markets\/([^/]+)\/index$/.exec(path)) !== null) {
       onlyParams(url, ["sizes"]);
       const state = book(id(match[1], "Package market id"));
-      const sizesText = url.searchParams.get("sizes") ?? "1";
-      const parts = sizesText.split(",");
-      if (parts.length > 16 || parts.some((part) => !/^[1-9]\d{0,30}$/.test(part))) throw new RequestError(400, "INVALID_REQUEST", "sizes must be up to 16 positive integers.");
+      const sizes = sizesParam(url);
       const now = nowValue();
       return {
         packageMarketId: state.executionClassId,
         asOfValue: now,
-        ...executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), parts.map((part) => BigInt(part))),
+        ...executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), sizes),
       };
+    }
+    if ((match = /^\/v1\/indices\/([^/]+)$/.exec(path)) !== null) {
+      // Every execution class of the series: direct liquidity is EXECUTABLE, adding implied
+      // liquidity gives a separate INDICATIVE series, and an unopened class says so.
+      onlyParams(url, ["sizes"]);
+      const series = seriesOf(id(match[1], "Series id"));
+      const { now, classes } = seriesBooks(series.seriesId, sizesParam(url));
+      return { seriesId: series.seriesId, quoteAsset: series.quoteAsset, asOfValue: now, executionClasses: classes };
+    }
+    if ((match = /^\/v1\/curves\/([^/]+)$/.exec(path)) !== null) {
+      // The series curve across execution classes: executable prices at each size and the last
+      // observed trade. Nothing is interpolated or modeled; a class without depth has no point.
+      onlyParams(url, ["sizes"]);
+      const series = seriesOf(id(match[1], "Series id"));
+      const { now, classes } = seriesBooks(series.seriesId, sizesParam(url));
+      return {
+        seriesId: series.seriesId,
+        quoteAsset: series.quoteAsset,
+        quoteConvention: series.quoteConvention,
+        asOfValue: now,
+        methodologyVersion: MARKET_DATA_METHODOLOGY_VERSION,
+        points: classes.map((entry) => {
+          const trade = entry.open ? lastTrade(entry.executionClassId) : undefined;
+          return {
+            executionClassId: entry.executionClassId,
+            settlementClass: entry.settlementClass,
+            domains: entry.domains,
+            open: entry.open,
+            ...(entry.open ? { halted: entry.halted, executable: entry.index.executable } : {}),
+            ...(trade === undefined ? {} : { lastTrade: trade }),
+          };
+        }),
+      };
+    }
+    if (path === "/v1/opportunities") {
+      // Open, unhalted package markets with executable depth at the requested size on at least
+      // one side, tightest executable spread first. Only direct resting liquidity counts.
+      onlyParams(url, ["size"]);
+      const [size] = sizesParam(url, "size");
+      const now = nowValue();
+      const seriesByClass = new Map<string, string>();
+      for (const series of exchange.listSeries()) {
+        for (const executionClass of exchange.listExecutionClasses(series.seriesId)) seriesByClass.set(executionClass.executionClassId, series.seriesId);
+      }
+      const opportunities = exchange.listBooks()
+        .filter((entry) => !entry.halted)
+        .flatMap((entry) => {
+          const state = book(entry.executionClassId);
+          const index = executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), [size as bigint]);
+          const bid = index.executable.bids[0];
+          const ask = index.executable.asks[0];
+          const bidFillable = bid?.averagePriceTicks !== undefined;
+          const askFillable = ask?.averagePriceTicks !== undefined;
+          if (!bidFillable && !askFillable) return [];
+          const trade = lastTrade(entry.executionClassId);
+          return [{
+            packageMarketId: entry.executionClassId,
+            ...(seriesByClass.has(entry.executionClassId) ? { seriesId: seriesByClass.get(entry.executionClassId) } : {}),
+            ...(bidFillable ? { bid } : {}),
+            ...(askFillable ? { ask } : {}),
+            ...(bidFillable && askFillable ? { spreadAtSizeTicks: (ask?.averagePriceTicks as bigint) - (bid?.averagePriceTicks as bigint) } : {}),
+            ...(trade === undefined ? {} : { lastTrade: trade }),
+          }];
+        })
+        .sort((left, right) => {
+          const a = left.spreadAtSizeTicks;
+          const b = right.spreadAtSizeTicks;
+          if (a !== undefined && b !== undefined && a !== b) return a < b ? -1 : 1;
+          if ((a === undefined) !== (b === undefined)) return a === undefined ? 1 : -1;
+          return left.packageMarketId < right.packageMarketId ? -1 : left.packageMarketId > right.packageMarketId ? 1 : 0;
+        });
+      return { asOfValue: now, size, label: "EXECUTABLE", opportunities };
     }
     if ((match = /^\/v1\/rfqs\/private\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);

@@ -30,6 +30,8 @@ Orders and terminal evidence are covered end to end:
 - `submitOrder` validates and hashes the order locally, hands only the canonical order bytes to a caller-supplied Ed25519 `OrderSigner`, and rejects an intake acknowledgement for any other hash. Intake is not execution; an accepted order is only eligible to be quoted.
 - `getOrder` re-hashes a served order to the requested hash and rejects an open order that carries outcome evidence.
 - `getReceipt` and `verifyTerminalEvidence` re-hash the evidence manifest, terminal outcome, and receipt, require all of them to name the requested order, require a receipt exactly for successful terminal states, check the outcome-to-receipt link, and, given the accepted quote's fee terms, check that the receipt charged nothing outside them.
+- `getOutcome` and `verifyOutcomeEvidence` verify an outcome without its receipt and accept only the receipt hash the outcome itself links.
+- `getCurve`, `getSeriesIndex`, and `getOpportunities` require every requested size to be answered with the right `EXECUTABLE`, `INDICATIVE`, or `OBSERVED` label, reject a price for depth that is not there, check that each spread is ask minus bid, and check the feed's spread ordering.
 - `getExecutionQuality` requires the `OBSERVED` label and a methodology, and checks that state counts sum to the outcome total, basis points stay in range, and percentiles are ordered.
 - `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it.
 

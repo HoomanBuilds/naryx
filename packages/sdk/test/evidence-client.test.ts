@@ -331,6 +331,66 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(client({}).submitPrivateRfq([{ envelope, ciphertext: new Uint8Array([1]) }], async () => new Uint8Array(3)), /64-byte signature/);
   });
 
+  test('an outcome read re-hashes the outcome and names only the receipt the outcome links', async () => {
+    const path = `GET /v1/outcomes/${orderHashHex}`;
+    const { receipt: _receipt, ...withoutReceipt } = served();
+    void _receipt;
+    const read = await client({ [path]: { body: withoutReceipt } }).getOutcome(orderHashHex);
+    assert.equal(read.receiptHash, toHex(packageReceiptHash(receipt())));
+    await assert.rejects(client({ [path]: { body: { ...withoutReceipt, receiptHash: 'ee'.repeat(32) } } }).getOutcome(orderHashHex), /not the one the outcome links/);
+    await assert.rejects(client({ [path]: { body: { ...withoutReceipt, outcomeHash: 'ee'.repeat(32) } } }).getOutcome(orderHashHex), /does not hash/);
+  });
+
+  test('curves and the opportunity feed must answer every requested size with the right labels', async () => {
+    const quote = (size: bigint, averagePriceTicks?: bigint) => ({
+      size,
+      fillableQuantity: averagePriceTicks === undefined ? 0n : size,
+      label: 'EXECUTABLE',
+      ...(averagePriceTicks === undefined ? {} : { averagePriceTicks }),
+    });
+    const trade = { priceTicks: 100n, quantity: 10n, recordedAtMs: 5, allocationHash: 'ab'.repeat(32), label: 'OBSERVED' };
+    const curve = {
+      seriesId: 'sol-carry',
+      quoteAsset: 'usd',
+      quoteConvention: 'annualized-net-yield-v1',
+      asOfValue: 1n,
+      methodologyVersion: 1,
+      points: [
+        { executionClassId: 'class-a', settlementClass: 'ATOMIC_POSTCONDITION', domains: ['svm:testnet'], open: true, halted: false, executable: { bids: [quote(10n, 96n)], asks: [quote(10n, 104n)] }, lastTrade: trade },
+        { executionClassId: 'class-b', settlementClass: 'ASYNC_BONDED_SOLVER', domains: ['evm:base'], open: false },
+      ],
+    };
+    const curvePath = 'GET /v1/curves/sol-carry?sizes=10';
+    const read = await client({ [curvePath]: { body: curve } }).getCurve('sol-carry', [10n]);
+    assert.equal(read.points[0]?.lastTrade?.priceTicks, 100n);
+    assert.equal(read.points[1]?.open, false);
+    const mislabeled = { ...curve, points: [{ ...curve.points[0], lastTrade: { ...trade, label: 'MODELED' } }] };
+    await assert.rejects(client({ [curvePath]: { body: mislabeled } }).getCurve('sol-carry', [10n]), /OBSERVED/);
+    const phantom = { ...curve, points: [{ ...curve.points[0], executable: { bids: [{ ...quote(10n, 96n), fillableQuantity: 5n }], asks: [quote(10n, 104n)] } }] };
+    await assert.rejects(client({ [curvePath]: { body: phantom } }).getCurve('sol-carry', [10n]), /depth it does not have/);
+    const closedWithData = { ...curve, points: [{ ...curve.points[1], lastTrade: trade }] };
+    await assert.rejects(client({ [curvePath]: { body: closedWithData } }).getCurve('sol-carry', [10n]), /closed but carries/);
+
+    const feedPath = 'GET /v1/opportunities?size=10';
+    const feed = {
+      asOfValue: 1n,
+      size: 10n,
+      label: 'EXECUTABLE',
+      opportunities: [
+        { packageMarketId: 'class-a', seriesId: 'sol-carry', bid: quote(10n, 96n), ask: quote(10n, 104n), spreadAtSizeTicks: 8n, lastTrade: trade },
+        { packageMarketId: 'class-c', bid: quote(10n, 90n), ask: quote(10n, 110n), spreadAtSizeTicks: 20n },
+        { packageMarketId: 'class-d', ask: quote(10n, 120n) },
+      ],
+    };
+    const opportunities = await client({ [feedPath]: { body: feed } }).getOpportunities(10n);
+    assert.deepEqual(opportunities.map((entry) => [entry.packageMarketId, entry.spreadAtSizeTicks]), [['class-a', 8n], ['class-c', 20n], ['class-d', undefined]]);
+    const unordered = { ...feed, opportunities: [feed.opportunities[1], feed.opportunities[0]] };
+    await assert.rejects(client({ [feedPath]: { body: unordered } }).getOpportunities(10n), /not ordered/);
+    const wrongSpread = { ...feed, opportunities: [{ ...feed.opportunities[0], spreadAtSizeTicks: 1n }] };
+    await assert.rejects(client({ [feedPath]: { body: wrongSpread } }).getOpportunities(10n), /ask minus its bid/);
+    await assert.rejects(client({ [feedPath]: { body: { ...feed, size: 20n } } }).getOpportunities(10n), /requested size/);
+  });
+
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {
     const { privateKey } = generateKeyPairSync('ed25519');
     const signer = async (digest: Uint8Array) => new Uint8Array(sign(null, digest, privateKey));

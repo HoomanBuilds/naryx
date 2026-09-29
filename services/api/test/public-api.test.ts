@@ -83,9 +83,14 @@ test("the tape pages by cursor and omits participant and taker order identities"
     for (const hidden of ["maker-1", "maker-2", "group-1", id(1), id(2), "participantId", "consumedSourceKeys"]) {
       assert.equal(first.text.includes(hidden), false, hidden);
     }
+    // The resting order produced no fill, so the tape holds exactly the one trade.
+    assert.equal(tape.trades[0]?.fills.length, 1);
+    store.submitOrder(CLASS, order(3), NOW);
+    store.submitOrder(CLASS, order(4, { side: "BID", timeInForce: "IOC" }), NOW);
     const next = await get(`/v1/markets/${CLASS}/package-tape?after=${tape.nextCursor}&limit=1`);
-    const page = next.body as { trades: readonly unknown[]; nextCursor: number };
+    const page = next.body as { trades: readonly { fills: readonly unknown[] }[]; nextCursor: number };
     assert.equal(page.trades.length, 1);
+    assert.equal(page.trades[0]?.fills.length, 1);
     const rest = await get(`/v1/markets/${CLASS}/package-tape?after=${page.nextCursor}`);
     assert.deepEqual((rest.body as { trades: readonly unknown[] }).trades, []);
     assert.equal((await get("/v1/markets/unknown-class/package-tape")).status, 404);
@@ -275,6 +280,58 @@ test("candles are built only from recorded trades and the index keeps executable
     assert.equal(provenance.implied.length, 1);
     assert.deepEqual([provenance.implied[0]?.solverId, provenance.implied[0]?.evidence, provenance.implied[0]?.label], ["solver-a", "RESERVATION_BACKED_IMPLIED", "EXECUTABLE"]);
     assert.equal(provenance.implied[0]?.sources.length, 2);
+  });
+});
+
+test("series indices, curves, and the opportunity feed are built from executable depth and observed trades", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    const opportunitiesBefore = (await get("/v1/opportunities?size=10")).body as { opportunities: readonly unknown[] };
+    assert.deepEqual(opportunitiesBefore.opportunities, []);
+    const unopened = (await get(`/v1/curves/${SERIES.seriesId}?sizes=10`)).body as { points: readonly { open: boolean; lastTrade?: unknown }[] };
+    assert.deepEqual(unopened.points.map((point) => [point.open, point.lastTrade]), [[true, undefined]]);
+
+    store.submitOrder(CLASS, order(1), NOW);
+    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    store.submitOrder(CLASS, order(3, { limitPriceTicks: 104n }), NOW);
+    store.submitOrder(CLASS, order(4, { side: "BID", limitPriceTicks: 96n }), NOW);
+
+    const indices = (await get(`/v1/indices/${SERIES.seriesId}?sizes=10,20`)).body as {
+      seriesId: string;
+      executionClasses: readonly { executionClassId: string; settlementClass: string; open: boolean; index: { executable: { asks: readonly { averagePriceTicks?: bigint; label: string }[] } } }[];
+    };
+    assert.equal(indices.seriesId, SERIES.seriesId);
+    assert.deepEqual(indices.executionClasses.map((entry) => [entry.executionClassId, entry.open]), [[CLASS, true]]);
+    assert.deepEqual(indices.executionClasses[0]?.index.executable.asks.map((quote) => [quote.averagePriceTicks, quote.label]), [[104n, "EXECUTABLE"], [undefined, "EXECUTABLE"]]);
+
+    const curve = (await get(`/v1/curves/${SERIES.seriesId}?sizes=10`)).body as {
+      quoteConvention: string;
+      points: readonly {
+        executionClassId: string;
+        executable: { bids: readonly { averagePriceTicks?: bigint }[]; asks: readonly { averagePriceTicks?: bigint }[] };
+        lastTrade?: { priceTicks: bigint; quantity: bigint; label: string };
+      }[];
+    };
+    assert.equal(curve.quoteConvention, SERIES.quoteConvention);
+    assert.deepEqual(
+      curve.points.map((point) => [point.executable.bids[0]?.averagePriceTicks, point.executable.asks[0]?.averagePriceTicks, point.lastTrade?.priceTicks, point.lastTrade?.quantity, point.lastTrade?.label]),
+      [[96n, 104n, 100n, 10n, "OBSERVED"]],
+    );
+
+    const feed = (await get("/v1/opportunities?size=10")).body as {
+      label: string;
+      opportunities: readonly { packageMarketId: string; seriesId?: string; spreadAtSizeTicks?: bigint; lastTrade?: { priceTicks: bigint } }[];
+    };
+    assert.equal(feed.label, "EXECUTABLE");
+    assert.deepEqual(feed.opportunities.map((entry) => [entry.packageMarketId, entry.seriesId, entry.spreadAtSizeTicks, entry.lastTrade?.priceTicks]), [[CLASS, SERIES.seriesId, 8n, 100n]]);
+    // Size the book cannot fill on either side is not an opportunity.
+    assert.deepEqual(((await get("/v1/opportunities?size=1000")).body as { opportunities: readonly unknown[] }).opportunities, []);
+
+    assert.equal((await get("/v1/curves/unknown-series")).status, 404);
+    assert.equal((await get("/v1/indices/unknown-series")).status, 404);
+    assert.equal((await get("/v1/opportunities?size=0")).status, 400);
+    assert.equal((await get(`/v1/curves/${SERIES.seriesId}?depth=1`)).status, 400);
+    assert.equal((await get(`/v1/outcomes/${"ab".repeat(32)}`)).status, 503);
   });
 });
 
