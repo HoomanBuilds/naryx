@@ -45,6 +45,11 @@ export type InjectedEvmWalletSession = {
   connect(): Promise<void>;
   disconnect(): void;
   switchNetwork(domain: EvmDomain): Promise<void>;
+  signTypedData(domain: EvmDomain, typedData: unknown): Promise<string>;
+  sendTransaction(
+    domain: EvmDomain,
+    transaction: Readonly<{ to: string; data: string; value: "0" }>,
+  ): Promise<string>;
 };
 
 function providerErrorCode(cause: unknown) {
@@ -52,16 +57,23 @@ function providerErrorCode(cause: unknown) {
   return typeof cause.code === "number" ? cause.code : null;
 }
 
-function friendlyWalletError(cause: unknown, action: "connect" | "switch") {
+function friendlyWalletError(
+  cause: unknown,
+  action: "connect" | "switch" | "sign" | "submit",
+) {
   const code = providerErrorCode(cause);
   if (code === 4001) {
-    return action === "connect" ? "Wallet connection cancelled." : "Network change cancelled.";
+    if (action === "connect") return "Wallet connection cancelled.";
+    if (action === "switch") return "Network change cancelled.";
+    return action === "sign" ? "Signature cancelled." : "Transaction cancelled.";
   }
   if (code === -32002) return "A wallet request is already open. Check your wallet.";
   if (code === 4902) return "This testnet is not configured in your wallet.";
-  return action === "connect"
-    ? "Wallet connection failed. Please try again."
-    : "Network change failed. Please switch networks in your wallet.";
+  if (action === "connect") return "Wallet connection failed. Please try again.";
+  if (action === "switch") return "Network change failed. Please switch networks in your wallet.";
+  return action === "sign"
+    ? "Wallet could not sign the package authorization."
+    : "Wallet could not submit the testnet transaction.";
 }
 
 function parseChainId(value: unknown) {
@@ -173,6 +185,71 @@ export function useInjectedEvmWallet(): InjectedEvmWalletSession {
     }
   }, []);
 
+  const requireReadyProvider = useCallback((domain: EvmDomain) => {
+    const provider = window.ethereum;
+    if (!provider || !sessionActive.current || !account) {
+      throw new Error("Connect your EVM wallet before continuing.");
+    }
+    if (chainId !== EVM_TESTNETS[domain].chainId) {
+      throw new Error(`Switch to ${EVM_TESTNETS[domain].label} before continuing.`);
+    }
+    return { provider, account };
+  }, [account, chainId]);
+
+  const signTypedData = useCallback(async (domain: EvmDomain, typedData: unknown) => {
+    const ready = requireReadyProvider(domain);
+    setError(null);
+    try {
+      const result = await ready.provider.request({
+        method: "eth_signTypedData_v4",
+        params: [ready.account, JSON.stringify(typedData)],
+      });
+      if (typeof result !== "string" || !/^0x[0-9a-f]{130}$/i.test(result)) {
+        throw new Error("Wallet returned an invalid package signature.");
+      }
+      return result.toLowerCase();
+    } catch (cause) {
+      const message = cause instanceof Error && cause.message.startsWith("Wallet returned")
+        ? cause.message
+        : friendlyWalletError(cause, "sign");
+      setError(message);
+      throw new Error(message);
+    }
+  }, [requireReadyProvider]);
+
+  const sendTransaction = useCallback(async (
+    domain: EvmDomain,
+    transaction: Readonly<{ to: string; data: string; value: "0" }>,
+  ) => {
+    const ready = requireReadyProvider(domain);
+    if (!/^0x[0-9a-f]{40}$/i.test(transaction.to) ||
+        !/^0x(?:[0-9a-f]{2})+$/i.test(transaction.data) || transaction.value !== "0") {
+      throw new Error("Prepared transaction is invalid.");
+    }
+    setError(null);
+    try {
+      const result = await ready.provider.request({
+        method: "eth_sendTransaction",
+        params: [{
+          from: ready.account,
+          to: transaction.to,
+          data: transaction.data,
+          value: "0x0",
+        }],
+      });
+      if (typeof result !== "string" || !/^0x[0-9a-f]{64}$/i.test(result) || /^0x0+$/.test(result)) {
+        throw new Error("Wallet returned an invalid transaction hash.");
+      }
+      return result.toLowerCase();
+    } catch (cause) {
+      const message = cause instanceof Error && cause.message.startsWith("Wallet returned")
+        ? cause.message
+        : friendlyWalletError(cause, "submit");
+      setError(message);
+      throw new Error(message);
+    }
+  }, [requireReadyProvider]);
+
   return {
     available,
     account,
@@ -183,5 +260,7 @@ export function useInjectedEvmWallet(): InjectedEvmWalletSession {
     connect,
     disconnect,
     switchNetwork,
+    signTypedData,
+    sendTransaction,
   };
 }
