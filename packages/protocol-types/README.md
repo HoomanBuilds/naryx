@@ -191,6 +191,32 @@ matching policies. Domain and venue-class sets are sorted by canonical bytes and
 Qualification and activation state are intentionally absent because they are mutable registry
 concerns. Constructing or hashing either schema does not activate a market.
 
+## Package matching and allocation evidence
+
+`PackageMatchingPolicy` is the immutable matching policy an execution class references through
+`matchingPolicyHash`. It binds price-time allocation, direct-before-implied priority at one price,
+the self-match and common-control policy, the amendment priority rule, the package quantity
+increment and minimum execution quantity, and the maximum implication depth. Only implemented
+variants exist, and implication deeper than one leg-sourced level fails closed.
+
+`matchPackageOrder` is a deterministic matcher over one execution-class book. Resting liquidity
+fills best price first, direct before implied at equal price, then by assigned sequence, always at
+the resting price. Fills are lot-aligned and may be partial for direct liquidity. IOC, FOK, GTC, GTD,
+post-only, and package minimum quantity are enforced against the complete package. A rejected
+order leaves the book untouched, and a remainder rests only when it cannot cross the book.
+
+`deriveImpliedPackageQuote` builds implied-in liquidity from leg sources with every leg term rounded
+against the taker. Indicative implication is never executable depth. Reservation-backed and
+solver-backed implied liquidity fills all or nothing, consumes each source reservation or solver
+commitment at most once, invalidates every sibling built on a consumed source, and is removed when
+`invalidateImpliedSource` observes a newer source version.
+
+Every accepted match produces a `PackageAllocation`. `verifyPackageAllocation` recomputes quantity
+conservation (`requested = direct fills + implied fills + rested + cancelled`), contiguous fill
+sequences, price, source, and time priority, taker limits, and single source consumption before the
+allocation is hashed under `CON/v1/package-allocation`. `packageBookState` revalidates any stored or
+caller-supplied book against its policy.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
@@ -279,7 +305,7 @@ Every public failure is a typed `ProtocolError` with a stable `code`:
 `fixtures/price-source-manifest.json`, `fixtures/package-template-registry-record.json`,
 `fixtures/domain-registry-record.json`, `fixtures/fee-policy-manifest.json`, and
 `fixtures/package-order-atomic.json`, `fixtures/package-order-hyperliquid-exit.json`, and
-`fixtures/solver-quote.json` hold
+`fixtures/solver-quote.json`, and `fixtures/package-matching-policy.json` hold
 language-neutral inputs and fixed expected outputs
 for the Rust, Solidity, and controller implementations of the same wire format. JSON carries the
 fixtures; JSON is never hashed, and wide or version integers in a fixture are decimal strings.

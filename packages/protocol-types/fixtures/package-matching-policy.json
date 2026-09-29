@@ -1,0 +1,18 @@
+{
+  "description": "PackageMatchingPolicy v1 canonical bytes and CON/v1/package-matching-policy digest, computed independently of the implementation.",
+  "input": {
+    "matchingPolicyVersion": 1,
+    "environment": "local",
+    "executionClassId": "sol-carry-atomic-v1",
+    "allocationRule": "PRICE_TIME",
+    "directVersusImpliedPriority": "DIRECT_FIRST",
+    "selfMatchPolicy": "CANCEL_INCOMING",
+    "commonControlAsSelf": true,
+    "amendmentPriorityRule": "RETAIN_ON_SIZE_REDUCTION",
+    "quantityIncrement": "10",
+    "minimumExecutionQuantity": "10",
+    "maximumImplicationDepth": 1
+  },
+  "bytesHex": "00000001000000056c6f63616c00000013736f6c2d63617272792d61746f6d69632d763101010101010000000000000000000000000000000a0000000000000000000000000000000a01",
+  "hashHex": "a250f728fc964aabf64318718a27d9636ab5fbe0aabe8dbff658838fc2ac980f"
+}

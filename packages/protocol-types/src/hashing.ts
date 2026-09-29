@@ -47,6 +47,9 @@ export const HASH_DOMAIN = Object.freeze({
   READINESS_EVIDENCE: 'CON/v1/readiness-evidence',
   READINESS_DECISION: 'CON/v1/readiness-decision',
   OPERATION_LEDGER_RECORD: 'CON/v1/operation-ledger-record',
+  PACKAGE_MATCHING_POLICY: 'CON/v1/package-matching-policy',
+  IMPLIED_PACKAGE_QUOTE: 'CON/v1/implied-package-quote',
+  PACKAGE_ALLOCATION: 'CON/v1/package-allocation',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];
