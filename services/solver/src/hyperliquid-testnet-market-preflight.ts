@@ -33,6 +33,11 @@ export interface HyperliquidTestnetMarketQualificationConfig {
   readonly spotTokenName: string;
   readonly quoteTokenName: string;
   readonly perpetualName: string;
+  readonly spotUniverseCanonical: boolean;
+  readonly spotTokenCanonical: boolean;
+  readonly quoteTokenCanonical: boolean;
+  readonly spotTokenId: `0x${string}`;
+  readonly quoteTokenId: `0x${string}`;
   readonly spotSizeDecimals: number;
   readonly perpetualSizeDecimals: number;
   readonly maxBookAgeMs: number;
@@ -51,6 +56,7 @@ type Decimal = Readonly<{ atoms: bigint; scale: number }>;
 
 const DECIMAL = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/;
 const NAME = /^[A-Za-z0-9@._:/-]{1,64}$/;
+const TOKEN_ID = /^0x[0-9a-f]{32}$/;
 
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`Hyperliquid Testnet market preflight failed: ${message}`);
@@ -109,6 +115,16 @@ function safeNonNegativeInteger(value: unknown, name: string, maximum: number): 
 function checkedName(value: unknown, name: string): string {
   requireCondition(typeof value === 'string' && NAME.test(value), `${name} is invalid`);
   return value;
+}
+
+function checkedBoolean(value: unknown, name: string): boolean {
+  requireCondition(typeof value === 'boolean', `${name} is invalid`);
+  return value;
+}
+
+function checkedTokenId(value: unknown, name: string): `0x${string}` {
+  requireCondition(typeof value === 'string' && TOKEN_ID.test(value), `${name} is invalid`);
+  return value as `0x${string}`;
 }
 
 function checkedBook(value: L2BookResponse, expectedCoin: string, name: string): Book {
@@ -248,6 +264,13 @@ export class HyperliquidTestnetMarketPreflight {
       spotTokenName: checkedName(config.spotTokenName, 'spotTokenName'),
       quoteTokenName: checkedName(config.quoteTokenName, 'quoteTokenName'),
       perpetualName: checkedName(config.perpetualName, 'perpetualName'),
+      spotUniverseCanonical: checkedBoolean(
+        config.spotUniverseCanonical, 'spotUniverseCanonical',
+      ),
+      spotTokenCanonical: checkedBoolean(config.spotTokenCanonical, 'spotTokenCanonical'),
+      quoteTokenCanonical: checkedBoolean(config.quoteTokenCanonical, 'quoteTokenCanonical'),
+      spotTokenId: checkedTokenId(config.spotTokenId, 'spotTokenId'),
+      quoteTokenId: checkedTokenId(config.quoteTokenId, 'quoteTokenId'),
       spotSizeDecimals: safeNonNegativeInteger(config.spotSizeDecimals, 'spotSizeDecimals', 18),
       perpetualSizeDecimals: safeNonNegativeInteger(
         config.perpetualSizeDecimals, 'perpetualSizeDecimals', 18,
@@ -298,15 +321,19 @@ export class HyperliquidTestnetMarketPreflight {
       && universe.name === this.#config.spotUniverseName
       && universe.tokens[0] === binding.spotTokenIndex
       && universe.tokens[1] === binding.quoteTokenIndex
-      && universe.isCanonical === true, 'spot universe identity mismatch');
+      && universe.isCanonical === this.#config.spotUniverseCanonical,
+    'spot universe identity mismatch');
     requireCondition(spotToken !== undefined
       && spotToken.name === this.#config.spotTokenName
-      && spotToken.isCanonical === true
+      && spotToken.isCanonical === this.#config.spotTokenCanonical
+      && spotToken.tokenId === this.#config.spotTokenId
       && spotToken.szDecimals === this.#config.spotSizeDecimals,
     'spot token identity mismatch');
     requireCondition(quoteToken !== undefined
       && quoteToken.name === this.#config.quoteTokenName
-      && quoteToken.isCanonical === true, 'quote token identity mismatch');
+      && quoteToken.isCanonical === this.#config.quoteTokenCanonical
+      && quoteToken.tokenId === this.#config.quoteTokenId,
+    'quote token identity mismatch');
     requireCondition(snapshot.perpetualMeta.collateralToken === binding.quoteTokenIndex,
       'perpetual collateral token mismatch');
     requireCondition(perpetual !== undefined

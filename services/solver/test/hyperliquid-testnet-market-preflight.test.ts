@@ -4,6 +4,7 @@ import type { HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
 import {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
   HyperliquidTestnetMarketPreflight,
+  type HyperliquidTestnetMarketQualificationConfig,
   type HyperliquidTestnetMarketReadPort,
   type HyperliquidTestnetMarketSnapshot,
 } from '../src/index.js';
@@ -85,18 +86,39 @@ function reader(value: HyperliquidTestnetMarketSnapshot): HyperliquidTestnetMark
   };
 }
 
-function preflight(value: HyperliquidTestnetMarketSnapshot) {
+function preflight(
+  value: HyperliquidTestnetMarketSnapshot,
+  overrides: Partial<HyperliquidTestnetMarketQualificationConfig> = {},
+) {
   return new HyperliquidTestnetMarketPreflight(reader(value), {
     spotUniverseName: '@7', spotTokenName: 'BTC', quoteTokenName: 'USDC',
     perpetualName: 'BTC', spotSizeDecimals: 5, perpetualSizeDecimals: 5,
+    spotUniverseCanonical: true, spotTokenCanonical: true, quoteTokenCanonical: true,
+    spotTokenId: `0x${'11'.repeat(16)}`, quoteTokenId: `0x${'00'.repeat(16)}`,
     maxBookAgeMs: 1_000, maxSnapshotSkewMs: 500,
     maxReferenceDivergenceBps: 50,
     minimumSpotDepth: '0.001', minimumPerpetualDepth: '0.001',
+    ...overrides,
   }, () => 1_000_000);
 }
 
 test('accepts exact Testnet market identities with executable two-sided depth', async () => {
   await preflight(snapshot()).qualify({ plan: plan(), binding });
+});
+
+test('accepts an exactly configured noncanonical builder spot market', async () => {
+  const value = snapshot();
+  await preflight(snapshot({
+    spotMeta: {
+      ...value.spotMeta,
+      universe: value.spotMeta.universe.map((market) => ({ ...market, isCanonical: false })),
+      tokens: value.spotMeta.tokens.map((token) => ({ ...token, isCanonical: false })),
+    },
+  }), {
+    spotUniverseCanonical: false,
+    spotTokenCanonical: false,
+    quoteTokenCanonical: false,
+  }).qualify({ plan: plan(), binding });
 });
 
 test('rejects a one-sided order book', async () => {
@@ -112,7 +134,7 @@ test('rejects market identity mismatch', async () => {
     spotMeta: {
       ...value.spotMeta,
       tokens: value.spotMeta.tokens.map((token) => token.index === 69
-        ? { ...token, name: 'WBTC' }
+        ? { ...token, tokenId: `0x${'22'.repeat(16)}` }
         : token),
     },
   })).qualify({ plan: plan(), binding }), /spot token identity mismatch/);

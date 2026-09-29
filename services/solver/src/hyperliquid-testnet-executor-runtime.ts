@@ -117,6 +117,13 @@ function nonNegativeInteger(environment: NodeJS.ProcessEnv, name: string, maximu
   return parsed;
 }
 
+function booleanValue(environment: NodeJS.ProcessEnv, name: string): boolean {
+  const value = required(environment, name);
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} must be true or false`);
+}
+
 function marketQualificationConfig(
   environment: NodeJS.ProcessEnv,
 ): HyperliquidTestnetMarketQualificationConfig {
@@ -125,6 +132,21 @@ function marketQualificationConfig(
     spotTokenName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_NAME'),
     quoteTokenName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_NAME'),
     perpetualName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_PERPETUAL_NAME'),
+    spotUniverseCanonical: booleanValue(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_CANONICAL',
+    ),
+    spotTokenCanonical: booleanValue(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_CANONICAL',
+    ),
+    quoteTokenCanonical: booleanValue(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_CANONICAL',
+    ),
+    spotTokenId: required(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_ID',
+    ) as `0x${string}`,
+    quoteTokenId: required(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_ID',
+    ) as `0x${string}`,
     spotSizeDecimals: nonNegativeInteger(
       environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_SIZE_DECIMALS', 18,
     ),
