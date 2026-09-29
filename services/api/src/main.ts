@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
+import { loadPublicMarketRuntime } from "./public-market-runtime.js";
 import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
 import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
@@ -57,6 +58,7 @@ function explicitlyEnabled(name: string): boolean {
 }
 
 const config = loadPrivateTerminalServerConfig();
+const publicMarket = loadPublicMarketRuntime();
 const orderStore = new SqliteInternalOrderStore(absolutePath(
   process.env.NARYX_API_ORDER_DB ?? "/tmp/naryx-local/api-orders.db",
   "NARYX_API_ORDER_DB",
@@ -323,6 +325,9 @@ const server = createPrivateTerminalServer(
   solanaLocalExecution,
   runtime.hyperliquidTestnetEvidence?.preparation,
   hyperliquidOrderRuntime?.terminalContext,
+  undefined,
+  undefined,
+  publicMarket?.handler,
 );
 
 function shutdown(): void {
@@ -332,6 +337,7 @@ function shutdown(): void {
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
     hyperliquidExecutionRuntime?.close();
+    publicMarket?.close();
     process.exitCode = 0;
   });
 }

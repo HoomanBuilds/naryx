@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,7 +14,14 @@ import {
   type PackageAllocation,
   type PackageMatchingPolicy,
 } from "@naryx/protocol-types";
-import { createPublicMarketRequestHandler, SqlitePackageExchangeStore, type PublicMarketApiOptions } from "../src/index.js";
+import {
+  createPrivateTerminalServer,
+  createPublicMarketRequestHandler,
+  loadPublicMarketRuntime,
+  PublicMarketConfigError,
+  SqlitePackageExchangeStore,
+  type PublicMarketApiOptions,
+} from "../src/index.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES_SUPPORT, id, impliedAsk, order, registerAll } from "./exchange-fixtures.js";
 
 async function withMarket(
@@ -130,4 +137,63 @@ test("requests are rate limited per client window", async () => {
     },
     { rateLimit: { windowMs: 1_000, maxRequests: 2 }, clockMs: () => now },
   );
+});
+
+test("the runtime is off by default and validates its configuration", () => {
+  assert.equal(loadPublicMarketRuntime({}), undefined);
+  assert.throws(() => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "yes" }), PublicMarketConfigError);
+  assert.throws(() => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "true" }), /NARYX_EXCHANGE_DB is required/);
+  assert.throws(
+    () => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "true", NARYX_EXCHANGE_DB: "relative.db" }),
+    /absolute path/,
+  );
+  const dir = mkdtempSync(join(tmpdir(), "naryx-market-config-"));
+  try {
+    const manifest = join(dir, "support.json");
+    const env = { NARYX_PUBLIC_MARKET_ENABLED: "true", NARYX_EXCHANGE_DB: join(dir, "exchange.sqlite"), NARYX_EXCHANGE_SUPPORT_MANIFEST: manifest };
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "SOLANA_SLOT", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+    assert.throws(() => loadPublicMarketRuntime(env), /slot source/);
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT, extra: true }));
+    assert.throws(() => loadPublicMarketRuntime(env), /exactly clockUnit/);
+    writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+    assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE: "0" }), /between 1 and 10000/);
+    const runtime = loadPublicMarketRuntime(env);
+    assert.ok(runtime);
+    assert.equal(runtime.clockUnit, "UNIX_SECONDS");
+    assert.equal(runtime.requestsPerMinute, 120);
+    runtime.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the private terminal server answers public market routes before its origin policy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-market-mount-"));
+  const manifest = join(dir, "support.json");
+  writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
+  const runtime = loadPublicMarketRuntime({
+    NARYX_PUBLIC_MARKET_ENABLED: "true",
+    NARYX_EXCHANGE_DB: join(dir, "exchange.sqlite"),
+    NARYX_EXCHANGE_SUPPORT_MANIFEST: manifest,
+  });
+  assert.ok(runtime);
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, runtime.handler,
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const book = await fetch(`http://127.0.0.1:${port}/v1/market/books/${CLASS}`, { headers: { Origin: "https://reader.example" } });
+    assert.equal(book.status, 404);
+    assert.equal(book.headers.get("access-control-allow-origin"), "*");
+    const privateRoute = await fetch(`http://127.0.0.1:${port}/internal/healthz`, { headers: { Origin: "https://reader.example" } });
+    assert.equal(privateRoute.status, 403);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/internal/healthz`)).status, 200);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    runtime.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

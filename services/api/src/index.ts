@@ -74,6 +74,12 @@ export {
   type PublicMarketStore,
 } from "./public-market-api.js";
 export {
+  loadPublicMarketRuntime,
+  PublicMarketConfigError,
+  type PublicMarketClockUnit,
+  type PublicMarketRuntime,
+} from "./public-market-runtime.js";
+export {
   InternalOrderCoordinator,
   TerminalOrderValidationError,
   type InternalOrderClockPort,

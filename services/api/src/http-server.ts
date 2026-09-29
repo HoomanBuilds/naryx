@@ -1044,6 +1044,7 @@ export function createPrivateTerminalServer(
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
   executionReadinessGate?: ExecutionReadinessGate,
   executionReadinessScopes?: ExecutionReadinessScopeResolver,
+  publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1064,6 +1065,16 @@ export function createPrivateTerminalServer(
     executionReadinessScopes,
   );
   return createServer((request, response) => {
+    // Public read-only routes answer before the private terminal's origin policy; every other
+    // path falls through to the private handler unchanged.
+    let handledPublicly = false;
+    try {
+      handledPublicly = publicRoutes?.(request, response) ?? false;
+    } catch {
+      reject(response, 500, "INTERNAL_ERROR", "Request handling failed.");
+      return;
+    }
+    if (handledPublicly) return;
     handler(request, response).catch(() => {
       if (!response.headersSent) {
         reject(response, 500, "INTERNAL_ERROR", "Request handling failed.");
