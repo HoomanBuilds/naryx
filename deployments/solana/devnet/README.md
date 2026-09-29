@@ -86,6 +86,16 @@ After each successful deployment, verify the program through a read-only query:
 solana program show PROGRAM_ID --url https://api.devnet.solana.com --output json
 ```
 
+Before a candidate release manifest is reviewed or committed, run the signerless preflight from `contracts/solana`:
+
+```bash
+node scripts/verify-devnet-release.mjs --manifest /absolute/path/to/candidate-release.json
+```
+
+The input path is mandatory and must be absolute. The script has a fixed `https://api.devnet.solana.com` read endpoint and does not load Solana CLI configuration, a default wallet, a keypair, or a signer. It calls only `getGenesisHash` and `getMultipleAccountsInfo`. The candidate uses schema version `1`, cluster `solana-devnet`, the exact Devnet genesis hash, and a nonempty `programs` array. Each program record supplies `name`, `programId`, `programDataAddress`, `deploymentSlot`, and `upgradeAuthority`, which is `null` for an immutable program. Optional `artifactPath`, `artifactSha256`, and `deployedByteSha256` fields add byte comparisons. An artifact path is resolved relative to the candidate manifest unless it is absolute.
+
+The preflight rejects mainnet and every non-Devnet genesis, missing accounts, nonexecutable programs, wrong upgradeable-loader ownership, invalid Program and ProgramData layouts, mismatched ProgramData linkage, deployment slot, or upgrade authority, and any supplied artifact or deployed byte hash mismatch. Successful JSON output is derived read-only evidence for review. It is not a deployment record, activation record, support claim, write authorization, or proof that initialization occurred. The script never creates or updates a manifest.
+
 Dump the deployed bytes to an external temporary directory and compare their SHA-256 hash with the final artifact. A committed release manifest must record:
 
 - cluster name and observed genesis hash;
