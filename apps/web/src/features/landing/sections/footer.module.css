@@ -139,9 +139,10 @@ a.glow:hover {
     color 0.2s;
 }
 
-.contact:hover {
-  background: var(--glint);
-  color: var(--violet);
+.contact {
+  max-width: 280px;
+  border-style: dashed;
+  opacity: 0.8;
 }
 
 .form {
@@ -215,6 +216,12 @@ a.glow:hover {
 
 .columns a:hover {
   color: var(--cyan);
+}
+
+.unpublished {
+  font-size: 15px;
+  opacity: 0.45;
+  cursor: default;
 }
 
 .wordmark {

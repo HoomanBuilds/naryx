@@ -178,7 +178,7 @@ export default function Hero() {
         <div className={styles.overlay} aria-hidden="true">
           <span className={styles.midline} />
           <span className={styles.midLabel}>
-            <span className="tag">Package mark</span>
+            <span className="tag">Illustrative package mark</span>
             <strong className="mono" data-price="+0.42%">
               +0.42%
             </strong>

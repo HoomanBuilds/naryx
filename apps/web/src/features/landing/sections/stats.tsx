@@ -8,8 +8,8 @@ import styles from "./stats.module.css";
 const TILES = [
   { value: 1, decimals: 0, prefix: "", suffix: "", label: "Signature for every leg of the strategy", tone: "blue" },
   { value: 4, decimals: 0, prefix: "", suffix: "", label: "Domains: Solana, Base, Hyperliquid, Arbitrum", tone: "light" },
-  { value: 4, decimals: 0, prefix: "", suffix: "", label: "Settlement classes, each with its own guarantee", tone: "dark" },
-  { value: 5, decimals: 0, prefix: "", suffix: "", label: "Evidence grades on every receipt", tone: "ink" },
+  { value: 3, decimals: 0, prefix: "", suffix: "", label: "Settlement classes, each with its own guarantee", tone: "dark" },
+  { value: 4, decimals: 0, prefix: "", suffix: "", label: "Evidence grades on every receipt", tone: "ink" },
 ];
 
 /** The stat mosaic: tiles on dithered pixel patterns, counting up. */

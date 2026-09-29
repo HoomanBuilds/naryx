@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, type FormEvent } from "react";
 import { gsap, reducedMotion, ScrollTrigger, useGSAP } from "@/features/landing/gsap";
 import { ParticleWordmark } from "@/features/landing/particle-wordmark";
 import styles from "./footer.module.css";
@@ -12,7 +12,15 @@ const COLUMNS = [
   { title: "Company", links: ["Blog", "X", "Careers", "Contact"] },
   { title: "Security & legal", links: ["Security model", "Activation status"] },
 ];
-const HREFS: Record<string, string> = { Terminal: "/trade" };
+// Only destinations that exist are links. Everything else is shown as not yet published.
+const HREFS: Record<string, string> = {
+  Terminal: "/trade",
+  "Market makers": "#use",
+  Receipts: "#engine",
+  Solvers: "#engine",
+  "Settlement classes": "#engine",
+  "Activation status": "/trade",
+};
 
 function Crosshair() {
   return (
@@ -30,7 +38,6 @@ function Crosshair() {
  */
 export default function Footer() {
   const root = useRef<HTMLElement>(null);
-  const [subscribed, setSubscribed] = useState(false);
 
   useGSAP(
     () => {
@@ -113,10 +120,9 @@ export default function Footer() {
     { scope: root },
   );
 
-  // Display only: there is no mailing list behind this demo.
+  // There is no mailing list yet, so the form is visibly closed instead of pretending to accept an address.
   const subscribe = (event: FormEvent) => {
     event.preventDefault();
-    setSubscribed(true);
   };
 
   return (
@@ -139,15 +145,15 @@ export default function Footer() {
               Newsletter
             </label>
             <div className={styles.field}>
-              <input id="newsletter" type="email" placeholder="ENTER EMAIL" required disabled={subscribed} />
-              <button type="submit" disabled={subscribed}>
-                {subscribed ? "Signed up" : "Sign me up!"}
+              <input id="newsletter" type="email" placeholder="OPENS AT PUBLIC LAUNCH" disabled aria-describedby="newsletter-status" />
+              <button type="submit" disabled>
+                Not open yet
               </button>
             </div>
           </form>
-          <a href="mailto:hello@naryx.example" className={`${styles.title} ${styles.contact}`}>
-            Contact Naryx
-          </a>
+          <p id="newsletter-status" className={`${styles.title} ${styles.contact}`}>
+            Newsletter and contact channels open at public launch
+          </p>
         </div>
 
         <nav className={styles.columns} aria-label="Footer">
@@ -157,7 +163,13 @@ export default function Footer() {
               <ul>
                 {links.map((link) => (
                   <li key={link}>
-                    <a href={HREFS[link] ?? "#top"}>{link}</a>
+                    {HREFS[link] === undefined ? (
+                      <span className={styles.unpublished} aria-disabled="true" title="Not yet published">
+                        {link}
+                      </span>
+                    ) : (
+                      <a href={HREFS[link]}>{link}</a>
+                    )}
                   </li>
                 ))}
               </ul>
