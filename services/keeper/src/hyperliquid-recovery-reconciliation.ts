@@ -35,12 +35,26 @@ const U32_MAX = 0xffff_ffff;
 export const HYPERCORE_RECOVERY_RECONCILIATION_SOURCE =
   'HYPERCORE_ACCOUNT_RECOVERY_RECONCILIATION';
 
+// Terminal values use the canonical terminal-state names. A paired rollback that restores the
+// pre-package state is RECOVERED_FLAT: terminal, but never a successful package receipt.
 export type HyperliquidRecoveryOutcome =
   | 'RECONCILING'
-  | 'RECOVERED_EXACT'
+  | 'RECOVERED_COMPLETE'
   | 'RECOVERED_BOUNDED'
+  | 'RECOVERED_FLAT'
   | 'RECOVERY_REQUIRED'
   | 'MANUAL_INTERVENTION';
+
+const TERMINAL_RECOVERY_OUTCOMES: ReadonlySet<HyperliquidRecoveryOutcome> = new Set([
+  'RECOVERED_COMPLETE',
+  'RECOVERED_BOUNDED',
+  'RECOVERED_FLAT',
+]);
+
+/** Only completed recoveries (exact or bounded) produce a successful package receipt. */
+export function recoveryIssuesSuccessfulReceipt(outcome: HyperliquidRecoveryOutcome): boolean {
+  return outcome === 'RECOVERED_COMPLETE' || outcome === 'RECOVERED_BOUNDED';
+}
 
 export type HyperliquidRecoveryReason =
   | 'INCOMPLETE_RECOVERY'
@@ -600,7 +614,7 @@ export function createHyperliquidRecoveryAttempt(
 function terminalOutcome(
   attempt: HyperliquidRecoveryAttempt,
   evidence: HyperliquidRecoveryReconciliationSnapshot,
-): 'RECOVERED_EXACT' | 'RECOVERED_BOUNDED' | null {
+): 'RECOVERED_COMPLETE' | 'RECOVERED_BOUNDED' | 'RECOVERED_FLAT' | null {
   const residual = absolute(
     evidence.netSpotBalanceDeltaAtoms + evidence.perpetualPositionDeltaAtoms,
   );
@@ -611,7 +625,7 @@ function terminalOutcome(
         === attempt.sourceAttempt.plan.prePerpetualPositionAtoms
       && evidence.perpetualPositionTargetAtoms
         === attempt.sourceAttempt.plan.prePerpetualPositionAtoms
-      ? 'RECOVERED_EXACT'
+      ? 'RECOVERED_FLAT'
       : null;
   }
   if (evidence.observedPerpetualPositionAtoms
@@ -621,7 +635,7 @@ function terminalOutcome(
   const terminal = attempt.sourceAttempt.plan.terminalResidualPolicy;
   if (terminal.kind === 'EXACT_NET') {
     return evidence.netSpotBalanceDeltaAtoms === terminal.netSpotDeltaAtoms && residual === 0n
-      ? 'RECOVERED_EXACT'
+      ? 'RECOVERED_COMPLETE'
       : null;
   }
   return evidence.netSpotBalanceDeltaAtoms >= terminal.minNetSpotDeltaAtoms
@@ -643,7 +657,7 @@ export function reconcileHyperliquidRecovery(
     && (sameEvidence(attempt.acceptedEvidence, evidence)
       || sameEvidencePayload(attempt.acceptedEvidence, evidence))) return attempt;
   if (attempt.status === 'MANUAL_INTERVENTION') return attempt;
-  if (attempt.status === 'RECOVERED_EXACT' || attempt.status === 'RECOVERED_BOUNDED') {
+  if (TERMINAL_RECOVERY_OUTCOMES.has(attempt.status)) {
     return manual(attempt, 'CONFLICTING_TERMINAL_EVIDENCE', evidence);
   }
   if (attempt.acceptedEvidence !== null

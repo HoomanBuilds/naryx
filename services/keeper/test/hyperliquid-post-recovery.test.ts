@@ -35,6 +35,7 @@ import {
   prepareHyperliquidRecoverySubmission,
   reconcileHyperliquidPackageAttempt,
   reconcileHyperliquidRecovery,
+  recoveryIssuesSuccessfulReceipt,
   registerHyperliquidRecoveryAgent,
   type HyperliquidPackageAttempt,
   type HyperliquidReconciliationSnapshotInput,
@@ -369,7 +370,8 @@ test('reconciles exact completion from authoritative actual evidence', () => {
     recoveryAttempt(source, compiled),
     recoveryEvidence(source, compiled),
   );
-  assert.equal(result.status, 'RECOVERED_EXACT');
+  assert.equal(result.status, 'RECOVERED_COMPLETE');
+  assert.equal(recoveryIssuesSuccessfulReceipt(result.status), true);
   assert.equal(result.acceptedEvidence!.perpetualPositionDeltaAtoms, -100n);
   assert.equal(result.acceptedEvidence!.actualRecoveryCosts[0]!.amountAtoms, 10n);
 });
@@ -406,7 +408,8 @@ test('paired rollback restores the pre-package spot and perpetual state exactly'
     recoveryAttempt(source, compiled),
     recoveryEvidence(source, compiled),
   );
-  assert.equal(result.status, 'RECOVERED_EXACT');
+  assert.equal(result.status, 'RECOVERED_FLAT');
+  assert.equal(recoveryIssuesSuccessfulReceipt(result.status), false);
   assert.equal(result.acceptedEvidence!.netSpotBalanceDeltaAtoms, 0n);
   assert.equal(result.acceptedEvidence!.perpetualPositionDeltaAtoms, 0n);
   assert.equal(result.acceptedEvidence!.observedPerpetualPositionAtoms, 0n);
