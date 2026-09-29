@@ -19,6 +19,15 @@ const FAILURE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const LIFECYCLE_ATTEMPT_ID_PATTERN = /^solana-cash-carry-[0-9a-f]{64}$/;
 const LOCAL_ATTEMPT_ID_PATTERN = /^local-atomic-[0-9a-f]{64}$/;
 const LOCAL_CONTEXT_ID = "local:svm:sol-carry-v1";
+const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia" as const;
+const BASE_SEPOLIA_CHAIN_REFERENCE = "84532" as const;
+const ARBITRUM_SEPOLIA_DOMAIN_ID = "evm:arbitrum-sepolia" as const;
+const ARBITRUM_SEPOLIA_CHAIN_REFERENCE = "421614" as const;
+const EVM_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const EVM_HASH_PATTERN = /^0x[0-9a-f]{64}$/;
+const EVM_SIGNATURE_PATTERN = /^0x[0-9a-f]{130}$/;
+const EVM_ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+const EVM_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 export type SolanaExecutionObservationRequest = Readonly<{
   idempotencyKey: string;
@@ -65,6 +74,199 @@ export type SolanaExecutionObservation =
     lastValidBlockHeight: number;
     observedBlockHeight: number;
   }>;
+
+export type EvmRequestIdentity = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+}>;
+
+export type BaseAtomicAuthorization = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  domainId: typeof BASE_SEPOLIA_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  environment: "TESTNET";
+  chainReference: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+  typedData: Readonly<{
+    domain: Readonly<{
+      name: "Naryx Package Verifier";
+      version: "1";
+      chainId: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+      verifyingContract: string;
+    }>;
+    types: Readonly<{
+      EIP712Domain: readonly Readonly<{ name: string; type: string }>[];
+      TraderPermit: readonly Readonly<{ name: string; type: string }>[];
+    }>;
+    primaryType: "TraderPermit";
+    message: Readonly<{
+      packageHash: string;
+      accountsHash: string;
+      limitsHash: string;
+      nonce: string;
+      deadline: string;
+    }>;
+  }>;
+  digest: string;
+  requestCommitment: string;
+}>;
+
+export type BaseAtomicPreparationRequest = EvmRequestIdentity & Readonly<{
+  traderSignature: string;
+}>;
+
+export type BaseAtomicPreparation = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  domainId: typeof BASE_SEPOLIA_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  environment: "TESTNET";
+  chainReference: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+  to: string;
+  value: "0";
+  data: string;
+  orderHash: string;
+  quoteHash: string;
+  routeHash: string;
+  requestCommitment: string;
+}>;
+
+export type BaseAtomicObservationRequest = EvmRequestIdentity & Readonly<{
+  transactionHash: string;
+}>;
+
+export type EvmEvidenceGrade =
+  | "none"
+  | "transaction-receipt"
+  | "contract-state"
+  | "authenticated-callback-record"
+  | "finalized-contract-receipt";
+
+export type BaseAtomicLifecycle =
+  | "NOT_FOUND"
+  | "SUBMITTED"
+  | "REVERTED"
+  | "CONFIRMED"
+  | "FINALIZED"
+  | "EVIDENCE_MISMATCH";
+
+export type BaseAtomicPackageReceipt = Readonly<{
+  receiptHash: string;
+  domainIdHash: string;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  orderHash: string;
+  quoteHash: string;
+  routeHash: string;
+  spotFillCommitment: string;
+  seriesIdentityKey: string;
+  seriesBindingVersion: number;
+  seriesBindingHash: string;
+  action: number;
+  strategyAccount: string;
+  solver: string;
+  recovery: boolean;
+  baseQuantityAtoms: string;
+  spotQuoteAtoms: string;
+  packageSizeUnits: string;
+  nonce: string;
+}>;
+
+export type BaseAtomicOpenPackage = Readonly<{
+  entryReceiptHash: string;
+  routeHash: string;
+  baseQuantityAtoms: string;
+  packageSizeUnits: string;
+}>;
+
+export type BaseAtomicObservation = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  environment: "TESTNET";
+  domainId: typeof BASE_SEPOLIA_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  chainReference: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+  transactionHash: string;
+  lifecycle: BaseAtomicLifecycle;
+  evidenceGrade: EvmEvidenceGrade;
+  blockNumber: string | null;
+  confirmations: number | null;
+  receiptHash: string | null;
+  packageReceipt: BaseAtomicPackageReceipt | null;
+  openPackage: BaseAtomicOpenPackage | null;
+  reason: string | null;
+}>;
+
+export type EvmCoordinatorState =
+  | "NONE" | "RESERVED" | "REQUEST_SUBMITTED" | "VENUE_PENDING" | "EXECUTED"
+  | "CANCELLED" | "FROZEN" | "RECOVERY_PENDING" | "RECOVERED"
+  | "MANUAL_INTERVENTION" | "CLOSED";
+
+export type EvmVenueStatus =
+  | "NONE" | "PENDING" | "EXECUTED" | "CANCELLED" | "FROZEN" | "RECOVERED" | "CONFLICT";
+
+export type ArbitrumAsyncLifecycle =
+  | "NOT_FOUND" | "RESERVED" | "REQUEST_SUBMITTED" | "VENUE_PENDING" | "EXECUTED"
+  | "CANCELLED" | "FROZEN" | "RECOVERY_PENDING" | "RECOVERED"
+  | "MANUAL_INTERVENTION" | "CLOSED" | "CONFLICT" | "EVIDENCE_MISMATCH";
+
+export type ArbitrumAsyncObservation = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  environment: "TESTNET";
+  domainId: typeof ARBITRUM_SEPOLIA_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  chainReference: typeof ARBITRUM_SEPOLIA_CHAIN_REFERENCE;
+  packageId: string;
+  lifecycle: ArbitrumAsyncLifecycle;
+  evidenceGrade: EvmEvidenceGrade;
+  coordinator: Readonly<{
+    state: EvmCoordinatorState;
+    stateVersion: number;
+    requestKey: string;
+    outcomeEvidenceHash: string;
+    recoveryEvidenceHash: string;
+    hasVenueOutcome: boolean;
+    lastVenueOutcome: number;
+    recoveryDutyActive: boolean;
+    recoveryActionSubmitted: boolean;
+    recoveryProven: boolean;
+    bondSlashed: boolean;
+    evidenceConflict: boolean;
+  }> | null;
+  entry: Readonly<{
+    status: EvmVenueStatus;
+    evidenceHash: string;
+    positionSizeBefore: string;
+    positionSizeAfter: string;
+    revision: number;
+  }> | null;
+  exit: Readonly<{
+    status: EvmVenueStatus;
+    evidenceHash: string;
+    revision: number;
+    reconciling: boolean;
+    released: boolean;
+  }> | null;
+  finalReceipt: Readonly<{
+    commitment: string;
+    packageId: string;
+    entryRequestKey: string;
+    exitRequestKey: string;
+    recipient: string;
+    fullCloseSizeUsd: string;
+    spotBaseAtoms: string;
+    spotQuoteAtoms: string;
+    perpStatus: number;
+    terminalState: number;
+  }> | null;
+  exitCompleted: boolean;
+  reason: string | null;
+}>;
 
 export type PackageLifecycleState =
   | "PACKAGE_CREATED"
@@ -1250,6 +1452,456 @@ function requireLifecycleResponse(value: unknown, requestedAttemptId: string): P
   return Object.freeze({ attempt, receipts: Object.freeze(receipts) });
 }
 
+const EVM_EVIDENCE_GRADES = new Set<EvmEvidenceGrade>([
+  "none", "transaction-receipt", "contract-state", "authenticated-callback-record",
+  "finalized-contract-receipt",
+]);
+const BASE_ATOMIC_LIFECYCLES = new Set<BaseAtomicLifecycle>([
+  "NOT_FOUND", "SUBMITTED", "REVERTED", "CONFIRMED", "FINALIZED", "EVIDENCE_MISMATCH",
+]);
+const EVM_COORDINATOR_STATES = new Set<EvmCoordinatorState>([
+  "NONE", "RESERVED", "REQUEST_SUBMITTED", "VENUE_PENDING", "EXECUTED", "CANCELLED",
+  "FROZEN", "RECOVERY_PENDING", "RECOVERED", "MANUAL_INTERVENTION", "CLOSED",
+]);
+const EVM_VENUE_STATUSES = new Set<EvmVenueStatus>([
+  "NONE", "PENDING", "EXECUTED", "CANCELLED", "FROZEN", "RECOVERED", "CONFLICT",
+]);
+const ARBITRUM_ASYNC_LIFECYCLES = new Set<ArbitrumAsyncLifecycle>([
+  "NOT_FOUND", "RESERVED", "REQUEST_SUBMITTED", "VENUE_PENDING", "EXECUTED", "CANCELLED",
+  "FROZEN", "RECOVERY_PENDING", "RECOVERED", "MANUAL_INTERVENTION", "CLOSED", "CONFLICT",
+  "EVIDENCE_MISMATCH",
+]);
+const EIP712_DOMAIN_FIELDS = [
+  { name: "name", type: "string" },
+  { name: "version", type: "string" },
+  { name: "chainId", type: "uint256" },
+  { name: "verifyingContract", type: "address" },
+] as const;
+const TRADER_PERMIT_FIELDS = [
+  { name: "packageHash", type: "bytes32" },
+  { name: "accountsHash", type: "bytes32" },
+  { name: "limitsHash", type: "bytes32" },
+  { name: "nonce", type: "uint256" },
+  { name: "deadline", type: "uint256" },
+] as const;
+
+function requireEvmIdentity(value: EvmRequestIdentity): EvmRequestIdentity {
+  if (!EVM_ID_PATTERN.test(value.attemptId) || !EVM_ID_PATTERN.test(value.idempotencyKey)) {
+    throw new Error("EVM request identity is invalid.");
+  }
+  return Object.freeze({ attemptId: value.attemptId, idempotencyKey: value.idempotencyKey });
+}
+
+function requireEvmHash(value: unknown, name: string, allowZero = false): string {
+  if (typeof value !== "string" || !EVM_HASH_PATTERN.test(value) ||
+      (!allowZero && /^0x0{64}$/.test(value))) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireEvmAddress(value: unknown, name: string): string {
+  if (typeof value !== "string" || !EVM_ADDRESS_PATTERN.test(value) || /^0x0{40}$/i.test(value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireEvmDecimal(value: unknown, name: string): string {
+  if (typeof value !== "string" || !EVM_DECIMAL_PATTERN.test(value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireEvmPositiveInteger(value: unknown, name: string): number {
+  const checked = requireInteger(value, name);
+  if (checked === 0) throw new Error(`${name} is invalid.`);
+  return checked;
+}
+
+function requireEvmReason(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0 || value.length > 300) {
+    throw new Error("EVM observation reason is invalid.");
+  }
+  return value;
+}
+
+function requireBaseAuthorization(
+  value: unknown,
+  request: EvmRequestIdentity,
+): BaseAtomicAuthorization {
+  if (!isRecord(value) || !isRecord(value.typedData)) {
+    throw new Error("Base atomic authorization response is invalid.");
+  }
+  requireExactKeys(value, [
+    "attemptId", "idempotencyKey", "domainId", "domainManifestVersion", "domainManifestHash",
+    "environment", "chainReference", "typedData", "digest", "requestCommitment",
+  ], "Base atomic authorization response");
+  if (value.attemptId !== request.attemptId || value.idempotencyKey !== request.idempotencyKey ||
+      value.domainId !== BASE_SEPOLIA_DOMAIN_ID || value.environment !== "TESTNET" ||
+      value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE) {
+    throw new Error("Base atomic authorization response binding is invalid.");
+  }
+  const typedData = value.typedData;
+  requireExactKeys(typedData, ["domain", "types", "primaryType", "message"], "Base typed data");
+  if (!isRecord(typedData.domain) || !isRecord(typedData.types) || !isRecord(typedData.message)) {
+    throw new Error("Base typed data is invalid.");
+  }
+  requireExactKeys(typedData.domain, ["name", "version", "chainId", "verifyingContract"], "Base typed data domain");
+  if (typedData.domain.name !== "Naryx Package Verifier" || typedData.domain.version !== "1" ||
+      typedData.domain.chainId !== BASE_SEPOLIA_CHAIN_REFERENCE || typedData.primaryType !== "TraderPermit") {
+    throw new Error("Base typed data domain is invalid.");
+  }
+  requireExactKeys(typedData.types, ["EIP712Domain", "TraderPermit"], "Base typed data types");
+  if (JSON.stringify(typedData.types.EIP712Domain) !== JSON.stringify(EIP712_DOMAIN_FIELDS) ||
+      JSON.stringify(typedData.types.TraderPermit) !== JSON.stringify(TRADER_PERMIT_FIELDS)) {
+    throw new Error("Base typed data types are invalid.");
+  }
+  requireExactKeys(typedData.message, ["packageHash", "accountsHash", "limitsHash", "nonce", "deadline"], "Base trader permit");
+  const domain = Object.freeze({
+    name: "Naryx Package Verifier" as const,
+    version: "1" as const,
+    chainId: BASE_SEPOLIA_CHAIN_REFERENCE,
+    verifyingContract: requireEvmAddress(typedData.domain.verifyingContract, "Base verifier"),
+  });
+  const message = Object.freeze({
+    packageHash: requireEvmHash(typedData.message.packageHash, "Base package hash"),
+    accountsHash: requireEvmHash(typedData.message.accountsHash, "Base accounts hash"),
+    limitsHash: requireEvmHash(typedData.message.limitsHash, "Base limits hash"),
+    nonce: requireEvmDecimal(typedData.message.nonce, "Base permit nonce"),
+    deadline: requireEvmDecimal(typedData.message.deadline, "Base permit deadline"),
+  });
+  return Object.freeze({
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    domainId: BASE_SEPOLIA_DOMAIN_ID,
+    domainManifestVersion: requireEvmPositiveInteger(value.domainManifestVersion, "Base manifest version"),
+    domainManifestHash: requireEvmHash(value.domainManifestHash, "Base manifest hash"),
+    environment: "TESTNET",
+    chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+    typedData: Object.freeze({
+      domain,
+      types: Object.freeze({
+        EIP712Domain: Object.freeze(EIP712_DOMAIN_FIELDS.map((field) => Object.freeze({ ...field }))),
+        TraderPermit: Object.freeze(TRADER_PERMIT_FIELDS.map((field) => Object.freeze({ ...field }))),
+      }),
+      primaryType: "TraderPermit",
+      message,
+    }),
+    digest: requireEvmHash(value.digest, "Base permit digest"),
+    requestCommitment: requireEvmHash(value.requestCommitment, "Base authorization request commitment"),
+  });
+}
+
+function requireBasePreparation(
+  value: unknown,
+  request: BaseAtomicPreparationRequest,
+): BaseAtomicPreparation {
+  if (!isRecord(value)) throw new Error("Base atomic preparation response is invalid.");
+  requireExactKeys(value, [
+    "attemptId", "idempotencyKey", "domainId", "domainManifestVersion", "domainManifestHash",
+    "environment", "chainReference", "to", "value", "data", "orderHash", "quoteHash",
+    "routeHash", "requestCommitment",
+  ], "Base atomic preparation response");
+  if (value.attemptId !== request.attemptId || value.idempotencyKey !== request.idempotencyKey ||
+      value.domainId !== BASE_SEPOLIA_DOMAIN_ID || value.environment !== "TESTNET" ||
+      value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE || value.value !== "0") {
+    throw new Error("Base atomic preparation response binding is invalid.");
+  }
+  if (typeof value.data !== "string" || !/^0x[0-9a-f]+$/.test(value.data) ||
+      value.data.length <= 2 || value.data.length % 2 !== 0) {
+    throw new Error("Base atomic calldata is invalid.");
+  }
+  return Object.freeze({
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    domainId: BASE_SEPOLIA_DOMAIN_ID,
+    domainManifestVersion: requireEvmPositiveInteger(value.domainManifestVersion, "Base manifest version"),
+    domainManifestHash: requireEvmHash(value.domainManifestHash, "Base manifest hash"),
+    environment: "TESTNET",
+    chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+    to: requireEvmAddress(value.to, "Base transaction target"),
+    value: "0",
+    data: value.data,
+    orderHash: requireEvmHash(value.orderHash, "Base order hash"),
+    quoteHash: requireEvmHash(value.quoteHash, "Base quote hash"),
+    routeHash: requireEvmHash(value.routeHash, "Base route hash"),
+    requestCommitment: requireEvmHash(value.requestCommitment, "Base preparation request commitment"),
+  });
+}
+
+function requireBasePackageReceipt(value: unknown): BaseAtomicPackageReceipt {
+  if (!isRecord(value)) throw new Error("Base package receipt is invalid.");
+  requireExactKeys(value, [
+    "receiptHash", "domainIdHash", "domainManifestVersion", "domainManifestHash", "orderHash",
+    "quoteHash", "routeHash", "spotFillCommitment", "seriesIdentityKey", "seriesBindingVersion",
+    "seriesBindingHash", "action", "strategyAccount", "solver", "recovery", "baseQuantityAtoms",
+    "spotQuoteAtoms", "packageSizeUnits", "nonce",
+  ], "Base package receipt");
+  if (typeof value.recovery !== "boolean") throw new Error("Base package receipt recovery flag is invalid.");
+  return Object.freeze({
+    receiptHash: requireEvmHash(value.receiptHash, "Base receipt hash"),
+    domainIdHash: requireEvmHash(value.domainIdHash, "Base receipt domain hash"),
+    domainManifestVersion: requireEvmPositiveInteger(value.domainManifestVersion, "Base receipt domain version"),
+    domainManifestHash: requireEvmHash(value.domainManifestHash, "Base receipt manifest hash"),
+    orderHash: requireEvmHash(value.orderHash, "Base receipt order hash"),
+    quoteHash: requireEvmHash(value.quoteHash, "Base receipt quote hash"),
+    routeHash: requireEvmHash(value.routeHash, "Base receipt route hash"),
+    spotFillCommitment: requireEvmHash(value.spotFillCommitment, "Base spot fill commitment"),
+    seriesIdentityKey: requireEvmHash(value.seriesIdentityKey, "Base series identity"),
+    seriesBindingVersion: requireEvmPositiveInteger(value.seriesBindingVersion, "Base series version"),
+    seriesBindingHash: requireEvmHash(value.seriesBindingHash, "Base series binding hash"),
+    action: requireInteger(value.action, "Base package action"),
+    strategyAccount: requireEvmAddress(value.strategyAccount, "Base strategy account"),
+    solver: requireEvmAddress(value.solver, "Base solver"),
+    recovery: value.recovery,
+    baseQuantityAtoms: requireEvmDecimal(value.baseQuantityAtoms, "Base quantity"),
+    spotQuoteAtoms: requireEvmDecimal(value.spotQuoteAtoms, "Base spot quote"),
+    packageSizeUnits: requireEvmDecimal(value.packageSizeUnits, "Base package units"),
+    nonce: requireEvmDecimal(value.nonce, "Base package nonce"),
+  });
+}
+
+function requireBaseOpenPackage(value: unknown): BaseAtomicOpenPackage {
+  if (!isRecord(value)) throw new Error("Base open package is invalid.");
+  requireExactKeys(value, ["entryReceiptHash", "routeHash", "baseQuantityAtoms", "packageSizeUnits"], "Base open package");
+  return Object.freeze({
+    entryReceiptHash: requireEvmHash(value.entryReceiptHash, "Base entry receipt hash"),
+    routeHash: requireEvmHash(value.routeHash, "Base open route hash"),
+    baseQuantityAtoms: requireEvmDecimal(value.baseQuantityAtoms, "Base open quantity"),
+    packageSizeUnits: requireEvmDecimal(value.packageSizeUnits, "Base open package units"),
+  });
+}
+
+function requireBaseObservation(
+  value: unknown,
+  request: BaseAtomicObservationRequest,
+): BaseAtomicObservation {
+  if (!isRecord(value)) throw new Error("Base atomic observation response is invalid.");
+  requireExactKeys(value, [
+    "attemptId", "idempotencyKey", "environment", "domainId", "domainManifestVersion",
+    "domainManifestHash", "chainReference", "transactionHash", "lifecycle", "evidenceGrade",
+    "blockNumber", "confirmations", "receiptHash", "packageReceipt", "openPackage", "reason",
+  ], "Base atomic observation response");
+  if (value.attemptId !== request.attemptId || value.idempotencyKey !== request.idempotencyKey ||
+      value.transactionHash !== request.transactionHash || value.environment !== "TESTNET" ||
+      value.domainId !== BASE_SEPOLIA_DOMAIN_ID || value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE ||
+      typeof value.lifecycle !== "string" || !BASE_ATOMIC_LIFECYCLES.has(value.lifecycle as BaseAtomicLifecycle) ||
+      typeof value.evidenceGrade !== "string" || !EVM_EVIDENCE_GRADES.has(value.evidenceGrade as EvmEvidenceGrade)) {
+    throw new Error("Base atomic observation response binding is invalid.");
+  }
+  const lifecycle = value.lifecycle as BaseAtomicLifecycle;
+  const evidenceGrade = value.evidenceGrade as EvmEvidenceGrade;
+  const blockNumber = value.blockNumber === null ? null : requireEvmDecimal(value.blockNumber, "Base block number");
+  const confirmations = value.confirmations === null ? null : requireInteger(value.confirmations, "Base confirmations");
+  const receiptHash = value.receiptHash === null ? null : requireEvmHash(value.receiptHash, "Base receipt hash");
+  const packageReceipt = value.packageReceipt === null ? null : requireBasePackageReceipt(value.packageReceipt);
+  const openPackage = value.openPackage === null ? null : requireBaseOpenPackage(value.openPackage);
+  const reason = requireEvmReason(value.reason);
+  if (lifecycle === "NOT_FOUND" &&
+      (evidenceGrade !== "none" || blockNumber !== null || confirmations !== null || receiptHash !== null ||
+        packageReceipt !== null || openPackage !== null)) {
+    throw new Error("Base NOT_FOUND observation carries impossible evidence.");
+  }
+  if (lifecycle === "REVERTED" &&
+      (evidenceGrade !== "transaction-receipt" || blockNumber === null || confirmations === null ||
+        packageReceipt !== null || openPackage !== null)) {
+    throw new Error("Base REVERTED observation carries impossible evidence.");
+  }
+  if ((lifecycle === "SUBMITTED" || lifecycle === "CONFIRMED") &&
+      (evidenceGrade !== "contract-state" || blockNumber === null || confirmations === null ||
+        (packageReceipt === null && openPackage === null))) {
+    throw new Error(`Base ${lifecycle} observation carries impossible evidence.`);
+  }
+  if (lifecycle === "FINALIZED" &&
+      (evidenceGrade !== "finalized-contract-receipt" || blockNumber === null || confirmations === null ||
+        (packageReceipt === null && openPackage === null) || reason !== null)) {
+    throw new Error("Base FINALIZED observation carries impossible evidence.");
+  }
+  const domainManifestVersion = requireEvmPositiveInteger(value.domainManifestVersion, "Base observation manifest version");
+  const domainManifestHash = requireEvmHash(value.domainManifestHash, "Base observation manifest hash");
+  if (packageReceipt && (packageReceipt.domainManifestVersion !== domainManifestVersion ||
+      packageReceipt.domainManifestHash !== domainManifestHash || receiptHash !== packageReceipt.receiptHash)) {
+    throw new Error("Base package receipt does not match its observation.");
+  }
+  return Object.freeze({
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    environment: "TESTNET",
+    domainId: BASE_SEPOLIA_DOMAIN_ID,
+    domainManifestVersion,
+    domainManifestHash,
+    chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+    transactionHash: requireEvmHash(request.transactionHash, "Base transaction hash"),
+    lifecycle,
+    evidenceGrade,
+    blockNumber,
+    confirmations,
+    receiptHash,
+    packageReceipt,
+    openPackage,
+    reason,
+  });
+}
+
+function requireArbitrumAsyncObservation(
+  value: unknown,
+  request: EvmRequestIdentity,
+): ArbitrumAsyncObservation {
+  if (!isRecord(value)) throw new Error("Arbitrum async observation response is invalid.");
+  requireExactKeys(value, [
+    "attemptId", "idempotencyKey", "environment", "domainId", "domainManifestVersion",
+    "domainManifestHash", "chainReference", "packageId", "lifecycle", "evidenceGrade",
+    "coordinator", "entry", "exit", "finalReceipt", "exitCompleted", "reason",
+  ], "Arbitrum async observation response");
+  if (value.attemptId !== request.attemptId || value.idempotencyKey !== request.idempotencyKey ||
+      value.environment !== "TESTNET" || value.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID ||
+      value.chainReference !== ARBITRUM_SEPOLIA_CHAIN_REFERENCE || typeof value.lifecycle !== "string" ||
+      !ARBITRUM_ASYNC_LIFECYCLES.has(value.lifecycle as ArbitrumAsyncLifecycle) ||
+      typeof value.evidenceGrade !== "string" || !EVM_EVIDENCE_GRADES.has(value.evidenceGrade as EvmEvidenceGrade) ||
+      typeof value.exitCompleted !== "boolean") {
+    throw new Error("Arbitrum async observation response binding is invalid.");
+  }
+  const lifecycle = value.lifecycle as ArbitrumAsyncLifecycle;
+  const evidenceGrade = value.evidenceGrade as EvmEvidenceGrade;
+  let coordinator: ArbitrumAsyncObservation["coordinator"] = null;
+  if (value.coordinator !== null) {
+    if (!isRecord(value.coordinator)) throw new Error("Arbitrum coordinator is invalid.");
+    requireExactKeys(value.coordinator, [
+      "state", "stateVersion", "requestKey", "outcomeEvidenceHash", "recoveryEvidenceHash",
+      "hasVenueOutcome", "lastVenueOutcome", "recoveryDutyActive", "recoveryActionSubmitted",
+      "recoveryProven", "bondSlashed", "evidenceConflict",
+    ], "Arbitrum coordinator");
+    if (typeof value.coordinator.state !== "string" ||
+        !EVM_COORDINATOR_STATES.has(value.coordinator.state as EvmCoordinatorState)) {
+      throw new Error("Arbitrum coordinator state is invalid.");
+    }
+    for (const field of [
+      "hasVenueOutcome", "recoveryDutyActive", "recoveryActionSubmitted", "recoveryProven",
+      "bondSlashed", "evidenceConflict",
+    ] as const) {
+      if (typeof value.coordinator[field] !== "boolean") throw new Error("Arbitrum coordinator flags are invalid.");
+    }
+    coordinator = Object.freeze({
+      state: value.coordinator.state as EvmCoordinatorState,
+      stateVersion: requireInteger(value.coordinator.stateVersion, "Arbitrum coordinator version"),
+      requestKey: requireEvmHash(value.coordinator.requestKey, "Arbitrum request key", true),
+      outcomeEvidenceHash: requireEvmHash(value.coordinator.outcomeEvidenceHash, "Arbitrum outcome evidence", true),
+      recoveryEvidenceHash: requireEvmHash(value.coordinator.recoveryEvidenceHash, "Arbitrum recovery evidence", true),
+      hasVenueOutcome: value.coordinator.hasVenueOutcome as boolean,
+      lastVenueOutcome: requireInteger(value.coordinator.lastVenueOutcome, "Arbitrum venue outcome"),
+      recoveryDutyActive: value.coordinator.recoveryDutyActive as boolean,
+      recoveryActionSubmitted: value.coordinator.recoveryActionSubmitted as boolean,
+      recoveryProven: value.coordinator.recoveryProven as boolean,
+      bondSlashed: value.coordinator.bondSlashed as boolean,
+      evidenceConflict: value.coordinator.evidenceConflict as boolean,
+    });
+  }
+  const requireVenueRecord = (raw: unknown, name: string) => {
+    if (!isRecord(raw)) throw new Error(`${name} is invalid.`);
+    if (typeof raw.status !== "string" || !EVM_VENUE_STATUSES.has(raw.status as EvmVenueStatus)) {
+      throw new Error(`${name} status is invalid.`);
+    }
+    return raw;
+  };
+  let entry: ArbitrumAsyncObservation["entry"] = null;
+  if (value.entry !== null) {
+    const raw = requireVenueRecord(value.entry, "Arbitrum entry");
+    requireExactKeys(raw, ["status", "evidenceHash", "positionSizeBefore", "positionSizeAfter", "revision"], "Arbitrum entry");
+    entry = Object.freeze({
+      status: raw.status as EvmVenueStatus,
+      evidenceHash: requireEvmHash(raw.evidenceHash, "Arbitrum entry evidence", true),
+      positionSizeBefore: requireEvmDecimal(raw.positionSizeBefore, "Arbitrum position before"),
+      positionSizeAfter: requireEvmDecimal(raw.positionSizeAfter, "Arbitrum position after"),
+      revision: requireInteger(raw.revision, "Arbitrum entry revision"),
+    });
+  }
+  let exit: ArbitrumAsyncObservation["exit"] = null;
+  if (value.exit !== null) {
+    const raw = requireVenueRecord(value.exit, "Arbitrum exit");
+    requireExactKeys(raw, ["status", "evidenceHash", "revision", "reconciling", "released"], "Arbitrum exit");
+    if (typeof raw.reconciling !== "boolean" || typeof raw.released !== "boolean") {
+      throw new Error("Arbitrum exit flags are invalid.");
+    }
+    exit = Object.freeze({
+      status: raw.status as EvmVenueStatus,
+      evidenceHash: requireEvmHash(raw.evidenceHash, "Arbitrum exit evidence", true),
+      revision: requireInteger(raw.revision, "Arbitrum exit revision"),
+      reconciling: raw.reconciling as boolean,
+      released: raw.released as boolean,
+    });
+  }
+  let finalReceipt: ArbitrumAsyncObservation["finalReceipt"] = null;
+  if (value.finalReceipt !== null) {
+    if (!isRecord(value.finalReceipt)) throw new Error("Arbitrum final receipt is invalid.");
+    requireExactKeys(value.finalReceipt, [
+      "commitment", "packageId", "entryRequestKey", "exitRequestKey", "recipient",
+      "fullCloseSizeUsd", "spotBaseAtoms", "spotQuoteAtoms", "perpStatus", "terminalState",
+    ], "Arbitrum final receipt");
+    finalReceipt = Object.freeze({
+      commitment: requireEvmHash(value.finalReceipt.commitment, "Arbitrum final commitment"),
+      packageId: requireEvmHash(value.finalReceipt.packageId, "Arbitrum final package id"),
+      entryRequestKey: requireEvmHash(value.finalReceipt.entryRequestKey, "Arbitrum entry request key", true),
+      exitRequestKey: requireEvmHash(value.finalReceipt.exitRequestKey, "Arbitrum exit request key", true),
+      recipient: requireEvmAddress(value.finalReceipt.recipient, "Arbitrum recipient"),
+      fullCloseSizeUsd: requireEvmDecimal(value.finalReceipt.fullCloseSizeUsd, "Arbitrum close size"),
+      spotBaseAtoms: requireEvmDecimal(value.finalReceipt.spotBaseAtoms, "Arbitrum spot base"),
+      spotQuoteAtoms: requireEvmDecimal(value.finalReceipt.spotQuoteAtoms, "Arbitrum spot quote"),
+      perpStatus: requireInteger(value.finalReceipt.perpStatus, "Arbitrum perp status"),
+      terminalState: requireInteger(value.finalReceipt.terminalState, "Arbitrum terminal state"),
+    });
+  }
+  const packageId = requireEvmHash(value.packageId, "Arbitrum package id");
+  const exitCompleted = value.exitCompleted;
+  if (lifecycle === "NOT_FOUND" &&
+      (evidenceGrade !== "none" || coordinator !== null || entry !== null || exit !== null ||
+        finalReceipt !== null || exitCompleted)) {
+    throw new Error("Arbitrum NOT_FOUND observation carries impossible evidence.");
+  }
+  if (lifecycle === "CONFLICT" && (!coordinator ||
+      (!coordinator.evidenceConflict && entry?.status !== "CONFLICT" && exit?.status !== "CONFLICT"))) {
+    throw new Error("Arbitrum CONFLICT observation carries no conflict signal.");
+  }
+  if (lifecycle !== "NOT_FOUND" && lifecycle !== "CONFLICT" && lifecycle !== "EVIDENCE_MISMATCH" &&
+      (!coordinator || lifecycle !== coordinator.state)) {
+    throw new Error("Arbitrum lifecycle does not match coordinator state.");
+  }
+  for (const record of [entry, exit]) {
+    if (record && record.status !== "NONE" && record.status !== "PENDING" && /^0x0{64}$/.test(record.evidenceHash)) {
+      throw new Error("Arbitrum terminal venue status lacks evidence.");
+    }
+  }
+  if (finalReceipt && (!exit || finalReceipt.packageId !== packageId)) {
+    throw new Error("Arbitrum final receipt does not match its observation.");
+  }
+  if (exitCompleted && (entry?.status !== "EXECUTED" || exit?.status !== "EXECUTED" || !exit.released ||
+      /^0x0{64}$/.test(exit.evidenceHash) || !finalReceipt || finalReceipt.packageId !== packageId ||
+      finalReceipt.perpStatus !== 2 || finalReceipt.terminalState !== 1 ||
+      evidenceGrade !== "finalized-contract-receipt")) {
+    throw new Error("Arbitrum completed exit carries incomplete evidence.");
+  }
+  return Object.freeze({
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    environment: "TESTNET",
+    domainId: ARBITRUM_SEPOLIA_DOMAIN_ID,
+    domainManifestVersion: requireEvmPositiveInteger(value.domainManifestVersion, "Arbitrum manifest version"),
+    domainManifestHash: requireEvmHash(value.domainManifestHash, "Arbitrum manifest hash"),
+    chainReference: ARBITRUM_SEPOLIA_CHAIN_REFERENCE,
+    packageId,
+    lifecycle,
+    evidenceGrade,
+    coordinator,
+    entry,
+    exit,
+    finalReceipt,
+    exitCompleted,
+    reason: requireEvmReason(value.reason),
+  });
+}
+
 function toSafeObservationError(status: number, code: string | null): Error {
   if (status === 503 || code === "EXECUTION_UNAVAILABLE" ||
       status === 502 || code === "EXECUTION_OBSERVATION_FAILED") {
@@ -1293,6 +1945,87 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error("Private terminal runtime health is unavailable.");
     }
     return requireRuntimeHealth(payload.runtime);
+  }
+
+  async prepareBaseAtomicAuthorization(
+    input: EvmRequestIdentity,
+    signal?: AbortSignal,
+  ): Promise<BaseAtomicAuthorization> {
+    const request = requireEvmIdentity(input);
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/evm-testnet/prepare-atomic-authorization`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+        signal,
+      },
+    );
+    if (!response.ok) throw new Error(`Base authorization preparation failed with ${response.status}.`);
+    return requireBaseAuthorization(await response.json() as unknown, request);
+  }
+
+  async prepareBaseAtomicExecution(
+    input: BaseAtomicPreparationRequest,
+    signal?: AbortSignal,
+  ): Promise<BaseAtomicPreparation> {
+    const identity = requireEvmIdentity(input);
+    if (!EVM_SIGNATURE_PATTERN.test(input.traderSignature)) {
+      throw new Error("Base trader signature is invalid.");
+    }
+    const request = Object.freeze({ ...identity, traderSignature: input.traderSignature });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/evm-testnet/prepare-atomic`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Base atomic preparation failed with ${response.status}.`);
+    return requireBasePreparation(await response.json() as unknown, request);
+  }
+
+  async observeBaseAtomicExecution(
+    input: BaseAtomicObservationRequest,
+    signal?: AbortSignal,
+  ): Promise<BaseAtomicObservation> {
+    const identity = requireEvmIdentity(input);
+    const transactionHash = requireEvmHash(input.transactionHash, "Base transaction hash");
+    const request = Object.freeze({ ...identity, transactionHash });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/evm-testnet/observe-atomic`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Base atomic observation failed with ${response.status}.`);
+    return requireBaseObservation(await response.json() as unknown, request);
+  }
+
+  async observeArbitrumAsyncExecution(
+    input: EvmRequestIdentity,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumAsyncObservation> {
+    const request = requireEvmIdentity(input);
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/evm-testnet/observe-async`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw new Error(`Arbitrum async observation failed with ${response.status}.`);
+    return requireArbitrumAsyncObservation(await response.json() as unknown, request);
   }
 
   async getSnapshot(domain: DomainId, signal?: AbortSignal): Promise<TerminalViewModel> {
