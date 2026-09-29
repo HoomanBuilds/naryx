@@ -1,151 +1,156 @@
 # Naryx
 
-**Naryx, the Complex Order Network.** Trade the strategy, not the legs.
+**The Complex Order Network. Trade the strategy, not the legs.**
 
-Naryx is open execution and clearing infrastructure for complete onchain financial strategies. An application submits one typed strategy package instead of a sequence of unrelated venue orders. Solvers compete to price and execute the whole package. The protocol enforces the user's signed limits, coordinates every leg under an explicit settlement class, drives permitted recovery, and publishes a verifiable receipt.
+Naryx is an open execution network for complete onchain financial strategies. A trader describes one typed package, receives one signed package quote, authorizes one bounded outcome, and follows one lifecycle through execution, recovery, exit, and receipt verification. The first implemented strategy is cash-and-carry: acquire spot and short the matching perpetual as one economic order.
 
-The first template is cash-and-carry: buy spot, short the matching perpetual, manage the position, and exit both legs through the same protocol.
+The missing primitive is simple: onchain venues expose individual orders, but not an open protocol that can price, authorize, execute, recover, and verify a complete multi-leg strategy as one bounded object.
 
-Settlement guarantees are named, never implied. On domains where all legs share one rollback boundary, every leg succeeds together or reverts. On domains without atomic composition, the user signs exact intermediate-risk, completion, rollback, and deadline limits before execution, and the result is reported as exact or explicitly bounded. Independent chains are never described as atomically composable.
+Naryx does not pretend independent chains are atomic. It assigns every route an explicit settlement class:
 
-## Status
+- `ATOMIC_POSTCONDITION` for legs sharing one rollback boundary;
+- `ASYNC_BONDED_SOLVER` for delayed venues with bonded completion and rollback obligations;
+- `BATCHED_IOC_WITH_RECOVERY` for HyperCore batches with signed residual and recovery limits.
 
-**Pre-mainnet. Testnet, devnet, local, and read-only only.**
+## Flagship mechanism
 
-This repository performs no mainnet writes. It does not deploy, upgrade, approve, transfer, bridge, deposit, withdraw, open or close a position, fund a reservation or bond, or sign a mainnet payload for later broadcast. Read-only mainnet RPC and API calls are permitted and carry no signer.
+The protocol owns the package market rather than presenting a thin router:
 
-Environment promotion order:
+- canonical strategy series make economically equivalent package routes one recognizable market;
+- package books, quote shards, firm inventory reservations, and signed solver quotes price the combined outcome;
+- exact package postconditions measure what the trader receives across all legs, including fees and permitted residual exposure;
+- strategy accounts, delayed registries, nonce protection, and immutable domain references preserve authorization and exit liveness;
+- asynchronous coordinators and bounded recovery state machines make partial execution explicit instead of mislabeling it atomic;
+- evidence-graded lifecycle receipts distinguish submitted, completed, recovered, failed, and unresolved attempts;
+- readiness policies bind exact authority, budget, evidence, risk, and recovery commitments before any funded handoff.
 
-1. local deterministic
-2. public devnet and testnet
-3. pinned production-state clone or fork
-4. read-only shadow mainnet
-5. capped mainnet, only after the readiness gates pass under an approved funds manifest
+## Architecture
 
-Promotion is one way and is granted per domain, adapter, template, settlement class, quote mode, and size cohort.
+```text
+Package terminal
+      |
+Private API and durable package lifecycle
+      |
+Signed package quotes and route selection
+      |
+Domain compiler and execution coordinator
+      |
+Solana programs | EVM contracts | HyperCore adapter
+      |
+Lifecycle observation, recovery, and evidence
+```
 
-The canonical protocol identity and registry kernel is implemented, together with delayed domain
-configuration on Solana and EVM. Package execution, venue adapters, settlement, recovery, and
-product surfaces are not implemented yet.
+The repository keeps compile-time imports, deployment artifacts, network calls, and test consumption as separate dependency relations. The authoritative boundaries are in [AGENTS.md](AGENTS.md).
 
-## Component map
-
-| Path | Responsibility |
+| Path | Current responsibility |
 |---|---|
-| `apps/web` | Package terminal. Order construction, quote comparison, pre-sign review, execution progress, recovery, lifecycle, receipts. |
-| `contracts/solana` | Anchor workspace containing the `naryx_core` program: package verification, pre-state and post-state enforcement, nonce state, adapter allowlist, event emission. |
-| `contracts/evm` | Foundry workspace for the EVM package verifier, pinned venue adapter contracts, transient execution context, and versioned events. |
-| `services/api` | Public API and the authoritative order, quote, authorization, nonce, recovery, and outbox store. Lifecycle, RFQ delivery, preflight, settlement coordination. |
-| `services/solver` | Reference solver runtime. Market data, quote generation, cost modelling, quote signing, inventory and exposure limits. |
-| `services/indexer` | Chain and venue indexing, fill reconciliation, finality and reorg handling, normalized receipts. Read-only, no signer. |
-| `services/keeper` | Lifecycle and risk automation under signed conditions, cost bounds, risk bounds, and expiries. |
-| `packages/protocol-types` | Protocol kernel. Canonical schemas, domain-separated hashing, exact integer arithmetic, terminal states, evidence grades, golden vectors. |
-| `packages/adapter-core` | The adapter contract every domain implements. Interface, versioning, dependency identity, evidence grades, resource plan. |
-| `packages/adapters/solana` | Solana venue adapters and `naryx_core` client bindings. |
-| `packages/adapters/evm` | EVM venue adapters, Base first. |
-| `packages/adapters/hyperliquid` | HyperCore execution, journaling, reconciliation, and bounded recovery. |
-| `packages/sdk` | Public TypeScript client SDK. Quote, authorize, preflight, submit, watch, recover, exit. |
-| `deployments` | Data only. Program IDs, addresses, ABIs, IDLs, code hashes, pinned dependency identities, environment manifests. |
-| `tests` | Cross-workspace conformance, integration, fork, and fault-injection evidence. |
+| `packages/protocol-types` | Canonical manifests, series, orders, quotes, routes, exact integer arithmetic, hashes, readiness policy, and evidence types. |
+| `contracts/solana` | Anchor programs for core verification, package books, quote shards, inventory reservations, typed Orca spot execution, and typed Rise perpetual execution. |
+| `contracts/evm` | Foundry contracts for atomic strategy accounts, package verification and execution, quote shards, reservations, registries, Uniswap V3 spot execution, and bonded asynchronous GMX lifecycle control. |
+| `packages/adapter-core` | Chain-neutral adapter compilation, simulation, and evidence interfaces. |
+| `packages/adapters/solana` | Authenticated Solana compilation, unsigned simulation, evidence reads, deployment qualification, and signerless mainnet shadow qualification. |
+| `packages/adapters/evm` | Chain-neutral atomic calldata compilation plus atomic and asynchronous read-only lifecycle observation. |
+| `packages/adapters/hyperliquid` | HyperCore Testnet batched IOC planning, deterministic client order IDs, bounded residuals, reconciliation, and recovery semantics. |
+| `services/api` | Private terminal API, durable orders, quote selection, readiness gating, unsigned transaction materialization, and lifecycle reads. |
+| `services/solver` | Signed package quote generation and the isolated Hyperliquid Testnet executor boundary. |
+| `services/keeper` | Hyperliquid evidence, recovery reconciliation, signerless mainnet shadow reads, and dependency incident state. |
+| `apps/web` | Trading terminal for package construction, quote review, wallet authorization, readiness, execution progress, recovery state, and receipts. |
+| `deployments` | Published IDLs, ABIs, identities, and reviewed deployment evidence. It contains no executable logic or secrets. |
+| `tests` | Cross-workspace local lifecycle, fork qualification, and conformance evidence. |
+| `packages/sdk`, `services/indexer` | Defined future boundaries. They are not claimed as completed public products. |
 
-### Dependency direction
+## Chain roles
 
-Three relations are tracked separately, because a code import, an artifact read, and a network call are not the same edge.
+- **Solana** is the native package-exchange domain. Naryx implements package books, maker quote shards, firm reservations, authenticated atomic execution, typed Orca and Rise adapters, and public exit compilation.
+- **Base** is the synchronous EVM domain. A Naryx strategy account coordinates package execution with a pinned Uniswap V3 spot port and exact postcondition verification. Base Sepolia includes conformance perpetual support for the test environment, not a claim of a production perpetual venue.
+- **Arbitrum** is the asynchronous venue domain. A bonded coordinator and isolated account manage spot entry, GMX V2 request ownership, failed-entry rollback, recovery, and final exit evidence.
+- **Hyperliquid** supplies HyperCore spot and perpetual execution through an adapter and isolated services. Naryx deploys no Hyperliquid contract and never calls a batched IOC action atomic.
 
-Compile-time imports, where `A -> B` means B imports A:
+Adding another instance of an implemented runtime family is manifest registration plus deployment and adapter records. Adding new execution semantics requires reviewed code first. Unknown identities and combinations fail closed.
 
-```text
-packages/protocol-types -> packages/adapter-core
-packages/adapter-core   -> packages/adapters/{solana,evm,hyperliquid}
-packages/adapters/*     -> services/{api,solver,indexer,keeper}
-packages/protocol-types -> packages/sdk
-packages/adapter-core   -> packages/sdk   (types only)
-packages/sdk            -> apps/web
-```
+## Implementation and activation status
 
-Artifact publication, where `A -> B` means B reads A as data:
+**Pre-mainnet. Public deployment is intentionally deferred. Mainnet writes are prohibited.**
 
-```text
-contracts/solana -> deployments
-contracts/evm    -> deployments
-deployments      -> packages/adapters/*, services/*, apps/web, tests
-```
+| Environment | Current evidence | Activation status |
+|---|---|---|
+| Solana local | Real local validator, current SBF programs, canonical manifests, authenticated entry, rollback, public exit, and receipt reconciliation. | Locally verified. |
+| Base local | Private Anvil deployment of the atomic EVM contract graph with entry, exit, solver authorization, and receipts. | Locally verified. |
+| Arbitrum local | Private Anvil deployment of the bonded asynchronous coordinator and isolated GMX lifecycle with entry and exit scenarios. | Locally verified. |
+| Solana Devnet | Five public program identities, build artifacts, release verifier, unsigned transaction materializer, signerless observer, readiness gate, and browser review flow exist. | Deployment and initialization deferred. |
+| Base Sepolia | Deployment and configuration scripts, immutable runtime manifest validation, bytecode qualification, unsigned attempt materialization, and wallet handoff exist. | Deployment deferred. |
+| Arbitrum Sepolia | Deployment and configuration scripts plus signerless asynchronous lifecycle observation exist. | Deployment deferred. |
+| Hyperliquid Testnet | Signed quote, batched IOC compiler, durable nonce journal, account and market preflight, isolated executor, evidence collection, reconciliation, recovery, and terminal flow exist behind independent default-off gates. | Public execution deferred pending a qualified dedicated Testnet account, test assets, and passing market depth. |
+| Base and Arbitrum production-state forks | Pinned read-only qualification harnesses are committed. Without the required RPC and reviewed point-in-time inputs, the harnesses compile and explicitly skip instead of inventing evidence. | No completed fork evidence is claimed. |
+| Solana and Hyperliquid mainnet shadow | Signerless readers validate production identity, authority, market state, liquidity, fees, and bounded executable economics. | Read-only capability only. No activation or trading claim. |
+| Any mainnet write | No deployment, approval, transfer, bridge, deposit, order, recovery, or signed payload for later broadcast is allowed. | Prohibited until explicit authorization and all readiness gates pass. |
 
-Runtime calls, where `A -> B` means A calls B over the network:
+Public program identities are not deployment claims. Published conformance IDLs and ABIs identify local test dependencies, not live venue integrations.
 
-```text
-apps/web     -> services/api   (public API)
-packages/sdk -> services/api   (public API)
-```
+## Safety model
 
-Test consumption, where `A -> B` means B exercises A:
+- The browser never holds a solver or service signing key.
+- Runtime configuration is external, immutable, versioned, environment-bound, and disabled by default.
+- Every order, quote, route, receipt, registry record, and readiness decision binds the exact domain manifest version and hash.
+- Quantities, prices, fees, caps, and budgets use exact integer atoms with explicit rounding.
+- Contracts verify their domain postconditions. Services coordinate only semantics that cannot share a rollback boundary.
+- Hyperliquid uses a dedicated Testnet account and agent lease, durable monotonic nonces, exact market identity, pre-submission authority and liquidity checks, and no ambiguous-response retry.
+- Unknown, stale, inactive, mismatched, over-budget, or unsupported state fails closed.
+- Read-only mainnet components have no signer and no broadcast path.
 
-```text
-every workspace -> tests
-```
+## Reproduce the implemented evidence
 
-`packages/protocol-types` depends on nothing in this repository, and neither does `deployments`, which is data only and is consumed rather than imported. `contracts/solana` and `contracts/evm` depend on nothing in this repository and publish their IDLs, ABIs, and identities into `deployments`. `packages/sdk` depends on `packages/protocol-types` and `packages/adapter-core` types only, never on an adapter or a service's internals, and reaches `services/api` over the public API. `apps/web` does the same. An adapter never imports a sibling adapter. `tests` may consume every workspace and nothing depends on it.
+This is a multi-workspace repository. There is intentionally no monolithic command that hides which boundary is being validated.
 
-Hyperliquid has no Naryx smart contract. Its logic lives in `packages/adapters/hyperliquid` and the execution services that drive it, never in either contract workspace.
-
-Build order is contract-first: `packages/protocol-types`, then `contracts/solana` and `contracts/evm`, then `packages/adapter-core` and the adapters, then `services/*`, then `packages/sdk`, then `apps/web`.
-
-## Setup
-
-Requires Node.js with npm, the Rust toolchain, the Anchor CLI, the Solana CLI, and Foundry.
-
-Every workspace that an official generator can produce was produced by one. Package manifests are never hand-authored. Run from the repository root, the sequence that reproduces this layout is:
+Install only the workspace you are exercising with its committed lockfile, for example:
 
 ```bash
-mkdir -p contracts
-(cd contracts && anchor init naryx_core --package-manager npm --template multiple --test-template litesvm --no-git)
-mv contracts/naryx_core contracts/solana
-
-forge init contracts/evm --empty --use-parent-git --no-git
-
-npx create-next-app@latest apps/web --typescript --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --disable-git
+npm ci --prefix packages/protocol-types
+npm ci --prefix packages/adapters/solana
+npm ci --prefix services/api
+npm ci --prefix apps/web
 ```
 
-`anchor init` takes a workspace name, not a path, and uses that name for both the directory and the program. It therefore generates `contracts/naryx_core`, which is renamed to `contracts/solana`. The program keeps the name `naryx_core`, so `Anchor.toml`, `programs/naryx_core`, and `declare_id!` are untouched by the rename. `forge init` and `create-next-app` take the target path directly and need no move.
-
-Each `anchor init` run generates a fresh program keypair and a matching declared ID, so re-running this sequence produces a different ID from the one committed here. See Validation below.
-
-Install dependencies:
+Protocol and TypeScript boundaries:
 
 ```bash
-npm install --prefix contracts/solana
-npm install --prefix apps/web
+npm test --prefix packages/protocol-types
+npm test --prefix packages/adapters/solana
+npm test --prefix packages/adapters/evm
+npm test --prefix packages/adapters/hyperliquid
+npm test --prefix services/api
+npm test --prefix services/solver
+npm test --prefix services/keeper
 ```
 
-## Validation
-
-Solana program:
+Contract workspaces:
 
 ```bash
 cd contracts/solana && anchor build --ignore-keys
 cd contracts/solana && cargo test
-```
-
-`cargo test` is the test command declared by the scaffold in `Anchor.toml`. The LiteSVM tests run in process and need no local validator; they load the built program at the declared ID, so they do not depend on the deploy keypair.
-
-Program keypairs are never committed. The one under `contracts/solana/target/deploy` is ignored build output and is regenerated per checkout, so a fresh clone's keypair never matches the ID declared in `Anchor.toml` and `programs/naryx_core/src/lib.rs`. That declared ID is a scaffold-only local identity, not a deployed program, so pre-deployment validation skips the keypair check with `--ignore-keys`.
-
-A reviewed devnet or testnet deployment is what ends that state. It supplies an externally managed program keypair into ignored build output, runs `anchor keys sync`, commits only the resulting public ID change, and then verifies an ordinary `anchor build` without `--ignore-keys` against that injected keypair. No deployment has happened and none is authorized yet.
-
-EVM contracts:
-
-```bash
+cd contracts/evm && forge fmt --check
 cd contracts/evm && forge build
 cd contracts/evm && forge test
 ```
 
-Web terminal:
+Cross-workspace local lifecycles:
+
+```bash
+npm test --prefix tests/solana-local
+npm test --prefix tests/evm-local
+npm test --prefix tests/arbitrum-local
+```
+
+Terminal:
 
 ```bash
 npm run lint --prefix apps/web
 npm run build --prefix apps/web
+npm run dev --prefix apps/web
 ```
 
-## Contributing
+The Solana local suite builds SBF programs and starts a fresh local validator. The EVM suites start private Anvil chains. They create only ephemeral assets and identities outside the repository.
 
-Read `AGENTS.md` before changing anything. It is the authoritative repository policy. A framework's own `AGENTS.md` inside a workspace is generator output and covers that framework only.
+## Repository rules
+
+Read [AGENTS.md](AGENTS.md) before changing anything. It defines the dependency graph, extension model, testing policy, secret handling, generated artifact cleanup, deployment safety, and commit rules.
