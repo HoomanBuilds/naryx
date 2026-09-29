@@ -525,6 +525,10 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
       const metadata = this.#metadata();
       requireCondition(metadata.journalRevision === input.expectedVersion,
         'journal compare-and-set version mismatch');
+      requireCondition(this.#database.prepare<[Buffer], { readonly found: number }>(`
+        SELECT 1 AS found FROM hyperliquid_submission_attempts WHERE order_hash = ?
+      `).get(Buffer.from(normalized.commitments.orderHash)) === undefined,
+      'an initial action for this order hash already exists');
       this.#requireSignerLease(normalized.agentWallet, normalized.signerLeaseId, normalized.nowMs);
       const nonceRow = this.#database.prepare<[string, string, string, string, string], NonceRow>(`
         SELECT highest_nonce_decimal
@@ -866,6 +870,14 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
     const metadata = this.#metadata();
     requireCondition(metadata.schemaVersion === SCHEMA_VERSION,
       'Hyperliquid journal metadata schema version mismatch');
+    // At most one initial action per order hash, and client order IDs are never reused. These are
+    // backstops independent of any upstream order store; opening a journal that already violates
+    // them fails closed.
+    this.#database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS hyperliquid_attempts_one_per_order ON hyperliquid_submission_attempts(order_hash);
+      CREATE UNIQUE INDEX IF NOT EXISTS hyperliquid_attempts_unique_spot_cloid ON hyperliquid_submission_attempts(spot_client_order_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS hyperliquid_attempts_unique_perp_cloid ON hyperliquid_submission_attempts(perpetual_client_order_id);
+    `);
   }
 
   #requireOpen(): void {

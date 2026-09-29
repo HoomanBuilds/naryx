@@ -38,9 +38,12 @@ function wire(clientOrderId: `0x${string}`, buy: boolean): HypercoreOrderWire {
   };
 }
 
-function plan(routeByte = 6): HyperliquidExecutionPlan {
-  const spot = wire(spotClientOrderId, true);
-  const perpetual = wire(perpetualClientOrderId, false);
+// Each order gets its own order hash and client order IDs; order 0 is the default attempt.
+function plan(routeByte = 6, order = 0): HyperliquidExecutionPlan {
+  const spotId = order === 0 ? spotClientOrderId : `0x${(0x60 + order).toString(16).repeat(16)}` as const;
+  const perpId = order === 0 ? perpetualClientOrderId : `0x${(0x70 + order).toString(16).repeat(16)}` as const;
+  const spot = wire(spotId, true);
+  const perpetual = wire(perpId, false);
   return {
     version: 1,
     guarantee: HYPERCORE_EXECUTION_GUARANTEE,
@@ -49,7 +52,7 @@ function plan(routeByte = 6): HyperliquidExecutionPlan {
     },
     commitments: {
       seriesManifestHash: hash(2), executionClassManifestHash: hash(3),
-      orderHash: hash(4), quoteHash: hash(5), routeHash: hash(routeByte),
+      orderHash: hash(order === 0 ? 4 : 0x40 + order), quoteHash: hash(5), routeHash: hash(routeByte),
     },
     requestExpiryMs: expiry,
     unsignedRequestFields: {
@@ -57,8 +60,8 @@ function plan(routeByte = 6): HyperliquidExecutionPlan {
       expiresAfter: Number(expiry),
     },
     legs: [
-      { role: 'SPOT', clientOrderId: spotClientOrderId, order: spot },
-      { role: 'PERPETUAL', clientOrderId: perpetualClientOrderId, order: perpetual },
+      { role: 'SPOT', clientOrderId: spotId, order: spot },
+      { role: 'PERPETUAL', clientOrderId: perpId, order: perpetual },
     ],
   } as unknown as HyperliquidExecutionPlan;
 }
@@ -149,27 +152,31 @@ test('rejects changed replay, stale CAS, signer lease changes, and nonce reuse',
   assert.equal(replay.journalVersion, prepared.journalVersion);
   await assert.rejects(journal.prepare(input({ plan: plan(9) })), /immutable binding/);
   await assert.rejects(journal.prepare(input({
-    attemptId: 'attempt-2', nonce: nonce + 1n,
+    attemptId: 'attempt-2', nonce: nonce + 1n, plan: plan(6, 2),
   })), /compare-and-set/);
   await assert.rejects(journal.prepare(input({
-    expectedVersion: 1n, attemptId: 'attempt-2', nonce,
+    expectedVersion: 1n, attemptId: 'attempt-2', nonce, plan: plan(6, 2),
   })), /strictly increase/);
   await assert.rejects(journal.prepare(input({
-    expectedVersion: 1n, attemptId: 'attempt-2', nonce: nonce + 1n,
+    expectedVersion: 1n, attemptId: 'attempt-2', nonce: nonce + 1n, plan: plan(6, 2),
     signerLeaseId: 'solver-process-2',
   })), /already bound/);
-  const second = await journal.prepare(input({
+  // A second initial action for the same order hash is refused under a fresh nonce.
+  await assert.rejects(journal.prepare(input({
     expectedVersion: 1n, attemptId: 'attempt-2', nonce: nonce + 1n,
+  })), /order hash already exists/);
+  const second = await journal.prepare(input({
+    expectedVersion: 1n, attemptId: 'attempt-2', nonce: nonce + 1n, plan: plan(6, 2),
   }));
   assert.equal(second.journalVersion, 2n);
   journal.close();
 
   journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
   await assert.rejects(journal.prepare(input({
-    expectedVersion: 2n, attemptId: 'attempt-3', nonce: nonce + 1n,
+    expectedVersion: 2n, attemptId: 'attempt-3', nonce: nonce + 1n, plan: plan(6, 3),
   })), /strictly increase/);
   await assert.rejects(journal.prepare(input({
-    expectedVersion: 1n, attemptId: 'attempt-3', nonce: nonce + 2n,
+    expectedVersion: 1n, attemptId: 'attempt-3', nonce: nonce + 2n, plan: plan(6, 3),
   })), /compare-and-set/);
   journal.close();
 });
@@ -179,7 +186,7 @@ test('lists restart-recoverable prepared and response-unknown attempts', async (
   let journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
   await journal.prepare(input({ attemptId: 'attempt-prepared' }));
   const second = await journal.prepare(input({
-    expectedVersion: 1n, attemptId: 'attempt-unknown', nonce: nonce + 1n,
+    expectedVersion: 1n, attemptId: 'attempt-unknown', nonce: nonce + 1n, plan: plan(6, 2),
   }));
   const durable = await journal.confirmDurable({
     expectedVersion: second.journalVersion,

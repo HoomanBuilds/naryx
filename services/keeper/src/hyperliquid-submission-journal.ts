@@ -365,6 +365,17 @@ export function prepareHyperliquidSubmission(
   checkVersion(journal, input.expectedVersion);
   requireCondition(agent.highestReservedNonce === null || input.nonce > agent.highestReservedNonce,
     'nonce must strictly increase for the agent wallet');
+  // At most one initial action per order hash, and client order IDs are never reused, across
+  // every agent wallet in the journal.
+  const orderHash = hex(packageAttempt.plan.commitments.orderHash);
+  const clientOrderIds = new Set([core.spotClientOrderId.toLowerCase(), core.perpetualClientOrderId.toLowerCase()]);
+  for (const other of journal.agents.flatMap((entry) => entry.attempts)) {
+    requireCondition(hex(other.packageAttempt.plan.commitments.orderHash) !== orderHash,
+      'an initial action for this order hash already exists');
+    requireCondition(!clientOrderIds.has(other.spotClientOrderId.toLowerCase())
+      && !clientOrderIds.has(other.perpetualClientOrderId.toLowerCase()),
+    'a client order ID is already reserved');
+  }
   const record: HyperliquidSubmissionRecord = Object.freeze({
     ...core, recordHash, status: 'PREPARED', durableRevision: null,
     acknowledgementId: null, rejectionId: null,
