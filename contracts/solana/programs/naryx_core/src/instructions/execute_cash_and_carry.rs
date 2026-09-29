@@ -30,7 +30,9 @@ use crate::{
     },
     instructions::series_registry::validate_active_cash_carry_series_binding,
     instructions::{
-        ed25519_signature::{verify_ed25519_signature, Ed25519SignatureError},
+        ed25519_signature::{
+            signed_ed25519_public_key, verify_ed25519_signature, Ed25519SignatureError,
+        },
         program_identity::validate_program_data,
     },
     state::{
@@ -550,10 +552,20 @@ fn execute<'info>(
     }
     validate_live_resource_accounts(&ctx.accounts)?;
 
+    // A solver-authorized execution names its solver through the Ed25519 verification instruction;
+    // that key must be in the active set, and the digest checked below binds it.
+    let signed_solver = if args.recovery {
+        None
+    } else {
+        Some(signed_solver_key(
+            &ctx.accounts.runtime.instructions_sysvar,
+        )?)
+    };
     let solver = execution_solver(
         args.action,
         args.recovery,
-        ctx.accounts.solver_registry.active,
+        &ctx.accounts.solver_registry,
+        signed_solver,
     )?;
     let quote_evidence = if let Some(quote) = &quote_args {
         prepare_quote_evidence(
@@ -1238,7 +1250,8 @@ fn select_execution_domain(
 fn execution_solver(
     action: CashCarryAction,
     recovery: bool,
-    active_solver: Pubkey,
+    registry: &SolverRegistry,
+    signed_solver: Option<Pubkey>,
 ) -> Result<Pubkey> {
     if recovery {
         require!(
@@ -1247,13 +1260,16 @@ fn execution_solver(
         );
         Ok(Pubkey::default())
     } else {
-        require_keys_neq!(
-            active_solver,
-            Pubkey::default(),
-            ErrorCode::CashCarrySolverInvalid
-        );
-        Ok(active_solver)
+        let solver = signed_solver.ok_or_else(|| error!(ErrorCode::CashCarrySolverInvalid))?;
+        require!(registry.is_active(&solver), ErrorCode::CashCarrySolverInvalid);
+        Ok(solver)
     }
+}
+
+/// The solver key the preceding Ed25519 verification instruction names.
+pub(crate) fn signed_solver_key(instructions_sysvar: &AccountInfo) -> Result<Pubkey> {
+    signed_ed25519_public_key(instructions_sysvar)
+        .map_err(|_| error!(ErrorCode::CashCarrySignatureInstructionInvalid))
 }
 
 pub(crate) fn validate_resource_indices(
@@ -2519,16 +2535,41 @@ mod tests {
     #[test]
     fn recovery_authorization_is_exit_only_and_solverless() {
         let active_solver = Pubkey::new_unique();
+        let other_solver = Pubkey::new_unique();
+        let registry = SolverRegistry {
+            active: vec![active_solver, other_solver],
+            pending: Vec::new(),
+            bump: 255,
+        };
         assert_eq!(
-            execution_solver(CashCarryAction::Entry, false, active_solver).unwrap(),
+            execution_solver(CashCarryAction::Entry, false, &registry, Some(active_solver)).unwrap(),
             active_solver
         );
+        // Any active solver may authorize with its own signature.
         assert_eq!(
-            execution_solver(CashCarryAction::Exit, true, Pubkey::default()).unwrap(),
+            execution_solver(CashCarryAction::Entry, false, &registry, Some(other_solver)).unwrap(),
+            other_solver
+        );
+        assert_eq!(
+            execution_solver(CashCarryAction::Exit, true, &registry, None).unwrap(),
             Pubkey::default()
         );
-        assert!(execution_solver(CashCarryAction::Entry, true, active_solver).is_err());
-        assert!(execution_solver(CashCarryAction::Exit, false, Pubkey::default()).is_err());
+        assert!(execution_solver(CashCarryAction::Entry, true, &registry, None).is_err());
+        assert!(execution_solver(CashCarryAction::Exit, false, &registry, None).is_err());
+        assert!(execution_solver(
+            CashCarryAction::Entry,
+            false,
+            &registry,
+            Some(Pubkey::new_unique())
+        )
+        .is_err());
+        assert!(execution_solver(
+            CashCarryAction::Entry,
+            false,
+            &registry,
+            Some(Pubkey::default())
+        )
+        .is_err());
     }
 
     #[test]

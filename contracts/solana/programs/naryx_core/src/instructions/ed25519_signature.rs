@@ -20,14 +20,7 @@ pub(crate) fn verify_ed25519_signature(
     solver: &Pubkey,
     digest: &[u8; MESSAGE_LENGTH],
 ) -> std::result::Result<(), Ed25519SignatureError> {
-    let current_index = load_current_index_checked(instructions_sysvar)
-        .map_err(|_| Ed25519SignatureError::InvalidInstruction)?;
-    let verifier_index = current_index
-        .checked_sub(1)
-        .ok_or(Ed25519SignatureError::InvalidInstruction)?;
-    let verifier = load_instruction_at_checked(verifier_index as usize, instructions_sysvar)
-        .map_err(|_| Ed25519SignatureError::InvalidInstruction)?;
-
+    let verifier = preceding_verifier(instructions_sysvar)?;
     verify_ed25519_instruction(&verifier, solver, digest, |index| {
         load_instruction_at_checked(index, instructions_sysvar)
             .ok()
@@ -35,12 +28,50 @@ pub(crate) fn verify_ed25519_signature(
     })
 }
 
+/// The public key the preceding Ed25519 verification instruction checked a signature for. It names
+/// which solver signed; the caller must still require that key to be active and bind the digest.
+pub(crate) fn signed_ed25519_public_key(
+    instructions_sysvar: &AccountInfo,
+) -> std::result::Result<Pubkey, Ed25519SignatureError> {
+    let verifier = preceding_verifier(instructions_sysvar)?;
+    let (public_key, _) = verifier_contents(&verifier, |index| {
+        load_instruction_at_checked(index, instructions_sysvar)
+            .ok()
+            .map(|instruction| instruction.data)
+    })?;
+    Pubkey::try_from(public_key.as_slice()).map_err(|_| Ed25519SignatureError::InvalidInstruction)
+}
+
+fn preceding_verifier(
+    instructions_sysvar: &AccountInfo,
+) -> std::result::Result<anchor_lang::solana_program::instruction::Instruction, Ed25519SignatureError> {
+    let current_index = load_current_index_checked(instructions_sysvar)
+        .map_err(|_| Ed25519SignatureError::InvalidInstruction)?;
+    let verifier_index = current_index
+        .checked_sub(1)
+        .ok_or(Ed25519SignatureError::InvalidInstruction)?;
+    load_instruction_at_checked(verifier_index as usize, instructions_sysvar)
+        .map_err(|_| Ed25519SignatureError::InvalidInstruction)
+}
+
 fn verify_ed25519_instruction(
     verifier: &anchor_lang::solana_program::instruction::Instruction,
     solver: &Pubkey,
     digest: &[u8; MESSAGE_LENGTH],
-    mut load_data: impl FnMut(usize) -> Option<Vec<u8>>,
+    load_data: impl FnMut(usize) -> Option<Vec<u8>>,
 ) -> std::result::Result<(), Ed25519SignatureError> {
+    let (public_key, message) = verifier_contents(verifier, load_data)?;
+    if public_key.as_slice() != solver.as_ref() || message.as_slice() != digest {
+        return Err(Ed25519SignatureError::Mismatch);
+    }
+    Ok(())
+}
+
+/// The public key and message of a single-signature Ed25519 verification instruction.
+fn verifier_contents(
+    verifier: &anchor_lang::solana_program::instruction::Instruction,
+    mut load_data: impl FnMut(usize) -> Option<Vec<u8>>,
+) -> std::result::Result<(Vec<u8>, Vec<u8>), Ed25519SignatureError> {
     if verifier.program_id != ed25519_program::id()
         || !verifier.accounts.is_empty()
         || verifier.data.len() < SIGNATURE_OFFSETS_START + SIGNATURE_OFFSETS_LENGTH
@@ -84,11 +115,7 @@ fn verify_ed25519_instruction(
         MESSAGE_LENGTH,
         &mut load_data,
     )?;
-
-    if public_key.as_slice() != solver.as_ref() || message.as_slice() != digest {
-        return Err(Ed25519SignatureError::Mismatch);
-    }
-    Ok(())
+    Ok((public_key, message))
 }
 
 fn resolve_bytes(

@@ -439,8 +439,11 @@ async function provision(runDir, rpcUrl, connection, identities, keyPaths) {
   const proposedConfig = await core.account.protocolConfig.fetch(
     addresses.config,
   );
-  const solverActivationSlot =
-    proposedRegistry.pending.activationSlot.toNumber();
+  const solverProposal = proposedRegistry.pending.find((pending) =>
+    pending.key.equals(identities.solver.publicKey),
+  );
+  if (solverProposal === undefined) throw new Error("Solver proposal is missing");
+  const solverActivationSlot = solverProposal.activationSlot.toNumber();
   const entryActivationSlot = proposedConfig.pendingUnpauseSlot.toNumber();
   await waitForSlot(
     connection,
@@ -448,7 +451,7 @@ async function provision(runDir, rpcUrl, connection, identities, keyPaths) {
   );
 
   await core.methods
-    .activateSolver()
+    .activateSolver(identities.solver.publicKey)
     .accountsStrict({
       executor: identities.governanceExecutor.publicKey,
       config: addresses.config,
@@ -741,7 +744,8 @@ export async function validateEnvironment(environment) {
   );
   if (
     config.entryPaused ||
-    !registry.active.equals(environment.identities.solver.publicKey)
+    registry.active.length !== 1 ||
+    !registry.active[0].equals(environment.identities.solver.publicKey)
   ) {
     throw new Error("Core entry state or solver activation is not provisioned");
   }

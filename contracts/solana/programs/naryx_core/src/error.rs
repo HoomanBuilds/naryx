@@ -348,4 +348,10 @@ pub enum ErrorCode {
     CashCarryQuoteSideMismatch,
     #[msg("Cash-and-carry execution quantities do not resolve to the quoted package units")]
     CashCarryQuotePackageUnitMismatch,
+    #[msg("Solver is already active")]
+    SolverAlreadyActive,
+    #[msg("Solver is not active")]
+    SolverNotActive,
+    #[msg("Solver set or proposal queue is full")]
+    SolverSetFull,
 }

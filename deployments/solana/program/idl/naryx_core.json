@@ -979,7 +979,12 @@
           }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "activate_unpause",
@@ -1586,7 +1591,12 @@
           }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "cancel_unpause",
@@ -5001,6 +5011,98 @@
       ]
     },
     {
+      "name": "remove_solver",
+      "discriminator": [
+        43,
+        3,
+        131,
+        241,
+        120,
+        158,
+        187,
+        178
+      ],
+      "accounts": [
+        {
+          "name": "pauser",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "schedule_unpause",
       "discriminator": [
         4,
@@ -6112,493 +6214,513 @@
     },
     {
       "code": 6074,
+      "name": "ConformanceEntryReceiptMismatch",
+      "msg": "Conformance exit does not match its authoritative entry receipt"
+    },
+    {
+      "code": 6075,
       "name": "ResourceSubjectZero",
       "msg": "Resource subject identifier is all zero"
     },
     {
-      "code": 6075,
+      "code": 6076,
       "name": "ResourceManifestVersionZero",
       "msg": "Resource manifest version is zero"
     },
     {
-      "code": 6076,
+      "code": 6077,
       "name": "ResourceManifestHashZero",
       "msg": "Resource manifest hash is all zero"
     },
     {
-      "code": 6077,
+      "code": 6078,
       "name": "ResourceDescriptorVersionZero",
       "msg": "Resource descriptor version is zero"
     },
     {
-      "code": 6078,
+      "code": 6079,
       "name": "ResourceDescriptorHashZero",
       "msg": "Resource descriptor hash is all zero"
     },
     {
-      "code": 6079,
+      "code": 6080,
       "name": "ResourceDescriptorUnsupported",
       "msg": "Resource descriptor is not a supported semantic version"
     },
     {
-      "code": 6080,
+      "code": 6081,
       "name": "ResourceSettlementUnsupported",
       "msg": "Resource settlement class is not supported"
     },
     {
-      "code": 6081,
+      "code": 6082,
       "name": "ResourceQuoteLimitMissing",
       "msg": "Resource quote limit is missing"
     },
     {
-      "code": 6082,
+      "code": 6083,
       "name": "ResourceQuoteLimitUnexpected",
       "msg": "Resource quote limit is not allowed for this resource kind"
     },
     {
-      "code": 6083,
+      "code": 6084,
       "name": "ResourceQuoteLimitMismatch",
       "msg": "Resource quote limit does not bind the exact quote asset and decimals"
     },
     {
-      "code": 6084,
+      "code": 6085,
       "name": "ResourceMaximumNotionalZero",
       "msg": "Resource maximum notional is zero"
     },
     {
-      "code": 6085,
+      "code": 6086,
       "name": "ResourceMarketUnitZero",
       "msg": "Resource market unit is zero"
     },
     {
-      "code": 6086,
+      "code": 6087,
       "name": "ResourceMarketMultiplierNotReduced",
       "msg": "Resource market multiplier is not in lowest terms"
     },
     {
-      "code": 6087,
+      "code": 6088,
       "name": "ResourceReferenceShape",
       "msg": "Resource reference shape is invalid"
     },
     {
-      "code": 6088,
+      "code": 6089,
       "name": "ResourceAddressZero",
       "msg": "Resource address is the default Pubkey"
     },
     {
-      "code": 6089,
+      "code": 6090,
       "name": "ResourceAccountMismatch",
       "msg": "Resource account identity is invalid"
     },
     {
-      "code": 6090,
+      "code": 6091,
       "name": "ResourceProgramUnsupported",
       "msg": "Resource program is not recognized"
     },
     {
-      "code": 6091,
+      "code": 6092,
       "name": "ResourceCodeIdentityMismatch",
       "msg": "Resource program or code identity changed"
     },
     {
-      "code": 6092,
+      "code": 6093,
       "name": "ResourceDecimalsMismatch",
       "msg": "Resource decimals do not match the mint"
     },
     {
-      "code": 6093,
+      "code": 6094,
       "name": "ResourceRoleMismatch",
       "msg": "Resource role is invalid for this kind"
     },
     {
-      "code": 6094,
+      "code": 6095,
       "name": "ResourceDomainMismatch",
       "msg": "Resource manifest domain does not match the active domain"
     },
     {
-      "code": 6095,
+      "code": 6096,
       "name": "ResourceIndexMismatch",
       "msg": "Resource index does not match the proposed record"
     },
     {
-      "code": 6096,
+      "code": 6097,
       "name": "ResourceRegistrationExists",
       "msg": "A resource registration proposal is already pending"
     },
     {
-      "code": 6097,
+      "code": 6098,
       "name": "ResourceRegistrationMissing",
       "msg": "No resource registration proposal is pending"
     },
     {
-      "code": 6098,
+      "code": 6099,
       "name": "ResourceRegistrationNotReady",
       "msg": "Resource registration is before its activation slot"
     },
     {
-      "code": 6099,
+      "code": 6100,
       "name": "ResourceManifestVersionNotIncreasing",
       "msg": "Resource manifest version is not newer than the last proposed version"
     },
     {
-      "code": 6100,
+      "code": 6101,
       "name": "ResourceAlreadyActive",
       "msg": "Resource is already active"
     },
     {
-      "code": 6101,
+      "code": 6102,
       "name": "ResourceNotActive",
       "msg": "Resource is not the active record for its subject"
     },
     {
-      "code": 6102,
+      "code": 6103,
       "name": "ResourceControlProposalExists",
       "msg": "A resource control proposal is already pending"
     },
     {
-      "code": 6103,
+      "code": 6104,
       "name": "ResourceControlProposalMissing",
       "msg": "No resource control proposal is pending"
     },
     {
-      "code": 6104,
+      "code": 6105,
       "name": "ResourceControlProposalNotReady",
       "msg": "Resource control proposal is before its activation slot"
     },
     {
-      "code": 6105,
+      "code": 6106,
       "name": "ResourceDeprecatedTerminal",
       "msg": "Deprecated resource control is terminal"
     },
     {
-      "code": 6106,
+      "code": 6107,
       "name": "ResourceUnsafeImmediateControl",
       "msg": "Immediate resource control update would widen permissions or risk"
     },
     {
-      "code": 6107,
+      "code": 6108,
       "name": "ResourceActionNotAllowed",
       "msg": "Resource does not permit this action"
     },
     {
-      "code": 6108,
+      "code": 6109,
       "name": "ResourceMaximumNotionalExceeded",
       "msg": "Resource package notional exceeds an exact quote-asset limit"
     },
     {
-      "code": 6109,
+      "code": 6110,
       "name": "ResourceLegValueZero",
       "msg": "Resource leg quantity or limit price is zero"
     },
     {
-      "code": 6110,
+      "code": 6111,
       "name": "ResourceBaseLotMismatch",
       "msg": "Resource leg quantity is not aligned to the market base lot"
     },
     {
-      "code": 6111,
+      "code": 6112,
       "name": "ResourceQuoteTickMismatch",
       "msg": "Resource leg limit price is not aligned to the market quote tick"
     },
     {
-      "code": 6112,
+      "code": 6113,
       "name": "ResourceMinimumNotionalNotMet",
       "msg": "Resource leg quote notional is below the market minimum"
     },
     {
-      "code": 6113,
+      "code": 6114,
       "name": "ResourceNotionalOverflow",
       "msg": "Resource leg notional arithmetic overflowed"
     },
     {
-      "code": 6114,
+      "code": 6115,
       "name": "ResourceEconomicQuantityMismatch",
       "msg": "Cash-and-carry legs do not carry equal multiplier-adjusted base quantity"
     },
     {
-      "code": 6115,
+      "code": 6116,
       "name": "ResourcePackageNotionalMismatch",
       "msg": "Resource package notional does not equal the larger exact leg notional"
     },
     {
-      "code": 6116,
+      "code": 6117,
       "name": "ResourceInstancesNotDistinct",
       "msg": "Cash-and-carry resources are not distinct where required"
     },
     {
-      "code": 6117,
+      "code": 6118,
       "name": "SeriesBindingSchemaUnsupported",
       "msg": "Cash-and-carry series binding schema is unsupported"
     },
     {
-      "code": 6118,
+      "code": 6119,
       "name": "SeriesBindingVersionZero",
       "msg": "Cash-and-carry series binding version is zero"
     },
     {
-      "code": 6119,
+      "code": 6120,
       "name": "SeriesBindingHashZero",
       "msg": "Cash-and-carry series binding hash is all zero"
     },
     {
-      "code": 6120,
+      "code": 6121,
       "name": "SeriesBindingDomainMismatch",
       "msg": "Cash-and-carry series binding domain does not match"
     },
     {
-      "code": 6121,
+      "code": 6122,
       "name": "SeriesBindingTemplateUnsupported",
       "msg": "Cash-and-carry series binding template is unsupported"
     },
     {
-      "code": 6122,
+      "code": 6123,
       "name": "SeriesBindingSettlementUnsupported",
       "msg": "Cash-and-carry series binding settlement class is unsupported"
     },
     {
-      "code": 6123,
+      "code": 6124,
       "name": "SeriesBindingQuoteConventionUnsupported",
       "msg": "Cash-and-carry series binding quote convention is unsupported"
     },
     {
-      "code": 6124,
+      "code": 6125,
       "name": "SeriesBindingEntrySideUnsupported",
       "msg": "Cash-and-carry series binding entry side is unsupported"
     },
     {
-      "code": 6125,
+      "code": 6126,
       "name": "SeriesBindingUnitZero",
       "msg": "Cash-and-carry series binding unit is zero"
     },
     {
-      "code": 6126,
+      "code": 6127,
       "name": "SeriesBindingAssetMismatch",
       "msg": "Cash-and-carry series binding asset does not match an active registered asset"
     },
     {
-      "code": 6127,
+      "code": 6128,
       "name": "SeriesBindingIdentityMismatch",
       "msg": "Cash-and-carry series identity key does not match canonical fields"
     },
     {
-      "code": 6128,
+      "code": 6129,
       "name": "SeriesBindingHashMismatch",
       "msg": "Cash-and-carry series binding hash does not match canonical fields"
     },
     {
-      "code": 6129,
+      "code": 6130,
       "name": "SeriesBindingIndexMismatch",
       "msg": "Cash-and-carry series binding index is inconsistent"
     },
     {
-      "code": 6130,
+      "code": 6131,
       "name": "SeriesBindingRegistrationExists",
       "msg": "A cash-and-carry series binding registration is already pending"
     },
     {
-      "code": 6131,
+      "code": 6132,
       "name": "SeriesBindingRegistrationMissing",
       "msg": "No cash-and-carry series binding registration is pending"
     },
     {
-      "code": 6132,
+      "code": 6133,
       "name": "SeriesBindingRegistrationNotReady",
       "msg": "Cash-and-carry series binding registration is before its activation slot"
     },
     {
-      "code": 6133,
+      "code": 6134,
       "name": "SeriesBindingVersionNotIncreasing",
       "msg": "Cash-and-carry series binding version is not increasing"
     },
     {
-      "code": 6134,
+      "code": 6135,
       "name": "SeriesBindingAlreadyActive",
       "msg": "Cash-and-carry series binding is already active"
     },
     {
-      "code": 6135,
+      "code": 6136,
       "name": "SeriesBindingNotActive",
       "msg": "Cash-and-carry series binding is not active"
     },
     {
-      "code": 6136,
+      "code": 6137,
       "name": "SeriesBindingSemanticMutation",
       "msg": "Cash-and-carry series binding changes immutable economic semantics"
     },
     {
-      "code": 6137,
+      "code": 6138,
       "name": "SeriesBindingLifecycleUnsupported",
       "msg": "Cash-and-carry series binding lifecycle is unsupported"
     },
     {
-      "code": 6138,
+      "code": 6139,
       "name": "SeriesBindingControlProposalExists",
       "msg": "Cash-and-carry series binding control proposal already exists"
     },
     {
-      "code": 6139,
+      "code": 6140,
       "name": "SeriesBindingControlProposalMissing",
       "msg": "Cash-and-carry series binding control proposal is missing"
     },
     {
-      "code": 6140,
+      "code": 6141,
       "name": "SeriesBindingControlProposalNotReady",
       "msg": "Cash-and-carry series binding control proposal is before its activation slot"
     },
     {
-      "code": 6141,
+      "code": 6142,
       "name": "SeriesBindingDeprecatedTerminal",
       "msg": "Deprecated cash-and-carry series binding is terminal"
     },
     {
-      "code": 6142,
+      "code": 6143,
       "name": "SeriesBindingUnsafeImmediateControl",
       "msg": "Immediate cash-and-carry series binding control would widen permissions"
     },
     {
-      "code": 6143,
+      "code": 6144,
       "name": "CashCarryHashZero",
       "msg": "Cash-and-carry execution hash is all zero"
     },
     {
-      "code": 6144,
+      "code": 6145,
       "name": "CashCarryNonceZero",
       "msg": "Cash-and-carry execution nonce is zero"
     },
     {
-      "code": 6145,
+      "code": 6146,
       "name": "CashCarryOrderExpired",
       "msg": "Cash-and-carry execution is expired"
     },
     {
-      "code": 6146,
+      "code": 6147,
       "name": "CashCarryEntryPaused",
       "msg": "Cash-and-carry entry execution is paused"
     },
     {
-      "code": 6147,
+      "code": 6148,
       "name": "CashCarrySolverInvalid",
       "msg": "Cash-and-carry solver is invalid"
     },
     {
-      "code": 6148,
+      "code": 6149,
       "name": "CashCarrySignatureInstructionInvalid",
       "msg": "Cash-and-carry solver signature instruction is invalid"
     },
     {
-      "code": 6149,
+      "code": 6150,
       "name": "CashCarrySignatureMismatch",
       "msg": "Cash-and-carry solver signature does not bind this execution"
     },
     {
-      "code": 6150,
+      "code": 6151,
       "name": "CashCarryResourceNotCurrent",
       "msg": "Cash-and-carry execution account is not the active resource"
     },
     {
-      "code": 6151,
+      "code": 6152,
       "name": "CashCarryResourceAccountMismatch",
       "msg": "Cash-and-carry execution account does not match the admitted resource"
     },
     {
-      "code": 6152,
+      "code": 6153,
       "name": "CashCarryTokenAccountMismatch",
       "msg": "Cash-and-carry token account does not match the admitted asset"
     },
     {
-      "code": 6153,
+      "code": 6154,
       "name": "CashCarryRouteDirectionInvalid",
       "msg": "Cash-and-carry route direction is invalid"
     },
     {
-      "code": 6154,
+      "code": 6155,
       "name": "CashCarryArithmeticOverflow",
       "msg": "Cash-and-carry execution arithmetic overflowed"
     },
     {
-      "code": 6155,
+      "code": 6156,
       "name": "CashCarryPostconditionFailed",
       "msg": "Cash-and-carry position or token postcondition failed"
     },
     {
-      "code": 6156,
+      "code": 6157,
       "name": "CashCarryCollateralNotPrefunded",
       "msg": "Cash-and-carry Rise collateral must be prefunded"
     },
     {
-      "code": 6157,
+      "code": 6158,
       "name": "CashCarryCollateralBelowFloor",
       "msg": "Cash-and-carry Rise collateral is below the signed floor"
     },
     {
-      "code": 6158,
+      "code": 6159,
       "name": "CashCarryPackageAlreadyOpen",
       "msg": "Cash-and-carry package is already open"
     },
     {
-      "code": 6159,
+      "code": 6160,
       "name": "CashCarryPackageNotOpen",
       "msg": "Cash-and-carry package is not open"
     },
     {
-      "code": 6160,
+      "code": 6161,
       "name": "CashCarryOpenPackageMismatch",
       "msg": "Cash-and-carry exit does not match the open package"
     },
     {
-      "code": 6161,
+      "code": 6162,
       "name": "CashCarryEntryReceiptInvalid",
       "msg": "Cash-and-carry entry receipt is invalid"
     },
     {
-      "code": 6162,
+      "code": 6163,
       "name": "CashCarryRecoveryInvalid",
       "msg": "Cash-and-carry recovery mode is only valid for exit"
     },
     {
-      "code": 6163,
+      "code": 6164,
       "name": "CashCarryQuoteActionInvalid",
       "msg": "Cash-and-carry quoted execution is only valid for a normal entry"
     },
     {
-      "code": 6164,
+      "code": 6165,
       "name": "CashCarryQuoteParameterInvalid",
       "msg": "Cash-and-carry package quote parameters are invalid"
     },
     {
-      "code": 6165,
+      "code": 6166,
       "name": "CashCarryQuoteAccountMismatch",
       "msg": "Cash-and-carry package-book account binding is invalid"
     },
     {
-      "code": 6166,
+      "code": 6167,
       "name": "CashCarryQuoteCodeIdentityMismatch",
       "msg": "Cash-and-carry package-book code identity changed"
     },
     {
-      "code": 6167,
+      "code": 6168,
       "name": "CashCarryQuoteReturnDataInvalid",
       "msg": "Cash-and-carry package-book return data is invalid"
     },
     {
-      "code": 6168,
+      "code": 6169,
       "name": "CashCarryStrategyAuthorityInvalid",
       "msg": "Cash-and-carry strategy authority identity is invalid"
     },
     {
-      "code": 6169,
+      "code": 6170,
       "name": "CashCarryQuoteSeriesMismatch",
       "msg": "Cash-and-carry package quote does not match the active series binding"
     },
     {
-      "code": 6170,
+      "code": 6171,
       "name": "CashCarryQuoteSideMismatch",
       "msg": "Cash-and-carry package quote side does not match the active series entry side"
     },
     {
-      "code": 6171,
+      "code": 6172,
       "name": "CashCarryQuotePackageUnitMismatch",
       "msg": "Cash-and-carry execution quantities do not resolve to the quoted package units"
+    },
+    {
+      "code": 6173,
+      "name": "SolverAlreadyActive",
+      "msg": "Solver is already active"
+    },
+    {
+      "code": 6174,
+      "name": "SolverNotActive",
+      "msg": "Solver is not active"
+    },
+    {
+      "code": 6175,
+      "name": "SolverSetFull",
+      "msg": "Solver set or proposal queue is full"
     }
   ],
   "types": [
@@ -9403,17 +9525,24 @@
     },
     {
       "name": "SolverRegistry",
+      "docs": [
+        "The solvers whose signatures may authorize settlement. Additions wait out the configuration",
+        "delay after a proposal; the pauser can remove a solver at once, since that only takes authority",
+        "away. With no active solver, every solver-authorized execution fails closed."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "active",
-            "type": "pubkey"
+            "type": {
+              "vec": "pubkey"
+            }
           },
           {
             "name": "pending",
             "type": {
-              "option": {
+              "vec": {
                 "defined": {
                   "name": "PendingSolver"
                 }

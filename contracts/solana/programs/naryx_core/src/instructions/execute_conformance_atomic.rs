@@ -12,7 +12,9 @@ use crate::{
     },
     error::ErrorCode,
     events::ConformanceExecutionRecorded,
-    instructions::ed25519_signature::{verify_ed25519_signature, Ed25519SignatureError},
+    instructions::ed25519_signature::{
+        signed_ed25519_public_key, verify_ed25519_signature, Ed25519SignatureError,
+    },
     state::{ConformanceExecutionReceipt, ConformanceNonce, ProtocolConfig, SolverRegistry},
     wire::HASH_BYTE_LENGTH,
 };
@@ -194,10 +196,12 @@ pub(crate) fn handler(
             ErrorCode::ConformanceEntryReceiptMismatch
         );
     }
-    let solver = ctx.accounts.solver_registry.active;
-    require_keys_neq!(
-        solver,
-        Pubkey::default(),
+    // The solver is named by the Ed25519 verification instruction and must be in the active set;
+    // the execution digest checked below binds it.
+    let solver = signed_ed25519_public_key(&ctx.accounts.instructions_sysvar)
+        .map_err(|_| error!(ErrorCode::ConformanceSignatureInstructionInvalid))?;
+    require!(
+        ctx.accounts.solver_registry.is_active(&solver),
         ErrorCode::ConformanceSolverInvalid
     );
     let account_keys = [

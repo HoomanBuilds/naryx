@@ -186,12 +186,16 @@ pub mod naryx_core {
         instructions::solver_registry::propose(ctx, key)
     }
 
-    pub fn activate_solver(ctx: Context<ActivateSolver>) -> Result<()> {
-        instructions::solver_registry::activate(ctx)
+    pub fn activate_solver(ctx: Context<ActivateSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::activate(ctx, key)
     }
 
-    pub fn cancel_solver(ctx: Context<CancelSolver>) -> Result<()> {
-        instructions::solver_registry::cancel(ctx)
+    pub fn cancel_solver(ctx: Context<CancelSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::cancel(ctx, key)
+    }
+
+    pub fn remove_solver(ctx: Context<RemoveSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::remove(ctx, key)
     }
 
     pub fn initialize_cash_carry_strategy(ctx: Context<InitializeCashCarryStrategy>) -> Result<()> {
@@ -435,11 +439,15 @@ pub mod naryx_core {
         instructions::solver_registry::propose(ctx, key)
     }
 
-    pub fn activate_solver(ctx: Context<ActivateSolver>) -> Result<()> {
-        instructions::solver_registry::activate(ctx)
+    pub fn activate_solver(ctx: Context<ActivateSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::activate(ctx, key)
     }
 
-    pub fn cancel_solver(ctx: Context<CancelSolver>) -> Result<()> {
-        instructions::solver_registry::cancel(ctx)
+    pub fn cancel_solver(ctx: Context<CancelSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::cancel(ctx, key)
+    }
+
+    pub fn remove_solver(ctx: Context<RemoveSolver>, key: Pubkey) -> Result<()> {
+        instructions::solver_registry::remove(ctx, key)
     }
 }

@@ -367,7 +367,7 @@ pub struct ExecuteFirmCashAndCarry<'info> {
     pub config: Box<Account<'info, ProtocolConfig>>,
     #[account(seeds = [SOLVER_REGISTRY_SEED], bump = solver_registry.bump)]
     pub solver_registry: Box<Account<'info, SolverRegistry>>,
-    #[account(mut, address = solver_registry.active)]
+    #[account(mut, constraint = solver_registry.is_active(&solver.key()) @ ErrorCode::CashCarrySolverInvalid)]
     pub solver: SystemAccount<'info>,
     #[account(
         init, payer = trader, space = 8 + CashCarryExecutionReceipt::INIT_SPACE,

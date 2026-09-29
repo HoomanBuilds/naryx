@@ -979,7 +979,12 @@
           }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "activate_unpause",
@@ -1586,7 +1591,12 @@
           }
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
     },
     {
       "name": "cancel_unpause",
@@ -3540,6 +3550,98 @@
       ]
     },
     {
+      "name": "remove_solver",
+      "discriminator": [
+        43,
+        3,
+        131,
+        241,
+        120,
+        158,
+        187,
+        178
+      ],
+      "accounts": [
+        {
+          "name": "pauser",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "registry",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "key",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "schedule_unpause",
       "discriminator": [
         4,
@@ -5117,6 +5219,21 @@
       "code": 6172,
       "name": "CashCarryQuotePackageUnitMismatch",
       "msg": "Cash-and-carry execution quantities do not resolve to the quoted package units"
+    },
+    {
+      "code": 6173,
+      "name": "SolverAlreadyActive",
+      "msg": "Solver is already active"
+    },
+    {
+      "code": 6174,
+      "name": "SolverNotActive",
+      "msg": "Solver is not active"
+    },
+    {
+      "code": 6175,
+      "name": "SolverSetFull",
+      "msg": "Solver set or proposal queue is full"
     }
   ],
   "types": [
@@ -7609,17 +7726,24 @@
     },
     {
       "name": "SolverRegistry",
+      "docs": [
+        "The solvers whose signatures may authorize settlement. Additions wait out the configuration",
+        "delay after a proposal; the pauser can remove a solver at once, since that only takes authority",
+        "away. With no active solver, every solver-authorized execution fails closed."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "active",
-            "type": "pubkey"
+            "type": {
+              "vec": "pubkey"
+            }
           },
           {
             "name": "pending",
             "type": {
-              "option": {
+              "vec": {
                 "defined": {
                   "name": "PendingSolver"
                 }

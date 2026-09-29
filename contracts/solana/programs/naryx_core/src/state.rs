@@ -73,12 +73,26 @@ pub struct PendingSolver {
     pub activation_slot: u64,
 }
 
+/// The solvers whose signatures may authorize settlement. Additions wait out the configuration
+/// delay after a proposal; the pauser can remove a solver at once, since that only takes authority
+/// away. With no active solver, every solver-authorized execution fails closed.
 #[account]
 #[derive(InitSpace)]
 pub struct SolverRegistry {
-    pub active: Pubkey,
-    pub pending: Option<PendingSolver>,
+    #[max_len(16)]
+    pub active: Vec<Pubkey>,
+    #[max_len(8)]
+    pub pending: Vec<PendingSolver>,
     pub bump: u8,
+}
+
+impl SolverRegistry {
+    pub const MAX_ACTIVE: usize = 16;
+    pub const MAX_PENDING: usize = 8;
+
+    pub fn is_active(&self, key: &Pubkey) -> bool {
+        *key != Pubkey::default() && self.active.iter().any(|active| active == key)
+    }
 }
 
 #[account]

@@ -364,7 +364,9 @@ impl Env {
                 config: self.config,
                 registry: self.solver_registry,
             },
-            naryx_core::instruction::ActivateSolver {},
+            naryx_core::instruction::ActivateSolver {
+                key: self.solver.pubkey(),
+            },
         );
         send(&mut self.svm, &self.payer, &[&self.executor], &[activate]).unwrap();
     }
@@ -705,11 +707,12 @@ fn solver_signature_must_match_registered_key_and_exact_digest() {
     wrong_key[0].data[48..112].copy_from_slice(stranger.sign_message(&digest).as_ref());
     wrong_key[0].data[16..48].copy_from_slice(stranger.pubkey().as_ref());
     let failure = env.execute(wrong_key).unwrap_err();
+    // A key outside the active solver set is refused before its digest is even compared.
     assert_eq!(
         failure.err,
         TransactionError::InstructionError(
             1,
-            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSolverInvalid))
         )
     );
 
@@ -844,7 +847,7 @@ fn signature_instruction_resolves_external_instruction_references() {
 }
 
 #[test]
-fn solver_rotation_requires_proposer_and_delay() {
+fn solver_set_additions_wait_for_the_delay_and_removals_revoke_at_once() {
     let mut env = setup(true);
     let next_solver = Keypair::new();
     let proposal = core_ix(
@@ -868,7 +871,9 @@ fn solver_rotation_requires_proposer_and_delay() {
             config: env.config,
             registry: env.solver_registry,
         },
-        naryx_core::instruction::ActivateSolver {},
+        naryx_core::instruction::ActivateSolver {
+            key: next_solver.pubkey(),
+        },
     );
     let failure = send(
         &mut env.svm,
@@ -887,6 +892,23 @@ fn solver_rotation_requires_proposer_and_delay() {
     env.svm
         .warp_to_slot(env.current_slot() + CONFIG_DELAY_SLOTS);
     send(&mut env.svm, &env.payer, &[&env.executor], &[activate]).unwrap();
+
+    // Removing a solver needs the pauser and takes effect at once.
+    let remove = core_ix(
+        naryx_core::accounts::RemoveSolver {
+            pauser: env.pauser.pubkey(),
+            config: env.config,
+            registry: env.solver_registry,
+        },
+        naryx_core::instruction::RemoveSolver {
+            key: env.solver.pubkey(),
+        },
+    );
+    let mut unauthorized_removal = remove.clone();
+    unauthorized_removal.accounts[0].pubkey = env.executor.pubkey();
+    assert!(send(&mut env.svm, &env.payer, &[&env.executor], &[unauthorized_removal]).is_err());
+    send(&mut env.svm, &env.payer, &[&env.pauser], &[remove]).unwrap();
+
     let stale = env.execution_ix(
         [0x86; 32],
         ConformanceAction::Entry,
@@ -899,9 +921,20 @@ fn solver_rotation_requires_proposer_and_delay() {
         failure.err,
         TransactionError::InstructionError(
             1,
-            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureMismatch))
+            InstructionError::Custom(u32::from(ErrorCode::ConformanceSolverInvalid))
         )
     );
+
+    // The added solver settles with its own signature.
+    env.solver = next_solver;
+    let fresh = env.execution_ix(
+        [0x87; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 1,
+    );
+    env.execute(fresh).unwrap();
 }
 
 #[test]
