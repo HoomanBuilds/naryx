@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadPublicMarketRuntime } from "./public-market-runtime.js";
@@ -327,10 +328,28 @@ const server = createPrivateTerminalServer(
   hyperliquidOrderRuntime?.terminalContext,
   undefined,
   undefined,
-  publicMarket?.handler,
+  // A dedicated public listener keeps the public API off the private terminal server entirely.
+  publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
 );
 
+const publicServer = publicMarket?.listener === undefined
+  ? undefined
+  : createServer((request, response) => {
+    if (publicMarket.handler(request, response)) return;
+    response.statusCode = 404;
+    response.setHeader("Content-Type", "application/json; charset=utf-8");
+    response.setHeader("Cache-Control", "no-store");
+    response.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Unknown public API route." } }));
+  });
+if (publicServer !== undefined && publicMarket?.listener !== undefined) {
+  const { host, port } = publicMarket.listener;
+  publicServer.listen(port, host, () => {
+    process.stdout.write(`Naryx public API listening on ${host}:${port}\n`);
+  });
+}
+
 function shutdown(): void {
+  publicServer?.close();
   server.close(() => {
     orderStore.close();
     lifecycleStore.close();

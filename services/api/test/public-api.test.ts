@@ -164,7 +164,13 @@ test("the runtime is off by default and validates its configuration", () => {
     assert.ok(runtime);
     assert.equal(runtime.clockUnit, "UNIX_SECONDS");
     assert.equal(runtime.requestsPerMinute, 120);
+    assert.equal(runtime.listener, undefined);
     runtime.close();
+    assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_PORT: "70000" }), /between 1 and 65535/);
+    assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_HOST: "0.0.0.0" }), /requires NARYX_PUBLIC_API_PORT/);
+    const separate = loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_PORT: "8788", NARYX_PUBLIC_API_HOST: "0.0.0.0" });
+    assert.deepEqual(separate?.listener, { host: "0.0.0.0", port: 8788 });
+    separate?.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

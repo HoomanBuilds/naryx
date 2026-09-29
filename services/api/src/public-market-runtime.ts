@@ -20,6 +20,11 @@ export type PublicMarketClockUnit = "UNIX_SECONDS" | "UNIX_MILLISECONDS";
 
 export interface PublicMarketRuntime {
   readonly handler: (request: IncomingMessage, response: ServerResponse) => boolean;
+  /**
+   * When set, the public and solver APIs run on their own listener that never serves the private
+   * terminal routes, so exposing them does not expose `/internal`.
+   */
+  readonly listener?: { readonly host: string; readonly port: number };
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
   readonly solverApiEnabled: boolean;
@@ -115,6 +120,18 @@ export function loadPublicMarketRuntime(
     throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE must be between 1 and 10000.");
   }
   const requestsPerMinute = Number(rawRate);
+  const rawPort = environment.NARYX_PUBLIC_API_PORT;
+  let listener: { host: string; port: number } | undefined;
+  if (rawPort !== undefined && rawPort !== "") {
+    if (!/^[1-9]\d{0,4}$/.test(rawPort) || Number(rawPort) > 65_535) {
+      throw new PublicMarketConfigError("NARYX_PUBLIC_API_PORT must be a port between 1 and 65535.");
+    }
+    const host = environment.NARYX_PUBLIC_API_HOST ?? "127.0.0.1";
+    if (!/^[0-9A-Fa-f.:]{2,45}$/.test(host)) throw new PublicMarketConfigError("NARYX_PUBLIC_API_HOST must be an IP address.");
+    listener = { host, port: Number(rawPort) };
+  } else if (environment.NARYX_PUBLIC_API_HOST !== undefined) {
+    throw new PublicMarketConfigError("NARYX_PUBLIC_API_HOST requires NARYX_PUBLIC_API_PORT.");
+  }
   const registryPath = environment.NARYX_REGISTRY_DB;
   const solverPath = environment.NARYX_SOLVER_API_DB;
   const optional = (value: string | undefined) => (value === undefined || value === "" ? undefined : value);
@@ -158,6 +175,7 @@ export function loadPublicMarketRuntime(
     return Object.freeze({
       handler: (request: IncomingMessage, response: ServerResponse) =>
         (solverHandler?.(request, response) ?? false) || publicHandler(request, response),
+      ...(listener === undefined ? {} : { listener: Object.freeze(listener) }),
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
