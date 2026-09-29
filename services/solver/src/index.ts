@@ -735,3 +735,10 @@ export {
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
+export {
+  HYPERLIQUID_TESTNET_EXECUTION_ENABLED_ENV,
+  loadHyperliquidTestnetExecutorRuntime,
+  type HyperliquidTestnetExecutorRuntimeDependencies,
+  type HyperliquidTestnetExecutorRuntimeStatus,
+  type LoadedHyperliquidTestnetExecutorRuntime,
+} from './hyperliquid-testnet-executor-runtime.js';
