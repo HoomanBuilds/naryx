@@ -25,7 +25,15 @@ The package also re-exports kernel verifiers an integrator can run with no Naryx
 
 Private delivery is covered on both sides: `NaryxClient` submits caller-encrypted RFQ envelopes, reads delivery status, creates sealed auctions, and reads them, recomputing a closed auction's result from its published event log and rejecting any mismatch; `NaryxSolverClient` pulls, acknowledges, and answers envelopes and commits and reveals sealed quotes. The SDK does not implement the encryption suite; a reviewed library must be pinned first.
 
-Order submission, receipt, and outcome calls are added as the API exposes them; no terminal-internal route is wrapped.
+Orders and terminal evidence are covered end to end:
+
+- `submitOrder` validates and hashes the order locally, hands only the canonical order bytes to a caller-supplied Ed25519 `OrderSigner`, and rejects an intake acknowledgement for any other hash. Intake is not execution; an accepted order is only eligible to be quoted.
+- `getOrder` re-hashes a served order to the requested hash and rejects an open order that carries outcome evidence.
+- `getReceipt` and `verifyTerminalEvidence` re-hash the evidence manifest, terminal outcome, and receipt, require all of them to name the requested order, require a receipt exactly for successful terminal states, check the outcome-to-receipt link, and, given the accepted quote's fee terms, check that the receipt charged nothing outside them.
+- `getExecutionQuality` requires the `OBSERVED` label and a methodology, and checks that state counts sum to the outcome total, basis points stay in range, and percentiles are ordered.
+- `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it.
+
+No terminal-internal route is wrapped.
 
 ```sh
 npm test

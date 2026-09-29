@@ -1,12 +1,16 @@
 import {
   encodeUtf8,
   fromProtocolJson,
+  packageOrderHash,
   solverRequestDigest,
   toHex,
   toProtocolJson,
+  validatePackageOrderProfile,
   type AssetRef,
   type DomainRef,
   type ImpliedPackageQuoteInput,
+  type PackageOrder,
+  type PackageOrderInput,
   type PackageQuoteShardInput,
   type SolverCapabilityManifestInput,
   type SolverCapacityCommitmentInput,
@@ -24,6 +28,12 @@ function webCrypto(): WebCrypto {
   const crypto = (globalThis as { crypto?: WebCrypto }).crypto;
   if (crypto === undefined || typeof crypto.getRandomValues !== 'function') throw new TypeError('Web Crypto is required');
   return crypto;
+}
+
+export interface OpenOrderPage {
+  readonly orders: readonly { readonly cursor: number; readonly orderHash: string; readonly order: PackageOrder; readonly receivedAtMs: number }[];
+  /** Pass back as `after` to continue; unchanged when the page is empty. */
+  readonly nextCursor: number;
 }
 
 export interface NaryxSolverClientOptions {
@@ -171,6 +181,36 @@ export class NaryxSolverClient {
 
   revealSealedQuote(auctionHash: string, opening: { readonly quoteHash: string; readonly netOutcomeAtoms: bigint; readonly salt: Uint8Array }) {
     return this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
+  }
+
+  /**
+   * Signed public orders without a terminal outcome, oldest first. Every order is validated and
+   * re-hashed locally, so a solver never quotes an order whose served hash it has not checked.
+   */
+  async pollOrders(after = 0): Promise<OpenOrderPage> {
+    if (!Number.isSafeInteger(after) || after < 0) throw new TypeError('after must be a nonnegative cursor');
+    const body = await this.#call('GET', `/v1/solver/orders?after=${after}`);
+    if (!Array.isArray(body.orders)) throw new NaryxEvidenceError('orders is not an array');
+    let previous = after;
+    const orders = body.orders.map((entry: unknown, index: number) => {
+      const served = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      const cursor = served.cursor;
+      if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor <= previous) throw new NaryxEvidenceError('order cursors must strictly increase past the requested cursor');
+      previous = cursor;
+      let order: PackageOrder;
+      try {
+        order = validatePackageOrderProfile(served.order as PackageOrderInput);
+      } catch {
+        throw new NaryxEvidenceError(`orders[${index}] failed validation`);
+      }
+      const orderHash = toHex(packageOrderHash(order));
+      if (served.orderHash !== orderHash) throw new NaryxEvidenceError(`orders[${index}] does not hash to its served hash`);
+      const receivedAtMs = served.receivedAtMs;
+      if (typeof receivedAtMs !== 'number' || !Number.isSafeInteger(receivedAtMs) || receivedAtMs < 0) throw new NaryxEvidenceError(`orders[${index}] has no receipt time`);
+      return Object.freeze({ cursor, orderHash, order, receivedAtMs });
+    });
+    if (body.nextCursor !== previous) throw new NaryxEvidenceError('the next cursor does not follow the last order');
+    return Object.freeze({ orders: Object.freeze(orders), nextCursor: previous });
   }
 
   cancelQuote(packageMarketId: string, entryId: string) {

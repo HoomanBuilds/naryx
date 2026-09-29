@@ -3,26 +3,43 @@ import {
   bytesEqual,
   CANDLE_INTERVAL_MS,
   commitmentHash,
+  evidenceManifest,
+  evidenceManifestHash,
   fromProtocolJson,
   packageAllocation,
   packageAllocationHash,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  packageOrderBytes,
   packageOrderHash,
+  packageReceipt,
+  packageReceiptHash,
   ProtocolError,
   replayRouteDecision,
   replaySealedAuction,
+  requiresSuccessfulReceipt,
   sealedAuctionHash,
+  TERMINAL_STATE,
+  terminalOutcomeHash,
+  terminalOutcomeRecord,
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
+  verifyOutcomeReceiptLink,
   verifyPackageAllocation,
+  verifyReceiptFees,
+  type AcceptedQuoteFeeTerms,
   type CandleInterval,
   type CandleSeries,
+  type EvidenceManifest,
+  type EvidenceManifestInput,
   type ExecutablePackageIndex,
   type PackageAllocation,
   type PackageMatchingPolicy,
+  type PackageOrder,
   type PackageOrderInput,
+  type PackageReceipt,
+  type PackageReceiptInput,
   type PackageTakerOrderInput,
   type PrivateRfqEnvelopeInput,
   type SealedAuctionDefinitionInput,
@@ -33,6 +50,9 @@ import {
   type RfqSolverCapacity,
   type RouteDecisionInput,
   type RouteDecisionReplay,
+  type TerminalOutcomeInput,
+  type TerminalOutcomeRecord,
+  type TerminalState,
 } from '@naryx/protocol-types';
 
 const MAX_RESPONSE_CHARS = 2_097_152;
@@ -134,6 +154,82 @@ export interface RegisteredDocumentView<T = unknown> {
   readonly documentHashHex: string;
   readonly registeredAtMs: number;
   readonly document: T;
+}
+
+/**
+ * Signs the exact canonical order bytes with the owner's Ed25519 key and returns the 64-byte
+ * signature. The key never enters this client; a wallet, an HSM, or a signing service backs it.
+ */
+export type OrderSigner = (canonicalOrderBytes: Uint8Array) => Promise<Uint8Array>;
+
+export interface SubmittedOrder {
+  readonly orderHash: string;
+  /** True when the server already held this exact order and signature. */
+  readonly replayed: boolean;
+  /** Intake only: the order may be quoted; nothing has executed. */
+  readonly status: 'ACCEPTED_FOR_QUOTING';
+}
+
+export interface OrderStatusView {
+  readonly orderHash: string;
+  /** Present when the server holds the signed order; always re-hashed to the requested hash. */
+  readonly order?: PackageOrder;
+  readonly owner?: string;
+  readonly authorizationSignature?: string;
+  readonly receivedAtMs?: number;
+  /** OPEN means no terminal outcome is recorded yet; it is not a claim about execution. */
+  readonly status: TerminalState | 'OPEN';
+  readonly outcomeHash?: string;
+  readonly receiptHash?: string;
+}
+
+export interface VerifiedTerminalEvidence {
+  readonly orderHash: string;
+  readonly terminalState: TerminalState;
+  readonly evidenceManifest: EvidenceManifest;
+  readonly evidenceManifestHash: string;
+  readonly outcome: TerminalOutcomeRecord;
+  readonly outcomeHash: string;
+  /** Present exactly when the terminal state is a successful one. */
+  readonly receipt?: PackageReceipt;
+  readonly receiptHash?: string;
+  /** True only when the caller supplied accepted quote fee terms and the receipt satisfied them. */
+  readonly feesVerified: boolean;
+  readonly recordedAtMs: number;
+}
+
+export interface ExecutionQualityView {
+  readonly label: 'OBSERVED';
+  readonly methodology: string;
+  readonly solverId?: string;
+  readonly terminalOutcomes: number;
+  readonly byTerminalState: Readonly<Record<TerminalState, number>>;
+  readonly successfulBps: number;
+  readonly recoveredBps: number;
+  readonly timeUnhedgedMs?: { readonly median: bigint; readonly p95: bigint; readonly max: bigint };
+  readonly receiptFieldEvidence: Readonly<Record<string, number>>;
+}
+
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** Bitcoin-alphabet base58, the encoding the order intake expects for Ed25519 signatures. */
+export function base58Encode(bytes: Uint8Array): string {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+  const digits: number[] = [];
+  for (let index = zeros; index < bytes.length; index += 1) {
+    let carry = bytes[index] as number;
+    for (let digit = 0; digit < digits.length; digit += 1) {
+      carry += (digits[digit] as number) << 8;
+      digits[digit] = carry % 58;
+      carry = Math.floor(carry / 58);
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+  return '1'.repeat(zeros) + digits.reverse().map((digit) => BASE58_ALPHABET[digit]).join('');
 }
 
 function record(value: unknown, context: string): Record<string, unknown> {
@@ -446,6 +542,114 @@ export class NaryxClient {
     return verifyAllocationEvidence(takerOrderId, body.allocation, body.matchingPolicy);
   }
 
+  // ---------------------------------------------------------------- orders and evidence
+
+  /**
+   * Submits an order signed by its owner. The order is validated and hashed locally first, the
+   * signer sees only the canonical bytes, and the server must acknowledge the same hash. Intake is
+   * not execution: an accepted order is only eligible to be quoted.
+   */
+  async submitOrder(order: PackageOrderInput, sign: OrderSigner): Promise<SubmittedOrder> {
+    if (typeof sign !== 'function') throw new TypeError('an order signer is required');
+    const validated = validatePackageOrderProfile(order);
+    const orderHash = toHex(packageOrderHash(validated));
+    const signature = await sign(packageOrderBytes(validated));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    const body = record(
+      await this.#request('POST', '/v1/orders', { order: validated, authorization: { scheme: 'ED25519', signature: base58Encode(signature) } }),
+      'order intake',
+    );
+    if (body.orderHashHex !== orderHash) throw new NaryxEvidenceError('the server acknowledged a different order hash');
+    if (body.status !== 'ACCEPTED_FOR_QUOTING' || typeof body.replayed !== 'boolean') throw new NaryxEvidenceError('order intake response is malformed');
+    return Object.freeze({ orderHash, replayed: body.replayed, status: 'ACCEPTED_FOR_QUOTING' as const });
+  }
+
+  /** Reads an order's status. A served order must hash to the requested order hash. */
+  async getOrder(orderHash: string): Promise<OrderStatusView> {
+    const requested = hashHex(orderHash, 'order hash');
+    const body = record(await this.#request('GET', `/v1/orders/${requested}`), 'order');
+    if (body.orderHash !== requested) throw new NaryxEvidenceError('order response is for another order');
+    const status = body.status;
+    if (typeof status !== 'string' || (status !== 'OPEN' && !Object.hasOwn(TERMINAL_STATE, status))) throw new NaryxEvidenceError('order status is unknown');
+    let order: PackageOrder | undefined;
+    if (body.order !== undefined) {
+      try {
+        order = validatePackageOrderProfile(body.order as PackageOrderInput);
+      } catch {
+        throw new NaryxEvidenceError('the served order failed validation');
+      }
+      if (toHex(packageOrderHash(order)) !== requested) throw new NaryxEvidenceError('the served order does not hash to the requested order');
+      if (body.owner !== order.owner) throw new NaryxEvidenceError('the served owner is not the order owner');
+    }
+    if (status === 'OPEN' && (body.outcomeHash !== undefined || body.receiptHash !== undefined)) throw new NaryxEvidenceError('an open order cannot carry outcome evidence');
+    if (status !== 'OPEN' && body.outcomeHash === undefined) throw new NaryxEvidenceError('a terminal order must name its outcome hash');
+    return Object.freeze({
+      orderHash: requested,
+      status: status as TerminalState | 'OPEN',
+      ...(order === undefined ? {} : { order, owner: order.owner }),
+      ...(typeof body.authorizationSignature === 'string' ? { authorizationSignature: body.authorizationSignature } : {}),
+      ...(body.receivedAtMs === undefined ? {} : { receivedAtMs: count(body.receivedAtMs, 'receivedAtMs') }),
+      ...(body.outcomeHash === undefined ? {} : { outcomeHash: hashHex(body.outcomeHash, 'outcomeHash') }),
+      ...(body.receiptHash === undefined ? {} : { receiptHash: hashHex(body.receiptHash, 'receiptHash') }),
+    });
+  }
+
+  /**
+   * Reads the terminal evidence of an order and verifies it without trusting the server. Pass the
+   * accepted quote's fee terms to also check that the receipt charged nothing outside them.
+   */
+  async getReceipt(orderHash: string, options: { readonly acceptedQuoteFeeTerms?: AcceptedQuoteFeeTerms } = {}): Promise<VerifiedTerminalEvidence> {
+    const requested = hashHex(orderHash, 'order hash');
+    const body = record(await this.#request('GET', `/v1/receipts/${requested}`), 'receipt');
+    if (body.orderHash !== requested) throw new NaryxEvidenceError('receipt response is for another order');
+    return verifyTerminalEvidence(requested, body, options.acceptedQuoteFeeTerms);
+  }
+
+  /** Measured execution quality; every figure comes from stored outcomes and receipts. */
+  async getExecutionQuality(filter: { readonly solverId?: string } = {}): Promise<ExecutionQualityView> {
+    const query = filter.solverId === undefined ? '' : `?solverId=${checkId(filter.solverId, 'solver id')}`;
+    const body = record(await this.#request('GET', `/v1/analytics/execution-quality${query}`), 'execution quality');
+    if (body.label !== 'OBSERVED' || typeof body.methodology !== 'string') throw new NaryxEvidenceError('execution quality must be labeled OBSERVED with its methodology');
+    if (filter.solverId !== undefined && body.solverId !== filter.solverId) throw new NaryxEvidenceError('execution quality is for another solver');
+    const terminalOutcomes = count(body.terminalOutcomes, 'terminalOutcomes');
+    const served = record(body.byTerminalState, 'byTerminalState');
+    const byTerminalState = {} as Record<TerminalState, number>;
+    let total = 0;
+    for (const state of Object.keys(TERMINAL_STATE) as TerminalState[]) {
+      byTerminalState[state] = count(served[state], `byTerminalState.${state}`);
+      total += byTerminalState[state];
+    }
+    if (total !== terminalOutcomes) throw new NaryxEvidenceError('terminal state counts do not sum to the outcome count');
+    const bps = (value: unknown, name: string) => {
+      const parsed = count(value, name);
+      if (parsed > 10_000) throw new NaryxEvidenceError(`${name} exceeds 10000 basis points`);
+      return parsed;
+    };
+    let timeUnhedgedMs: ExecutionQualityView['timeUnhedgedMs'];
+    if (body.timeUnhedgedMs !== undefined) {
+      const served = record(body.timeUnhedgedMs, 'timeUnhedgedMs');
+      const median = big(served.median, 'timeUnhedgedMs.median');
+      const p95 = big(served.p95, 'timeUnhedgedMs.p95');
+      const max = big(served.max, 'timeUnhedgedMs.max');
+      if (median < 0n || median > p95 || p95 > max) throw new NaryxEvidenceError('time unhedged percentiles are not ordered');
+      timeUnhedgedMs = Object.freeze({ median, p95, max });
+    }
+    const grades = record(body.receiptFieldEvidence, 'receiptFieldEvidence');
+    const receiptFieldEvidence: Record<string, number> = {};
+    for (const [grade, value] of Object.entries(grades)) receiptFieldEvidence[grade] = count(value, `receiptFieldEvidence.${grade}`);
+    return Object.freeze({
+      label: 'OBSERVED' as const,
+      methodology: body.methodology,
+      ...(filter.solverId === undefined ? {} : { solverId: filter.solverId }),
+      terminalOutcomes,
+      byTerminalState: Object.freeze(byTerminalState),
+      successfulBps: bps(body.successfulBps, 'successfulBps'),
+      recoveredBps: bps(body.recoveredBps, 'recoveredBps'),
+      ...(timeUnhedgedMs === undefined ? {} : { timeUnhedgedMs }),
+      receiptFieldEvidence: Object.freeze(receiptFieldEvidence),
+    });
+  }
+
   // ---------------------------------------------------------------- private delivery
 
   /**
@@ -576,6 +780,69 @@ export function verifyAllocationEvidence(takerOrderId: string, allocationInput: 
     throw new NaryxEvidenceError(`allocation failed verification: ${(error as Error).message}`);
   }
   return Object.freeze({ allocation, matchingPolicy: policy, allocationHash: toHex(packageAllocationHash(allocation)) });
+}
+
+/**
+ * Verifies served terminal evidence without trusting the server: every record re-hashes to its
+ * served hash, the manifest and outcome name the requested order, the outcome binds the manifest,
+ * and a receipt is present exactly for successful states and links to the outcome both ways.
+ */
+export function verifyTerminalEvidence(
+  orderHash: string,
+  served: Record<string, unknown>,
+  acceptedQuoteFeeTerms?: AcceptedQuoteFeeTerms,
+): VerifiedTerminalEvidence {
+  const requested = hashHex(orderHash, 'order hash');
+  let manifest: EvidenceManifest;
+  let outcome: TerminalOutcomeRecord;
+  let manifestHash: string;
+  let outcomeHash: string;
+  try {
+    manifest = evidenceManifest(served.evidenceManifest as EvidenceManifestInput);
+    manifestHash = toHex(evidenceManifestHash(served.evidenceManifest as EvidenceManifestInput));
+    outcome = terminalOutcomeRecord(served.outcome as TerminalOutcomeInput);
+    outcomeHash = toHex(terminalOutcomeHash(served.outcome as TerminalOutcomeInput));
+  } catch (error) {
+    throw new NaryxEvidenceError(`terminal evidence is malformed: ${(error as Error).message}`);
+  }
+  if (served.evidenceManifestHash !== manifestHash) throw new NaryxEvidenceError('the evidence manifest does not hash to its served hash');
+  if (served.outcomeHash !== outcomeHash) throw new NaryxEvidenceError('the terminal outcome does not hash to its served hash');
+  if (toHex(manifest.orderHash) !== requested || toHex(outcome.orderHash) !== requested) throw new NaryxEvidenceError('the evidence names another order');
+  if (toHex(outcome.evidenceManifestHash) !== manifestHash) throw new NaryxEvidenceError('the outcome does not bind the served evidence manifest');
+  if (served.terminalState !== outcome.terminalState) throw new NaryxEvidenceError('the served terminal state is not the outcome state');
+  let receipt: PackageReceipt | undefined;
+  let receiptHash: string | undefined;
+  let feesVerified = false;
+  if (requiresSuccessfulReceipt(outcome.terminalState)) {
+    if (served.receipt === undefined) throw new NaryxEvidenceError('a successful outcome must be served with its receipt');
+    try {
+      receipt = packageReceipt(served.receipt as PackageReceiptInput);
+      receiptHash = toHex(packageReceiptHash(served.receipt as PackageReceiptInput));
+    } catch (error) {
+      throw new NaryxEvidenceError(`receipt is malformed: ${(error as Error).message}`);
+    }
+    if (served.receiptHash !== receiptHash) throw new NaryxEvidenceError('the receipt does not hash to its served hash');
+    const link = verifyOutcomeReceiptLink(served.outcome as TerminalOutcomeInput, served.receipt as PackageReceiptInput);
+    if (!link.valid) throw new NaryxEvidenceError(`the outcome and receipt do not link: ${link.violations.join(', ')}`);
+    if (acceptedQuoteFeeTerms !== undefined) {
+      const fees = verifyReceiptFees(served.receipt as PackageReceiptInput, acceptedQuoteFeeTerms);
+      if (!fees.valid) throw new NaryxEvidenceError(`the receipt charged outside the accepted quote: ${fees.violations.join(', ')}`);
+      feesVerified = true;
+    }
+  } else if (served.receipt !== undefined || served.receiptHash !== undefined || outcome.successfulReceiptHash !== undefined) {
+    throw new NaryxEvidenceError(`${outcome.terminalState} is not a successful outcome and has no receipt`);
+  }
+  return Object.freeze({
+    orderHash: requested,
+    terminalState: outcome.terminalState,
+    evidenceManifest: manifest,
+    evidenceManifestHash: manifestHash,
+    outcome,
+    outcomeHash,
+    ...(receipt === undefined ? {} : { receipt, receiptHash: receiptHash as string }),
+    feesVerified,
+    recordedAtMs: count(served.recordedAtMs, 'recordedAtMs'),
+  });
 }
 
 /** Rebuilds observed candles from tape pages, so an integrator can check a served series. */

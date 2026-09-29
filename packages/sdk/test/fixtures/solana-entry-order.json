@@ -1,0 +1,254 @@
+{
+  "action": "ENTRY",
+  "allowedRecoveryActions": [],
+  "direction": "LONG_SPOT_SHORT_PERP",
+  "domain": {
+    "domainId": "svm:testnet",
+    "domainManifestHash": {
+      "$naryxType": "bytes",
+      "value": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "domainManifestVersion": 1
+  },
+  "environment": "testnet",
+  "exitOutcomeSchemaVersion": 0,
+  "expectedPrePositionEntryNotional": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "expectedPrePositionSize": {
+    "asset": {
+      "assetId": "svm:testnet:sol",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "decimals": 9
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "expiryUnit": "SOLANA_SLOT",
+  "expiryValue": {
+    "$naryxType": "bigint",
+    "value": "1001500"
+  },
+  "maxAggregateRecoveryLossQuote": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "maxEntrySpread": {
+    "baseAsset": {
+      "assetId": "svm:testnet:sol",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "decimals": 9
+    },
+    "baseAtoms": {
+      "$naryxType": "bigint",
+      "value": "400"
+    },
+    "quoteAsset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "quoteAtoms": {
+      "$naryxType": "bigint",
+      "value": "1"
+    },
+    "roundingDirection": "CEIL"
+  },
+  "maxMarginAdded": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "20000000"
+    }
+  },
+  "maxPriorityFee": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "100000"
+    }
+  },
+  "maxProtocolFee": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "100000"
+    }
+  },
+  "maxRecoveryCostAtomsByAsset": [],
+  "maxResidualBaseQuantity": {
+    "asset": {
+      "assetId": "svm:testnet:sol",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "decimals": 9
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "maxSolverFee": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "100000"
+    }
+  },
+  "maxSpotQuoteIn": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "150150000"
+    }
+  },
+  "maxVenueFeeAtomsByAsset": [],
+  "minVenueReserveReturned": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "minWalletQuoteBalanceDelta": {
+    "asset": {
+      "assetId": "svm:testnet:usdc",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "decimals": 6
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "0"
+    }
+  },
+  "nonce": {
+    "$naryxType": "bigint",
+    "value": "14252410743899738516"
+  },
+  "owner": "OWNER",
+  "packageOrderType": "MARKETABLE_LIMIT",
+  "packageTemplateManifestHash": {
+    "$naryxType": "bytes",
+    "value": "4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "packageTimeInForce": "FOK",
+  "partialFillPolicy": "EXACT_ALL_LEGS",
+  "permittedPerpAdapters": [
+    {
+      "adapterId": "perp-adapter-v1",
+      "adapterManifestHash": {
+        "$naryxType": "bytes",
+        "value": "6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "adapterManifestVersion": 1
+    }
+  ],
+  "permittedSpotAdapters": [
+    {
+      "adapterId": "spot-adapter-v1",
+      "adapterManifestHash": {
+        "$naryxType": "bytes",
+        "value": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "adapterManifestVersion": 1
+    }
+  ],
+  "quantity": {
+    "asset": {
+      "assetId": "svm:testnet:sol",
+      "assetManifestHash": {
+        "$naryxType": "bytes",
+        "value": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "decimals": 9
+    },
+    "atoms": {
+      "$naryxType": "bigint",
+      "value": "1000000000"
+    }
+  },
+  "settlementAccount": "OWNER",
+  "settlementClass": "ATOMIC_POSTCONDITION",
+  "templateId": "cash-and-carry-v1",
+  "templateVersion": 1,
+  "version": 1
+}
