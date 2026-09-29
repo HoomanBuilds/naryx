@@ -811,6 +811,7 @@ export interface PackageFill {
   readonly makerSource: PackageLiquiditySource;
   readonly makerSequence: bigint;
   readonly makerParticipantId: ProtocolId;
+  readonly makerCommonControlGroupId: ProtocolId;
   readonly priceTicks: bigint;
   readonly quantity: bigint;
   readonly consumedSourceKeys: readonly CommitmentHash[];
@@ -822,6 +823,9 @@ export interface PackageAllocation {
   readonly executionClassId: ProtocolId;
   readonly matchingPolicyHash: ManifestHash;
   readonly takerOrderId: CommitmentHash;
+  /** The taker's identity, bound so self-match prevention can be verified from the evidence. */
+  readonly takerParticipantId: ProtocolId;
+  readonly takerCommonControlGroupId: ProtocolId;
   readonly takerSide: PackageBookSide;
   readonly takerTimeInForce: PackageTimeInForce;
   readonly takerLimitPriceTicks: bigint;
@@ -1000,6 +1004,7 @@ export function matchPackageOrder(
         makerSource: maker.source,
         makerSequence: maker.sequence,
         makerParticipantId: maker.participantId,
+        makerCommonControlGroupId: maker.commonControlGroupId,
         priceTicks: maker.priceTicks,
         quantity,
         consumedSourceKeys: Object.freeze(keys.map((key) => commitmentHash(key))),
@@ -1062,6 +1067,8 @@ export function matchPackageOrder(
     executionClassId: checked.executionClassId,
     matchingPolicyHash: state.matchingPolicyHash,
     takerOrderId: taker.orderId,
+    takerParticipantId: taker.participantId,
+    takerCommonControlGroupId: taker.commonControlGroupId,
     takerSide: taker.side,
     takerTimeInForce: taker.timeInForce,
     takerLimitPriceTicks: taker.limitPriceTicks,
@@ -1097,6 +1104,7 @@ function freezeFill(fill: PackageFill, context: string): PackageFill {
     makerSource: variant(PACKAGE_LIQUIDITY_SOURCE, fill.makerSource, `${context}.makerSource`),
     makerSequence: positive(fill.makerSequence, U64_BITS, `${context}.makerSequence`),
     makerParticipantId: protocolId(fill.makerParticipantId, `${context}.makerParticipantId`),
+    makerCommonControlGroupId: protocolId(fill.makerCommonControlGroupId, `${context}.makerCommonControlGroupId`),
     priceTicks: signedTicks(fill.priceTicks, `${context}.priceTicks`),
     quantity: positive(fill.quantity, U128_BITS, `${context}.quantity`),
     consumedSourceKeys: Object.freeze(
@@ -1126,6 +1134,8 @@ export function packageAllocation(input: PackageAllocation, context = 'packageAl
     executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
     matchingPolicyHash: manifestHash(input.matchingPolicyHash, `${context}.matchingPolicyHash`),
     takerOrderId: commitmentHash(input.takerOrderId, `${context}.takerOrderId`),
+    takerParticipantId: protocolId(input.takerParticipantId, `${context}.takerParticipantId`),
+    takerCommonControlGroupId: protocolId(input.takerCommonControlGroupId, `${context}.takerCommonControlGroupId`),
     takerSide: variant(PACKAGE_BOOK_SIDE, input.takerSide, `${context}.takerSide`),
     takerTimeInForce: variant(PACKAGE_TIME_IN_FORCE, input.takerTimeInForce, `${context}.takerTimeInForce`),
     takerLimitPriceTicks: signedTicks(input.takerLimitPriceTicks, `${context}.takerLimitPriceTicks`),
@@ -1179,6 +1189,10 @@ export function verifyPackageAllocation(
     }
     const maker = toHex(fill.makerEntryId);
     if (makers.has(maker) || maker === toHex(allocation.takerOrderId)) fail(at, 'maker entry fills more than once');
+    if (fill.makerParticipantId === allocation.takerParticipantId ||
+        (checkedPolicy.commonControlAsSelf && fill.makerCommonControlGroupId === allocation.takerCommonControlGroupId)) {
+      fail(at, 'a fill matches the taker against itself');
+    }
     makers.add(maker);
     for (const key of fill.consumedSourceKeys) {
       const hex = toHex(key);
@@ -1228,6 +1242,7 @@ function encodeFill(writer: CanonicalWriter, fill: PackageFill, context: string)
   writer.writeEnum(PACKAGE_LIQUIDITY_SOURCE, fill.makerSource, `${context}.makerSource`);
   writer.writeU64(fill.makerSequence, `${context}.makerSequence`);
   encodeProtocolId(writer, fill.makerParticipantId, `${context}.makerParticipantId`);
+  encodeProtocolId(writer, fill.makerCommonControlGroupId, `${context}.makerCommonControlGroupId`);
   writer.writeI128(fill.priceTicks, `${context}.priceTicks`);
   writer.writeU128(fill.quantity, `${context}.quantity`);
   writer.writeSet(
@@ -1245,6 +1260,8 @@ export function packageAllocationBytes(value: PackageAllocation, context = 'pack
     encodeProtocolId(writer, allocation.executionClassId, `${context}.executionClassId`);
     encodeManifestHash(writer, allocation.matchingPolicyHash, `${context}.matchingPolicyHash`);
     encodeCommitmentHash(writer, allocation.takerOrderId, `${context}.takerOrderId`);
+    encodeProtocolId(writer, allocation.takerParticipantId, `${context}.takerParticipantId`);
+    encodeProtocolId(writer, allocation.takerCommonControlGroupId, `${context}.takerCommonControlGroupId`);
     writer.writeEnum(PACKAGE_BOOK_SIDE, allocation.takerSide, `${context}.takerSide`);
     writer.writeEnum(PACKAGE_TIME_IN_FORCE, allocation.takerTimeInForce, `${context}.takerTimeInForce`);
     writer.writeI128(allocation.takerLimitPriceTicks, `${context}.takerLimitPriceTicks`);

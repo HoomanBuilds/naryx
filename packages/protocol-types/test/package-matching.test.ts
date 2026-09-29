@@ -423,6 +423,18 @@ describe('allocation evidence', () => {
     assert.equal(allocation.fills.length, 3);
   });
 
+  test('the taker identity is bound, so a self-match fill cannot verify', () => {
+    const [first, ...rest] = allocation.fills as [PackageAllocation['fills'][number], ...PackageAllocation['fills']];
+    assert.throws(tamper((value) => ({ ...value, fills: [{ ...first, makerParticipantId: value.takerParticipantId }, ...rest] })), /against itself/);
+    if (policy.commonControlAsSelf) {
+      assert.throws(
+        tamper((value) => ({ ...value, fills: [{ ...first, makerCommonControlGroupId: value.takerCommonControlGroupId }, ...rest] })),
+        /against itself/,
+      );
+    }
+    assert.notEqual(toHex(packageAllocationHash(allocation)), toHex(packageAllocationHash({ ...allocation, takerParticipantId: 'someone-else' as PackageAllocation['takerParticipantId'] })));
+  });
+
   test('conservation, priority, and single consumption tampering is rejected', () => {
     const [first, second, third] = allocation.fills as [never, never, never];
     assert.throws(tamper((value) => ({ ...value, cancelledQuantity: 10n })), /not conserved/);
