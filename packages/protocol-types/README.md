@@ -15,6 +15,13 @@ funded-operation manifests, security finding summaries, and computed readiness d
 cannot assert readiness directly: required evidence, roles, caps, validity, and finding state are
 validated before the decision can become `READY`.
 
+Funded operations bind exact operation and account commitments, unsigned payload identity,
+separate principal and loss budgets, prerequisites, stop conditions, simulation and recovery
+evidence, and explicit approvers. Readiness additionally checks aggregate asset and account caps,
+signed evidence categories, independent security review, and critical or high finding closure.
+Canonical operation-ledger records define reserve, consume, reconcile, and release transitions for
+durable service storage without embedding a database implementation in the protocol kernel.
+
 Arithmetic is exact and integer-based. Rounding direction, overflow, zero quantity, expiry, and replay are behavior to be tested, not assumptions.
 
 ## Implemented so far
