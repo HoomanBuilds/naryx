@@ -53,6 +53,7 @@ const settle = (overrides: Partial<ShardSettlementRequest> = {}): ShardSettlemen
   referenceSequence: 1n,
   referencePriceTicks: 1_000n,
   levelId: 2n,
+  takerSide: 'BUY',
   size: 10n,
   fee: 5n,
   atValue: 100n,
@@ -97,14 +98,16 @@ describe('package quote shard', () => {
   });
 
   test('settlement binds the exact shard, reference, level, fee, heartbeat, kill switch, and capacity', () => {
-    assert.deepEqual(checkShardSettlement(shard, settle()), { executable: true, priceTicks: 1_005n, quoteMode: 'FIRM_ONCHAIN' });
-    assert.deepEqual(checkShardSettlement(shard, settle({ levelId: 1n })), { executable: true, priceTicks: 995n, quoteMode: 'FIRM_ONCHAIN' });
+    assert.deepEqual(checkShardSettlement(shard, settle()), { executable: true, priceTicks: 1_005n, direction: 'ASK', quoteMode: 'FIRM_ONCHAIN' });
+    assert.deepEqual(checkShardSettlement(shard, settle({ levelId: 1n, takerSide: 'SELL' })), { executable: true, priceTicks: 995n, direction: 'BID', quoteMode: 'FIRM_ONCHAIN' });
     const cases: [Partial<ShardSettlementRequest>, string][] = [
       [{ boundShardHash: packageQuoteShardHash({ ...shard, heartbeatExpiry: 600n }) }, 'SHARD_CHANGED'],
       [{ atValue: 500n }, 'STALE_HEARTBEAT'],
       [{ referenceSequence: 2n }, 'REFERENCE_CHANGED'],
       [{ referenceStateHash: '33'.repeat(32) }, 'REFERENCE_CHANGED'],
       [{ levelId: 9n }, 'LEVEL_UNKNOWN'],
+      [{ levelId: 1n }, 'SIDE_MISMATCH'],
+      [{ takerSide: 'SELL' }, 'SIDE_MISMATCH'],
       [{ size: 11n }, 'SIZE_ABOVE_LEVEL'],
       [{ fee: 6n }, 'FEE_ABOVE_MAXIMUM'],
     ];

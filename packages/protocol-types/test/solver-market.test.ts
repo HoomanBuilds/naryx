@@ -143,6 +143,15 @@ describe('maker quote surfaces', () => {
     assert.equal(generateMakerQuotes({ ...surface, portfolioKillSwitch: true }, 100n, 0n).length, 0);
   });
 
+  test('levels at the same offset share capped inventory by level id, not listing order', () => {
+    const tied = (levels: MakerQuoteSurfaceInput['levels']) => ({ ...surface, maximumInventoryUnits: 10n, levels });
+    const one = { levelId: 1n, side: 'BID' as const, sizeUnits: 8n, offsetTicks: -1n };
+    const two = { levelId: 2n, side: 'BID' as const, sizeUnits: 8n, offsetTicks: -1n };
+    const sizes = (levels: MakerQuoteSurfaceInput['levels']) => generateMakerQuotes(tied(levels), 100n, 0n).map((quote) => [quote.levelId, quote.sizeUnits]);
+    assert.deepEqual(sizes([one, two]), [[1n, 8n], [2n, 2n]]);
+    assert.deepEqual(sizes([two, one]), sizes([one, two]));
+  });
+
   test('a self-crossing or oversized surface rejects', () => {
     const crossing = { ...surface, levels: [...surface.levels, { levelId: 4n, side: 'ASK' as const, sizeUnits: 1n, offsetTicks: -2n }] };
     assert.throws(() => makerQuoteSurface(crossing), /crosses itself/);

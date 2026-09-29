@@ -389,13 +389,17 @@ export function generateMakerQuotes(
   let bidRoom = surface.maximumInventoryUnits - inventory;
   let askRoom = surface.maximumInventoryUnits + inventory;
   const skew = surface.skewTicksPerInventoryUnit * inventory;
-  const ordered = [...surface.levels].sort((left, right) =>
-    left.side !== right.side
-      ? left.side === 'BID' ? -1 : 1
-      : left.side === 'BID'
+  // Best price first on each side; equal offsets fall back to the level id so capped inventory
+  // room is assigned the same way whatever order the levels were listed in.
+  const ordered = [...surface.levels].sort((left, right) => {
+    if (left.side !== right.side) return left.side === 'BID' ? -1 : 1;
+    if (left.offsetTicks !== right.offsetTicks) {
+      return left.side === 'BID'
         ? (left.offsetTicks > right.offsetTicks ? -1 : 1)
-        : (left.offsetTicks < right.offsetTicks ? -1 : 1),
-  );
+        : (left.offsetTicks < right.offsetTicks ? -1 : 1);
+    }
+    return left.levelId < right.levelId ? -1 : left.levelId > right.levelId ? 1 : 0;
+  });
   const quotes: MakerQuote[] = [];
   for (const level of ordered) {
     const room = level.side === 'BID' ? bidRoom : askRoom;

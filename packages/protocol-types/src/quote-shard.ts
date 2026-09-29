@@ -271,9 +271,15 @@ export function admitShardUpdate(
   if (currentInput === undefined) return Object.freeze({ accepted: true as const, duplicate: false, shard: next });
   const current = packageQuoteShard(currentInput);
   const reject = (reason: ShardUpdateRejection) => Object.freeze({ accepted: false as const, reason });
-  const identity = (shard: PackageQuoteShard) =>
-    [shard.environment, shard.domain.domainId, shard.domain.domainManifestVersion, shard.solverId, shard.templateId, shard.marketGroupId].join('|');
-  if (identity(current) !== identity(next) || compareBytes(current.domain.domainManifestHash, next.domain.domainManifestHash) !== 0) {
+  // Compared field by field: identifiers are arbitrary ASCII, so a joined key could collide.
+  const sameIdentity =
+    current.environment === next.environment &&
+    current.domain.domainId === next.domain.domainId &&
+    current.domain.domainManifestVersion === next.domain.domainManifestVersion &&
+    current.solverId === next.solverId &&
+    current.templateId === next.templateId &&
+    current.marketGroupId === next.marketGroupId;
+  if (!sameIdentity || compareBytes(current.domain.domainManifestHash, next.domain.domainManifestHash) !== 0) {
     return reject('IDENTITY_CHANGED');
   }
   if (next.shardSequence === current.shardSequence) {
@@ -293,6 +299,8 @@ export interface ShardSettlementRequest {
   /** The reference price the bound reference state implies, in the level's price ticks. */
   readonly referencePriceTicks: bigint;
   readonly levelId: bigint;
+  /** The taker's side: a BUY may only lift an ASK level and a SELL may only hit a BID level. */
+  readonly takerSide: 'BUY' | 'SELL';
   readonly size: bigint;
   readonly fee: bigint;
   readonly atValue: bigint;
@@ -304,6 +312,7 @@ export type ShardSettlementRejection =
   | 'STALE_HEARTBEAT'
   | 'REFERENCE_CHANGED'
   | 'LEVEL_UNKNOWN'
+  | 'SIDE_MISMATCH'
   | 'LEVEL_EXPIRED'
   | 'SIZE_ABOVE_LEVEL'
   | 'FEE_ABOVE_MAXIMUM'
@@ -316,7 +325,7 @@ export type ShardSettlementRejection =
 export function checkShardSettlement(
   input: PackageQuoteShardInput,
   request: ShardSettlementRequest,
-): { readonly executable: true; readonly priceTicks: bigint; readonly quoteMode: QuoteMode } | { readonly executable: false; readonly reason: ShardSettlementRejection } {
+): { readonly executable: true; readonly priceTicks: bigint; readonly direction: PackageBookSide; readonly quoteMode: QuoteMode } | { readonly executable: false; readonly reason: ShardSettlementRejection } {
   const shard = packageQuoteShard(input);
   object(request, 'checkShardSettlement.request');
   const reject = (reason: ShardSettlementRejection) => Object.freeze({ executable: false as const, reason });
@@ -332,6 +341,8 @@ export function checkShardSettlement(
   }
   const level = shard.quoteLevels.find((value) => value.levelId === unsigned(request.levelId, U64_BITS, 'checkShardSettlement.levelId'));
   if (level === undefined) return reject('LEVEL_UNKNOWN');
+  if (request.takerSide !== 'BUY' && request.takerSide !== 'SELL') throw new MalformedInputError('checkShardSettlement.takerSide', 'expected BUY or SELL');
+  if (level.direction !== (request.takerSide === 'BUY' ? 'ASK' : 'BID')) return reject('SIDE_MISMATCH');
   if (at >= level.validUntilValue) return reject('LEVEL_EXPIRED');
   const size = unsigned(request.size, U128_BITS, 'checkShardSettlement.size');
   if (size === 0n || size > level.size) return reject('SIZE_ABOVE_LEVEL');
@@ -341,6 +352,7 @@ export function checkShardSettlement(
   return Object.freeze({
     executable: true as const,
     priceTicks: checkedSigned(request.referencePriceTicks + level.referenceOffset, I128_BITS, 'checkShardSettlement.priceTicks'),
+    direction: level.direction,
     quoteMode: level.quoteMode,
   });
 }
