@@ -17,6 +17,8 @@ import {
 } from '@naryx/protocol-types';
 import {
   decodeFunctionData,
+  encodeAbiParameters,
+  hashTypedData,
   getAbiItem,
   keccak256,
   stringToHex,
@@ -31,10 +33,12 @@ import {
   compileEvmAtomicPackage,
   EVM_RUNTIME_IDENTITY,
   NARYX_STRATEGY_ACCOUNT_ABI,
+  prepareEvmTraderPermitAuthorization,
   type EvmAtomicExecutionBounds,
   type EvmDeploymentIdentity,
   type EvmManifestResourceIdentity,
 } from '../src/index.js';
+import { EVM_CASH_CARRY_ADMISSION_COMPONENTS } from '../src/abi.js';
 
 const hash = (byte: number): Hash32 => new Uint8Array(32).fill(byte) as Hash32;
 const hashHex = (byte: number): Hex => `0x${byte.toString(16).padStart(2, '0').repeat(32)}`;
@@ -88,6 +92,109 @@ function manifest(domainId: string, chainReference: bigint, manifestVersion = 1)
     supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
   });
 }
+
+test('prepares the PackageVerifier TraderPermit typed data from the unsigned execution', () => {
+  const domain = manifest('evm:base-sepolia', 84_532n);
+  const admitted = admission(domain);
+  const identity = deployment(domain, 84_532n);
+  const authorization = prepareEvmTraderPermitAuthorization(
+    admitted,
+    identity,
+    seriesBinding(domain),
+    bounds,
+  );
+  const compiled = compileEvmAtomicPackage(admitted, identity, seriesBinding(domain), bounds);
+  const decoded = decodeFunctionData({ abi: NARYX_STRATEGY_ACCOUNT_ABI, data: compiled.payload.data });
+  const execution = decoded.args?.[0] as {
+    domainIdHash: Hex; domainManifestVersion: number; domainManifestHash: Hex;
+    orderHash: Hex; quoteHash: Hex; routeHash: Hex; spotFillCommitment: Hex;
+    packageQuoteIntentHash: Hex; seriesIdentityKey: Hex; seriesBindingVersion: number;
+    seriesBindingHash: Hex; action: number; strategyAccount: Address; solver: Address;
+    spotPort: Address; perpObserver: Address; perpInstrument: Address; perpExpiry: number;
+    baseToken: Address; quoteToken: Address; baseQuantityAtoms: bigint; perpQuantityWad: bigint;
+    packageSizeUnits: bigint; entryReceiptHash: Hex; spotQuoteBoundAtoms: bigint;
+    packageNotionalQuoteAtoms: bigint; expectedPrePerpBalanceWad: bigint;
+    expectedPrePerpSizeWad: bigint; expectedPrePerpEntryNotionalWad: bigint;
+    expectedPostPerpSizeWad: bigint; minimumPostPerpBalanceWad: bigint;
+    maximumPostPerpBalanceWad: bigint; maximumPostPerpEntryNotionalWad: bigint;
+    nonce: bigint; deadline: bigint;
+  };
+  const resourceAdmission = decoded.args?.[1];
+  const admissionHash = keccak256(encodeAbiParameters(
+    [{ type: 'tuple', components: EVM_CASH_CARRY_ADMISSION_COMPONENTS }],
+    [resourceAdmission as never],
+  ));
+  const packageIdentityHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'bytes32' }, { type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'bytes32' }, { type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'uint8' },
+    ],
+    [
+      execution.domainIdHash, execution.domainManifestVersion, execution.domainManifestHash,
+      execution.orderHash, execution.quoteHash, execution.routeHash, execution.spotFillCommitment,
+      execution.packageQuoteIntentHash, execution.seriesIdentityKey, execution.seriesBindingVersion,
+      execution.seriesBindingHash, admissionHash, execution.action,
+    ],
+  ));
+  const packageEconomicsHash = keccak256(encodeAbiParameters(
+    [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint128' }, { type: 'bytes32' }],
+    [execution.baseQuantityAtoms, execution.perpQuantityWad, execution.packageSizeUnits, execution.entryReceiptHash],
+  ));
+  const packageHash = keccak256(encodeAbiParameters(
+    [{ type: 'bytes32' }, { type: 'bytes32' }],
+    [packageIdentityHash, packageEconomicsHash],
+  ));
+  const accountsHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'address' },
+      { type: 'address' }, { type: 'uint32' }, { type: 'address' }, { type: 'address' },
+      { type: 'uint256' },
+    ],
+    [
+      execution.strategyAccount, execution.solver, execution.spotPort, execution.perpObserver,
+      execution.perpInstrument, execution.perpExpiry, execution.baseToken, execution.quoteToken, 84_532n,
+    ],
+  ));
+  const limitsHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'uint256' }, { type: 'uint256' }, { type: 'int128' }, { type: 'int128' },
+      { type: 'uint128' }, { type: 'int128' }, { type: 'int128' }, { type: 'int128' },
+      { type: 'uint128' },
+    ],
+    [
+      execution.spotQuoteBoundAtoms, execution.packageNotionalQuoteAtoms,
+      execution.expectedPrePerpBalanceWad, execution.expectedPrePerpSizeWad,
+      execution.expectedPrePerpEntryNotionalWad, execution.expectedPostPerpSizeWad,
+      execution.minimumPostPerpBalanceWad, execution.maximumPostPerpBalanceWad,
+      execution.maximumPostPerpEntryNotionalWad,
+    ],
+  ));
+
+  assert.deepEqual(authorization.domain, {
+    name: 'Naryx Package Verifier',
+    version: '1',
+    chainId: 84_532n,
+    verifyingContract: packageVerifier,
+  });
+  assert.equal(authorization.primaryType, 'TraderPermit');
+  assert.deepEqual(authorization.message, {
+    packageHash,
+    accountsHash,
+    limitsHash,
+    nonce: execution.nonce,
+    deadline: execution.deadline,
+  });
+  assert.equal(authorization.message.nonce, execution.nonce);
+  assert.equal(authorization.message.deadline, execution.deadline);
+  assert.equal(authorization.digest, hashTypedData({
+    domain: authorization.domain,
+    types: authorization.types,
+    primaryType: authorization.primaryType,
+    message: authorization.message,
+  }));
+});
 
 function exitAdmission(
   domainManifest: DomainManifest,

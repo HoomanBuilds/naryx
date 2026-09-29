@@ -21,6 +21,7 @@ const solanaPorts = {
   observation: { observe: async () => ({}) },
 } as unknown as PrivateTerminalExecutionPorts;
 const evmPorts = {
+  authorization: { prepare: async () => ({}) },
   preparation: { prepare: async () => ({}) },
   atomicObservation: { observe: async () => ({}) },
   asyncObservation: { observe: async () => ({}) },
@@ -70,6 +71,7 @@ test("runtime composition exposes only explicitly enabled complete boundaries", 
   assert.equal(evmCalls, 1);
   assert.equal(enabled.solanaDevnet.preparation, solanaPorts.preparation);
   assert.equal(enabled.solanaDevnet.observation, solanaPorts.observation);
+  assert.equal(enabled.evmTestnet.authorization, evmPorts.authorization);
   assert.equal(enabled.evmTestnet.preparation, evmPorts.preparation);
   assert.equal(enabled.evmTestnet.atomicObservation, evmPorts.atomicObservation);
   assert.equal(enabled.evmTestnet.asyncObservation, evmPorts.asyncObservation);

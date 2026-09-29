@@ -18,10 +18,12 @@ import {
 } from "./hyperliquid-testnet-terminal.js";
 import {
   EvmTestnetTerminalValidationError,
+  parseEvmTestnetPrepareAtomicAuthorizationRequest,
   parseEvmTestnetObserveAsyncRequest,
   parseEvmTestnetObserveAtomicRequest,
   parseEvmTestnetPrepareAtomicRequest,
   validateEvmTestnetAsyncObservation,
+  validateEvmTestnetAtomicAuthorization,
   validateEvmTestnetAtomicObservation,
   validateEvmTestnetAtomicPreparation,
   type EvmTestnetTerminalPorts,
@@ -289,6 +291,7 @@ export function createPrivateTerminalRequestHandler(
         executionPreparationAvailable: executionPorts.preparation !== undefined,
         executionObservationAvailable: executionPorts.observation !== undefined,
         hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined,
+        evmTestnetAtomicAuthorizationAvailable: evmTestnetPorts.authorization !== undefined,
         evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined,
         evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
         evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined,
@@ -467,6 +470,34 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "HYPERLIQUID_EXECUTION_FAILED", "Hyperliquid Testnet execution failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-testnet/prepare-atomic-authorization") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmTestnetPorts.authorization === undefined) {
+        reject(response, 503, "EXECUTION_UNAVAILABLE", "EVM Testnet atomic authorization is unavailable.");
+        return;
+      }
+      try {
+        const terminalRequest = parseEvmTestnetPrepareAtomicAuthorizationRequest(await readJson(request));
+        const sanitized = validateEvmTestnetAtomicAuthorization(
+          await evmTestnetPorts.authorization.prepare(terminalRequest),
+          terminalRequest,
+        );
+        sendJson(response, 200, sanitized);
+      } catch (error) {
+        if (error instanceof EvmTestnetTerminalValidationError ||
+            error instanceof PreviewValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_ATOMIC_AUTHORIZATION_FAILED", "EVM Testnet authorization failed closed.");
       }
       return;
     }

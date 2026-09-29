@@ -20,6 +20,7 @@ import {
 } from "@naryx/adapter-evm";
 import {
   encodeAbiParameters,
+  hashTypedData,
   keccak256,
   stringToHex,
   type Address,
@@ -288,10 +289,12 @@ test("evm testnet terminal unavailable defaults are 503 and health is false", as
     const health = await fetch(`${url}/internal/healthz`);
     assert.equal(health.status, 200);
     const body = (await health.json()) as Record<string, unknown>;
+    assert.equal(body.evmTestnetAtomicAuthorizationAvailable, false);
     assert.equal(body.evmTestnetAtomicPreparationAvailable, false);
     assert.equal(body.evmTestnetAtomicObservationAvailable, false);
     assert.equal(body.evmTestnetAsyncObservationAvailable, false);
     for (const [path, payload] of [
+      ["/internal/terminal/evm-testnet/prepare-atomic-authorization", { attemptId: "attempt-base-0123456789", idempotencyKey: "idem-base-0123456789AB" }],
       ["/internal/terminal/evm-testnet/prepare-atomic", { attemptId: "attempt-base-0123456789", idempotencyKey: "idem-base-0123456789AB", traderSignature: signatureHex(9) }],
       ["/internal/terminal/evm-testnet/observe-atomic", { attemptId: "attempt-base-0123456789", idempotencyKey: "idem-base-0123456789AB", transactionHash: hashHex(61) }],
       ["/internal/terminal/evm-testnet/observe-async", { attemptId: "attempt-arb-pending-01", idempotencyKey: "idem-arb-pending-0001" }],
@@ -569,8 +572,52 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
   try {
     const health = (await (await fetch(`${url}/internal/healthz`)).json()) as Record<string, unknown>;
     assert.equal(health.evmTestnetAtomicPreparationAvailable, true);
+    assert.equal(health.evmTestnetAtomicAuthorizationAvailable, true);
     assert.equal(health.evmTestnetAtomicObservationAvailable, true);
     assert.equal(health.evmTestnetAsyncObservationAvailable, true);
+
+    const authorizationResponse = await fetch(`${url}/internal/terminal/evm-testnet/prepare-atomic-authorization`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ attemptId, idempotencyKey }),
+    });
+    assert.equal(authorizationResponse.status, 200);
+    const authorization = (await authorizationResponse.json()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(authorization).sort(), [
+      "attemptId", "chainReference", "digest", "domainId", "domainManifestHash",
+      "domainManifestVersion", "environment", "idempotencyKey", "requestCommitment", "typedData",
+    ]);
+    assert.equal(authorization.environment, "TESTNET");
+    assert.equal(authorization.domainId, baseDomainId);
+    assert.equal(authorization.chainReference, "84532");
+    const typedData = authorization.typedData as {
+      domain: { name: string; version: string; chainId: string; verifyingContract: Address };
+      types: { TraderPermit: readonly { name: string; type: string }[] };
+      primaryType: "TraderPermit";
+      message: { packageHash: Hex; accountsHash: Hex; limitsHash: Hex; nonce: string; deadline: string };
+    };
+    assert.deepEqual(typedData.domain, {
+      name: "Naryx Package Verifier",
+      version: "1",
+      chainId: "84532",
+      verifyingContract: packageVerifier,
+    });
+    assert.equal(authorization.digest, hashTypedData({
+      domain: { ...typedData.domain, chainId: 84_532n },
+      types: { TraderPermit: typedData.types.TraderPermit },
+      primaryType: typedData.primaryType,
+      message: {
+        ...typedData.message,
+        nonce: BigInt(typedData.message.nonce),
+        deadline: BigInt(typedData.message.deadline),
+      },
+    }));
+    const rejectedAuthorization = await fetch(`${url}/internal/terminal/evm-testnet/prepare-atomic-authorization`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ attemptId, idempotencyKey, chainReference: "84532" }),
+    });
+    assert.equal(rejectedAuthorization.status, 400);
 
     const prepareBody = { attemptId, idempotencyKey, traderSignature };
     const first = await fetch(`${url}/internal/terminal/evm-testnet/prepare-atomic`, {

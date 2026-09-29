@@ -92,6 +92,7 @@ export function composePrivateTerminalRuntime(
   }
 
   const evmTestnet: {
+    authorization?: NonNullable<EvmTestnetTerminalPorts["authorization"]>;
     preparation?: NonNullable<EvmTestnetTerminalPorts["preparation"]>;
     atomicObservation?: NonNullable<EvmTestnetTerminalPorts["atomicObservation"]>;
     asyncObservation?: NonNullable<EvmTestnetTerminalPorts["asyncObservation"]>;
@@ -102,10 +103,12 @@ export function composePrivateTerminalRuntime(
       baseHealth = health(false, "RUNTIME_FACTORY_NOT_INJECTED");
     } else if (evmInitializationFailed) {
       baseHealth = health(false, "RUNTIME_INITIALIZATION_FAILED");
-    } else if (typeof evmCandidate?.preparation?.prepare !== "function" ||
+    } else if (typeof evmCandidate?.authorization?.prepare !== "function" ||
+        typeof evmCandidate.preparation?.prepare !== "function" ||
         typeof evmCandidate.atomicObservation?.observe !== "function") {
       baseHealth = health(false, "REQUIRED_PORTS_MISSING");
     } else {
+      evmTestnet.authorization = evmCandidate.authorization;
       evmTestnet.preparation = evmCandidate.preparation;
       evmTestnet.atomicObservation = evmCandidate.atomicObservation;
       baseHealth = health(true, null);

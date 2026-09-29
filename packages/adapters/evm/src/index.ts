@@ -22,8 +22,10 @@ import {
 } from '@naryx/protocol-types';
 import {
   bytesToHex,
+  encodeAbiParameters,
   encodeFunctionData,
   getAddress,
+  hashTypedData,
   isAddress,
   keccak256,
   stringToHex,
@@ -32,7 +34,10 @@ import {
   type Address,
   type Hex,
 } from 'viem';
-import { NARYX_STRATEGY_ACCOUNT_ABI } from './abi.js';
+import {
+  EVM_CASH_CARRY_ADMISSION_COMPONENTS,
+  NARYX_STRATEGY_ACCOUNT_ABI,
+} from './abi.js';
 
 const UINT32_MAX = (1n << 32n) - 1n;
 const UINT128_MAX = (1n << 128n) - 1n;
@@ -100,6 +105,42 @@ export interface EvmAtomicExecutionBounds {
   readonly maximumPostPerpEntryNotionalWad: bigint;
   readonly perpExpiry: number;
   readonly perpArgs: readonly [Hash32, Hash32];
+}
+
+export type EvmAtomicAuthorizationBounds = Omit<EvmAtomicExecutionBounds, 'traderSignature'>;
+
+export const EVM_TRADER_PERMIT_DOMAIN = Object.freeze({
+  name: 'Naryx Package Verifier',
+  version: '1',
+} as const);
+
+export const EVM_TRADER_PERMIT_TYPES = Object.freeze({
+  TraderPermit: Object.freeze([
+    { name: 'packageHash', type: 'bytes32' },
+    { name: 'accountsHash', type: 'bytes32' },
+    { name: 'limitsHash', type: 'bytes32' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+  ]),
+} as const);
+
+export interface EvmTraderPermitAuthorization {
+  readonly domain: Readonly<{
+    name: typeof EVM_TRADER_PERMIT_DOMAIN.name;
+    version: typeof EVM_TRADER_PERMIT_DOMAIN.version;
+    chainId: bigint;
+    verifyingContract: Address;
+  }>;
+  readonly types: typeof EVM_TRADER_PERMIT_TYPES;
+  readonly primaryType: 'TraderPermit';
+  readonly message: Readonly<{
+    packageHash: Hex;
+    accountsHash: Hex;
+    limitsHash: Hex;
+    nonce: bigint;
+    deadline: bigint;
+  }>;
+  readonly digest: Hex;
 }
 
 export interface EvmCallPayload {
@@ -330,12 +371,12 @@ function hexBytes(value: unknown, name: string): Uint8Array {
   return Uint8Array.from(Buffer.from(checked.slice(2), 'hex'));
 }
 
-export function compileEvmAtomicPackage(
+function buildEvmAtomicMaterial(
   admission: PackageAdmission,
   deployment: EvmDeploymentIdentity,
   seriesBindingInput: CashCarrySeriesBindingV1Input,
-  bounds: EvmAtomicExecutionBounds,
-): CompiledEvmAtomicPackage {
+  bounds: EvmAtomicAuthorizationBounds,
+) {
   const { order, quote, route } = admission;
   const domain = validateDomain(admission, deployment);
   requireCondition(order.environment === deployment.domainManifest.environment, 'order environment does not match deployment');
@@ -359,7 +400,6 @@ export function compileEvmAtomicPackage(
   requireCondition(quote.solverSignatureScheme === 'SECP256K1_RECOVERABLE', 'solver signature scheme is unsupported');
   requireCondition(quote.quoteMode !== 'FIRM_ONCHAIN', 'onchain firm quotes require the quoted-package compiler');
   requireCondition(quote.solverVerificationKey.length === 20, 'solver verification key must be an EVM address');
-  const traderSignature = ecdsaSignature(bounds.traderSignature, 'trader signature');
   requireCondition(quote.signature instanceof Uint8Array && quote.signature.length === 65, 'solver quote signature must be exactly 65 bytes');
   const solverSignature = bytesToHex(quote.signature);
   requireCondition(route.actions.length === 2 && route.serviceCharges.length === 0, 'route contains unsupported actions or service charges');
@@ -514,29 +554,128 @@ export function compileEvmAtomicPackage(
     packageNotionalQuoteAtoms,
   };
 
+  return {
+    domain,
+    execution,
+    resourceAdmission,
+    solverSignature,
+    strategyAccount,
+    perpArgs: [
+      nonzeroHash(bounds.perpArgs[0], 'perpArgs[0]'),
+      nonzeroHash(bounds.perpArgs[1], 'perpArgs[1]'),
+    ] as const,
+  };
+}
+
+export function prepareEvmTraderPermitAuthorization(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  seriesBindingInput: CashCarrySeriesBindingV1Input,
+  bounds: EvmAtomicAuthorizationBounds,
+): EvmTraderPermitAuthorization {
+  const material = buildEvmAtomicMaterial(admission, deployment, seriesBindingInput, bounds);
+  const execution = material.execution;
+  const admissionHash = keccak256(encodeAbiParameters(
+    [{ type: 'tuple', components: EVM_CASH_CARRY_ADMISSION_COMPONENTS }],
+    [material.resourceAdmission],
+  ));
+  const packageIdentityHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'bytes32' }, { type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'bytes32' }, { type: 'uint32' }, { type: 'bytes32' }, { type: 'bytes32' },
+      { type: 'uint8' },
+    ],
+    [
+      execution.domainIdHash, execution.domainManifestVersion, execution.domainManifestHash,
+      execution.orderHash, execution.quoteHash, execution.routeHash, execution.spotFillCommitment,
+      execution.packageQuoteIntentHash, execution.seriesIdentityKey, execution.seriesBindingVersion,
+      execution.seriesBindingHash, admissionHash, execution.action,
+    ],
+  ));
+  const packageEconomicsHash = keccak256(encodeAbiParameters(
+    [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint128' }, { type: 'bytes32' }],
+    [execution.baseQuantityAtoms, execution.perpQuantityWad, execution.packageSizeUnits, execution.entryReceiptHash],
+  ));
+  const packageHash = keccak256(encodeAbiParameters(
+    [{ type: 'bytes32' }, { type: 'bytes32' }],
+    [packageIdentityHash, packageEconomicsHash],
+  ));
+  const accountsHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'address' },
+      { type: 'address' }, { type: 'uint32' }, { type: 'address' }, { type: 'address' },
+      { type: 'uint256' },
+    ],
+    [
+      execution.strategyAccount, execution.solver, execution.spotPort, execution.perpObserver,
+      execution.perpInstrument, execution.perpExpiry, execution.baseToken, execution.quoteToken,
+      deployment.deploymentChainReference,
+    ],
+  ));
+  const limitsHash = keccak256(encodeAbiParameters(
+    [
+      { type: 'uint256' }, { type: 'uint256' }, { type: 'int128' }, { type: 'int128' },
+      { type: 'uint128' }, { type: 'int128' }, { type: 'int128' }, { type: 'int128' },
+      { type: 'uint128' },
+    ],
+    [
+      execution.spotQuoteBoundAtoms, execution.packageNotionalQuoteAtoms,
+      execution.expectedPrePerpBalanceWad, execution.expectedPrePerpSizeWad,
+      execution.expectedPrePerpEntryNotionalWad, execution.expectedPostPerpSizeWad,
+      execution.minimumPostPerpBalanceWad, execution.maximumPostPerpBalanceWad,
+      execution.maximumPostPerpEntryNotionalWad,
+    ],
+  ));
+  const domain = Object.freeze({
+    ...EVM_TRADER_PERMIT_DOMAIN,
+    chainId: deployment.deploymentChainReference,
+    verifyingContract: validateContractIdentity(deployment.packageVerifier, 'packageVerifier'),
+  });
+  const message = Object.freeze({
+    packageHash,
+    accountsHash,
+    limitsHash,
+    nonce: execution.nonce,
+    deadline: execution.deadline,
+  });
+  return Object.freeze({
+    domain,
+    types: EVM_TRADER_PERMIT_TYPES,
+    primaryType: 'TraderPermit' as const,
+    message,
+    digest: hashTypedData({ domain, types: EVM_TRADER_PERMIT_TYPES, primaryType: 'TraderPermit', message }),
+  });
+}
+
+export function compileEvmAtomicPackage(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  seriesBindingInput: CashCarrySeriesBindingV1Input,
+  bounds: EvmAtomicExecutionBounds,
+): CompiledEvmAtomicPackage {
+  const material = buildEvmAtomicMaterial(admission, deployment, seriesBindingInput, bounds);
+  const traderSignature = ecdsaSignature(bounds.traderSignature, 'trader signature');
   const data = encodeFunctionData({
     abi: NARYX_STRATEGY_ACCOUNT_ABI,
     functionName: 'executePackage',
     args: [
-      execution,
-      resourceAdmission,
+      material.execution,
+      material.resourceAdmission,
       traderSignature,
-      solverSignature,
-      [
-        nonzeroHash(bounds.perpArgs[0], 'perpArgs[0]'),
-        nonzeroHash(bounds.perpArgs[1], 'perpArgs[1]'),
-      ],
+      material.solverSignature,
+      material.perpArgs,
     ],
   });
 
   return {
-    domain,
+    domain: material.domain,
     orderHash: admission.orderHash,
     quoteHash: admission.quoteHash,
     routeHash: admission.routeHash,
     payload: {
       chainReference: deployment.deploymentChainReference,
-      to: strategyAccount,
+      to: material.strategyAccount,
       value: 0n,
       data,
     },

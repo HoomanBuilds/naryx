@@ -29,7 +29,7 @@ const assetAdmission = [
   { name: 'decimals', type: 'uint8' },
 ] as const satisfies readonly AbiParameter[];
 
-const execution = [
+export const EVM_EXECUTION_COMPONENTS = [
   { name: 'domainIdHash', type: 'bytes32' },
   { name: 'domainManifestVersion', type: 'uint32' },
   { name: 'domainManifestHash', type: 'bytes32' },
@@ -67,7 +67,7 @@ const execution = [
   { name: 'deadline', type: 'uint256' },
 ] as const satisfies readonly AbiParameter[];
 
-const admission = [
+export const EVM_CASH_CARRY_ADMISSION_COMPONENTS = [
   {
     name: 'domain',
     type: 'tuple',
@@ -108,8 +108,8 @@ export const NARYX_STRATEGY_ACCOUNT_ABI: Abi = [
     name: 'executePackage',
     stateMutability: 'nonpayable',
     inputs: [
-      { name: 'execution', type: 'tuple', components: execution },
-      { name: 'admission', type: 'tuple', components: admission },
+      { name: 'execution', type: 'tuple', components: EVM_EXECUTION_COMPONENTS },
+      { name: 'admission', type: 'tuple', components: EVM_CASH_CARRY_ADMISSION_COMPONENTS },
       { name: 'traderSignature', type: 'bytes' },
       { name: 'solverSignature', type: 'bytes' },
       { name: 'perpArgs', type: 'bytes32[2]' },

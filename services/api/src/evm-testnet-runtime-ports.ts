@@ -9,6 +9,7 @@ import {
   hash32 as assertEvmHash32,
   observeAsyncBondedPackage,
   observeEvmAtomicPackage,
+  prepareEvmTraderPermitAuthorization,
   requiredEvmAddress as assertEvmAddress,
   validateFinalityPolicy,
 } from "@naryx/adapter-evm";
@@ -31,6 +32,7 @@ import type {
 import {
   encodeAbiParameters,
   getAddress,
+  hashTypedData,
   isAddress,
   keccak256,
   stringToHex,
@@ -39,6 +41,8 @@ import {
 } from "viem";
 
 export const EVM_TESTNET_ENVIRONMENT = "TESTNET" as const;
+export const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia" as const;
+export const BASE_SEPOLIA_CHAIN_REFERENCE = "84532" as const;
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const SIGNATURE_PATTERN = /^0x[0-9a-f]{130}$/;
@@ -47,6 +51,7 @@ const CHAIN_REFERENCE_PATTERN = /^[1-9][0-9]*$/;
 const REASON_MAX_LENGTH = 300;
 
 const PREPARE_KEYS = ["attemptId", "idempotencyKey", "traderSignature"] as const;
+const PREPARE_AUTHORIZATION_KEYS = ["attemptId", "idempotencyKey"] as const;
 const OBSERVE_ATOMIC_KEYS = ["attemptId", "idempotencyKey", "transactionHash"] as const;
 const OBSERVE_ASYNC_KEYS = ["attemptId", "idempotencyKey"] as const;
 
@@ -85,6 +90,43 @@ export type EvmTestnetPrepareAtomicRequest = Readonly<{
   attemptId: string;
   idempotencyKey: string;
   traderSignature: string;
+}>;
+
+export type EvmTestnetPrepareAtomicAuthorizationRequest = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+}>;
+
+export type EvmTestnetAtomicAuthorizationDto = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  domainId: typeof BASE_SEPOLIA_DOMAIN_ID;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  environment: typeof EVM_TESTNET_ENVIRONMENT;
+  chainReference: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+  typedData: Readonly<{
+    domain: Readonly<{
+      name: "Naryx Package Verifier";
+      version: "1";
+      chainId: typeof BASE_SEPOLIA_CHAIN_REFERENCE;
+      verifyingContract: string;
+    }>;
+    types: Readonly<{
+      EIP712Domain: readonly Readonly<{ name: string; type: string }>[];
+      TraderPermit: readonly Readonly<{ name: string; type: string }>[];
+    }>;
+    primaryType: "TraderPermit";
+    message: Readonly<{
+      packageHash: string;
+      accountsHash: string;
+      limitsHash: string;
+      nonce: string;
+      deadline: string;
+    }>;
+  }>;
+  digest: string;
+  requestCommitment: string;
 }>;
 
 export type EvmTestnetObserveAtomicRequest = Readonly<{
@@ -230,6 +272,10 @@ export interface EvmTestnetAtomicPreparationPort {
   prepare(request: EvmTestnetPrepareAtomicRequest): Promise<EvmTestnetAtomicPreparationDto>;
 }
 
+export interface EvmTestnetAtomicAuthorizationPort {
+  prepare(request: EvmTestnetPrepareAtomicAuthorizationRequest): Promise<EvmTestnetAtomicAuthorizationDto>;
+}
+
 export interface EvmTestnetAtomicObservationPort {
   observe(request: EvmTestnetObserveAtomicRequest): Promise<EvmTestnetAtomicObservationDto>;
 }
@@ -239,6 +285,7 @@ export interface EvmTestnetAsyncObservationPort {
 }
 
 export type EvmTestnetTerminalPorts = Readonly<{
+  authorization?: EvmTestnetAtomicAuthorizationPort;
   preparation?: EvmTestnetAtomicPreparationPort;
   atomicObservation?: EvmTestnetAtomicObservationPort;
   asyncObservation?: EvmTestnetAsyncObservationPort;
@@ -357,6 +404,24 @@ export function parseEvmTestnetPrepareAtomicRequest(value: unknown): EvmTestnetP
     attemptId: requireBrowserId(value.attemptId, "attemptId"),
     idempotencyKey: requireBrowserId(value.idempotencyKey, "idempotencyKey"),
     traderSignature: requireTraderSignature(value.traderSignature),
+  });
+}
+
+export function parseEvmTestnetPrepareAtomicAuthorizationRequest(
+  value: unknown,
+): EvmTestnetPrepareAtomicAuthorizationRequest {
+  if (!isRecord(value)) {
+    throw new EvmTestnetTerminalValidationError("INVALID_EVM_BODY", "Request body must be a JSON object.");
+  }
+  if (!hasExactKeys(value, [...PREPARE_AUTHORIZATION_KEYS].sort())) {
+    throw new EvmTestnetTerminalValidationError(
+      "INVALID_EVM_FIELDS",
+      "Request must contain only attemptId and idempotencyKey.",
+    );
+  }
+  return Object.freeze({
+    attemptId: requireBrowserId(value.attemptId, "attemptId"),
+    idempotencyKey: requireBrowserId(value.idempotencyKey, "idempotencyKey"),
   });
 }
 
@@ -560,6 +625,141 @@ function computeRequestCommitment(args: Readonly<{
   const commitment = keccak256(encoded);
   if (/^0x0+$/.test(commitment)) throw new Error("requestCommitment must be nonzero.");
   return commitment;
+}
+
+const EIP712_DOMAIN_FIELDS = Object.freeze([
+  Object.freeze({ name: "name", type: "string" }),
+  Object.freeze({ name: "version", type: "string" }),
+  Object.freeze({ name: "chainId", type: "uint256" }),
+  Object.freeze({ name: "verifyingContract", type: "address" }),
+]);
+const TRADER_PERMIT_FIELDS = Object.freeze([
+  Object.freeze({ name: "packageHash", type: "bytes32" }),
+  Object.freeze({ name: "accountsHash", type: "bytes32" }),
+  Object.freeze({ name: "limitsHash", type: "bytes32" }),
+  Object.freeze({ name: "nonce", type: "uint256" }),
+  Object.freeze({ name: "deadline", type: "uint256" }),
+]);
+
+function computeAuthorizationRequestCommitment(args: Readonly<{
+  request: EvmTestnetPrepareAtomicAuthorizationRequest;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+  verifyingContract: string;
+  digest: string;
+}>): string {
+  return keccak256(encodeAbiParameters(
+    [
+      { type: "string" }, { type: "string" }, { type: "string" }, { type: "uint32" },
+      { type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "bytes32" },
+    ],
+    [
+      args.request.attemptId,
+      args.request.idempotencyKey,
+      BASE_SEPOLIA_DOMAIN_ID,
+      args.domainManifestVersion,
+      args.domainManifestHash as Hex,
+      BigInt(BASE_SEPOLIA_CHAIN_REFERENCE),
+      args.verifyingContract as Address,
+      args.digest as Hex,
+    ],
+  ));
+}
+
+export function validateEvmTestnetAtomicAuthorization(
+  value: unknown,
+  request: EvmTestnetPrepareAtomicAuthorizationRequest,
+): EvmTestnetAtomicAuthorizationDto {
+  const keys = [
+    "attemptId", "chainReference", "digest", "domainId", "domainManifestHash",
+    "domainManifestVersion", "environment", "idempotencyKey", "requestCommitment", "typedData",
+  ].sort();
+  if (!isRecord(value) || !hasExactKeys(value, keys) || !isRecord(value.typedData)) {
+    throw new Error("EVM atomic authorization has invalid fields.");
+  }
+  if (value.attemptId !== request.attemptId || value.idempotencyKey !== request.idempotencyKey) {
+    throw new Error("EVM atomic authorization identity does not match the request.");
+  }
+  if (value.environment !== EVM_TESTNET_ENVIRONMENT || value.domainId !== BASE_SEPOLIA_DOMAIN_ID ||
+      value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE) {
+    throw new Error("EVM atomic authorization is not bound to Base Sepolia testnet.");
+  }
+  const domainManifestVersion = requirePositiveInteger(value.domainManifestVersion, "domainManifestVersion");
+  const domainManifestHash = requireCommitment(value.domainManifestHash, "domainManifestHash");
+  const typedData = value.typedData;
+  if (!hasExactKeys(typedData, ["domain", "message", "primaryType", "types"]) ||
+      !isRecord(typedData.domain) || !isRecord(typedData.message) || !isRecord(typedData.types)) {
+    throw new Error("EVM trader permit typed data has invalid fields.");
+  }
+  if (!hasExactKeys(typedData.domain, ["chainId", "name", "verifyingContract", "version"]) ||
+      typedData.domain.name !== "Naryx Package Verifier" || typedData.domain.version !== "1" ||
+      typedData.domain.chainId !== BASE_SEPOLIA_CHAIN_REFERENCE || typedData.primaryType !== "TraderPermit") {
+    throw new Error("EVM trader permit domain is invalid.");
+  }
+  const verifyingContract = requireAddress(typedData.domain.verifyingContract, "typedData.domain.verifyingContract");
+  if (!hasExactKeys(typedData.types, ["EIP712Domain", "TraderPermit"]) ||
+      JSON.stringify(typedData.types.EIP712Domain) !== JSON.stringify(EIP712_DOMAIN_FIELDS) ||
+      JSON.stringify(typedData.types.TraderPermit) !== JSON.stringify(TRADER_PERMIT_FIELDS)) {
+    throw new Error("EVM trader permit types are invalid.");
+  }
+  if (!hasExactKeys(typedData.message, ["accountsHash", "deadline", "limitsHash", "nonce", "packageHash"])) {
+    throw new Error("EVM trader permit message has invalid fields.");
+  }
+  const message = Object.freeze({
+    packageHash: requireCommitment(typedData.message.packageHash, "typedData.message.packageHash"),
+    accountsHash: requireCommitment(typedData.message.accountsHash, "typedData.message.accountsHash"),
+    limitsHash: requireCommitment(typedData.message.limitsHash, "typedData.message.limitsHash"),
+    nonce: requireDecimalString(typedData.message.nonce, "typedData.message.nonce"),
+    deadline: requireDecimalString(typedData.message.deadline, "typedData.message.deadline"),
+  });
+  const domain = Object.freeze({
+    name: "Naryx Package Verifier" as const,
+    version: "1" as const,
+    chainId: BASE_SEPOLIA_CHAIN_REFERENCE,
+    verifyingContract,
+  });
+  const digest = requireCommitment(value.digest, "digest");
+  const expectedDigest = hashTypedData({
+    domain: { ...domain, chainId: BigInt(domain.chainId), verifyingContract: verifyingContract as Address },
+    types: { TraderPermit: TRADER_PERMIT_FIELDS },
+    primaryType: "TraderPermit",
+    message: {
+      packageHash: message.packageHash as Hex,
+      accountsHash: message.accountsHash as Hex,
+      limitsHash: message.limitsHash as Hex,
+      nonce: BigInt(message.nonce),
+      deadline: BigInt(message.deadline),
+    },
+  });
+  if (digest !== expectedDigest) throw new Error("EVM trader permit digest does not match its typed data.");
+  const requestCommitment = requireCommitment(value.requestCommitment, "requestCommitment");
+  const expectedCommitment = computeAuthorizationRequestCommitment({
+    request,
+    domainManifestVersion,
+    domainManifestHash,
+    verifyingContract,
+    digest,
+  });
+  if (requestCommitment !== expectedCommitment) {
+    throw new Error("EVM atomic authorization commitment does not bind the request.");
+  }
+  return Object.freeze({
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    domainId: BASE_SEPOLIA_DOMAIN_ID,
+    domainManifestVersion,
+    domainManifestHash,
+    environment: EVM_TESTNET_ENVIRONMENT,
+    chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+    typedData: Object.freeze({
+      domain,
+      types: Object.freeze({ EIP712Domain: EIP712_DOMAIN_FIELDS, TraderPermit: TRADER_PERMIT_FIELDS }),
+      primaryType: "TraderPermit" as const,
+      message,
+    }),
+    digest,
+    requestCommitment,
+  });
 }
 
 const PREPARATION_KEYS = [
@@ -1465,6 +1665,71 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
   >();
 
   return Object.freeze({
+    authorization: Object.freeze({
+      prepare: async (request: EvmTestnetPrepareAtomicAuthorizationRequest) => {
+        const attemptId = requireBrowserId(request.attemptId, "attemptId");
+        const idempotencyKey = requireIdempotencyKey(request.idempotencyKey);
+        const context = await atomicContextProvider(attemptId);
+        if (!isRecord(context as unknown)) throw new Error("Atomic context provider returned an invalid context.");
+        const atomicContext = context as EvmTestnetAtomicAttemptContext;
+        const admission = atomicContext.admission;
+        const deployment = atomicContext.deployment;
+        const domains = admissionDomains(admission);
+        requireTestnetDeployment(deployment);
+        if (domains.order.domainId !== BASE_SEPOLIA_DOMAIN_ID ||
+            deployment.domainManifest.domainId !== BASE_SEPOLIA_DOMAIN_ID ||
+            deployment.deploymentChainReference !== BigInt(BASE_SEPOLIA_CHAIN_REFERENCE) ||
+            deployment.domainManifest.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE) {
+          throw new Error("Atomic authorization context must be bound to Base Sepolia.");
+        }
+        const authorization = prepareEvmTraderPermitAuthorization(
+          admission,
+          deployment,
+          atomicContext.seriesBindingInput,
+          atomicContext.bounds,
+        );
+        const domainManifestHash = toHex0x(domains.order.domainManifestHash, "domainManifestHash");
+        const verifyingContract = getAddress(authorization.domain.verifyingContract);
+        const digest = requireCommitment(authorization.digest, "digest");
+        const normalizedRequest = { attemptId, idempotencyKey };
+        return validateEvmTestnetAtomicAuthorization({
+          ...normalizedRequest,
+          domainId: BASE_SEPOLIA_DOMAIN_ID,
+          domainManifestVersion: domains.order.domainManifestVersion,
+          domainManifestHash,
+          environment: EVM_TESTNET_ENVIRONMENT,
+          chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+          typedData: {
+            domain: {
+              name: authorization.domain.name,
+              version: authorization.domain.version,
+              chainId: BASE_SEPOLIA_CHAIN_REFERENCE,
+              verifyingContract,
+            },
+            types: {
+              EIP712Domain: EIP712_DOMAIN_FIELDS,
+              TraderPermit: TRADER_PERMIT_FIELDS,
+            },
+            primaryType: authorization.primaryType,
+            message: {
+              packageHash: authorization.message.packageHash,
+              accountsHash: authorization.message.accountsHash,
+              limitsHash: authorization.message.limitsHash,
+              nonce: authorization.message.nonce.toString(),
+              deadline: authorization.message.deadline.toString(),
+            },
+          },
+          digest,
+          requestCommitment: computeAuthorizationRequestCommitment({
+            request: normalizedRequest,
+            domainManifestVersion: domains.order.domainManifestVersion,
+            domainManifestHash,
+            verifyingContract,
+            digest,
+          }),
+        }, normalizedRequest);
+      },
+    }),
     preparation: Object.freeze({
       prepare: async (request: EvmTestnetPrepareAtomicRequest) => {
         const attemptId = requireBrowserId(request.attemptId, "attemptId");
