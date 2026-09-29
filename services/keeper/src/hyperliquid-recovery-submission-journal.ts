@@ -30,6 +30,7 @@ export type HyperliquidRecoverySubmissionStatus =
   | 'ACKNOWLEDGED'
   | 'REJECTED'
   | 'RECONCILING'
+  | 'RECONCILED'
   | 'FENCED';
 
 export interface HyperliquidRecoverySubmissionRecord {
@@ -55,6 +56,9 @@ export interface HyperliquidRecoverySubmissionRecord {
   readonly durableRevision: string | null;
   readonly acknowledgementId: string | null;
   readonly rejectionId: string | null;
+  /** Evidence version and outcome recorded when this attempt's reconciliation completed. */
+  readonly reconciledEvidenceVersion: bigint | null;
+  readonly reconciledOutcome: HyperliquidRecoveryAttempt['status'] | null;
 }
 
 export interface HyperliquidRecoveryAgentJournal {
@@ -180,7 +184,8 @@ function recoveryLineageKey(plan: HyperliquidRecoveryExecutionPlan): `0x${string
 }
 
 type RecordCore = Omit<HyperliquidRecoverySubmissionRecord,
-  'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'>;
+  | 'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'
+  | 'reconciledEvidenceVersion' | 'reconciledOutcome'>;
 
 function immutableRecord(
   record: RecordCore | HyperliquidRecoverySubmissionRecord,
@@ -412,6 +417,27 @@ export function prepareHyperliquidRecoverySubmission(
   requireCondition(lineage === undefined
     || plan.recoverySequence > lineage.highestReservedRecoverySequence,
   'recovery sequence must strictly increase for the package lineage');
+  // A lost or unresolved recovery order may still fill, so no new recovery action for the same
+  // package may be prepared under any agent wallet until every earlier one is reconciled or was
+  // fenced before submission, and the follow-up must be compiled from the latest evidence.
+  const lineageRecords = journal.agents.flatMap((entry) => entry.attempts)
+    .filter((record) => record.recoveryLineageKey === lineageKey);
+  requireCondition(lineageRecords.every((record) => record.status === 'RECONCILED' || record.status === 'FENCED'),
+    'an earlier recovery attempt for this package is not yet reconciled');
+  requireCondition(lineageRecords.every((record) => record.reconciledOutcome === null
+    || record.reconciledOutcome === 'RECOVERY_REQUIRED'),
+  'the package recovery already reached a terminal or manual outcome');
+  const latestReconciledVersion = lineageRecords.reduce<bigint | null>(
+    (latest, record) => record.reconciledEvidenceVersion !== null
+      && (latest === null || record.reconciledEvidenceVersion > latest)
+      ? record.reconciledEvidenceVersion
+      : latest,
+    null,
+  );
+  requireCondition(latestReconciledVersion === null || plan.sourceEvidenceVersion >= latestReconciledVersion,
+    'a follow-up recovery must be compiled from the latest reconciled evidence');
+  requireCondition(lineageRecords.every((record) => plan.recoverySequence > record.recoverySequence),
+    'recovery sequence must strictly increase for the package across agent wallets');
   const record: HyperliquidRecoverySubmissionRecord = Object.freeze({
     ...core,
     recordHash: commitment,
@@ -419,6 +445,8 @@ export function prepareHyperliquidRecoverySubmission(
     durableRevision: null,
     acknowledgementId: null,
     rejectionId: null,
+    reconciledEvidenceVersion: null,
+    reconciledOutcome: null,
   });
   return replaceAgent(journal, agentIndex, {
     ...agent,
@@ -542,6 +570,43 @@ export function beginHyperliquidRecoverySubmissionReconciliation(
   return transition(journal, input,
     ['DURABLE_RECORD_CONFIRMED', 'SUBMITTED_UNKNOWN', 'ACKNOWLEDGED', 'REJECTED'],
     'RECONCILING');
+}
+
+/**
+ * Records the completed reconciliation of a recovery attempt. The reconciled attempt must be the
+ * one handed off for this record and must carry the evidence it was decided on; only then can a
+ * follow-up recovery for the same package be prepared.
+ */
+export function completeHyperliquidRecoverySubmissionReconciliation(
+  journal: HyperliquidRecoverySubmissionJournal,
+  input: Readonly<{
+    expectedVersion: bigint;
+    recoveryAttemptId: string;
+    reconciledAttempt: HyperliquidRecoveryAttempt;
+  }>,
+): HyperliquidRecoverySubmissionJournal {
+  const located = locate(journal, input.recoveryAttemptId);
+  const reconciled = input.reconciledAttempt;
+  requireCondition(reconciled.status !== 'RECONCILING', 'recovery reconciliation has not decided an outcome');
+  requireCondition(recoveryKey(reconciled.plan) === located.record.recoveryKey,
+    'reconciled attempt does not belong to this recovery record');
+  const evidence = reconciled.acceptedEvidence ?? reconciled.lockEvidence;
+  requireCondition(evidence !== null, 'recovery reconciliation carries no evidence');
+  if (located.record.status === 'RECONCILED') {
+    requireCondition(located.record.reconciledEvidenceVersion === evidence.evidenceVersion
+      && located.record.reconciledOutcome === reconciled.status,
+    'recovery attempt was already reconciled with different evidence');
+    return journal;
+  }
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.record.status === 'RECONCILING',
+    `RECONCILED cannot follow ${located.record.status}`);
+  return replaceRecord(journal, located.agentIndex, located.recordIndex, {
+    ...located.record,
+    status: 'RECONCILED',
+    reconciledEvidenceVersion: evidence.evidenceVersion,
+    reconciledOutcome: reconciled.status,
+  });
 }
 
 export function fenceHyperliquidRecoveryAgent(

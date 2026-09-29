@@ -24,6 +24,7 @@ import {
   acknowledgeHyperliquidRecoverySubmission,
   beginHyperliquidReconciliation,
   beginHyperliquidRecoverySubmissionReconciliation,
+  completeHyperliquidRecoverySubmissionReconciliation,
   confirmHyperliquidRecoveryDurableRecord,
   createHyperliquidPackageAttempt,
   createHyperliquidRecoveryAttempt,
@@ -733,4 +734,76 @@ test('scopes recovery sequence fencing to each package lineage', () => {
   assert.deepEqual(second.agents[0]!.recoveryLineages.map(
     (lineage) => lineage.highestReservedRecoverySequence,
   ), [1, 1]);
+});
+
+test('refuses a second recovery action while an earlier one for the package is unresolved', () => {
+  const secondAgent = `0x${'64'.repeat(20)}` as const;
+  const source = sourceAttempt(100n, 0n);
+  const firstPlan = recoveryPlan(source, 0);
+  const withSecondAgent = registerHyperliquidRecoveryAgent(registeredJournal(), {
+    expectedVersion: 1n,
+    agentWallet: secondAgent,
+    signerLeaseId: 'recovery-process-2',
+  });
+  const prepared = preparedJournal(withSecondAgent, source, firstPlan);
+  const durable = confirmHyperliquidRecoveryDurableRecord(prepared, {
+    expectedVersion: prepared.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+    recordHash: prepared.agents[0]!.attempts[0]!.recordHash,
+    durableRevision: 'recovery-store-rev-3',
+  });
+  const unknown = markHyperliquidRecoverySubmittedUnknown(durable, {
+    expectedVersion: durable.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+    nowMs,
+  });
+  const prepareSecond = (journal: HyperliquidRecoverySubmissionJournal, plan: HyperliquidRecoveryExecutionPlan) =>
+    prepareHyperliquidRecoverySubmission(journal, {
+      expectedVersion: journal.version,
+      recoveryAttemptId: 'recovery-attempt-2',
+      agentWallet: secondAgent,
+      signerLeaseId: 'recovery-process-2',
+      sourceAttempt: source,
+      plan,
+      nonce: nowMs + 5n,
+      nowMs,
+      vaultAddress: account.tradingAccount,
+    });
+
+  // The first response was lost: a second full action on another wallet could double the fill.
+  assert.throws(() => prepareSecond(unknown, recoveryPlan(source, 1)), /not yet reconciled/);
+
+  const reconciling = beginHyperliquidRecoverySubmissionReconciliation(unknown, {
+    expectedVersion: unknown.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+  });
+  assert.throws(() => prepareSecond(reconciling, recoveryPlan(source, 1)), /not yet reconciled/);
+
+  const partial = reconcileHyperliquidRecovery(recoveryAttempt(source, firstPlan), recoveryEvidence(source, firstPlan, [-50n]));
+  assert.equal(partial.status, 'RECOVERY_REQUIRED');
+  const reconciled = completeHyperliquidRecoverySubmissionReconciliation(reconciling, {
+    expectedVersion: reconciling.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+    reconciledAttempt: partial,
+  });
+  const record = reconciled.agents[0]!.attempts[0]!;
+  assert.equal(record.status, 'RECONCILED');
+  assert.equal(record.reconciledEvidenceVersion, partial.acceptedEvidence!.evidenceVersion);
+  assert.equal(completeHyperliquidRecoverySubmissionReconciliation(reconciled, {
+    expectedVersion: reconciled.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+    reconciledAttempt: partial,
+  }), reconciled);
+
+  // A follow-up compiled from evidence older than the reconciled recovery is refused.
+  assert.throws(() => prepareSecond(reconciled, recoveryPlan(source, 1)), /latest reconciled evidence/);
+
+  const complete = reconcileHyperliquidRecovery(recoveryAttempt(source, firstPlan), recoveryEvidence(source, firstPlan));
+  const terminal = completeHyperliquidRecoverySubmissionReconciliation(reconciling, {
+    expectedVersion: reconciling.version,
+    recoveryAttemptId: 'recovery-attempt-1',
+    reconciledAttempt: complete,
+  });
+  assert.equal(terminal.agents[0]!.attempts[0]!.reconciledOutcome, 'RECOVERED_COMPLETE');
+  assert.throws(() => prepareSecond(terminal, recoveryPlan(source, 1)), /terminal or manual outcome/);
 });
