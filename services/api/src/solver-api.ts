@@ -180,6 +180,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   /** A shard's own signature must come from one of the solver's currently valid quote keys. */
   function verifiedShard(manifest: SolverCapabilityManifestInput, input: unknown, shardId: string): PackageQuoteShardInput {
     const shard = packageQuoteShard(input as PackageQuoteShardInput);
+    if (shard.templateId.includes(".")) throw new SolverRequestError(400, "INVALID_REQUEST", "A quoted template id may not contain a dot.");
     if (shardIdOf(shard) !== shardId) throw new SolverRequestError(400, "SHARD_ID_MISMATCH", "The shard id must equal templateId.marketGroupId.");
     const hash = packageQuoteShardHash(shard);
     const keys = validQuoteKeys(manifest, manifestNow(manifest, clockMs()));

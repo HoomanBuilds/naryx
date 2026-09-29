@@ -99,7 +99,9 @@ export class NaryxSolverClient {
     return result;
   }
 
+  /** The template id may not contain a dot, so the first dot always splits the two parts. */
   static shardId(shard: Pick<PackageQuoteShardInput, 'templateId' | 'marketGroupId'>): string {
+    if (shard.templateId.includes('.')) throw new Error('A quoted template id may not contain a dot.');
     return `${shard.templateId}.${shard.marketGroupId}`;
   }
 

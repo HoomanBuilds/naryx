@@ -71,13 +71,20 @@ CREATE TRIGGER IF NOT EXISTS reject_shard_history_change BEFORE UPDATE ON quote_
 CREATE TRIGGER IF NOT EXISTS reject_shard_history_delete BEFORE DELETE ON quote_shard_history BEGIN SELECT RAISE(ABORT, 'shard history is append-only'); END;
 `;
 
-/** A shard's identity inside its solver: the template and market group it quotes. */
+/**
+ * A shard's identity inside its solver: the template and market group it quotes. The template id
+ * may not contain the separator, so the first dot always splits the two parts unambiguously.
+ */
 export function shardIdOf(shard: Pick<PackageQuoteShard, "templateId" | "marketGroupId">): string {
+  if (shard.templateId.includes(".")) {
+    throw new SolverApiStoreError("INVALID_SHARD_ID", "A quoted template id may not contain a dot.");
+  }
   return `${shard.templateId}.${shard.marketGroupId}`;
 }
 
+// A JSON tuple keeps the scope unambiguous whatever characters the identifiers contain.
 function capacityScope(record: SolverCapacityRecordInput): string {
-  return `${record.domain.domainId}|${record.domain.domainManifestVersion}|${record.asset.assetId}`;
+  return JSON.stringify([record.domain.domainId, record.domain.domainManifestVersion, record.asset.assetId]);
 }
 
 /**
