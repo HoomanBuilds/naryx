@@ -877,7 +877,8 @@ export function reconcileHyperliquidPackageAttempt(
     && attempt.plan.perpetualClientOrderId === evidence.perpetual.clientOrderId
     && attempt.plan.perpetualPositionTargetAtoms === evidence.perpetualPositionTargetAtoms;
   if (!identityMatches) return manualLock(attempt, 'IDENTITY_MISMATCH', evidence);
-  if (evidence.observedAtMs > attempt.plan.recoveryDeadlineMs) {
+  // Deadlines are half-open: evidence observed at the deadline itself is already too late.
+  if (evidence.observedAtMs >= attempt.plan.recoveryDeadlineMs) {
     return manualLock(attempt, 'RECOVERY_DEADLINE_BREACH', evidence);
   }
   if (
