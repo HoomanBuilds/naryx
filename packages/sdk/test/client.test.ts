@@ -176,6 +176,15 @@ describe('public API client', () => {
     const swapped = { ...result, winner: result.ranked[1] };
     const forgedHash = replaySealedAuction(definition, events.slice(0, 3), 200n).result.resultHash;
     await assert.rejects(client({ [path]: { body: { phase: 'CLOSED', definition, result: { ...swapped, resultHash: forgedHash }, events } } }).getSealedAuction(toHexString(hash)), /does not replay/);
+
+    // An honest hash with a swapped winner returns the replayed winner, never the served one.
+    const relabeled = await client({ [path]: { body: { phase: 'CLOSED', definition, result: swapped, events } } }).getSealedAuction(toHexString(hash));
+    assert.equal((relabeled.result as typeof result).winner?.solverId, result.winner?.solverId);
+
+    // Another auction's full data served for this hash is refused, in any phase.
+    const other = { ...definition, auctionId: 'a-2' };
+    await assert.rejects(client({ [path]: { body: { phase: 'CLOSED', definition: other, result, events } } }).getSealedAuction(toHexString(hash)), /does not hash to the requested auction/);
+    await assert.rejects(client({ [path]: { body: { phase: 'COMMIT', definition: other, commitmentCount: 0 } } }).getSealedAuction(toHexString(hash)), /does not hash to the requested auction/);
   });
 });
 

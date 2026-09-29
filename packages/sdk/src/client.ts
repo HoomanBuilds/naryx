@@ -11,11 +11,12 @@ import {
   packageOrderHash,
   ProtocolError,
   replayRouteDecision,
+  replaySealedAuction,
+  sealedAuctionHash,
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
   verifyPackageAllocation,
-  verifySealedAuctionResult,
   type CandleInterval,
   type CandleSeries,
   type ExecutablePackageIndex,
@@ -472,19 +473,39 @@ export class NaryxClient {
    * the result is recomputed locally from the published event log and must match exactly.
    */
   async getSealedAuction(auctionHash: string): Promise<Record<string, unknown>> {
-    const body = record(await this.#request('GET', `/v1/auctions/sealed/${hashHex(auctionHash, 'auction hash')}`), 'auction');
+    const requested = hashHex(auctionHash, 'auction hash');
+    const body = record(await this.#request('GET', `/v1/auctions/sealed/${requested}`), 'auction');
+    // Whatever the phase, a served definition must be the auction that was asked for.
+    const definitionMatches = (definition: SealedAuctionDefinitionInput) => {
+      try {
+        return toHex(sealedAuctionHash(definition)) === requested;
+      } catch {
+        return false;
+      }
+    };
+    if (body.definition !== undefined && !definitionMatches(body.definition as SealedAuctionDefinitionInput)) {
+      throw new NaryxEvidenceError('the served auction definition does not hash to the requested auction');
+    }
     if (body.phase !== 'CLOSED') return body;
+    if (body.definition === undefined) throw new NaryxEvidenceError('a closed auction must publish its definition');
     const definition = body.definition as SealedAuctionDefinitionInput;
-    const result = record(body.result, 'auction.result');
+    const served = record(body.result, 'auction.result');
     const events = list(body.events, 'auction.events') as readonly SealedAuctionEvent[];
+    let replayed: ReturnType<typeof replaySealedAuction>['result'];
+    try {
+      replayed = replaySealedAuction(definition, events, definition.revealDeadlineValue).result;
+    } catch {
+      throw new NaryxEvidenceError('the published auction event log does not replay');
+    }
     let matches = false;
     try {
-      matches = verifySealedAuctionResult(definition, events, definition.revealDeadlineValue, result.resultHash as Uint8Array);
+      matches = bytesEqual(replayed.resultHash, commitmentHash(served.resultHash as Uint8Array | string, 'auction.result.resultHash'));
     } catch {
       matches = false;
     }
     if (!matches) throw new NaryxEvidenceError('the published auction result does not replay from its event log');
-    return body;
+    // Return the locally replayed result, never the server's copy of the other fields.
+    return Object.freeze({ ...body, result: replayed });
   }
 
   // ---------------------------------------------------------------- computation
