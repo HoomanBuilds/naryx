@@ -28,6 +28,7 @@ export * from './firm-plan.js';
 export * from './materializer.js';
 export * from './public-exit-plan.js';
 export * from './cash-carry-accounts.js';
+export * from './deployment-identity.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 const EXECUTION_DIGEST_DOMAIN = 'NARYX/conformance-execution/v1';
