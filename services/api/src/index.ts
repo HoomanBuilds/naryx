@@ -59,6 +59,14 @@ export {
   type PackageLifecycleStoreOptions,
 } from "./package-lifecycle-store.js";
 export {
+  PackageExchangeStoreError,
+  SqlitePackageExchangeStore,
+  type ExchangeDocumentKind,
+  type PackageExchangeStoreOptions,
+  type PackageExchangeSubmitResult,
+  type RegisteredExchangeDocument,
+} from "./package-exchange-store.js";
+export {
   InternalOrderCoordinator,
   TerminalOrderValidationError,
   type InternalOrderClockPort,
