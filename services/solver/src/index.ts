@@ -671,7 +671,10 @@ export {
   type StoredInternalAtomicQuote,
 } from './internal-atomic-quote-server.js';
 export { HttpInternalOrderProvider } from './http-internal-order-provider.js';
-export { SqliteInternalAtomicQuoteStore } from './internal-atomic-quote-sqlite-store.js';
+export {
+  SqliteAtomicQuoteNonceSource,
+  SqliteInternalAtomicQuoteStore,
+} from './internal-atomic-quote-sqlite-store.js';
 export {
   HttpSelectedSolanaAdmissionProvider,
   SolanaExecutionAuthorizationError,
@@ -700,6 +703,19 @@ export {
   createLocalAtomicMarketRuntime,
   type LocalAtomicMarketRuntime,
 } from './local-atomic-market-runtime.js';
+export {
+  composeQuoteProviders,
+  createHyperliquidTestnetQuoteRuntime,
+  type HyperliquidTestnetQuoteLeg,
+  type HyperliquidTestnetQuoteRuntime,
+  type HyperliquidTestnetQuoteRuntimeInput,
+  type HyperliquidTestnetRecoveryIdentity,
+} from './hyperliquid-testnet-quote-runtime.js';
+export {
+  HYPERLIQUID_TESTNET_QUOTE_ENABLED_ENV,
+  loadHyperliquidTestnetQuoteRuntime,
+  type HyperliquidTestnetQuoteConfigDependencies,
+} from './hyperliquid-testnet-quote-config.js';
 export {
   HyperliquidTestnetRuntimeCoordinator,
   type HandoffBearingSubmission,

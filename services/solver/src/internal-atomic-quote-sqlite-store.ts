@@ -11,6 +11,8 @@ import {
 
 const HASH = /^[0-9a-f]{64}$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+const NONCE_SCOPE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
+const U256_MAX = (1n << 256n) - 1n;
 
 function repositoryRoot(): string | undefined {
   let current = dirname(fileURLToPath(import.meta.url));
@@ -67,6 +69,9 @@ export class SqliteInternalAtomicQuoteStore implements InternalAtomicQuoteStore 
   readonly #db: Database.Database;
   readonly #select: Database.Statement;
   readonly #insert: Database.Statement;
+  readonly #selectNonce: Database.Statement;
+  readonly #insertNonce: Database.Statement;
+  readonly #updateNonce: Database.Statement;
 
   constructor(dbPath: string) {
     const path = requirePath(dbPath);
@@ -79,6 +84,10 @@ export class SqliteInternalAtomicQuoteStore implements InternalAtomicQuoteStore 
         idempotency_key TEXT PRIMARY KEY,
         order_hash TEXT NOT NULL,
         response_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS quote_nonce_counters (
+        scope TEXT PRIMARY KEY,
+        next_nonce TEXT NOT NULL
       )
     `);
     this.#select = this.#db.prepare(
@@ -86,6 +95,15 @@ export class SqliteInternalAtomicQuoteStore implements InternalAtomicQuoteStore 
     );
     this.#insert = this.#db.prepare(
       'INSERT INTO signed_atomic_quotes (idempotency_key, order_hash, response_json) VALUES (?, ?, ?)',
+    );
+    this.#selectNonce = this.#db.prepare(
+      'SELECT next_nonce FROM quote_nonce_counters WHERE scope = ?',
+    );
+    this.#insertNonce = this.#db.prepare(
+      'INSERT INTO quote_nonce_counters (scope, next_nonce) VALUES (?, ?)',
+    );
+    this.#updateNonce = this.#db.prepare(
+      'UPDATE quote_nonce_counters SET next_nonce = ? WHERE scope = ? AND next_nonce = ?',
     );
   }
 
@@ -130,7 +148,40 @@ export class SqliteInternalAtomicQuoteStore implements InternalAtomicQuoteStore 
     }
   }
 
+  nextNonce(scope: string): bigint {
+    if (!NONCE_SCOPE.test(scope)) throw new Error('quote nonce scope is invalid');
+    return this.#db.transaction(() => {
+      const row = this.#selectNonce.get(scope) as { next_nonce?: unknown } | undefined;
+      if (row === undefined) {
+        this.#insertNonce.run(scope, '2');
+        return 1n;
+      }
+      if (typeof row.next_nonce !== 'string' || !/^[1-9][0-9]*$/.test(row.next_nonce)) {
+        throw new Error('stored quote nonce is invalid');
+      }
+      const nonce = BigInt(row.next_nonce);
+      if (nonce > U256_MAX) throw new Error('quote nonce space is exhausted');
+      const result = this.#updateNonce.run((nonce + 1n).toString(), scope, row.next_nonce);
+      if (result.changes !== 1) throw new Error('quote nonce reservation conflict');
+      return nonce;
+    })();
+  }
+
   close(): void {
     this.#db.close();
+  }
+}
+
+export class SqliteAtomicQuoteNonceSource {
+  readonly #store: SqliteInternalAtomicQuoteStore;
+  readonly #scope: string;
+
+  constructor(store: SqliteInternalAtomicQuoteStore, scope: string) {
+    this.#store = store;
+    this.#scope = scope;
+  }
+
+  next(): bigint {
+    return this.#store.nextNonce(this.#scope);
   }
 }

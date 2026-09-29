@@ -222,6 +222,30 @@ function evaluateCandidate(
   if (route.settlementClass !== order.settlementClass) {
     return rejected(recordId, 'SETTLEMENT_CLASS_MISMATCH', hash);
   }
+  const isHyperliquid = order.settlementClass === 'BATCHED_IOC_WITH_RECOVERY';
+  const recovery = route.recoveryPlan;
+  if (isHyperliquid
+    && (route.executionPlanKind !== 'HYPERCORE_BATCHED_IOC'
+      || route.quantityPolicyClass !== order.hyperliquidQuantityPolicy
+      || recovery === undefined
+      || recovery.recoveryExpiryUnit !== order.hyperliquidRecoveryExpiryUnit
+      || recovery.maxActionExpiryValue !== order.hyperliquidMaxRecoveryActionExpiryValue
+      || recovery.deadlineValue !== order.hyperliquidRecoveryDeadlineValue
+      || recovery.minRecoveryWindowMs !== order.hyperliquidMinRecoveryWindowMs
+      || recovery.maxTerminalResidual.atoms
+        !== order.hyperliquidMaxTerminalResidualBaseQuantity?.atoms
+      || recovery.maxAggregateRecoveryLoss.atoms !== order.maxAggregateRecoveryLossQuote.atoms
+      || recovery.maxRecoveryCostCaps.length !== order.maxRecoveryCostAtomsByAsset.length
+      || recovery.maxRecoveryCostCaps.some((cap, index) => {
+        const signed = order.maxRecoveryCostAtomsByAsset[index];
+        return signed === undefined || !sameAsset(cap.asset, signed.asset)
+          || cap.maxAtoms !== signed.maxAtoms;
+      })
+      || recovery.actionSlots.length !== order.allowedRecoveryActions.length
+      || recovery.actionSlots.some((slot, index) =>
+        slot.action !== order.allowedRecoveryActions[index]))) {
+    return rejected(recordId, 'SETTLEMENT_CLASS_MISMATCH', hash);
+  }
   if (route.routeExpiryUnit !== order.expiryUnit) {
     return rejected(recordId, 'EXPIRY_UNIT_MISMATCH', hash);
   }
@@ -244,14 +268,19 @@ function evaluateCandidate(
   if (spot.side !== 'BUY' || perpetual.side !== 'SELL') {
     return rejected(recordId, 'LEG_SHAPE_MISMATCH', hash);
   }
-  if (spot.timeInForce !== 'FOK' || perpetual.timeInForce !== 'FOK') {
+  const expectedTimeInForce = isHyperliquid ? 'IOC' : 'FOK';
+  if (spot.timeInForce !== expectedTimeInForce || perpetual.timeInForce !== expectedTimeInForce) {
     return rejected(recordId, 'LEG_SHAPE_MISMATCH', hash);
   }
   if (spot.reduceOnly !== false || perpetual.reduceOnly !== false) {
     return rejected(recordId, 'LEG_SHAPE_MISMATCH', hash);
   }
   const orderQuote = order.maxSpotQuoteIn?.asset;
-  if (spot.quantity.atoms !== order.quantity.atoms
+  const expectedSpotQuantity = isHyperliquid
+    ? order.hyperliquidGrossSpotQuantity?.atoms
+    : order.quantity.atoms;
+  if (expectedSpotQuantity === undefined
+    || spot.quantity.atoms !== expectedSpotQuantity
     || perpetual.quantity.atoms !== order.quantity.atoms
     || !sameAsset(spot.quantity.asset, order.quantity.asset)
     || !sameAsset(perpetual.quantity.asset, order.quantity.asset)
@@ -296,8 +325,9 @@ export function planAtomicEntryRoute(
   );
   if (validated.direction !== 'LONG_SPOT_SHORT_PERP'
     || validated.action !== 'ENTRY'
-    || validated.settlementClass !== 'ATOMIC_POSTCONDITION') {
-    throw new Error('atomic route decision requires a long-spot short-perp ENTRY order');
+    || (validated.settlementClass !== 'ATOMIC_POSTCONDITION'
+      && validated.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY')) {
+    throw new Error('route decision requires a supported long-spot short-perp ENTRY order');
   }
   const recomputed = packageOrderHash(validated);
   if (!bytesEqual(recomputed, input.orderHash)) {

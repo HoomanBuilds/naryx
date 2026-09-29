@@ -10,14 +10,17 @@ import {
   HttpHyperliquidTestnetTrustedAttemptProvider,
   HttpInternalOrderProvider,
   SolanaExecutionAuthorizationService,
+  SqliteAtomicQuoteNonceSource,
   SqliteSolanaExecutionAuthorizationStore,
   SqliteInternalAtomicQuoteStore,
+  composeQuoteProviders,
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
   createHyperliquidTestnetExecutorServer,
   createLocalAtomicMarketRuntime,
   loadHyperliquidTestnetAgentSigner,
   loadHyperliquidTestnetExecutorRuntime,
+  loadHyperliquidTestnetQuoteRuntime,
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
@@ -101,6 +104,7 @@ if (signerPath === undefined || signerPath.length === 0) {
 
 const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
 const executionSigner = loadSigner(signerPath);
+const store = new SqliteInternalAtomicQuoteStore(quoteDbPath);
 const manifestRuntime = environmentManifestPath === undefined
   ? undefined
   : await loadSolanaLocalEnvironmentRuntime(
@@ -118,6 +122,10 @@ const runtime = createLocalAtomicMarketRuntime(
       return validatorSlot;
     },
 );
+const hyperliquidQuoteRuntime = loadHyperliquidTestnetQuoteRuntime(process.env, {
+  nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet'),
+});
+const quoteProviders = composeQuoteProviders(runtime.providers, hyperliquidQuoteRuntime?.providers);
 const clockRefresh = manifestRuntime === undefined
   ? undefined
   : setInterval(() => {
@@ -125,11 +133,10 @@ const clockRefresh = manifestRuntime === undefined
   }, 250);
 clockRefresh?.unref();
 const orderProvider = new HttpInternalOrderProvider(apiOrigin);
-const store = new SqliteInternalAtomicQuoteStore(quoteDbPath);
 const coordinator = createInternalAtomicQuoteCoordinator({
   orders: orderProvider.get,
-  candidates: runtime.providers.candidates,
-  terms: runtime.providers.terms,
+  candidates: quoteProviders.candidates,
+  terms: quoteProviders.terms,
   signer: executionSigner,
   store,
 });

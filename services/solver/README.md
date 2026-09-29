@@ -12,6 +12,16 @@ Being the reference implementation is not a network claim. Team-operated solver 
 
 ## Current implementation
 
+The ordinary signed quote listener can optionally dispatch canonical `hypercore:testnet` entry
+orders to a separate reference cash-and-carry quote runtime. It is disabled unless
+`NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED=true` and a complete versioned protocol JSON config is
+provided through `NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG`. The runtime emits only
+`BATCHED_IOC_WITH_RECOVERY` routes with `HYPERCORE_BATCHED_IOC`, exact configured versioned market
+references, millisecond expiry, the order's explicit `EXACT_NET` or `BOUNDED_NET` residual policy,
+and zero protocol and solver fees. Quote nonces are reserved durably in the existing quote SQLite
+database. It performs no venue request, agent signing, or execution. Local Solana quote dispatch
+continues to use the existing local-only runtime and semantics.
+
 The Hyperliquid submission service accepts only an existing compiled `HyperliquidExecutionPlan` for `hypercore:testnet`. It independently binds the master and trading account relation, subaccount vault context, agent wallet and lease, package commitments, exact official-shape IOC action, client order IDs, nonce, and request expiry. It requires an injected durable journal port whose compare-and-set lifecycle matches the keeper journal: `PREPARED`, `DURABLE_RECORD_CONFIRMED`, `SUBMITTED_UNKNOWN`, then acknowledgement, rejection, or reconciliation. An unavailable or inconsistent journal fails closed before signing or submission.
 
 The concrete SQLite journal requires an explicit absolute database path and never defaults into the repository or accepts an in-memory database. It uses WAL mode, full synchronous commits, schema version 1, exact decimal text for bigint values, BLOBs for 32-byte commitments, global compare-and-set revisions, permanent signer lease and account nonce fences, and a committed row readback before durable confirmation. Restart recovery is limited to reading an attempt or listing unresolved submissions. It exposes no arbitrary SQL and stores no signer or other secret.

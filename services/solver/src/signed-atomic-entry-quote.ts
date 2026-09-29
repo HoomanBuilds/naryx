@@ -39,6 +39,8 @@ export interface AtomicEntryQuoteTerms {
   readonly expectedGrossSpotQuantity: AssetAmount;
   readonly expectedNetSpotQuantity: AssetAmount;
   readonly expectedBaseAssetFee: AssetAmount;
+  readonly expectedTerminalResidualBaseQuantity?: AssetAmount;
+  readonly expectedTerminalResidualQuoteValue?: AssetAmount;
   readonly expectedMarginDelta: AssetAmount;
   readonly expectedRawFillFeesByAsset: readonly AssetAmount[];
   readonly expectedBuilderFeesByAsset: readonly AssetAmount[];
@@ -134,8 +136,9 @@ export async function signAtomicEntryQuote(
   }
   if (validatedOrder.direction !== 'LONG_SPOT_SHORT_PERP'
     || validatedOrder.action !== 'ENTRY'
-    || validatedOrder.settlementClass !== 'ATOMIC_POSTCONDITION') {
-    fail('BINDING_MISMATCH', 'atomic entry requires long-spot short-perp ENTRY');
+    || (validatedOrder.settlementClass !== 'ATOMIC_POSTCONDITION'
+      && validatedOrder.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY')) {
+    fail('BINDING_MISMATCH', 'quote requires a supported long-spot short-perp ENTRY order');
   }
   const recomputedOrderHash = packageOrderHash(validatedOrder);
   if (!(decision.orderHash instanceof Uint8Array) || !bytesEqual(recomputedOrderHash, decision.orderHash)) {
@@ -228,8 +231,18 @@ export async function signAtomicEntryQuote(
   if (quoteAsset === undefined) {
     fail('BINDING_MISMATCH', 'entry order has no quote asset cap');
   }
-  if (terms.maxRecoveryCostAtomsByAsset.length !== 0) {
+  const isHyperliquid = validatedOrder.settlementClass === 'BATCHED_IOC_WITH_RECOVERY';
+  if (!isHyperliquid && terms.maxRecoveryCostAtomsByAsset.length !== 0) {
     fail('FEE_CAP_EXCEEDED', 'atomic entry cannot carry recovery caps');
+  }
+  if (isHyperliquid) {
+    if (terms.maxRecoveryCostAtomsByAsset.length !== validatedOrder.maxRecoveryCostAtomsByAsset.length
+      || terms.maxRecoveryCostAtomsByAsset.some((cap, index) => {
+        const signed = validatedOrder.maxRecoveryCostAtomsByAsset[index];
+        return signed === undefined || !sameAsset(cap.asset, signed.asset) || cap.maxAtoms !== signed.maxAtoms;
+      })) {
+      fail('FEE_CAP_EXCEEDED', 'recovery cost caps must equal the signed order caps');
+    }
   }
   const cappedFees: ReadonlyArray<Readonly<{ fee: AssetAmount; cap: AssetAmount; name: string }>> = [
     { fee: terms.solverFee, cap: validatedOrder.maxSolverFee, name: 'solverFee' },
@@ -280,9 +293,13 @@ export async function signAtomicEntryQuote(
     fail('BINDING_MISMATCH', 'expected spot notional exceeds the order cap');
   }
   const grossQuantity = terms.expectedGrossSpotQuantity;
-  if (!sameAsset(grossQuantity.asset, validatedOrder.quantity.asset)
-    || grossQuantity.atoms !== validatedOrder.quantity.atoms) {
-    fail('BINDING_MISMATCH', 'expected gross spot quantity must equal the order quantity');
+  const signedGrossQuantity = isHyperliquid
+    ? validatedOrder.hyperliquidGrossSpotQuantity
+    : validatedOrder.quantity;
+  if (signedGrossQuantity === undefined
+    || !sameAsset(grossQuantity.asset, validatedOrder.quantity.asset)
+    || grossQuantity.atoms !== signedGrossQuantity.atoms) {
+    fail('BINDING_MISMATCH', 'expected gross spot quantity must equal the signed gross quantity');
   }
   const baseFee = terms.expectedBaseAssetFee;
   if (!sameAsset(baseFee.asset, validatedOrder.quantity.asset)
@@ -291,9 +308,26 @@ export async function signAtomicEntryQuote(
     fail('BINDING_MISMATCH', 'expected base-asset fee must be a nonnegative order-base amount');
   }
   const netQuantity = terms.expectedNetSpotQuantity;
-  if (!sameAsset(netQuantity.asset, validatedOrder.quantity.asset)
-    || netQuantity.atoms !== grossQuantity.atoms - baseFee.atoms) {
+  if (!sameAsset(netQuantity.asset, validatedOrder.quantity.asset)) {
+    fail('BINDING_MISMATCH', 'expected net spot quantity must use the order base asset');
+  }
+  if (!isHyperliquid && netQuantity.atoms !== grossQuantity.atoms - baseFee.atoms) {
     fail('BINDING_MISMATCH', 'expected net spot quantity must equal gross minus base fee');
+  }
+  if (isHyperliquid) {
+    const minimum = validatedOrder.hyperliquidMinNetSpotDelta;
+    const maximum = validatedOrder.hyperliquidMaxNetSpotDelta;
+    const residualBase = terms.expectedTerminalResidualBaseQuantity;
+    const residualQuote = terms.expectedTerminalResidualQuoteValue;
+    if (minimum === undefined || maximum === undefined
+      || netQuantity.atoms < minimum.atoms || netQuantity.atoms > maximum.atoms
+      || residualBase === undefined || residualQuote === undefined
+      || !sameAsset(residualBase.asset, validatedOrder.quantity.asset)
+      || !sameAsset(residualQuote.asset, quoteAsset)
+      || residualBase.atoms !== validatedOrder.hyperliquidMaxTerminalResidualBaseQuantity?.atoms
+      || residualQuote.atoms !== validatedOrder.hyperliquidMaxTerminalResidualQuoteValue?.atoms) {
+      fail('BINDING_MISMATCH', 'Hyperliquid net quantity and residuals must remain within signed bounds');
+    }
   }
   const marginDelta = terms.expectedMarginDelta;
   if (!sameAsset(marginDelta.asset, quoteAsset)
@@ -360,6 +394,12 @@ export async function signAtomicEntryQuote(
     expectedGrossSpotQuantity: terms.expectedGrossSpotQuantity,
     expectedNetSpotQuantity: terms.expectedNetSpotQuantity,
     expectedBaseAssetFee: terms.expectedBaseAssetFee,
+    ...(terms.expectedTerminalResidualBaseQuantity === undefined
+      ? {}
+      : {
+          expectedTerminalResidualBaseQuantity: terms.expectedTerminalResidualBaseQuantity,
+          expectedTerminalResidualQuoteValue: terms.expectedTerminalResidualQuoteValue,
+        }),
     expectedMarginDelta: terms.expectedMarginDelta,
     expectedRawFillFeesByAsset: terms.expectedRawFillFeesByAsset,
     expectedBuilderFeesByAsset: terms.expectedBuilderFeesByAsset,
@@ -367,7 +407,7 @@ export async function signAtomicEntryQuote(
     solverFee: terms.solverFee,
     protocolFee: terms.protocolFee,
     expectedPriorityFee: terms.expectedPriorityFee,
-    maxRecoveryCostAtomsByAsset: [],
+    maxRecoveryCostAtomsByAsset: terms.maxRecoveryCostAtomsByAsset,
     feePolicyVersion: terms.feePolicyVersion,
     feePolicyManifestHash: terms.feePolicyManifestHash,
     validUntilUnit: terms.validUntilUnit,
