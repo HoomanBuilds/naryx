@@ -69,10 +69,14 @@ export {
   type LocalAtomicOrderRuntime,
 } from "./local-atomic-order-context.js";
 export {
+  executionSelectionKind,
   ExecutionIntentStoreError,
   SqliteExecutionIntentStore,
   type ExecutionAuthorization,
   type ExecutionIntentStore,
+  type ExecutionSelectionKind,
+  type BaseSelectedExecutionAttempt,
+  type LocalSelectedExecutionAttempt,
   type SelectedExecutionAttempt,
 } from "./execution-intent-store.js";
 export {

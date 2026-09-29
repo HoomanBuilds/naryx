@@ -13,6 +13,7 @@ import {
 } from "@naryx/protocol-types";
 import {
   createPrivateTerminalServer,
+  SqliteExecutionIntentStore,
   SqliteInternalOrderStore,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
@@ -271,6 +272,111 @@ test("internal terminal orders create, replay, retrieve, and conflict in one flo
     }
   } finally {
     store.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Base Sepolia quote selection is durable and readable before trader permit", async () => {
+  const origin = "http://127.0.0.1:3000";
+  const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-api-base-selection-"));
+  const context = Object.freeze({
+    ...activeContext(),
+    contextId: "base-sepolia-atomic-v1",
+    domain: domainRef("evm:base-sepolia", 1, "81".repeat(32)),
+    expiryUnit: "EVM_UNIX_SECONDS" as const,
+  });
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const orderPorts = {
+    contexts: (contextId: string) => contextId === context.contextId ? context : undefined,
+    store: orders,
+    clock: { currentClock: async () => 1_000_500n },
+  };
+  const solverQuotePort = {
+    quote: async (request: SolverAtomicQuoteRequest) => ({
+      version: 1 as const,
+      status: "SIGNED" as const,
+      idempotencyKey: request.idempotencyKey,
+      orderHash: request.orderHash,
+      routeHash: "71".repeat(32),
+      quoteHash: "72".repeat(32),
+      solverSignatureDigest: "73".repeat(32),
+      routeBytes: "01",
+      solverQuoteBytes: "02",
+      route: { orderHash: request.orderHash },
+      quote: { orderHash: request.orderHash, routeHash: "71".repeat(32) },
+    }),
+  };
+  const server = createPrivateTerminalServer(
+    config,
+    {},
+    orderPorts,
+    undefined,
+    {},
+    undefined,
+    solverQuotePort,
+    intents,
+  );
+  const serverUrl = await listen(server);
+  try {
+    const createdResponse = await fetch(`${serverUrl}/internal/terminal/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({
+        contextId: context.contextId,
+        owner: "0x1111111111111111111111111111111111111111",
+        settlementAccount: "0x2222222222222222222222222222222222222222",
+        size: "1",
+        slippageBps: 10,
+        idempotencyKey: "base-order-key-0001",
+      }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = await createdResponse.json() as { order: { orderHashHex: string } };
+    const quoteResponse = await fetch(
+      `${serverUrl}/internal/terminal/orders/${created.order.orderHashHex}/quote`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({ idempotencyKey: "base-quote-key-0001" }),
+      },
+    );
+    assert.equal(quoteResponse.status, 200);
+    const selectedResponse = await fetch(
+      `${serverUrl}/internal/terminal/orders/${created.order.orderHashHex}/select`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({ quoteHash: "72".repeat(32) }),
+      },
+    );
+    assert.equal(selectedResponse.status, 201);
+    const selected = await selectedResponse.json() as {
+      status: string;
+      attempt: { attemptId: string; status: string; domainId: string };
+    };
+    assert.equal(selected.status, "BASE_ATOMIC_QUOTE_SELECTED");
+    assert.equal(selected.attempt.status, "BASE_ATOMIC_QUOTE_SELECTED");
+    assert.equal(selected.attempt.domainId, "evm:base-sepolia");
+    assert.match(selected.attempt.attemptId, /^base-atomic-[0-9a-f]{52}$/);
+
+    const readResponse = await fetch(
+      `${serverUrl}/internal/terminal/attempts/${selected.attempt.attemptId}`,
+      { headers: { Origin: origin } },
+    );
+    assert.equal(readResponse.status, 200);
+    const read = await readResponse.json() as {
+      attempt: { attemptId: string; status: string };
+      quote: { quoteHash: string };
+    };
+    assert.equal(read.attempt.attemptId, selected.attempt.attemptId);
+    assert.equal(read.attempt.status, "BASE_ATOMIC_QUOTE_SELECTED");
+    assert.equal(read.quote.quoteHash, "72".repeat(32));
+  } finally {
+    await close(server);
+    intents.close();
+    orders.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 });

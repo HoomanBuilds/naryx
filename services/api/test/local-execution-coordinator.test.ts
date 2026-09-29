@@ -199,6 +199,7 @@ test("fails closed without an authorized selected attempt and serves narrow acti
       getAuthorization: setup.intents.getAuthorization.bind(setup.intents),
       recordQuote: setup.intents.recordQuote.bind(setup.intents),
       selectQuote: setup.intents.selectQuote.bind(setup.intents),
+      selectQuoteForOrder: setup.intents.selectQuoteForOrder.bind(setup.intents),
       getAttempt: setup.intents.getAttempt.bind(setup.intents),
       getSelectedQuote: (attemptId) => {
         const quote = setup.intents.getSelectedQuote(attemptId);

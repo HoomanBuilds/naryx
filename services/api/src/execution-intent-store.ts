@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import bs58 from "bs58";
+import type { DomainRef } from "@naryx/protocol-types";
 import type { InternalOrderRecord } from "./internal-order-store.js";
 import {
   validateSolverAtomicQuoteResponse,
@@ -11,7 +12,9 @@ import {
 } from "./solver-quote-client.js";
 
 const HASH = /^[0-9a-f]{64}$/;
-const ATTEMPT_ID = /^local-atomic-[0-9a-f]{64}$/;
+const LOCAL_ATTEMPT_ID = /^local-atomic-[0-9a-f]{64}$/;
+const BASE_ATTEMPT_ID = /^base-atomic-[0-9a-f]{52}$/;
+const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 export interface ExecutionAuthorization {
@@ -21,7 +24,7 @@ export interface ExecutionAuthorization {
   readonly authorizedAtMs: number;
 }
 
-export interface SelectedExecutionAttempt {
+export interface LocalSelectedExecutionAttempt {
   readonly attemptId: string;
   readonly orderHash: string;
   readonly routeHash: string;
@@ -30,11 +33,34 @@ export interface SelectedExecutionAttempt {
   readonly selectedAtMs: number;
 }
 
+export interface BaseSelectedExecutionAttempt {
+  readonly attemptId: string;
+  readonly orderHash: string;
+  readonly routeHash: string;
+  readonly quoteHash: string;
+  readonly status: "BASE_ATOMIC_QUOTE_SELECTED";
+  readonly selectedAtMs: number;
+  readonly domainId: "evm:base-sepolia";
+  readonly domainManifestVersion: number;
+  readonly domainManifestHash: string;
+}
+
+export type SelectedExecutionAttempt =
+  | LocalSelectedExecutionAttempt
+  | BaseSelectedExecutionAttempt;
+
+export type ExecutionSelectionKind = "SOLANA_AUTHORIZED" | "BASE_ATOMIC";
+
 export interface ExecutionIntentStore {
   authorize(order: InternalOrderRecord, signature: string): ExecutionAuthorization;
   getAuthorization(orderHash: string): ExecutionAuthorization | undefined;
   recordQuote(response: SolverAtomicQuoteResponse): void;
-  selectQuote(orderHash: string, quoteHash: string): SelectedExecutionAttempt;
+  selectQuote(orderHash: string, quoteHash: string): LocalSelectedExecutionAttempt;
+  selectQuoteForOrder(
+    order: InternalOrderRecord,
+    recognizedDomain: DomainRef,
+    quoteHash: string,
+  ): SelectedExecutionAttempt;
   getAttempt(attemptId: string): SelectedExecutionAttempt | undefined;
   getSelectedQuote(attemptId: string): SolverAtomicQuoteResponse | undefined;
   close(): void;
@@ -134,6 +160,56 @@ function attemptId(orderHash: string, routeHash: string, quoteHash: string): str
     .digest("hex")}`;
 }
 
+function baseAttemptId(
+  order: InternalOrderRecord,
+  routeHash: string,
+  quoteHash: string,
+): string {
+  const version = Buffer.alloc(8);
+  version.writeBigUInt64BE(BigInt(order.domainManifestVersion));
+  const digest = createHash("sha256")
+    .update("NARYX/base-atomic-execution-attempt/v1", "ascii")
+    .update(Buffer.from(order.domainId, "ascii"))
+    .update(version)
+    .update(Buffer.from(order.domainManifestHashHex, "hex"))
+    .update(Buffer.from(order.orderHashHex, "hex"))
+    .update(Buffer.from(routeHash, "hex"))
+    .update(Buffer.from(quoteHash, "hex"))
+    .digest("hex");
+  return `base-atomic-${digest.slice(0, 52)}`;
+}
+
+function domainHashHex(domain: DomainRef): string {
+  const hash = Buffer.from(domain.domainManifestHash).toString("hex");
+  if (!HASH.test(hash) || /^0+$/.test(hash)) {
+    throw new ExecutionIntentStoreError("UNRECOGNIZED_ORDER_DOMAIN", "Recognized domain manifest identity is invalid.");
+  }
+  return hash;
+}
+
+export function executionSelectionKind(
+  order: InternalOrderRecord,
+  recognizedDomain: DomainRef,
+): ExecutionSelectionKind {
+  const recognizedHash = domainHashHex(recognizedDomain);
+  if (order.domainId !== recognizedDomain.domainId
+    || order.domainManifestVersion !== recognizedDomain.domainManifestVersion
+    || order.domainManifestHashHex !== recognizedHash) {
+    throw new ExecutionIntentStoreError(
+      "UNRECOGNIZED_ORDER_DOMAIN",
+      "Stored canonical order domain does not match the recognized manifest identity.",
+    );
+  }
+  if (order.domainId === BASE_SEPOLIA_DOMAIN_ID) return "BASE_ATOMIC";
+  if (order.domainId.startsWith("evm:")) {
+    throw new ExecutionIntentStoreError(
+      "UNSUPPORTED_ORDER_DOMAIN",
+      "Only Base Sepolia supports EVM atomic quote selection.",
+    );
+  }
+  return "SOLANA_AUTHORIZED";
+}
+
 export class SqliteExecutionIntentStore implements ExecutionIntentStore {
   readonly #db: Database.Database;
 
@@ -166,6 +242,18 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
         status TEXT NOT NULL CHECK (status = 'AUTHORIZED_QUOTE_SELECTED'),
         selected_at_ms INTEGER NOT NULL,
         FOREIGN KEY (order_hash) REFERENCES execution_authorizations(order_hash),
+        FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
+      );
+      CREATE TABLE IF NOT EXISTS selected_base_atomic_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        order_hash TEXT NOT NULL UNIQUE,
+        route_hash TEXT NOT NULL,
+        quote_hash TEXT NOT NULL UNIQUE,
+        domain_id TEXT NOT NULL CHECK (domain_id = 'evm:base-sepolia'),
+        domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
+        domain_manifest_hash TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status = 'BASE_ATOMIC_QUOTE_SELECTED'),
+        selected_at_ms INTEGER NOT NULL,
         FOREIGN KEY (quote_hash) REFERENCES solver_quotes(quote_hash)
       );
     `);
@@ -227,7 +315,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
     }
   }
 
-  selectQuote(orderHash: string, quoteHash: string): SelectedExecutionAttempt {
+  selectQuote(orderHash: string, quoteHash: string): LocalSelectedExecutionAttempt {
     if (!HASH.test(orderHash) || !HASH.test(quoteHash)) {
       throw new ExecutionIntentStoreError("INVALID_SELECTION", "Order or quote hash is invalid.");
     }
@@ -249,6 +337,49 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       ON CONFLICT(order_hash) DO NOTHING
     `).run(id, orderHash, quote.route_hash, quoteHash, now);
     const stored = this.getAttempt(id);
+    if (stored === undefined || stored.status !== "AUTHORIZED_QUOTE_SELECTED") {
+      throw new ExecutionIntentStoreError("SELECTION_CONFLICT", "Order already selected a different quote.");
+    }
+    return stored;
+  }
+
+  selectQuoteForOrder(
+    order: InternalOrderRecord,
+    recognizedDomain: DomainRef,
+    quoteHash: string,
+  ): SelectedExecutionAttempt {
+    const kind = executionSelectionKind(order, recognizedDomain);
+    if (kind === "SOLANA_AUTHORIZED") {
+      return this.selectQuote(order.orderHashHex, quoteHash);
+    }
+    if (!HASH.test(order.orderHashHex) || !HASH.test(quoteHash)) {
+      throw new ExecutionIntentStoreError("INVALID_SELECTION", "Order or quote hash is invalid.");
+    }
+    const quote = this.#db.prepare(`
+      SELECT route_hash FROM solver_quotes WHERE quote_hash = ? AND order_hash = ?
+    `).get(quoteHash, order.orderHashHex) as { route_hash?: unknown } | undefined;
+    if (quote === undefined || typeof quote.route_hash !== "string" || !HASH.test(quote.route_hash)) {
+      throw new ExecutionIntentStoreError("QUOTE_NOT_FOUND", "Quote is not recorded for this order.");
+    }
+    const id = baseAttemptId(order, quote.route_hash, quoteHash);
+    const now = Date.now();
+    this.#db.prepare(`
+      INSERT INTO selected_base_atomic_attempts
+        (attempt_id, order_hash, route_hash, quote_hash, domain_id, domain_manifest_version,
+         domain_manifest_hash, status, selected_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'BASE_ATOMIC_QUOTE_SELECTED', ?)
+      ON CONFLICT(order_hash) DO NOTHING
+    `).run(
+      id,
+      order.orderHashHex,
+      quote.route_hash,
+      quoteHash,
+      order.domainId,
+      order.domainManifestVersion,
+      order.domainManifestHashHex,
+      now,
+    );
+    const stored = this.getAttempt(id);
     if (stored === undefined) {
       throw new ExecutionIntentStoreError("SELECTION_CONFLICT", "Order already selected a different quote.");
     }
@@ -256,7 +387,8 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
   }
 
   getAttempt(id: string): SelectedExecutionAttempt | undefined {
-    if (!ATTEMPT_ID.test(id)) throw new ExecutionIntentStoreError("INVALID_ATTEMPT_ID", "Attempt ID is invalid.");
+    if (BASE_ATTEMPT_ID.test(id)) return this.#getBaseAttempt(id);
+    if (!LOCAL_ATTEMPT_ID.test(id)) throw new ExecutionIntentStoreError("INVALID_ATTEMPT_ID", "Attempt ID is invalid.");
     const row = this.#db.prepare(`
       SELECT attempt_id, order_hash, route_hash, quote_hash, status, selected_at_ms
       FROM selected_execution_attempts WHERE attempt_id = ?
@@ -276,6 +408,38 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
       quoteHash: row.quote_hash,
       status: "AUTHORIZED_QUOTE_SELECTED",
       selectedAtMs: row.selected_at_ms,
+    });
+  }
+
+  #getBaseAttempt(id: string): BaseSelectedExecutionAttempt | undefined {
+    const row = this.#db.prepare(`
+      SELECT attempt_id, order_hash, route_hash, quote_hash, domain_id,
+        domain_manifest_version, domain_manifest_hash, status, selected_at_ms
+      FROM selected_base_atomic_attempts WHERE attempt_id = ?
+    `).get(id) as Record<string, unknown> | undefined;
+    if (row === undefined) return undefined;
+    if (row.attempt_id !== id || typeof row.order_hash !== "string" || !HASH.test(row.order_hash)
+      || typeof row.route_hash !== "string" || !HASH.test(row.route_hash)
+      || typeof row.quote_hash !== "string" || !HASH.test(row.quote_hash)
+      || row.domain_id !== BASE_SEPOLIA_DOMAIN_ID
+      || typeof row.domain_manifest_version !== "number"
+      || !Number.isSafeInteger(row.domain_manifest_version) || row.domain_manifest_version < 1
+      || typeof row.domain_manifest_hash !== "string" || !HASH.test(row.domain_manifest_hash)
+      || /^0+$/.test(row.domain_manifest_hash)
+      || row.status !== "BASE_ATOMIC_QUOTE_SELECTED"
+      || typeof row.selected_at_ms !== "number" || !Number.isSafeInteger(row.selected_at_ms)) {
+      throw new ExecutionIntentStoreError("CORRUPT_ROW", "Stored Base atomic attempt is invalid.");
+    }
+    return Object.freeze({
+      attemptId: id,
+      orderHash: row.order_hash,
+      routeHash: row.route_hash,
+      quoteHash: row.quote_hash,
+      status: "BASE_ATOMIC_QUOTE_SELECTED",
+      selectedAtMs: row.selected_at_ms,
+      domainId: BASE_SEPOLIA_DOMAIN_ID,
+      domainManifestVersion: row.domain_manifest_version,
+      domainManifestHash: row.domain_manifest_hash,
     });
   }
 
