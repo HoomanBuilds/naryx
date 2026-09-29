@@ -13,6 +13,7 @@ import {
   type HyperliquidPackageSubmissionResult,
   type HyperliquidTestnetExecutorRequest,
   type HyperliquidTestnetRuntimeCoordinatorInput,
+  type HyperliquidTestnetAttemptHandoff,
 } from '../src/index.js';
 
 const ATTEMPT_ID = 'attempt-0123456789AB';
@@ -151,6 +152,15 @@ async function start(
   injected: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>,
   resolved: HyperliquidTestnetRuntimeCoordinatorInput | undefined = attempt(),
 ) {
+  const handoff = resolved === undefined ? undefined : {
+    attemptId: resolved.attemptId,
+    admission: {},
+    seriesManifestHash: '11'.repeat(32),
+    executionClassManifestHash: '12'.repeat(32),
+    market: {},
+    limits: { maxEvidenceAgeMs: 1, maxSnapshotSkewMs: 1, maxFillPages: 1 },
+    selectedAtMs: 1,
+  } as unknown as HyperliquidTestnetAttemptHandoff;
   let calls = 0;
   const coordinator = {
     execute: async (input: HyperliquidTestnetRuntimeCoordinatorInput) => {
@@ -160,7 +170,8 @@ async function start(
     },
   } as unknown as HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
   const server = createHyperliquidTestnetExecutorServer(() => ({
-    attempts: { resolve: () => resolved },
+    attempts: { resolve: () => handoff },
+    prepareAttempt: () => resolved as HyperliquidTestnetRuntimeCoordinatorInput,
     coordinator,
   }));
   await new Promise<void>((resolve, reject) => {

@@ -585,6 +585,37 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
     return this.#requiredReceipt(normalized.attemptId);
   }
 
+  submissionContext(input: Readonly<{
+    account: HyperliquidSubmissionAccount;
+    agentWallet: `0x${string}`;
+    signerLeaseId: string;
+    nowMs: bigint;
+  }>): Readonly<{ expectedVersion: bigint; nonce: bigint }> {
+    this.#requireOpen();
+    const account = normalizedAccount(input.account);
+    const agentWallet = address(input.agentWallet, 'agentWallet');
+    const signerLeaseId = identifier(input.signerLeaseId, 'signerLeaseId');
+    const nowMs = decodedBigint(canonicalBigint(input.nowMs, 'nowMs'), 'nowMs');
+    const row = this.#database.prepare<[string, string, string, string, string], NonceRow>(`
+      SELECT highest_nonce_decimal
+      FROM hyperliquid_nonce_fences
+      WHERE master_account = ? AND trading_account = ? AND account_kind = ?
+        AND agent_wallet = ? AND signer_lease_id = ?
+    `).get(
+      account.masterAccount,
+      account.tradingAccount,
+      account.accountKind,
+      agentWallet,
+      signerLeaseId,
+    );
+    const previous = row === undefined
+      ? 0n
+      : decodedBigint(row.highest_nonce_decimal, 'stored nonce high-water');
+    const nonce = nowMs > previous ? nowMs : previous + 1n;
+    requireCondition(nonce <= MAX_SAFE_INTEGER, 'allocated nonce must fit a safe integer');
+    return Object.freeze({ expectedVersion: this.#metadata().journalRevision, nonce });
+  }
+
   async confirmDurable(input: Readonly<{
     expectedVersion: bigint;
     attemptId: string;

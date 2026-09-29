@@ -131,7 +131,19 @@ test('persists the complete journal lifecycle across reopen', async (t) => {
 test('rejects changed replay, stale CAS, signer lease changes, and nonce reuse', async (t) => {
   const path = databasePath(t);
   let journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
+  assert.deepEqual(journal.submissionContext({
+    account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
+    agentWallet,
+    signerLeaseId: 'solver-process-1',
+    nowMs,
+  }), { expectedVersion: 0n, nonce: nowMs });
   const prepared = await journal.prepare(input());
+  assert.deepEqual(journal.submissionContext({
+    account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
+    agentWallet,
+    signerLeaseId: 'solver-process-1',
+    nowMs,
+  }), { expectedVersion: 1n, nonce: nonce + 1n });
   const replay = await journal.prepare(input());
   assert.equal(replay.record.recordHash, prepared.record.recordHash);
   assert.equal(replay.journalVersion, prepared.journalVersion);

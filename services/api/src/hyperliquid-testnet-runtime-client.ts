@@ -1,8 +1,10 @@
 import {
   fromProtocolJson,
+  fromHex,
   stringifyProtocolJson,
   toHex,
   type DomainRef,
+  type PackageAdmission,
   type PackageOrder,
   type RoutePayload,
   type SolverQuote,
@@ -21,12 +23,6 @@ const ADDRESS = /^0x[0-9a-f]{40}$/;
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 30_000;
-
-export type HyperliquidTestnetAccountBinding = Readonly<{
-  masterAccount: `0x${string}`;
-  tradingAccount: `0x${string}`;
-  accountKind: "MASTER" | "SUBACCOUNT";
-}>;
 
 export type HyperliquidTestnetMarketMetadata = Readonly<{
   spot: HyperliquidTestnetMarketLegMetadata & Readonly<{
@@ -61,24 +57,12 @@ export type HyperliquidTestnetExecutionBounds = Readonly<{
 
 export type HyperliquidTestnetAttemptPreparation = Readonly<{
   attemptId: string;
-  orderHash: string;
-  quoteHash: string;
-  routeHash: string;
-  solverId: string;
-  solverVerificationKey: string;
-  domain: Readonly<{
-    domainId: "hypercore:testnet";
-    domainManifestVersion: number;
-    domainManifestHash: string;
-  }>;
-  account: HyperliquidTestnetAccountBinding;
+  admission: PackageAdmission;
+  seriesManifestHash: string;
+  executionClassManifestHash: string;
   market: HyperliquidTestnetMarketMetadata;
-  bounds: HyperliquidTestnetExecutionBounds;
+  limits: HyperliquidTestnetExecutionBounds;
   selectedAtMs: number;
-  expiresAtMs: number;
-  order: PackageOrder;
-  route: RoutePayload;
-  quote: SolverQuote;
 }>;
 
 export interface HyperliquidTestnetPreparationPort {
@@ -105,9 +89,10 @@ export type HyperliquidTestnetAttemptPreparationOptions = Readonly<{
   intents: Pick<ExecutionIntentStore, "getAttempt" | "getSelectedQuote">;
   orders: Pick<InternalOrderStore, "getByOrderHash" | "getCanonicalOrderByHash">;
   domain: DomainRef;
+  seriesManifestHash: string;
+  executionClassManifestHash: string;
   solverId: string;
   solverVerificationKey: string;
-  account: HyperliquidTestnetAccountBinding;
   market: HyperliquidTestnetMarketMetadata;
   bounds: HyperliquidTestnetExecutionBounds;
   currentTimeMs: () => number;
@@ -149,17 +134,6 @@ function requirePositiveInteger(value: unknown, name: string): number {
   const checked = requireNonNegativeInteger(value, name);
   if (checked === 0) fail("INVALID_CONFIGURATION", `${name} must be positive`);
   return checked;
-}
-
-function accountBinding(value: HyperliquidTestnetAccountBinding): HyperliquidTestnetAccountBinding {
-  if (!ADDRESS.test(value.masterAccount) || /^0x0+$/.test(value.masterAccount)
-    || !ADDRESS.test(value.tradingAccount) || /^0x0+$/.test(value.tradingAccount)
-    || (value.accountKind !== "MASTER" && value.accountKind !== "SUBACCOUNT")
-    || (value.accountKind === "MASTER" && value.masterAccount !== value.tradingAccount)
-    || (value.accountKind === "SUBACCOUNT" && value.masterAccount === value.tradingAccount)) {
-    fail("INVALID_CONFIGURATION", "Hyperliquid account binding is invalid");
-  }
-  return Object.freeze({ ...value });
 }
 
 function marketMetadata(value: HyperliquidTestnetMarketMetadata): HyperliquidTestnetMarketMetadata {
@@ -229,7 +203,7 @@ function executionBounds(value: HyperliquidTestnetExecutionBounds): HyperliquidT
   });
 }
 
-function domainBinding(value: DomainRef): HyperliquidTestnetAttemptPreparation["domain"] {
+function domainBinding(value: DomainRef) {
   const hash = toHex(value.domainManifestHash);
   if (value.domainId !== "hypercore:testnet"
     || !Number.isSafeInteger(value.domainManifestVersion) || value.domainManifestVersion < 1
@@ -279,7 +253,8 @@ export function createHyperliquidTestnetAttemptPreparationPort(
   }
   const expectedSolverId = options.solverId;
   const expectedSolver = checkedSolverKey(options.solverVerificationKey);
-  const account = accountBinding(options.account);
+  const seriesManifestHash = checkedSolverKey(options.seriesManifestHash);
+  const executionClassManifestHash = checkedSolverKey(options.executionClassManifestHash);
   const market = marketMetadata(options.market);
   const bounds = executionBounds(options.bounds);
 
@@ -333,20 +308,19 @@ export function createHyperliquidTestnetAttemptPreparationPort(
       }
       return Object.freeze({
         attemptId,
-        orderHash: attempt.orderHash,
-        quoteHash: attempt.quoteHash,
-        routeHash: attempt.routeHash,
-        solverId: expectedSolverId,
-        solverVerificationKey: expectedSolver,
-        domain: expectedDomain,
-        account,
+        admission: Object.freeze({
+          order,
+          route: verified.route,
+          quote: verified.quote,
+          orderHash: fromHex(attempt.orderHash, "orderHash"),
+          routeHash: fromHex(attempt.routeHash, "routeHash"),
+          quoteHash: fromHex(attempt.quoteHash, "quoteHash"),
+        }) as PackageAdmission,
+        seriesManifestHash,
+        executionClassManifestHash,
         market,
-        bounds,
+        limits: bounds,
         selectedAtMs: attempt.selectedAtMs,
-        expiresAtMs: Number(expiresAt),
-        order,
-        route: verified.route,
-        quote: verified.quote,
       });
     },
   });

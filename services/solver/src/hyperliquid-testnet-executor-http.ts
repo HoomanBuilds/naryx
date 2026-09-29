@@ -1,9 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import {
-  HYPERCORE_EXECUTION_GUARANTEE,
-  type HyperliquidExecutionPlan,
-} from '@naryx/adapter-hyperliquid';
-import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
+import { parseProtocolJson, stringifyProtocolJson, type PackageAdmission } from '@naryx/protocol-types';
 import type {
   HyperliquidPackageSubmissionResult,
 } from './index.js';
@@ -18,14 +14,10 @@ export const SOLVER_TESTNET_EXECUTE_PATH = '/internal/solver/hyperliquid-testnet
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
-const INTERNAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const ADDRESS = /^0x[0-9a-f]{40}$/;
 const HASH = /^0x[0-9a-f]{64}$/;
-const CLOID = /^0x[0-9a-f]{32}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
 const MAX_REASONS = 8;
 const MAX_EVIDENCE = 64;
-const SPOT_ASSET_OFFSET = 10_000;
 
 export type HyperliquidTestnetExecutorRequest = Readonly<{
   attemptId: string;
@@ -114,8 +106,26 @@ type FinalPackageStatus = 'NO_EFFECT' | 'COMPLETED_EXACT' | 'COMPLETED_BOUNDED' 
   'RECOVERY_REQUIRED' | 'MANUAL_INTERVENTION';
 
 export interface HyperliquidTestnetTrustedAttemptProvider {
-  resolve(attemptId: string): HyperliquidTestnetRuntimeCoordinatorInput | undefined |
-    Promise<HyperliquidTestnetRuntimeCoordinatorInput | undefined>;
+  resolve(attemptId: string): HyperliquidTestnetAttemptHandoff | undefined |
+    Promise<HyperliquidTestnetAttemptHandoff | undefined>;
+}
+
+export interface HyperliquidTestnetAttemptHandoff {
+  readonly attemptId: string;
+  readonly admission: PackageAdmission;
+  readonly seriesManifestHash: string;
+  readonly executionClassManifestHash: string;
+  readonly market: Readonly<{
+    spot: Readonly<Record<string, unknown> & { assetId: number; sizeDecimals: number; universeIndex: number; tokenIndex: number }>;
+    perpetual: Readonly<Record<string, unknown> & { assetId: number; sizeDecimals: number; assetIndex: number }>;
+    quoteTokenIndex: number;
+  }>;
+  readonly limits: Readonly<{
+    maxEvidenceAgeMs: number;
+    maxSnapshotSkewMs: number;
+    maxFillPages: number;
+  }>;
+  readonly selectedAtMs: number;
 }
 
 export interface HyperliquidTestnetExecutorPort {
@@ -124,6 +134,7 @@ export interface HyperliquidTestnetExecutorPort {
 
 export type HyperliquidTestnetExecutorRuntime = Readonly<{
   attempts: HyperliquidTestnetTrustedAttemptProvider;
+  prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidTestnetRuntimeCoordinatorInput;
   coordinator: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
 }>;
 
@@ -173,115 +184,29 @@ function safeInteger(value: unknown, name: string, positive = false): number {
   return value;
 }
 
-function safeBigint(value: unknown, name: string, positive = false): bigint {
-  requireCondition(typeof value === 'bigint' && (positive ? value > 0n : value >= 0n)
-    && value <= BigInt(Number.MAX_SAFE_INTEGER), 'INVALID_ATTEMPT', `${name} is invalid`);
-  return value;
-}
-
-function nonzeroBytes32(value: unknown, name: string): void {
-  requireCondition(value instanceof Uint8Array && value.length === 32
-    && value.some((byte) => byte !== 0), 'INVALID_ATTEMPT', `${name} is invalid`);
-}
-
-function validateWindow(value: unknown, name: string, endEqualsNow: boolean): void {
-  requireCondition(isRecord(value), 'INVALID_ATTEMPT', `${name} is invalid`);
-  const start = safeInteger(value.startTimeMs, `${name}.startTimeMs`);
-  const end = safeInteger(value.endTimeMs, `${name}.endTimeMs`);
-  const now = safeInteger(value.nowMs, `${name}.nowMs`);
-  safeInteger(value.maxEvidenceAgeMs, `${name}.maxEvidenceAgeMs`, true);
-  safeInteger(value.maxSnapshotSkewMs, `${name}.maxSnapshotSkewMs`, true);
-  requireCondition(start <= end && (endEqualsNow ? end === now : end <= now),
-    'INVALID_ATTEMPT', `${name} range is invalid`);
-  if (value.maxFillPages !== undefined) {
-    safeInteger(value.maxFillPages, `${name}.maxFillPages`, true);
-  }
-}
-
-function validateAccount(value: unknown): void {
-  requireCondition(isRecord(value), 'INVALID_ATTEMPT', 'account is invalid');
-  requireCondition(typeof value.masterAccount === 'string' && ADDRESS.test(value.masterAccount)
-    && !/^0x0+$/.test(value.masterAccount), 'INVALID_ATTEMPT', 'master account is invalid');
-  requireCondition(typeof value.tradingAccount === 'string' && ADDRESS.test(value.tradingAccount)
-    && !/^0x0+$/.test(value.tradingAccount), 'INVALID_ATTEMPT', 'trading account is invalid');
-  requireCondition(value.accountKind === 'MASTER' || value.accountKind === 'SUBACCOUNT',
-    'INVALID_ATTEMPT', 'account kind is invalid');
-  requireCondition(value.accountKind === 'MASTER'
-    ? value.masterAccount === value.tradingAccount
-    : value.masterAccount !== value.tradingAccount,
-  'INVALID_ATTEMPT', 'account relation is invalid');
-}
-
-function validatePlan(plan: HyperliquidExecutionPlan, input: HyperliquidTestnetRuntimeCoordinatorInput): void {
-  requireCondition(plan.version === 1 && plan.guarantee === HYPERCORE_EXECUTION_GUARANTEE,
-    'INVALID_ATTEMPT', 'plan version or guarantee is invalid');
-  requireCondition(plan.domain.domainId === 'hypercore:testnet'
-    && Number.isSafeInteger(plan.domain.domainManifestVersion)
-    && plan.domain.domainManifestVersion > 0, 'INVALID_ATTEMPT', 'plan domain is invalid');
-  nonzeroBytes32(plan.domain.domainManifestHash, 'domainManifestHash');
-  for (const [name, value] of Object.entries(plan.commitments)) {
-    nonzeroBytes32(value, `commitments.${name}`);
-  }
-  const expiry = safeBigint(plan.requestExpiryMs, 'requestExpiryMs', true);
-  requireCondition(expiry > input.nowMs && plan.unsignedRequestFields.expiresAfter === Number(expiry),
-    'INVALID_ATTEMPT', 'plan expiry is invalid');
-  const action = plan.unsignedRequestFields.action;
-  requireCondition(action.type === 'order' && action.grouping === 'na'
-    && action.orders.length === 2 && plan.legs.length === 2,
-  'INVALID_ATTEMPT', 'plan must contain exactly two ungrouped IOC orders');
-  const spot = plan.legs.find((leg) => leg.role === 'SPOT');
-  const perpetual = plan.legs.find((leg) => leg.role === 'PERPETUAL');
-  requireCondition(spot !== undefined && perpetual !== undefined && spot !== perpetual,
-    'INVALID_ATTEMPT', 'plan leg roles are invalid');
-  requireCondition(spot.order === action.orders[spot.legIndex]
-    || JSON.stringify(spot.order) === JSON.stringify(action.orders[spot.legIndex]),
-  'INVALID_ATTEMPT', 'spot leg is not bound to the action');
-  requireCondition(perpetual.order === action.orders[perpetual.legIndex]
-    || JSON.stringify(perpetual.order) === JSON.stringify(action.orders[perpetual.legIndex]),
-  'INVALID_ATTEMPT', 'perpetual leg is not bound to the action');
-  for (const leg of [spot, perpetual]) {
-    requireCondition(leg.order.t.limit.tif === 'Ioc' && CLOID.test(leg.order.c)
-      && leg.order.c === leg.clientOrderId, 'INVALID_ATTEMPT', 'plan IOC identity is invalid');
-  }
-  requireCondition(spot.clientOrderId !== perpetual.clientOrderId,
-    'INVALID_ATTEMPT', 'client order IDs must differ');
-  requireCondition(spot.order.a === SPOT_ASSET_OFFSET + input.binding.spotUniverseIndex
-    && perpetual.order.a === input.binding.perpetualAssetIndex,
-  'INVALID_ATTEMPT', 'market binding does not match plan assets');
-}
-
 export function validateHyperliquidTestnetRuntimeAttempt(
   expectedAttemptId: string,
   value: unknown,
-): HyperliquidTestnetRuntimeCoordinatorInput {
+): HyperliquidTestnetAttemptHandoff {
   requireCondition(isRecord(value), 'INVALID_ATTEMPT', 'attempt provider returned an invalid attempt');
   requireCondition(hasExactKeys(value, [
-    'account', 'agentWallet', 'attemptId', 'binding', 'checkpointWindow', 'expectedVersion',
-    'nonce', 'nowMs', 'plan', 'reconciliationWindow', 'signerLeaseId', 'vaultAddress',
+    'admission', 'attemptId', 'executionClassManifestHash', 'limits', 'market',
+    'selectedAtMs', 'seriesManifestHash',
   ]), 'INVALID_ATTEMPT', 'attempt provider fields are invalid');
-  const input = value as unknown as HyperliquidTestnetRuntimeCoordinatorInput;
+  const input = value as unknown as HyperliquidTestnetAttemptHandoff;
   requireCondition(input.attemptId === expectedAttemptId, 'ATTEMPT_IDENTITY_MISMATCH',
     'resolved attempt identity does not match the request');
-  safeBigint(input.expectedVersion, 'expectedVersion');
-  safeBigint(input.nonce, 'nonce', true);
-  safeBigint(input.nowMs, 'nowMs', true);
-  requireCondition(typeof input.signerLeaseId === 'string' && INTERNAL_ID.test(input.signerLeaseId),
-    'INVALID_ATTEMPT', 'signer lease ID is invalid');
-  requireCondition(typeof input.agentWallet === 'string' && ADDRESS.test(input.agentWallet)
-    && !/^0x0+$/.test(input.agentWallet), 'INVALID_ATTEMPT', 'agent wallet is invalid');
-  validateAccount(input.account);
-  requireCondition(input.agentWallet !== input.account.masterAccount
-    && input.agentWallet !== input.account.tradingAccount,
-  'INVALID_ATTEMPT', 'agent wallet must differ from account identities');
-  requireCondition(input.vaultAddress === (input.account.accountKind === 'SUBACCOUNT'
-    ? input.account.tradingAccount : null), 'INVALID_ATTEMPT', 'vault binding is invalid');
-  for (const field of ['spotUniverseIndex', 'spotTokenIndex', 'perpetualAssetIndex',
-    'quoteTokenIndex'] as const) {
-    safeInteger(input.binding[field], `binding.${field}`);
+  requireCondition(isRecord(input.admission) && isRecord(input.market) && isRecord(input.limits),
+    'INVALID_ATTEMPT', 'attempt admission, market, or limits are invalid');
+  requireCondition(typeof input.seriesManifestHash === 'string' && /^[0-9a-f]{64}$/.test(input.seriesManifestHash)
+    && !/^0+$/.test(input.seriesManifestHash), 'INVALID_ATTEMPT', 'series manifest hash is invalid');
+  requireCondition(typeof input.executionClassManifestHash === 'string'
+    && /^[0-9a-f]{64}$/.test(input.executionClassManifestHash)
+    && !/^0+$/.test(input.executionClassManifestHash), 'INVALID_ATTEMPT', 'execution class manifest hash is invalid');
+  safeInteger(input.selectedAtMs, 'selectedAtMs', true);
+  for (const field of ['maxEvidenceAgeMs', 'maxSnapshotSkewMs', 'maxFillPages'] as const) {
+    safeInteger(input.limits[field], `limits.${field}`, true);
   }
-  validateWindow(input.checkpointWindow, 'checkpointWindow', false);
-  validateWindow(input.reconciliationWindow, 'reconciliationWindow', true);
-  validatePlan(input.plan, input);
   return input;
 }
 
@@ -432,6 +357,7 @@ export function createHyperliquidTestnetExecutor(
   const runtime = factory();
   requireCondition(runtime !== null && typeof runtime === 'object'
     && typeof runtime.attempts?.resolve === 'function'
+    && typeof runtime.prepareAttempt === 'function'
     && typeof runtime.coordinator?.execute === 'function', 'INVALID_ATTEMPT',
   'executor runtime factory returned incomplete ports');
   return Object.freeze({
@@ -441,7 +367,8 @@ export function createHyperliquidTestnetExecutor(
       if (resolved === undefined) {
         throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
       }
-      const input = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
+      const handoff = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
+      const input = runtime.prepareAttempt(handoff);
       return sanitizeResult(request, await runtime.coordinator.execute(input));
     },
   });

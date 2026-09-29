@@ -1,5 +1,10 @@
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
+  HyperliquidExecutionPlanner,
+  type HyperliquidExecutionPlannerOptions,
+} from '@naryx/adapter-hyperliquid';
+import { adapterRef, versionedManifestRef } from '@naryx/protocol-types';
+import {
   HYPERLIQUID_SERVER_SIGNER_SCOPE,
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
   HyperliquidSdkTestnetOrderSubmitter,
@@ -15,6 +20,7 @@ import {
 } from './hyperliquid-testnet-evidence-http.js';
 import {
   type HyperliquidTestnetExecutorRuntimeFactory,
+  type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 import { HyperliquidSqliteDurableJournal } from './hyperliquid-sqlite-journal.js';
@@ -44,6 +50,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly signer?: HyperliquidServerSigner;
   readonly transportFactory?: () => HyperliquidTestnetExchangeTransport;
   readonly fetchImplementation?: typeof fetch;
+  readonly currentTimeMs?: () => number;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -83,24 +90,36 @@ function enabled(environment: NodeJS.ProcessEnv): boolean {
   throw new Error(`${HYPERLIQUID_TESTNET_EXECUTION_ENABLED_ENV} must be true or false`);
 }
 
-function boundAttempts(
-  source: HyperliquidTestnetTrustedAttemptProvider,
-  agentWallet: `0x${string}`,
-  expectedAccount: HyperliquidSubmissionAccount,
-): HyperliquidTestnetTrustedAttemptProvider {
-  return Object.freeze({
-    async resolve(attemptId: string) {
-      const attempt = await source.resolve(attemptId);
-      if (attempt === undefined) return undefined;
-      if (attempt.agentWallet !== agentWallet
-        || attempt.account.masterAccount !== expectedAccount.masterAccount
-        || attempt.account.tradingAccount !== expectedAccount.tradingAccount
-        || attempt.account.accountKind !== expectedAccount.accountKind) {
-        throw new Error('trusted attempt does not match configured Testnet agent and account');
-      }
-      return attempt;
-    },
+function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidExecutionPlannerOptions {
+  const marketRef = (value: Readonly<Record<string, unknown>>) => ({
+    adapter: adapterRef({
+      adapterId: value.adapterId as string,
+      adapterManifestVersion: value.adapterManifestVersion as number,
+      adapterManifestHash: value.adapterManifestHash as string,
+    }),
+    venue: versionedManifestRef(
+      value.venueId as string,
+      value.venueManifestVersion as number,
+      value.venueManifestHash as string,
+    ),
+    market: versionedManifestRef(
+      value.marketId as string,
+      value.marketManifestVersion as number,
+      value.marketManifestHash as string,
+    ),
+    assetId: value.assetId as number,
+    sizeDecimals: value.sizeDecimals as number,
   });
+  return {
+    environment: 'testnet',
+    seriesIdentity: {
+      domain: attempt.admission.order.domain,
+      seriesManifestHash: attempt.seriesManifestHash,
+      executionClassManifestHash: attempt.executionClassManifestHash,
+    },
+    spot: marketRef(attempt.market.spot),
+    perpetual: marketRef(attempt.market.perpetual),
+  };
 }
 
 export async function loadHyperliquidTestnetExecutorRuntime(
@@ -127,6 +146,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   const expectedAgent = address(environment, 'NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS');
   const expectedAccount = account(environment);
   const journalPath = required(environment, 'NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB');
+  const signerLeaseId = required(environment, 'NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID');
   const keeperOrigin = required(environment, 'NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN');
   const attempts = dependencies.attempts;
   const signer = dependencies.signer;
@@ -155,8 +175,52 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     const submitter = new HyperliquidSdkTestnetOrderSubmitter(signer, transport);
     const submission = new HyperliquidTestnetPackageSubmissionService(journal, submitter);
     const coordinator = new HyperliquidTestnetRuntimeCoordinator(evidence, submission);
+    const currentTimeMs = dependencies.currentTimeMs ?? Date.now;
     const runtime = Object.freeze({
-      attempts: boundAttempts(attempts, expectedAgent, expectedAccount),
+      attempts,
+      prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff) {
+        const now = currentTimeMs();
+        if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');
+        const nowMs = BigInt(now);
+        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission);
+        const context = journal.submissionContext({
+          account: expectedAccount,
+          agentWallet: expectedAgent,
+          signerLeaseId,
+          nowMs,
+        });
+        const startTimeMs = Math.max(0, now - attempt.limits.maxEvidenceAgeMs);
+        return Object.freeze({
+          expectedVersion: context.expectedVersion,
+          attemptId: attempt.attemptId,
+          agentWallet: expectedAgent,
+          signerLeaseId,
+          plan,
+          account: expectedAccount,
+          nonce: context.nonce,
+          nowMs,
+          vaultAddress: expectedAccount.accountKind === 'SUBACCOUNT'
+            ? expectedAccount.tradingAccount : null,
+          binding: {
+            spotUniverseIndex: attempt.market.spot.universeIndex,
+            spotTokenIndex: attempt.market.spot.tokenIndex,
+            perpetualAssetIndex: attempt.market.perpetual.assetIndex,
+            quoteTokenIndex: attempt.market.quoteTokenIndex,
+          },
+          checkpointWindow: {
+            startTimeMs, endTimeMs: now, nowMs: now,
+            maxEvidenceAgeMs: attempt.limits.maxEvidenceAgeMs,
+            maxSnapshotSkewMs: attempt.limits.maxSnapshotSkewMs,
+            maxFillPages: attempt.limits.maxFillPages,
+          },
+          reconciliationWindow: {
+            startTimeMs: now, endTimeMs: now, nowMs: now,
+            maxEvidenceAgeMs: attempt.limits.maxEvidenceAgeMs,
+            maxSnapshotSkewMs: attempt.limits.maxSnapshotSkewMs,
+            maxFillPages: attempt.limits.maxFillPages,
+          },
+        });
+      },
       coordinator,
     });
     return Object.freeze({

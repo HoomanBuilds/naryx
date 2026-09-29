@@ -30,11 +30,8 @@ function preparationOptions() {
     domain: domainRef("hypercore:testnet", 1, "11".repeat(32)),
     solverId: "solver-hypercore-testnet-v1",
     solverVerificationKey: "22".repeat(32),
-    account: {
-      masterAccount: `0x${"33".repeat(20)}` as const,
-      tradingAccount: `0x${"44".repeat(20)}` as const,
-      accountKind: "SUBACCOUNT" as const,
-    },
+    seriesManifestHash: "23".repeat(32),
+    executionClassManifestHash: "24".repeat(32),
     market: {
       spot: {
         adapterId: "hypercore-spot-v1",

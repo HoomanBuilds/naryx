@@ -130,7 +130,6 @@ export {
   HyperliquidTestnetRuntimeClientError,
   createHyperliquidTestnetAttemptPreparationPort,
   createHyperliquidTestnetEvidenceRuntime,
-  type HyperliquidTestnetAccountBinding,
   type HyperliquidTestnetAttemptPreparation,
   type HyperliquidTestnetAttemptPreparationOptions,
   type HyperliquidTestnetEvidenceHttpOptions,

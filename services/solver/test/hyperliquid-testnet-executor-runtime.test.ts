@@ -11,6 +11,7 @@ import {
   type HyperliquidServerSigner,
   type HyperliquidTestnetExchangeTransport,
   type HyperliquidTestnetRuntimeCoordinatorInput,
+  type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from '../src/index.js';
 
@@ -47,9 +48,11 @@ function attempts(
   return {
     resolve: async (attemptId) => ({
       attemptId,
-      agentWallet: agent,
-      account: { masterAccount, tradingAccount: trading, accountKind: 'SUBACCOUNT' },
-    }) as unknown as HyperliquidTestnetRuntimeCoordinatorInput,
+      admission: { agent, trading },
+      seriesManifestHash: '11'.repeat(32),
+      executionClassManifestHash: '12'.repeat(32),
+      market: {}, limits: {}, selectedAtMs: 1,
+    }) as unknown as HyperliquidTestnetAttemptHandoff,
   };
 }
 
@@ -58,6 +61,7 @@ function enabledEnvironment(databasePath: string): NodeJS.ProcessEnv {
     NARYX_HYPERLIQUID_TESTNET_EXECUTION_ENABLED: 'true',
     NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT: 'TESTNET',
     NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS: agentWallet,
+    NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID: 'solver-process-1',
     NARYX_HYPERLIQUID_TESTNET_MASTER_ACCOUNT: masterAccount,
     NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT: tradingAccount,
     NARYX_HYPERLIQUID_TESTNET_ACCOUNT_KIND: 'SUBACCOUNT',
@@ -114,8 +118,8 @@ test('composes the pinned transport, durable journal, evidence client, and bound
     const runtime = loaded.runtimeFactory?.();
     assert.ok(runtime);
     const resolved = await runtime.attempts.resolve('attempt-runtime-0001');
-    assert.equal(resolved?.agentWallet, agentWallet);
-    assert.equal(resolved?.account.tradingAccount, tradingAccount);
+    assert.equal((resolved?.admission as unknown as { agent: string }).agent, agentWallet);
+    assert.equal((resolved?.admission as unknown as { trading: string }).trading, tradingAccount);
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });
@@ -149,7 +153,7 @@ test('rejects environment and signer mismatches before transport creation', asyn
   }
 });
 
-test('rejects a trusted attempt with a different configured account identity', async () => {
+test('does not accept account identity from the API attempt handoff', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'naryx-hyperliquid-runtime-binding-'));
   const databasePath = join(directory, 'submission.sqlite');
   const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(databasePath), {
@@ -160,8 +164,10 @@ test('rejects a trusted attempt with a different configured account identity', a
   try {
     const runtime = loaded.runtimeFactory?.();
     assert.ok(runtime);
-    await assert.rejects(async () => runtime.attempts.resolve('attempt-runtime-0002'),
-      /does not match configured Testnet agent and account/);
+    const resolved = await runtime.attempts.resolve('attempt-runtime-0002');
+    assert.equal((resolved?.admission as unknown as { trading: string }).trading,
+      `0x${'55'.repeat(20)}`);
+    assert.equal('account' in (resolved as unknown as Record<string, unknown>), false);
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });

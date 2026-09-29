@@ -734,6 +734,7 @@ export {
   type HyperliquidTestnetExecutorResult,
   type HyperliquidTestnetExecutorRuntime,
   type HyperliquidTestnetExecutorRuntimeFactory,
+  type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 export {
