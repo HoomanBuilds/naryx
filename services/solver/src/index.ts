@@ -22,6 +22,14 @@ import {
   type HyperliquidPlanCommitments,
 } from '@naryx/adapter-hyperliquid';
 
+export {
+  EvmLocalExecutionAuthorizationService,
+  type AuthorizedEvmLocalExecution,
+  type EvmLocalExecutionAuthorizationChain,
+  type EvmLocalExecutionAuthorizationInput,
+  type EvmLocalExecutionSigner,
+} from './evm-local-execution-authorization.js';
+
 export const HYPERLIQUID_TESTNET_EXCHANGE_URL = TESTNET_API_URL;
 export const HYPERLIQUID_SERVER_SIGNER_SCOPE = 'SERVER_SIDE_HYPERLIQUID_TESTNET_AGENT';
 export const HYPERLIQUID_RECONCILIATION_COLLECTOR =

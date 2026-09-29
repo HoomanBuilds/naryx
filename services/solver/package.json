@@ -29,13 +29,15 @@
   },
   "dependencies": {
     "@naryx/adapter-core": "file:../../packages/adapter-core",
+    "@naryx/adapter-evm": "file:../../packages/adapters/evm",
     "@naryx/adapter-hyperliquid": "file:../../packages/adapters/hyperliquid",
     "@naryx/adapter-solana": "file:../../packages/adapters/solana",
     "@naryx/protocol-types": "file:../../packages/protocol-types",
     "@nktkas/hyperliquid": "0.33.3",
     "@solana/web3.js": "1.99.0",
     "better-sqlite3": "13.0.3",
-    "bs58": "6.0.0"
+    "bs58": "6.0.0",
+    "viem": "2.56.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",
