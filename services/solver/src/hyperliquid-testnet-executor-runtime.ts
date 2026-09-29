@@ -25,6 +25,12 @@ import {
 } from './hyperliquid-testnet-executor-http.js';
 import { HyperliquidSqliteDurableJournal } from './hyperliquid-sqlite-journal.js';
 import {
+  HyperliquidAuthorityFenceStore,
+  HyperliquidSdkTestnetAuthorityReader,
+  HyperliquidTestnetAuthorityPreflight,
+  type HyperliquidTestnetAuthorityReadPort,
+} from './hyperliquid-testnet-authority.js';
+import {
   HyperliquidSdkTestnetMarketReadClient,
   HyperliquidTestnetMarketPreflight,
   type HyperliquidTestnetMarketQualificationConfig,
@@ -58,6 +64,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly fetchImplementation?: typeof fetch;
   readonly currentTimeMs?: () => number;
   readonly marketReader?: HyperliquidTestnetMarketReadPort;
+  readonly authorityReader?: HyperliquidTestnetAuthorityReadPort;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -122,6 +129,27 @@ function booleanValue(environment: NodeJS.ProcessEnv, name: string): boolean {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw new Error(`${name} must be true or false`);
+}
+
+function integerList(environment: NodeJS.ProcessEnv, name: string): readonly number[] {
+  const values = required(environment, name).split(',');
+  const parsed = values.map((value) => {
+    if (!/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`${name} must be comma-separated integers`);
+    const integer = Number(value);
+    if (!Number.isSafeInteger(integer)) throw new Error(`${name} contains an unsafe integer`);
+    return integer;
+  });
+  if (new Set(parsed).size !== parsed.length) throw new Error(`${name} must not contain duplicates`);
+  return Object.freeze(parsed);
+}
+
+function nameList(environment: NodeJS.ProcessEnv, name: string): readonly string[] {
+  const values = required(environment, name).split(',');
+  if (values.some((value) => !/^[A-Za-z0-9@._:/-]{1,64}$/.test(value))
+    || new Set(values).size !== values.length) {
+    throw new Error(`${name} must contain unique comma-separated market names`);
+  }
+  return Object.freeze(values);
 }
 
 function marketQualificationConfig(
@@ -248,8 +276,40 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   }
 
   const journal = new HyperliquidSqliteDurableJournal({ databasePath: journalPath });
+  const authorityStore = new HyperliquidAuthorityFenceStore(journalPath);
   try {
     const currentTimeMs = dependencies.currentTimeMs ?? Date.now;
+    const expectedLeverageMode = required(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_EXPECTED_LEVERAGE_MODE',
+    );
+    if (expectedLeverageMode !== 'cross' && expectedLeverageMode !== 'isolated') {
+      throw new Error('NARYX_HYPERLIQUID_TESTNET_EXPECTED_LEVERAGE_MODE must be cross or isolated');
+    }
+    const authorityPreflight = new HyperliquidTestnetAuthorityPreflight(
+      dependencies.authorityReader ?? new HyperliquidSdkTestnetAuthorityReader(currentTimeMs),
+      authorityStore,
+      Object.freeze({
+        account: expectedAccount,
+        approvedAgent: expectedAgent,
+        incidentBufferMs: positiveInteger(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_AUTHORITY_INCIDENT_BUFFER_MS', 604_800_000,
+        ),
+        expectedPortfolioMarginEnabled: booleanValue(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_EXPECTED_PORTFOLIO_MARGIN_ENABLED',
+        ),
+        expectedPerpetualLeverageMode: expectedLeverageMode,
+        allowedSpotTokenIndices: integerList(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_SPOT_TOKEN_INDICES',
+        ),
+        allowedPerpetualCoins: nameList(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS',
+        ),
+        maxSnapshotAgeMs: positiveInteger(
+          environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_SNAPSHOT_AGE_MS', 60_000,
+        ),
+      }),
+      currentTimeMs,
+    );
     const marketPreflight = new HyperliquidTestnetMarketPreflight(
       dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient(),
       qualificationConfig,
@@ -267,6 +327,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       attempts,
       async preflight(attempt: HyperliquidTestnetAttemptHandoff) {
         const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission);
+        await authorityPreflight.qualify(attempt.admission);
         await marketPreflight.qualify({
           plan,
           binding: {
@@ -331,9 +392,13 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         account: expectedAccount,
       }),
       runtimeFactory: () => runtime,
-      close: () => journal.close(),
+      close: () => {
+        authorityStore.close();
+        journal.close();
+      },
     });
   } catch (error) {
+    authorityStore.close();
     journal.close();
     throw error;
   }

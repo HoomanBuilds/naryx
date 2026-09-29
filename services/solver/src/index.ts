@@ -765,6 +765,15 @@ export {
   type HyperliquidTestnetExecutorRuntimeStatus,
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './hyperliquid-testnet-executor-runtime.js';
+export {
+  HyperliquidAuthorityFenceStore,
+  HyperliquidSdkTestnetAuthorityReader,
+  HyperliquidTestnetAuthorityPreflight,
+  type HyperliquidAuthorityFenceState,
+  type HyperliquidTestnetAuthorityConfig,
+  type HyperliquidTestnetAuthorityReadPort,
+  type HyperliquidTestnetAuthoritySnapshot,
+} from './hyperliquid-testnet-authority.js';
 export { loadHyperliquidTestnetAgentSigner } from './hyperliquid-testnet-agent-key.js';
 export {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
