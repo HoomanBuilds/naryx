@@ -983,3 +983,11 @@ export {
   type SizeQuote,
   type ExecutablePackageIndex,
 } from './market-data.js';
+
+export {
+  SOLVER_REQUEST_VERSION,
+  SOLVER_REQUEST_METHODS,
+  solverRequestDigest,
+  type SolverRequestMethod,
+  type SolverRequestInput,
+} from './solver-request.js';

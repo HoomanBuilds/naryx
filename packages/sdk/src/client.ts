@@ -38,7 +38,7 @@ const BASE_URL = /^(https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?|http:\/\/(127\.0\.0\.1|l
 /** The minimal fetch surface the client needs, so any runtime or test double can supply it. */
 export type FetchLike = (
   url: string,
-  init: { readonly method: 'GET' | 'POST'; readonly headers: Readonly<Record<string, string>>; readonly body?: string },
+  init: { readonly method: 'GET' | 'POST' | 'PUT'; readonly headers: Readonly<Record<string, string>>; readonly body?: string },
 ) => Promise<{ readonly status: number; readonly headers: { get(name: string): string | null }; text(): Promise<string> }>;
 
 export interface NaryxClientOptions {
@@ -408,6 +408,24 @@ export class NaryxClient {
       }
     }
     return body as unknown as ExecutablePackageIndex & { readonly asOfValue: bigint };
+  }
+
+  /** Live solver shard quotes for a market, each with its quote mode and settlement class. */
+  async getMarketQuotes(packageMarketId: string): Promise<readonly Record<string, unknown>[]> {
+    checkId(packageMarketId, 'package market id');
+    const body = record(await this.#request('GET', `/v1/markets/${packageMarketId}/quotes`), 'quotes');
+    const modes = new Set(['IMPLIED', 'EXECUTION_COMMITMENT', 'FIRM_SIMULATED', 'FIRM_ONCHAIN']);
+    return list(body.quotes, 'quotes').map((entry, index) => {
+      const quote = record(entry, `quotes[${index}]`);
+      if (typeof quote.quoteMode !== 'string' || !modes.has(quote.quoteMode)) throw new NaryxEvidenceError('every quote must carry a known quote mode');
+      return quote;
+    });
+  }
+
+  async getSolverCapacity(solverId: string): Promise<Record<string, unknown>> {
+    const body = record(await this.#request('GET', `/v1/solvers/${checkId(solverId, 'solver id')}/capacity`), 'capacity');
+    if (body.solverId !== solverId) throw new NaryxEvidenceError('capacity is for another solver');
+    return body;
   }
 
   async getImpliedProvenance(packageMarketId: string): Promise<readonly Record<string, unknown>[]> {

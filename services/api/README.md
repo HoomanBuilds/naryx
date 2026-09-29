@@ -53,6 +53,17 @@ The private solver handoff is GET `/internal/solver/hyperliquid-testnet/attempts
 
 Query parameters are whitelisted, POST bodies are protocol JSON of at most 64 KiB, other methods are refused with 405, CORS allows any origin without credentials, and requests are rate limited per client window. `SqliteRegistryStore` holds immutable domain, market, package-template, and solver capability manifests; a solver manifest is admitted only with a valid Ed25519 operator signature over its manifest hash, an unchanged operator key, and a non-decreasing nonce.
 
+`createSolverApiHandler` serves the authenticated solver API under `/v1/solver/`, enabled by `NARYX_SOLVER_API_DB` together with `NARYX_REGISTRY_DB`. Manifest registration (`PUT /v1/solver/capability-manifest`, `POST /v1/solver/register`) is authenticated by the operator signature inside the manifest. Every other request carries `X-Naryx-Solver`, `X-Naryx-Key`, `X-Naryx-Timestamp`, `X-Naryx-Nonce`, and `X-Naryx-Signature`: an Ed25519 signature by a registered, currently valid quote key over `solverRequestDigest`, which binds the method, path and query, body hash, solver, key, time, and a single-use nonce. Requests outside a 30-second skew, reused nonces, unknown or expired keys, and altered bodies are refused with 401.
+
+| Route | Rule |
+|---|---|
+| `PUT /v1/solver/quote-shards/{templateId.marketGroupId}`, `GET` the same | the shard must also be signed by a valid quote key over its hash, belong to the caller, and advance its sequence; an identical repeat is idempotent |
+| `POST .../replace`, `.../heartbeat`, `.../cancel-all`, `POST /v1/solver/kill-switch` | each may change only its own fields: levels and reference, heartbeat expiry, all levels removed, or the kill switch activated |
+| `PUT /v1/solver/capacity`, `POST /v1/solver/reservations`, `POST /v1/solver/reservations/release` | per-scope capacity ledgers; evidence only moves forward and commitments cannot exceed it |
+| `POST /v1/solver/quotes`, `POST /v1/solver/quotes/cancel` | implied liquidity is derived server-side from its leg sources, so a solver cannot post a price its sources do not imply; only the owner can cancel |
+
+Public reads add `GET /v1/markets/{id}/quotes` (live shard levels with quote mode, settlement class, and reference; killed shards, stale heartbeats, and expired levels are excluded) and `GET /v1/solvers/{id}/capacity`.
+
 It may depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`. It must not depend on `apps/web`, `packages/sdk`, or another service's internals.
 
 The Hyperliquid Testnet evidence runtime is separate from execution. It resolves an attempt only from the durable selected intent, canonical order, and signed quote stores, verifies the exact domain, solver, route, market metadata, bounds, and expiry, and can call only loopback solver preparation and reconciliation endpoints. The executor client is independently gated and owns no signer. Neither partial runtime is reported ready by itself.

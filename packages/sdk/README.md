@@ -21,7 +21,9 @@ Served evidence is never trusted where it can be checked:
 
 The package also re-exports kernel verifiers an integrator can run with no Naryx service in the loop: allocation hashing and verification, candle aggregation, the executable index, the privacy profile, route-decision replay, sealed-auction replay and result verification, selective-disclosure verification, and strategy state hashing.
 
-Solver, order submission, receipt, and outcome calls are added as the API exposes them; no terminal-internal route is wrapped.
+`NaryxSolverClient` covers the authenticated solver API: manifest registration, quote shards (put, replace, heartbeat, cancel-all, kill switch), capacity evidence and reservations, and book quotes. It signs every request over `solverRequestDigest` with a fresh random nonce through a caller-supplied `sign` function, so the quote key stays in the solver's own signer and never enters the SDK. `NaryxClient` also reads live market quotes, rejecting any quote without a known quote mode, and solver capacity.
+
+Order submission, receipt, and outcome calls are added as the API exposes them; no terminal-internal route is wrapped.
 
 ```sh
 npm test

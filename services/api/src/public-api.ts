@@ -29,6 +29,7 @@ import type {
 } from "@naryx/protocol-types";
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
+import type { SqliteSolverApiStore } from "./solver-api-store.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
@@ -54,10 +55,14 @@ export type PublicExchangeStore = Pick<
 
 export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest">;
 
+export type PublicSolverState = Pick<SqliteSolverApiStore, "shardsForMarket" | "capacityStatus">;
+
 export interface PublicApiOptions {
   readonly exchange: PublicExchangeStore;
   /** Optional: registry routes answer 503 when no registry is configured. */
   readonly registry?: PublicRegistryStore;
+  /** Optional: solver quote and capacity routes answer 503 without it. */
+  readonly solverState?: PublicSolverState;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -160,7 +165,7 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
  * derived market number. It returns false for paths it does not own, including /v1/solver/.
  */
 export function createPublicApiHandler(options: PublicApiOptions) {
-  const { exchange, registry, nowValue } = options;
+  const { exchange, registry, solverState, nowValue } = options;
   const { windowMs, maxRequests } = options.rateLimit;
   if (!Number.isSafeInteger(windowMs) || windowMs < 1 || !Number.isSafeInteger(maxRequests) || maxRequests < 1) {
     throw new Error("Public API rate limit must be positive.");
@@ -187,6 +192,18 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function requireRegistry(): PublicRegistryStore {
     if (registry === undefined) throw new RequestError(503, "REGISTRY_UNAVAILABLE", "No registry is configured on this server.");
     return registry;
+  }
+
+  function requireSolverState(): PublicSolverState {
+    if (solverState === undefined) throw new RequestError(503, "SOLVER_STATE_UNAVAILABLE", "No solver state is configured on this server.");
+    return solverState;
+  }
+
+  /** Server time in a quote's own unit; slot-timed quotes cannot be judged against wall-clock time. */
+  function nowIn(unit: string): bigint | undefined {
+    if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
+    if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
+    return undefined;
   }
 
   function book(classId: string) {
@@ -280,6 +297,47 @@ export function createPublicApiHandler(options: PublicApiOptions) {
             label: entry.implied?.evidence === "SOLVER_BACKED_IMPLIED" || entry.implied?.evidence === "RESERVATION_BACKED_IMPLIED" ? "EXECUTABLE" : "INDICATIVE",
           })),
       };
+    }
+    if ((match = /^\/v1\/markets\/([^/]+)\/quotes$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const classId = id(match[1], "Package market id");
+      // Offsets are relative to each shard's signed reference state; only live levels are listed.
+      const quotes = requireSolverState()
+        .shardsForMarket(classId)
+        .filter(({ shard }) => shard.killSwitchState === "INACTIVE")
+        .flatMap(({ shard, shardHashHex }) =>
+          shard.quoteLevels.flatMap((level) => {
+            const now = nowIn(level.validUntilUnit);
+            if (now === undefined || now >= level.validUntilValue || now >= shard.heartbeatExpiry) return [];
+            return [{
+              solverId: shard.solverId,
+              shardHash: shardHashHex,
+              shardSequence: shard.shardSequence,
+              referenceStateHash: toHex(shard.referenceStateHash),
+              referenceSequence: shard.referenceSequence,
+              levelId: level.levelId,
+              direction: level.direction,
+              size: level.size,
+              referenceOffset: level.referenceOffset,
+              maximumFee: level.maximumFee,
+              quoteMode: level.quoteMode,
+              settlementClass: level.settlementClass,
+              reservationPolicy: level.reservationPolicy,
+              validUntilUnit: level.validUntilUnit,
+              validUntilValue: level.validUntilValue,
+            }];
+          }),
+        );
+      return { packageMarketId: classId, quotes };
+    }
+    if ((match = /^\/v1\/solvers\/([^/]+)\/capacity$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const solverId = id(match[1], "Solver id");
+      const manifest = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
+      if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver.");
+      const now = nowIn(manifest.document.validityUnit);
+      if (now === undefined) throw new RequestError(409, "VALIDITY_UNIT_UNSUPPORTED", "Slot-timed capacity cannot be judged against wall-clock time.");
+      return { solverId, asOfValue: now, scopes: requireSolverState().capacityStatus(solverId, now) };
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-depth$/.exec(path)) !== null) {
       onlyParams(url, []);

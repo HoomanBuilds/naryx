@@ -15,6 +15,7 @@ export {
   type RegisteredDocumentView,
   type VerifiedAllocation,
 } from './client.js';
+export { NaryxSolverClient, type NaryxSolverClientOptions } from './solver-client.js';
 
 // Evidence verifiers an integrator can run without any Naryx service in the loop.
 export {

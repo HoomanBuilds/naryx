@@ -73,7 +73,10 @@ export {
   type PublicApiOptions,
   type PublicExchangeStore,
   type PublicRegistryStore,
+  type PublicSolverState,
 } from "./public-api.js";
+export { createSolverApiHandler, type SolverApiOptions } from "./solver-api.js";
+export { shardIdOf, SolverApiStoreError, SqliteSolverApiStore } from "./solver-api-store.js";
 export {
   RegistryStoreError,
   SqliteRegistryStore,

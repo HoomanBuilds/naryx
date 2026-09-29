@@ -9,6 +9,8 @@ import type {
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
 import { SqliteRegistryStore } from "./registry-store.js";
+import { createSolverApiHandler } from "./solver-api.js";
+import { SqliteSolverApiStore } from "./solver-api-store.js";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
 const DEFAULT_REQUESTS_PER_MINUTE = 120;
@@ -19,6 +21,7 @@ export interface PublicMarketRuntime {
   readonly handler: (request: IncomingMessage, response: ServerResponse) => boolean;
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
+  readonly solverApiEnabled: boolean;
   close(): void;
 }
 
@@ -94,8 +97,8 @@ function loadSupport(path: string): {
 /**
  * Loads the public v1 API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly "true", and
  * then requires an absolute exchange database path and support manifest; NARYX_REGISTRY_DB, when
- * set, enables the registry routes. It serves reads and side-effect-free computation only; it
- * never registers documents or accepts orders.
+ * set, enables the registry routes, and NARYX_SOLVER_API_DB (which requires the registry) enables
+ * the authenticated solver API. Public routes serve reads and side-effect-free computation only.
  */
 export function loadPublicMarketRuntime(
   environment: NodeJS.ProcessEnv = process.env,
@@ -112,33 +115,49 @@ export function loadPublicMarketRuntime(
   }
   const requestsPerMinute = Number(rawRate);
   const registryPath = environment.NARYX_REGISTRY_DB;
-  const store = new SqlitePackageExchangeStore(databasePath, {
-    seriesSupport: support.seriesSupport,
-    executionClassSupport: support.executionClassSupport,
-  });
-  let registry: SqliteRegistryStore | undefined;
-  try {
-    registry = registryPath === undefined || registryPath === "" ? undefined : new SqliteRegistryStore(absolute(registryPath, "NARYX_REGISTRY_DB"));
-  } catch (error) {
-    store.close();
-    throw error;
+  const solverPath = environment.NARYX_SOLVER_API_DB;
+  const optional = (value: string | undefined) => (value === undefined || value === "" ? undefined : value);
+  if (optional(solverPath) !== undefined && optional(registryPath) === undefined) {
+    throw new PublicMarketConfigError("NARYX_SOLVER_API_DB requires NARYX_REGISTRY_DB, which authenticates solvers.");
   }
-  const nowValue = support.clockUnit === "UNIX_SECONDS"
-    ? () => BigInt(Math.floor(clockMs() / 1_000))
-    : () => BigInt(Math.floor(clockMs()));
-  return Object.freeze({
-    handler: createPublicApiHandler({
+  const opened: { close(): void }[] = [];
+  try {
+    const store = new SqlitePackageExchangeStore(databasePath, {
+      seriesSupport: support.seriesSupport,
+      executionClassSupport: support.executionClassSupport,
+    });
+    opened.push(store);
+    const registry = optional(registryPath) === undefined ? undefined : new SqliteRegistryStore(absolute(registryPath, "NARYX_REGISTRY_DB"));
+    if (registry !== undefined) opened.push(registry);
+    const solverState = optional(solverPath) === undefined ? undefined : new SqliteSolverApiStore(absolute(solverPath, "NARYX_SOLVER_API_DB"));
+    if (solverState !== undefined) opened.push(solverState);
+    const nowValue = support.clockUnit === "UNIX_SECONDS"
+      ? () => BigInt(Math.floor(clockMs() / 1_000))
+      : () => BigInt(Math.floor(clockMs()));
+    const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
+    const publicHandler = createPublicApiHandler({
       exchange: store,
       ...(registry === undefined ? {} : { registry }),
+      ...(solverState === undefined ? {} : { solverState }),
       nowValue,
-      rateLimit: { windowMs: 60_000, maxRequests: requestsPerMinute },
+      rateLimit,
       clockMs,
-    }),
-    clockUnit: support.clockUnit,
-    requestsPerMinute,
-    close: () => {
-      store.close();
-      registry?.close();
-    },
-  });
+    });
+    const solverHandler = solverState === undefined || registry === undefined
+      ? undefined
+      : createSolverApiHandler({ store: solverState, registry, exchange: store, nowValue, clockMs, rateLimit });
+    return Object.freeze({
+      handler: (request: IncomingMessage, response: ServerResponse) =>
+        (solverHandler?.(request, response) ?? false) || publicHandler(request, response),
+      clockUnit: support.clockUnit,
+      requestsPerMinute,
+      solverApiEnabled: solverHandler !== undefined,
+      close: () => {
+        for (const resource of opened.reverse()) resource.close();
+      },
+    });
+  } catch (error) {
+    for (const resource of opened.reverse()) resource.close();
+    throw error;
+  }
 }
