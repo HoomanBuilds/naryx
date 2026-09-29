@@ -54,6 +54,7 @@ export const HASH_DOMAIN = Object.freeze({
   SOLVER_COMMITMENT_ROOT: 'CON/v1/solver-commitment-root',
   RFQ_DECISION: 'CON/v1/rfq-decision',
   PERFORMANCE_BOND: 'CON/v1/performance-bond',
+  NETTING_PROOF: 'CON/v1/netting-proof',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

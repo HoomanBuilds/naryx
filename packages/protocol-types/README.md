@@ -244,6 +244,41 @@ nothing under a market or portfolio kill switch. Performance bonds cover only na
 faults, claim each fault evidence hash once, cap payouts per claim and in aggregate, pay after an
 undisputed window or an explicit resolution, and release the unpaid remainder once after expiry.
 
+## Clearing and portfolio intelligence
+
+`normalizedPosition` validates a read-only venue snapshot: owner, domain, venue, market, underlying,
+signed base quantity, exact mark and liquidation prices, collateral, maintenance requirement,
+shared dependencies, risk domain, and close routes with executable size, cost, delay, authority,
+and any shared rollback boundary. Fields a venue does not expose are listed as unknown, never
+invented. Normalizing a position grants no authority over it.
+
+`buildExposureGraph` aggregates net and gross delta per underlying and concentration per shared
+dependency and risk domain in one accounting asset, with no implicit conversion. Close-cost
+estimates walk the cheapest usable routes, round partial use up, and report incomplete when
+authority is missing or a dependency failed. `stressPortfolio` applies joint price, liquidity, and
+dependency shocks with every term rounded against the portfolio and lists positions that cannot
+close rather than assigning them a cost.
+
+`evaluateMarginOffset` starts from venue-local requirements plus the recovery reserve. An offset
+applies only when every leg is current and fully known, the clearing account holds close authority,
+all legs close inside one shared rollback boundary within the time limit, no dependency failed,
+recovery capital is reserved, and the risk domain is within its cap. The permitted amount is the
+hedged notional times the offset rate after every haircut, capped at the headroom above the absolute
+floor. Any failed condition removes the offset, and without funded credit the result is advisory.
+Historical correlation never enters.
+
+`planCoordinatedDeRisk` cancels risk-increasing orders, reduces the leg nearest liquidation together
+with its linked hedges by the same fraction in the closing direction, labels the reduction atomic
+only when the legs share a rollback boundary, and locks for manual recovery whenever state or a
+liquidation boundary is unknown. It never claims control of a venue's native liquidation.
+
+`netObligations` crosses opposite obligations per underlying pro rata in lot increments, routes only
+the net externally, and hashes the allocation under `CON/v1/netting-proof`. `verifyNetting` proves
+`gross = internal + external` per obligation, balanced internal crossing per underlying, and that no
+share flips direction or exceeds its obligation. `compressPackageLegs` keeps the original graph
+beside the compressed one. Recovery capital is reserved per risk domain, and a claim that exceeds its
+own domain's reserve rejects instead of borrowing from another.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
