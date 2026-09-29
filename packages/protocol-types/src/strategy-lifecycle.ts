@@ -288,6 +288,8 @@ export interface StrategyTransitionReceipt {
   readonly atValue: bigint;
   /** An internal operation changes labels and accounting only; no external venue position moved. */
   readonly externalPositionsMoved: boolean;
+  /** Liabilities settled by an exit, with their evidence; empty for every other operation. */
+  readonly liabilitySettlements: readonly { readonly liabilityId: ProtocolId; readonly settledAtoms: bigint; readonly evidenceHash: CommitmentHash }[];
   readonly receiptHash: CommitmentHash;
 }
 
@@ -334,6 +336,7 @@ function accept(
   prior: readonly StrategyState[],
   states: readonly StrategyState[],
   externalPositionsMoved: boolean,
+  liabilitySettlements: readonly { readonly liabilityId: ProtocolId; readonly settledAtoms: bigint; readonly evidenceHash: CommitmentHash }[] = [],
 ): StrategyTransitionResult {
   const priorStateHashes = Object.freeze(prior.map(strategyStateHash));
   const nextStateHashes = Object.freeze(states.map(strategyStateHash));
@@ -345,6 +348,13 @@ function accept(
     writer.writeArray(nextStateHashes, (element, hash) => encodeCommitmentHash(element, hash, 'nextStateHash'));
     writer.writeU64(context.atValue, 'atValue');
     writer.writeBool(externalPositionsMoved, 'externalPositionsMoved');
+    if (operation === 'EXIT') {
+      writer.writeArray(liabilitySettlements, (element, settlement) => {
+        encodeProtocolId(element, settlement.liabilityId, 'liabilityId');
+        element.writeU128(settlement.settledAtoms, 'settledAtoms');
+        encodeCommitmentHash(element, settlement.evidenceHash, 'evidenceHash');
+      }, 'liabilitySettlements');
+    }
   });
   return Object.freeze({
     accepted: true as const,
@@ -356,6 +366,7 @@ function accept(
       nextStateHashes,
       atValue: context.atValue,
       externalPositionsMoved,
+      liabilitySettlements: Object.freeze([...liabilitySettlements]),
       receiptHash: commitmentHash(domainHash(HASH_DOMAIN.STRATEGY_TRANSITION, payload), 'strategyTransitionReceipt'),
     }),
   });
@@ -427,7 +438,11 @@ export function splitStrategy(
   const secondLegs = state.legs.map((leg, index) => ({ ...leg, signedQuantityAtoms: leg.signedQuantityAtoms - (firstLegs[index] as StrategyLeg).signedQuantityAtoms }));
   if ([...firstLegs, ...secondLegs].some((leg) => leg.signedQuantityAtoms === 0n)) return reject('SPLIT_TOO_SMALL');
   if (!ratioHolds(firstLegs) || !ratioHolds(secondLegs)) return reject('RATIO_BROKEN');
-  const firstLiabilities = state.liabilities.map((liability) => ({ ...liability, atoms: (liability.atoms * share) / BPS }));
+  // Liabilities follow the realized exposure split, not the nominal share, so lot flooring on the
+  // legs cannot leave one child carrying debt for exposure it does not hold.
+  const realizedNumerator = absBigInt((firstLegs[0] as StrategyLeg).signedQuantityAtoms);
+  const realizedDenominator = absBigInt((state.legs[0] as StrategyLeg).signedQuantityAtoms);
+  const firstLiabilities = state.liabilities.map((liability) => ({ ...liability, atoms: (liability.atoms * realizedNumerator) / realizedDenominator }));
   const secondLiabilities = state.liabilities.map((liability, index) => ({ ...liability, atoms: liability.atoms - (firstLiabilities[index] as StrategyLiability).atoms }));
   const child = (strategyId: ProtocolId, legs: StrategyLeg[], liabilities: StrategyLiability[]) =>
     strategyState({ ...state, strategyId, legs, liabilities, delegations: [], stateVersion: 1n });
@@ -435,8 +450,13 @@ export function splitStrategy(
 }
 
 function sameTerms(left: StrategyState, right: StrategyState): boolean {
-  const legKey = (leg: StrategyLeg) => [leg.legId, leg.underlyingId, leg.instrumentId, leg.venueId, leg.lotAtoms, leg.ratioNumerator, leg.ratioDenominator].join('|');
-  const liabilityKey = (liability: StrategyLiability) => [liability.liabilityId, liability.kind, liability.assetId, liability.transferable].join('|');
+  // Compared field by field: identifiers are arbitrary ASCII, so joined strings could collide.
+  const sameLeg = (a: StrategyLeg, b: StrategyLeg) =>
+    a.legId === b.legId && a.underlyingId === b.underlyingId && a.instrumentId === b.instrumentId &&
+    a.venueId === b.venueId && a.lotAtoms === b.lotAtoms && a.ratioNumerator === b.ratioNumerator &&
+    a.ratioDenominator === b.ratioDenominator;
+  const sameLiability = (a: StrategyLiability, b: StrategyLiability) =>
+    a.liabilityId === b.liabilityId && a.kind === b.kind && a.assetId === b.assetId && a.transferable === b.transferable;
   return (
     left.ownerId === right.ownerId &&
     left.subaccountId === right.subaccountId &&
@@ -444,8 +464,10 @@ function sameTerms(left: StrategyState, right: StrategyState): boolean {
     left.executionClassId === right.executionClassId &&
     left.venuePositionsTransferable === right.venuePositionsTransferable &&
     left.legalTransferRestricted === right.legalTransferRestricted &&
-    left.legs.map(legKey).join(';') === right.legs.map(legKey).join(';') &&
-    left.liabilities.map(liabilityKey).join(';') === right.liabilities.map(liabilityKey).join(';')
+    left.legs.length === right.legs.length &&
+    left.legs.every((leg, index) => sameLeg(leg, right.legs[index] as StrategyLeg)) &&
+    left.liabilities.length === right.liabilities.length &&
+    left.liabilities.every((liability, index) => sameLiability(liability, right.liabilities[index] as StrategyLiability))
   );
 }
 
@@ -558,6 +580,10 @@ export function rebalanceStrategy(
     legs.push({ ...leg, signedQuantityAtoms: quantity });
   }
   if (!ratioHolds(legs)) return reject('RATIO_BROKEN');
+  // The change bound is supplied with the request, so it cannot limit a delegate. Growing gross
+  // exposure is an INCREASE, which only the owner may authorize.
+  const gross = (values: readonly StrategyLeg[]) => values.reduce((sum, leg) => sum + absBigInt(leg.signedQuantityAtoms), 0n);
+  if (protocolId(context.actorId) !== state.ownerId && gross(legs) > gross(state.legs)) return reject('UNAUTHORIZED');
   return accept('REBALANCE', context, [state], [next(state, { legs })], true);
 }
 
@@ -588,13 +614,43 @@ export function resizeStrategy(
   return accept(resize.operation, context, [state], [next(state, { legs })], true);
 }
 
-/** Closes every leg together and settles every liability. A closed strategy accepts no further operation. */
-export function exitStrategy(input: StrategyState, context: StrategyTransitionContext): StrategyTransitionResult {
+export interface LiabilitySettlement {
+  readonly liabilityId: string;
+  readonly settledAtoms: bigint;
+  /** Hash of the repayment or release evidence. */
+  readonly evidenceHash: Uint8Array | string;
+}
+
+/**
+ * Closes every leg together. A liability is removed only when a settlement for its full amount,
+ * with evidence, is supplied; anything unsettled stays on the closed strategy as an open
+ * liability rather than disappearing. A closed strategy accepts no further operation.
+ */
+export function exitStrategy(
+  input: StrategyState,
+  context: StrategyTransitionContext,
+  settlements: readonly LiabilitySettlement[] = [],
+): StrategyTransitionResult {
   const state = strategyState(input);
   const failure = authorize(state, context, 'EXIT');
   if (failure !== undefined) return reject(failure);
+  requireArray(settlements, 'exitStrategy.settlements', STRATEGY_MAX_LEGS * 4);
+  const settled = new Map<string, { liabilityId: ProtocolId; settledAtoms: bigint; evidenceHash: CommitmentHash }>();
+  for (const [index, settlement] of settlements.entries()) {
+    const at = `exitStrategy.settlements[${index}]`;
+    object(settlement, at);
+    const liabilityId = protocolId(settlement.liabilityId, `${at}.liabilityId`);
+    const liability = state.liabilities.find((value) => value.liabilityId === liabilityId);
+    if (liability === undefined) throw new MalformedInputError(`${at}.liabilityId`, 'no such liability');
+    if (settled.has(liabilityId)) throw new MalformedInputError(`${at}.liabilityId`, 'a liability is settled twice');
+    const settledAtoms = unsigned(settlement.settledAtoms, U128_BITS, `${at}.settledAtoms`);
+    if (settledAtoms !== liability.atoms) throw new MalformedInputError(`${at}.settledAtoms`, 'a settlement covers the full liability');
+    settled.set(liabilityId, { liabilityId, settledAtoms, evidenceHash: commitmentHash(settlement.evidenceHash, `${at}.evidenceHash`) });
+  }
   const legs = state.legs.map((leg) => ({ ...leg, signedQuantityAtoms: 0n }));
-  return accept('EXIT', context, [state], [next(state, { open: false, legs, liabilities: [], delegations: [] })], true);
+  const liabilities = state.liabilities.filter((liability) => !settled.has(liability.liabilityId));
+  const ordered = state.liabilities.flatMap((liability) => settled.get(liability.liabilityId) ?? []);
+  return accept('EXIT', context, [state], [next(state, { open: false, legs, liabilities, delegations: [] })], true, ordered);
 }
 
 /**

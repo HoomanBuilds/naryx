@@ -471,6 +471,7 @@ export {
   type StrategyTransitionContext,
   type StrategyTransitionReceipt,
   type StrategyTransitionResult,
+  type LiabilitySettlement,
 } from './strategy-lifecycle.js';
 
 export {

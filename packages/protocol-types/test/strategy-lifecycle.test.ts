@@ -143,6 +143,8 @@ describe('internal transfer, split, and merge', () => {
     assert.deepEqual(quantities(first), { perp: -30n, spot: 30n });
     assert.deepEqual(quantities(second), { perp: -70n, spot: 70n });
     assert.equal((first.liabilities[0]?.atoms ?? 0n) + (second.liabilities[0]?.atoms ?? 0n), 5_000n);
+    // Liabilities follow the realized 30/70 exposure split, not the nominal 33.33 percent share.
+    assert.deepEqual([first.liabilities[0]?.atoms, second.liabilities[0]?.atoms], [1_500n, 3_500n]);
     for (const child of [first, second]) {
       assert.equal(child.stateVersion, 1n);
       assert.equal(child.delegations.length, 0);
@@ -166,6 +168,16 @@ describe('internal transfer, split, and merge', () => {
     const [relabeled] = accepted(assignInternal(second, ctx(second, 'owner'), 'desk-b')).states as [StrategyState];
     assert.equal(rejected(mergeStrategies(first, relabeled, [ctx(first, 'owner'), ctx(relabeled, 'owner')], 'carry-2')), 'TERMS_DIFFER');
     assert.equal(rejected(mergeStrategies(first, second, [ctx(first, 'bot'), ctx(second, 'bot')], 'carry-2')), 'UNAUTHORIZED');
+  });
+
+  test('merge compares terms field by field, so separator characters cannot collide', () => {
+    const leg = (underlyingId: string, instrumentId: string) => ({
+      legId: 'x', underlyingId, instrumentId, venueId: 'v', signedQuantityAtoms: 10n, lotAtoms: 10n, ratioNumerator: 1n, ratioDenominator: 1n,
+    });
+    const shape = { ...base, legs: [leg('b|c', 'd')], liabilities: [], delegations: [] };
+    const first = strategyState({ ...shape, strategyId: 's1' });
+    const second = strategyState({ ...shape, strategyId: 's2', legs: [leg('b', 'c|d')] });
+    assert.equal(rejected(mergeStrategies(first, second, [ctx(first, 'owner'), ctx(second, 'owner')], 's3')), 'TERMS_DIFFER');
   });
 });
 
@@ -221,11 +233,23 @@ describe('roll, migration, rebalance, and resize', () => {
       { legId: 'spot', signedQuantityAtoms: spot, maximumChangeAtoms: bound },
       { legId: 'perp', signedQuantityAtoms: perp, maximumChangeAtoms: bound },
     ];
-    const [next] = accepted(rebalanceStrategy(base, ctx(base, 'bot'), target(120n, -120n))).states as [StrategyState];
+    const [next] = accepted(rebalanceStrategy(base, ctx(base, 'owner'), target(120n, -120n))).states as [StrategyState];
     assert.deepEqual(quantities(next), { perp: -120n, spot: 120n });
+    const [smaller] = accepted(rebalanceStrategy(base, ctx(base, 'bot'), target(90n, -90n))).states as [StrategyState];
+    assert.deepEqual(quantities(smaller), { perp: -90n, spot: 90n });
     assert.equal(rejected(rebalanceStrategy(base, ctx(base, 'bot'), target(120n, -110n))), 'RATIO_BROKEN');
     assert.equal(rejected(rebalanceStrategy(base, ctx(base, 'bot'), target(100n, 10n, 200n))), 'DIRECTION_FLIP');
-    assert.equal(rejected(rebalanceStrategy(base, ctx(base, 'bot'), target(150n, -150n))), 'CHANGE_EXCEEDS_BOUND');
+    assert.equal(rejected(rebalanceStrategy(base, ctx(base, 'owner'), target(150n, -150n))), 'CHANGE_EXCEEDS_BOUND');
+  });
+
+  test('a rebalance delegate cannot grow exposure with a self-supplied change bound', () => {
+    const huge = (2n ** 128n) - 1n;
+    const targets = [
+      { legId: 'spot', signedQuantityAtoms: 100_000n, maximumChangeAtoms: huge },
+      { legId: 'perp', signedQuantityAtoms: -100_000n, maximumChangeAtoms: huge },
+    ];
+    assert.equal(rejected(rebalanceStrategy(base, ctx(base, 'bot'), targets)), 'UNAUTHORIZED');
+    assert.equal(rejected(resizeStrategy(base, ctx(base, 'bot'), { operation: 'INCREASE', changeBps: 5_000n })), 'UNAUTHORIZED');
   });
 
   test('resize scales every leg and rejects a change that breaks the ratio', () => {
@@ -249,12 +273,26 @@ describe('roll, migration, rebalance, and resize', () => {
 });
 
 describe('exit and external divergence', () => {
-  test('exit closes every leg and liability, then nothing else is accepted', () => {
+  test('exit keeps an unsettled liability visible on the closed strategy', () => {
     const { states, receipt } = accepted(exitStrategy(base, ctx(base, 'bot')));
+    const [closed] = states as [StrategyState];
+    assert.equal(closed.open, false);
+    assert.deepEqual(closed.liabilities.map((liability) => [liability.liabilityId, liability.atoms]), [['loan', 5_000n]]);
+    assert.equal(receipt.liabilitySettlements.length, 0);
+    assert.throws(() => exitStrategy(base, ctx(base, 'bot'), [{ liabilityId: 'loan', settledAtoms: 4_999n, evidenceHash: new Uint8Array(32).fill(3) }]), /full liability/);
+    assert.throws(() => exitStrategy(base, ctx(base, 'bot'), [{ liabilityId: 'other', settledAtoms: 1n, evidenceHash: new Uint8Array(32).fill(3) }]), /no such liability/);
+  });
+
+  test('exit closes every leg and settled liability, then nothing else is accepted', () => {
+    const settlement = { liabilityId: 'loan', settledAtoms: 5_000n, evidenceHash: new Uint8Array(32).fill(3) };
+    const { states, receipt } = accepted(exitStrategy(base, ctx(base, 'bot'), [settlement]));
     const [closed] = states as [StrategyState];
     assert.equal(closed.open, false);
     assert.deepEqual(quantities(closed), { perp: 0n, spot: 0n });
     assert.equal(closed.liabilities.length, 0);
+    assert.equal(receipt.liabilitySettlements[0]?.settledAtoms, 5_000n);
+    const unsettledReceipt = accepted(exitStrategy(base, ctx(base, 'bot'))).receipt;
+    assert.notEqual(toHex(receipt.receiptHash), toHex(unsettledReceipt.receiptHash));
     assert.equal(closed.delegations.length, 0);
     assert.equal(receipt.externalPositionsMoved, true);
     assert.equal(rejected(assignInternal(closed, ctx(closed, 'owner'), 'desk-b')), 'STRATEGY_CLOSED');
