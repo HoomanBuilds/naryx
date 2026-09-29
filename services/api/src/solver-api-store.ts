@@ -171,6 +171,22 @@ export class SqliteSolverApiStore {
     );
   }
 
+  /**
+   * Every commitment the solver holds in a capacity ledger that is healthy at `atValue`, keyed by
+   * lowercase hex id. Commitments in expired or over-committed ledgers back nothing.
+   */
+  outstandingCommitments(solverId: string, atValue: bigint): ReadonlyMap<string, { readonly firm: boolean }> {
+    const rows = this.db.prepare("SELECT ledger_json FROM solver_capacity WHERE solver_id = ?").all(solverId) as { ledger_json: string }[];
+    const outstanding = new Map<string, { readonly firm: boolean }>();
+    for (const row of rows) {
+      const stored = parseProtocolJson(row.ledger_json) as SolverCapacityLedger;
+      const ledger = { record: solverCapacityRecord(stored.record), commitments: stored.commitments };
+      if (solverCapacityStatus(ledger, atValue).state !== "ACTIVE") continue;
+      for (const commitment of ledger.commitments) outstanding.set(toHex(commitment.commitmentId), { firm: commitment.firm });
+    }
+    return outstanding;
+  }
+
   private ledger(solverId: string, scope: string): SolverCapacityLedger | undefined {
     const row = this.db.prepare("SELECT ledger_json FROM solver_capacity WHERE solver_id = ? AND scope = ?").get(solverId, scope) as
       | { ledger_json: string }

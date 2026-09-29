@@ -240,8 +240,15 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
         { sourceId: "perp-1", sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(901) },
       ],
     };
-    const posted = await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote });
+    // Made-up reservations and a missing expiry never become executable depth.
+    assert.equal(((await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote, expiresAtValue: NOW + 60n })).body.error as { code: string }).code, "BACKING_NOT_OUTSTANDING");
+    assert.equal((await commit(501, 20n)).status, 200);
+    assert.equal((await commit(901, 20n)).status, 200);
+    assert.equal((await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote })).status, 400);
+    const posted = await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote, expiresAtValue: NOW + 60n });
     assert.equal(posted.status, 200, JSON.stringify(toProtocolJson(posted.body)));
+    const reused = { ...quote, legSources: quote.legSources.map((source) => ({ ...source, priceTicks: source.side === "ASK" ? 1_200n : source.priceTicks })) };
+    assert.equal(((await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote: reused, expiresAtValue: NOW + 60n })).body.error as { code: string }).code, "BACKING_IN_USE");
     const entryId = posted.body.entryId as string;
     assert.equal(api.exchange.getBook(CLASS)?.entries[0]?.participantId, "solver-a");
     const cancelled = await api.call("POST", "/v1/solver/quotes/cancel", { packageMarketId: CLASS, entryId });

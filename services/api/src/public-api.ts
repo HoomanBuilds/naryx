@@ -323,9 +323,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       const classId = id(match[1], "Package market id");
       // Offsets are relative to each shard's signed reference state; only live levels are listed.
+      // A shard is listed only while its solver's manifest is live and still holds a valid quote key.
+      const quotable = (solverId: string) => {
+        const manifest = registry?.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId)?.document;
+        if (manifest === undefined) return false;
+        const now = nowIn(manifest.validityUnit);
+        return now !== undefined && now < manifest.validUntilValue &&
+          manifest.quoteVerificationKeys.some((key) => now >= key.validFromValue && now < key.validUntilValue);
+      };
       const quotes = requireSolverState()
         .shardsForMarket(classId)
-        .filter(({ shard }) => shard.killSwitchState === "INACTIVE")
+        .filter(({ shard }) => shard.killSwitchState === "INACTIVE" && quotable(shard.solverId))
         .flatMap(({ shard, shardHashHex }) =>
           shard.quoteLevels.flatMap((level) => {
             const now = nowIn(level.validUntilUnit);

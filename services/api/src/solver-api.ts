@@ -37,7 +37,7 @@ const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHARD_ID = /^[A-Za-z0-9._:-]{1,257}$/;
 
 export interface SolverApiOptions {
-  readonly store: Pick<SqliteSolverApiStore, "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity">;
+  readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidity" | "cancelEntry">;
@@ -100,6 +100,11 @@ function header(request: IncomingMessage, name: string): string {
 }
 
 /** Converts server time to a manifest's validity unit; slot-timed manifests cannot authenticate wall-clock requests. */
+function requireObject(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new SolverRequestError(400, "INVALID_REQUEST", `${name} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
 function manifestNow(manifest: SolverCapabilityManifestInput, nowMs: number): bigint {
   if (manifest.validityUnit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(nowMs / 1_000));
   if (manifest.validityUnit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(nowMs);
@@ -278,14 +283,16 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     }
     if (method === "POST" && path === "/v1/solver/reservations") {
       const body = decodeBody(raw);
-      const scope = { domain: body.domain as DomainRef, asset: body.asset as AssetRef };
-      const result = store.commitCapacity(solverId, scope, body.commitment as SolverCapacityCommitmentInput);
+      const scope = { domain: requireObject(body.domain, "domain") as unknown as DomainRef, asset: requireObject(body.asset, "asset") as unknown as AssetRef };
+      // The commitment time is the server's, so a solver cannot backdate past expired evidence.
+      const commitment = { ...requireObject(body.commitment, "commitment"), atValue: nowValue() } as unknown as SolverCapacityCommitmentInput;
+      const result = store.commitCapacity(solverId, scope, commitment);
       if (!result.accepted) throw new SolverRequestError(409, result.rejection, "The capacity commitment was rejected.");
       return result;
     }
     if (method === "POST" && path === "/v1/solver/reservations/release") {
       const body = decodeBody(raw);
-      store.releaseCapacity(solverId, { domain: body.domain as DomainRef, asset: body.asset as AssetRef }, body.commitmentId as string);
+      store.releaseCapacity(solverId, { domain: requireObject(body.domain, "domain") as unknown as DomainRef, asset: requireObject(body.asset, "asset") as unknown as AssetRef }, body.commitmentId as string);
       return { released: true };
     }
     if (method === "POST" && path === "/v1/solver/quotes") {
@@ -298,12 +305,39 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (book === undefined || policy === undefined) throw new SolverRequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
       // The quote is derived here from its sources, so a solver cannot post a price its sources do not imply.
       const quote = deriveImpliedPackageQuote(policy, body.quote as ImpliedPackageQuoteInput);
+      const now = nowValue();
+      if (typeof body.expiresAtValue !== "bigint" || body.expiresAtValue <= now) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
+      }
+      // Executable depth must be backed by what this solver actually holds: every source
+      // reservation, or the solver commitment, must be outstanding in a healthy capacity ledger,
+      // and none may already back another live entry in this book.
+      const outstanding = store.outstandingCommitments(solverId, now);
+      const backing = quote.evidence === "SOLVER_BACKED_IMPLIED"
+        ? [quote.solverCommitment]
+        : quote.sources.map((source) => source.reservationId);
+      for (const id of backing) {
+        const held = id === undefined ? undefined : outstanding.get(toHex(id));
+        if (held === undefined) throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A reservation or commitment is not outstanding for this solver.");
+        if (quote.evidence === "SOLVER_BACKED_IMPLIED" && !held.firm) throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Solver-backed implication needs a firm commitment.");
+      }
+      const inUse = new Set(
+        book.entries
+          .filter((entry) => entry.implied !== undefined && (entry.expiresAtValue === undefined || entry.expiresAtValue > now))
+          .flatMap((entry) => [
+            ...(entry.implied?.solverCommitment === undefined ? [] : [toHex(entry.implied.solverCommitment)]),
+            ...(entry.implied?.sources ?? []).flatMap((source) => (source.reservationId === undefined ? [] : [toHex(source.reservationId)])),
+          ]),
+      );
+      if (backing.some((id) => id !== undefined && inUse.has(toHex(id)))) {
+        throw new SolverRequestError(409, "BACKING_IN_USE", "A reservation or commitment already backs live liquidity in this book.");
+      }
       const entry = books.addImpliedLiquidity(classId, {
         quote,
         participantId: solverId,
         commonControlGroupId: manifest.commonControlGroupId,
-        ...(typeof body.expiresAtValue === "bigint" ? { expiresAtValue: body.expiresAtValue } : {}),
-        nowValue: nowValue(),
+        expiresAtValue: body.expiresAtValue,
+        nowValue: now,
       });
       return { entryId: toHex(entry.entryId), priceTicks: entry.priceTicks, quantity: entry.quantity };
     }
