@@ -21,6 +21,10 @@ const event = (locator: string, kind: ObservedChainEvent["kind"], attemptId = "a
   evidenceGrade: "CONSENSUS_VERIFIED",
   fieldsHashHex: hash(`fields-${locator}-${kind}`),
 });
+const at = (height: number, label: string) => ({ height, blockHashHex: hash(label) });
+const MAIN = ["g", "b1", "b2", "b3"];
+const finality = (index: SqliteReceiptIndex, confirmed: number, finalized: number, labels = MAIN) =>
+  index.advanceFinality(SOL, at(confirmed, labels[confirmed] ?? "missing"), at(finalized, labels[finalized] ?? "missing"));
 const block = (height: number, label: string, parentLabel: string, events: readonly ObservedChainEvent[] = []): ObservedBlock => ({
   height,
   blockHashHex: hash(label),
@@ -63,11 +67,11 @@ test("a settlement is provisional until every contributing block is finalized", 
     chain(index);
     let record = index.packageRecord("pkg-1");
     assert.deepEqual([record.outcome, record.finality], ["SETTLED", "OBSERVED"]);
-    index.advanceFinality(SOL, 3, 1);
+    finality(index, 3, 1);
     record = index.packageRecord("pkg-1");
     assert.deepEqual(record.events.map((item) => item.finality), ["FINALIZED", "CONFIRMED"]);
     assert.equal(record.finality, "CONFIRMED");
-    index.advanceFinality(SOL, 3, 3);
+    finality(index, 3, 3);
     assert.equal(index.packageRecord("pkg-1").finality, "FINALIZED");
     assert.equal(index.packageRecord("pkg-1").weakestEvidenceGrade, "CONSENSUS_VERIFIED");
   });
@@ -87,15 +91,30 @@ test("a reorg orphans displaced settlement evidence and a return to the old bran
   });
 });
 
+test("finality names a block hash, so a fork block the index still holds is never finalized", () => {
+  withIndex((index) => {
+    index.ingestBlock(SOL, block(0, "g", "none"));
+    index.ingestBlock(SOL, block(1, "b1", "g"));
+    index.ingestBlock(SOL, block(2, "fork2", "b1", [event("txf:0", "SETTLED")]));
+    // The chain finalized its real block 2 before the index replayed the reorg away from the fork.
+    assert.throws(() => index.advanceFinality(SOL, at(2, "b2"), at(2, "b2")), { code: "FORK_MISMATCH" });
+    assert.equal(index.packageRecord("pkg-1").finality, "OBSERVED");
+    assert.deepEqual(index.ingestBlock(SOL, block(2, "b2", "b1")), { status: "REORGED", orphanedBlocks: 1 });
+    index.advanceFinality(SOL, at(2, "b2"), at(2, "b2"));
+    // The abandoned settlement is gone rather than final.
+    assert.equal(index.packageRecord("pkg-1").outcome, "UNKNOWN");
+  });
+});
+
 test("finalized history is never rewritten and finality never moves backward", () => {
   withIndex((index) => {
     chain(index);
-    index.advanceFinality(SOL, 3, 2);
+    finality(index, 3, 2);
     assert.throws(() => index.ingestBlock(SOL, block(2, "b2z", "b1")), { code: "FINALIZED_CONFLICT" });
     assert.equal(index.packageRecord("pkg-1").outcome, "SETTLED");
-    assert.throws(() => index.advanceFinality(SOL, 3, 1), { code: "FINALITY_REGRESSION" });
-    assert.throws(() => index.advanceFinality(SOL, 9, 3), { code: "UNKNOWN_BLOCK" });
-    assert.throws(() => index.advanceFinality(SOL, 2, 3), { code: "INVALID_INPUT" });
+    assert.throws(() => finality(index, 3, 1), { code: "FINALITY_REGRESSION" });
+    assert.throws(() => finality(index, 9, 3), { code: "UNKNOWN_BLOCK" });
+    assert.throws(() => finality(index, 2, 3), { code: "INVALID_INPUT" });
     assert.deepEqual(index.ingestBlock(SOL, block(3, "b3y", "b2")), { status: "REORGED", orphanedBlocks: 1 });
   });
 });
@@ -165,13 +184,13 @@ test("the record rebuilds identically from the canonical chain after the index i
     chain(first);
     first.ingestBlock(SOL, block(3, "b3x", "b2"));
     first.ingestBlock(SOL, block(3, "b3", "b2", [event("tx3:0", "SETTLED")]));
-    first.advanceFinality(SOL, 3, 3);
+    finality(first, 3, 3);
     const original = first.packageRecord("pkg-1").recordHashHex;
     first.close();
     rmSync(join(dir, "first.sqlite"));
     const rebuilt = new SqliteReceiptIndex(join(dir, "second.sqlite"));
     chain(rebuilt);
-    rebuilt.advanceFinality(SOL, 3, 3);
+    finality(rebuilt, 3, 3);
     assert.equal(rebuilt.packageRecord("pkg-1").recordHashHex, original);
     rebuilt.close();
   } finally {

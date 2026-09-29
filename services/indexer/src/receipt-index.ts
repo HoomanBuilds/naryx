@@ -152,6 +152,12 @@ function checkedEvent(event: ObservedChainEvent, index: number): ObservedChainEv
  * change below the finalized height, which is raised as a safety fault rather than rewritten.
  * It holds no signer and has no broadcast path.
  */
+/** A finality checkpoint: the height and the block hash the chain reports at that height. */
+export interface FinalityCheckpoint {
+  readonly height: number;
+  readonly blockHashHex: string;
+}
+
 export class SqliteReceiptIndex {
   private readonly db: Database.Database;
 
@@ -264,19 +270,34 @@ export class SqliteReceiptIndex {
     });
   }
 
-  /** Moves confirmation and finality forward only, and only onto canonical blocks the index holds. */
-  advanceFinality(domainIdInput: string, confirmedHeight: number, finalizedHeight: number): void {
+  /**
+   * Moves confirmation and finality forward only. Each checkpoint names both a height and the block
+   * hash the chain reports there, and the index must hold exactly that block as canonical at that
+   * height, so a stale fork block can never be finalized before the reorg is replayed.
+   */
+  advanceFinality(domainIdInput: string, confirmedCheckpoint: FinalityCheckpoint, finalizedCheckpoint: FinalityCheckpoint): void {
     const domainId = id(domainIdInput, "domainId");
-    const confirmed = height(confirmedHeight, "confirmedHeight");
-    const finalized = height(finalizedHeight, "finalizedHeight");
+    if (typeof confirmedCheckpoint !== "object" || confirmedCheckpoint === null || typeof finalizedCheckpoint !== "object" || finalizedCheckpoint === null) {
+      throw new ReceiptIndexError("INVALID_INPUT", "Finality checkpoints must name a height and block hash.");
+    }
+    const confirmed = height(confirmedCheckpoint.height, "confirmedHeight");
+    const finalized = height(finalizedCheckpoint.height, "finalizedHeight");
+    const confirmedHash = hashHex(confirmedCheckpoint.blockHashHex, "confirmedBlockHashHex");
+    const finalizedHash = hashHex(finalizedCheckpoint.blockHashHex, "finalizedBlockHashHex");
     if (finalized > confirmed) throw new ReceiptIndexError("INVALID_INPUT", "Finalized height cannot exceed confirmed height.");
     this.transaction(() => {
       const current = this.ensureDomain(domainId);
       if (finalized < current.finalized) throw new ReceiptIndexError("FINALITY_REGRESSION", "Finalized height cannot move backward.");
-      const canonical = this.db
-        .prepare("SELECT 1 FROM blocks WHERE domain_id = ? AND height = ? AND canonical = 1")
-        .get(domainId, confirmed);
-      if (canonical === undefined) throw new ReceiptIndexError("UNKNOWN_BLOCK", "Confirmation must name a canonical block the index holds.");
+      const canonicalAt = this.db.prepare("SELECT block_hash FROM blocks WHERE domain_id = ? AND height = ? AND canonical = 1");
+      const heldConfirmed = canonicalAt.get(domainId, confirmed) as { block_hash: string } | undefined;
+      if (heldConfirmed === undefined) throw new ReceiptIndexError("UNKNOWN_BLOCK", "Confirmation must name a canonical block the index holds.");
+      if (heldConfirmed.block_hash !== confirmedHash) {
+        throw new ReceiptIndexError("FORK_MISMATCH", "The confirmed block is not the one the index holds; replay the reorg first.");
+      }
+      const heldFinalized = canonicalAt.get(domainId, finalized) as { block_hash: string } | undefined;
+      if (heldFinalized === undefined || heldFinalized.block_hash !== finalizedHash) {
+        throw new ReceiptIndexError("FORK_MISMATCH", "The finalized block is not the one the index holds; replay the reorg first.");
+      }
       this.db
         .prepare("UPDATE domains SET confirmed_height = ?, finalized_height = ? WHERE domain_id = ?")
         .run(Math.max(confirmed, current.confirmed), finalized, domainId);

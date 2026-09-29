@@ -17,6 +17,7 @@ export {
   ReceiptIndexError,
   SqliteReceiptIndex,
   type DomainIndexState,
+  type FinalityCheckpoint,
   type IngestResult,
   type ObservedBlock,
   type ObservedChainEvent,
