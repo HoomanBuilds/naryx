@@ -85,6 +85,8 @@ interface AdmissionOptions {
   readonly residualValuationPrice?: ReturnType<typeof price>;
   readonly quoteIdentity?: Uint8Array;
   readonly perpetualLimit?: ReturnType<typeof price>;
+  readonly routeExpiryValue?: bigint;
+  readonly quoteValidUntilValue?: bigint;
 }
 
 function admission(options: AdmissionOptions = {}): PackageAdmission {
@@ -198,7 +200,7 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
       orderHash,
       routeHash,
       validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
-      validUntilValue: 980n,
+      validUntilValue: options.quoteValidUntilValue ?? 980n,
       expectedTerminalResidualBaseQuantity: assetAmount(baseAsset, terminalBaseCap),
       expectedTerminalResidualQuoteValue: assetAmount(quoteAsset, terminalQuoteCap),
     },
@@ -215,7 +217,7 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
       settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
       executionPlanKind: 'HYPERCORE_BATCHED_IOC',
       routeExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
-      routeExpiryValue: 950n,
+      routeExpiryValue: options.routeExpiryValue ?? 950n,
       legs,
       actions,
       recoveryPlan: {
@@ -431,4 +433,10 @@ test('rejects a route limit that differs from the signed perpetual limit', () =>
     () => planner().compile(changed),
     /route perpetual limit does not equal the signed order limit/,
   );
+});
+
+test('the initial action expiry ends strictly before the quote validity and package expiry', () => {
+  assert.equal(planner().compile(admission()).requestExpiryMs, 950n);
+  assert.throws(() => planner().compile(admission({ routeExpiryValue: 980n })), /strictly before the quote validity/);
+  assert.throws(() => planner().compile(admission({ routeExpiryValue: 1_000n, quoteValidUntilValue: 1_200n })), /strictly before the package expiry/);
 });

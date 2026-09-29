@@ -217,11 +217,18 @@ export async function signAtomicEntryQuote(
     || terms.validUntilUnit !== validatedRoute.routeExpiryUnit) {
     fail('EXPIRY_INVALID', 'quote validity unit must equal order and route expiry units');
   }
+  // Atomic quotes end with their route. A batched route's expiry is the initial action's
+  // expiresAfter, which must end strictly before the quote validity (half-open intervals).
+  const batched = validatedOrder.settlementClass === 'BATCHED_IOC_WITH_RECOVERY';
   if (typeof terms.validUntilValue !== 'bigint'
     || terms.validUntilValue <= 0n
     || terms.validUntilValue > validatedOrder.expiryValue
-    || terms.validUntilValue > validatedRoute.routeExpiryValue) {
-    fail('EXPIRY_INVALID', 'quote validity must be positive and within order and route expiry');
+    || (batched
+      ? terms.validUntilValue <= validatedRoute.routeExpiryValue
+      : terms.validUntilValue > validatedRoute.routeExpiryValue)) {
+    fail('EXPIRY_INVALID', batched
+      ? 'quote validity must be positive, within order expiry, and strictly after the initial action expiry'
+      : 'quote validity must be positive and within order and route expiry');
   }
   if (typeof terms.quoteNonce !== 'bigint' || terms.quoteNonce <= 0n) {
     fail('BINDING_MISMATCH', 'quote nonce must be a positive integer');

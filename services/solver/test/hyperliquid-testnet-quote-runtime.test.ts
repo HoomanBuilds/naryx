@@ -194,7 +194,10 @@ test('builds and signs an explicit-residual Hyperliquid Testnet quote without ve
   assert.equal(decision.route.settlementClass, 'BATCHED_IOC_WITH_RECOVERY');
   assert.equal(decision.route.quantityPolicyClass, 'EXACT_NET');
   assert.equal(decision.route.routeExpiryUnit, 'HYPERLIQUID_UNIX_MILLISECONDS');
-  assert.equal(decision.route.routeExpiryValue, 1_400n);
+  // G-051: the initial action (route) expiry ends strictly before the quote validity.
+  assert.equal(decision.route.routeExpiryValue, 1_399n);
+  assert.equal(terms.validUntilValue, 1_400n);
+  assert.ok(decision.route.routeExpiryValue < terms.validUntilValue);
   assert.equal(decision.route.legs.every((leg) => leg.timeInForce === 'IOC'), true);
   assert.equal(terms.protocolFee.atoms, 0n);
   assert.equal(terms.solverFee.atoms, 0n);

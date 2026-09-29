@@ -256,12 +256,16 @@ function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnet
   requireOrder(order, input);
   const now = requirePositive(input.currentTimeMs(), 'currentTimeMs');
   if (now >= order.expiryValue) throw new Error('order is expired');
+  const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  // The initial action expiry (the route expiry) must end strictly before both the package expiry
+  // and the quote validity, so the quote always outlives the action it prices.
   const routeExpiryValue = [
-    order.expiryValue,
+    order.expiryValue - 1n,
     now + requirePositive(input.routeTtlMs, 'routeTtlMs'),
-    now + requirePositive(input.quoteTtlMs, 'quoteTtlMs'),
+    now + quoteTtl - 1n,
   ].reduce((left, right) => left < right ? left : right);
   if (routeExpiryValue <= now) throw new Error('configured freshness window is empty');
+  const quoteValidUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
 
   const grossSpot = order.hyperliquidGrossSpotQuantity!;
   const quoteAsset = order.maxSpotQuoteIn!.asset;
@@ -357,7 +361,7 @@ function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnet
     feePolicyVersion: input.feePolicyVersion,
     feePolicyManifestHash: input.feePolicyManifestHash,
     validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
-    validUntilValue: routeExpiryValue,
+    validUntilValue: quoteValidUntilValue,
   });
   return Object.freeze({ candidate, terms });
 }

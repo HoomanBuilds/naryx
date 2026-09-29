@@ -341,15 +341,14 @@ function requireLegBinding(
   requireCondition(leg.timeInForce === 'IOC', `${role} leg must use IOC`);
 }
 
+// The route expiry is the exact initial expiresAfter. Validity intervals are half-open, so it must
+// be strictly earlier than both the package expiry and the selected quote's validity.
 function requestExpiry(admission: PackageAdmission): bigint {
-  const expiries = [
-    admission.order.expiryValue,
-    admission.quote.validUntilValue,
-    admission.route.routeExpiryValue,
-  ];
-  const earliest = expiries.reduce((left, right) => left < right ? left : right);
-  requireCondition(earliest > 0n && earliest <= MAX_SAFE_INTEGER, 'request expiry must be a positive safe millisecond integer');
-  return earliest;
+  const initial = admission.route.routeExpiryValue;
+  requireCondition(initial > 0n && initial <= MAX_SAFE_INTEGER, 'request expiry must be a positive safe millisecond integer');
+  requireCondition(initial < admission.order.expiryValue, 'initial action expiry must be strictly before the package expiry');
+  requireCondition(initial < admission.quote.validUntilValue, 'initial action expiry must be strictly before the quote validity');
+  return initial;
 }
 
 export function hypercoreQuoteAtomsAtWirePrice(
