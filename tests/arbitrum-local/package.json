@@ -1,0 +1,17 @@
+{
+  "name": "arbitrum-local",
+  "version": "1.0.0",
+  "description": "Reproducible Naryx Arbitrum local asynchronous environment",
+  "main": "src/environment.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:environment": "node --test test/environment.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "viem": "2.56.8"
+  }
+}
