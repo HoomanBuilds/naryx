@@ -321,6 +321,30 @@ contract AtomicPackageExecutorTest is Test {
         assertEq(shortQuantity, 5);
     }
 
+    function testEveryActiveSolverSettlesOnlyWithItsOwnSignature() public {
+        vm.prank(PROPOSER);
+        solverRegistry.proposeSolver(nextSolver);
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        solverRegistry.activateSolver(nextSolver);
+        assertEq(solverRegistry.activeSolverCount(), 2);
+
+        bytes32 entryReceiptHash = _execute(_execution(ENTRY, 5, 9, 4));
+
+        AtomicPackageExecutor.Execution memory exit = _execution(EXIT, 5, 7, 4);
+        exit.nonce = 1;
+        exit.entryReceiptHash = entryReceiptHash;
+        exit.solver = nextSolver;
+        bytes memory traderSignature = _signature(traderKey, executor.traderPermitDigest(exit));
+        // One active solver cannot sign for another active solver's execution.
+        bytes memory otherSolverSignature = _signature(solverKey, executor.solverAuthorizationDigest(exit));
+        vm.expectRevert(AtomicPackageExecutor.InvalidSolverSignature.selector);
+        executor.execute(exit, traderSignature, otherSolverSignature);
+
+        executor.execute(exit, traderSignature, _signature(nextSolverKey, executor.solverAuthorizationDigest(exit)));
+        assertEq(quote.balanceOf(recipient), 11);
+    }
+
     function testSolverRotationChangesNormalAuthorizationAfterDelay() public {
         vm.prank(PROPOSER);
         solverRegistry.proposeSolver(nextSolver);
@@ -328,7 +352,10 @@ contract AtomicPackageExecutorTest is Test {
         bytes32 entryReceiptHash = _execute(_execution(ENTRY, 5, 9, 4));
         vm.warp(block.timestamp + 1);
         vm.prank(GOVERNANCE_EXECUTOR);
-        solverRegistry.activateSolver();
+        solverRegistry.activateSolver(nextSolver);
+        // Rotation is an addition followed by an immediate removal of the old solver.
+        vm.prank(PAUSER);
+        solverRegistry.removeSolver(solver);
 
         AtomicPackageExecutor.Execution memory exit = _execution(EXIT, 5, 7, 4);
         exit.nonce = 1;

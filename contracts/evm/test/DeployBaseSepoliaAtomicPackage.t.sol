@@ -47,7 +47,8 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         assertEq(domainId, script.DOMAIN_ID());
         assertEq(domainManifestVersion, 1);
         assertEq(domainManifestHash, DOMAIN_MANIFEST_HASH);
-        assertEq(deployment.solverRegistry.activeSolver(), solver);
+        assertTrue(deployment.solverRegistry.isActiveSolver(solver));
+        assertEq(deployment.solverRegistry.activeSolverCount(), 1);
         assertEq(address(deployment.resourceRegistry.config()), address(deployment.config));
         assertEq(deployment.resourceRegistry.cashCarryTemplateManifestHash(), TEMPLATE_MANIFEST_HASH);
         assertEq(address(deployment.cashCarrySeriesRegistry.resources()), address(deployment.resourceRegistry));

@@ -76,7 +76,10 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         _requireOperator(route.config, operatorAddress, true);
         _start(operatorAddress);
         _verifyDependencies(route);
-        if (route.solverRegistry.activeSolver() != route.solver) route.solverRegistry.proposeSolver(route.solver);
+        if (
+            !route.solverRegistry.isActiveSolver(route.solver)
+                && route.solverRegistry.pendingActivationTimestamp(route.solver) == 0
+        ) route.solverRegistry.proposeSolver(route.solver);
         route.resources
             .proposeRegistration(
                 _assetBinding(route, route.baseAsset, address(route.spotPort.baseToken()), 18), _control(route)
@@ -105,7 +108,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         _requireOperator(route.config, operatorAddress, false);
         _start(operatorAddress);
         _verifyDependencies(route);
-        if (route.solverRegistry.activeSolver() != route.solver) route.solverRegistry.activateSolver();
+        if (!route.solverRegistry.isActiveSolver(route.solver)) route.solverRegistry.activateSolver(route.solver);
         route.resources.activateRegistration(ResourceRegistry.ResourceKind.ASSET, route.baseAsset.subjectId);
         route.resources.activateRegistration(ResourceRegistry.ResourceKind.VENUE, route.spotVenue.subjectId);
         route.resources.activateRegistration(ResourceRegistry.ResourceKind.VENUE, route.perpetualVenue.subjectId);
@@ -297,7 +300,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
     }
 
     function _verifyActiveRoute(Route calldata route) private view {
-        if (route.solverRegistry.activeSolver() != route.solver) revert InvalidRoute();
+        if (!route.solverRegistry.isActiveSolver(route.solver)) revert InvalidRoute();
         ResourceRegistry.CashCarryAdmission memory routeAdmission =
             _admission(route, route.maximumPackageNotionalQuoteAtoms);
         route.resources.validateCashCarry(routeAdmission);

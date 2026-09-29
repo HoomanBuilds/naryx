@@ -528,10 +528,12 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         ResourceRegistry.CashCarryAdmission calldata admission,
         bytes calldata solverSignature
     ) private view {
-        address activeSolver = solverRegistry.activeSolver();
-        if (execution.solver == address(0) || execution.solver != activeSolver) revert InvalidExecution();
+        // Any solver in the active set may settle, but only with its own signature.
+        if (execution.solver == address(0) || !solverRegistry.isActiveSolver(execution.solver)) {
+            revert InvalidExecution();
+        }
         bytes32 digest = _hashTypedDataV4(_executionHash(SOLVER_AUTH_TYPEHASH, execution, _admissionHash(admission)));
-        if (ECDSA.recover(digest, solverSignature) != activeSolver) revert InvalidSolverSignature();
+        if (ECDSA.recover(digest, solverSignature) != execution.solver) revert InvalidSolverSignature();
     }
 
     function _validateDomain(Execution calldata execution) private view {

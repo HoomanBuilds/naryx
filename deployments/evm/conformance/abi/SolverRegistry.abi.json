@@ -17,20 +17,52 @@
   },
   {
     "type": "function",
-    "name": "activateSolver",
+    "name": "MAX_ACTIVE_SOLVERS",
     "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activateSolver",
+    "inputs": [
+      {
+        "name": "proposedSolver",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
   {
     "type": "function",
-    "name": "activeSolver",
+    "name": "activeSolverCount",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "address"
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activeSolvers",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address[]",
+        "internalType": "address[]"
       }
     ],
     "stateMutability": "view"
@@ -38,7 +70,13 @@
   {
     "type": "function",
     "name": "cancelSolverProposal",
-    "inputs": [],
+    "inputs": [
+      {
+        "name": "proposedSolver",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -57,26 +95,38 @@
   },
   {
     "type": "function",
-    "name": "pendingActivationTimestamp",
-    "inputs": [],
+    "name": "isActiveSolver",
+    "inputs": [
+      {
+        "name": "solver",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
-        "name": "",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "active",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
-    "name": "pendingSolver",
-    "inputs": [],
-    "outputs": [
+    "name": "pendingActivationTimestamp",
+    "inputs": [
       {
-        "name": "",
+        "name": "solver",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -95,6 +145,19 @@
     "stateMutability": "nonpayable"
   },
   {
+    "type": "function",
+    "name": "removeSolver",
+    "inputs": [
+      {
+        "name": "solver",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
     "type": "event",
     "name": "SolverActivated",
     "inputs": [
@@ -105,16 +168,16 @@
         "internalType": "address"
       },
       {
-        "name": "previousSolver",
+        "name": "solver",
         "type": "address",
         "indexed": true,
         "internalType": "address"
       },
       {
-        "name": "newSolver",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        "name": "activeSolverCount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -125,12 +188,6 @@
     "inputs": [
       {
         "name": "actor",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "activeSolver",
         "type": "address",
         "indexed": true,
         "internalType": "address"
@@ -161,12 +218,6 @@
         "internalType": "address"
       },
       {
-        "name": "activeSolver",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
         "name": "proposedSolver",
         "type": "address",
         "indexed": true,
@@ -177,6 +228,31 @@
         "type": "uint64",
         "indexed": false,
         "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SolverRemoved",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "activeSolverCount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
       }
     ],
     "anonymous": false
@@ -194,6 +270,16 @@
   {
     "type": "error",
     "name": "InvalidSolver",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SolverAlreadyActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SolverNotActive",
     "inputs": []
   },
   {
@@ -216,6 +302,11 @@
         "internalType": "uint64"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "SolverSetFull",
+    "inputs": []
   },
   {
     "type": "error",

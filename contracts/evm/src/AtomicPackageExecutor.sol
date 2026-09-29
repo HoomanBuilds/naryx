@@ -243,10 +243,12 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
     }
 
     function _validateSolver(Execution calldata execution, bytes calldata solverSignature) private view {
-        address activeSolver = solverRegistry.activeSolver();
-        if (execution.solver == address(0) || execution.solver != activeSolver) revert InvalidExecution();
+        // Any solver in the active set may settle, but only with its own signature.
+        if (execution.solver == address(0) || !solverRegistry.isActiveSolver(execution.solver)) {
+            revert InvalidExecution();
+        }
         bytes32 solverDigest = _hashTypedDataV4(_executionHash(SOLVER_AUTH_TYPEHASH, execution));
-        if (ECDSA.recover(solverDigest, solverSignature) != activeSolver) revert InvalidSolverSignature();
+        if (ECDSA.recover(solverDigest, solverSignature) != execution.solver) revert InvalidSolverSignature();
     }
 
     function _enter(Execution calldata execution) private returns (uint256 quoteSpent) {
