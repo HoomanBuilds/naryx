@@ -1,0 +1,34 @@
+{
+  "name": "@naryx/sdk",
+  "version": "0.1.0",
+  "description": "Public TypeScript client for the Naryx public API with local evidence verification.",
+  "scripts": {
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "private": true,
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "@naryx/protocol-types": "file:../protocol-types"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2"
+  }
+}

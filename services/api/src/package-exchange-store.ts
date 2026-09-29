@@ -68,6 +68,15 @@ export type PackageExchangeSubmitResult =
     }
   | { readonly accepted: false; readonly rejection: PackageMatchRejection };
 
+export interface PackageTapeRecord {
+  readonly cursor: number;
+  readonly allocation: PackageAllocation;
+  readonly allocationHashHex: string;
+  readonly recordedAtMs: number;
+}
+
+export const MAX_TAPE_PAGE = 100;
+
 export interface PackageExchangeStoreOptions {
   readonly seriesSupport: EconomicStrategySeriesSupportInput;
   readonly executionClassSupport: SeriesExecutionClassSupportInput;
@@ -494,6 +503,36 @@ export class SqlitePackageExchangeStore {
       .get(commitmentHash(takerOrderId)) as { allocation_json: unknown; execution_class_id: unknown } | undefined;
     if (row === undefined) return undefined;
     return this.decodeAllocation(jsonText(row.execution_class_id, "execution_class_id"), row.allocation_json);
+  }
+
+  /**
+   * Allocations for one book in recorded order after an opaque cursor. The cursor is the storage
+   * row order, so a reader resumes exactly where it stopped and never sees an allocation twice.
+   */
+  allocationTape(executionClassId: string, afterCursor: number, limit: number): readonly PackageTapeRecord[] {
+    if (!Number.isSafeInteger(afterCursor) || afterCursor < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_TAPE_PAGE) {
+      throw new PackageExchangeStoreError("INVALID_INPUT", `Tape cursor must be nonnegative and limit between 1 and ${MAX_TAPE_PAGE}.`);
+    }
+    if (this.getBook(executionClassId) === undefined) {
+      throw new PackageExchangeStoreError("BOOK_NOT_FOUND", "Package book is not open.");
+    }
+    const rows = this.db
+      .prepare(
+        "SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations WHERE execution_class_id = ? AND rowid > ? ORDER BY rowid LIMIT ?",
+      )
+      .all(executionClassId, afterCursor, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
+    return Object.freeze(
+      rows.map((row) => {
+        if (typeof row.cursor !== "number" || typeof row.recorded_at_ms !== "number") {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored tape row is invalid.");
+        }
+        const allocation = this.decodeAllocation(executionClassId, row.allocation_json);
+        if (!bytesEqual(packageAllocationHash(allocation), hashBytes(row.allocation_hash, "allocation_hash"))) {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored allocation hash does not match its content.");
+        }
+        return Object.freeze({ cursor: row.cursor, allocation, allocationHashHex: toHex(packageAllocationHash(allocation)), recordedAtMs: row.recorded_at_ms });
+      }),
+    );
   }
 
   // ---------------------------------------------------------------- internals

@@ -59,13 +59,20 @@ export {
   type PackageLifecycleStoreOptions,
 } from "./package-lifecycle-store.js";
 export {
+  MAX_TAPE_PAGE,
   PackageExchangeStoreError,
   SqlitePackageExchangeStore,
   type ExchangeDocumentKind,
   type PackageExchangeStoreOptions,
   type PackageExchangeSubmitResult,
+  type PackageTapeRecord,
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";
+export {
+  createPublicMarketRequestHandler,
+  type PublicMarketApiOptions,
+  type PublicMarketStore,
+} from "./public-market-api.js";
 export {
   InternalOrderCoordinator,
   TerminalOrderValidationError,
