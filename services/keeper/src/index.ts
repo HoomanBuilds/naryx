@@ -995,3 +995,4 @@ export function reconcileHyperliquidPackageAttempt(
   }
   return recoveryRequired(attempt, 'OUTCOME_OUT_OF_BOUNDS', evidence);
 }
+export * from './code-hash-monitor.js';
