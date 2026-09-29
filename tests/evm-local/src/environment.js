@@ -40,6 +40,8 @@ const artifacts = Object.freeze({
   executor: artifact("AtomicPackageExecutor.sol/AtomicPackageExecutor.json"),
 });
 
+export const evmLocalArtifacts = artifacts;
+
 async function availablePort() {
   const server = createServer();
   await new Promise((resolvePromise, reject) => {
