@@ -3,12 +3,14 @@ pub mod activate_unpause;
 pub mod cancel_domain_proposal;
 pub mod cancel_unpause;
 pub mod cash_carry_strategy;
+pub(crate) mod ed25519_signature;
 pub mod execute_cash_and_carry;
 #[cfg(feature = "conformance")]
 pub mod execute_conformance_atomic;
 pub mod execute_firm_cash_and_carry;
 pub mod initialize;
 pub mod pause_entry;
+pub(crate) mod program_identity;
 pub mod propose_domain;
 pub mod resource_registry;
 pub mod schedule_unpause;

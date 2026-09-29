@@ -800,7 +800,7 @@ fn signature_binds_accounts_and_quantity() {
 }
 
 #[test]
-fn signature_instruction_must_use_canonical_local_offsets() {
+fn signature_instruction_accepts_safe_local_offsets() {
     let mut env = setup(true);
     let mut instructions = env.execution_ix(
         [0x85; 32],
@@ -813,14 +813,34 @@ fn signature_instruction_must_use_canonical_local_offsets() {
     for (offset, value) in [(2, 49u16), (6, 17), (10, 113)] {
         instructions[0].data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
-    let failure = env.execute(instructions).unwrap_err();
-    assert_eq!(
-        failure.err,
-        TransactionError::InstructionError(
-            1,
-            InstructionError::Custom(u32::from(ErrorCode::ConformanceSignatureInstructionInvalid))
-        )
+    env.execute(instructions).unwrap();
+}
+
+#[test]
+fn signature_instruction_resolves_external_instruction_references() {
+    let mut env = setup(true);
+    let mut instructions = env.execution_ix(
+        [0x89; 32],
+        ConformanceAction::Entry,
+        4,
+        1,
+        env.current_slot() + 2,
     );
+    let signature_source = instructions.remove(0);
+    let mut referenced_verifier = Instruction {
+        program_id: solana_sdk_ids::ed25519_program::id(),
+        accounts: Vec::new(),
+        data: vec![1, 0],
+    };
+    for value in [48u16, 0, 16, 0, 112, 32, 0] {
+        referenced_verifier
+            .data
+            .extend_from_slice(&value.to_le_bytes());
+    }
+    instructions.insert(0, referenced_verifier);
+    instructions.insert(0, signature_source);
+
+    env.execute(instructions).unwrap();
 }
 
 #[test]

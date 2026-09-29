@@ -3,6 +3,7 @@ use anchor_spl::token::ID as TOKEN_PROGRAM_ID;
 use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_sha256_hasher::hashv;
 
+use crate::instructions::program_identity::validate_program_data;
 use crate::{
     constants::{
         ADAPTER_RESOURCE_SEED, ASSET_RESOURCE_SEED, MARKET_RESOURCE_SEED, PROTOCOL_CONFIG_SEED,
@@ -1176,7 +1177,10 @@ fn live_code_identity(program: &AccountInfo, program_data: &AccountInfo) -> Resu
         ErrorCode::ResourceCodeIdentityMismatch
     );
     let data = program_data.try_borrow_data()?;
-    require!(!data.is_empty(), ErrorCode::ResourceCodeIdentityMismatch);
+    require!(
+        validate_program_data(data.as_ref()),
+        ErrorCode::ResourceCodeIdentityMismatch
+    );
     Ok(hashv(&[data.as_ref()]).to_bytes())
 }
 

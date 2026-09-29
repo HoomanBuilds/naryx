@@ -12,8 +12,7 @@ use naryx_rise_adapter::{
     program::NaryxRiseAdapter, read_position_and_collateral, RiseMarketOrderArgs, RiseStrategy,
     RISE_GLOBAL_CONFIG, RISE_LOG_AUTHORITY, RISE_PROGRAM_ID,
 };
-use solana_instructions_sysvar::{load_current_index_checked, load_instruction_at_checked};
-use solana_sdk_ids::{bpf_loader_upgradeable, ed25519_program};
+use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_sha256_hasher::hashv;
 
 use crate::{
@@ -30,6 +29,10 @@ use crate::{
         CashCarryAdmission, CashCarryResources, ResourceAction,
     },
     instructions::series_registry::validate_active_cash_carry_series_binding,
+    instructions::{
+        ed25519_signature::{verify_ed25519_signature, Ed25519SignatureError},
+        program_identity::validate_program_data,
+    },
     state::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
         CashCarrySeriesBindingRecord, CashCarrySeriesBindingV1, CashCarryStrategyAuthority,
@@ -1110,7 +1113,7 @@ pub(crate) fn live_program_code_identity(
     );
     let data = program_data.try_borrow_data()?;
     require!(
-        !data.is_empty(),
+        validate_program_data(data.as_ref()),
         ErrorCode::CashCarryQuoteCodeIdentityMismatch
     );
     Ok(hashv(&[data.as_ref()]).to_bytes())
@@ -1836,41 +1839,12 @@ pub(crate) fn require_solver_signature(
     solver: &Pubkey,
     digest: &[u8; 32],
 ) -> Result<()> {
-    let index = load_current_index_checked(instructions_sysvar)
-        .map_err(|_| error!(ErrorCode::CashCarrySignatureInstructionInvalid))?;
-    require!(index > 0, ErrorCode::CashCarrySignatureInstructionInvalid);
-    let instruction = load_instruction_at_checked((index - 1) as usize, instructions_sysvar)
-        .map_err(|_| error!(ErrorCode::CashCarrySignatureInstructionInvalid))?;
-    require_keys_eq!(
-        instruction.program_id,
-        ed25519_program::id(),
-        ErrorCode::CashCarrySignatureInstructionInvalid
-    );
-    require!(
-        instruction.accounts.is_empty(),
-        ErrorCode::CashCarrySignatureInstructionInvalid
-    );
-    let data = instruction.data;
-    require!(
-        data.len() == 144 && data[0] == 1 && data[1] == 0,
-        ErrorCode::CashCarrySignatureInstructionInvalid
-    );
-    let field = |offset: usize| u16::from_le_bytes([data[offset], data[offset + 1]]);
-    require!(
-        field(2) == 48
-            && field(4) == u16::MAX
-            && field(6) == 16
-            && field(8) == u16::MAX
-            && field(10) == 112
-            && field(12) == 32
-            && field(14) == u16::MAX,
-        ErrorCode::CashCarrySignatureInstructionInvalid
-    );
-    require!(
-        &data[16..48] == solver.as_ref() && &data[112..144] == digest,
-        ErrorCode::CashCarrySignatureMismatch
-    );
-    Ok(())
+    verify_ed25519_signature(instructions_sysvar, solver, digest).map_err(|error| match error {
+        Ed25519SignatureError::InvalidInstruction => {
+            error!(ErrorCode::CashCarrySignatureInstructionInvalid)
+        }
+        Ed25519SignatureError::Mismatch => error!(ErrorCode::CashCarrySignatureMismatch),
+    })
 }
 
 pub(crate) fn resource_record_keys(resources: &CashCarryResourceAccounts) -> [Pubkey; 8] {
