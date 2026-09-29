@@ -109,6 +109,8 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/rfq-decision',
         'CON/v1/performance-bond',
         'CON/v1/netting-proof',
+        'CON/v1/strategy-state',
+        'CON/v1/strategy-transition',
       ],
     );
   });

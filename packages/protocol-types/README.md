@@ -279,6 +279,34 @@ share flips direction or exceeds its obligation. `compressPackageLegs` keeps the
 beside the compressed one. Recovery capital is reserved per risk domain, and a claim that exceeds its
 own domain's reserve rejects instead of borrowing from another.
 
+## Strategy lifecycle
+
+`strategyState` validates an open or closed strategy: owner, organization subaccount, series,
+execution class, legs on their lot lattice and in the series ratio direction, liabilities, and
+time-bounded delegations. `strategyStateHash` commits to it under `CON/v1/strategy-state`.
+
+Every transition binds the exact prior state version and hash, so a stale caller rejects. The owner
+may do anything. A delegate holds only granted, unexpired authority from a closed set of
+risk-reducing operations: rebalance, same-venue roll, decrease, and exit. Internal assignment,
+delegation, split, merge, novation, venue migration, increase, and baseline adoption are owner-only.
+
+- `assignInternal` changes the subaccount label and moves no external position.
+- `splitStrategy` gives the first child the lot-floored share and the second the exact remainder of
+  every leg and liability; children start undelegated. `mergeStrategies` requires identical owner,
+  instruments, venues, lots, ratios, and liability terms.
+- `novateStrategy` needs transferable venue positions and liabilities, no legal restriction,
+  consent from both owners, and a confirmation from every leg venue. Otherwise it rejects with the
+  remedy `EXIT_AND_REENTER`. Success clears every delegation.
+- `moveLeg` carries a leg's exact signed exposure to a new instrument; the new lot must divide it.
+- `rebalanceStrategy` and `resizeStrategy` keep direction, the per-leg change bound, and the series
+  ratio exactly by cross multiplication.
+- `exitStrategy` closes every leg and liability together. A closed strategy accepts nothing else.
+- `strategyDiverges` detects external position changes. Only the owner can adopt the observed
+  baseline, and the version bump invalidates every transition prepared against the old state.
+
+Each accepted transition returns a receipt hashed under `CON/v1/strategy-transition` that binds the
+operation, actor, prior and next state hashes, time, and whether any external venue position moved.
+
 ## Price source identity
 
 `PriceSourceManifest` binds one price source to an exact domain, feed identity, source kind,
