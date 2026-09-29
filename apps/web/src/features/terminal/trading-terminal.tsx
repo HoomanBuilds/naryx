@@ -10,6 +10,7 @@ import type {
   LocalSelectedAttempt,
   LocalSolverQuote,
   PackageLifecycleResponse,
+  PrivateTerminalRuntimeHealth,
   SolanaExecutionObservation,
 } from "./private-http-terminal-provider";
 import {
@@ -1230,6 +1231,7 @@ export function TradingTerminal({
   const [providerConnection, setProviderConnection] = useState<ProviderConnection>(
     privateProvider ? "connecting" : "disconnected",
   );
+  const [runtimeHealth, setRuntimeHealth] = useState<PrivateTerminalRuntimeHealth | null>(null);
 
   const ticketKey = JSON.stringify({
     selectedDomain,
@@ -1298,6 +1300,23 @@ export function TradingTerminal({
       controller.abort();
     };
   }, [privateProvider, selectedDomain]);
+
+  useEffect(() => {
+    if (!privateProvider) return;
+    const controller = new AbortController();
+    let active = true;
+    privateProvider.getRuntimeHealth(controller.signal)
+      .then((health) => {
+        if (active) setRuntimeHealth(health);
+      })
+      .catch(() => {
+        if (active) setRuntimeHealth(null);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [privateProvider]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1391,6 +1410,13 @@ export function TradingTerminal({
     () => snapshot.domains.find((domain) => domain.id === selectedDomain),
     [selectedDomain, snapshot.domains],
   );
+  const selectedRuntimeHealth = selectedDomain === "solana"
+    ? runtimeHealth?.solanaDevnet
+    : selectedDomain === "base"
+      ? runtimeHealth?.baseTestnetAtomic
+      : selectedDomain === "arbitrum"
+        ? runtimeHealth?.arbitrumTestnetAsync
+        : runtimeHealth?.hyperliquidTestnet;
 
   const actionState = useMemo(() => {
     if (selectedDomain !== "solana") {
@@ -1398,6 +1424,9 @@ export function TradingTerminal({
     }
     if (!privateProvider || providerConnection !== "connected") {
       return { disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
+    }
+    if (!runtimeHealth?.solanaDevnet.available) {
+      return { disabled: true, label: "Devnet runtime unavailable", reason: "The private service is connected, but its Solana Devnet execution runtime is not active." };
     }
     if (!wallet.selectedAccount) {
       return { disabled: true, label: "Connect Devnet wallet", reason: "Choose a Wallet Standard wallet and authorize a Solana Devnet account." };
@@ -1456,6 +1485,7 @@ export function TradingTerminal({
     providerConnection,
     quoteMode,
     selectedDomain,
+    runtimeHealth,
     wallet.canSignAndSendV0,
     wallet.selectedAccount,
   ]);
@@ -1741,6 +1771,7 @@ export function TradingTerminal({
 
   const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
     providerConnection !== "connected" || !wallet.selectedAccount ||
+    !runtimeHealth?.solanaDevnet.available ||
     !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
     quoteMode !== "coordinated_limits" ||
     currentSubmission !== null;
@@ -1768,7 +1799,7 @@ export function TradingTerminal({
       <div className={styles.domainContext} role="status">
         <span>{selectedDomainModel?.label}</span>
         <span>{selectedDomainModel?.runtime}</span>
-        <span>{selectedDomainModel?.state} data only</span>
+        <span>{selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state} data only`}</span>
       </div>
       <MarketHeader snapshot={snapshot} />
       <div className={styles.contentGrid}>

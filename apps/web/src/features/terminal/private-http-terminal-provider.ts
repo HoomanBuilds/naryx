@@ -25,6 +25,23 @@ export type SolanaExecutionObservationRequest = Readonly<{
   signature: string;
 }>;
 
+export type RuntimeBoundaryHealth = Readonly<{
+  available: boolean;
+  reason:
+    | "DISABLED_BY_CONFIGURATION"
+    | "RUNTIME_FACTORY_NOT_INJECTED"
+    | "RUNTIME_INITIALIZATION_FAILED"
+    | "REQUIRED_PORTS_MISSING"
+    | null;
+}>;
+
+export type PrivateTerminalRuntimeHealth = Readonly<{
+  solanaDevnet: RuntimeBoundaryHealth;
+  baseTestnetAtomic: RuntimeBoundaryHealth;
+  arbitrumTestnetAsync: RuntimeBoundaryHealth;
+  hyperliquidTestnet: RuntimeBoundaryHealth;
+}>;
+
 export type SolanaExecutionObservation =
   | Readonly<{
     lifecycle: "SUBMITTED";
@@ -215,6 +232,43 @@ const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const RUNTIME_HEALTH_REASONS = new Set([
+  "DISABLED_BY_CONFIGURATION",
+  "RUNTIME_FACTORY_NOT_INJECTED",
+  "RUNTIME_INITIALIZATION_FAILED",
+  "REQUIRED_PORTS_MISSING",
+]);
+
+function requireRuntimeBoundaryHealth(value: unknown, name: string): RuntimeBoundaryHealth {
+  if (!isRecord(value)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, ["available", "reason"], name);
+  if (typeof value.available !== "boolean" ||
+      (value.reason !== null &&
+        (typeof value.reason !== "string" || !RUNTIME_HEALTH_REASONS.has(value.reason)))) {
+    throw new Error(`${name} is invalid.`);
+  }
+  if (value.available !== (value.reason === null)) throw new Error(`${name} is inconsistent.`);
+  return Object.freeze({
+    available: value.available,
+    reason: value.reason as RuntimeBoundaryHealth["reason"],
+  });
+}
+
+function requireRuntimeHealth(value: unknown): PrivateTerminalRuntimeHealth {
+  if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
+  requireExactKeys(
+    value,
+    ["solanaDevnet", "baseTestnetAtomic", "arbitrumTestnetAsync", "hyperliquidTestnet"],
+    "Private terminal health",
+  );
+  return Object.freeze({
+    solanaDevnet: requireRuntimeBoundaryHealth(value.solanaDevnet, "Solana Devnet health"),
+    baseTestnetAtomic: requireRuntimeBoundaryHealth(value.baseTestnetAtomic, "Base Testnet health"),
+    arbitrumTestnetAsync: requireRuntimeBoundaryHealth(value.arbitrumTestnetAsync, "Arbitrum Testnet health"),
+    hyperliquidTestnet: requireRuntimeBoundaryHealth(value.hyperliquidTestnet, "Hyperliquid Testnet health"),
+  });
 }
 
 function requireExactKeys(
@@ -1218,6 +1272,27 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error("Private terminal base URL must be an HTTP or HTTPS URL.");
     }
     this.#baseUrl = parsed.href.replace(/\/$/, "");
+  }
+
+  async getRuntimeHealth(signal?: AbortSignal): Promise<PrivateTerminalRuntimeHealth> {
+    const response = await fetch(`${this.#baseUrl}/internal/healthz`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw new Error("Private terminal health is unavailable.");
+    let payload: unknown;
+    try {
+      payload = await response.json() as unknown;
+    } catch {
+      throw new Error("Private terminal health response is invalid.");
+    }
+    if (!isRecord(payload) || !("runtime" in payload)) {
+      throw new Error("Private terminal runtime health is unavailable.");
+    }
+    return requireRuntimeHealth(payload.runtime);
   }
 
   async getSnapshot(domain: DomainId, signal?: AbortSignal): Promise<TerminalViewModel> {
