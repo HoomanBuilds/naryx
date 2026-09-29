@@ -171,6 +171,7 @@ async function start(
   } as unknown as HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
   const server = createHyperliquidTestnetExecutorServer(() => ({
     attempts: { resolve: () => handoff },
+    preflight: async () => {},
     prepareAttempt: () => resolved as HyperliquidTestnetRuntimeCoordinatorInput,
     coordinator,
   }));

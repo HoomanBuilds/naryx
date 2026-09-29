@@ -134,6 +134,7 @@ export interface HyperliquidTestnetExecutorPort {
 
 export type HyperliquidTestnetExecutorRuntime = Readonly<{
   attempts: HyperliquidTestnetTrustedAttemptProvider;
+  preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<void>;
   prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidTestnetRuntimeCoordinatorInput;
   coordinator: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
 }>;
@@ -357,6 +358,7 @@ export function createHyperliquidTestnetExecutor(
   const runtime = factory();
   requireCondition(runtime !== null && typeof runtime === 'object'
     && typeof runtime.attempts?.resolve === 'function'
+    && typeof runtime.preflight === 'function'
     && typeof runtime.prepareAttempt === 'function'
     && typeof runtime.coordinator?.execute === 'function', 'INVALID_ATTEMPT',
   'executor runtime factory returned incomplete ports');
@@ -368,6 +370,7 @@ export function createHyperliquidTestnetExecutor(
         throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
       }
       const handoff = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
+      await runtime.preflight(handoff);
       const input = runtime.prepareAttempt(handoff);
       return sanitizeResult(request, await runtime.coordinator.execute(input));
     },

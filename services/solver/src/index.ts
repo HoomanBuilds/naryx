@@ -766,3 +766,12 @@ export {
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './hyperliquid-testnet-executor-runtime.js';
 export { loadHyperliquidTestnetAgentSigner } from './hyperliquid-testnet-agent-key.js';
+export {
+  HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+  HyperliquidSdkTestnetMarketReadClient,
+  HyperliquidTestnetMarketPreflight,
+  type HyperliquidTestnetMarketQualificationConfig,
+  type HyperliquidTestnetMarketQualificationInput,
+  type HyperliquidTestnetMarketReadPort,
+  type HyperliquidTestnetMarketSnapshot,
+} from './hyperliquid-testnet-market-preflight.js';

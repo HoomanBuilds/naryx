@@ -24,6 +24,12 @@ import {
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 import { HyperliquidSqliteDurableJournal } from './hyperliquid-sqlite-journal.js';
+import {
+  HyperliquidSdkTestnetMarketReadClient,
+  HyperliquidTestnetMarketPreflight,
+  type HyperliquidTestnetMarketQualificationConfig,
+  type HyperliquidTestnetMarketReadPort,
+} from './hyperliquid-testnet-market-preflight.js';
 import { HyperliquidTestnetRuntimeCoordinator } from './hyperliquid-testnet-runtime.js';
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -51,6 +57,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly transportFactory?: () => HyperliquidTestnetExchangeTransport;
   readonly fetchImplementation?: typeof fetch;
   readonly currentTimeMs?: () => number;
+  readonly marketReader?: HyperliquidTestnetMarketReadPort;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -88,6 +95,58 @@ function enabled(environment: NodeJS.ProcessEnv): boolean {
   if (value === undefined || value === 'false') return false;
   if (value === 'true') return true;
   throw new Error(`${HYPERLIQUID_TESTNET_EXECUTION_ENABLED_ENV} must be true or false`);
+}
+
+function positiveInteger(environment: NodeJS.ProcessEnv, name: string, maximum: number): number {
+  const value = required(environment, name);
+  if (!/^[0-9]+$/.test(value)) throw new Error(`${name} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > maximum) {
+    throw new Error(`${name} must be a positive integer no greater than ${maximum}`);
+  }
+  return parsed;
+}
+
+function nonNegativeInteger(environment: NodeJS.ProcessEnv, name: string, maximum: number): number {
+  const value = required(environment, name);
+  if (!/^[0-9]+$/.test(value)) throw new Error(`${name} must be a nonnegative integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > maximum) {
+    throw new Error(`${name} must be a nonnegative integer no greater than ${maximum}`);
+  }
+  return parsed;
+}
+
+function marketQualificationConfig(
+  environment: NodeJS.ProcessEnv,
+): HyperliquidTestnetMarketQualificationConfig {
+  return Object.freeze({
+    spotUniverseName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_NAME'),
+    spotTokenName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_NAME'),
+    quoteTokenName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_NAME'),
+    perpetualName: required(environment, 'NARYX_HYPERLIQUID_TESTNET_PERPETUAL_NAME'),
+    spotSizeDecimals: nonNegativeInteger(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_SPOT_SIZE_DECIMALS', 18,
+    ),
+    perpetualSizeDecimals: nonNegativeInteger(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_PERPETUAL_SIZE_DECIMALS', 18,
+    ),
+    maxBookAgeMs: positiveInteger(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_AGE_MS', 60_000,
+    ),
+    maxSnapshotSkewMs: positiveInteger(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_SNAPSHOT_SKEW_MS', 60_000,
+    ),
+    maxReferenceDivergenceBps: positiveInteger(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_REFERENCE_DIVERGENCE_BPS', 10_000,
+    ),
+    minimumSpotDepth: required(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_MINIMUM_SPOT_DEPTH',
+    ),
+    minimumPerpetualDepth: required(
+      environment, 'NARYX_HYPERLIQUID_TESTNET_MINIMUM_PERPETUAL_DEPTH',
+    ),
+  });
 }
 
 function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidExecutionPlannerOptions {
@@ -148,6 +207,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   const journalPath = required(environment, 'NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB');
   const signerLeaseId = required(environment, 'NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID');
   const keeperOrigin = required(environment, 'NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN');
+  const qualificationConfig = marketQualificationConfig(environment);
   const attempts = dependencies.attempts;
   const signer = dependencies.signer;
   if (attempts === undefined || typeof attempts.resolve !== 'function') {
@@ -167,6 +227,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
 
   const journal = new HyperliquidSqliteDurableJournal({ databasePath: journalPath });
   try {
+    const currentTimeMs = dependencies.currentTimeMs ?? Date.now;
+    const marketPreflight = new HyperliquidTestnetMarketPreflight(
+      dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient(),
+      qualificationConfig,
+      currentTimeMs,
+    );
     const transport = (dependencies.transportFactory
       ?? (() => new HyperliquidTestnetHttpExchangeTransport()))();
     if (transport.isTestnet !== true || transport.apiUrl !== HYPERLIQUID_TESTNET_EXCHANGE_URL) {
@@ -175,9 +241,20 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     const submitter = new HyperliquidSdkTestnetOrderSubmitter(signer, transport);
     const submission = new HyperliquidTestnetPackageSubmissionService(journal, submitter);
     const coordinator = new HyperliquidTestnetRuntimeCoordinator(evidence, submission);
-    const currentTimeMs = dependencies.currentTimeMs ?? Date.now;
     const runtime = Object.freeze({
       attempts,
+      async preflight(attempt: HyperliquidTestnetAttemptHandoff) {
+        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission);
+        await marketPreflight.qualify({
+          plan,
+          binding: {
+            spotUniverseIndex: attempt.market.spot.universeIndex,
+            spotTokenIndex: attempt.market.spot.tokenIndex,
+            perpetualAssetIndex: attempt.market.perpetual.assetIndex,
+            quoteTokenIndex: attempt.market.quoteTokenIndex,
+          },
+        });
+      },
       prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff) {
         const now = currentTimeMs();
         if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');

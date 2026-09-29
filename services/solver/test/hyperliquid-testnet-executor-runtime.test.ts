@@ -9,6 +9,7 @@ import {
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
   loadHyperliquidTestnetExecutorRuntime,
   type HyperliquidServerSigner,
+  type HyperliquidTestnetMarketReadPort,
   type HyperliquidTestnetExchangeTransport,
   type HyperliquidTestnetRuntimeCoordinatorInput,
   type HyperliquidTestnetAttemptHandoff,
@@ -67,6 +68,27 @@ function enabledEnvironment(databasePath: string): NodeJS.ProcessEnv {
     NARYX_HYPERLIQUID_TESTNET_ACCOUNT_KIND: 'SUBACCOUNT',
     NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB: databasePath,
     NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN: 'http://127.0.0.1:8791',
+    NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_NAME: '@7',
+    NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_NAME: 'BTC',
+    NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_NAME: 'USDC',
+    NARYX_HYPERLIQUID_TESTNET_PERPETUAL_NAME: 'BTC',
+    NARYX_HYPERLIQUID_TESTNET_SPOT_SIZE_DECIMALS: '5',
+    NARYX_HYPERLIQUID_TESTNET_PERPETUAL_SIZE_DECIMALS: '5',
+    NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_AGE_MS: '5000',
+    NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_SNAPSHOT_SKEW_MS: '1000',
+    NARYX_HYPERLIQUID_TESTNET_MAX_REFERENCE_DIVERGENCE_BPS: '100',
+    NARYX_HYPERLIQUID_TESTNET_MINIMUM_SPOT_DEPTH: '0.001',
+    NARYX_HYPERLIQUID_TESTNET_MINIMUM_PERPETUAL_DEPTH: '0.001',
+  };
+}
+
+function marketReader(): HyperliquidTestnetMarketReadPort {
+  return {
+    environment: 'testnet',
+    apiUrl: 'https://api.hyperliquid-testnet.xyz',
+    async read() {
+      throw new Error('composition tests must not read market data');
+    },
   };
 }
 
@@ -98,6 +120,7 @@ test('composes the pinned transport, durable journal, evidence client, and bound
   const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(databasePath), {
     attempts: attempts(),
     signer: signer(),
+    marketReader: marketReader(),
     transportFactory: () => {
       transportCalls += 1;
       return transport();
@@ -133,6 +156,7 @@ test('rejects environment and signer mismatches before transport creation', asyn
   const dependencies = {
     attempts: attempts(),
     signer: signer(`0x${'44'.repeat(20)}`),
+    marketReader: marketReader(),
     transportFactory: () => {
       transportCalls += 1;
       return transport();
@@ -159,6 +183,7 @@ test('does not accept account identity from the API attempt handoff', async () =
   const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(databasePath), {
     attempts: attempts(agentWallet, `0x${'55'.repeat(20)}`),
     signer: signer(),
+    marketReader: marketReader(),
     transportFactory: transport,
   });
   try {
