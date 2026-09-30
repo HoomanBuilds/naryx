@@ -1,0 +1,656 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "claimsAuthority_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "disputeResolver_",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "FAILED_TO_HONOR_FUNDED_RESERVATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "SUBMITTED_OFF_ROUTE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "WITHHELD_REQUIRED_RECOVERY_ACTION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "bond",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct PerformanceBondVault.Bond",
+        "components": [
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "asset",
+            "type": "address",
+            "internalType": "contract IERC20"
+          },
+          {
+            "name": "bondAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maximumPayoutPerClaim",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "encumberedAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "paidAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "disputeWindow",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "expiresAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "openClaims",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "coveredFaults",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "released",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claim",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct PerformanceBondVault.Claim",
+        "components": [
+          {
+            "name": "fault",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "state",
+            "type": "uint8",
+            "internalType": "enum PerformanceBondVault.ClaimState"
+          },
+          {
+            "name": "filedAt",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "beneficiary",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "payoutAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "claimsAuthority",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "disputeClaim",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "disputeResolver",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "fileClaim",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "fault",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "payoutAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "beneficiary",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "openBond",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "bondAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "coveredFaults",
+        "type": "uint8",
+        "internalType": "uint8"
+      },
+      {
+        "name": "maximumPayoutPerClaim",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "disputeWindow",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "expiresAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "release",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "resolveDispute",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "disputeUpheld",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settleClaim",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "BondOpened",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "asset",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "bondAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "coveredFaults",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "expiresAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BondReleased",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "returnedAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ClaimDisputed",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ClaimFiled",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "fault",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "payoutAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "beneficiary",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ClaimPaid",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "beneficiary",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "payoutAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ClaimResolved",
+    "inputs": [
+      {
+        "name": "bondId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "faultEvidenceHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "disputeUpheld",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "BondClosed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BondExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BondUnknown",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ClaimExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ClaimNotDisputed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ClaimNotPending",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputeWindowClosed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputeWindowOpen",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FaultNotCovered",
+    "inputs": [
+      {
+        "name": "fault",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidBond",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidClaim",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OpenClaims",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PayoutAboveCap",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PayoutAboveUnencumbered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TransferAmountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": [
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  }
+]

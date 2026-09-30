@@ -10,6 +10,10 @@ forge build
 forge test
 ```
 
+## Performance bonds
+
+`PerformanceBondVault` holds solver performance bonds that pay harmed takers for objective, evidence-bound faults: failing to honor a funded reservation, submitting off route, or withholding a required recovery action. A solver locks exactly the bond amount it names (a token that skims transfers is refused) and the faults it covers. Only the claims authority files a claim, against a unique fault evidence hash, within the per-claim cap and the unencumbered bond; only the bonded solver can dispute it, inside the dispute window; an undisputed claim pays once the window closes, and a disputed one pays only if the separate dispute resolver rejects the dispute. After expiry, with no open claim, the unpaid remainder returns to the solver exactly once. The vault is not deployed anywhere.
+
 ## ABI publication
 
 From the repository root, regenerate the ABI-only conformance artifacts with:
