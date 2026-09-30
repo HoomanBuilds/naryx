@@ -420,6 +420,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
             command: entry.command,
             commandHash: entry.commandHashHex,
             authorization: { scheme: "ED25519", signature: entry.signatureBase58 },
+            consents: entry.consents.map((consent) => ({ scheme: "ED25519", signerId: consent.signerId, signature: consent.signatureBase58 })),
             ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
             recordedAtMs: entry.recordedAtMs,
           })),
@@ -925,14 +926,23 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     }
     if (path === "/v1/strategies/commands") {
       // An owner or delegate's signed strategy command, applied through the kernel lifecycle rules
-      // against the exact stored state. Only accounting and authority change here; operations that
-      // move venue positions go through signed package actions.
+      // against the exact stored state. A position move is accepted only with the settled receipts
+      // that executed it; a novation also needs the new owner's consent over the same hash.
       const authorization = object(body.authorization, "authorization");
       if (authorization.scheme !== "ED25519" || typeof authorization.signature !== "string") {
         throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Strategy commands carry an ED25519 signature in base58.");
       }
       if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
-      const result = options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization.signature);
+      const rawConsents = body.consents ?? [];
+      if (!Array.isArray(rawConsents) || rawConsents.length > 3) throw new RequestError(400, "INVALID_REQUEST", "consents lists at most three ED25519 signatures.");
+      const consents = rawConsents.map((entry) => {
+        const consent = object(entry, "consent");
+        if (consent.scheme !== "ED25519" || typeof consent.signerId !== "string" || typeof consent.signature !== "string") {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "A consent carries an ED25519 signer id and base58 signature.");
+        }
+        return { signerId: consent.signerId, signatureBase58: consent.signature };
+      });
+      const result = options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization.signature, consents);
       if (!result.accepted) throw new RequestError(409, result.rejection, `The strategy command was rejected${result.remedy === undefined ? "" : `; remedy: ${result.remedy}`}.`);
       return result;
     }
@@ -1118,7 +1128,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof StrategyBookError) {
-          const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : error.code === "STRATEGY_NOT_FOUND" || error.code === "ORIGIN_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : ["STRATEGY_NOT_FOUND", "ORIGIN_NOT_FOUND", "RECEIPT_NOT_FOUND"].includes(error.code) ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof KeeperExecutorError) {

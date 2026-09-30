@@ -1186,12 +1186,28 @@ export class NaryxClient {
    * Signs and submits one strategy command. The command is hashed locally and only its hash goes
    * to the caller's signer; the server's acknowledgement must name that exact hash.
    */
-  async submitStrategyCommand(command: StrategyCommandInput, sign: StrategyCommandSigner) {
+  async submitStrategyCommand(
+    command: StrategyCommandInput,
+    sign: StrategyCommandSigner,
+    /** Other owners' consents over the same command hash, as a novation needs from the new owner. */
+    consents: readonly { readonly signerId: string; readonly sign: StrategyCommandSigner }[] = [],
+  ) {
     if (typeof sign !== 'function') throw new TypeError('a strategy command signer is required');
+    if (!Array.isArray(consents) || consents.length > 3) throw new TypeError('at most three consents');
     const commandHash = strategyCommandHash(command);
     const signature = await sign(commandHash);
     if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
-    const body = record(await this.#request('POST', '/v1/strategies/commands', { command, authorization: { scheme: 'ED25519', signature: base58Encode(signature) } }), 'strategy command');
+    const consentBodies = [];
+    for (const consent of consents) {
+      const consentSignature = await consent.sign(commandHash);
+      if (!(consentSignature instanceof Uint8Array) || consentSignature.length !== 64) throw new TypeError('a consent signer must return a 64-byte signature');
+      consentBodies.push({ scheme: 'ED25519', signerId: consent.signerId, signature: base58Encode(consentSignature) });
+    }
+    const body = record(await this.#request('POST', '/v1/strategies/commands', {
+      command,
+      authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+      ...(consentBodies.length === 0 ? {} : { consents: consentBodies }),
+    }), 'strategy command');
     if (body.accepted !== true || body.commandHashHex !== toHex(commandHash)) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
     return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
   }

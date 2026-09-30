@@ -169,3 +169,79 @@ test("the strategy book opens from one settled entry, applies signed commands th
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("position moves are accepted only with unclaimed settled receipts that account for the exact change, and novation needs consent and venue evidence", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-strategy-moves-"));
+  const owner = actor();
+  const buyer = actor();
+  const receipts = new Map<string, ReturnType<typeof receipt>>();
+  const verified = new Set<string>();
+  const book = new SqliteStrategyBookStore(join(dir, "strategies.sqlite"), {
+    environment: "testnet",
+    originReceipt: (hex) => receipts.get(hex),
+    transferEvidence: (claim) => verified.has(`${claim.venueId}:${claim.evidenceHashHex}:${claim.toOwnerId}`),
+    clock: () => NOW_MS,
+  });
+  try {
+    receipts.set("aa".repeat(32), receipt(hash(1), { owner: owner.id, netSpotDelta: 1_000_000_000n }));
+    const exitReceipt = (who: string, spot: bigint) => receipt(hash(2), { owner: who, action: "EXIT", netSpotDelta: -spot, perpPositionDelta: spot });
+    receipts.set("b1".repeat(32), exitReceipt(owner.id, 500_000_000n));
+    receipts.set("b2".repeat(32), exitReceipt(owner.id, 400_000_000n));
+    receipts.set("b3".repeat(32), exitReceipt(buyer.id, 500_000_000n));
+    const legs: StrategyState["legs"] = [
+      { legId: "spot", underlyingId: "sol", instrumentId: "sol-spot", venueId: "phoenix", signedQuantityAtoms: 1_000_000_000n, lotAtoms: 1_000_000n, ratioNumerator: 1n, ratioDenominator: 1n },
+      { legId: "perp", underlyingId: "sol", instrumentId: "sol-perp", venueId: "drift", signedQuantityAtoms: -1_000_000_000n, lotAtoms: 1_000_000n, ratioNumerator: -1n, ratioDenominator: 1n },
+    ];
+    const initial: StrategyState = {
+      version: 1, strategyId: "carry-1", ownerId: owner.id, subaccountId: "desk-1", seriesId: "sol-cash-carry", executionClassId: "sol-carry", open: true, stateVersion: 1n,
+      legs, liabilities: [], delegations: [], venuePositionsTransferable: true, legalTransferRestricted: false,
+    };
+    const build = (who: { id: string }, parameters: StrategyCommandInput["parameters"]): StrategyCommandInput => {
+      const current = book.strategy("carry-1")?.state;
+      return {
+        commandVersion: 1, environment: "testnet", strategyId: "carry-1", actorId: who.id, atValue: BigInt(NOW_MS), parameters,
+        expectedStateVersion: current?.stateVersion ?? 0n, expectedStateHash: current === undefined ? "00".repeat(32) : strategyStateHash(current),
+      };
+    };
+    const signature = (who: { key: KeyObject }, full: StrategyCommandInput) => bs58.encode(sign(null, strategyCommandHash(full), who.key));
+    const submit = (who: { id: string; key: KeyObject }, parameters: StrategyCommandInput["parameters"], consents: { signerId: string; signatureBase58: string }[] = []) => {
+      const full = build(who, parameters);
+      return book.submit(full, signature(who, full), consents);
+    };
+    assert.ok(submit(owner, { kind: "OPEN", originReceiptHash: "aa".repeat(32), state: initial }).accepted);
+
+    const decrease = (hashes: string[]) => submit(owner, { kind: "DECREASE", changeBps: 5_000n, executionReceiptHashes: hashes });
+    assert.throws(() => decrease(["b2".repeat(32)]), { code: "EXECUTION_MISMATCH" });
+    assert.throws(() => decrease(["b9".repeat(32)]), { code: "RECEIPT_NOT_FOUND" });
+    assert.throws(() => decrease(["aa".repeat(32)]), { code: "RECEIPT_CLAIMED" });
+    assert.throws(() => decrease(["b3".repeat(32)]), { code: "RECEIPT_OWNER_MISMATCH" });
+    const decreased = decrease(["b1".repeat(32)]);
+    assert.ok(decreased.accepted && decreased.receipt?.externalPositionsMoved === true);
+    assert.equal(book.strategy("carry-1")?.state.legs.find((leg) => leg.legId === "spot")?.signedQuantityAtoms, 500_000_000n);
+    receipts.set("b4".repeat(32), exitReceipt(owner.id, 250_000_000n));
+    assert.throws(() => decrease(["b1".repeat(32)]), { code: "RECEIPT_CLAIMED" });
+
+    // Novation: the signer's claim alone is not consent, and every venue's transfer must verify.
+    const novation: StrategyCommandInput["parameters"] = { kind: "NOVATE", newOwnerId: buyer.id, venueConfirmations: [{ venueId: "phoenix", evidenceHash: "c1".repeat(32) }, { venueId: "drift", evidenceHash: "c2".repeat(32) }] };
+    assert.deepEqual(submit(owner, novation), { accepted: false, rejection: "CONSENT_MISSING" });
+    const consent = () => [{ signerId: buyer.id, signatureBase58: signature(buyer, build(owner, novation)) }];
+    assert.throws(() => submit(owner, novation, [{ signerId: buyer.id, signatureBase58: signature(owner, build(owner, novation)) }]), { code: "INVALID_SIGNATURE" });
+    verified.add(`phoenix:${"c1".repeat(32)}:${buyer.id}`);
+    assert.deepEqual(submit(owner, novation, consent()), { accepted: false, rejection: "VENUE_CONFIRMATION_MISSING" });
+    verified.add(`drift:${"c2".repeat(32)}:${buyer.id}`);
+    const novated = submit(owner, novation, consent());
+    assert.ok(novated.accepted);
+    assert.equal(book.strategy("carry-1")?.state.ownerId, buyer.id);
+    assert.equal(book.ownerStrategies(buyer.id).length, 1);
+    assert.deepEqual(book.history("carry-1").at(-1)?.consents.map((entry) => entry.signerId), [buyer.id]);
+
+    // The new owner exits with its own settled receipt, and the strategy closes.
+    assert.deepEqual(submit(owner, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] }), { accepted: false, rejection: "UNAUTHORIZED" });
+    const exited = submit(buyer, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] });
+    assert.ok(exited.accepted);
+    assert.equal(book.strategy("carry-1")?.state.open, false);
+  } finally {
+    book.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

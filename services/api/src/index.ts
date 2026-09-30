@@ -343,7 +343,7 @@ export { QualificationStoreError, SqliteQualificationStore, type StoredQualifica
 export { PositionSnapshotStoreError, SqlitePositionSnapshotStore, type StoredPositionSnapshot } from "./position-snapshot-store.js";
 export { createMarketStream, type MarketStreamOptions } from "./market-stream.js";
 export { createOffchainShardSettlement, type OffchainShardFillRequest, type OffchainShardFillResult } from "./offchain-shard-settlement.js";
-export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";
+export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StrategyCommandConsent, type TransferEvidenceVerifier, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";
 export { createEvmBondReader, type EvmBondReaderOptions } from "./evm-bond-reader.js";
 export { BuilderStoreError, SqliteBuilderStore, type BuilderAttributionView } from "./builder-store.js";
 export { createKeeperExecutorHandler, KeeperExecutorError, keeperClock, SqliteKeeperExecutor, type KeeperActionPlan } from "./keeper-executor.js";

@@ -4,9 +4,11 @@ import {
   applyStrategyCommand,
   strategyCommandHash,
   strategyCommandSubjects,
+  strategyExecutionMatches,
   strategyState,
   strategyStateHash,
   toHex,
+  type PackageReceiptInput,
   type StrategyCommandInput,
   type StrategyState,
 } from '../src/index.js';
@@ -76,5 +78,61 @@ describe('strategy commands', () => {
     assert.throws(() => applyStrategyCommand(command({ kind: 'MERGE', otherStrategyId: 'strategy-9', otherExpectedStateVersion: 1n, otherExpectedStateHash: '22'.repeat(32), mergedStrategyId: 'strategy-m' }), states), /no such strategy/);
     assert.deepEqual(strategyCommandSubjects(command({ kind: 'MERGE', otherStrategyId: 'strategy-9', otherExpectedStateVersion: 1n, otherExpectedStateHash: '22'.repeat(32), mergedStrategyId: 'strategy-m' })), ['strategy-1', 'strategy-9']);
     assert.throws(() => strategyCommandHash(command({ kind: 'DELEGATE', delegateId: 'bot-1', authorities: ['EXIT', 'EXIT'], expiresAtValue: 1n })), /repeat/);
+  });
+  test('position moves bind settled receipts whose per-venue deltas are exactly the change', () => {
+    const states = new Map([['strategy-1', opened]]);
+    const receipt = (overrides: Partial<PackageReceiptInput>) => ({
+      terminalState: 'FINALIZED_COMPLETE', owner: 'owner-1', packageMarketId: 'sequenced-recoverable', action: 'EXIT',
+      spotVenue: 'solana', perpVenue: 'hyperliquid', netSpotDelta: -50n, perpPositionDelta: 50n, ...overrides,
+    }) as unknown as PackageReceiptInput;
+    const decrease = command({ kind: 'DECREASE', changeBps: 5_000n, executionReceiptHashes: ['21'.repeat(32)] });
+    const outcome = applyStrategyCommand(decrease, states);
+    assert.ok(outcome.kind === 'TRANSITIONED' && outcome.result.accepted);
+    const next = outcome.result.states[0] as StrategyState;
+    assert.equal(outcome.result.receipt.externalPositionsMoved, true);
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({})]), { matches: true });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({ netSpotDelta: -40n })]), { matches: false, mismatch: 'EXECUTION_MISMATCH' });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({ action: 'ENTRY' })]), { matches: false, mismatch: 'RECEIPT_ACTION_MISMATCH' });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({ owner: 'owner-2' })]), { matches: false, mismatch: 'RECEIPT_OWNER_MISMATCH' });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({ terminalState: 'RECOVERED_FLAT' })]), { matches: false, mismatch: 'RECEIPT_NOT_SETTLED' });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, [receipt({ packageMarketId: 'other' })]), { matches: false, mismatch: 'RECEIPT_MARKET_MISMATCH' });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', opened, next, []), { matches: false, mismatch: 'EXECUTION_MISMATCH' });
+
+    // A migration closes the leg on one venue and opens it on another; the totals balance per venue.
+    const migrate = applyStrategyCommand(command({ kind: 'MIGRATE', legId: 'perp', newLegId: 'perp-base', newInstrumentId: 'sol-perp-base', newVenueId: 'base', newLotAtoms: 10n, executionReceiptHashes: ['22'.repeat(32), '23'.repeat(32)] }), states);
+    assert.ok(migrate.kind === 'TRANSITIONED' && migrate.result.accepted);
+    const moved = migrate.result.states[0] as StrategyState;
+    const close = receipt({ netSpotDelta: 0n, perpPositionDelta: 100n, packageMarketId: 'hl-market' });
+    const reopen = receipt({ action: 'ENTRY', netSpotDelta: 0n, perpVenue: 'base', perpPositionDelta: -100n, packageMarketId: 'base-market' });
+    assert.deepEqual(strategyExecutionMatches('MIGRATE', opened, moved, [close, reopen]), { matches: true });
+    assert.deepEqual(strategyExecutionMatches('MIGRATE', opened, moved, [close]), { matches: false, mismatch: 'EXECUTION_MISMATCH' });
+
+    // An exit zeroes every leg and closes the strategy.
+    const exit = applyStrategyCommand(command({ kind: 'EXIT', settlements: [], executionReceiptHashes: ['24'.repeat(32)] }), states);
+    assert.ok(exit.kind === 'TRANSITIONED' && exit.result.accepted && exit.result.states[0]?.open === false);
+    assert.deepEqual(strategyExecutionMatches('EXIT', opened, exit.result.states[0] as StrategyState, [receipt({ netSpotDelta: -100n, perpPositionDelta: 100n })]), { matches: true });
+
+    // Receipt order does not change the command hash; the receipt set does.
+    const one = strategyCommandHash(command({ kind: 'MIGRATE', legId: 'perp', newLegId: 'p', newInstrumentId: 'i', newVenueId: 'base', newLotAtoms: 10n, executionReceiptHashes: ['22'.repeat(32), '23'.repeat(32)] }));
+    const two = strategyCommandHash(command({ kind: 'MIGRATE', legId: 'perp', newLegId: 'p', newInstrumentId: 'i', newVenueId: 'base', newLotAtoms: 10n, executionReceiptHashes: ['23'.repeat(32), '22'.repeat(32)] }));
+    const three = strategyCommandHash(command({ kind: 'MIGRATE', legId: 'perp', newLegId: 'p', newInstrumentId: 'i', newVenueId: 'base', newLotAtoms: 10n, executionReceiptHashes: ['23'.repeat(32)] }));
+    assert.equal(toHex(one), toHex(two));
+    assert.notEqual(toHex(one), toHex(three));
+    assert.throws(() => strategyCommandHash(command({ kind: 'DECREASE', changeBps: 1n, executionReceiptHashes: [] })), /1 to 8/);
+    assert.throws(() => strategyCommandHash(command({ kind: 'DECREASE', changeBps: 1n, executionReceiptHashes: ['22'.repeat(32), '22'.repeat(32)] })), /twice/);
+  });
+
+  test('novation counts only verified consent and venue transfer evidence', () => {
+    const transferable = strategyState({ ...opened, venuePositionsTransferable: true });
+    const states = new Map([['strategy-1', transferable]]);
+    const novate = command({ kind: 'NOVATE', newOwnerId: 'owner-2', venueConfirmations: [{ venueId: 'solana', evidenceHash: '31'.repeat(32) }, { venueId: 'hyperliquid', evidenceHash: '32'.repeat(32) }] }, { expectedStateHash: strategyStateHash(transferable) });
+    const claimed = applyStrategyCommand(novate, states);
+    assert.ok(claimed.kind === 'TRANSITIONED' && !claimed.result.accepted && claimed.result.rejection === 'CONSENT_MISSING');
+    const partial = applyStrategyCommand(novate, states, { consentingOwnerIds: ['owner-2'], confirmedVenueIds: ['solana'] });
+    assert.ok(partial.kind === 'TRANSITIONED' && !partial.result.accepted && partial.result.rejection === 'VENUE_CONFIRMATION_MISSING');
+    const novated = applyStrategyCommand(novate, states, { consentingOwnerIds: ['owner-2'], confirmedVenueIds: ['solana', 'hyperliquid'] });
+    assert.ok(novated.kind === 'TRANSITIONED' && novated.result.accepted && novated.result.states[0]?.ownerId === 'owner-2');
+    const restricted = applyStrategyCommand(command({ ...novate.parameters } as StrategyCommandInput['parameters']), new Map([['strategy-1', opened]]), { consentingOwnerIds: ['owner-2'], confirmedVenueIds: ['solana', 'hyperliquid'] });
+    assert.ok(restricted.kind === 'TRANSITIONED' && !restricted.result.accepted && restricted.result.rejection === 'NOT_TRANSFERABLE' && restricted.result.remedy === 'EXIT_AND_REENTER');
   });
 });

@@ -6,6 +6,8 @@ import {
   strategyCommandBytes,
   strategyCommandHash,
   strategyCommandSubjects,
+  strategyExecutionMatches,
+  strategyExecutionReceiptHashes,
   strategyState,
   strategyStateHash,
   stringifyProtocolJson,
@@ -53,6 +55,22 @@ CREATE TABLE IF NOT EXISTS strategy_command_subjects (
   strategy_id TEXT NOT NULL,
   PRIMARY KEY (strategy_id, command_cursor)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_execution_receipts (
+  receipt_hash BLOB PRIMARY KEY,
+  command_hash BLOB NOT NULL,
+  strategy_id TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_command_consents (
+  command_hash BLOB NOT NULL,
+  signer_id TEXT NOT NULL,
+  signature BLOB NOT NULL,
+  PRIMARY KEY (command_hash, signer_id)
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS reject_execution_receipt_change BEFORE UPDATE ON strategy_execution_receipts BEGIN SELECT RAISE(ABORT, 'execution receipt claims are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_execution_receipt_delete BEFORE DELETE ON strategy_execution_receipts BEGIN SELECT RAISE(ABORT, 'execution receipt claims are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_consent_change BEFORE UPDATE ON strategy_command_consents BEGIN SELECT RAISE(ABORT, 'command consents are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_consent_delete BEFORE DELETE ON strategy_command_consents BEGIN SELECT RAISE(ABORT, 'command consents are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_command_change BEFORE UPDATE ON strategy_commands BEGIN SELECT RAISE(ABORT, 'strategy commands are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_command_delete BEFORE DELETE ON strategy_commands BEGIN SELECT RAISE(ABORT, 'strategy commands are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_subject_change BEFORE UPDATE ON strategy_command_subjects BEGIN SELECT RAISE(ABORT, 'strategy command subjects are append-only'); END;
@@ -72,6 +90,8 @@ export interface StoredStrategyCommand {
   readonly command: StrategyCommandInput;
   readonly signatureBase58: string;
   readonly receipt?: StrategyTransitionReceipt;
+  /** Other owners' verified consents over the same command hash. */
+  readonly consents: readonly StrategyCommandConsent[];
   readonly recordedAtMs: number;
 }
 
@@ -92,6 +112,24 @@ export type StrategyCommandResult =
 export type OriginReceiptReader = (receiptHashHex: string) => PackageReceiptInput | undefined;
 
 /**
+ * Verifies one venue's evidence that a strategy's position there moved from one owner to another.
+ * Without a verifier no venue confirms, so a novation is never accepted on a claim alone.
+ */
+export type TransferEvidenceVerifier = (claim: {
+  readonly strategyId: string;
+  readonly venueId: string;
+  readonly evidenceHashHex: string;
+  readonly fromOwnerId: string;
+  readonly toOwnerId: string;
+}) => boolean;
+
+/** Another owner's Ed25519 consent to a command, over the same command hash. */
+export interface StrategyCommandConsent {
+  readonly signerId: string;
+  readonly signatureBase58: string;
+}
+
+/**
  * The durable strategy book. Every command is signed by its actor's Ed25519 key over the
  * command hash and applied through the kernel's lifecycle rules against the exact stored prior
  * state. A strategy opens only from one settled entry receipt that names its owner and market and
@@ -103,11 +141,13 @@ export class SqliteStrategyBookStore {
   private readonly clock: () => number;
   private readonly environment: string;
   private readonly originReceipt: OriginReceiptReader;
+  private readonly transferEvidence: TransferEvidenceVerifier | undefined;
 
-  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly clock?: () => number }) {
+  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly transferEvidence?: TransferEvidenceVerifier; readonly clock?: () => number }) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new StrategyBookError(code, message));
     this.environment = options.environment;
     this.originReceipt = options.originReceipt;
+    this.transferEvidence = options.transferEvidence;
     this.clock = options.clock ?? Date.now;
   }
 
@@ -115,7 +155,7 @@ export class SqliteStrategyBookStore {
     this.db.close();
   }
 
-  submit(command: StrategyCommandInput, signatureBase58: string): StrategyCommandResult {
+  submit(command: StrategyCommandInput, signatureBase58: string, consents: readonly StrategyCommandConsent[] = []): StrategyCommandResult {
     let commandHash: Uint8Array;
     try {
       strategyCommandBytes(command);
@@ -134,6 +174,21 @@ export class SqliteStrategyBookStore {
     }
     if (actorKey.length !== 32 || !verifyEd25519(actorKey, commandHash, signature)) {
       throw new StrategyBookError("INVALID_SIGNATURE", "The command is not signed by the Ed25519 key its actor id names.");
+    }
+    // Consents are other owners' signatures over the same command hash; only verified ones count.
+    if (!Array.isArray(consents) || consents.length > 3) throw new StrategyBookError("INVALID_SIGNATURE", "A command carries at most three consents.");
+    const consented: { signerId: string; signature: Uint8Array }[] = [];
+    for (const consent of consents) {
+      let key: Uint8Array;
+      let consentSignature: Uint8Array;
+      try {
+        key = bs58.decode(consent.signerId);
+        consentSignature = bs58.decode(consent.signatureBase58);
+      } catch {
+        throw new StrategyBookError("INVALID_SIGNATURE", "Consent signer ids and signatures must be base58.");
+      }
+      if (key.length !== 32 || !verifyEd25519(key, commandHash, consentSignature)) throw new StrategyBookError("INVALID_SIGNATURE", "A consent is not signed by the key its signer id names.");
+      if (!consented.some((entry) => entry.signerId === consent.signerId)) consented.push({ signerId: consent.signerId, signature: consentSignature });
     }
     const now = BigInt(this.clock());
     if (command.atValue > now + MAXIMUM_COMMAND_SKEW_MS || command.atValue + MAXIMUM_COMMAND_SKEW_MS < now) {
@@ -158,7 +213,7 @@ export class SqliteStrategyBookStore {
       }
       let outcome;
       try {
-        outcome = applyStrategyCommand(command, states);
+        outcome = applyStrategyCommand(command, states, this.evidenceFor(command, states, consented.map((entry) => entry.signerId)));
       } catch (error) {
         throw new StrategyBookError("INVALID_COMMAND", (error as Error).message);
       }
@@ -168,7 +223,10 @@ export class SqliteStrategyBookStore {
         const parameters = command.parameters as Extract<StrategyCommandInput["parameters"], { kind: "OPEN" }>;
         const originHex = typeof parameters.originReceiptHash === "string" ? parameters.originReceiptHash.toLowerCase() : toHex(parameters.originReceiptHash);
         this.requireOrigin(originHex, outcome.state);
-        if (this.db.prepare("SELECT 1 FROM strategies WHERE origin_receipt_hash = ?").get(Buffer.from(originHex, "hex")) !== undefined) {
+        if (
+          this.db.prepare("SELECT 1 FROM strategies WHERE origin_receipt_hash = ?").get(Buffer.from(originHex, "hex")) !== undefined ||
+          this.db.prepare("SELECT 1 FROM strategy_execution_receipts WHERE receipt_hash = ?").get(Buffer.from(originHex, "hex")) !== undefined
+        ) {
           throw new StrategyBookError("ORIGIN_CLAIMED", "This receipt already founded a strategy.");
         }
         const owned = this.db.prepare("SELECT COUNT(*) AS count FROM strategies WHERE owner_id = ?").get(outcome.state.ownerId) as { count: number };
@@ -179,6 +237,7 @@ export class SqliteStrategyBookStore {
       }
       const result = outcome.result;
       if (!result.accepted) return { accepted: false, rejection: result.rejection, ...(result.remedy === undefined ? {} : { remedy: result.remedy }) };
+      const executionReceipts = this.requireExecution(command, states, result.states);
       const nextIds = new Set(result.states.map((state) => state.strategyId as string));
       for (const state of result.states) {
         if (!states.has(state.strategyId) && this.read(state.strategyId) !== undefined) {
@@ -191,6 +250,10 @@ export class SqliteStrategyBookStore {
         if (!nextIds.has(id)) this.db.prepare("UPDATE strategies SET retired_by = ?, updated_at_ms = ? WHERE strategy_id = ?").run(commandHash, nowMs, id);
       }
       this.record(commandHash, command, signature, result.receipt, [...new Set([...states.keys(), ...nextIds])], nowMs);
+      const claim = this.db.prepare("INSERT INTO strategy_execution_receipts (receipt_hash, command_hash, strategy_id, recorded_at_ms) VALUES (?, ?, ?, ?)");
+      for (const receiptHash of executionReceipts) claim.run(receiptHash, commandHash, command.strategyId, nowMs);
+      const consent = this.db.prepare("INSERT INTO strategy_command_consents (command_hash, signer_id, signature) VALUES (?, ?, ?)");
+      for (const entry of consented) consent.run(commandHash, entry.signerId, entry.signature);
       return { accepted: true, replayed: false, commandHashHex: toHex(commandHash), receipt: result.receipt, states: result.states.map((state) => this.summary(state)) };
     }).immediate();
   }
@@ -207,6 +270,7 @@ export class SqliteStrategyBookStore {
          WHERE s.strategy_id = ? ORDER BY c.cursor ASC LIMIT ?`,
       )
       .all(strategyId, Math.min(Math.max(1, limit), 1_000)) as { command_hash: Uint8Array; command_json: string; signature: Uint8Array; receipt_json: string | null; recorded_at_ms: number }[];
+    const consents = this.db.prepare("SELECT signer_id, signature FROM strategy_command_consents WHERE command_hash = ? ORDER BY signer_id");
     return rows.map((row) => {
       const command = parseProtocolJson(row.command_json) as StrategyCommandInput;
       // Stored commands are re-hashed on read; a modified row is reported, never served.
@@ -215,6 +279,7 @@ export class SqliteStrategyBookStore {
         commandHashHex: toHex(row.command_hash),
         command,
         signatureBase58: bs58.encode(row.signature),
+        consents: (consents.all(row.command_hash) as { signer_id: string; signature: Uint8Array }[]).map((entry) => Object.freeze({ signerId: entry.signer_id, signatureBase58: bs58.encode(entry.signature) })),
         ...(row.receipt_json === null ? {} : { receipt: parseProtocolJson(row.receipt_json) as StrategyTransitionReceipt }),
         recordedAtMs: row.recorded_at_ms,
       });
@@ -224,6 +289,50 @@ export class SqliteStrategyBookStore {
   ownerStrategies(ownerId: string): readonly StoredStrategy[] {
     const rows = this.db.prepare("SELECT strategy_id FROM strategies WHERE owner_id = ? ORDER BY strategy_id LIMIT ?").all(ownerId, MAX_STRATEGIES_PER_OWNER) as { strategy_id: string }[];
     return rows.map((row) => this.read(row.strategy_id)).filter((entry): entry is StoredStrategy => entry !== undefined);
+  }
+
+  /** Verified consents and venue transfer evidence for a novation; nothing for any other command. */
+  private evidenceFor(command: StrategyCommandInput, states: ReadonlyMap<string, StrategyState>, consentingOwnerIds: readonly string[]) {
+    const parameters = command.parameters;
+    if (parameters.kind !== "NOVATE") return {};
+    const current = states.get(command.strategyId);
+    const confirmedVenueIds = current === undefined || this.transferEvidence === undefined
+      ? []
+      : parameters.venueConfirmations
+        .filter((confirmation) => this.transferEvidence?.({
+          strategyId: command.strategyId,
+          venueId: confirmation.venueId,
+          evidenceHashHex: typeof confirmation.evidenceHash === "string" ? confirmation.evidenceHash.toLowerCase() : toHex(confirmation.evidenceHash),
+          fromOwnerId: current.ownerId,
+          toOwnerId: parameters.newOwnerId,
+        }) === true)
+        .map((confirmation) => confirmation.venueId);
+    return { consentingOwnerIds, confirmedVenueIds };
+  }
+
+  /**
+   * A position-moving command must be accounted for by settled receipts that no strategy has
+   * founded on or claimed: their per-venue deltas are the exact change the kernel computed.
+   */
+  private requireExecution(command: StrategyCommandInput, states: ReadonlyMap<string, StrategyState>, next: readonly StrategyState[]): readonly Uint8Array[] {
+    const hashes = strategyExecutionReceiptHashes(command.parameters);
+    if (hashes.length === 0) return [];
+    const receipts = hashes.map((hash) => {
+      const hex = toHex(hash);
+      if (
+        this.db.prepare("SELECT 1 FROM strategy_execution_receipts WHERE receipt_hash = ?").get(hash) !== undefined ||
+        this.db.prepare("SELECT 1 FROM strategies WHERE origin_receipt_hash = ?").get(hash) !== undefined
+      ) {
+        throw new StrategyBookError("RECEIPT_CLAIMED", `Receipt ${hex} already accounts for another strategy change.`);
+      }
+      const receipt = this.originReceipt(hex);
+      if (receipt === undefined) throw new StrategyBookError("RECEIPT_NOT_FOUND", `No settled receipt has hash ${hex}.`);
+      return receipt;
+    });
+    const prior = states.get(command.strategyId) as StrategyState;
+    const check = strategyExecutionMatches(command.parameters.kind, prior, next[0] as StrategyState, receipts);
+    if (!check.matches) throw new StrategyBookError(check.mismatch, "The bound receipts do not account for this exact position change.");
+    return hashes;
   }
 
   /** The receipt must be a settled entry by this owner in this market whose deltas are exactly the legs. */
