@@ -811,6 +811,76 @@ export class NaryxClient {
   }
 
   /**
+   * Follows an order until it has a terminal outcome, reading its status every `intervalMs`, and
+   * returns the terminal status. OPEN only means no outcome is recorded yet. It stops with an error
+   * after `timeoutMs` or when `signal` aborts; it never infers execution from silence.
+   */
+  async watchOrder(orderHash: string, options: { readonly intervalMs?: number; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}): Promise<OrderStatusView> {
+    const intervalMs = options.intervalMs ?? 2_000;
+    const timeoutMs = options.timeoutMs ?? 300_000;
+    if (!Number.isSafeInteger(intervalMs) || intervalMs < 100 || !Number.isSafeInteger(timeoutMs) || timeoutMs < intervalMs) {
+      throw new TypeError('intervalMs must be at least 100 and timeoutMs at least intervalMs');
+    }
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (options.signal?.aborted === true) throw new Error('watchOrder was aborted');
+      const status = await this.getOrder(orderHash);
+      if (status.status !== 'OPEN') return status;
+      if (Date.now() + intervalMs > deadline) throw new Error('the order has no terminal outcome within the timeout');
+      await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  /**
+   * Subscribes to public market data over `/v1/stream` with the runtime's WebSocket. Depth arrives
+   * labeled EXECUTABLE and tape labeled OBSERVED, exactly as the HTTP routes serve them; tape trade
+   * cursors must strictly advance or the message is reported as an error instead.
+   */
+  subscribeMarket(packageMarketId: string, channels: readonly ('package-depth' | 'package-tape')[], onMessage: (message: Record<string, unknown>) => void, options: { readonly tapeAfter?: number } = {}) {
+    const market = checkId(packageMarketId, 'package market id');
+    const Socket = (globalThis as { WebSocket?: new (url: string) => { send(text: string): void; close(): void; addEventListener(type: string, listener: (event: { data?: unknown }) => void): void } }).WebSocket;
+    if (Socket === undefined) throw new TypeError('no WebSocket implementation is available');
+    const url = new URL(`${this.#baseUrl}/v1/stream`);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new Socket(url.toString());
+    let tapeCursor = options.tapeAfter ?? -1;
+    socket.addEventListener('open', () => {
+      for (const channel of channels) {
+        socket.send(JSON.stringify(toProtocolJson({ op: 'subscribe', channel, packageMarketId: market, ...(channel === 'package-tape' && options.tapeAfter !== undefined ? { after: options.tapeAfter } : {}) })));
+      }
+    });
+    socket.addEventListener('message', (event) => {
+      let message: Record<string, unknown>;
+      try {
+        message = fromProtocolJson(JSON.parse(String(event.data))) as Record<string, unknown>;
+      } catch {
+        onMessage({ type: 'error', code: 'INVALID_MESSAGE', message: 'the stream sent a message that is not protocol JSON' });
+        return;
+      }
+      if (message.type === 'subscribed' && message.channel === 'package-tape' && typeof message.after === 'number') tapeCursor = message.after;
+      if (message.type === 'package-depth' && message.label !== 'EXECUTABLE') {
+        onMessage({ type: 'error', code: 'MISLABELED', message: 'depth must be labeled EXECUTABLE' });
+        return;
+      }
+      if (message.type === 'package-tape') {
+        if (message.label !== 'OBSERVED' || !Array.isArray(message.trades)) {
+          onMessage({ type: 'error', code: 'MISLABELED', message: 'tape must be labeled OBSERVED' });
+          return;
+        }
+        for (const trade of message.trades as Record<string, unknown>[]) {
+          if (typeof trade.cursor !== 'number' || trade.cursor <= tapeCursor) {
+            onMessage({ type: 'error', code: 'TAPE_OUT_OF_ORDER', message: 'tape cursors must strictly advance' });
+            return;
+          }
+          tapeCursor = trade.cursor;
+        }
+      }
+      onMessage(message);
+    });
+    return { close: () => socket.close() };
+  }
+
+  /**
    * Reads the terminal evidence of an order and verifies it without trusting the server. Pass the
    * accepted quote's fee terms to also check that the receipt charged nothing outside them.
    */

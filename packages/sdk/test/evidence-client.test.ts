@@ -708,6 +708,22 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(client({ 'POST /v1/packages/simulate': { body: body([]) } }).simulatePackageGraph(graph), /differ from the local simulation/);
   });
 
+  test('watching an order returns its terminal status and gives up after its timeout', async () => {
+    let reads = 0;
+    const statuses = ['OPEN', 'OPEN', 'FINALIZED_COMPLETE'];
+    const fetcher: FetchLike = async () => {
+      const status = statuses[Math.min(reads, statuses.length - 1)];
+      reads += 1;
+      const body = status === 'OPEN' ? { orderHash: ORDER_HASH, status } : { orderHash: ORDER_HASH, status, outcomeHash: 'ab'.repeat(32) };
+      return { status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(toProtocolJson(body)) };
+    };
+    const watched = await new NaryxClient({ baseUrl: 'https://api.example', fetch: fetcher }).watchOrder(ORDER_HASH, { intervalMs: 100, timeoutMs: 5_000 });
+    assert.equal(watched.status, 'FINALIZED_COMPLETE');
+    assert.equal(reads, 3);
+    const open = client({ [`GET /v1/orders/${ORDER_HASH}`]: { body: { orderHash: ORDER_HASH, status: 'OPEN' } } });
+    await assert.rejects(open.watchOrder(ORDER_HASH, { intervalMs: 100, timeoutMs: 250 }), /no terminal outcome within the timeout/);
+  });
+
   test('the stream auth message signs a GET of the stream path with an empty body and a fresh nonce', async () => {
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     const solver = new NaryxSolverClient({ baseUrl: 'https://api.example', solverId: 'solver-a', keyId: 'q-1', sign: async (digest) => new Uint8Array(sign(null, digest, privateKey)), fetch: serve({}), now: () => 1_900_000_000_000 });
