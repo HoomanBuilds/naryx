@@ -196,6 +196,12 @@
   color: var(--text-primary);
 }
 
+/* The workspace view currently open below the chart */
+.primaryNav .primaryNavOpen {
+  color: var(--text-primary);
+  box-shadow: inset 0 -2px 0 var(--yellow);
+}
+
 .primaryNav .primaryNavActive {
   color: var(--text-primary);
   cursor: default;

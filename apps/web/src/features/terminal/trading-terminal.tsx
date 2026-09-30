@@ -237,6 +237,7 @@ function TopNavigation({
   evmWallet,
   onDomainChange,
   onOpenView,
+  activeView,
 }: {
   snapshot: TerminalViewModel;
   selectedDomain: DomainId;
@@ -245,6 +246,7 @@ function TopNavigation({
   evmWallet: InjectedEvmWalletSession;
   onDomainChange: (domain: DomainId) => void;
   onOpenView: (tab: BottomTab) => void;
+  activeView: BottomTab;
 }) {
   const providerLabel = providerConnection === "connected"
     ? "Service connected"
@@ -262,7 +264,13 @@ function TopNavigation({
       <nav className={styles.primaryNav} aria-label="Terminal">
         <span className={styles.primaryNavActive} aria-current="page">Trade</span>
         {NAV_VIEWS.map((view) => (
-          <button key={view.tab} type="button" onClick={() => onOpenView(view.tab)}>
+          <button
+            key={view.tab}
+            type="button"
+            className={activeView === view.tab ? styles.primaryNavOpen : undefined}
+            aria-pressed={activeView === view.tab}
+            onClick={() => onOpenView(view.tab)}
+          >
             {view.label}
           </button>
         ))}
@@ -2485,6 +2493,7 @@ export function TradingTerminal({
         evmWallet={evmWallet}
         onDomainChange={changeDomain}
         onOpenView={openView}
+        activeView={workspaceTab}
       />
       <main className={styles.terminalGrid}>
         <div className={styles.areaInstrument}>
