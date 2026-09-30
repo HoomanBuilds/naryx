@@ -72,8 +72,13 @@ export class EvmJsonRpc {
     return block;
   }
 
-  async logs(fromBlock: number, toBlock: number, addresses: readonly string[], topics: readonly string[]): Promise<readonly RpcLog[]> {
-    const result = await this.#call("eth_getLogs", [{ fromBlock: `0x${fromBlock.toString(16)}`, toBlock: `0x${toBlock.toString(16)}`, address: addresses, topics: [topics] }]);
+  /**
+   * Logs of a height range, or of exactly one block when `blockHash` is given (EIP-234): a
+   * backend that has not imported that block then errors instead of answering with no logs.
+   */
+  async logs(fromBlock: number, toBlock: number, addresses: readonly string[], topics: readonly string[], blockHash?: string): Promise<readonly RpcLog[]> {
+    const range = blockHash === undefined ? { fromBlock: `0x${fromBlock.toString(16)}`, toBlock: `0x${toBlock.toString(16)}` } : { blockHash };
+    const result = await this.#call("eth_getLogs", [{ ...range, address: addresses, topics: [topics] }]);
     if (!Array.isArray(result)) throw new Error("logs response is not a list");
     return result as RpcLog[];
   }
@@ -143,11 +148,17 @@ export async function readBlock(source: EvmIndexerSource, height: number): Promi
     source.rpcs.map(async (rpc) => {
       const block = await rpc.block(height);
       if (block === null) return null;
-      const inBlock = (log: RpcLog) => log.removed !== true && log.blockHash.toLowerCase() === block.hash.toLowerCase();
-      const logs = (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC])).filter(inBlock);
+      // Logs are read for this exact block hash; a log from any other block means the endpoint is
+      // on another view of the chain, so the read fails and retries rather than dropping events.
+      const inBlock = (log: RpcLog) => {
+        if (log.removed === true) return false;
+        if (log.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`logs for height ${height} came from another block`);
+        return true;
+      };
+      const logs = (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC], block.hash)).filter(inBlock);
       let bondEvents: ObservedBondEvent[] = [];
       if (source.bondVaults !== undefined && source.bondVaults.length > 0) {
-        const bondLogs = (await rpc.logs(height, height, source.bondVaults, BOND_VAULT_TOPICS)).filter(inBlock);
+        const bondLogs = (await rpc.logs(height, height, source.bondVaults, BOND_VAULT_TOPICS, block.hash)).filter(inBlock);
         if (bondLogs.length > 0) {
           // Claim times are block times, so a vault log is unusable without its block's timestamp.
           const timestamp = quantity(block.timestamp, "block.timestamp");

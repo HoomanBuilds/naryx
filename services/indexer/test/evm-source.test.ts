@@ -37,8 +37,7 @@ function chain() {
       const height = tag === "finalized" ? 2 : tag === "safe" ? 3 : Number.parseInt(tag.slice(2), 16);
       result = height > head ? null : { number: quantity(height), hash: blockHash(height), parentHash: height === 0 ? `0x${"00".repeat(32)}` : blockHash(height - 1) };
     } else if (method === "eth_getLogs") {
-      const height = Number.parseInt(params[0].fromBlock.slice(2), 16);
-      result = logs.get(blockHash(height)) ?? [];
+      result = logs.get(params[0].blockHash as string) ?? [];
     }
     return { ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id, result }) };
   };

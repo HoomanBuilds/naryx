@@ -95,3 +95,23 @@ test('the http ports send the executor every bound it re-checks and accept a que
   assert.deepEqual(calls[0]?.body?.condition, condition);
   assert.throws(() => httpKeeperPorts('http://10.0.0.1:4100'), /loopback/);
 });
+
+test('a final journal line torn by a crash is cut, and earlier corruption still stops the keeper', async () => {
+  const { writeFileSync, readFileSync: read } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'naryx-keeper-torn-'));
+  try {
+    const path = join(dir, 'journal.jsonl');
+    writeFileSync(path, `${JSON.stringify({ authorizationHash: 'aa', state: 'DISPATCHING', detail: '', atMs: 1 })}\n{"authorizationHash":"bb","sta`);
+    const journal = new KeeperActionJournal(path);
+    assert.equal(journal.consumed('aa'), true);
+    assert.equal(journal.consumed('bb'), false);
+    journal.record('cc', 'DISPATCHING');
+    const reopened = new KeeperActionJournal(path);
+    assert.equal(reopened.consumed('cc'), true);
+    assert.equal(read(path, 'utf8').split('\n').filter((line) => line !== '').length, 2);
+    writeFileSync(path, `{"torn\n${JSON.stringify({ authorizationHash: 'aa', state: 'EXECUTED', detail: '', atMs: 1 })}\n`);
+    assert.throws(() => new KeeperActionJournal(path));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

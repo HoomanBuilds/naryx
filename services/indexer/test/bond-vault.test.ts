@@ -67,8 +67,9 @@ function chain(blocks: ReadonlyMap<number, { readonly timestamp: number; readonl
         ? null
         : { number: quantity(height), hash: hashOf(height), parentHash: height === 0 ? `0x${"00".repeat(32)}` : hashOf(height - 1), timestamp: quantity(blocks.get(height)?.timestamp ?? 900 + height) };
     } else if (method === "eth_getLogs") {
-      const filter = params[0] as { fromBlock: string; address: string[]; topics: string[][] };
-      result = logsAt(Number.parseInt(filter.fromBlock.slice(2), 16)).filter((log) => filter.address.includes(log.address) && (filter.topics[0] as string[]).includes(log.topics[0] as string));
+      const filter = params[0] as { blockHash: string; address: string[]; topics: string[][] };
+      const height = [...Array(head + 1).keys()].find((candidate) => hashOf(candidate) === filter.blockHash) ?? -1;
+      result = logsAt(height).filter((log) => filter.address.includes(log.address) && (filter.topics[0] as string[]).includes(log.topics[0] as string));
     }
     return { ok: true, status: 200, json: async () => ({ jsonrpc: "2.0", id, result }) };
   };

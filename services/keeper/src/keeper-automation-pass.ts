@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, truncateSync, writeSync } from 'node:fs';
 import { createPublicKey, verify } from 'node:crypto';
 import {
   authorizeKeeperAction,
@@ -55,9 +55,20 @@ export class KeeperActionJournal {
     if (!path.startsWith('/')) throw new Error('the keeper action journal needs an absolute path');
     this.#path = path;
     if (existsSync(path)) {
-      for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const lines = readFileSync(path, 'utf8').split('\n');
+      for (const [index, line] of lines.entries()) {
         if (line.trim() === '') continue;
-        const entry = JSON.parse(line) as { authorizationHash: string; state: string };
+        let entry: { authorizationHash: string; state: string };
+        try {
+          entry = JSON.parse(line) as { authorizationHash: string; state: string };
+        } catch (error) {
+          // Only a final line torn by a crash mid-write is skipped: its fsync never completed, so no
+          // dispatch followed it. Corruption anywhere earlier stops the keeper.
+          if (!lines.slice(index + 1).every((rest) => rest.trim() === '')) throw error;
+          // Cut the torn tail so later records start on a clean line and the next load stays valid.
+          truncateSync(path, Buffer.byteLength(lines.slice(0, index).map((kept) => `${kept}\n`).join(''), 'utf8'));
+          break;
+        }
         this.#states.set(entry.authorizationHash, entry.state);
       }
     }

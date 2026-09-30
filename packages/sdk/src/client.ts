@@ -1331,7 +1331,10 @@ export class NaryxClient {
         const signature = served.signature;
         if (key === undefined || key.length !== 32 || !(signature instanceof Uint8Array)) throw new NaryxEvidenceError(`events[${index}] is an approval without a usable key or signature`);
         const digest = manualRecoveryApprovalHash({ incidentHash, actionHash: event.actionHash, approverId: event.approverId, atValue: event.atValue });
-        if ((await webCryptoEd25519(key, digest, signature)) === false) throw new NaryxEvidenceError(`events[${index}] is not signed by its approver`);
+        // Quorum rests on these signatures, so an approval that cannot be checked is never counted.
+        const verdict = await webCryptoEd25519(key, digest, signature);
+        if (verdict === undefined) throw new NaryxEvidenceError('Ed25519 verification is unavailable here, so recovery approvals cannot be checked');
+        if (!verdict) throw new NaryxEvidenceError(`events[${index}] is not signed by its approver`);
       }
       events.push(event);
     }
@@ -1506,9 +1509,14 @@ export class NaryxClient {
     const positions = await this.getPositions(strategyAccount, options);
     const body = record(await this.#request('GET', `/v1/risk/${positions.strategyAccount}`), 'risk');
     if (body.strategyAccount !== positions.strategyAccount || typeof body.methodology !== 'string') throw new NaryxEvidenceError('risk is for another account or has no methodology');
+    const seenAssets = new Set<string>();
     const groups = list(body.byAccountingAsset, 'byAccountingAsset').map((entry, index) => {
       const served = record(entry, `byAccountingAsset[${index}]`);
       const asset = served.accountingAsset as NormalizedPosition['markPrice']['quoteAsset'];
+      // Each accounting asset appears once, so a repeated group can never stand in for a missing one.
+      const assetKey = `${String(asset?.assetId)}/${asset?.assetManifestHash instanceof Uint8Array ? toHex(asset.assetManifestHash) : String(asset?.assetManifestHash)}`;
+      if (seenAssets.has(assetKey)) throw new NaryxEvidenceError(`byAccountingAsset[${index}] repeats an accounting asset`);
+      seenAssets.add(assetKey);
       const grouped = positions.positions.filter((position) => bytesEqual(position.markPrice.quoteAsset.assetManifestHash, asset.assetManifestHash) && position.markPrice.quoteAsset.assetId === asset.assetId);
       const same = (left: unknown, right: unknown) => JSON.stringify(toProtocolJson(left)) === JSON.stringify(toProtocolJson(right));
       if (!same(buildExposureGraph(grouped, asset), served.exposure) || !same(packageCloseCostIndex(grouped), served.closeCost)) {

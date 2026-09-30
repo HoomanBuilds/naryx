@@ -140,8 +140,9 @@ export class NaryxSolverClient {
     if (Socket === undefined) throw new TypeError('no WebSocket implementation is available');
     const url = new URL(`${this.#baseUrl}/v1/solver/stream`);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new Socket(url.toString());
+    // Sign first: a slow signer must not let the socket open before the open listener exists.
     const auth = await this.streamAuthMessage();
+    const socket = new Socket(url.toString());
     socket.addEventListener('open', () => socket.send(JSON.stringify(toProtocolJson(auth))));
     socket.addEventListener('message', (event) => {
       let message: Record<string, unknown>;

@@ -22,9 +22,15 @@ export interface ReportExportOptions {
  * commitment in a separate owner-only file, from which single rows are disclosed to an auditor.
  * Every field salt is fresh random bytes, so an undisclosed field cannot be guessed from its commitment.
  */
+const MAX_REPORT_PACKAGES = 10_000;
+
 export function exportReconciliationReport(index: Pick<SqliteReceiptIndex, "packageIdsInRange" | "packageRecord">, options: ReportExportOptions): ReconciliationReport {
   if (!isAbsolute(options.outDir)) throw new Error("The report directory must be an absolute path.");
-  const records = index.packageIdsInRange(options.domainId, options.fromHeight, options.toHeight).map((packageId) => index.packageRecord(packageId));
+  // A report claims every package in the range, so a range too large for one report fails
+  // instead of silently leaving packages out.
+  const packageIds = index.packageIdsInRange(options.domainId, options.fromHeight, options.toHeight, MAX_REPORT_PACKAGES + 1);
+  if (packageIds.length > MAX_REPORT_PACKAGES) throw new Error(`The range holds more than ${MAX_REPORT_PACKAGES} packages; export it in smaller ranges.`);
+  const records = packageIds.map((packageId) => index.packageRecord(packageId));
   const { report, disclosures } = reconciliationReport(records, {
     reportId: options.reportId,
     periodStartMs: options.periodStartMs,
