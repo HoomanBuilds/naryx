@@ -58,6 +58,10 @@ export const SETTLEMENT_CLASS = Object.freeze({
   ATOMIC_POSTCONDITION: 1,
   BATCHED_IOC_WITH_RECOVERY: 2,
   ASYNC_BONDED_SOLVER: 3,
+  /** Pre-positioned inventory per domain with coordinated prepare, commit, and compensation; never atomic. */
+  CROSS_DOMAIN_PREPOSITIONED: 4,
+  /** Automation stopped and authority fenced; only incident-approved actions run. */
+  MANUAL_CONTROLLED_RECOVERY: 5,
 } as const);
 export type SettlementClass = keyof typeof SETTLEMENT_CLASS;
 

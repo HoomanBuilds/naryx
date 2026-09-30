@@ -1268,3 +1268,30 @@ export {
   type StrategyCommandOutcome,
   type StrategyCommandParameters,
 } from './strategy-command.js';
+
+export {
+  CROSS_DOMAIN_PLAN_VERSION,
+  crossDomainPlan,
+  crossDomainPlanHash,
+  replayCrossDomainCoordination,
+  type CrossDomainAction,
+  type CrossDomainCoordination,
+  type CrossDomainDomainStatus,
+  type CrossDomainEvent,
+  type CrossDomainFinality,
+  type CrossDomainLegInput,
+  type CrossDomainPhase,
+  type CrossDomainPlan,
+  type CrossDomainPlanInput,
+} from './cross-domain-coordination.js';
+
+export {
+  MANUAL_RECOVERY_INCIDENT_VERSION,
+  manualRecoveryIncident,
+  manualRecoveryIncidentHash,
+  replayManualRecovery,
+  type ManualRecoveryEvent,
+  type ManualRecoveryIncident,
+  type ManualRecoveryIncidentInput,
+  type ManualRecoveryState,
+} from './manual-recovery.js';

@@ -90,6 +90,8 @@ describe('frozen enum discriminants', () => {
       ATOMIC_POSTCONDITION: 1,
       BATCHED_IOC_WITH_RECOVERY: 2,
       ASYNC_BONDED_SOLVER: 3,
+      CROSS_DOMAIN_PREPOSITIONED: 4,
+      MANUAL_CONTROLLED_RECOVERY: 5,
     });
     assert.deepEqual(QUANTITY_POLICY_CLASS, {
       EXACT_ATOMIC: 1,

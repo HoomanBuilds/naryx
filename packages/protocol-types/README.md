@@ -482,3 +482,5 @@ npm run build
 npm test
 npm pack --dry-run
 ```
+
+Cross-domain and manual recovery settlement: `crossDomainPlan` and `replayCrossDomainCoordination` define `CROSS_DOMAIN_PREPOSITIONED` as a replayable prepare, commit, expiry, and compensation state machine over per-domain finalized evidence, with a static interim exposure bound, deterministic next actions for a restarted coordinator, and fencing on conflicting evidence, a missed commit deadline, or backward time. `manualRecoveryIncident` and `replayManualRecovery` define `MANUAL_CONTROLLED_RECOVERY`: automation is refused, only quorum-approved actions run once, and only the exact target baseline restores the incident. Neither class is accepted by any route, template, or domain record yet, so no package can claim cross-domain execution.

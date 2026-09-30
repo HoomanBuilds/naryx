@@ -678,6 +678,8 @@ const SETTLEMENT_GUARANTEE: Readonly<Record<string, string>> = {
   ATOMIC_POSTCONDITION: "Every leg settles in one transaction, or none does",
   BATCHED_IOC_WITH_RECOVERY: "Legs execute IOC; a partial state is completed or unwound within the signed recovery bounds",
   ASYNC_BONDED_SOLVER: "The solver settles within its window or its bond pays the signed fault amount",
+  CROSS_DOMAIN_PREPOSITIONED: "Per-domain prepare, commit, and compensation; never atomic across chains; not enabled",
+  MANUAL_CONTROLLED_RECOVERY: "Automation stopped; only incident-approved actions run",
 };
 
 function assetAmountText(value: unknown): string {
