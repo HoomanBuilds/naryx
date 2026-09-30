@@ -5,7 +5,31 @@ import type { DepthLevel, MarketFeed, TapeTrade } from "../market-feed";
 import { handleTablistKeys, usePersistedSetting } from "../persisted-setting";
 import styles from "./pro.module.css";
 
-type BookView = "book" | "trades";
+type BookView = "book" | "trades" | "ladder";
+
+const LADDER_SIZES = [10, 50, 100, 250, 500, 1_000] as const;
+
+/**
+ * The average and worst price to fill each size against the book, walking direct and implied
+ * depth from the touch. A size the book cannot fill has no price, never an extrapolated one.
+ */
+function sizeLadder(levels: readonly DepthLevel[], sizes: readonly number[]): { size: number; average?: number; worst?: number }[] {
+  return sizes.map((size) => {
+    let remaining = size;
+    let notional = 0;
+    let worst: number | undefined;
+    for (const level of levels) {
+      if (remaining <= 0) break;
+      const available = level.direct + level.implied;
+      if (available <= 0) continue;
+      const take = Math.min(available, remaining);
+      notional += take * level.price;
+      remaining -= take;
+      worst = level.price;
+    }
+    return remaining > 0 ? { size } : { size, average: notional / size, worst };
+  });
+}
 type BookSide = "both" | "bids" | "asks";
 
 function grouped(levels: readonly DepthLevel[], step: number, side: "bid" | "ask"): DepthLevel[] {
@@ -62,7 +86,7 @@ function SideIcon({ side }: { side: BookSide }) {
  */
 export function OrderBook({ feed }: { feed: MarketFeed }) {
   const { unit, precision } = feed.seriesMeta("basis");
-  const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades"]);
+  const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades", "ladder"]);
   const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
   const book = useMemo(() => feed.depth(), [feed]);
   const fixture = feed.label === "FIXTURE";
@@ -117,14 +141,15 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
   return (
     <section className={styles.bookPanel} aria-label="Order book and trades">
       <div className={styles.panelTabs} role="tablist" aria-label="Book view" onKeyDown={handleTablistKeys}>
-        <button type="button" role="tab" aria-selected={view === "book"} className={view === "book" ? styles.tabActive : undefined} onClick={() => setView("book")}>Order book</button>
+        <button type="button" role="tab" aria-selected={view === "book"} className={view === "book" ? styles.tabActive : undefined} onClick={() => setView("book")} title="Order book">Book</button>
         <button type="button" role="tab" aria-selected={view === "trades"} className={view === "trades" ? styles.tabActive : undefined} onClick={() => setView("trades")}>Trades</button>
+        <button type="button" role="tab" aria-selected={view === "ladder"} className={view === "ladder" ? styles.tabActive : undefined} onClick={() => setView("ladder")}>Ladder</button>
         {/* Depth from the public API is executable package book depth; trades are observed; a fixture is neither. */}
         <span
           className={`${fixture ? styles.labelFixture : styles.labelObserved} ${styles.tabTag}`}
           title={fixture ? "Deterministic fixture levels for layout; not resting orders" : feed.sourceNote}
         >
-          {fixture ? "FIXTURE" : view === "book" ? "EXECUTABLE" : "OBSERVED"}
+          {fixture ? "FIXTURE" : view === "trades" ? "OBSERVED" : "EXECUTABLE"}
         </span>
       </div>
       {view === "book" ? (
@@ -184,12 +209,48 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
             <span className={styles.down}>{(100 - bidShare).toFixed(0)}% S</span>
           </div>
         </div>
+      ) : view === "ladder" ? (
+        <div key="ladder" className={styles.viewFade}>
+          <SizeLadder bids={book.bids} asks={book.asks} unit={unit} precision={precision} />
+        </div>
       ) : (
         <div key="trades" className={styles.viewFade}>
           <TradeTape trades={trades} unit={unit} precision={precision} />
         </div>
       )}
     </section>
+  );
+}
+
+function SizeLadder({ bids, asks, unit, precision }: { bids: readonly DepthLevel[]; asks: readonly DepthLevel[]; unit: string; precision: number }) {
+  const rows = useMemo(() => {
+    const buys = sizeLadder([...asks].sort((left, right) => left.price - right.price), LADDER_SIZES);
+    const sells = sizeLadder([...bids].sort((left, right) => right.price - left.price), LADDER_SIZES);
+    return LADDER_SIZES.map((size, index) => ({ size, buy: buys[index], sell: sells[index] }));
+  }, [bids, asks]);
+  const price = (value: number | undefined) => (value === undefined ? <span className={styles.dimCell}>Exceeds depth</span> : value.toFixed(precision + 1));
+  return (
+    <>
+      <div className={styles.tapeHeader} role="row">
+        <span role="columnheader">Size</span>
+        <span role="columnheader" title={`Average price in ${unit} to buy the size from the asks`}>Buy avg</span>
+        <span role="columnheader" title="Average price to sell the size into the bids">Sell avg</span>
+        <span role="columnheader" title="Buy average minus sell average">Spread</span>
+      </div>
+      <div className={styles.tapeBody} role="table" aria-label="Executable price at size">
+        {rows.map((row) => (
+          <div key={row.size} className={styles.tapeRow} role="row">
+            <span role="cell">{row.size.toLocaleString("en-US")}</span>
+            <span role="cell" className={styles.down} title={row.buy?.worst === undefined ? undefined : `Worst level ${row.buy.worst.toFixed(precision)}`}>{price(row.buy?.average)}</span>
+            <span role="cell" className={styles.up} title={row.sell?.worst === undefined ? undefined : `Worst level ${row.sell.worst.toFixed(precision)}`}>{price(row.sell?.average)}</span>
+            <span role="cell" className={styles.dimCell}>
+              {row.buy?.average === undefined || row.sell?.average === undefined ? "-" : (row.buy.average - row.sell.average).toFixed(precision + 1)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className={styles.ladderNote}>Walked from the touch through direct and implied depth. A size the book cannot fill shows no price.</p>
+    </>
   );
 }
 

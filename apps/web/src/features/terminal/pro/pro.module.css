@@ -61,6 +61,14 @@
   margin-left: auto;
 }
 
+.ladderNote {
+  margin: 0;
+  padding: 10px 14px;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .metricSource dd {
   display: flex;
   align-items: center;
