@@ -7,6 +7,7 @@ import Button from "@/features/landing/button";
 import { GlyphField } from "@/features/landing/glyph-field";
 import { loadGlyphs, loadImage } from "@/features/landing/glyphs";
 import { gsap, reducedMotion, SCRAMBLE, ScrollTrigger, SplitText, useGSAP } from "@/features/landing/gsap";
+import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./hero.module.css";
 
 /**
@@ -166,6 +167,17 @@ export default function Hero() {
               <Button href="#engine" variant="outline">
                 How it works
               </Button>
+            </div>
+            <div className={styles.chains}>
+              <span className="mono">Settles on</span>
+              <ul>
+                {CHAINS.map(({ id, name, Icon }) => (
+                  <li key={id}>
+                    <Icon size={16} variant="branded" aria-hidden />
+                    {name}
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         </div>

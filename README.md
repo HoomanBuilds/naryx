@@ -93,7 +93,7 @@ Adding another instance of an implemented runtime family is manifest registratio
 
 Public program identities are not deployment claims. Published conformance IDLs and ABIs identify local test dependencies, not live venue integrations.
 
-The landing page uses third-party fonts under `apps/web/src/features/landing/fonts` and third-party artwork under `apps/web/public/landing` as local design material. Their licenses are unverified, so they must be verified or replaced with assets Naryx can ship before any public release of `apps/web`.
+The landing page uses third-party fonts under `apps/web/src/features/landing/fonts` and third-party artwork under `apps/web/public/landing` as local design material. Their licenses are unverified, so they must be verified or replaced with assets Naryx can ship before any public release of `apps/web`. Chain, token, and wallet marks in the landing page and terminal come from the pinned `@web3icons/react` package (MIT-licensed code); the marks themselves are trademarks of their owners, used only to name the networks and assets Naryx operates on, and each owner's brand guidelines should be confirmed before public release.
 
 ## Safety model
 

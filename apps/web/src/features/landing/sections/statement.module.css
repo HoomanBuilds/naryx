@@ -81,7 +81,20 @@
   font-size: 16px;
 }
 
-.foot :global(.mono) {
+.chains {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chains li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--yellow);
   font-size: 12px;
   letter-spacing: 0.06em;
@@ -93,6 +106,10 @@
   .foot {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .chains {
+    justify-content: flex-start;
   }
 }
 

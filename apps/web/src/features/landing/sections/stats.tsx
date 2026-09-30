@@ -3,11 +3,12 @@
 import { useRef } from "react";
 import Button from "@/features/landing/button";
 import { gsap, reducedMotion, ScrollTrigger, useGSAP } from "@/features/landing/gsap";
+import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./stats.module.css";
 
-const TILES = [
+const TILES: readonly { value: number; decimals: number; prefix: string; suffix: string; label: string; tone: string; chains?: boolean }[] = [
   { value: 1, decimals: 0, prefix: "", suffix: "", label: "Signature for every leg of the strategy", tone: "blue" },
-  { value: 4, decimals: 0, prefix: "", suffix: "", label: "Domains: Solana, Base, Hyperliquid, Arbitrum", tone: "light" },
+  { value: 4, decimals: 0, prefix: "", suffix: "", label: "Domains: Solana, Base, Arbitrum, Hyperliquid", tone: "light", chains: true },
   { value: 3, decimals: 0, prefix: "", suffix: "", label: "Settlement classes, each with its own guarantee", tone: "dark" },
   { value: 4, decimals: 0, prefix: "", suffix: "", label: "Evidence grades on every receipt", tone: "ink" },
 ];
@@ -63,8 +64,17 @@ export default function Stats() {
         </div>
 
         <div className={styles.tiles}>
-          {TILES.map(({ value, decimals, prefix, suffix, label, tone }) => (
+          {TILES.map(({ value, decimals, prefix, suffix, label, tone, chains }) => (
             <div key={label} className={`${styles.tile} ${styles[tone]}`}>
+              {chains ? (
+                <span className={styles.logos} aria-hidden="true">
+                  {CHAINS.map(({ id, Icon }) => (
+                    <span key={id}>
+                      <Icon size={22} variant="branded" />
+                    </span>
+                  ))}
+                </span>
+              ) : null}
               <strong>
                 {prefix}
                 <span data-value={value} data-decimals={decimals}>

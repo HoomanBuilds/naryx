@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import { gsap, reducedMotion, SplitText, useGSAP } from "@/features/landing/gsap";
+import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./statement.module.css";
 
 /**
@@ -51,7 +52,14 @@ export default function Statement() {
               Vaults, desks and treasuries keep rebuilding the same risky work: placing each leg, watching for partial
               fills, unwinding when one side fails. Naryx makes the complete strategy the thing you trade.
             </p>
-            <span className="mono">Solana, Base, Hyperliquid, Arbitrum</span>
+            <ul className={styles.chains} aria-label="Execution domains">
+              {CHAINS.map(({ id, name, Icon }) => (
+                <li key={id} className="mono">
+                  <Icon size={18} variant="mono" aria-hidden />
+                  {name}
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       </div>

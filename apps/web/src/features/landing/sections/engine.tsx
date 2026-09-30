@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import Arrow from "@/features/landing/arrow";
 import { gsap, reducedMotion, SCRAMBLE, useGSAP } from "@/features/landing/gsap";
+import { CHAINS as BRAND_CHAINS } from "@/features/brand/chain-icons";
 import styles from "./engine.module.css";
 
 const STEPS = [
@@ -41,11 +42,9 @@ const CENTER = { x: 300, y: 300 };
 /** A venue's leg feed: a curve from its slab down into the package mark. */
 const feed = (x: number) => `M${x} 124 C${x} 200 ${CENTER.x} 190 ${CENTER.x} 256`;
 const VENUES = [180, 300, 420];
-const CHAINS = [
-  { x: 172, label: "Solana" },
-  { x: 300, label: "Base" },
-  { x: 428, label: "Arbitrum" },
-];
+/** The four domains a match can settle on, one slab each, with Base as the settling example. */
+const CHAIN_SLABS = BRAND_CHAINS.map((chain, i) => ({ ...chain, x: 120 + i * 120 }));
+const SETTLING_CHAIN = 1;
 
 /** Package book rows (A), each of which becomes a quote cell in the solver grid (B). */
 const LEVELS = [36, 58, 84, 104, 132, 156, 178];
@@ -185,15 +184,18 @@ function Scene() {
 
       {/* C: chains the match can settle on */}
       <g data-part="chains">
-        {CHAINS.map(({ x, label }, i) => {
-          const s = slab(x, 520, 104, 60, 46);
+        {CHAIN_SLABS.map(({ x, name, Icon }, i) => {
+          const s = slab(x, 520, 100, 58, 46);
           return (
-            <g key={label} data-chain={i}>
+            <g key={name} data-chain={i}>
               <path d={s.left} fill="url(#side-left)" />
               <path d={s.right} fill="url(#side-right)" />
               <path data-top d={s.top} fill="#242424" stroke="#3a3a3a" />
+              <g data-logo className={styles.chainLogo}>
+                <Icon x={x - 13} y={520 - 15} size={26} variant="mono" />
+              </g>
               <text x={x} y={604} textAnchor="middle" className={styles.chainLabel}>
-                {label}
+                {name}
               </text>
             </g>
           );
@@ -350,9 +352,10 @@ export default function Engine() {
           { opacity: 1, scale: 1, duration: 0.14 },
           "toC+=0.12",
         )
-        .to(q('[data-part="settle"]'), { attr: { y: 520 - 12 }, duration: 0.3, ease: "power2.in" }, "toC+=0.3")
+        .to(q('[data-part="settle"]'), { attr: { x: CHAIN_SLABS[SETTLING_CHAIN].x - 12, y: 520 - 12 }, duration: 0.3, ease: "power2.in" }, "toC+=0.3")
         .to(q('[data-part="settle"]'), { opacity: 0, duration: 0.05 }, "toC+=0.6")
-        .to(q(`[data-chain="1"] [data-top]`), { fill: "#ffff00", stroke: "#ffff00", duration: 0.08 }, "toC+=0.6")
+        .to(q(`[data-chain="${SETTLING_CHAIN}"] [data-top]`), { fill: "#ffff00", stroke: "#ffff00", duration: 0.08 }, "toC+=0.6")
+        .to(q(`[data-chain="${SETTLING_CHAIN}"] [data-logo]`), { color: "#000000", duration: 0.08 }, "toC+=0.6")
         .fromTo(q('[data-part="receipt"]'), { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.12 }, "toC+=0.68")
         .to({}, { duration: 0.2 });
 
