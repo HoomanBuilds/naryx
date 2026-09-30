@@ -50,6 +50,7 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
+import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -287,7 +288,7 @@ function TopNavigation({
               title={`${domain.label}: ${domain.runtime}. ${domain.state} data.`}
               onClick={() => onDomainChange(domain.id)}
             >
-              <span className={styles.domainGlyph} data-domain={domain.id} aria-hidden="true" />
+              <ChainIcon chain={domain.id} size={14} className={styles.domainIcon} />
               {domain.label}
             </button>
           ))}
@@ -477,7 +478,7 @@ function ExecutionReadiness({
                       aria-label={`${model?.label ?? fallback.label} domain, ${status}. ${blocker} ${selected ? "Selected." : "Select."}`}
                       onClick={() => onSelect(domain)}
                     >
-                      <span className={styles.domainGlyph} data-domain={domain} aria-hidden="true" />
+                      <ChainIcon chain={domain} size={16} />
                       {model?.label ?? fallback.label}
                     </button>
                   </td>
@@ -1273,7 +1274,10 @@ function Ticket({
           aria-describedby="size-context"
         />
         <div className={styles.sizeMeta}>
-          <span className={styles.symbolChip}>{snapshot.ticket.sizeSymbol}</span>
+          <span className={styles.symbolChip}>
+            <AssetIcon symbol={snapshot.ticket.sizeSymbol} size={14} />
+            {snapshot.ticket.sizeSymbol}
+          </span>
           <span id="size-context">
             <span key={preview?.bound.value ?? "none"} className={styles.flash}>
               {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
@@ -1316,9 +1320,15 @@ function Ticket({
       <ol className={styles.legList} aria-label="Package legs">
         {legs.map((leg) => (
           <li key={leg.sequence}>
-            <span className={styles.legIndex}>{leg.sequence}</span>
+            <span className={styles.legMark} title={`Leg ${leg.sequence}: ${leg.instrument} on ${chainOf(leg.venue)?.name ?? leg.venue}`}>
+              <AssetIcon symbol={leg.instrument.split(/[\s/-]/)[0] ?? leg.instrument} size={24} />
+              <ChainIcon chain={leg.venue} size={12} className={styles.legChain} />
+            </span>
             <div>
-              <strong className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>{leg.action}</strong>
+              <strong className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>
+                <span className={styles.legSeq}>{leg.sequence}</span>
+                {leg.action}
+              </strong>
               <small>{leg.instrument} / {leg.venue}</small>
             </div>
             <div className={styles.legNumbers}>
@@ -1596,7 +1606,10 @@ function BottomWorkspace({
                     {compact(receipt.receiptHashHex, 10, 8)}
                   </td>
                   <td title={receipt.domain.domainManifestHashHex}>
-                    {receipt.domain.domainId}
+                    <span className={styles.chainCell}>
+                      <ChainIcon chain={receipt.domain.domainId} size={14} />
+                      {receipt.domain.domainId}
+                    </span>
                   </td>
                   <td className={styles.monoCell}>
                     {receipt.priorState ?? "START"} &gt; {receipt.nextState}

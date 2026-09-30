@@ -273,33 +273,10 @@
   color: var(--text-primary);
 }
 
-.domainGlyph {
-  display: inline-block;
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  background: var(--text-faint);
-}
 
-.domainGlyph[data-domain="solana"] {
-  background: linear-gradient(135deg, #9b7bff, #33e0b0);
-}
 
-.domainGlyph[data-domain="base"] {
-  border-radius: 50%;
-  background: #3d7bff;
-}
 
-.domainGlyph[data-domain="arbitrum"] {
-  transform: rotate(45deg) scale(0.85);
-  background: #5aa9ff;
-}
 
-.domainGlyph[data-domain="hyperliquid"] {
-  border-radius: 50%;
-  background: #7fe5c9;
-}
 
 .walletControl {
   display: flex;
@@ -955,6 +932,40 @@
 
 .legList li + li {
   border-top: 1px dashed var(--line);
+}
+
+/* A leg's asset with the chain it executes on pinned to the corner */
+.legMark {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.legChain {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  border-radius: 50%;
+  background: var(--panel, #0b0d10);
+  box-shadow: 0 0 0 2px var(--panel, #0b0d10);
+}
+
+.legSeq {
+  margin-right: 6px;
+  color: var(--text-faint);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.domainIcon {
+  opacity: 0.9;
+}
+
+.chainCell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .legIndex {

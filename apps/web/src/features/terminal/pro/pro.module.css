@@ -264,36 +264,27 @@
   gap: 10px;
 }
 
+/* Base over quote with the execution chain pinned to the corner */
 .instrumentBadge {
-  display: grid;
+  --pair-ring: var(--panel, #0b0d10);
+  position: relative;
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  align-items: center;
+  padding-right: 4px;
+}
+
+.instrumentChain {
+  position: absolute;
+  right: -2px;
+  bottom: -4px;
+  border-radius: 50%;
   background: var(--canvas);
+  box-shadow: 0 0 0 2px var(--canvas);
 }
 
-.instrumentBadge svg {
-  width: 18px;
-  height: 18px;
-}
 
-.badgeLong {
-  fill: var(--up);
-}
 
-.badgeShort {
-  fill: var(--down);
-}
-
-.badgeLink {
-  fill: none;
-  stroke: var(--yellow);
-  stroke-linecap: round;
-  stroke-width: 1.4;
-}
 
 .instrumentIdentity strong {
   display: block;

@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { MarketFeed } from "../market-feed";
 import type { TerminalViewModel } from "../terminal-view-model";
+import { ChainIcon, PairIcon } from "@/features/brand/chain-icons";
 import styles from "./pro.module.css";
 
 // Compact labels for the dense header; the full label stays available as the tooltip.
@@ -46,11 +47,8 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
     <section className={styles.instrumentBar} aria-label="Instrument">
       <div className={styles.instrumentIdentity}>
         <span className={styles.instrumentBadge} aria-hidden="true">
-          <svg viewBox="0 0 18 18">
-            <rect x="2" y="3" width="5" height="12" rx="1" className={styles.badgeLong} />
-            <rect x="11" y="3" width="5" height="12" rx="1" className={styles.badgeShort} />
-            <path d="M7 9h4" className={styles.badgeLink} />
-          </svg>
+          <PairIcon base={snapshot.market.base} quote={snapshot.market.quote} size={24} />
+          <ChainIcon chain={snapshot.selectedDomain} size={13} className={styles.instrumentChain} />
         </span>
         <div>
           <strong>{snapshot.market.packageId}</strong>

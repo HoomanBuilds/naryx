@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { PublicFeedStatus } from "../public-market-feed";
 import type { ProviderConnection, TerminalViewModel } from "../terminal-view-model";
+import { ChainIcon } from "@/features/brand/chain-icons";
 import styles from "./pro.module.css";
 
 function UtcClock() {
@@ -40,7 +41,10 @@ export function StatusBar({
         <i className={providerConnection === "connected" ? styles.dotOk : providerConnection === "connecting" ? styles.dotWarn : styles.dotOff} aria-hidden="true" />
         {connection}
       </span>
-      <span className={styles.statusItem}>{domainLabel} <em>{domainNote}</em></span>
+      <span className={styles.statusItem}>
+        <ChainIcon chain={domainLabel} size={12} />
+        {domainLabel} <em>{domainNote}</em>
+      </span>
       <span className={styles.statusItem}>Evidence <em>{snapshot.environment.evidenceGrade}</em></span>
       <span className={styles.statusItem} title={feedStatus?.detail}>
         Market data <em className={feedLabel === "FIXTURE" ? styles.statusFixture : undefined}>{feedLabel}</em>

@@ -80,9 +80,10 @@ export function AssetIcon({ symbol, size = 16, className }: { symbol: string; si
   const key = symbol.toUpperCase().replace(/-PERP$/, "");
   const Icon = ASSETS[key];
   if (Icon) {
+    // The filled variant clipped to a disc reads as a token badge at any size and overlaps cleanly.
     return (
-      <span className={className} title={symbol} style={{ display: "inline-flex", flex: "none", lineHeight: 0 }}>
-        <Icon size={size} variant="branded" aria-hidden />
+      <span className={className} title={symbol} style={{ display: "inline-flex", flex: "none", width: size, height: size, overflow: "hidden", borderRadius: "50%", lineHeight: 0 }}>
+        <Icon size={size} variant="background" aria-hidden />
       </span>
     );
   }
