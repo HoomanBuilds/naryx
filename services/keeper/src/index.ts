@@ -1006,3 +1006,4 @@ export {
   type PositionSnapshotPassResult,
   type WatchedPositionAccount,
 } from './position-snapshot-pass.js';
+export * from './keeper-automation-pass.js';

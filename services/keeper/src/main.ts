@@ -11,6 +11,31 @@ import {
 } from './code-hash-monitor.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
 import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
+import { httpKeeperPorts, KeeperActionJournal, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
+
+// Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
+// executor, consuming each authorization once in its journal. It is off without its config.
+const automation = loadKeeperAutomationConfig(process.env, (path) => readFileSync(path, 'utf8'));
+if (automation !== undefined) {
+  const journal = new KeeperActionJournal(automation.journalPath);
+  const ports = { ...httpKeeperPorts(automation.executorOrigin), now: (unit: string) => (unit === 'EVM_UNIX_SECONDS' ? BigInt(Math.floor(Date.now() / 1_000)) : undefined) };
+  let running = false;
+  const pass = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const results = await runKeeperAutomationPass({ keeperId: automation.keeperId, entries: automation.entries, ports, journal });
+      const acted = results.filter((result) => result.status !== 'NOT_READY' && result.status !== 'SKIPPED_CONSUMED');
+      if (acted.length > 0) process.stdout.write(`Keeper automation: ${acted.map((result) => `${result.strategyId} ${result.status}${result.detail === undefined ? '' : ` ${result.detail}`}`).join(', ')}\n`);
+    } catch (error) {
+      process.stderr.write(`Keeper automation pass failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
+    } finally {
+      running = false;
+    }
+  };
+  void pass();
+  setInterval(() => void pass(), automation.intervalMs).unref();
+}
 
 const config = loadKeeperServerConfig();
 const client = new HyperliquidSdkTestnetReadClient();
