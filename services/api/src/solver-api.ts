@@ -69,6 +69,12 @@ export interface SolverApiOptions {
    * without it, and accepted only when the kernel confirms the bond backs the quote.
    */
   readonly bonds?: (bondIdHex: string) => PerformanceBondLedger | undefined | Promise<PerformanceBondLedger | undefined>;
+  /**
+   * Committed atoms each package unit of implied liquidity consumes, per execution class: from the
+   * solver commitment, and from each leg's reservation in leg order. Executable implied quantity
+   * is bounded by what its backing actually holds; a class without an entry takes no implied liquidity.
+   */
+  readonly backingAtomsPerPackageUnit?: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -386,9 +392,17 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         const backing = quote.evidence === "SOLVER_BACKED_IMPLIED"
           ? [quote.solverCommitment]
           : quote.sources.map((source) => source.reservationId);
-        for (const id of backing) {
+        const units = options.backingAtomsPerPackageUnit?.get(classId);
+        if (units === undefined || (quote.evidence !== "SOLVER_BACKED_IMPLIED" && units.legs.length !== backing.length)) {
+          throw new SolverRequestError(409, "BACKING_UNIT_UNKNOWN", "This market has no backing unit, so its implied liquidity cannot be bounded.");
+        }
+        for (const [index, id] of backing.entries()) {
           const held = id === undefined ? undefined : outstanding.get(toHex(id));
           if (held === undefined) throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A reservation or commitment is not outstanding for this solver.");
+          const perUnit = quote.evidence === "SOLVER_BACKED_IMPLIED" ? units.commitment : (units.legs[index] as bigint);
+          if (quote.quantity * perUnit > held.atoms) {
+            throw new SolverRequestError(409, "BACKING_INSUFFICIENT", "The implied quantity needs more than its reservation or commitment holds.");
+          }
           if (quote.evidence === "SOLVER_BACKED_IMPLIED" && !held.firm) throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Solver-backed implication needs a firm commitment.");
           if (inUse.has(toHex(id as Uint8Array))) {
             throw new SolverRequestError(409, "BACKING_IN_USE", "A reservation or commitment already backs live liquidity in this book.");

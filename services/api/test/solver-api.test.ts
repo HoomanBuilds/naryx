@@ -101,7 +101,7 @@ async function withSolverApi(
     }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, bonds: (id) => OBSERVED_BONDS.get(id), ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, bonds: (id) => OBSERVED_BONDS.get(id), backingAtomsPerPackageUnit: new Map([[CLASS, { commitment: 1n, legs: [1n, 1n] }]]), ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, evidence, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
@@ -270,6 +270,9 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
     assert.equal(posted.status, 200, JSON.stringify(toProtocolJson(posted.body)));
     const reused = { ...quote, legSources: quote.legSources.map((source) => ({ ...source, priceTicks: source.side === "ASK" ? 1_200n : source.priceTicks })) };
     assert.equal(((await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote: reused, expiresAtValue: NOW + 60n })).body.error as { code: string }).code, "BACKING_IN_USE");
+    // Executable quantity never exceeds what its reservations hold.
+    const oversized = { ...quote, legSources: quote.legSources.map((source) => ({ ...source, quantity: 30n })) };
+    assert.equal(((await api.call("POST", "/v1/solver/quotes", { packageMarketId: CLASS, quote: oversized, expiresAtValue: NOW + 60n })).body.error as { code: string }).code, "BACKING_INSUFFICIENT");
     const entryId = posted.body.entryId as string;
     assert.equal(api.exchange.getBook(CLASS)?.entries[0]?.participantId, "solver-a");
     const cancelled = await api.call("POST", "/v1/solver/quotes/cancel", { packageMarketId: CLASS, entryId });
