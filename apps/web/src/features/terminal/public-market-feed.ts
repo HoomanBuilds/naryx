@@ -12,6 +12,10 @@ import {
 } from "./market-feed";
 
 const POLL_MS = 3_000;
+/** While the stream is up, a full read every half minute still catches anything a push missed. */
+const STREAM_RESYNC_MS = 30_000;
+const STREAM_RETRY_MIN_MS = 2_000;
+const STREAM_RETRY_MAX_MS = 30_000;
 const TAPE_PAGE = 100;
 /** How many tape pages a first load reads; older trades are left to the candles endpoint. */
 const INITIAL_TAPE_PAGES = 20;
@@ -130,7 +134,8 @@ interface LiveState {
 
 /**
  * The terminal's market data from the public v1 API: executable package depth and the observed
- * package tape, polled every few seconds. Candles are rebuilt from the observed trades, so the
+ * package tape, read in full first and then pushed over the API's WebSocket stream, with polling
+ * every few seconds whenever the stream is down. Candles are rebuilt from the observed trades, so the
  * chart shows only what traded. Until the first successful read, and whenever the API has never
  * answered, the fixture feed stays in place under its FIXTURE label; after a failed poll the last
  * observed data stays on screen and the status says it is stale.
@@ -151,8 +156,93 @@ export function usePublicMarketFeed(
     const controller = new AbortController();
     let cursor = 0;
     let trades: TapeTrade[] = [];
+    let bids: DepthLevel[] = [];
+    let asks: DepthLevel[] = [];
+    let halted = false;
     let first = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | undefined;
+    let streaming = false;
+    let reconnectDelayMs = STREAM_RETRY_MIN_MS;
+
+    const publish = (detail: string) => {
+      const observed = { bids, asks, trades, cursor, halted };
+      setLive((previous) => ({ ...observed, version: (previous?.version ?? 0) + 1 }));
+      setStatus({ state: "live", detail: halted ? "Market halted by the exchange." : detail, updatedAtMs: Date.now() });
+    };
+    const markStale = (error: unknown) => {
+      const detail = error instanceof Error ? error.message : "request failed";
+      setStatus((previous) =>
+        previous.state === "live" || previous.state === "stale"
+          ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
+          : { state: "unavailable", detail: `Public market API unavailable (${detail}); showing fixture data.` },
+      );
+    };
+    const schedule = (delayMs: number) => {
+      if (timer !== undefined) clearTimeout(timer);
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), delayMs);
+    };
+
+    // After the first full read, the stream pushes depth changes and new trades; polling resumes
+    // only while the stream is down, and a slow resync keeps even a quiet stream honest.
+    const openStream = () => {
+      if (controller.signal.aborted || typeof WebSocket === "undefined" || socket !== undefined) return;
+      let url: string;
+      try {
+        const parsed = new URL(`${base}/v1/stream`);
+        parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+        url = parsed.toString();
+      } catch {
+        return;
+      }
+      const opened = new WebSocket(url);
+      socket = opened;
+      opened.addEventListener("open", () => {
+        opened.send(JSON.stringify({ op: "subscribe", channel: "package-depth", packageMarketId }));
+        opened.send(JSON.stringify({ op: "subscribe", channel: "package-tape", packageMarketId, after: cursor }));
+      });
+      opened.addEventListener("message", (event) => {
+        try {
+          const message = decode(JSON.parse(String(event.data)) as Json) as Record<string, unknown>;
+          if (message.type === "subscribed" && message.channel === "package-tape") {
+            streaming = true;
+            reconnectDelayMs = STREAM_RETRY_MIN_MS;
+            schedule(STREAM_RESYNC_MS);
+            publish("Streaming from the public market API.");
+            return;
+          }
+          if (message.packageMarketId !== packageMarketId) return;
+          if (message.type === "package-depth") {
+            const nextBids = levels(message.bids, "bids");
+            const nextAsks = levels(message.asks, "asks");
+            bids = nextBids;
+            asks = nextAsks;
+            halted = message.halted === true;
+            publish("Streaming from the public market API.");
+          } else if (message.type === "package-tape") {
+            const next = tapePage(message, cursor);
+            trades = [...trades, ...next.trades].slice(-MAX_TRADES);
+            cursor = next.nextCursor;
+            publish("Streaming from the public market API.");
+          } else if (message.type === "error") {
+            throw new PublicApiError(`stream refused: ${String(message.code)}`);
+          }
+        } catch (error) {
+          // A malformed push ends the stream; polling takes over from the last good state.
+          markStale(error);
+          opened.close();
+        }
+      });
+      opened.addEventListener("close", () => {
+        if (socket === opened) socket = undefined;
+        const wasStreaming = streaming;
+        streaming = false;
+        if (controller.signal.aborted) return;
+        schedule(wasStreaming ? 0 : POLL_MS);
+        setTimeout(openStream, reconnectDelayMs);
+        reconnectDelayMs = Math.min(reconnectDelayMs * 2, STREAM_RETRY_MAX_MS);
+      });
+    };
 
     const poll = async () => {
       try {
@@ -160,37 +250,43 @@ export function usePublicMarketFeed(
         if (depth.packageMarketId !== packageMarketId) throw new PublicApiError("depth is for another market");
         // Parse everything before touching state: a malformed response marks the feed stale here,
         // never throws inside a state updater during render.
-        const bids = levels(depth.bids, "bids");
-        const asks = levels(depth.asks, "asks");
-        const halted = depth.halted === true;
-        const pages = first ? INITIAL_TAPE_PAGES : 5;
+        const nextBids = levels(depth.bids, "bids");
+        const nextAsks = levels(depth.asks, "asks");
+        // While the stream is up it owns the tape cursor, so a resync reads depth only.
+        const pages = streaming ? 0 : first ? INITIAL_TAPE_PAGES : 5;
+        const startCursor = cursor;
+        let nextTrades = trades;
+        let nextCursor = cursor;
         for (let page = 0; page < pages; page += 1) {
-          const body = await read(base, `/v1/markets/${market}/package-tape?after=${cursor}&limit=${TAPE_PAGE}`, controller.signal);
-          const next = tapePage(body, cursor);
-          trades = [...trades, ...next.trades].slice(-MAX_TRADES);
-          cursor = next.nextCursor;
+          const body = await read(base, `/v1/markets/${market}/package-tape?after=${nextCursor}&limit=${TAPE_PAGE}`, controller.signal);
+          const next = tapePage(body, nextCursor);
+          nextTrades = [...nextTrades, ...next.trades].slice(-MAX_TRADES);
+          nextCursor = next.nextCursor;
           if (next.trades.length === 0 || (body.trades as unknown[]).length < TAPE_PAGE) break;
         }
+        bids = nextBids;
+        asks = nextAsks;
+        halted = depth.halted === true;
+        // A stream push that advanced the tape during this read wins over the read.
+        if (cursor === startCursor) {
+          trades = nextTrades;
+          cursor = nextCursor;
+        }
         first = false;
-        const observed = trades;
-        const observedCursor = cursor;
-        setLive((previous) => ({ bids, asks, trades: observed, cursor: observedCursor, halted, version: (previous?.version ?? 0) + 1 }));
-        setStatus({ state: "live", detail: halted ? "Market halted by the exchange." : "Live from the public market API.", updatedAtMs: Date.now() });
+        publish(streaming ? "Streaming from the public market API." : "Live from the public market API.");
+        openStream();
       } catch (error) {
         if (controller.signal.aborted) return;
-        const detail = error instanceof Error ? error.message : "request failed";
-        setStatus((previous) =>
-          previous.state === "live" || previous.state === "stale"
-            ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
-            : { state: "unavailable", detail: `Public market API unavailable (${detail}); showing fixture data.` },
-        );
+        markStale(error);
       }
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), POLL_MS);
+      schedule(streaming ? STREAM_RESYNC_MS : POLL_MS);
     };
     void poll();
     return () => {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
+      socket?.close();
+      socket = undefined;
     };
   }, [baseUrl, packageMarketId]);
 
