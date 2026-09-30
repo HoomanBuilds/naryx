@@ -668,12 +668,6 @@ function protocolScalar(value: unknown): string {
   return "-";
 }
 
-function quoteAmount(quote: LocalSolverQuote, key: string): string {
-  const value = quote.quote[key];
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return "-";
-  return protocolScalar((value as Record<string, unknown>).atoms);
-}
-
 const SETTLEMENT_GUARANTEE: Readonly<Record<string, string>> = {
   ATOMIC_POSTCONDITION: "Every leg settles in one transaction, or none does",
   BATCHED_IOC_WITH_RECOVERY: "Legs execute IOC; a partial state is completed or unwound within the signed recovery bounds",
@@ -687,6 +681,65 @@ function assetAmountText(value: unknown): string {
   const record = value as Record<string, unknown>;
   const asset = record.asset as Record<string, unknown> | undefined;
   return `${protocolScalar(record.atoms)} atoms ${typeof asset?.assetId === "string" ? asset.assetId : ""}`.trim();
+}
+
+function assetAmountsText(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) return "none";
+  return value.map(assetAmountText).join(", ");
+}
+
+/**
+ * Every fee and gas estimate the solver signed, each in its own asset and on the chain the quote
+ * names. Amounts in different assets are listed, never summed.
+ */
+function QuoteFees({ quote }: { quote: LocalSolverQuote }) {
+  const terms = quote.quote;
+  const domain = terms.domain as Record<string, unknown> | undefined;
+  const chain = typeof domain?.domainId === "string" ? domain.domainId : "-";
+  return (
+    <div className={styles.reviewGrid} aria-label="Fees and gas">
+      <span>Fee chain</span><strong>{chain}</strong>
+      <span>Venue fees</span><strong>{assetAmountsText(terms.expectedNormalizedVenueFeesByAsset)}</strong>
+      <span>Raw fill fees</span><strong>{assetAmountsText(terms.expectedRawFillFeesByAsset)}</strong>
+      <span>Builder fees</span><strong>{assetAmountsText(terms.expectedBuilderFeesByAsset)}</strong>
+      <span>Base-asset fee</span><strong>{assetAmountText(terms.expectedBaseAssetFee)}</strong>
+      <span>Solver fee</span><strong>{assetAmountText(terms.solverFee)}</strong>
+      <span>Protocol fee</span><strong>{assetAmountText(terms.protocolFee)}</strong>
+      <span>Network fee on {chain}</span><strong>{assetAmountText(terms.expectedPriorityFee)} (priority fee or gas estimate)</strong>
+      <span>Recovery cost cap</span><strong>{assetAmountsText(terms.maxRecoveryCostAtomsByAsset)}</strong>
+      <span>Fee policy</span><strong title={protocolScalar(terms.feePolicyManifestHash)}>v{protocolScalar(terms.feePolicyVersion)} / {compact(protocolScalar(terms.feePolicyManifestHash))}</strong>
+    </div>
+  );
+}
+
+/**
+ * The account each domain executes from and the limits enforced on it. These describe what the
+ * code enforces; nothing here claims a deployment or a funded account.
+ */
+function AccountStatus({ domain }: { domain: string }) {
+  if (domain === "hyperliquid") {
+    return (
+      <div className={styles.reviewGrid} aria-label="Hyperliquid account limits">
+        <span>Account mode</span><strong>Standard only (abstraction disabled)</strong>
+        <span>Mode check</span><strong>Solver preflight refuses unified, default, and portfolio-margin accounts before every package</strong>
+        <span>Ledgers</span><strong>Spot and perpetual USDC funded separately</strong>
+        <span>Executor authority</span><strong>Trade-only API wallet on a dedicated Testnet account; not trustless</strong>
+        <span>Recovery</span><strong>Bounded by the signed price, deadline, loss, fee, and residual policy</strong>
+      </div>
+    );
+  }
+  if (domain === "base" || domain === "arbitrum") {
+    return (
+      <div className={styles.reviewGrid} aria-label="EVM strategy account status">
+        <span>Strategy account</span><strong>NaryxStrategyAccount, one per owner</strong>
+        <span>Authority</span><strong>Owner signs every package; a delegate may only submit an owner-signed recovery exit</strong>
+        <span>Smart-account capability</span><strong>None required; manual creation and funding, no spend-permission fallback</strong>
+        <span>Ownership transfer</span><strong>Two-step: the new owner must accept</strong>
+        <span>Deployment</span><strong>Not deployed here; {domain === "base" ? "Base Sepolia" : "Arbitrum Sepolia"} deployment is deferred</strong>
+      </div>
+    );
+  }
+  return null;
 }
 
 /**
@@ -760,9 +813,6 @@ function LocalExecutionPanel({
           <span>Quote mode</span><strong>{protocolScalar(quote.quote.quoteMode)}</strong>
           <span>Valid until</span><strong>{protocolScalar(quote.quote.validUntilValue)} {protocolScalar(quote.quote.validUntilUnit)}</strong>
           <span>Outcome</span><strong>{protocolScalar((quote.quote.quotedOutcome as Record<string, unknown> | undefined)?.kind)}</strong>
-          <span>Solver fee atoms</span><strong>{quoteAmount(quote, "solverFee")}</strong>
-          <span>Protocol fee atoms</span><strong>{quoteAmount(quote, "protocolFee")}</strong>
-          <span>Priority fee atoms</span><strong>{quoteAmount(quote, "expectedPriorityFee")}</strong>
           <span>Quote hash</span><strong title={quote.quoteHash}>{compact(quote.quoteHash, 12, 10)}</strong>
           <span>Route hash</span><strong title={quote.routeHash}>{compact(quote.routeHash, 12, 10)}</strong>
           <span>Solver digest</span><strong title={quote.solverSignatureDigest}>{compact(quote.solverSignatureDigest, 12, 10)}</strong>
@@ -771,6 +821,7 @@ function LocalExecutionPanel({
         </div>
       ) : null}
       {quote ? <QuoteTerms quote={quote} /> : null}
+      {quote ? <QuoteFees quote={quote} /> : null}
       {attempt ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Selected attempt</span>
@@ -866,12 +917,10 @@ function HyperliquidTestnetPanel({
           <span>Valid until</span><strong>{protocolScalar(quote.quote.validUntilValue)} ms</strong>
           <span>Quote hash</span><strong title={quote.quoteHash}>{compact(quote.quoteHash, 12, 10)}</strong>
           <span>Route hash</span><strong title={quote.routeHash}>{compact(quote.routeHash, 12, 10)}</strong>
-          <span>Solver fee atoms</span><strong>{quoteAmount(quote, "solverFee")}</strong>
-          <span>Protocol fee atoms</span><strong>{quoteAmount(quote, "protocolFee")}</strong>
-          <span>Recovery cap entries</span><strong>{Array.isArray(quote.quote.maxRecoveryCostAtomsByAsset) ? quote.quote.maxRecoveryCostAtomsByAsset.length : 0}</strong>
         </div>
       ) : null}
       {quote ? <QuoteTerms quote={quote} /> : null}
+      {quote ? <QuoteFees quote={quote} /> : null}
       {attempt ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Selected Testnet attempt</span>
@@ -1340,6 +1389,7 @@ function Ticket({
           <span>{selectedDomain === "hyperliquid" ? "Hyperliquid Testnet flow" : "Local conformance lifecycle"}</span>
           <span className={styles.chipNeutral}>{flowState}</span>
         </summary>
+        <AccountStatus domain={selectedDomain} />
         {selectedDomain === "hyperliquid" ? (
           <HyperliquidTestnetPanel
             flow={hyperliquidFlow}
