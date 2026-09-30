@@ -63,3 +63,4 @@ export {
   verifySealedAuctionResult,
   verifySelectiveDisclosure,
 } from '@naryx/protocol-types';
+export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy } from './maker-automation.js';
