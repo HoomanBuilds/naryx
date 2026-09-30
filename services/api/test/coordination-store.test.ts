@@ -74,6 +74,16 @@ test("coordinations and recovery incidents replay through the kernel, and only s
     assert.throws(() => store.approve("incident-1", approval(a, 1_001n), signed(a, approval(a, 1_001n))), { code: "APPROVAL_IN_FUTURE" });
     store.approve("incident-1", approval(a, 950n), signed(a, approval(a, 950n)));
     assert.throws(() => store.approve("incident-1", approval(b, 940n), signed(b, approval(b, 940n))), { code: "EVENT_REJECTED" });
+    // A replayed approval is acknowledged without a new event, so replays cannot fill the incident.
+    for (let i = 0; i < 3; i += 1) assert.deepEqual(store.approve("incident-1", approval(a, 950n), signed(a, approval(a, 950n))), { sequence: 1, replayed: true });
+    // Caller-supplied kind or incident hash never overrides the server's.
+    const forged = { ...approval(a, 950n), kind: "BASELINE_VERIFIED", baselineHash: "77".repeat(32), evidenceHash: "64".repeat(32) };
+    assert.deepEqual(store.approve("incident-1", forged, signed(a, approval(a, 950n))), { sequence: 1, replayed: true });
+    assert.equal(store.incident("incident-1")?.state.phase, "FENCED");
+    store.openIncident({ ...incident, incidentId: "incident-2" });
+    const otherHash = manualRecoveryIncidentHash({ ...incident, incidentId: "incident-2" });
+    assert.throws(() => store.approve("incident-1", { ...approval(b, 955n), incidentHash: otherHash } as ReturnType<typeof approval>, new Uint8Array(sign(null, manualRecoveryApprovalHash({ ...approval(b, 955n), incidentHash: otherHash }), b.key))), { code: "INVALID_SIGNATURE" });
+    assert.equal(store.incident("incident-1")?.events.length, 1);
 
     // Loopback coordinator writes; the public route serves the replay and takes signed approvals.
     const internal = createCoordinationInternalHandler(store);

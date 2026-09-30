@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type Database from "better-sqlite3";
 import bs58 from "bs58";
 import {
+  commitmentHash,
   crossDomainPlan,
   crossDomainPlanHash,
   manualRecoveryApprovalHash,
@@ -79,6 +80,30 @@ function hex(value: Uint8Array | string): string {
   return typeof value === "string" ? value.toLowerCase() : toHex(value);
 }
 
+/** Rebuilds a coordinator event from exactly its kind's fields, so no extra field is ever stored. */
+function recoveryEvent(input: ManualRecoveryEvent): ManualRecoveryEvent {
+  if (typeof input !== "object" || input === null) throw new CoordinationStoreError("INVALID_EVENT", "An event is an object.");
+  switch (input.kind) {
+    case "ACTION_EXECUTED":
+      return { kind: input.kind, actionHash: input.actionHash, evidenceHash: input.evidenceHash, atValue: input.atValue };
+    case "AUTOMATED_ACTION_ATTEMPTED":
+      return { kind: input.kind, actionHash: input.actionHash, atValue: input.atValue };
+    case "BASELINE_VERIFIED":
+      return { kind: input.kind, baselineHash: input.baselineHash, evidenceHash: input.evidenceHash, atValue: input.atValue };
+    default:
+      throw new CoordinationStoreError("INVALID_EVENT", "Unknown recovery event kind.");
+  }
+}
+
+function crossDomainEvent(input: CrossDomainEvent): CrossDomainEvent {
+  if (typeof input !== "object" || input === null) throw new CoordinationStoreError("INVALID_EVENT", "An event is an object.");
+  if (input.kind === "PREPARE_FAILED") return { kind: input.kind, domainId: input.domainId, evidenceHash: input.evidenceHash, atValue: input.atValue };
+  if (input.kind === "PREPARED" || input.kind === "COMMITTED" || input.kind === "COMPENSATED") {
+    return { kind: input.kind, domainId: input.domainId, evidenceHash: input.evidenceHash, finality: input.finality, atValue: input.atValue };
+  }
+  throw new CoordinationStoreError("INVALID_EVENT", "Unknown coordination event kind.");
+}
+
 /**
  * The durable record of cross-domain prepositioned coordinations and manual controlled recovery
  * incidents. The coordinator appends plans and per-domain evidence, and the incident owner opens
@@ -119,7 +144,8 @@ export class SqliteCoordinationStore {
   }
 
   /** Appends one domain's evidence. It must replay; conflicts and late evidence are kept and fence the package. */
-  appendCrossDomainEvent(planHashHex: string, event: CrossDomainEvent): { readonly sequence: number } {
+  appendCrossDomainEvent(planHashHex: string, input: CrossDomainEvent): { readonly sequence: number } {
+    const event = crossDomainEvent(input);
     return this.db.transaction(() => {
       const stored = this.planRow(planHashHex);
       const events = this.planEvents(planHashHex);
@@ -195,29 +221,40 @@ export class SqliteCoordinationStore {
   }
 
   /** A named approver's approval, signed over the approval hash with the approver's own key. */
-  approve(incidentId: string, approval: { readonly actionHash: Uint8Array | string; readonly approverId: string; readonly atValue: bigint }, signature: Uint8Array): { readonly sequence: number } {
+  approve(incidentId: string, input: { readonly actionHash: Uint8Array | string; readonly approverId: string; readonly atValue: bigint }, signature: Uint8Array): { readonly sequence: number; readonly replayed: boolean } {
     return this.db.transaction(() => {
       const incident = this.incidentRow(incidentId);
-      // An approval dated ahead of the coordinator's clock would push every later event out.
-      const now = this.nowIn(incident.timeUnit);
-      if (typeof approval.atValue !== "bigint" || (now !== undefined && approval.atValue > now)) {
-        throw new CoordinationStoreError("APPROVAL_IN_FUTURE", "An approval cannot be dated after the coordinator's clock.");
+      // Only these three fields come from the caller; the kind and the incident hash are the server's.
+      if (typeof input !== "object" || input === null || typeof input.approverId !== "string" || typeof input.atValue !== "bigint") {
+        throw new CoordinationStoreError("INVALID_EVENT", "An approval names an action hash, an approver id, and a bigint time.");
       }
-      if (!incident.approverIds.includes(approval.approverId)) throw new CoordinationStoreError("NOT_AN_APPROVER", "The approver is not named by this incident.");
-      let digest: Uint8Array;
+      let actionHash: string;
       try {
-        digest = manualRecoveryApprovalHash({ incidentHash: manualRecoveryIncidentHash(incident), ...approval });
+        actionHash = toHex(commitmentHash(input.actionHash, "approval.actionHash"));
       } catch (error) {
         throw new CoordinationStoreError("INVALID_EVENT", (error as Error).message);
       }
-      if (!verifyEd25519(bs58.decode(approval.approverId), digest, signature)) throw new CoordinationStoreError("INVALID_SIGNATURE", "The approver did not sign this approval.");
-      return this.appendRecovery(incidentId, incident, { kind: "ACTION_APPROVED", ...approval }, signature);
+      const event = { kind: "ACTION_APPROVED" as const, actionHash, approverId: input.approverId, atValue: input.atValue };
+      if (!incident.approverIds.includes(event.approverId)) throw new CoordinationStoreError("NOT_AN_APPROVER", "The approver is not named by this incident.");
+      const digest = manualRecoveryApprovalHash({ actionHash, approverId: event.approverId, atValue: event.atValue, incidentHash: manualRecoveryIncidentHash(incident) });
+      if (!verifyEd25519(bs58.decode(event.approverId), digest, signature)) throw new CoordinationStoreError("INVALID_SIGNATURE", "The approver did not sign this approval.");
+      // An approver's approval of an action counts once; a repeat is acknowledged without a new event.
+      const prior = this.incidentEvents(incidentId);
+      const repeated = prior.findIndex((entry) => entry.event.kind === "ACTION_APPROVED" && hex(entry.event.actionHash) === actionHash && entry.event.approverId === event.approverId);
+      if (repeated >= 0) return { sequence: repeated + 1, replayed: true };
+      // An approval dated ahead of the coordinator's clock would push every later event out. Without
+      // a clock in the incident's unit (slots), it may not pass the latest recorded time.
+      const latest = prior.reduce((max, entry) => (entry.event.atValue > max ? entry.event.atValue : max), BigInt(incident.fencedAtValue));
+      const bound = this.nowIn(incident.timeUnit) ?? latest;
+      if (event.atValue > bound) throw new CoordinationStoreError("APPROVAL_IN_FUTURE", "An approval cannot be dated after the coordinator's clock or latest evidence.");
+      return { ...this.appendRecovery(incidentId, incident, event, signature), replayed: false };
     }).immediate();
   }
 
   /** Executions, refused automation, and baseline evidence; approvals go through `approve`. */
-  appendRecoveryEvent(incidentId: string, event: ManualRecoveryEvent): { readonly sequence: number } {
-    if (event?.kind === "ACTION_APPROVED") throw new CoordinationStoreError("SIGNATURE_REQUIRED", "Approvals must be signed by their approver.");
+  appendRecoveryEvent(incidentId: string, input: ManualRecoveryEvent): { readonly sequence: number } {
+    if (input?.kind === "ACTION_APPROVED") throw new CoordinationStoreError("SIGNATURE_REQUIRED", "Approvals must be signed by their approver.");
+    const event = recoveryEvent(input);
     return this.db.transaction(() => this.appendRecovery(incidentId, this.incidentRow(incidentId), event, undefined)).immediate();
   }
 

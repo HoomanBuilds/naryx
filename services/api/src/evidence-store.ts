@@ -272,6 +272,9 @@ export class SqliteEvidenceStore {
     if (!columns.some((column) => column.name === "quote_hash")) this.db.exec("ALTER TABLE terminal_outcomes ADD COLUMN quote_hash BLOB");
     this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_quote ON terminal_outcomes(quote_hash, solver_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_receipt ON terminal_outcomes(receipt_hash)");
+    // Per-solver performance reads scan only that solver's rows.
+    this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_solver ON terminal_outcomes(solver_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS order_quotes_by_solver ON order_quotes(solver_id, order_hash)");
     this.clock = options.clock ?? Date.now;
   }
 

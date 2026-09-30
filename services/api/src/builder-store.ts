@@ -151,7 +151,11 @@ export class SqliteBuilderStore {
     const rows = this.db
       .prepare("SELECT order_hash, attribution_json FROM builder_attributions WHERE builder_id = ? ORDER BY recorded_at_ms DESC LIMIT ?")
       .all(builderId, Math.min(Math.max(1, limit), 1_000)) as { order_hash: Uint8Array; attribution_json: string }[];
-    return rows.map((row) => {
+    return rows.map((row) => this.view(row));
+  }
+
+  private view(row: { order_hash: Uint8Array; attribution_json: string }): BuilderAttributionView {
+    {
       const orderHash = toHex(row.order_hash);
       const attribution = parseProtocolJson(row.attribution_json) as BuilderAttributionInput;
       const outcome = this.options.evidence.getOutcome(orderHash);
@@ -179,13 +183,20 @@ export class SqliteBuilderStore {
         payable: check.payable,
         violations: check.payable ? [] : check.violations,
       });
-    });
+    }
   }
 
-  /** Payable builder fees by asset over successful attributed receipts. */
+  /**
+   * Payable builder fees by asset over every successful attributed receipt of the builder, not
+   * only the newest page, so attributions added by others can never push revenue out of the sum.
+   */
   revenue(builderId: string): readonly { readonly assetId: string; readonly atoms: bigint; readonly orders: number }[] {
     const totals = new Map<string, { atoms: bigint; orders: number }>();
-    for (const view of this.attributions(builderId, 1_000)) {
+    const rows = this.db
+      .prepare("SELECT order_hash, attribution_json FROM builder_attributions WHERE builder_id = ?")
+      .all(builderId) as { order_hash: Uint8Array; attribution_json: string }[];
+    for (const row of rows) {
+      const view = this.view(row);
       if (!view.payable) continue;
       for (const fee of view.chargedByAsset) {
         const entry = totals.get(fee.assetId) ?? { atoms: 0n, orders: 0 };

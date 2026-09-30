@@ -663,6 +663,7 @@ export function createSolverStream(options: SolverStreamOptions): {
     orders?: { cursor: number };
     privateRfqs?: Set<string>;
     readonly authTimer: ReturnType<typeof setTimeout>;
+    readonly key: string;
   }
   const clients = new Set<StreamClient>();
   const send = (client: StreamClient, message: Record<string, unknown>) => client.connection.send(JSON.stringify(toProtocolJson(message)));
@@ -783,11 +784,18 @@ export function createSolverStream(options: SolverStreamOptions): {
     upgrade(request, socket) {
       const url = new URL(request.url ?? "/", "http://solver-api.local");
       if (url.pathname !== SOLVER_STREAM_PATH) return false;
+      // Unauthenticated sockets are capped like the market stream, before any solver has signed in.
+      const key = clientKey(request.socket.remoteAddress);
+      const fromClient = [...clients].filter((client) => client.key === key).length;
+      if (clients.size >= 512 || fromClient >= 8) {
+        socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        return true;
+      }
       acceptWebSocket(
         request,
         socket,
         (connection) => {
-          const client: StreamClient = { connection, authTimer: setTimeout(() => connection.close(4408), 10_000) };
+          const client: StreamClient = { connection, key, authTimer: setTimeout(() => connection.close(4408), 10_000) };
           clients.add(client);
           return {
             onText: (text) => onText(client, text),
