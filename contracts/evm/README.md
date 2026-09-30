@@ -76,3 +76,9 @@ forge test --match-contract ArbitrumMainnetForkQualificationTest
 ```
 
 Record a completed qualification under `deployments/evm/fork-evidence/` only after reviewing the pinned inputs and real test output. Do not copy those values into application runtime configuration.
+
+## Deployment preparation
+
+The scripts under `script/` prepare Base Sepolia and Arbitrum Sepolia deployments. None has been run against a public network, and none may be without explicit authorization for that exact action.
+
+`DeployBaseSepoliaFirmLiquidity` deploys the firm liquidity layer on top of an existing atomic package deployment: `FirmInventoryReservationBook`, `DirectInventorySpotPort`, one solver's `PackageQuoteShard` (whose only consumer is the verifier), and `PerformanceBondVault`. Before creating anything it requires the Base Sepolia chain and pins the protocol config, the verifier, and both tokens by the code hashes their review recorded, refusing any that changed. It registers and approves nothing: shard registration and port approval go through the delayed governance path of the configure script. Once deployed, each new contract's runtime code hash belongs in the keeper's code-hash monitor targets, and the vault's address in `NARYX_INDEXER_EVM_BOND_VAULTS`.

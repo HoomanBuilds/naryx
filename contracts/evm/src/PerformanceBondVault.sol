@@ -146,7 +146,14 @@ contract PerformanceBondVault is ReentrancyGuard {
         asset.safeTransferFrom(msg.sender, address(this), bondAtoms);
         if (asset.balanceOf(address(this)) - before != bondAtoms) revert TransferAmountMismatch();
         emit BondOpened(
-            bondId, msg.sender, address(asset), bondAtoms, coveredFaults, maximumPayoutPerClaim, disputeWindow, expiresAt
+            bondId,
+            msg.sender,
+            address(asset),
+            bondAtoms,
+            coveredFaults,
+            maximumPayoutPerClaim,
+            disputeWindow,
+            expiresAt
         );
     }
 
