@@ -1255,3 +1255,16 @@ export {
   type MarketCatalogueInput,
   type MarketCatalogueQuery,
 } from './market-catalogue.js';
+
+export {
+  STRATEGY_COMMAND_VERSION,
+  STRATEGY_COMMAND_KIND,
+  applyStrategyCommand,
+  strategyCommandBytes,
+  strategyCommandHash,
+  strategyCommandSubjects,
+  type StrategyCommandInput,
+  type StrategyCommandKind,
+  type StrategyCommandOutcome,
+  type StrategyCommandParameters,
+} from './strategy-command.js';

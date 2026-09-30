@@ -138,6 +138,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/package-graph',
         'CON/v1/market-catalogue',
         'CON/v1/shard-fill',
+        'CON/v1/strategy-command',
       ],
     );
   });

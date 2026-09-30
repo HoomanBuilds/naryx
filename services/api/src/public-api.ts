@@ -36,6 +36,7 @@ import type {
   PackageGraphInput,
   PackageTemplateManifestInput,
   PackageOrderInput,
+  StrategyCommandInput,
   PackageTakerOrderInput,
   PrivateRfqEnvelopeInput,
   SealedAuctionDefinitionInput,
@@ -53,6 +54,7 @@ import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
+import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 
@@ -141,6 +143,8 @@ export interface PublicApiOptions {
   readonly catalogue?: { current(): { readonly catalogue: unknown; readonly catalogueHash: string } };
   /** Optional: position and risk reads answer 503 without it. Snapshots are accepted only when signed by a configured authority. */
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
+  /** The signed strategy book; without it the strategy routes answer 503. */
+  readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -369,6 +373,48 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       if (options.catalogue === undefined) throw new RequestError(503, "CATALOGUE_UNAVAILABLE", "No catalogue authority is configured on this server.");
       return options.catalogue.current();
+    }
+    if ((match = /^\/v1\/strategies\/([^/]+)(\/history)?$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
+      const strategyId = id(match[1], "Strategy id");
+      if (match[2] !== undefined) {
+        // Every signed command that touched the strategy, with its signature and transition receipt,
+        // so a client can re-hash, re-verify, and chain them itself.
+        return {
+          strategyId,
+          commands: options.strategies.history(strategyId).map((entry) => ({
+            command: entry.command,
+            commandHash: entry.commandHashHex,
+            authorization: { scheme: "ED25519", signature: entry.signatureBase58 },
+            ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
+            recordedAtMs: entry.recordedAtMs,
+          })),
+        };
+      }
+      const stored = options.strategies.strategy(strategyId);
+      if (stored === undefined) throw new RequestError(404, "STRATEGY_NOT_FOUND", "No such strategy.");
+      return {
+        state: stored.state,
+        stateHash: stored.stateHashHex,
+        ...(stored.originReceiptHashHex === undefined ? {} : { originReceiptHash: stored.originReceiptHashHex }),
+        ...(stored.retiredByCommandHashHex === undefined ? {} : { retiredByCommandHash: stored.retiredByCommandHashHex }),
+      };
+    }
+    if ((match = /^\/v1\/owners\/([^/]+)\/strategies$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
+      const ownerId = id(match[1], "Owner id");
+      return {
+        ownerId,
+        strategies: options.strategies.ownerStrategies(ownerId).map((stored) => ({
+          strategyId: stored.state.strategyId,
+          stateVersion: stored.state.stateVersion,
+          stateHash: stored.stateHashHex,
+          open: stored.state.open,
+          retired: stored.retiredByCommandHashHex !== undefined,
+        })),
+      };
     }
     if ((match = /^\/v1\/(positions|risk)\/([^/]+)$/.exec(path)) !== null) {
       // The latest signed read-only snapshot of each source for one strategy account, and the
@@ -827,6 +873,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/auctions/sealed",
       "/v1/orders",
       "/v1/position-snapshots",
+      "/v1/strategies/commands",
     ].includes(path)) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
@@ -839,6 +886,19 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const order = object(body.order, "order") as unknown as PackageOrderInput;
       const result = requireEvidence().submitOrder(order, authorization.signature as string);
       return { ...result, status: "ACCEPTED_FOR_QUOTING" };
+    }
+    if (path === "/v1/strategies/commands") {
+      // An owner or delegate's signed strategy command, applied through the kernel lifecycle rules
+      // against the exact stored state. Only accounting and authority change here; operations that
+      // move venue positions go through signed package actions.
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519" || typeof authorization.signature !== "string") {
+        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Strategy commands carry an ED25519 signature in base58.");
+      }
+      if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
+      const result = options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization.signature);
+      if (!result.accepted) throw new RequestError(409, result.rejection, `The strategy command was rejected${result.remedy === undefined ? "" : `; remedy: ${result.remedy}`}.`);
+      return result;
     }
     if (path === "/v1/orders/validate") {
       try {
@@ -1000,6 +1060,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
         if (error instanceof EvidenceStoreError) {
           const status = ["INVALID_ORDER", "INVALID_SIGNATURE", "UNSUPPORTED_AUTHORIZATION"].includes(error.code) ? 400 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof StrategyBookError) {
+          const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : error.code === "STRATEGY_NOT_FOUND" || error.code === "ORIGIN_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof PositionSnapshotStoreError) {

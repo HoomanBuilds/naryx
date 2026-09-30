@@ -84,6 +84,7 @@ export const HASH_DOMAIN = Object.freeze({
   PACKAGE_GRAPH: 'CON/v1/package-graph',
   MARKET_CATALOGUE: 'CON/v1/market-catalogue',
   SHARD_FILL: 'CON/v1/shard-fill',
+  STRATEGY_COMMAND: 'CON/v1/strategy-command',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

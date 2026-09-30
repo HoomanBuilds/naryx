@@ -21,6 +21,12 @@ import {
   packageReceiptHash,
   positionSnapshotRecord,
   positionSnapshotRecordHash,
+  strategyCommandHash,
+  strategyState,
+  strategyStateHash,
+  type StrategyCommandInput,
+  type StrategyState,
+  type StrategyTransitionReceipt,
   marketCatalogue,
   marketCatalogueCurrent,
   marketCatalogueHash,
@@ -407,6 +413,28 @@ export function base58Encode(bytes: Uint8Array): string {
   return '1'.repeat(zeros) + digits.reverse().map((digit) => BASE58_ALPHABET[digit]).join('');
 }
 
+/** Decodes Bitcoin-alphabet base58; undefined for any character outside the alphabet. */
+export function base58Decode(text: string): Uint8Array | undefined {
+  if (typeof text !== 'string' || text.length > 256) return undefined;
+  let zeros = 0;
+  while (zeros < text.length && text[zeros] === '1') zeros += 1;
+  const bytes: number[] = [];
+  for (let index = zeros; index < text.length; index += 1) {
+    let carry = BASE58_ALPHABET.indexOf(text[index] as string);
+    if (carry < 0) return undefined;
+    for (let byte = 0; byte < bytes.length; byte += 1) {
+      carry += (bytes[byte] as number) * 58;
+      bytes[byte] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  return Uint8Array.from([...new Array<number>(zeros).fill(0), ...bytes.reverse()]);
+}
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new NaryxEvidenceError(`${context} is not an object`);
   return value as Record<string, unknown>;
@@ -539,6 +567,18 @@ function sizesQuery(sizes: readonly bigint[]): string {
  * order validation and route-decision replay are recomputed locally and must agree with the
  * server, and candle series are rebuilt from the tape on request.
  */
+/** Signs a strategy command hash with the actor's own Ed25519 key; the key never enters the SDK. */
+export type StrategyCommandSigner = (commandHash: Uint8Array) => Promise<Uint8Array>;
+
+export interface VerifiedStrategyCommand {
+  readonly commandHash: string;
+  readonly command: StrategyCommandInput;
+  /** True only when the actor's own key verified the signature here. */
+  readonly signatureVerified: boolean;
+  readonly receipt?: StrategyTransitionReceipt;
+  readonly recordedAtMs: number;
+}
+
 /** A market catalogue whose hash was recomputed here; search it locally with `search`. */
 export interface VerifiedMarketCatalogue {
   readonly catalogue: MarketCatalogue;
@@ -1136,6 +1176,93 @@ export class NaryxClient {
     if (body.label !== 'SIMULATED' || body.graphHash !== toHex(packageGraphHash(graph))) throw new NaryxEvidenceError('the simulation is unlabeled or for another graph');
     if (JSON.stringify(toProtocolJson(body.failurePoints)) !== JSON.stringify(toProtocolJson(local))) throw new NaryxEvidenceError('the served failure points differ from the local simulation');
     return Object.freeze({ graphHash: body.graphHash as string, stages: body.stages, failurePoints: local });
+  }
+
+  /**
+   * Signs and submits one strategy command. The command is hashed locally and only its hash goes
+   * to the caller's signer; the server's acknowledgement must name that exact hash.
+   */
+  async submitStrategyCommand(command: StrategyCommandInput, sign: StrategyCommandSigner) {
+    if (typeof sign !== 'function') throw new TypeError('a strategy command signer is required');
+    const commandHash = strategyCommandHash(command);
+    const signature = await sign(commandHash);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    const body = record(await this.#request('POST', '/v1/strategies/commands', { command, authorization: { scheme: 'ED25519', signature: base58Encode(signature) } }), 'strategy command');
+    if (body.accepted !== true || body.commandHashHex !== toHex(commandHash)) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
+    return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
+  }
+
+  /** A strategy's current state, re-validated and re-hashed here; the served hash must match. */
+  async getStrategy(strategyId: string): Promise<{ readonly state: StrategyState; readonly stateHash: string; readonly originReceiptHash?: string; readonly retiredByCommandHash?: string }> {
+    const id = checkId(strategyId, 'strategy id');
+    const body = record(await this.#request('GET', `/v1/strategies/${id}`), 'strategy');
+    let state: StrategyState;
+    try {
+      state = strategyState(body.state as StrategyState);
+    } catch (error) {
+      throw new NaryxEvidenceError(`strategy state is malformed: ${(error as Error).message}`);
+    }
+    const stateHash = toHex(strategyStateHash(state));
+    if (state.strategyId !== id || body.stateHash !== stateHash) throw new NaryxEvidenceError('the strategy state is another strategy or does not match its hash');
+    return Object.freeze({
+      state,
+      stateHash,
+      ...(typeof body.originReceiptHash === 'string' ? { originReceiptHash: body.originReceiptHash } : {}),
+      ...(typeof body.retiredByCommandHash === 'string' ? { retiredByCommandHash: body.retiredByCommandHash } : {}),
+    });
+  }
+
+  /**
+   * Every signed command that touched a strategy. Each is re-hashed, its signature is checked
+   * against the key its actor id names, its receipt must start from the state it bound, and after
+   * the first, every command must bind a state an earlier command in the history produced.
+   */
+  async getStrategyHistory(strategyId: string): Promise<readonly VerifiedStrategyCommand[]> {
+    const id = checkId(strategyId, 'strategy id');
+    const body = record(await this.#request('GET', `/v1/strategies/${id}/history`), 'strategy history');
+    if (body.strategyId !== id) throw new NaryxEvidenceError('the history is for another strategy');
+    const produced = new Set<string>();
+    const verified: VerifiedStrategyCommand[] = [];
+    for (const [index, entry] of list(body.commands, 'commands').entries()) {
+      const served = record(entry, `commands[${index}]`);
+      const command = served.command as StrategyCommandInput;
+      let commandHash: Uint8Array;
+      try {
+        commandHash = strategyCommandHash(command);
+      } catch (error) {
+        throw new NaryxEvidenceError(`commands[${index}] is malformed: ${(error as Error).message}`);
+      }
+      if (served.commandHash !== toHex(commandHash)) throw new NaryxEvidenceError(`commands[${index}] does not match its hash`);
+      const authorization = record(served.authorization, `commands[${index}].authorization`);
+      const signature = base58Decode(String(authorization.signature));
+      const key = base58Decode(command.actorId);
+      if (signature === undefined || key === undefined || key.length !== 32) throw new NaryxEvidenceError(`commands[${index}] has no usable actor key or signature`);
+      const verdict = await webCryptoEd25519(key, commandHash, signature);
+      if (verdict === false) throw new NaryxEvidenceError(`commands[${index}] is not signed by its actor`);
+      const receipt = served.receipt as StrategyTransitionReceipt | undefined;
+      const bound: string[] = [];
+      if (command.parameters.kind === 'OPEN') {
+        produced.add(toHex(strategyStateHash(command.parameters.state)));
+      } else {
+        bound.push(typeof command.expectedStateHash === 'string' ? command.expectedStateHash.toLowerCase() : toHex(command.expectedStateHash));
+        if (command.parameters.kind === 'MERGE') {
+          const other = command.parameters.otherExpectedStateHash;
+          bound.push(typeof other === 'string' ? other.toLowerCase() : toHex(other));
+        }
+        const prior = new Set((receipt?.priorStateHashes ?? []).map((hash) => (typeof hash === 'string' ? String(hash).toLowerCase() : toHex(hash))));
+        if (receipt === undefined || bound.some((hash) => !prior.has(hash))) throw new NaryxEvidenceError(`commands[${index}] has no receipt from the state it bound`);
+        if (index > 0 && !bound.some((hash) => produced.has(hash))) throw new NaryxEvidenceError(`commands[${index}] binds a state no earlier command produced`);
+        for (const hash of receipt.nextStateHashes) produced.add(typeof hash === 'string' ? String(hash).toLowerCase() : toHex(hash));
+      }
+      verified.push(Object.freeze({
+        commandHash: toHex(commandHash),
+        command,
+        signatureVerified: verdict === true,
+        ...(receipt === undefined ? {} : { receipt }),
+        recordedAtMs: typeof served.recordedAtMs === 'number' ? served.recordedAtMs : 0,
+      }));
+    }
+    return Object.freeze(verified);
   }
 
   /**

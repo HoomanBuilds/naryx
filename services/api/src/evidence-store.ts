@@ -271,6 +271,7 @@ export class SqliteEvidenceStore {
     const columns = this.db.prepare("PRAGMA table_info(terminal_outcomes)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "quote_hash")) this.db.exec("ALTER TABLE terminal_outcomes ADD COLUMN quote_hash BLOB");
     this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_quote ON terminal_outcomes(quote_hash, solver_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS terminal_outcomes_by_receipt ON terminal_outcomes(receipt_hash)");
     this.clock = options.clock ?? Date.now;
   }
 
@@ -559,6 +560,12 @@ export class SqliteEvidenceStore {
         );
       return { outcomeHashHex: toHex(outcomeHash), ...(receiptHash === undefined ? {} : { receiptHashHex: toHex(receiptHash) }), replayed: false };
     });
+  }
+
+  /** The successful outcome whose receipt has this hash, re-hashed on read like `getOutcome`. */
+  outcomeByReceipt(receiptHashHex: string): StoredOutcome | undefined {
+    const row = this.db.prepare("SELECT order_hash FROM terminal_outcomes WHERE receipt_hash = ?").get(Buffer.from(receiptHashHex, "hex")) as { order_hash: Uint8Array } | undefined;
+    return row === undefined ? undefined : this.getOutcome(toHex(row.order_hash));
   }
 
   getOutcome(orderHashHex: string): StoredOutcome | undefined {

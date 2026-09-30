@@ -21,6 +21,7 @@ import { SqliteEvidenceStore } from "./evidence-store.js";
 import { SqliteQualificationStore } from "./qualification-store.js";
 import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
+import { SqliteStrategyBookStore } from "./strategy-book-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -297,6 +298,22 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (positions !== undefined) opened.push(positions);
+    const strategyPath = optional(environment.NARYX_STRATEGY_DB);
+    if (strategyPath !== undefined && evidence === undefined) {
+      throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
+    }
+    const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
+    if (strategyPath !== undefined && (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment) || publicEnvironment.toLowerCase().includes("mainnet"))) {
+      throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
+    }
+    const strategies = strategyPath === undefined || evidence === undefined
+      ? undefined
+      : new SqliteStrategyBookStore(absolute(strategyPath, "NARYX_STRATEGY_DB"), {
+        environment: publicEnvironment as string,
+        originReceipt: (receiptHashHex) => evidence.outcomeByReceipt(receiptHashHex)?.receipt,
+        clock: clockMs,
+      });
+    if (strategies !== undefined) opened.push(strategies);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -318,6 +335,7 @@ export function loadPublicMarketRuntime(
       ...(positions === undefined ? {} : { positions }),
       ...(graphContext === undefined ? {} : { graphContext }),
       ...(catalogue === undefined ? {} : { catalogue }),
+      ...(strategies === undefined ? {} : { strategies }),
       nowValue,
       rateLimit,
       clockMs,

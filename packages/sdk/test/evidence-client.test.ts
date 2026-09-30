@@ -14,6 +14,10 @@ import {
   positionSnapshotRecord,
   positionSnapshotRecordHash,
   marketCatalogueHash,
+  applyStrategyCommand,
+  strategyCommandHash,
+  strategyState,
+  strategyStateHash,
   domainRef,
   evidenceManifestHash,
   fromProtocolJson,
@@ -34,6 +38,8 @@ import {
   type AcceptedQuoteFeeTerms,
   type EvidenceManifestInput,
   type MarketCatalogueInput,
+  type StrategyCommandInput,
+  type StrategyState,
   type PackageOrderInput,
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
@@ -43,7 +49,7 @@ import {
   type SolverQuoteInput,
   type TerminalOutcomeInput,
 } from '@naryx/protocol-types';
-import { NaryxClient, NaryxSolverClient, base58Encode, type FetchLike } from '../src/index.js';
+import { NaryxClient, NaryxSolverClient, base58Decode, base58Encode, type FetchLike } from '../src/index.js';
 
 const ORDER = fromProtocolJson(
   JSON.parse(readFileSync(new URL('../../test/fixtures/solana-entry-order.json', import.meta.url), 'utf8')),
@@ -832,5 +838,46 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(read(served({ firstQuoteLatencyMs: { median: 500, p95: 400, max: 400 } })), /not ordered/);
     await assert.rejects(read(served({ priceImprovementBps: { measured: 2, median: 100, min: 100, max: 100 } })), /beyond the settled outcomes/);
     await assert.rejects(read(served({ solverId: 'solver-b' })), /another solver/);
+  });
+  test('strategy histories are re-hashed, signature-checked against each actor, and chained state to state', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const ownerId = base58Encode(new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32)));
+    assert.deepEqual(base58Decode(ownerId), new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32)));
+    assert.equal(base58Decode('0OIl'), undefined);
+    const initial: StrategyState = strategyState({
+      version: 1, strategyId: 'carry-1', ownerId, subaccountId: 'desk-1', seriesId: 'sol-cash-carry', executionClassId: 'sol-carry', open: true, stateVersion: 1n,
+      legs: [
+        { legId: 'spot', underlyingId: 'sol', instrumentId: 'sol-spot', venueId: 'phoenix', signedQuantityAtoms: 100n, lotAtoms: 10n, ratioNumerator: 1n, ratioDenominator: 1n },
+        { legId: 'perp', underlyingId: 'sol', instrumentId: 'sol-perp', venueId: 'drift', signedQuantityAtoms: -100n, lotAtoms: 10n, ratioNumerator: -1n, ratioDenominator: 1n },
+      ],
+      liabilities: [], delegations: [], venuePositionsTransferable: false, legalTransferRestricted: false,
+    });
+    const base = { commandVersion: 1, environment: 'testnet', strategyId: 'carry-1', actorId: ownerId, atValue: 1_790_000_000_000n } as const;
+    const open: StrategyCommandInput = { ...base, expectedStateVersion: 0n, expectedStateHash: '00'.repeat(32), parameters: { kind: 'OPEN', originReceiptHash: '11'.repeat(32), state: initial } };
+    const assign: StrategyCommandInput = { ...base, expectedStateVersion: 1n, expectedStateHash: strategyStateHash(initial), parameters: { kind: 'ASSIGN_INTERNAL', subaccountId: 'desk-2' } };
+    const transition = applyStrategyCommand(assign, new Map([['carry-1', initial]]));
+    assert.ok(transition.kind === 'TRANSITIONED' && transition.result.accepted);
+    const entry = (command: StrategyCommandInput, receipt?: unknown, signer = privateKey) => ({
+      command,
+      commandHash: toHex(strategyCommandHash(command)),
+      authorization: { scheme: 'ED25519', signature: base58Encode(new Uint8Array(sign(null, strategyCommandHash(command), signer))) },
+      ...(receipt === undefined ? {} : { receipt }),
+      recordedAtMs: 1,
+    });
+    const reader = (commands: unknown[]) => client({ 'GET /v1/strategies/carry-1/history': { body: { strategyId: 'carry-1', commands } } });
+    const history = await reader([entry(open), entry(assign, transition.result.receipt)]).getStrategyHistory('carry-1');
+    assert.deepEqual(history.map((item) => [item.command.parameters.kind, item.signatureVerified]), [['OPEN', true], ['ASSIGN_INTERNAL', true]]);
+    await assert.rejects(reader([entry(open, undefined, generateKeyPairSync('ed25519').privateKey)]).getStrategyHistory('carry-1'), /not signed by its actor/);
+    await assert.rejects(reader([{ ...entry(open), commandHash: 'ab'.repeat(32) }]).getStrategyHistory('carry-1'), /does not match its hash/);
+    const detached: StrategyCommandInput = { ...assign, expectedStateVersion: 5n, expectedStateHash: 'cd'.repeat(32) };
+    await assert.rejects(reader([entry(open), entry(detached, { ...transition.result.receipt, priorStateHashes: [new Uint8Array(32).fill(0xcd)] })]).getStrategyHistory('carry-1'), /no earlier command produced/);
+    await assert.rejects(reader([entry(open), entry(assign)]).getStrategyHistory('carry-1'), /no receipt from the state it bound/);
+
+    const seen: { method: string; path: string; body?: unknown }[] = [];
+    const ack = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: toHex(strategyCommandHash(assign)), states: [] } } }, seen);
+    const submitted = await ack.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey)));
+    assert.equal(submitted.commandHash, toHex(strategyCommandHash(assign)));
+    const wrong = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: 'ef'.repeat(32), states: [] } } });
+    await assert.rejects(wrong.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey))), /different strategy command/);
   });
 });

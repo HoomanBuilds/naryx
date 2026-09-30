@@ -236,6 +236,11 @@ export function strategyState(input: StrategyState, context = 'strategyState'): 
   });
 }
 
+/** Writes a validated strategy state exactly as its hash commits to it. */
+export function encodeStrategyState(writer: CanonicalWriter, state: StrategyState): void {
+  encodeState(writer, strategyState(state));
+}
+
 function encodeState(writer: CanonicalWriter, state: StrategyState): void {
   writer.writeU32(state.version, 'version');
   for (const id of [state.strategyId, state.ownerId, state.subaccountId, state.seriesId, state.executionClassId]) {

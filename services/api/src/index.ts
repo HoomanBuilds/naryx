@@ -343,3 +343,4 @@ export { QualificationStoreError, SqliteQualificationStore, type StoredQualifica
 export { PositionSnapshotStoreError, SqlitePositionSnapshotStore, type StoredPositionSnapshot } from "./position-snapshot-store.js";
 export { createMarketStream, type MarketStreamOptions } from "./market-stream.js";
 export { createOffchainShardSettlement, type OffchainShardFillRequest, type OffchainShardFillResult } from "./offchain-shard-settlement.js";
+export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";
