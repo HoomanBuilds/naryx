@@ -1194,3 +1194,12 @@ export {
   type BenchmarkComparison,
   type TopUpAttempt,
 } from './benchmark.js';
+export {
+  POSITION_SNAPSHOT_RECORD_VERSION,
+  positionSnapshotRecord,
+  positionSnapshotRecordBytes,
+  positionSnapshotRecordHash,
+  samePositionSnapshot,
+  type PositionSnapshotRecord,
+  type PositionSnapshotRecordInput,
+} from './position-snapshot.js';
