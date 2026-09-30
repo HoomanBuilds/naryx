@@ -23,6 +23,8 @@ import {
   domainRef,
   evidenceManifestHash,
   fromProtocolJson,
+  manualRecoveryApprovalHash,
+  manualRecoveryIncidentHash,
   packageOrderBytes,
   packageOrderHash,
   packageReceiptHash,
@@ -896,5 +898,27 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(read('ab'.repeat(32)), /does not match its hash/);
     const revenue = await client({ 'GET /v1/builders/builder-a/revenue': { body: { builderId: 'builder-a', label: 'OBSERVED', payableByAsset: [{ assetId: 'usdc', atoms: 70n, orders: 1 }] } } }).getBuilderRevenue('builder-a');
     assert.deepEqual(revenue, [{ assetId: 'usdc', atoms: 70n, orders: 1 }]);
+  });
+  test('recovery incidents are re-hashed, every approval is checked against its named approver, and the phase is replayed locally', async () => {
+    const keys = [generateKeyPairSync('ed25519'), generateKeyPairSync('ed25519')];
+    const ids = keys.map(({ publicKey }) => base58Encode(new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32))));
+    const incident = {
+      incidentVersion: 1, environment: 'testnet', incidentId: 'incident-1', orderHash: '11'.repeat(32), timeUnit: 'EVM_UNIX_SECONDS' as const,
+      fencedAtValue: 100n, approverIds: ids, approvalQuorum: 2, baselineTargetHash: '77'.repeat(32),
+    };
+    const incidentHash = toHex(manualRecoveryIncidentHash(incident));
+    const approval = (index: number, atValue: bigint, signer = keys[index]!.privateKey) => {
+      const event = { kind: 'ACTION_APPROVED' as const, actionHash: '62'.repeat(32), approverId: ids[index]!, atValue };
+      return { event, signature: new Uint8Array(sign(null, manualRecoveryApprovalHash({ incidentHash, ...event }), signer)) };
+    };
+    const reader = (events: unknown[]) => client({ 'GET /v1/recovery/incidents/incident-1': { body: { incident, incidentHash, events, state: { phase: 'RESTORED' } } } });
+    const read = await reader([approval(0, 101n), approval(1, 102n), { event: { kind: 'ACTION_EXECUTED', actionHash: '62'.repeat(32), evidenceHash: '63'.repeat(32), atValue: 103n } }]).getRecoveryIncident('incident-1');
+    assert.equal(read.state.phase, 'FENCED', 'the served phase is replaced by the local replay');
+    assert.equal(read.state.executedActions.length, 1);
+    await assert.rejects(reader([approval(0, 101n, keys[1]!.privateKey)]).getRecoveryIncident('incident-1'), /not signed by its approver/);
+    const seen: { method: string; path: string; body?: unknown }[] = [];
+    await client({ 'POST /v1/recovery/approvals': { body: { sequence: 1 } } }, seen)
+      .submitRecoveryApproval('incident-1', { incidentHash, actionHash: '62'.repeat(32), approverId: ids[0]!, atValue: 101n }, async (hash) => new Uint8Array(sign(null, hash, keys[0]!.privateKey)));
+    assert.equal((seen[0]?.body as { incidentId: string }).incidentId, 'incident-1');
   });
 });

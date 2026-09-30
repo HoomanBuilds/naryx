@@ -1295,8 +1295,10 @@ export {
 export {
   MANUAL_RECOVERY_INCIDENT_VERSION,
   manualRecoveryIncident,
+  manualRecoveryApprovalHash,
   manualRecoveryIncidentHash,
   replayManualRecovery,
+  type ManualRecoveryApprovalInput,
   type ManualRecoveryEvent,
   type ManualRecoveryIncident,
   type ManualRecoveryIncidentInput,

@@ -25,6 +25,7 @@ import { SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { createEvmBondReader } from "./evm-bond-reader.js";
 import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
+import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -45,7 +46,7 @@ export interface PublicMarketRuntime {
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
   readonly solverApiEnabled: boolean;
-  /** Loopback keeper executor routes under `/internal/keeper/`; mount only on the private server. */
+  /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
 }
@@ -374,6 +375,18 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (keeper !== undefined) opened.push(keeper);
+    const coordinationPath = optional(environment.NARYX_COORDINATION_DB);
+    if (coordinationPath !== undefined && (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment) || publicEnvironment.toLowerCase().includes("mainnet"))) {
+      throw new PublicMarketConfigError("NARYX_COORDINATION_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
+    }
+    const coordination = coordinationPath === undefined
+      ? undefined
+      : new SqliteCoordinationStore(absolute(coordinationPath, "NARYX_COORDINATION_DB"), { environment: publicEnvironment as string, clock: clockMs });
+    if (coordination !== undefined) opened.push(coordination);
+    const internalHandlers = [
+      ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
+      ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
+    ];
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -398,6 +411,7 @@ export function loadPublicMarketRuntime(
       ...(strategies === undefined ? {} : { strategies }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
+      ...(coordination === undefined ? {} : { coordination }),
       nowValue,
       rateLimit,
       clockMs,
@@ -442,7 +456,9 @@ export function loadPublicMarketRuntime(
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
-      ...(keeper === undefined ? {} : { internalHandler: createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) }) }),
+      ...(internalHandlers.length === 0 ? {} : {
+        internalHandler: (request: IncomingMessage, response: ServerResponse) => internalHandlers.some((handler) => handler(request, response)),
+      }),
       close: () => {
         for (const resource of opened.reverse()) resource.close();
       },

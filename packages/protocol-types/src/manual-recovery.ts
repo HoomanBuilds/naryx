@@ -83,6 +83,26 @@ export function manualRecoveryIncidentHash(input: ManualRecoveryIncidentInput): 
   return commitmentHash(domainHash(HASH_DOMAIN.MANUAL_RECOVERY_INCIDENT, bytes), 'manualRecoveryIncidentHash');
 }
 
+/** One named approver's signed approval of one recovery action within one incident. */
+export interface ManualRecoveryApprovalInput {
+  readonly incidentHash: Uint8Array | string;
+  readonly actionHash: Uint8Array | string;
+  readonly approverId: string;
+  readonly atValue: bigint;
+}
+
+export function manualRecoveryApprovalHash(input: ManualRecoveryApprovalInput): CommitmentHash {
+  if (typeof input !== 'object' || input === null) throw new MalformedInputError('manualRecoveryApproval', 'expected an object');
+  const bytes = canonicalBytes((writer) => {
+    writer.writeU32(MANUAL_RECOVERY_INCIDENT_VERSION, 'incidentVersion');
+    encodeCommitmentHash(writer, commitmentHash(input.incidentHash, 'manualRecoveryApproval.incidentHash'), 'incidentHash');
+    encodeCommitmentHash(writer, commitmentHash(input.actionHash, 'manualRecoveryApproval.actionHash'), 'actionHash');
+    encodeProtocolId(writer, protocolId(input.approverId, 'manualRecoveryApproval.approverId'), 'approverId');
+    writer.writeU64(checkedUnsigned(input.atValue, 64, 'manualRecoveryApproval.atValue'), 'atValue');
+  });
+  return commitmentHash(domainHash(HASH_DOMAIN.MANUAL_RECOVERY_APPROVAL, bytes), 'manualRecoveryApprovalHash');
+}
+
 export type ManualRecoveryEvent =
   | { readonly kind: 'ACTION_APPROVED'; readonly actionHash: Uint8Array | string; readonly approverId: string; readonly atValue: bigint }
   | { readonly kind: 'ACTION_EXECUTED'; readonly actionHash: Uint8Array | string; readonly evidenceHash: Uint8Array | string; readonly atValue: bigint }

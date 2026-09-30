@@ -4,6 +4,7 @@ import {
   crossDomainPlanHash,
   domainRef,
   replayCrossDomainCoordination,
+  manualRecoveryApprovalHash,
   replayManualRecovery,
   toHex,
   type CrossDomainEvent,
@@ -109,5 +110,12 @@ describe('manual controlled recovery', () => {
     assert.match(unapproved.violations.join('\n'), /not an approver[\s\S]*without quorum/);
     const wrongBaseline = replayManualRecovery(incident, [{ kind: 'BASELINE_VERIFIED', baselineHash: '78'.repeat(32), evidenceHash: '64'.repeat(32), atValue: 106n }]);
     assert.equal(wrongBaseline.phase, 'FENCED');
+  });
+  test('an approval hash binds the incident, action, approver, and time', () => {
+    const approval = { incidentHash: '71'.repeat(32), actionHash: '72'.repeat(32), approverId: 'approver-1', atValue: 5n };
+    const base = toHex(manualRecoveryApprovalHash(approval));
+    for (const change of [{ incidentHash: '73'.repeat(32) }, { actionHash: '74'.repeat(32) }, { approverId: 'approver-2' }, { atValue: 6n }]) {
+      assert.notEqual(toHex(manualRecoveryApprovalHash({ ...approval, ...change })), base);
+    }
   });
 });

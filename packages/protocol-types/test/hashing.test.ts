@@ -144,6 +144,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/mainnet-funds-manifest',
         'CON/v1/builder-manifest',
         'CON/v1/builder-attribution',
+        'CON/v1/manual-recovery-approval',
       ],
     );
   });

@@ -61,6 +61,7 @@ import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
+import { CoordinationStoreError, type SqliteCoordinationStore } from "./coordination-store.js";
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 
@@ -153,6 +154,8 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
+  /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
+  readonly coordination?: Pick<SqliteCoordinationStore, "coordination" | "incident" | "approve">;
   /** Authority-signed strategy health; without it the health routes answer 503. */
   readonly health?: Pick<SqliteKeeperExecutor, "publishHealth" | "health">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
@@ -297,6 +300,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return undefined;
   }
 
+  function requireCoordination() {
+    if (options.coordination === undefined) throw new RequestError(503, "COORDINATION_UNAVAILABLE", "No coordination store is configured on this server.");
+    return options.coordination;
+  }
+
   function requirePositions() {
     if (options.positions === undefined) throw new RequestError(503, "POSITIONS_UNAVAILABLE", "No position snapshot store is configured on this server.");
     return options.positions;
@@ -398,6 +406,20 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const manifest = options.builders.latest(builderId);
       if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such builder.");
       return { builderId, manifest, manifestHash: toHex(builderManifestHash(manifest)) };
+    }
+    if ((match = /^\/v1\/coordinations\/([0-9a-fA-F]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      // The plan, every piece of per-domain evidence, and the kernel replay of phase, next actions,
+      // and violations; a client re-runs replayCrossDomainCoordination to check it.
+      const view = requireCoordination().coordination(match[1] as string, nowIn);
+      if (view === undefined) throw new RequestError(404, "PLAN_NOT_FOUND", "No such coordination.");
+      return { planHash: (match[1] as string).toLowerCase(), ...view };
+    }
+    if ((match = /^\/v1\/recovery\/incidents\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const view = requireCoordination().incident(id(match[1], "Incident id"));
+      if (view === undefined) throw new RequestError(404, "INCIDENT_NOT_FOUND", "No such incident.");
+      return view;
     }
     if ((match = /^\/v1\/strategies\/([^/]+)\/health$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -908,6 +930,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/orders",
       "/v1/position-snapshots",
       "/v1/health-snapshots",
+      "/v1/recovery/approvals",
       "/v1/strategies/commands",
       "/v1/builders",
       "/v1/builders/attributions",
@@ -1064,6 +1087,21 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // signature, the observation time, and ordering; nothing here grants authority over positions.
       return requirePositions().append(object(body.record, "record") as unknown as PositionSnapshotRecordInput);
     }
+    if (path === "/v1/recovery/approvals") {
+      // A named approver's Ed25519 signature over the approval hash; nothing else counts toward quorum.
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519" || typeof authorization.signature !== "string") {
+        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Approvals carry an ED25519 signature in base58.");
+      }
+      let signature: Uint8Array;
+      try {
+        signature = bs58.decode(authorization.signature);
+      } catch {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The signature must be base58.");
+      }
+      const approval = object(body.approval, "approval") as unknown as { actionHash: string; approverId: string; atValue: bigint };
+      return requireCoordination().approve(id(typeof body.incidentId === "string" ? body.incidentId : undefined, "Incident id"), approval, signature);
+    }
     if (path === "/v1/health-snapshots") {
       // A health observation signed by a configured authority over the snapshot hash. It feeds the
       // keeper gate only; nothing here grants authority over a strategy or its positions.
@@ -1129,6 +1167,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyBookError) {
           const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : ["STRATEGY_NOT_FOUND", "ORIGIN_NOT_FOUND", "RECEIPT_NOT_FOUND"].includes(error.code) ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof CoordinationStoreError) {
+          const status = error.code.endsWith("NOT_FOUND") ? 404 : error.code.startsWith("INVALID") || error.code === "NOT_AN_APPROVER" ? 400 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof KeeperExecutorError) {

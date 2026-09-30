@@ -20,6 +20,7 @@ import type {
 } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
 import { verifyEd25519 } from "./ed25519.js";
+import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 import type { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import type { SqliteStrategyBookStore } from "./strategy-book-store.js";
 
@@ -261,8 +262,6 @@ export class SqliteKeeperExecutor {
   }
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
-
 /** The executor's clock in an authorization's expiry unit; Solana slots need a slot reader. */
 export function keeperClock(clockMs: () => number = Date.now): (unit: string) => bigint | undefined {
   return (unit) => {
@@ -270,14 +269,6 @@ export function keeperClock(clockMs: () => number = Date.now): (unit: string) =>
     if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(Math.floor(clockMs()));
     return undefined;
   };
-}
-
-function send(response: ServerResponse, status: number, body: unknown): true {
-  response.statusCode = status;
-  response.setHeader("Content-Type", "application/json; charset=utf-8");
-  response.setHeader("Cache-Control", "no-store");
-  response.end(stringifyProtocolJson(body));
-  return true;
 }
 
 /**
@@ -292,35 +283,25 @@ export function createKeeperExecutorHandler(options: {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
     if (!url.pathname.startsWith("/internal/keeper/")) return false;
-    const fail = (status: number, code: string, message: string) => send(response, status, { error: { code, message } });
-    // Only a loopback keeper may call; a browser request always carries an Origin and is refused.
-    const remote = request.socket.remoteAddress ?? "";
-    if (!LOOPBACK.has(remote) || request.headers.origin !== undefined) return fail(403, "FORBIDDEN", "Keeper routes answer loopback callers only.");
+    const fail = (status: number, code: string, message: string) => sendError(response, status, code, message);
+    if (!internalCaller(request)) return fail(403, "FORBIDDEN", "Keeper routes answer loopback callers only.");
     const match = /^\/internal\/keeper\/strategies\/([A-Za-z0-9._:-]{1,128})\/health$/.exec(url.pathname);
     if (request.method === "GET" && match !== null) {
       const health = options.executor.health(match[1] as string);
-      return health === undefined ? fail(404, "HEALTH_UNAVAILABLE", "No health snapshot describes the strategy's current state.") : send(response, 200, health);
+      return health === undefined ? fail(404, "HEALTH_UNAVAILABLE", "No health snapshot describes the strategy's current state.") : sendJson(response, 200, health);
     }
-    if (request.method === "GET" && url.pathname === "/internal/keeper/queue") return send(response, 200, { queued: options.executor.queued() });
+    if (request.method === "GET" && url.pathname === "/internal/keeper/queue") return sendJson(response, 200, { queued: options.executor.queued() });
     if (request.method !== "POST" || (url.pathname !== "/internal/keeper/plan" && url.pathname !== "/internal/keeper/execute")) return fail(404, "NOT_FOUND", "Unknown keeper route.");
-    const chunks: Buffer[] = [];
-    let size = 0;
-    request.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= 262_144) chunks.push(chunk);
-    });
-    request.on("end", () => {
+    readInternalBody(request, response, (body) => {
       try {
-        if (size > 262_144) return fail(413, "TOO_LARGE", "Keeper requests are at most 256 KiB.");
-        const body = parseProtocolJson(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
         if (url.pathname === "/internal/keeper/plan") {
           const plan = options.executor.plan(body.authorization as KeeperActionAuthorizationInput, body.before as StrategyHealthSnapshotInput);
-          return plan === undefined ? fail(404, "NO_PLAN", "This executor cannot price that action for the strategy.") : send(response, 200, plan);
+          return plan === undefined ? fail(404, "NO_PLAN", "This executor cannot price that action for the strategy.") : sendJson(response, 200, plan);
         }
         const authorization = body.authorization as KeeperActionAuthorizationInput;
         const atValue = options.nowIn(authorization.expiryUnit);
         if (atValue === undefined) return fail(400, "TIME_UNIT_UNSUPPORTED", "The executor has no clock in the authorization's unit.");
-        return send(response, 200, options.executor.execute({
+        return sendJson(response, 200, options.executor.execute({
           keeperId: String(body.keeperId),
           authorization,
           ownerSignature: body.ownerSignature as Uint8Array,

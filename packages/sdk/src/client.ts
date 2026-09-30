@@ -1,4 +1,16 @@
 import {
+  crossDomainPlanHash,
+  manualRecoveryApprovalHash,
+  manualRecoveryIncidentHash,
+  replayCrossDomainCoordination,
+  replayManualRecovery,
+  type CrossDomainCoordination,
+  type CrossDomainEvent,
+  type CrossDomainPlanInput,
+  type ManualRecoveryApprovalInput,
+  type ManualRecoveryEvent,
+  type ManualRecoveryIncidentInput,
+  type ManualRecoveryState,
   aggregateCandles,
   buildExposureGraph,
   bytesEqual,
@@ -1269,6 +1281,81 @@ export class NaryxClient {
       ...(typeof body.originReceiptHash === 'string' ? { originReceiptHash: body.originReceiptHash } : {}),
       ...(typeof body.retiredByCommandHash === 'string' ? { retiredByCommandHash: body.retiredByCommandHash } : {}),
     });
+  }
+
+  /**
+   * A cross-domain coordination, checked here: the plan must hash to the requested plan hash, and
+   * the phase, next actions, and violations are replayed locally from the served evidence at
+   * `nowValue` (default: this machine's clock in the plan's unit, or the latest evidence time for
+   * slot-timed plans). The server's own replay is never trusted.
+   */
+  async getCoordination(planHash: string, nowValue?: bigint): Promise<{ readonly plan: CrossDomainPlanInput; readonly events: readonly CrossDomainEvent[]; readonly state: CrossDomainCoordination }> {
+    if (!/^[0-9a-f]{64}$/.test(planHash)) throw new TypeError('the plan hash is 64 lowercase hex characters');
+    const body = record(await this.#request('GET', `/v1/coordinations/${planHash}`), 'coordination');
+    const plan = body.plan as CrossDomainPlanInput;
+    const events = list(body.events, 'events') as CrossDomainEvent[];
+    let state: CrossDomainCoordination;
+    try {
+      if (toHex(crossDomainPlanHash(plan)) !== planHash) throw new Error('the plan does not match its hash');
+      const latest = events.reduce((max, event) => (event.atValue > max ? event.atValue : max), 0n);
+      const clock = plan.timeUnit === 'EVM_UNIX_SECONDS' ? BigInt(Math.floor(Date.now() / 1_000)) : plan.timeUnit === 'HYPERLIQUID_UNIX_MILLISECONDS' ? BigInt(Date.now()) : latest;
+      state = replayCrossDomainCoordination(plan, events, nowValue ?? clock);
+    } catch (error) {
+      throw new NaryxEvidenceError(`the coordination does not verify: ${(error as Error).message}`);
+    }
+    return Object.freeze({ plan, events: Object.freeze(events), state });
+  }
+
+  /**
+   * A manual recovery incident, checked here: the incident must hash to the served hash, every
+   * approval must carry its named approver's Ed25519 signature over the approval hash, and the
+   * phase is replayed locally from the served events.
+   */
+  async getRecoveryIncident(incidentId: string): Promise<{ readonly incident: ManualRecoveryIncidentInput; readonly incidentHash: string; readonly events: readonly ManualRecoveryEvent[]; readonly state: ManualRecoveryState }> {
+    const id = checkId(incidentId, 'incident id');
+    const body = record(await this.#request('GET', `/v1/recovery/incidents/${id}`), 'recovery incident');
+    const incident = body.incident as ManualRecoveryIncidentInput;
+    let incidentHash: string;
+    try {
+      incidentHash = toHex(manualRecoveryIncidentHash(incident));
+    } catch (error) {
+      throw new NaryxEvidenceError(`the incident is malformed: ${(error as Error).message}`);
+    }
+    if (incident.incidentId !== id || body.incidentHash !== incidentHash) throw new NaryxEvidenceError('the incident is another incident or does not match its hash');
+    const events: ManualRecoveryEvent[] = [];
+    for (const [index, entry] of list(body.events, 'events').entries()) {
+      const served = record(entry, `events[${index}]`);
+      const event = served.event as ManualRecoveryEvent;
+      if (event?.kind === 'ACTION_APPROVED') {
+        const key = base58Decode(event.approverId);
+        const signature = served.signature;
+        if (key === undefined || key.length !== 32 || !(signature instanceof Uint8Array)) throw new NaryxEvidenceError(`events[${index}] is an approval without a usable key or signature`);
+        const digest = manualRecoveryApprovalHash({ incidentHash, actionHash: event.actionHash, approverId: event.approverId, atValue: event.atValue });
+        if ((await webCryptoEd25519(key, digest, signature)) === false) throw new NaryxEvidenceError(`events[${index}] is not signed by its approver`);
+      }
+      events.push(event);
+    }
+    let state: ManualRecoveryState;
+    try {
+      state = replayManualRecovery(incident, events);
+    } catch (error) {
+      throw new NaryxEvidenceError(`the incident does not replay: ${(error as Error).message}`);
+    }
+    return Object.freeze({ incident, incidentHash, events: Object.freeze(events), state });
+  }
+
+  /** Signs one approval hash with the approver's own key; the server counts it only for a named approver. */
+  async submitRecoveryApproval(incidentId: string, approval: ManualRecoveryApprovalInput, sign: StrategyCommandSigner): Promise<{ readonly sequence: number }> {
+    const id = checkId(incidentId, 'incident id');
+    if (typeof sign !== 'function') throw new TypeError('an approval signer is required');
+    const signature = await sign(manualRecoveryApprovalHash(approval));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    const body = record(await this.#request('POST', '/v1/recovery/approvals', {
+      incidentId: id,
+      approval: { actionHash: approval.actionHash, approverId: approval.approverId, atValue: approval.atValue },
+      authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+    }), 'recovery approval');
+    return Object.freeze({ sequence: Number(body.sequence) });
   }
 
   /**
