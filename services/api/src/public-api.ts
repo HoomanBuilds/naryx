@@ -137,6 +137,8 @@ export interface PublicApiOptions {
   readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
   /** Optional: graph compilation answers 503 without the active registry records and resource limits it runs against. */
   readonly graphContext?: { readonly activeRegistryRecords: readonly DomainRegistryRecordInput[]; readonly resourceLimits: readonly DomainResourceLimit[] };
+  /** Optional: the signed market catalogue answers 503 without an issuer. */
+  readonly catalogue?: { current(): { readonly catalogue: unknown; readonly catalogueHash: string } };
   /** Optional: position and risk reads answer 503 without it. Snapshots are accepted only when signed by a configured authority. */
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
@@ -360,6 +362,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === "/v1/domains") {
       onlyParams(url, []);
       return { domains: requireRegistry().list("DOMAIN") };
+    }
+    if (path === "/v1/catalogue") {
+      // The whole signed catalogue of markets and solvers, the same for every reader, so a client
+      // can search locally without revealing what it looks for.
+      onlyParams(url, []);
+      if (options.catalogue === undefined) throw new RequestError(503, "CATALOGUE_UNAVAILABLE", "No catalogue authority is configured on this server.");
+      return options.catalogue.current();
     }
     if ((match = /^\/v1\/(positions|risk)\/([^/]+)$/.exec(path)) !== null) {
       // The latest signed read-only snapshot of each source for one strategy account, and the

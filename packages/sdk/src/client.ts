@@ -21,6 +21,14 @@ import {
   packageReceiptHash,
   positionSnapshotRecord,
   positionSnapshotRecordHash,
+  marketCatalogue,
+  marketCatalogueCurrent,
+  marketCatalogueHash,
+  searchMarketCatalogue,
+  type MarketCatalogue,
+  type MarketCatalogueEntry,
+  type MarketCatalogueInput,
+  type MarketCatalogueQuery,
   privateRfqEnvelopeHash,
   ProtocolError,
   QUALIFICATION_OBJECT_TYPE,
@@ -512,9 +520,23 @@ function sizesQuery(sizes: readonly bigint[]): string {
  * order validation and route-decision replay are recomputed locally and must agree with the
  * server, and candle series are rebuilt from the tape on request.
  */
+/** A market catalogue whose hash was recomputed here; search it locally with `search`. */
+export interface VerifiedMarketCatalogue {
+  readonly catalogue: MarketCatalogue;
+  readonly catalogueHash: string;
+  /** True only when the signing authority is one the caller trusts and the signature verifies. */
+  readonly signatureVerified: boolean;
+  /** Whether the catalogue was current by this machine's clock when it was read. */
+  readonly current: boolean;
+  /** Filters the downloaded catalogue in this process; no request is made. */
+  search(query: MarketCatalogueQuery): readonly MarketCatalogueEntry[];
+}
+
 export class NaryxClient {
   readonly #baseUrl: string;
   readonly #fetch: FetchLike;
+  /** The highest catalogue sequence accepted per environment and authority, so an older one cannot be replayed. */
+  readonly #catalogueSequences = new Map<string, bigint>();
 
   constructor(options: NaryxClientOptions) {
     if (typeof options !== 'object' || options === null || typeof options.baseUrl !== 'string') throw new TypeError('baseUrl is required');
@@ -1095,6 +1117,41 @@ export class NaryxClient {
     if (body.label !== 'SIMULATED' || body.graphHash !== toHex(packageGraphHash(graph))) throw new NaryxEvidenceError('the simulation is unlabeled or for another graph');
     if (JSON.stringify(toProtocolJson(body.failurePoints)) !== JSON.stringify(toProtocolJson(local))) throw new NaryxEvidenceError('the served failure points differ from the local simulation');
     return Object.freeze({ graphHash: body.graphHash as string, stages: body.stages, failurePoints: local });
+  }
+
+  /**
+   * The whole signed market catalogue, the same for every reader, so searching it locally never
+   * reveals what the caller looks for. It is re-validated and re-hashed here. A catalogue signed by
+   * an authority in `trustedAuthorities` must verify; a catalogue from `environment`, when given,
+   * is required; and a catalogue older than one this client already accepted from the same
+   * authority is refused as a replay.
+   */
+  async getCatalogue(options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array>; readonly environment?: string; readonly nowMs?: bigint } = {}): Promise<VerifiedMarketCatalogue> {
+    const body = record(await this.#request('GET', '/v1/catalogue'), 'catalogue');
+    let catalogue: MarketCatalogue;
+    let hash: string;
+    try {
+      catalogue = marketCatalogue(body.catalogue as MarketCatalogueInput);
+      hash = toHex(marketCatalogueHash(body.catalogue as MarketCatalogueInput));
+    } catch (error) {
+      throw new NaryxEvidenceError(`catalogue is malformed: ${(error as Error).message}`);
+    }
+    if (body.catalogueHash !== hash) throw new NaryxEvidenceError('the served catalogue hash does not match the catalogue');
+    if (options.environment !== undefined && catalogue.environment !== options.environment) throw new NaryxEvidenceError('the catalogue is for another environment');
+    let signatureVerified = false;
+    const trusted = options.trustedAuthorities?.get(catalogue.authority);
+    if (trusted !== undefined) {
+      const verdict = await webCryptoEd25519(trusted, fromHex(hash), catalogue.signature);
+      if (verdict === false) throw new NaryxEvidenceError('the catalogue signature does not verify under the trusted authority');
+      signatureVerified = verdict === true;
+    }
+    const key = `${catalogue.environment}/${catalogue.authority}`;
+    const seen = this.#catalogueSequences.get(key);
+    if (seen !== undefined && catalogue.sequence < seen) throw new NaryxEvidenceError('the catalogue is older than one already accepted');
+    // Only a verified catalogue may raise the replay floor, so an unsigned one cannot lock out a real one.
+    if (signatureVerified) this.#catalogueSequences.set(key, catalogue.sequence);
+    const current = marketCatalogueCurrent(catalogue, options.nowMs ?? BigInt(Date.now()));
+    return Object.freeze({ catalogue, catalogueHash: hash, signatureVerified, current, search: (query: MarketCatalogueQuery) => searchMarketCatalogue(catalogue, query) });
   }
 
   /**

@@ -13,6 +13,7 @@ import {
   simulatePackageGraphFailures,
   positionSnapshotRecord,
   positionSnapshotRecordHash,
+  marketCatalogueHash,
   domainRef,
   evidenceManifestHash,
   fromProtocolJson,
@@ -32,6 +33,7 @@ import {
   toProtocolJson,
   type AcceptedQuoteFeeTerms,
   type EvidenceManifestInput,
+  type MarketCatalogueInput,
   type PackageOrderInput,
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
@@ -761,5 +763,49 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(solver({ orders: [{ cursor: 3, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 2 }).pollOrders(), /next cursor/);
     await assert.rejects(solver({ orders: [{ cursor: 0, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 0 }).pollOrders(), /strictly increase/);
     assert.equal((await solver({ orders: [], nextCursor: 0 }).pollOrders()).orders.length, 0);
+  });
+  test('the market catalogue is re-hashed, checked against trusted keys, refuses replays, and is searched locally', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const trustedKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
+    const entry = (packageMarketId: string, halted = false) => ({
+      packageMarketId,
+      executionClassVersion: 1,
+      seriesId: 'sol-carry',
+      seriesVersion: 1,
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      underlyingRefs: ['sol'],
+      quoteAsset: 'usdc',
+      settlementClass: 'ATOMIC_POSTCONDITION' as const,
+      firmnessClass: 'firm',
+      collateralMode: 'isolated',
+      domainIds: ['svm:testnet'],
+      halted,
+    });
+    const issue = (sequence: bigint, entries = [entry('sol-carry-atomic'), entry('sol-carry-halted', true)]): { catalogue: MarketCatalogueInput; catalogueHash: string } => {
+      const unsigned: MarketCatalogueInput = { catalogueVersion: 1, environment: 'testnet', sequence, issuedAtMs: 1_000n, expiresAtMs: 61_000n, entries, solverIds: ['solver-a'], authority: 'catalogue-1', signature: new Uint8Array(0) };
+      const hashed = marketCatalogueHash(unsigned);
+      return { catalogue: { ...unsigned, signature: new Uint8Array(sign(null, hashed, privateKey)) }, catalogueHash: toHex(hashed) };
+    };
+    const routes: Record<string, Route> = { 'GET /v1/catalogue': { body: issue(5n) } };
+    const seen: { method: string; path: string; body?: unknown }[] = [];
+    const reader = client(routes, seen);
+    const trust = new Map([['catalogue-1', trustedKey]]);
+    const verified = await reader.getCatalogue({ trustedAuthorities: trust, environment: 'testnet', nowMs: 2_000n });
+    assert.equal(verified.signatureVerified, true);
+    assert.equal(verified.current, true);
+    assert.deepEqual(verified.search({ text: 'SOL' }).map((found) => found.packageMarketId), ['sol-carry-atomic']);
+    assert.equal(verified.search({ includeHalted: true, domainId: 'svm:testnet' }).length, 2);
+    assert.equal(seen.length, 1, 'searching makes no request');
+    assert.equal((await reader.getCatalogue({ nowMs: 61_000n })).current, false);
+    await assert.rejects(reader.getCatalogue({ environment: 'devnet' }), /another environment/);
+    await assert.rejects(reader.getCatalogue({ trustedAuthorities: new Map([['catalogue-1', new Uint8Array(32).fill(9)]]) }), /does not verify/);
+    // An older signed catalogue is a replay once a newer one was accepted from the same authority.
+    routes['GET /v1/catalogue'] = { body: issue(4n) };
+    await assert.rejects(reader.getCatalogue({ trustedAuthorities: trust }), /older than one already accepted/);
+    // A market added after signing no longer matches the served hash.
+    const altered = issue(6n);
+    routes['GET /v1/catalogue'] = { body: { ...altered, catalogue: { ...altered.catalogue, entries: [...altered.catalogue.entries, entry('sol-carry-shadow')] } } };
+    await assert.rejects(reader.getCatalogue({ trustedAuthorities: trust }), /hash does not match/);
   });
 });

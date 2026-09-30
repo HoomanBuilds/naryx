@@ -18,6 +18,7 @@ export {
   type VerifiedOrderQuote,
   type VerifiedPositionSource,
   type VerifiedPositions,
+  type VerifiedMarketCatalogue,
   type VerifiedRouteDecision,
   type VerifiedSolverManifest,
   type VerifiedOutcome,

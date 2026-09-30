@@ -1238,3 +1238,17 @@ export {
   type PackageResourceGroupPlan,
   type CompiledPackageGraph,
 } from './package-graph.js';
+export {
+  MARKET_CATALOGUE_VERSION,
+  MAX_CATALOGUE_ENTRIES,
+  marketCatalogue,
+  marketCatalogueBytes,
+  marketCatalogueHash,
+  marketCatalogueCurrent,
+  searchMarketCatalogue,
+  type MarketCatalogue,
+  type MarketCatalogueEntry,
+  type MarketCatalogueEntryInput,
+  type MarketCatalogueInput,
+  type MarketCatalogueQuery,
+} from './market-catalogue.js';

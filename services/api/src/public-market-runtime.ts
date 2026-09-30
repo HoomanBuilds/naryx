@@ -1,3 +1,4 @@
+import { createPrivateKey, sign } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -19,6 +20,7 @@ import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
 import { SqliteQualificationStore } from "./qualification-store.js";
 import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
+import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -187,6 +189,33 @@ function authorityKeys(value: string | undefined, database: string, variable: st
   return authorities;
 }
 
+/**
+ * The catalogue authority's Ed25519 PKCS#8 PEM key, which signs the market catalogue on the
+ * server. NARYX_CATALOGUE_AUTHORITY names it and NARYX_PUBLIC_ENVIRONMENT names the environment.
+ */
+function loadCatalogueSigner(environment: NodeJS.ProcessEnv): { authority: string; environment: string; signHash: (hash: Uint8Array) => Uint8Array } | undefined {
+  const keyPath = environment.NARYX_CATALOGUE_KEY_FILE;
+  if (keyPath === undefined || keyPath === "") return undefined;
+  const authority = environment.NARYX_CATALOGUE_AUTHORITY;
+  if (authority === undefined || !/^[A-Za-z0-9._-]{1,128}$/.test(authority)) {
+    throw new PublicMarketConfigError("NARYX_CATALOGUE_KEY_FILE requires NARYX_CATALOGUE_AUTHORITY, the signing key id.");
+  }
+  const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
+  if (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment) || publicEnvironment.toLowerCase().includes("mainnet")) {
+    throw new PublicMarketConfigError("NARYX_CATALOGUE_KEY_FILE requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
+  }
+  const path = absolute(keyPath, "NARYX_CATALOGUE_KEY_FILE");
+  if (statSync(path).size > 4_096) throw new PublicMarketConfigError("NARYX_CATALOGUE_KEY_FILE is too large to be a key.");
+  let key;
+  try {
+    key = createPrivateKey(readFileSync(path, "utf8"));
+  } catch {
+    throw new PublicMarketConfigError("NARYX_CATALOGUE_KEY_FILE must hold a PKCS#8 PEM private key.");
+  }
+  if (key.asymmetricKeyType !== "ed25519") throw new PublicMarketConfigError("NARYX_CATALOGUE_KEY_FILE must hold an Ed25519 key.");
+  return { authority, environment: publicEnvironment, signHash: (hash) => new Uint8Array(sign(null, hash, key)) };
+}
+
 function activationDelay(value: string | undefined): bigint {
   if (value === undefined || !/^(0|[1-9]\d{0,18})$/.test(value)) {
     throw new PublicMarketConfigError("NARYX_QUALIFICATION_DB requires NARYX_QUALIFICATION_ACTIVATION_DELAY in the records' time unit.");
@@ -275,6 +304,10 @@ export function loadPublicMarketRuntime(
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
     const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
     const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
+    const catalogueSigner = loadCatalogueSigner(environment);
+    const catalogue = catalogueSigner === undefined
+      ? undefined
+      : createCatalogueIssuer({ exchange: store, ...(registry === undefined ? {} : { registry }), ...catalogueSigner, clockMs });
     const publicHandler = createPublicApiHandler({
       exchange: store,
       ...(registry === undefined ? {} : { registry }),
@@ -284,6 +317,7 @@ export function loadPublicMarketRuntime(
       ...(qualification === undefined ? {} : { qualification }),
       ...(positions === undefined ? {} : { positions }),
       ...(graphContext === undefined ? {} : { graphContext }),
+      ...(catalogue === undefined ? {} : { catalogue }),
       nowValue,
       rateLimit,
       clockMs,
