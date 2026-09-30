@@ -162,7 +162,7 @@ test("the runtime is off by default and validates its configuration", () => {
     writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "SOLANA_SLOT", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
     assert.throws(() => loadPublicMarketRuntime(env), /slot source/);
     writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT, extra: true }));
-    assert.throws(() => loadPublicMarketRuntime(env), /exactly clockUnit/);
+    assert.throws(() => loadPublicMarketRuntime(env), /version 1 with clockUnit/);
     writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
     assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE: "0" }), /between 1 and 10000/);
     const runtime = loadPublicMarketRuntime(env);
