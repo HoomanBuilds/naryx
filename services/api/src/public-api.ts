@@ -69,6 +69,33 @@ function senderPublicKey(senderKeyId: unknown): Uint8Array | undefined {
   }
 }
 const HASH_HEX = /^[0-9a-f]{64}$/;
+/** Executable package depth of one book, as the HTTP route and the stream both serve it. */
+export function packageDepthView(state: NonNullable<ReturnType<SqlitePackageExchangeStore["getBook"]>>, now: bigint) {
+  return {
+    packageMarketId: state.executionClassId,
+    matchingPolicyHash: toHex(state.matchingPolicyHash),
+    halted: state.halted,
+    asOfValue: now,
+    bids: packageBookLevels(state, "BID", now),
+    asks: packageBookLevels(state, "ASK", now),
+  };
+}
+
+/** One page of the observed package tape, as the HTTP route and the stream both serve it. */
+export function packageTapeView(classId: string, records: ReturnType<SqlitePackageExchangeStore["allocationTape"]>, after: number) {
+  return {
+    packageMarketId: classId,
+    trades: records.map((record) => ({
+      cursor: record.cursor,
+      allocationHash: record.allocationHashHex,
+      takerSide: record.allocation.takerSide,
+      recordedAtMs: record.recordedAtMs,
+      fills: record.allocation.fills.map((fill) => ({ fillSequence: fill.fillSequence, priceTicks: fill.priceTicks, quantity: fill.quantity, makerSource: fill.makerSource })),
+    })),
+    nextCursor: records.length === 0 ? after : (records[records.length - 1] as { cursor: number }).cursor,
+  };
+}
+
 const CURSOR = /^(0|[1-9]\d{0,15})$/;
 const LIMIT = /^[1-9]\d{0,2}$/;
 const MILLIS = /^(0|[1-9]\d{0,15})$/;
@@ -622,16 +649,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-depth$/.exec(path)) !== null) {
       onlyParams(url, []);
-      const state = book(id(match[1], "Package market id"));
-      const now = nowValue();
-      return {
-        packageMarketId: state.executionClassId,
-        matchingPolicyHash: toHex(state.matchingPolicyHash),
-        halted: state.halted,
-        asOfValue: now,
-        bids: packageBookLevels(state, "BID", now),
-        asks: packageBookLevels(state, "ASK", now),
-      };
+      return packageDepthView(book(id(match[1], "Package market id")), nowValue());
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-tape$/.exec(path)) !== null) {
       onlyParams(url, ["after", "limit"]);
@@ -639,18 +657,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const after = url.searchParams.get("after") ?? "0";
       const limit = url.searchParams.get("limit") ?? "50";
       if (!CURSOR.test(after) || !LIMIT.test(limit) || Number(limit) > MAX_TAPE_PAGE) throw new RequestError(400, "INVALID_REQUEST", "Tape cursor or limit is malformed.");
-      const records = exchange.allocationTape(classId, Number(after), Number(limit));
-      return {
-        packageMarketId: classId,
-        trades: records.map((record) => ({
-          cursor: record.cursor,
-          allocationHash: record.allocationHashHex,
-          takerSide: record.allocation.takerSide,
-          recordedAtMs: record.recordedAtMs,
-          fills: record.allocation.fills.map((fill) => ({ fillSequence: fill.fillSequence, priceTicks: fill.priceTicks, quantity: fill.quantity, makerSource: fill.makerSource })),
-        })),
-        nextCursor: records.length === 0 ? Number(after) : (records[records.length - 1] as { cursor: number }).cursor,
-      };
+      return packageTapeView(classId, exchange.allocationTape(classId, Number(after), Number(limit)), Number(after));
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/candles$/.exec(path)) !== null) {
       onlyParams(url, ["interval", "from", "to"]);

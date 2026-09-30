@@ -1,6 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
+import { createMarketStream } from "./market-stream.js";
 import { parseProtocolJson } from "@naryx/protocol-types";
 import type {
   EconomicStrategySeriesSupportInput,
@@ -32,6 +34,8 @@ export interface PublicMarketRuntime {
    * terminal routes, so exposing them does not expose `/internal`.
    */
   readonly listener?: { readonly host: string; readonly port: number };
+  /** Takes WebSocket upgrades for `/v1/stream`; returns false for any other path. */
+  readonly upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => boolean;
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
   readonly solverApiEnabled: boolean;
@@ -299,10 +303,13 @@ export function loadPublicMarketRuntime(
         clockMs,
         rateLimit,
       });
+    const stream = createMarketStream({ exchange: store, nowValue });
+    opened.push(stream);
     return Object.freeze({
       handler: (request: IncomingMessage, response: ServerResponse) =>
         (solverHandler?.(request, response) ?? false) || publicHandler(request, response),
       ...(listener === undefined ? {} : { listener: Object.freeze(listener) }),
+      upgrade: stream.upgrade,
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,

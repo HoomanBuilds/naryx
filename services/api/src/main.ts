@@ -341,6 +341,11 @@ const publicServer = publicMarket?.listener === undefined
     response.setHeader("Cache-Control", "no-store");
     response.end(JSON.stringify({ error: { code: "NOT_FOUND", message: "Unknown public API route." } }));
   });
+// Public market data streams over WebSocket on whichever server carries the public API.
+const streamHost = publicServer ?? (publicMarket === undefined ? undefined : server);
+streamHost?.on("upgrade", (request, socket, head) => {
+  if (publicMarket?.upgrade(request, socket, head) !== true) socket.destroy();
+});
 if (publicServer !== undefined && publicMarket?.listener !== undefined) {
   const { host, port } = publicMarket.listener;
   publicServer.listen(port, host, () => {
