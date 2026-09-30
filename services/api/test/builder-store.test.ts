@@ -53,7 +53,7 @@ test("builders register signed manifests, owners attribute orders, and only capp
       evidenceManifest: evidenceManifest(orderHash),
       outcome: outcome(orderHash, { terminalState: "FINALIZED_COMPLETE", successfulReceiptHash: packageReceiptHash(settled) }),
       receipt: settled,
-      acceptedQuoteFeeTerms: terms,
+      acceptedQuoteFeeTerms: { ...terms, builderFeesByAsset: [assetAmount(usdc, 70_000n)] },
     });
     const [view] = builders.attributions("builder-a");
     assert.equal(view?.payable, true, JSON.stringify(view?.violations));

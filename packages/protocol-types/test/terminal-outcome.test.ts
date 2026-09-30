@@ -139,6 +139,7 @@ const terms: AcceptedQuoteFeeTerms = {
   feePolicyVersion: 3,
   feePolicyManifestHash: hash(6),
   maxRecoveryCostByAsset: [usd(50_000n)],
+  builderFeesByAsset: [usd(2_000n)],
 };
 
 describe('canonical terminal states', () => {
@@ -301,6 +302,12 @@ describe('receipt fee verification', () => {
   test('charges at or below the accepted quote under the same policy pass', () => {
     assert.deepEqual(verifyReceiptFees(receiptInput(), terms), { valid: true, violations: [] });
     assert.equal(verifyReceiptFees(receiptInput({ solverFee: usd(1n) }), terms).valid, true);
+  });
+
+  test('builder fees are bounded by the quoted builder fee', () => {
+    assert.deepEqual(verifyReceiptFees(receiptInput(), { ...terms, builderFeesByAsset: [usd(1_999n)] }).violations, ['BUILDER_FEE_EXCEEDS_QUOTE']);
+    const { builderFeesByAsset: _omitted, ...unquoted } = terms;
+    assert.deepEqual(verifyReceiptFees(receiptInput(), unquoted).violations, ['BUILDER_FEE_UNQUOTED']);
   });
 
   test('overcharges, policy drift, and asset substitution are rejected', () => {

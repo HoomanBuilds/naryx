@@ -1125,9 +1125,13 @@ export interface AcceptedQuoteFeeTerms {
   readonly feePolicyManifestHash: Uint8Array | string;
   /** The order's recovery cost caps, keyed by asset. */
   readonly maxRecoveryCostByAsset: readonly AssetAmount[];
+  /** The builder fees the accepted quote stated, by asset; absent means no builder fee was quoted. */
+  readonly builderFeesByAsset?: readonly AssetAmount[];
 }
 
 export type ReceiptFeeViolation =
+  | 'BUILDER_FEE_UNQUOTED'
+  | 'BUILDER_FEE_EXCEEDS_QUOTE'
   | 'PROTOCOL_FEE_ASSET_MISMATCH'
   | 'PROTOCOL_FEE_EXCEEDS_QUOTE'
   | 'SOLVER_FEE_ASSET_MISMATCH'
@@ -1170,6 +1174,14 @@ export function verifyReceiptFees(receiptInput: PackageReceiptInput, terms: Acce
     violations.push('FEE_POLICY_MANIFEST_MISMATCH');
   }
   if (RECOVERED_STATES.has(receipt.terminalState) && receipt.protocolFee.atoms !== 0n) violations.push('RECOVERY_PROTOCOL_FEE_CHARGED');
+  // A builder is paid only what the accepted quote stated, never more and never in another asset.
+  const quotedBuilder = assetVector(terms.builderFeesByAsset ?? [], 'acceptedQuoteFeeTerms.builderFeesByAsset', true);
+  for (const fee of receipt.builderFeesByAsset) {
+    if (fee.atoms === 0n) continue;
+    const quoted = quotedBuilder.find((entry) => sameAsset(entry, fee));
+    if (quoted === undefined) violations.push('BUILDER_FEE_UNQUOTED');
+    else if (fee.atoms > quoted.atoms) violations.push('BUILDER_FEE_EXCEEDS_QUOTE');
+  }
   for (const cost of receipt.recoveryCostByAsset) {
     if (cost.atoms === 0n) continue;
     const cap = caps.find((entry) => sameAsset(entry, cost));
