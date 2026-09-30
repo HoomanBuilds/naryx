@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
+import { SolverMetrics } from "./pro/solver-metrics";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
@@ -57,7 +58,7 @@ const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
 const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
 
-type BottomTab = WorkspaceTab | "route" | "readiness";
+type BottomTab = WorkspaceTab | "route" | "readiness" | "solvers";
 
 /**
  * Formats an exact decimal string as dollars with grouping. Digits are never rounded; trailing
@@ -1395,6 +1396,7 @@ function BottomWorkspace({
   attentionKey,
   routePlan,
   readiness,
+  solvers,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
@@ -1410,8 +1412,9 @@ function BottomWorkspace({
   attentionKey: number;
   routePlan: ReactNode;
   readiness: ReactNode;
+  solvers: ReactNode;
 }) {
-  const extraPanel = activeTab === "route" ? routePlan : activeTab === "readiness" ? readiness : null;
+  const extraPanel = activeTab === "route" ? routePlan : activeTab === "readiness" ? readiness : activeTab === "solvers" ? solvers : null;
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
@@ -1431,6 +1434,7 @@ function BottomWorkspace({
       count: workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count,
     })),
     { tab: "route", label: "Route plan" },
+    { tab: "solvers", label: "Solvers" },
     { tab: "readiness", label: "Readiness" },
   ];
 
@@ -1598,7 +1602,7 @@ export function TradingTerminal({
   const [workspaceTab, setWorkspaceTab] = usePersistedSetting<BottomTab>(
     "workspace.tab",
     "positions",
-    ["positions", "orders", "history", "receipts", "route", "readiness"],
+    ["positions", "orders", "history", "receipts", "route", "solvers", "readiness"],
   );
   const [workspaceAttention, setWorkspaceAttention] = useState(0);
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
@@ -2404,6 +2408,7 @@ export function TradingTerminal({
                 onSelect={changeDomain}
               />
             }
+            solvers={<SolverMetrics publicApiBaseUrl={publicApiBaseUrl} />}
           />
         </div>
       </main>
