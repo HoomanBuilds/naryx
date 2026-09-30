@@ -351,6 +351,7 @@ export type StrategyExecutionMismatch =
   | 'RECEIPT_MARKET_MISMATCH'
   | 'RECEIPT_ACTION_MISMATCH'
   | 'RECEIPT_SPOT_DELTA_MISSING'
+  | 'EXECUTION_AMBIGUOUS'
   | 'EXECUTION_MISMATCH';
 
 function venueTotals(entries: readonly (readonly [string, bigint])[]): Map<string, bigint> {
@@ -360,13 +361,19 @@ function venueTotals(entries: readonly (readonly [string, bigint])[]): Map<strin
   return totals;
 }
 
+function sameTotals(left: Map<string, bigint>, right: Map<string, bigint>): boolean {
+  return left.size === right.size && [...right].every(([venue, delta]) => left.get(venue) === delta);
+}
+
 /**
  * Whether settled package receipts account exactly for a position-moving transition. Every
- * receipt must be a successful terminal receipt of the strategy's owner; resize and exit receipts
- * must be in the strategy's own market, entries for an increase and exits for a decrease or exit.
- * The receipts' net spot and perpetual deltas, summed per venue, must equal the change in the
- * strategy's legs per venue, exactly. A roll or migration may use any market of the owner, since
- * the receiving instrument can trade elsewhere, but its per-venue totals still must balance.
+ * receipt must be a successful terminal receipt of the strategy's owner, with its spot and
+ * perpetual legs on different venues, and every strategy leg must sit on its own venue, so a
+ * venue's delta names exactly one leg; anything else is ambiguous and refused. Resize and exit
+ * receipts are in the strategy's own market, entries for an increase and exits for a decrease or
+ * exit, and their net deltas summed per venue must equal the change in the legs per venue. A roll
+ * or migration must show exits in the strategy's market that close exactly the moved leg and
+ * entries, in any market, that open exactly its replacement; nothing else may move.
  */
 export function strategyExecutionMatches(
   kind: StrategyCommandKind,
@@ -376,21 +383,39 @@ export function strategyExecutionMatches(
 ): { readonly matches: true } | { readonly matches: false; readonly mismatch: StrategyExecutionMismatch } {
   const fail = (mismatch: StrategyExecutionMismatch) => Object.freeze({ matches: false as const, mismatch });
   if (receipts.length === 0) return fail('EXECUTION_MISMATCH');
-  const moves: (readonly [string, bigint])[] = [];
+  const moving = kind === 'ROLL' || kind === 'MIGRATE';
+  const distinctVenues = (state: StrategyState) => new Set(state.legs.map((leg) => leg.venueId)).size === state.legs.length;
+  if (!distinctVenues(prior) || !distinctVenues(next)) return fail('EXECUTION_AMBIGUOUS');
+  const moves = { ENTRY: [] as (readonly [string, bigint])[], EXIT: [] as (readonly [string, bigint])[] };
   for (const receipt of receipts) {
     if (!requiresSuccessfulReceipt(receipt.terminalState)) return fail('RECEIPT_NOT_SETTLED');
     if (receipt.owner !== prior.ownerId) return fail('RECEIPT_OWNER_MISMATCH');
-    if (kind !== 'ROLL' && kind !== 'MIGRATE' && receipt.packageMarketId !== prior.executionClassId) return fail('RECEIPT_MARKET_MISMATCH');
+    if (receipt.spotVenue === receipt.perpVenue) return fail('EXECUTION_AMBIGUOUS');
+    const inStrategyMarket = receipt.packageMarketId === prior.executionClassId;
+    if ((!moving || receipt.action === 'EXIT') && !inStrategyMarket) return fail('RECEIPT_MARKET_MISMATCH');
     if ((kind === 'INCREASE' && receipt.action !== 'ENTRY') || ((kind === 'DECREASE' || kind === 'EXIT') && receipt.action !== 'EXIT')) return fail('RECEIPT_ACTION_MISMATCH');
     if (receipt.netSpotDelta === undefined) return fail('RECEIPT_SPOT_DELTA_MISSING');
-    moves.push([receipt.spotVenue, receipt.netSpotDelta], [receipt.perpVenue, receipt.perpPositionDelta]);
+    moves[receipt.action].push([receipt.spotVenue, receipt.netSpotDelta], [receipt.perpVenue, receipt.perpPositionDelta]);
   }
-  const executed = venueTotals(moves);
+  if (moving) {
+    const nextIds = new Set(next.legs.map((leg) => leg.legId as string));
+    const priorIds = new Set(prior.legs.map((leg) => leg.legId as string));
+    const closed = prior.legs.find((leg) => !nextIds.has(leg.legId));
+    const opened = next.legs.find((leg) => !priorIds.has(leg.legId));
+    if (closed === undefined || opened === undefined) return fail('EXECUTION_MISMATCH');
+    const exits = venueTotals(moves.EXIT);
+    const entries = venueTotals(moves.ENTRY);
+    if (!sameTotals(exits, new Map([[closed.venueId as string, -closed.signedQuantityAtoms]])) || !sameTotals(entries, new Map([[opened.venueId as string, opened.signedQuantityAtoms]]))) {
+      return fail('EXECUTION_MISMATCH');
+    }
+    return Object.freeze({ matches: true as const });
+  }
+  const executed = venueTotals([...moves.ENTRY, ...moves.EXIT]);
   const required = venueTotals([
     ...next.legs.map((leg) => [leg.venueId as string, leg.signedQuantityAtoms] as const),
     ...prior.legs.map((leg) => [leg.venueId as string, -leg.signedQuantityAtoms] as const),
   ]);
-  if (executed.size !== required.size || [...required].some(([venue, delta]) => executed.get(venue) !== delta)) return fail('EXECUTION_MISMATCH');
+  if (!sameTotals(executed, required)) return fail('EXECUTION_MISMATCH');
   return Object.freeze({ matches: true as const });
 }
 

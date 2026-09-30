@@ -56,6 +56,11 @@ describe('position snapshot records', () => {
     const base = record();
     const reversed = record({ positions: [...base.positions].reverse(), signature: new Uint8Array(64).fill(9) });
     assert.equal(samePositionSnapshot(base, reversed), true);
+    const routed = (routes: NormalizedPositionInput['closeRoutes']) => record({ positions: base.positions.map((entry) => ({ ...entry, closeRoutes: routes })) });
+    const first = { routeId: 'ioc-a', executableQuantityAtoms: 1n, expectedCostQuoteAtoms: 1n, settlementDelayMs: 1n, authorityHeld: true, requiredDependencyIds: [] };
+    const second = { ...first, routeId: 'ioc-b', expectedCostQuoteAtoms: 2n };
+    assert.equal(samePositionSnapshot(routed([first, second]), routed([second, first])), true, 'close route order carries no meaning');
+    assert.throws(() => positionSnapshotRecordHash(routed([first, first])), /route ids? repeats?/);
     for (const changed of [
       { positions: [position('b-perp', { quantityBaseAtoms: -9_000_000_000n })] },
       { positions: [position('b-perp', { liquidationPrice: undefined } as never)] },

@@ -68,7 +68,7 @@ The repository keeps compile-time imports, deployment artifacts, network calls, 
 
 Cross-domain parity decisions:
 
-- **Performance bonds** live in the EVM `PerformanceBondVault`. The API verifies a `FIRM_BONDED` quote's bond by id through the configured bond reader whatever domain the quote executes on, so Solana and Hyperliquid quotes use the same bonds rather than a second vault.
+- **Performance bonds** live in the EVM `PerformanceBondVault`. The API verifies a `FIRM_BONDED` quote's bond by id through the configured bond reader, and a bond backs only fee exposure in its own asset, with its expiry compared in the vault's block seconds. A Solana or Hyperliquid quote is therefore bondable only when its fees are in the bond's asset; slot-timed quotes are never bondable against a wall-clock bond.
 - **Solver fees** are policy-bounded. The EVM verifier accepts a nonzero shard fee only within an active `PolicyRegistry` fee policy, and the Base Sepolia script deploys it with fees disabled. The Solana core requires a zero maximum fee on every quote, which matches the zero-fee alpha; enabling Solana fees needs a reviewed fee-policy account first.
 - **Strategy transfer**: the EVM `NaryxStrategyAccount` supports a two-step owner transfer and an expiring recovery-exit delegate. A Solana strategy authority is a PDA seeded by the trader key over a venue-owned Rise strategy, and a Hyperliquid account is a venue account, so a strategy on either domain is not transferable in place. The strategy book answers `NOT_TRANSFERABLE` with the remedy `EXIT_AND_REENTER`.
 

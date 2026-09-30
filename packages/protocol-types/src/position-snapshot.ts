@@ -71,8 +71,13 @@ function encodePosition(writer: CanonicalWriter, position: NormalizedPosition): 
   );
   writer.writeArray(position.dependencyIds, (inner, value) => encodeProtocolId(inner, value, 'dependencyId'), 'dependencyIds');
   encodeProtocolId(writer, position.riskDomainId, 'riskDomainId');
+  // Route order carries no meaning (close cost re-sorts by cost), so routes encode by route id.
+  const routes = [...position.closeRoutes].sort((left, right) => (left.routeId < right.routeId ? -1 : left.routeId > right.routeId ? 1 : 0));
+  for (let i = 1; i < routes.length; i += 1) {
+    if (routes[i - 1]?.routeId === routes[i]?.routeId) throw new DuplicateElementError('positionSnapshot.closeRoutes', 'a route id repeats');
+  }
   writer.writeArray(
-    position.closeRoutes,
+    routes,
     (inner, route) => {
       encodeProtocolId(inner, protocolId(route.routeId), 'routeId');
       inner.writeU128(route.executableQuantityAtoms, 'executableQuantityAtoms');

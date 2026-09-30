@@ -397,7 +397,7 @@ test("solvers answer public orders with signed quotes that takers read back with
     // A bonded quote is accepted only when an observed bond backs it for its whole life.
     const bonded = (quoteNonce: bigint) => quote({ quoteMode: "FIRM_BONDED", reservationId: "cd".repeat(32), performanceBondId: "b0".repeat(32), quoteNonce });
     assert.equal(errorCode(await post({ quote: bonded(31n), route })), "BOND_UNVERIFIED");
-    const bondFor = (expiresAtValue: bigint) => openPerformanceBond({ version: 1, bondId: "b0".repeat(32), solverId: "solver-a", asset: { assetId: "usdc", assetManifestHash: new Uint8Array(32).fill(3), decimals: 6 } as never, bondAtoms: 1_000_000_000n, coveredFaults: ["FAILED_TO_HONOR_FUNDED_RESERVATION"], maximumPayoutPerClaimAtoms: 500_000_000n, disputeWindowValue: 60n, expiresAtValue });
+    const bondFor = (expiresAtValue: bigint) => openPerformanceBond({ version: 1, bondId: "b0".repeat(32), solverId: "solver-a", asset: { assetId: "svm:test-domain-1:usdc", assetManifestHash: "55".repeat(32), decimals: 6 } as never, bondAtoms: 1_000_000_000n, coveredFaults: ["FAILED_TO_HONOR_FUNDED_RESERVATION"], maximumPayoutPerClaimAtoms: 500_000_000n, disputeWindowValue: 60n, expiresAtValue });
     OBSERVED_BONDS.set("b0".repeat(32), bondFor(NOW_S + 61n));
     assert.equal(errorCode(await post({ quote: bonded(32n), route })), "BOND_INSUFFICIENT");
     OBSERVED_BONDS.set("b0".repeat(32), bondFor(NOW_S + 86_400n));

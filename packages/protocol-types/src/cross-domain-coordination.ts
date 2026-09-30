@@ -211,7 +211,9 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
         anyPrepared = true;
         break;
       case 'PREPARE_FAILED':
-        if (current === 'COMMITTING' || current === 'COMMITTED') { fence(`${event.domainId} failed to prepare after committing`); break; }
+        // A domain seen preparing, prepared, or compensating cannot also have failed to prepare:
+        // overwriting it would skip the compensation of inventory it may hold.
+        if (current !== 'PENDING' && current !== 'FAILED') { fence(`${event.domainId} failed to prepare after ${current}`); break; }
         status.set(event.domainId, 'FAILED');
         if (phase === 'PREPARING') phase = 'ABORTING';
         else if (phase === 'COMMITTING') fence(`${event.domainId} failed after the commit decision`);
@@ -249,13 +251,13 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
     const value = status.get(id) as CrossDomainDomainStatus;
     if (phase === 'PREPARING' && value === 'PENDING') nextActions.push({ kind: 'PREPARE', domainId: id });
     else if (phase === 'COMMITTING' && value === 'PREPARED') nextActions.push({ kind: 'COMMIT', domainId: id });
-    else if (phase === 'ABORTING' && value === 'PREPARED') nextActions.push({ kind: 'COMPENSATE', domainId: id });
+    // A preparing domain that never finalized is compensated too; waiting is not enough once aborting.
+    else if (phase === 'ABORTING' && (value === 'PREPARED' || value === 'PREPARING')) nextActions.push({ kind: 'COMPENSATE', domainId: id });
     else if ((phase === 'PREPARING' || phase === 'COMMITTING' || phase === 'ABORTING') && (value === 'PREPARING' || value === 'COMMITTING' || value === 'COMPENSATING')) {
       nextActions.push({ kind: 'AWAIT_FINALITY', domainId: id });
     }
   }
   if (phase === 'FENCED') nextActions.push({ kind: 'ESCALATE', reason: violations[violations.length - 1] ?? 'fenced' });
-  // A preparing domain that never finalized is compensated too; waiting is not enough once aborting.
   const terminalState: TerminalState | undefined =
     phase === 'FENCED' ? 'MANUAL_INTERVENTION' : phase === 'COMMITTED' ? 'FINALIZED_COMPLETE' : phase === 'ABORTED' ? (anyPrepared ? 'RECOVERED_FLAT' : 'NO_EFFECT') : undefined;
   return Object.freeze({

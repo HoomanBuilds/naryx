@@ -102,10 +102,24 @@ describe('strategy commands', () => {
     const migrate = applyStrategyCommand(command({ kind: 'MIGRATE', legId: 'perp', newLegId: 'perp-base', newInstrumentId: 'sol-perp-base', newVenueId: 'base', newLotAtoms: 10n, executionReceiptHashes: ['22'.repeat(32), '23'.repeat(32)] }), states);
     assert.ok(migrate.kind === 'TRANSITIONED' && migrate.result.accepted);
     const moved = migrate.result.states[0] as StrategyState;
-    const close = receipt({ netSpotDelta: 0n, perpPositionDelta: 100n, packageMarketId: 'hl-market' });
+    const close = receipt({ netSpotDelta: 0n, perpPositionDelta: 100n });
     const reopen = receipt({ action: 'ENTRY', netSpotDelta: 0n, perpVenue: 'base', perpPositionDelta: -100n, packageMarketId: 'base-market' });
     assert.deepEqual(strategyExecutionMatches('MIGRATE', opened, moved, [close, reopen]), { matches: true });
     assert.deepEqual(strategyExecutionMatches('MIGRATE', opened, moved, [close]), { matches: false, mismatch: 'EXECUTION_MISMATCH' });
+    assert.deepEqual(strategyExecutionMatches('MIGRATE', opened, moved, [receipt({ netSpotDelta: 0n, perpPositionDelta: 100n, packageMarketId: 'hl-market' }), reopen]), { matches: false, mismatch: 'RECEIPT_MARKET_MISMATCH' });
+    // A roll nets to zero per venue, so it must show the exact close and reopen, not any zero-sum pair.
+    const roll = applyStrategyCommand(command({ kind: 'ROLL', legId: 'perp', newLegId: 'perp-next', newInstrumentId: 'sol-perp-next', newVenueId: 'hyperliquid', newLotAtoms: 10n, executionReceiptHashes: ['25'.repeat(32), '26'.repeat(32)] }), states);
+    assert.ok(roll.kind === 'TRANSITIONED' && roll.result.accepted);
+    const rolled = roll.result.states[0] as StrategyState;
+    const unrelatedEntry = receipt({ action: 'ENTRY', netSpotDelta: 7n, perpPositionDelta: -7n, spotVenue: 'orca', perpVenue: 'drift', packageMarketId: 'other' });
+    const unrelatedExit = receipt({ netSpotDelta: -7n, perpPositionDelta: 7n, spotVenue: 'orca', perpVenue: 'drift' });
+    assert.deepEqual(strategyExecutionMatches('ROLL', opened, rolled, [unrelatedEntry, unrelatedExit]), { matches: false, mismatch: 'EXECUTION_MISMATCH' });
+    const rollExit = receipt({ netSpotDelta: 0n, perpPositionDelta: 100n });
+    const rollEntry = receipt({ action: 'ENTRY', netSpotDelta: 0n, perpPositionDelta: -100n, packageMarketId: 'next-market' });
+    assert.deepEqual(strategyExecutionMatches('ROLL', opened, rolled, [rollExit, rollEntry]), { matches: true });
+    // Two legs on one venue make a per-venue delta ambiguous, so it is refused.
+    const shared = strategyState({ ...opened, legs: opened.legs.map((leg) => ({ ...leg, venueId: 'hyperliquid' })) });
+    assert.deepEqual(strategyExecutionMatches('DECREASE', shared, shared, [receipt({ spotVenue: 'hyperliquid-spot' })]), { matches: false, mismatch: 'EXECUTION_AMBIGUOUS' });
 
     // An exit zeroes every leg and closes the strategy.
     const exit = applyStrategyCommand(command({ kind: 'EXIT', settlements: [], executionReceiptHashes: ['24'.repeat(32)] }), states);

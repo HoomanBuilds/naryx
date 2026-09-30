@@ -182,7 +182,7 @@ describe('performance bonds', () => {
   });
 
   test('a bond backs a FIRM_BONDED quote only when it covers the reservation fault for the quote life', () => {
-    const quote = { quoteMode: 'FIRM_BONDED' as const, solverId: 'solver-a', performanceBondId: id(1), validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: 900n, solverFee: { atoms: 20n }, protocolFee: { atoms: 10n } };
+    const quote = { quoteMode: 'FIRM_BONDED' as const, solverId: 'solver-a', performanceBondId: id(1), validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: 900n, solverFee: { asset: USD, atoms: 20n }, protocolFee: { asset: USD, atoms: 10n } };
     assert.deepEqual(verifyQuoteBond(quote, bond(), 'EVM_UNIX_SECONDS'), { backed: true });
     const refused = (change: object, ledger = bond()) => {
       const result = verifyQuoteBond({ ...quote, ...change }, ledger, 'EVM_UNIX_SECONDS');
@@ -195,7 +195,10 @@ describe('performance bonds', () => {
     assert.deepEqual(refused({ validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', validUntilValue: 989_001n }), ['BOND_EXPIRES_BEFORE_QUOTE']);
     assert.deepEqual(refused({ validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', validUntilValue: 989_000n }), []);
     assert.deepEqual(refused({ validUntilUnit: 'SOLANA_SLOT', validUntilValue: 10n }), ['BOND_TIME_UNIT_MISMATCH']);
-    assert.deepEqual(refused({ solverFee: { atoms: 55n } }), ['CAP_BELOW_FEE_EXPOSURE']);
+    assert.deepEqual(refused({ solverFee: { asset: USD, atoms: 55n } }), ['CAP_BELOW_FEE_EXPOSURE']);
+    assert.deepEqual(refused({ protocolFee: { asset: { ...USD, assetId: 'other' }, atoms: 1n } }), ['BOND_ASSET_MISMATCH']);
+    assert.deepEqual(refused({}, fileBondClaim(bond(), claim(4, 60n))), []);
+    assert.deepEqual(refused({}, fileBondClaim(fileBondClaim(bond(), claim(4, 60n)), claim(5, 15n))), ['BOND_EXHAUSTED'], 'a bond with less left than the fee exposure does not back the quote');
     assert.deepEqual(refused({ quoteMode: 'FIRM_ONCHAIN' }), ['NOT_BONDED_MODE']);
     const drained = fileBondClaim(fileBondClaim(bond(), claim(2, 50n)), claim(3, 50n));
     assert.deepEqual(refused({}, drained), ['BOND_EXHAUSTED']);

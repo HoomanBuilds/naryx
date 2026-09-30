@@ -54,6 +54,11 @@ describe('cross-domain prepositioned coordination', () => {
     assert.equal(aborted.terminalState, 'RECOVERED_FLAT');
     assert.equal(replayCrossDomainCoordination(plan, [], 101n).terminalState, 'NO_EFFECT', 'nothing prepared before expiry has no effect');
     assert.equal(replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n)], 101n).phase, 'ABORTING');
+    // A prepare that was only observed is compensated once aborting, never awaited forever.
+    assert.deepEqual(replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n, '51', 'OBSERVED')], 1_000_000n).nextActions, [{ kind: 'COMPENSATE', domainId: 'svm:testnet' }]);
+    // A failure report for a domain already prepared fences instead of skipping its compensation.
+    const overwrite = replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n), { kind: 'PREPARE_FAILED', domainId: 'svm:testnet', evidenceHash: '58'.repeat(32), atValue: 21n }], 30n);
+    assert.equal(overwrite.phase, 'FENCED');
   });
 
   test('conflicting evidence, commit without decision, a missed commit deadline, or backward time fence the package', () => {

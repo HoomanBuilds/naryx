@@ -24,7 +24,7 @@ test("the bond reader turns the vault's bond state into the kernel ledger the ba
       return { ok: true, status: 200, json: async () => ({ result }) };
     },
   });
-  const quote = { quoteMode: "FIRM_BONDED" as const, solverId: "solver-a", performanceBondId: "b0".repeat(32), validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: 4_000n, solverFee: { atoms: 10n }, protocolFee: { atoms: 0n } };
+  const quote = { quoteMode: "FIRM_BONDED" as const, solverId: "solver-a", performanceBondId: "b0".repeat(32), validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: 4_000n, solverFee: { asset: assetRef("usdc", "33".repeat(32), 6), atoms: 10n }, protocolFee: { asset: assetRef("usdc", "33".repeat(32), 6), atoms: 0n } };
   const ledger = await reader("b0".repeat(32));
   assert.ok(ledger !== undefined);
   assert.deepEqual(verifyQuoteBond(quote, ledger, "EVM_UNIX_SECONDS"), { backed: true });
