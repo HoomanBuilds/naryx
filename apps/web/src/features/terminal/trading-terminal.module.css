@@ -1625,6 +1625,91 @@
 /* ---------------------------------------------------------------- route plan and readiness tabs */
 
 .routePanel,
+/* Portfolio: one card per chain above the positions table */
+.portfolioGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px 4px;
+}
+
+.portfolioCard {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--canvas);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background-color 0.15s;
+}
+
+.portfolioCard:hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.portfolioCardActive,
+.portfolioCardActive:hover {
+  border-color: var(--text-secondary);
+}
+
+.portfolioHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.portfolioHead strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.portfolioHead small {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.portfolioCard dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.portfolioCard dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.portfolioCard dt {
+  color: var(--text-secondary);
+}
+
+.portfolioCard dd {
+  overflow: hidden;
+  margin: 0;
+  font-family: var(--font-geist-mono), monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .portfolioGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .readinessPanel {
   display: flex;
   min-width: 0;

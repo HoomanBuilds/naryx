@@ -383,6 +383,91 @@ function readinessStatus(
   return health.available ? "Available" : "Unavailable";
 }
 
+const SETTLEMENT_SHORT: Record<string, string> = {
+  ATOMIC_POSTCONDITION: "Atomic",
+  ASYNC_BONDED_SOLVER: "Bonded async",
+  BATCHED_IOC_WITH_RECOVERY: "Batched IOC with recovery",
+};
+
+/**
+ * The portfolio overview: one card per chain with the account that executes there, its readiness,
+ * its settlement class, and the latest package the durable lifecycle reports on it. Nothing here
+ * invents a balance or a position; empty means none were reported.
+ */
+function PortfolioOverview({
+  snapshot,
+  selectedDomain,
+  providerConnection,
+  runtimeHealth,
+  lifecycle,
+  hasService,
+  wallet,
+  evmWallet,
+  onSelect,
+}: {
+  snapshot: TerminalViewModel;
+  selectedDomain: DomainId;
+  providerConnection: ProviderConnection;
+  runtimeHealth: PrivateTerminalRuntimeHealth | null;
+  lifecycle: PackageLifecycleResponse | null;
+  hasService: boolean;
+  wallet: SolanaWalletSession;
+  evmWallet: InjectedEvmWalletSession;
+  onSelect: (domain: DomainId) => void;
+}) {
+  const latestDomain = chainOf(lifecycle?.receipts.at(-1)?.domain.domainId)?.id;
+  return (
+    <div className={styles.portfolioGrid} aria-label="Accounts by chain">
+      {READINESS_ORDER.map((domain) => {
+        const model = snapshot.domains.find((item) => item.id === domain);
+        const label = model?.label ?? READINESS_FALLBACK[domain].label;
+        const status = readinessStatus(hasService, providerConnection, readinessHealthFor(domain, runtimeHealth));
+        const account = domain === "solana"
+          ? wallet.selectedAccount?.address
+          : domain === "hyperliquid"
+            ? undefined
+            : evmWallet.account ?? undefined;
+        const selected = selectedDomain === domain;
+        return (
+          <button
+            key={domain}
+            type="button"
+            className={selected ? `${styles.portfolioCard} ${styles.portfolioCardActive}` : styles.portfolioCard}
+            aria-pressed={selected}
+            onClick={() => onSelect(domain)}
+          >
+            <span className={styles.portfolioHead}>
+              <ChainIcon chain={domain} size={22} />
+              <strong>{label}</strong>
+              <small>{model?.runtime ?? READINESS_FALLBACK[domain].runtime}</small>
+            </span>
+            <dl>
+              <div>
+                <dt>Account</dt>
+                <dd title={account}>
+                  {domain === "hyperliquid" ? "Dedicated testnet gate" : account ? shortAddress(account, 6, 4) : "Not connected"}
+                </dd>
+              </div>
+              <div>
+                <dt>Execution</dt>
+                <dd className={status === "Available" ? styles.statusOk : styles.statusOff}>{status}</dd>
+              </div>
+              <div>
+                <dt>Settlement</dt>
+                <dd>{SETTLEMENT_SHORT[READINESS_META[domain].settlementClass] ?? READINESS_META[domain].settlementClass}</dd>
+              </div>
+              <div>
+                <dt>Latest package</dt>
+                <dd>{lifecycle && latestDomain === domain ? lifecycle.attempt.state.replace(/_/g, " ") : "None reported"}</dd>
+              </div>
+            </dl>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ExecutionReadiness({
   snapshot,
   selectedDomain,
@@ -1459,6 +1544,7 @@ function BottomWorkspace({
   routePlan,
   readiness,
   solvers,
+  portfolio,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
@@ -1475,6 +1561,7 @@ function BottomWorkspace({
   routePlan: ReactNode;
   readiness: ReactNode;
   solvers: ReactNode;
+  portfolio: ReactNode;
 }) {
   const extraPanel = activeTab === "route" ? routePlan : activeTab === "readiness" ? readiness : activeTab === "solvers" ? solvers : null;
   const activeWorkspace =
@@ -1537,6 +1624,7 @@ function BottomWorkspace({
         aria-labelledby={`tab-${activeWorkspace.tab}`}
         className={`${styles.tableScroller} ${styles.viewFade}`}
       >
+        {activeWorkspace.tab === "positions" ? portfolio : null}
         {showReceipts && lifecycle ? (
           <div className={styles.lifecycleSummary} role="status">
             <div>
@@ -2474,6 +2562,19 @@ export function TradingTerminal({
               />
             }
             solvers={<SolverMetrics publicApiBaseUrl={publicApiBaseUrl} />}
+            portfolio={
+              <PortfolioOverview
+                snapshot={snapshot}
+                selectedDomain={selectedDomain}
+                providerConnection={providerConnection}
+                runtimeHealth={runtimeHealth}
+                lifecycle={displayedLifecycle}
+                hasService={privateProvider !== null}
+                wallet={wallet}
+                evmWallet={evmWallet}
+                onSelect={changeDomain}
+              />
+            }
           />
         </div>
       </main>
