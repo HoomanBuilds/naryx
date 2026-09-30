@@ -9,7 +9,7 @@ import styles from "./stats.module.css";
 const TILES: readonly { value: number; decimals: number; prefix: string; suffix: string; label: string; tone: string; chains?: boolean }[] = [
   { value: 1, decimals: 0, prefix: "", suffix: "", label: "Signature for every leg of the strategy", tone: "blue" },
   { value: 4, decimals: 0, prefix: "", suffix: "", label: "Domains: Solana, Base, Arbitrum, Hyperliquid", tone: "light", chains: true },
-  { value: 3, decimals: 0, prefix: "", suffix: "", label: "Settlement classes, each with its own guarantee", tone: "dark" },
+  { value: 3, decimals: 0, prefix: "", suffix: "", label: "Settlement classes with execution paths, each with its own guarantee", tone: "dark" },
   { value: 4, decimals: 0, prefix: "", suffix: "", label: "Evidence grades on every receipt", tone: "ink" },
 ];
 
@@ -54,7 +54,7 @@ export default function Stats() {
           </h2>
           <p className={styles.lede} data-reveal>
             Delta-neutral vaults, trading desks, market makers, treasuries, wallets and strategy platforms already pay
-            to coordinate legs themselves. One Naryx integration replaces that work for every package they run.
+            to coordinate legs themselves. One Naryx integration replaces that work for every supported package they run.
           </p>
           <div data-reveal>
             <Button href="#use" variant="ink" arrow>

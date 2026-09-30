@@ -7,10 +7,10 @@ import { gsap, reducedMotion, useGSAP } from "@/features/landing/gsap";
 import styles from "./involved.module.css";
 
 const LINKS = [
+  { group: "Trade", note: "Review a package, its quotes, settlement class and fees in the terminal.", label: "Open the terminal", href: "/trade" },
+  { group: "Operate", note: "How independent solvers compete to quote complete packages.", label: "Solver competition", href: "#engine" },
   { group: "Join the community", note: "New strategies, domains and product news.", label: "X.com" },
-  { group: "Join the community", note: "Questions, support and the solver channel.", label: "Discord" },
   { group: "Build", note: "Package format, API reference and the protocol spec.", label: "Documentation" },
-  { group: "Operate", note: "Run a self-hosted solver and compete to quote complete packages.", label: "Run a solver" },
 ];
 
 /** The name in the glyph cipher: each letter is a figure, a ring over a glyph. */
@@ -48,18 +48,34 @@ export default function Involved() {
           Get involved
         </h2>
         <div className={styles.cells}>
-          {LINKS.map(({ group, note, label }) => (
-            <a key={label} href="#top" className={styles.cell}>
-              <span className="mono">{group}</span>
-              <span className={styles.note}>{note}</span>
-              <span className={`display ${styles.label}`}>
-                {label}
-                <svg viewBox="0 0 12 12" aria-hidden="true">
-                  <path d="M3 9 9 3M4 3h5v5" fill="none" stroke="currentColor" strokeWidth="1.4" />
-                </svg>
-              </span>
-            </a>
-          ))}
+          {LINKS.map(({ group, note, label, href }) => {
+            const content = (
+              <>
+                <span className={styles.groupRow}>
+                  <span className="mono">{group}</span>
+                  {href === undefined ? <span className={`mono ${styles.soon}`}>At public launch</span> : null}
+                </span>
+                <span className={styles.note}>{note}</span>
+                <span className={`display ${styles.label}`}>
+                  {label}
+                  {href === undefined ? null : (
+                    <svg viewBox="0 0 12 12" aria-hidden="true">
+                      <path d="M3 9 9 3M4 3h5v5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                    </svg>
+                  )}
+                </span>
+              </>
+            );
+            return href === undefined ? (
+              <div key={label} className={`${styles.cell} ${styles.pending}`} aria-disabled="true">
+                {content}
+              </div>
+            ) : (
+              <a key={label} href={href} className={styles.cell}>
+                {content}
+              </a>
+            );
+          })}
         </div>
 
         <div className={styles.panel}>
@@ -79,8 +95,8 @@ export default function Involved() {
 
         <div className={styles.bar}>
           <p className="display">Trade the strategy, not the legs</p>
-          <a href="#footer" className={styles.signup}>
-            Sign up for updates
+          <a href="/trade" className={styles.signup}>
+            Open the terminal
             <span aria-hidden="true">
               <Arrow />
             </span>

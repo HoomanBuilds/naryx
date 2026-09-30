@@ -3,27 +3,32 @@
 import { useRef } from "react";
 import { GLYPHS, glyphSrc } from "@/features/landing/glyphs";
 import { gsap, ScrollTrigger, SplitText, useGSAP, reducedMotion } from "@/features/landing/gsap";
+import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./shielded.module.css";
 
 const FEATURES = [
   {
     title: "Atomic",
+    chains: ["solana", "base"],
     body: "Every leg executes inside one real rollback boundary. If any precondition or postcondition fails, the whole package reverts.",
     cells: [0, 1, 2, 6, 7],
   },
   {
     title: "Batched, bounded residual",
+    chains: ["hyperliquid"],
     body: "Legs go out as one coordinated batch without a shared rollback. The signed package sets the quantity policy, the residual you accept and the recovery steps.",
     cells: [3, 4, 8, 9, 13, 14],
   },
   {
     title: "Bonded asynchronous",
+    chains: ["arbitrum"],
     body: "Two-phase venue requests get deadlines, funded bonds, loss and residual caps, and a defined end state. This class is never called atomic.",
     cells: [10, 11, 15, 16, 17],
   },
   {
     title: "Cross-domain",
-    body: "Cross-chain packages use inventory already in place on each chain, with no bridge in the critical path. Each chain's outcome is evidenced on its own.",
+    chains: [],
+    body: "Specified, not yet enabled. Cross-chain packages will use inventory already in place on each chain, with no bridge in the critical path, and each chain's outcome evidenced on its own.",
     cells: [5, 12, 18, 7, 14],
   },
 ];
@@ -144,15 +149,29 @@ export default function Shielded() {
           </div>
 
           <ol className={styles.features}>
-            {FEATURES.map(({ title, body }, i) => (
+            {FEATURES.map(({ title, body, chains }, i) => (
               <li key={title} className={styles.feature} data-feature>
                 <span className={`mono ${styles.number}`}>0{i + 1}</span>
                 <h3 className="display">{title}</h3>
                 <p>{body}</p>
+                {chains.length > 0 ? (
+                  <ul className={styles.chains} aria-label="Used on">
+                    {CHAINS.filter((chain) => (chains as readonly string[]).includes(chain.id)).map(({ id, name, Icon }) => (
+                      <li key={id} className="mono">
+                        <Icon size={16} variant="mono" aria-hidden />
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </li>
             ))}
           </ol>
         </div>
+        <p className={`mono ${styles.fallback}`}>
+          Fallback: a package that cannot reach its stated end state is fenced for manual controlled recovery. Automation
+          stops and only quorum-approved actions run.
+        </p>
       </div>
     </section>
   );

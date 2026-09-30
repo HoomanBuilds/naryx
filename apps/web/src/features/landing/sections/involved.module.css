@@ -65,6 +65,35 @@
   color: var(--yellow);
 }
 
+/* A destination that opens at public launch: shown, never clickable */
+.pending,
+.pending:hover {
+  background: transparent;
+  color: inherit;
+  cursor: default;
+}
+
+.pending .label,
+.pending .note {
+  opacity: 0.55;
+}
+
+.groupRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.soon {
+  padding: 3px 6px;
+  border: 1px solid currentColor;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .cell:hover .label svg {
   transform: translate(3px, -3px);
 }

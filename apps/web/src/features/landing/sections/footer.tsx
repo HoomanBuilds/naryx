@@ -18,7 +18,7 @@ const HREFS: Record<string, string> = {
   "Market makers": "#use",
   Receipts: "#engine",
   Solvers: "#engine",
-  "Settlement classes": "#engine",
+  "Settlement classes": "#shielded",
   "Activation status": "/trade",
 };
 

@@ -25,7 +25,7 @@ const CARDS = [
   {
     id: "trade",
     title: "Trade",
-    body: "Build a package from the strategy catalogue or the graph builder, compare complete-package quotes, and manage entry, rebalance, roll and exit in one terminal.",
+    body: "Pick a package, compare complete-package quotes with their settlement class and every fee, then enter and exit all legs from one terminal.",
     action: "Open the terminal",
     href: "/trade",
     tone: "yellow",
@@ -33,17 +33,17 @@ const CARDS = [
   {
     id: "route",
     title: "Quote",
-    body: "Publish quote surfaces for canonical series, answer RFQs automatically and hedge across venues with inventory-aware skew.",
-    action: "Run a solver",
-    href: "#roadmap",
+    body: "Publish quote surfaces for canonical series, answer RFQs automatically, and back firm quotes with onchain reservations or performance bonds.",
+    action: "How solvers compete",
+    href: "#engine",
     tone: "cyan",
   },
   {
     id: "build",
     title: "Build",
-    body: "Plug package execution into a wallet, vault, treasury or trading app, with builder attribution and revenue sharing.",
-    action: "Read the docs",
-    href: "#roadmap",
+    body: "Plug package execution into a wallet, vault, treasury or trading app through the API and SDK, with builder attribution and fee caps the order owner signs.",
+    action: "See the settlement classes",
+    href: "#shielded",
     tone: "outline",
   },
 ] as const;

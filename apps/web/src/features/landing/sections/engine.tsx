@@ -21,8 +21,8 @@ const STEPS = [
     name: "Solver competition",
     title: "Solvers quote the whole outcome",
     body: [
-      "Independent solvers and market makers return signed quotes for the complete package, backed by firm inventory reservations.",
-      "Naryx compares net outcomes after fees, slippage, funding, collateral, settlement and recovery risk, and picks an eligible route within your limits.",
+      "Independent solvers and market makers return signed quotes for the complete package. Each quote states its firmness: an onchain inventory reservation, a performance bond, or a simulated reservation on test networks.",
+      "Naryx compares net outcomes after fees, slippage, collateral, settlement and recovery risk, and picks an eligible route within your limits.",
     ],
   },
   {
@@ -398,7 +398,7 @@ export default function Engine() {
 
             <footer className={styles.foot}>
               <a className={styles.pill} href="#shielded">
-                Read the spec
+                Settlement classes
                 <svg viewBox="0 0 12 12" aria-hidden="true">
                   <path d="M3 9 9 3M4 3h5v5" fill="none" stroke="currentColor" strokeWidth="1.3" />
                 </svg>
