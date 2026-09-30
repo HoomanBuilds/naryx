@@ -66,6 +66,12 @@ The repository keeps compile-time imports, deployment artifacts, network calls, 
 - **Arbitrum** is the asynchronous venue domain. A bonded coordinator and isolated account manage spot entry, GMX V2 request ownership, failed-entry rollback, recovery, and final exit evidence.
 - **Hyperliquid** supplies HyperCore spot and perpetual execution through an adapter and isolated services. Naryx deploys no Hyperliquid contract and never calls a batched IOC action atomic.
 
+Cross-domain parity decisions:
+
+- **Performance bonds** live in the EVM `PerformanceBondVault`. The API verifies a `FIRM_BONDED` quote's bond by id through the configured bond reader whatever domain the quote executes on, so Solana and Hyperliquid quotes use the same bonds rather than a second vault.
+- **Solver fees** are policy-bounded. The EVM verifier accepts a nonzero shard fee only within an active `PolicyRegistry` fee policy, and the Base Sepolia script deploys it with fees disabled. The Solana core requires a zero maximum fee on every quote, which matches the zero-fee alpha; enabling Solana fees needs a reviewed fee-policy account first.
+- **Strategy transfer**: the EVM `NaryxStrategyAccount` supports a two-step owner transfer and an expiring recovery-exit delegate. A Solana strategy authority is a PDA seeded by the trader key over a venue-owned Rise strategy, and a Hyperliquid account is a venue account, so a strategy on either domain is not transferable in place. The strategy book answers `NOT_TRANSFERABLE` with the remedy `EXIT_AND_REENTER`.
+
 Adding another instance of an implemented runtime family is manifest registration plus deployment and adapter records. Adding new execution semantics requires reviewed code first. Unknown identities and combinations fail closed.
 
 ## Implementation and activation status
