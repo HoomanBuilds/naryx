@@ -61,3 +61,4 @@ export {
   type ObservedBondClaim,
   type ObservedBondEvent,
 } from "./bond-vault.js";
+export { exportReconciliationReport, type ReportExportOptions } from "./report-export.js";

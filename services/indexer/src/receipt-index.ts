@@ -474,6 +474,22 @@ export class SqliteReceiptIndex {
     return Object.freeze(ids.map((row) => this.bond(domainId, vault, row.bond_id)).filter((bond): bond is ObservedBond => bond !== undefined));
   }
 
+  /** Packages with a canonical chain event in the height range, in id order, at most `limit`. */
+  packageIdsInRange(domainIdInput: string, fromHeight: number, toHeight: number, limit = 10_000): readonly string[] {
+    const domainId = id(domainIdInput, "domainId");
+    const from = height(fromHeight, "fromHeight");
+    const to = height(toHeight, "toHeight");
+    if (to < from) throw new ReceiptIndexError("INVALID_INPUT", "The height range is empty.");
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT e.package_id FROM chain_events e
+         JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
+         WHERE e.domain_id = ? AND b.height BETWEEN ? AND ? ORDER BY e.package_id LIMIT ?`,
+      )
+      .all(domainId, from, to, Math.min(Math.max(1, limit), 10_000)) as { package_id: string }[];
+    return rows.map((row) => row.package_id);
+  }
+
   /** The normalized package record from canonical chain events and committed venue fills only. */
   packageRecord(packageIdInput: string): IndexedPackageRecord {
     const packageId = id(packageIdInput, "packageId");

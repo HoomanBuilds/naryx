@@ -32,3 +32,5 @@ Performance bonds are indexed from `PerformanceBondVault` logs when `NARYX_INDEX
 ```sh
 npm test
 ```
+
+`exportReconciliationReport` (and `node dist/report-cli.js` with the `NARYX_REPORT_*` variables it documents) writes the reconciliation report for every package with a canonical event in a height range: `report.json` with its report hash, the accounting `report.csv`, and `disclosures.json`, readable only by its owner, holding the fresh random salts behind every field commitment so single rows can be disclosed to an auditor later.
