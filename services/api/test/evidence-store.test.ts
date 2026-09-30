@@ -163,3 +163,60 @@ test("public routes serve signed orders, recorded outcomes with their hashes, an
     }
   });
 });
+
+test("failed outcomes are attributed through the solver's own quote, and solver performance is measured from records", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-evidence-performance-"));
+  let clock = 1_000;
+  const store = new SqliteEvidenceStore(join(dir, "evidence.sqlite"), { clock: () => clock });
+  try {
+    const orders = ["performance-order-0001", "performance-order-0002", "performance-order-0003"].map((key) => signedOrder(key));
+    for (const entry of orders) store.submitOrder(entry.order, entry.signature);
+    const quoteKey = generateKeyPairSync("ed25519").privateKey;
+    const quoteFor = (entry: (typeof orders)[number], solverId: string, manifestHash: string) => {
+      const route = { ...routeFor(entry.orderHashHex, entry.order.domain, entry.order.environment), solver: solverId };
+      const quote = signedQuoteFor({ orderHash: entry.orderHashHex, route, environment: entry.order.environment, domain: entry.order.domain, solverId, manifestHash, quoteKey, validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: 2_000n, quoteNonce: 1n });
+      const now = (unit: string) => (unit === "EVM_UNIX_SECONDS" ? 1_000n : unit === "SOLANA_SLOT" ? entry.order.expiryValue - 1n : undefined);
+      return { quote, recorded: store.recordQuote(quote, route, now) };
+    };
+    const [first, second, third] = orders as [(typeof orders)[number], (typeof orders)[number], (typeof orders)[number]];
+    clock = 1_250;
+    quoteFor(first, "solver-a", "ab".repeat(32));
+    quoteFor(first, "solver-b", "bc".repeat(32));
+    clock = 1_400;
+    const settledQuote = quoteFor(second, "solver-a", "ab".repeat(32));
+
+    // Order 1 had no effect; its outcome names solver A only by manifest hash.
+    const firstHash = Buffer.from(first.orderHashHex, "hex");
+    store.recordOutcome({ evidenceManifest: manifest(firstHash), outcome: outcome(firstHash, { solverCapabilityManifestHash: "ab".repeat(32) }) });
+    // Order 3 names a manifest no quote carries, so it is attributed to nobody.
+    const thirdHash = Buffer.from(third.orderHashHex, "hex");
+    store.recordOutcome({ evidenceManifest: manifest(thirdHash), outcome: outcome(thirdHash, { solverCapabilityManifestHash: "cd".repeat(32) }) });
+    // Order 2 settled on solver A's quote, spending 1% less than it quoted.
+    const quoted = settledQuote.quote.expectedSpotNotional.atoms;
+    const secondHash = Buffer.from(second.orderHashHex, "hex");
+    const settled = receipt(secondHash, { quoteHash: settledQuote.recorded.quoteHashHex, solver: "solver-a", spotQuoteDelta: -(quoted - quoted / 100n) });
+    store.recordOutcome({
+      evidenceManifest: manifest(secondHash),
+      outcome: outcome(secondHash, { terminalState: "FINALIZED_COMPLETE", successfulReceiptHash: packageReceiptHash(settled) }),
+      receipt: settled,
+      acceptedQuoteFeeTerms: terms,
+    });
+
+    const quality = store.executionQuality({ solverId: "solver-a" });
+    assert.equal(quality.terminalOutcomes, 2, "the failed outcome counts against the solver, not only its successes");
+    assert.equal(quality.successfulBps, 5_000);
+
+    const performance = store.solverPerformance("solver-a", [first.order.domain.domainId]);
+    assert.deepEqual(performance.coverage, { eligibleOrders: 3, quotedOrders: 2, coverageBps: 6_666 });
+    assert.deepEqual(performance.firstQuoteLatencyMs, { median: 250, p95: 400, max: 400 });
+    assert.equal(performance.outcomes.total, 2);
+    assert.equal(performance.outcomes.fadeBps, 5_000);
+    assert.equal(performance.outcomes.settledBps, 5_000);
+    assert.deepEqual(performance.priceImprovementBps, { measured: 1, median: 100, min: 100, max: 100 });
+    assert.equal(store.solverPerformance("solver-b", [first.order.domain.domainId]).outcomes.total, 0);
+    assert.equal(store.solverPerformance("solver-a", ["evm:other"]).coverage.eligibleOrders, 0);
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

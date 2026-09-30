@@ -250,6 +250,25 @@ export interface ExecutionQualityView {
   readonly receiptFieldEvidence: Readonly<Record<string, number>>;
 }
 
+export interface SolverPerformanceView {
+  readonly label: 'OBSERVED';
+  readonly methodology: string;
+  readonly solverId: string;
+  readonly eligibleDomainIds: readonly string[];
+  readonly coverage: { readonly eligibleOrders: number; readonly quotedOrders: number; readonly coverageBps: number };
+  readonly firstQuoteLatencyMs?: { readonly median: number; readonly p95: number; readonly max: number };
+  readonly outcomes: {
+    readonly total: number;
+    readonly byTerminalState: Readonly<Record<TerminalState, number>>;
+    readonly settledBps: number;
+    readonly fadeBps: number;
+    readonly recoveredBps: number;
+    readonly boundedResidualBps: number;
+    readonly manualInterventionBps: number;
+  };
+  readonly priceImprovementBps?: { readonly measured: number; readonly median: number; readonly min: number; readonly max: number };
+}
+
 export interface VerifiedOutcome {
   readonly orderHash: string;
   readonly terminalState: TerminalState;
@@ -1319,6 +1338,82 @@ export class NaryxClient {
   }
 
   /** Measured execution quality; every figure comes from stored outcomes and receipts. */
+  /**
+   * One solver's raw performance dimensions. Every basis-point figure is recomputed here from the
+   * served counts and must match exactly; percentiles must be ordered; there is no composite score.
+   */
+  async getSolverPerformance(solverId: string): Promise<SolverPerformanceView> {
+    const id = checkId(solverId, 'solver id');
+    const body = record(await this.#request('GET', `/v1/solvers/${id}/performance`), 'solver performance');
+    if (body.label !== 'OBSERVED' || typeof body.methodology !== 'string') throw new NaryxEvidenceError('solver performance must be labeled OBSERVED with its methodology');
+    if (body.solverId !== id) throw new NaryxEvidenceError('solver performance is for another solver');
+    const eligibleDomainIds = list(body.eligibleDomainIds, 'eligibleDomainIds').map((domain, index) => checkId(String(domain), `eligibleDomainIds[${index}]`));
+    const ratio = (part: number, whole: number) => (whole === 0 ? 0 : Math.floor((part * 10_000) / whole));
+    const exact = (served: unknown, part: number, whole: number, name: string) => {
+      if (count(served, name) !== ratio(part, whole)) throw new NaryxEvidenceError(`${name} does not match its counts`);
+      return ratio(part, whole);
+    };
+    const coverageBody = record(body.coverage, 'coverage');
+    const eligibleOrders = count(coverageBody.eligibleOrders, 'coverage.eligibleOrders');
+    const quotedOrders = count(coverageBody.quotedOrders, 'coverage.quotedOrders');
+    if (quotedOrders > eligibleOrders) throw new NaryxEvidenceError('a solver cannot quote more orders than were eligible');
+    const coverage = Object.freeze({ eligibleOrders, quotedOrders, coverageBps: exact(coverageBody.coverageBps, quotedOrders, eligibleOrders, 'coverage.coverageBps') });
+    let firstQuoteLatencyMs: SolverPerformanceView['firstQuoteLatencyMs'];
+    if (body.firstQuoteLatencyMs !== undefined) {
+      const served = record(body.firstQuoteLatencyMs, 'firstQuoteLatencyMs');
+      const median = count(served.median, 'firstQuoteLatencyMs.median');
+      const p95 = count(served.p95, 'firstQuoteLatencyMs.p95');
+      const max = count(served.max, 'firstQuoteLatencyMs.max');
+      if (quotedOrders === 0 || median > p95 || p95 > max) throw new NaryxEvidenceError('latency percentiles are not ordered or have no quotes behind them');
+      firstQuoteLatencyMs = Object.freeze({ median, p95, max });
+    } else if (quotedOrders > 0) throw new NaryxEvidenceError('quoted orders were served without their latency');
+    const outcomesBody = record(body.outcomes, 'outcomes');
+    const total = count(outcomesBody.total, 'outcomes.total');
+    const servedStates = record(outcomesBody.byTerminalState, 'outcomes.byTerminalState');
+    const byTerminalState = {} as Record<TerminalState, number>;
+    let sum = 0;
+    for (const state of Object.keys(TERMINAL_STATE) as TerminalState[]) {
+      byTerminalState[state] = count(servedStates[state], `outcomes.byTerminalState.${state}`);
+      sum += byTerminalState[state];
+    }
+    if (sum !== total) throw new NaryxEvidenceError('terminal state counts do not sum to the outcome count');
+    const settled = byTerminalState.FINALIZED_COMPLETE + byTerminalState.FINALIZED_BOUNDED + byTerminalState.RECOVERED_COMPLETE + byTerminalState.RECOVERED_BOUNDED;
+    const recovered = byTerminalState.RECOVERED_COMPLETE + byTerminalState.RECOVERED_BOUNDED + byTerminalState.RECOVERED_FLAT;
+    const outcomes = Object.freeze({
+      total,
+      byTerminalState: Object.freeze(byTerminalState),
+      settledBps: exact(outcomesBody.settledBps, settled, total, 'outcomes.settledBps'),
+      fadeBps: exact(outcomesBody.fadeBps, byTerminalState.NO_EFFECT, total, 'outcomes.fadeBps'),
+      recoveredBps: exact(outcomesBody.recoveredBps, recovered, total, 'outcomes.recoveredBps'),
+      boundedResidualBps: exact(outcomesBody.boundedResidualBps, byTerminalState.FINALIZED_BOUNDED + byTerminalState.RECOVERED_BOUNDED, total, 'outcomes.boundedResidualBps'),
+      manualInterventionBps: exact(outcomesBody.manualInterventionBps, byTerminalState.MANUAL_INTERVENTION, total, 'outcomes.manualInterventionBps'),
+    });
+    let priceImprovementBps: SolverPerformanceView['priceImprovementBps'];
+    if (body.priceImprovementBps !== undefined) {
+      const served = record(body.priceImprovementBps, 'priceImprovementBps');
+      const measured = count(served.measured, 'priceImprovementBps.measured');
+      const signedInteger = (value: unknown, name: string) => {
+        if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new NaryxEvidenceError(`${name} must be an integer`);
+        return value;
+      };
+      const median = signedInteger(served.median, 'priceImprovementBps.median');
+      const min = signedInteger(served.min, 'priceImprovementBps.min');
+      const max = signedInteger(served.max, 'priceImprovementBps.max');
+      if (measured === 0 || measured > settled || min > median || median > max) throw new NaryxEvidenceError('price improvement is unordered or measured beyond the settled outcomes');
+      priceImprovementBps = Object.freeze({ measured, median, min, max });
+    }
+    return Object.freeze({
+      label: 'OBSERVED' as const,
+      methodology: body.methodology,
+      solverId: id,
+      eligibleDomainIds: Object.freeze(eligibleDomainIds),
+      coverage,
+      ...(firstQuoteLatencyMs === undefined ? {} : { firstQuoteLatencyMs }),
+      outcomes,
+      ...(priceImprovementBps === undefined ? {} : { priceImprovementBps }),
+    });
+  }
+
   async getExecutionQuality(filter: { readonly solverId?: string } = {}): Promise<ExecutionQualityView> {
     const query = filter.solverId === undefined ? '' : `?solverId=${checkId(filter.solverId, 'solver id')}`;
     const body = record(await this.#request('GET', `/v1/analytics/execution-quality${query}`), 'execution quality');

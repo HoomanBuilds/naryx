@@ -808,4 +808,29 @@ describe('order intake and terminal evidence', () => {
     routes['GET /v1/catalogue'] = { body: { ...altered, catalogue: { ...altered.catalogue, entries: [...altered.catalogue.entries, entry('sol-carry-shadow')] } } };
     await assert.rejects(reader.getCatalogue({ trustedAuthorities: trust }), /hash does not match/);
   });
+
+  test('solver performance figures are recomputed from their counts and must be ordered', async () => {
+    const states = { FINALIZED_COMPLETE: 1, FINALIZED_BOUNDED: 0, RECOVERED_COMPLETE: 0, RECOVERED_BOUNDED: 0, RECOVERED_FLAT: 0, MANUAL_INTERVENTION: 0, NO_EFFECT: 1 };
+    const served = (overrides: Record<string, unknown> = {}) => ({
+      label: 'OBSERVED',
+      methodology: 'raw dimensions',
+      solverId: 'solver-a',
+      eligibleDomainIds: ['svm:testnet'],
+      coverage: { eligibleOrders: 3, quotedOrders: 2, coverageBps: 6_666 },
+      firstQuoteLatencyMs: { median: 250, p95: 400, max: 400 },
+      outcomes: { total: 2, byTerminalState: states, settledBps: 5_000, fadeBps: 5_000, recoveredBps: 0, boundedResidualBps: 0, manualInterventionBps: 0 },
+      priceImprovementBps: { measured: 1, median: 100, min: 100, max: 100 },
+      ...overrides,
+    });
+    const read = (body: unknown) => client({ 'GET /v1/solvers/solver-a/performance': { body } }).getSolverPerformance('solver-a');
+    const verified = await read(served());
+    assert.equal(verified.coverage.coverageBps, 6_666);
+    assert.equal(verified.outcomes.fadeBps, 5_000);
+    await assert.rejects(read(served({ coverage: { eligibleOrders: 3, quotedOrders: 2, coverageBps: 9_000 } })), /does not match its counts/);
+    await assert.rejects(read(served({ outcomes: { ...served().outcomes, fadeBps: 0 } })), /fadeBps does not match/);
+    await assert.rejects(read(served({ outcomes: { ...served().outcomes, total: 3 } })), /do not sum/);
+    await assert.rejects(read(served({ firstQuoteLatencyMs: { median: 500, p95: 400, max: 400 } })), /not ordered/);
+    await assert.rejects(read(served({ priceImprovementBps: { measured: 2, median: 100, min: 100, max: 100 } })), /beyond the settled outcomes/);
+    await assert.rejects(read(served({ solverId: 'solver-b' })), /another solver/);
+  });
 });

@@ -132,7 +132,7 @@ export interface PublicApiOptions {
   /** Encryption suites a reviewed release has pinned; with none, private RFQ fails closed. */
   readonly pinnedSuiteIds?: readonly string[];
   /** Optional: order intake, order and receipt reads, and execution analytics answer 503 without it. */
-  readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality" | "quotesFor" | "routeDecisionsFor">;
+  readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality" | "quotesFor" | "routeDecisionsFor" | "solverPerformance">;
   /** Optional: qualification reads answer 503 without it. Records are appended by operators, never here. */
   readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
   /** Optional: graph compilation answers 503 without the active registry records and resource limits it runs against. */
@@ -552,6 +552,15 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const entry = requireRegistry().byHash<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId, match[2] as string);
       if (entry === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver manifest.");
       return { solverId, manifestHash: entry.documentHashHex, manifestNonce: entry.subjectVersion, manifest: entry.document };
+    }
+    if ((match = /^\/v1\/solvers\/([^/]+)\/performance$/.exec(path)) !== null) {
+      // Raw, record-derived performance dimensions for one solver; eligibility follows the domains
+      // its latest signed manifest supports. There is no composite score.
+      onlyParams(url, []);
+      const solverId = id(match[1], "Solver id");
+      const manifest = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
+      if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver.");
+      return requireEvidence().solverPerformance(solverId, manifest.document.supportedDomains.map((domain) => domain.domainId));
     }
     if ((match = /^\/v1\/solvers\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);

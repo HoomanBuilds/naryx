@@ -23,6 +23,7 @@ export {
   type VerifiedSolverManifest,
   type VerifiedOutcome,
   type ExecutionQualityView,
+  type SolverPerformanceView,
   type FetchLike,
   type NaryxClientOptions,
   type OrderSigner,

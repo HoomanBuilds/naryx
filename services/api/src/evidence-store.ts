@@ -177,6 +177,40 @@ export interface ExecutionQualitySummary {
   readonly receiptFieldEvidence: Readonly<Record<string, number>>;
 }
 
+/**
+ * One solver's raw performance, each dimension from stored signed records: coverage of eligible
+ * orders, first-quote latency, what became of the orders it was selected for, and price
+ * improvement of its settled receipts against its own quotes. No composite score is formed.
+ */
+export interface SolverPerformanceSummary {
+  readonly label: "OBSERVED";
+  readonly methodology: string;
+  readonly solverId: string;
+  readonly eligibleDomainIds: readonly string[];
+  /** Orders in the eligible domains among the newest `SOLVER_PERFORMANCE_ORDER_SAMPLE` stored orders. */
+  readonly coverage: { readonly eligibleOrders: number; readonly quotedOrders: number; readonly coverageBps: number };
+  /** From an order's receipt by the server to the solver's first quote for it, in milliseconds. */
+  readonly firstQuoteLatencyMs?: { readonly median: number; readonly p95: number; readonly max: number };
+  readonly outcomes: {
+    readonly total: number;
+    readonly byTerminalState: Readonly<Record<TerminalState, number>>;
+    readonly settledBps: number;
+    /** NO_EFFECT outcomes of orders the solver was selected for: the quote was not honored. */
+    readonly fadeBps: number;
+    readonly recoveredBps: number;
+    /** Outcomes that kept a visible bounded residual. */
+    readonly boundedResidualBps: number;
+    readonly manualInterventionBps: number;
+  };
+  /**
+   * Settled spot quote amounts against the solver's own quoted notional, in basis points of the
+   * quote, truncated toward zero: positive when the taker paid less on entry or received more on exit.
+   */
+  readonly priceImprovementBps?: { readonly measured: number; readonly median: number; readonly min: number; readonly max: number };
+}
+
+export const SOLVER_PERFORMANCE_ORDER_SAMPLE = 10_000;
+
 const TERMINAL_STATES: readonly TerminalState[] = [
   "FINALIZED_COMPLETE",
   "FINALIZED_BOUNDED",
@@ -492,6 +526,19 @@ export class SqliteEvidenceStore {
         }
         return { outcomeHashHex: toHex(outcomeHash), ...(receiptHash === undefined ? {} : { receiptHashHex: toHex(receiptHash) }), replayed: true };
       }
+      // A failed outcome names its solver only through the capability manifest hash. It is
+      // attributed to the solver whose own signed quote for this order carries that hash, and to
+      // nobody when no quote, or more than one solver, does.
+      if (solverId === undefined && outcome.solverCapabilityManifestHash !== undefined) {
+        const named = toHex(outcome.solverCapabilityManifestHash);
+        const quoted = this.db.prepare("SELECT solver_id, quote_json FROM order_quotes WHERE order_hash = ?").all(outcome.orderHash) as { solver_id: string; quote_json: string }[];
+        const matching = new Set(
+          quoted
+            .filter((row) => hexOf((parseProtocolJson(row.quote_json) as SolverQuoteInput).solverCapabilityManifestHash) === named)
+            .map((row) => row.solver_id),
+        );
+        if (matching.size === 1) solverId = [...matching][0];
+      }
       this.db
         .prepare(
           `INSERT INTO terminal_outcomes (order_hash, terminal_state, solver_id, quote_hash, outcome_json, outcome_hash, receipt_json, receipt_hash, manifest_json, manifest_hash, recorded_at_ms)
@@ -632,6 +679,94 @@ export class SqliteEvidenceStore {
       receiptFieldEvidence: Object.freeze(grades),
     });
   }
+
+  solverPerformance(solverIdInput: string, eligibleDomainIds: readonly string[]): SolverPerformanceSummary {
+    const solverId = String(solverIdInput);
+    const domains = [...new Set(eligibleDomainIds)].sort();
+    const bps = (part: number, whole: number) => (whole === 0 ? 0 : Math.floor((part * 10_000) / whole));
+    const rank = <T>(sorted: readonly T[], fraction: number) => sorted[Math.max(0, Math.ceil(fraction * sorted.length) - 1)] as T;
+
+    const eligible = domains.length === 0
+      ? []
+      : (this.db
+        .prepare(
+          `SELECT order_hash, received_at_ms FROM (SELECT order_hash, domain_id, received_at_ms FROM public_orders ORDER BY cursor DESC LIMIT ?)
+           WHERE domain_id IN (${domains.map(() => "?").join(", ")})`,
+        )
+        .all(SOLVER_PERFORMANCE_ORDER_SAMPLE, ...domains) as { order_hash: Uint8Array; received_at_ms: number }[]);
+    const firstQuotes = new Map(
+      (this.db.prepare("SELECT order_hash, MIN(received_at_ms) AS first_ms FROM order_quotes WHERE solver_id = ? GROUP BY order_hash").all(solverId) as {
+        order_hash: Uint8Array;
+        first_ms: number;
+      }[]).map((row) => [toHex(row.order_hash), row.first_ms]),
+    );
+    const latencies: number[] = [];
+    for (const order of eligible) {
+      const first = firstQuotes.get(toHex(order.order_hash));
+      if (first !== undefined) latencies.push(Math.max(0, first - order.received_at_ms));
+    }
+    latencies.sort((left, right) => left - right);
+
+    const rows = this.db.prepare("SELECT terminal_state, receipt_json, quote_hash FROM terminal_outcomes WHERE solver_id = ?").all(solverId) as {
+      terminal_state: string;
+      receipt_json: string | null;
+      quote_hash: Uint8Array | null;
+    }[];
+    const byTerminalState = Object.fromEntries(TERMINAL_STATES.map((state) => [state, 0])) as Record<TerminalState, number>;
+    const improvements: number[] = [];
+    const quoteOf = this.db.prepare("SELECT quote_json FROM order_quotes WHERE quote_hash = ? AND solver_id = ?");
+    for (const row of rows) {
+      const state = row.terminal_state as TerminalState;
+      if (state in byTerminalState) byTerminalState[state] += 1;
+      if (row.receipt_json === null || row.quote_hash === null) continue;
+      const stored = quoteOf.get(row.quote_hash, solverId) as { quote_json: string } | undefined;
+      if (stored === undefined) continue;
+      const receipt = parseProtocolJson(row.receipt_json) as PackageReceiptInput;
+      const quoted = (parseProtocolJson(stored.quote_json) as SolverQuoteInput).expectedSpotNotional.atoms;
+      if (quoted <= 0n) continue;
+      const settled = receipt.spotQuoteDelta < 0n ? -receipt.spotQuoteDelta : receipt.spotQuoteDelta;
+      const improvement = receipt.action === "ENTRY" ? quoted - settled : settled - quoted;
+      improvements.push(Number((improvement * 10_000n) / quoted));
+    }
+    improvements.sort((left, right) => left - right);
+    const total = rows.length;
+    const settled = byTerminalState.FINALIZED_COMPLETE + byTerminalState.FINALIZED_BOUNDED + byTerminalState.RECOVERED_COMPLETE + byTerminalState.RECOVERED_BOUNDED;
+    const recovered = byTerminalState.RECOVERED_COMPLETE + byTerminalState.RECOVERED_BOUNDED + byTerminalState.RECOVERED_FLAT;
+    return Object.freeze({
+      label: "OBSERVED" as const,
+      methodology:
+        "Coverage: stored orders in the solver's supported domains that it quoted. Latency: order receipt to the solver's first quote. " +
+        "Outcomes: terminal outcomes attributed to the solver by its receipt or its own quote's manifest hash. " +
+        "Improvement: settled spot quote amount against the accepted quote's expected spot notional. Nearest-rank percentiles.",
+      solverId,
+      eligibleDomainIds: Object.freeze(domains),
+      coverage: Object.freeze({ eligibleOrders: eligible.length, quotedOrders: latencies.length, coverageBps: bps(latencies.length, eligible.length) }),
+      ...(latencies.length === 0 ? {} : { firstQuoteLatencyMs: Object.freeze({ median: rank(latencies, 0.5), p95: rank(latencies, 0.95), max: latencies[latencies.length - 1] as number }) }),
+      outcomes: Object.freeze({
+        total,
+        byTerminalState: Object.freeze(byTerminalState),
+        settledBps: bps(settled, total),
+        fadeBps: bps(byTerminalState.NO_EFFECT, total),
+        recoveredBps: bps(recovered, total),
+        boundedResidualBps: bps(byTerminalState.FINALIZED_BOUNDED + byTerminalState.RECOVERED_BOUNDED, total),
+        manualInterventionBps: bps(byTerminalState.MANUAL_INTERVENTION, total),
+      }),
+      ...(improvements.length === 0
+        ? {}
+        : {
+          priceImprovementBps: Object.freeze({
+            measured: improvements.length,
+            median: rank(improvements, 0.5),
+            min: improvements[0] as number,
+            max: improvements[improvements.length - 1] as number,
+          }),
+        }),
+    });
+  }
+}
+
+function hexOf(value: Uint8Array | string): string {
+  return typeof value === "string" ? value.toLowerCase() : toHex(value);
 }
 
 function orderExpired(order: PackageOrderInput, now: NowIn): boolean {

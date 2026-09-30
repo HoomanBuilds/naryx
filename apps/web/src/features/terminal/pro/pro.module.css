@@ -1161,7 +1161,7 @@
 .metricsHeader,
 .metricsRow {
   display: grid;
-  grid-template-columns: minmax(120px, 1.2fr) 0.7fr 0.8fr 0.8fr 1.1fr minmax(160px, 2fr) 76px;
+  grid-template-columns: minmax(140px, 1.6fr) 0.7fr 1.1fr 0.6fr 0.6fr 0.5fr 0.7fr 0.8fr 76px;
   gap: 12px;
   align-items: center;
   padding: 7px 18px;
@@ -1176,6 +1176,28 @@
 .metricsRow {
   font-family: var(--font-geist-mono), monospace;
   border-bottom: 1px solid var(--line-soft, rgba(255, 255, 255, 0.04));
+}
+
+.metricsSolver {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.metricsSolver > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricsEvidence {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.metricsWarn {
+  color: var(--down);
 }
 
 .metricsEmpty,
