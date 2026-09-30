@@ -77,6 +77,8 @@ forge test --match-contract ArbitrumMainnetForkQualificationTest
 
 Record a completed qualification under `deployments/evm/fork-evidence/` only after reviewing the pinned inputs and real test output. Do not copy those values into application runtime configuration.
 
+`PolicyRegistry` registers package template manifests and fee policy manifests. Activations and resumes are proposed by the proposer role and take effect only after the protocol config delay through the executor; the canceller withdraws pending proposals; the pauser pauses at once. A fee policy carries its maximum fee in basis points under a hard cap of 1000, a template none, and consumers check the exact version and manifest hash with `isActive`. The verifier still accepts only zero-fee shard fills, so no fee is charged onchain until a fee policy is both active and wired into verification.
+
 ## Deployment preparation
 
 The scripts under `script/` prepare Base Sepolia and Arbitrum Sepolia deployments. None has been run against a public network, and none may be without explicit authorization for that exact action.

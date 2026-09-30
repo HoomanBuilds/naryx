@@ -22,6 +22,7 @@ readonly -a ARTIFACTS=(
     "src/PackageQuoteShardRegistry.sol:PackageQuoteShardRegistry|PackageQuoteShardRegistry.abi.json"
     "src/AsyncBondedPackageCoordinator.sol:AsyncBondedPackageCoordinator|AsyncBondedPackageCoordinator.abi.json"
     "src/PerformanceBondVault.sol:PerformanceBondVault|PerformanceBondVault.abi.json"
+    "src/PolicyRegistry.sol:PolicyRegistry|PolicyRegistry.abi.json"
     "src/GmxV2ArbitrumAdapter.sol:GmxV2ArbitrumAdapter|GmxV2ArbitrumAdapter.abi.json"
     "src/GmxV2IsolatedAccount.sol:GmxV2IsolatedAccount|GmxV2IsolatedAccount.abi.json"
     "src/GmxV2ExitController.sol:GmxV2ExitController|GmxV2ExitController.abi.json"
