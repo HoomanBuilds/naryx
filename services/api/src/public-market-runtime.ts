@@ -14,6 +14,7 @@ import { SqliteSolverApiStore } from "./solver-api-store.js";
 import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
 import { SqliteQualificationStore } from "./qualification-store.js";
+import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -136,8 +137,13 @@ function loadSupport(path: string): {
 
 /** `keyId:base58Ed25519Key` pairs, comma separated: the keys allowed to sign qualification records. */
 function qualificationAuthorities(value: string | undefined): ReadonlyMap<string, Uint8Array> {
+  return authorityKeys(value, "NARYX_QUALIFICATION_DB", "NARYX_QUALIFICATION_AUTHORITIES");
+}
+
+/** `keyId:base58Ed25519Key` pairs, comma separated. */
+function authorityKeys(value: string | undefined, database: string, variable: string): ReadonlyMap<string, Uint8Array> {
   if (value === undefined || value.trim() === "") {
-    throw new PublicMarketConfigError("NARYX_QUALIFICATION_DB requires NARYX_QUALIFICATION_AUTHORITIES.");
+    throw new PublicMarketConfigError(`${database} requires ${variable}.`);
   }
   const authorities = new Map<string, Uint8Array>();
   for (const entry of value.split(",").map((part) => part.trim()).filter((part) => part !== "")) {
@@ -149,7 +155,7 @@ function qualificationAuthorities(value: string | undefined): ReadonlyMap<string
       key = undefined;
     }
     if (extra !== undefined || keyId === undefined || !/^[A-Za-z0-9._-]{1,128}$/.test(keyId) || key?.length !== 32 || authorities.has(keyId)) {
-      throw new PublicMarketConfigError("NARYX_QUALIFICATION_AUTHORITIES must list distinct keyId:base58 Ed25519 keys.");
+      throw new PublicMarketConfigError(`${variable} must list distinct keyId:base58 Ed25519 keys.`);
     }
     authorities.set(keyId, key);
   }
@@ -229,6 +235,14 @@ export function loadPublicMarketRuntime(
         minimumActivationDelay: activationDelay(environment.NARYX_QUALIFICATION_ACTIVATION_DELAY),
       });
     if (qualification !== undefined) opened.push(qualification);
+    const positionPath = optional(environment.NARYX_POSITION_DB);
+    const positions = positionPath === undefined
+      ? undefined
+      : new SqlitePositionSnapshotStore(absolute(positionPath, "NARYX_POSITION_DB"), {
+        authorities: authorityKeys(environment.NARYX_POSITION_AUTHORITIES, "NARYX_POSITION_DB", "NARYX_POSITION_AUTHORITIES"),
+        clock: clockMs,
+      });
+    if (positions !== undefined) opened.push(positions);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -241,6 +255,7 @@ export function loadPublicMarketRuntime(
       ...(delivery === undefined ? {} : { delivery, pinnedSuiteIds }),
       ...(evidence === undefined ? {} : { evidence }),
       ...(qualification === undefined ? {} : { qualification }),
+      ...(positions === undefined ? {} : { positions }),
       nowValue,
       rateLimit,
       clockMs,

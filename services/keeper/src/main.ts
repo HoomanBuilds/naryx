@@ -10,6 +10,7 @@ import {
   runCodeHashPass,
 } from './code-hash-monitor.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
+import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
 
 const config = loadKeeperServerConfig();
 const client = new HyperliquidSdkTestnetReadClient();
@@ -40,8 +41,30 @@ if (monitor !== undefined) {
   monitorTimer = setInterval(() => void pass(), monitor.intervalMs);
 }
 
+// The position snapshot pass only reads HyperCore testnet accounts; its key signs observations,
+// never actions, and the public API verifies each snapshot before storing it.
+const positionWatch = loadPositionSnapshotConfig(process.env, (path) => readFileSync(path, 'utf8'), parseProtocolJson);
+let positionTimer: ReturnType<typeof setInterval> | undefined;
+if (positionWatch !== undefined) {
+  const signHash = ed25519HashSigner(readFileSync(positionWatch.authorityKeyPath, 'utf8'));
+  const publish = httpSnapshotPublisher(positionWatch.apiBaseUrl);
+  const reader = {
+    clearinghouseState: async (user: `0x${string}`) => (await client.clearinghouseState(user)).payload,
+    spotClearinghouseState: async (user: `0x${string}`) => (await client.spotClearinghouseState(user)).payload,
+    allMids: () => client.allMids(),
+  };
+  const pass = async () => {
+    const results = await runPositionSnapshotPass({ environment: positionWatch.environment, accounts: positionWatch.accounts, reader, authority: positionWatch.authority, signHash, publish, nowMs: Date.now });
+    const failed = results.filter((entry) => entry.status === 'FAILED');
+    if (failed.length > 0) process.stderr.write(`Position snapshots failed: ${failed.map((entry) => `${entry.strategyAccount} ${entry.detail ?? ''}`).join('; ')}\n`);
+  };
+  void pass();
+  positionTimer = setInterval(() => void pass(), positionWatch.intervalMs);
+}
+
 function shutdown(): void {
   if (monitorTimer !== undefined) clearInterval(monitorTimer);
+  if (positionTimer !== undefined) clearInterval(positionTimer);
   server.close(() => {
     process.exitCode = 0;
   });

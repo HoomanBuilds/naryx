@@ -153,6 +153,11 @@ export class HyperliquidSdkTestnetReadClient implements HyperliquidTestnetReadCl
       () => this.#client.clearinghouseState({ user }));
   }
 
+  /** Every coin's mid price; indicative marks for risk reads, never execution prices. */
+  allMids(): Promise<Readonly<Record<string, string>>> {
+    return this.#client.allMids();
+  }
+
   openOrders(user: `0x${string}`): Promise<HyperliquidInfoEnvelope<OpenOrdersResponse>> {
     return this.#read({ operation: 'openOrders', user }, () => this.#client.openOrders({ user }));
   }

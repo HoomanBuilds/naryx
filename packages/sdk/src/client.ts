@@ -1,5 +1,6 @@
 import {
   aggregateCandles,
+  buildExposureGraph,
   bytesEqual,
   CANDLE_INTERVAL_MS,
   commitmentHash,
@@ -13,8 +14,11 @@ import {
   packageMatchingPolicyHash,
   packageOrderBytes,
   packageOrderHash,
+  packageCloseCostIndex,
   packageReceipt,
   packageReceiptHash,
+  positionSnapshotRecord,
+  positionSnapshotRecordHash,
   privateRfqEnvelopeHash,
   ProtocolError,
   QUALIFICATION_OBJECT_TYPE,
@@ -54,6 +58,9 @@ import {
   type PackageReceipt,
   type PackageReceiptInput,
   type PackageTakerOrderInput,
+  type NormalizedPosition,
+  type PositionSnapshotRecord,
+  type PositionSnapshotRecordInput,
   type PrivateRfqEnvelopeInput,
   type QualificationObjectType,
   type QualificationRecord,
@@ -310,6 +317,24 @@ export interface VerifiedOrderQuote {
    * server. A signature, manifest, or key binding that is checked and fails is rejected.
    */
   readonly signatureVerified: boolean;
+}
+
+export interface VerifiedPositionSource {
+  readonly sourceId: string;
+  readonly recordHash: string;
+  readonly observedAtMs: bigint;
+  readonly ageMs: bigint;
+  readonly unmappedInstruments: readonly string[];
+  readonly record: PositionSnapshotRecord;
+  /** True only when the record's authority is one the caller trusts and its signature verified here. */
+  readonly signatureVerified: boolean;
+}
+
+export interface VerifiedPositions {
+  readonly strategyAccount: string;
+  readonly label: 'OBSERVED';
+  readonly sources: readonly VerifiedPositionSource[];
+  readonly positions: readonly NormalizedPosition[];
 }
 
 export interface VerifiedRouteDecision {
@@ -977,6 +1002,83 @@ export class NaryxClient {
       operatorSignatureVerified = verdict === true;
     }
     return Object.freeze({ solverId: id, manifestHash: computed, manifestNonce: count(body.manifestNonce, 'manifestNonce'), manifest, operatorSignatureVerified });
+  }
+
+  /**
+   * The latest signed position snapshot of each source for a strategy account. Every record is
+   * re-validated and re-hashed, must belong to the account, and must carry exactly the positions
+   * served. A record signed by an authority in `trustedAuthorities` must verify, and only then is
+   * it marked verified; the server's own configuration is never taken as trust.
+   */
+  async getPositions(strategyAccount: string, options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {}): Promise<VerifiedPositions> {
+    const account = checkId(strategyAccount, 'strategy account');
+    const body = record(await this.#request('GET', `/v1/positions/${account}`), 'positions');
+    if (body.strategyAccount !== account || body.label !== 'OBSERVED') throw new NaryxEvidenceError('positions are for another account or not labeled OBSERVED');
+    const servedSources = list(body.sources, 'sources');
+    const records = list(body.records, 'records');
+    if (servedSources.length !== records.length) throw new NaryxEvidenceError('every source must carry its record');
+    const sources: VerifiedPositionSource[] = [];
+    for (const [index, entry] of records.entries()) {
+      let snapshot: PositionSnapshotRecord;
+      let hash: string;
+      try {
+        snapshot = positionSnapshotRecord(entry as PositionSnapshotRecordInput);
+        hash = toHex(positionSnapshotRecordHash(entry as PositionSnapshotRecordInput));
+      } catch (error) {
+        throw new NaryxEvidenceError(`records[${index}] is malformed: ${(error as Error).message}`);
+      }
+      const served = record(servedSources[index], `sources[${index}]`);
+      if (served.recordHash !== hash || served.sourceId !== snapshot.sourceId || served.observedAtMs !== snapshot.observedAtMs) {
+        throw new NaryxEvidenceError(`sources[${index}] does not describe its record`);
+      }
+      if (snapshot.strategyAccount !== account) throw new NaryxEvidenceError(`records[${index}] belongs to another account`);
+      let signatureVerified = false;
+      const trusted = options.trustedAuthorities?.get(snapshot.authority);
+      if (trusted !== undefined) {
+        const verdict = await webCryptoEd25519(trusted, fromHex(hash), snapshot.signature);
+        if (verdict === false) throw new NaryxEvidenceError(`records[${index}] signature does not verify under the trusted authority`);
+        signatureVerified = verdict === true;
+      }
+      sources.push(Object.freeze({
+        sourceId: snapshot.sourceId,
+        recordHash: hash,
+        observedAtMs: snapshot.observedAtMs,
+        ageMs: big(served.ageMs, 'ageMs'),
+        unmappedInstruments: snapshot.unmappedInstruments,
+        record: snapshot,
+        signatureVerified,
+      }));
+    }
+    const positions = sources.flatMap((source) => source.record.positions);
+    const servedPositions = list(body.positions, 'positions');
+    if (servedPositions.length !== positions.length) throw new NaryxEvidenceError('served positions differ from their records');
+    return Object.freeze({ strategyAccount: account, label: 'OBSERVED' as const, sources: Object.freeze(sources), positions: Object.freeze(positions) });
+  }
+
+  /**
+   * Risk for a strategy account. Positions come from `getPositions` and are verified the same way;
+   * exposure and close cost are recomputed here from those positions and must equal the served
+   * figures exactly. The stress rows are a server model labeled MODELED and are passed through.
+   */
+  async getRisk(strategyAccount: string, options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {}) {
+    const positions = await this.getPositions(strategyAccount, options);
+    const body = record(await this.#request('GET', `/v1/risk/${positions.strategyAccount}`), 'risk');
+    if (body.strategyAccount !== positions.strategyAccount || typeof body.methodology !== 'string') throw new NaryxEvidenceError('risk is for another account or has no methodology');
+    const groups = list(body.byAccountingAsset, 'byAccountingAsset').map((entry, index) => {
+      const served = record(entry, `byAccountingAsset[${index}]`);
+      const asset = served.accountingAsset as NormalizedPosition['markPrice']['quoteAsset'];
+      const grouped = positions.positions.filter((position) => bytesEqual(position.markPrice.quoteAsset.assetManifestHash, asset.assetManifestHash) && position.markPrice.quoteAsset.assetId === asset.assetId);
+      const same = (left: unknown, right: unknown) => JSON.stringify(toProtocolJson(left)) === JSON.stringify(toProtocolJson(right));
+      if (!same(buildExposureGraph(grouped, asset), served.exposure) || !same(packageCloseCostIndex(grouped), served.closeCost)) {
+        throw new NaryxEvidenceError(`byAccountingAsset[${index}] exposure or close cost differs from the local computation`);
+      }
+      const stress = record(served.stress, `byAccountingAsset[${index}].stress`);
+      if (stress.label !== 'MODELED') throw new NaryxEvidenceError('stress rows must be labeled MODELED');
+      return Object.freeze({ accountingAsset: asset, exposure: served.exposure, closeCost: served.closeCost, stress });
+    });
+    const covered = groups.reduce((sum, group) => sum + positions.positions.filter((position) => position.markPrice.quoteAsset.assetId === group.accountingAsset.assetId && bytesEqual(position.markPrice.quoteAsset.assetManifestHash, group.accountingAsset.assetManifestHash)).length, 0);
+    if (covered !== positions.positions.length) throw new NaryxEvidenceError('risk leaves out positions it was built from');
+    return Object.freeze({ positions, methodology: body.methodology, byAccountingAsset: Object.freeze(groups) });
   }
 
   /**

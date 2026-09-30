@@ -16,6 +16,8 @@ export {
   type SeriesCurvePoint,
   type SizeQuoteView,
   type VerifiedOrderQuote,
+  type VerifiedPositionSource,
+  type VerifiedPositions,
   type VerifiedRouteDecision,
   type VerifiedSolverManifest,
   type VerifiedOutcome,

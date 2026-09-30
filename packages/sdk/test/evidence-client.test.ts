@@ -5,6 +5,10 @@ import { describe, test } from 'node:test';
 import {
   assetAmount,
   assetRef,
+  buildExposureGraph,
+  packageCloseCostIndex,
+  positionSnapshotRecord,
+  positionSnapshotRecordHash,
   domainRef,
   evidenceManifestHash,
   fromProtocolJson,
@@ -582,6 +586,69 @@ describe('order intake and terminal evidence', () => {
     const loser = { ...decision, selectedRouteHash: new Uint8Array(32).fill(11) };
     await assert.rejects(read([served({ decision: loser, decisionHash: toHex(replayRouteDecision(loser).decisionHash) })]), /replay differs/);
     await assert.rejects(read([served({ decision: { ...decision, orderHash: 'cd'.repeat(32) } })]), /another order/);
+  });
+
+  test('positions are re-hashed and signature-checked against trusted keys, and risk is recomputed locally', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const trustedKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
+    const btc = assetRef('btc', '44'.repeat(32), 8);
+    const position = {
+      adapterVersion: 1,
+      snapshotId: 'hl:perp:BTC',
+      domain,
+      observedAtMs: 1_000n,
+      owner: 'strategy-1',
+      venueId: 'hypercore',
+      marketId: 'btc-perp',
+      underlyingId: 'btc',
+      positionType: 'PERPETUAL' as const,
+      quantityBaseAtoms: -50_000_000n,
+      markPrice: { baseAsset: btc, quoteAsset: usdc, quoteAtoms: 600n, baseAtoms: 1n, roundingDirection: 'AWAY_FROM_ZERO' as const },
+      collateralQuoteAtoms: 3_000_000_000n,
+      dependencyIds: ['venue:hypercore'],
+      riskDomainId: 'btc-carry',
+      closeRoutes: [{ routeId: 'ioc-close', executableQuantityAtoms: 50_000_000n, expectedCostQuoteAtoms: 15_000_000n, settlementDelayMs: 1_000n, authorityHeld: true, requiredDependencyIds: ['venue:hypercore'] }],
+    };
+    const unsigned = {
+      recordVersion: 1,
+      environment: 'testnet',
+      strategyAccount: 'strategy-1',
+      sourceId: 'hypercore-testnet-info',
+      observedAtMs: 1_500n,
+      positions: [position],
+      unmappedInstruments: [],
+      sourceEvidenceHash: '45'.repeat(32),
+      authority: 'position-key-1',
+      signature: new Uint8Array(0),
+    };
+    const signed = { ...unsigned, signature: new Uint8Array(sign(null, positionSnapshotRecordHash(unsigned), privateKey)) };
+    const normalized = positionSnapshotRecord(signed);
+    const positionsBody = (record = signed) => ({
+      strategyAccount: 'strategy-1',
+      label: 'OBSERVED',
+      sources: [{ sourceId: record.sourceId, recordHash: toHex(positionSnapshotRecordHash(record)), observedAtMs: record.observedAtMs, ageMs: 500n, positionCount: 1, unmappedInstruments: [] }],
+      records: [record],
+      positions: record.positions.map((entry) => ({ sourceId: record.sourceId, position: entry })),
+    });
+    const riskBody = (exposure: unknown = buildExposureGraph(normalized.positions, usdc)) => ({
+      strategyAccount: 'strategy-1',
+      methodology: 'uniform shocks',
+      byAccountingAsset: [{ accountingAsset: usdc, exposure, closeCost: packageCloseCostIndex(normalized.positions), stress: { label: 'MODELED', results: [] } }],
+    });
+    const trust = new Map([['position-key-1', trustedKey]]);
+    const reader = (positions: unknown, risk: unknown = riskBody()) => client({ 'GET /v1/positions/strategy-1': { body: positions }, 'GET /v1/risk/strategy-1': { body: risk } });
+    const verified = await reader(positionsBody()).getPositions('strategy-1', { trustedAuthorities: trust });
+    assert.equal(verified.sources[0]?.signatureVerified, true);
+    assert.equal((await reader(positionsBody()).getPositions('strategy-1')).sources[0]?.signatureVerified, false);
+    await assert.rejects(reader(positionsBody()).getPositions('strategy-1', { trustedAuthorities: new Map([['position-key-1', new Uint8Array(32).fill(9)]]) }), /does not verify/);
+    // A position altered after signing no longer matches its served hash.
+    const altered = positionsBody();
+    altered.records = [{ ...signed, positions: [{ ...position, quantityBaseAtoms: -1n }] }];
+    await assert.rejects(reader(altered).getPositions('strategy-1'), /does not describe its record/);
+    const risk = await reader(positionsBody()).getRisk('strategy-1', { trustedAuthorities: trust });
+    assert.equal(risk.byAccountingAsset.length, 1);
+    const inflated = { ...buildExposureGraph(normalized.positions, usdc), byUnderlying: [] };
+    await assert.rejects(reader(positionsBody(), riskBody(inflated)).getRisk('strategy-1'), /differs from the local computation/);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {

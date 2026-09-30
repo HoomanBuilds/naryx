@@ -26,6 +26,7 @@ import type {
   CandleInterval,
   DeRiskPolicy,
   NormalizedPositionInput,
+  PositionSnapshotRecordInput,
   PackageOrderInput,
   PackageTakerOrderInput,
   PrivateRfqEnvelopeInput,
@@ -43,6 +44,8 @@ import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./pr
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import type { SqliteQualificationStore } from "./qualification-store.js";
+import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
+import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -97,6 +100,8 @@ export interface PublicApiOptions {
   readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality" | "quotesFor" | "routeDecisionsFor">;
   /** Optional: qualification reads answer 503 without it. Records are appended by operators, never here. */
   readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
+  /** Optional: position and risk reads answer 503 without it. Snapshots are accepted only when signed by a configured authority. */
+  readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -239,6 +244,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return undefined;
   }
 
+  function requirePositions() {
+    if (options.positions === undefined) throw new RequestError(503, "POSITIONS_UNAVAILABLE", "No position snapshot store is configured on this server.");
+    return options.positions;
+  }
+
   function requireDelivery() {
     if (delivery === undefined) throw new RequestError(503, "PRIVATE_DELIVERY_UNAVAILABLE", "No private delivery relay is configured on this server.");
     return delivery;
@@ -313,6 +323,39 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === "/v1/domains") {
       onlyParams(url, []);
       return { domains: requireRegistry().list("DOMAIN") };
+    }
+    if ((match = /^\/v1\/(positions|risk)\/([^/]+)$/.exec(path)) !== null) {
+      // The latest signed read-only snapshot of each source for one strategy account, and the
+      // exact exposure, close cost, and modeled stress over those positions.
+      onlyParams(url, []);
+      const store = requirePositions();
+      const strategyAccount = id(match[2], "Strategy account");
+      const snapshots = store.latest(strategyAccount);
+      if (snapshots.length === 0) throw new RequestError(404, "POSITIONS_NOT_FOUND", "No position snapshot exists for this account.");
+      const view = positionsView(strategyAccount, snapshots, store.now());
+      if (match[1] === "positions") return view;
+      return { strategyAccount, sources: view.sources, methodology: RISK_METHODOLOGY, byAccountingAsset: riskView(view.positions.map((entry) => entry.position)) };
+    }
+    if ((match = /^\/v1\/risk-domains\/([^/]+)$/.exec(path)) !== null) {
+      // Every account's latest positions in one risk domain; positions in other domains are left out.
+      onlyParams(url, []);
+      const store = requirePositions();
+      const riskDomainId = id(match[1], "Risk domain");
+      const snapshots = store.riskDomain(riskDomainId);
+      if (snapshots.length === 0) throw new RequestError(404, "RISK_DOMAIN_NOT_FOUND", "No position snapshot has held this risk domain.");
+      const now = store.now();
+      const inDomain = snapshots.flatMap((entry) => entry.record.positions.filter((position) => position.riskDomainId === riskDomainId));
+      return {
+        riskDomainId,
+        label: "OBSERVED" as const,
+        accounts: snapshots.map((entry) => ({
+          strategyAccount: entry.record.strategyAccount,
+          ...positionsView(entry.record.strategyAccount, [entry], now).sources[0],
+          positionsInDomain: entry.record.positions.filter((position) => position.riskDomainId === riskDomainId).length,
+        })),
+        methodology: RISK_METHODOLOGY,
+        byAccountingAsset: riskView(inDomain),
+      };
     }
     if ((match = /^\/v1\/orders\/([0-9a-f]{64})\/route-decisions$/.exec(path)) !== null) {
       // Every solver route decision recorded for a public order, each replayed from its bounded
@@ -746,6 +789,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/rfqs/private",
       "/v1/auctions/sealed",
       "/v1/orders",
+      "/v1/position-snapshots",
     ].includes(path)) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
@@ -833,6 +877,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // Stored is not delivered: private success is reported only after a recipient acknowledges.
       return { results, deliveryStatusRoute: "/v1/rfqs/private/{envelopeHash}" };
     }
+    if (path === "/v1/position-snapshots") {
+      // A signed read-only observation from a position source. The store verifies the authority
+      // signature, the observation time, and ordering; nothing here grants authority over positions.
+      return requirePositions().append(object(body.record, "record") as unknown as PositionSnapshotRecordInput);
+    }
     if (path === "/v1/auctions/sealed") {
       const definition = object(body.definition, "definition") as unknown as SealedAuctionDefinitionInput;
       wallClockIn(String((definition as { timeUnit?: unknown }).timeUnit));
@@ -883,6 +932,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
         if (error instanceof EvidenceStoreError) {
           const status = ["INVALID_ORDER", "INVALID_SIGNATURE", "UNSUPPORTED_AUTHORIZATION"].includes(error.code) ? 400 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof PositionSnapshotStoreError) {
+          const status = ["INVALID_RECORD", "INVALID_SIGNATURE"].includes(error.code) ? 400 : error.code === "UNKNOWN_AUTHORITY" ? 403 : error.code === "CORRUPT_ROW" ? 500 : 409;
           return fail(response, status, error.code, error.message);
         }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");

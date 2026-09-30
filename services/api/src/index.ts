@@ -340,3 +340,4 @@ export {
 } from "./solver-quote-client.js";
 export { EvidenceStoreError, SqliteEvidenceStore, type ExecutionQualitySummary, type StoredOrder, type StoredOutcome, type StoredRouteDecision } from "./evidence-store.js";
 export { QualificationStoreError, SqliteQualificationStore, type StoredQualificationRecord } from "./qualification-store.js";
+export { PositionSnapshotStoreError, SqlitePositionSnapshotStore, type StoredPositionSnapshot } from "./position-snapshot-store.js";
