@@ -13,7 +13,7 @@ import type {
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
 import { SqliteRegistryStore } from "./registry-store.js";
-import { createSolverApiHandler, type AdmissionContext } from "./solver-api.js";
+import { createSolverApiHandler, createSolverStream, type AdmissionContext } from "./solver-api.js";
 import { SqliteSolverApiStore } from "./solver-api-store.js";
 import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
@@ -34,7 +34,7 @@ export interface PublicMarketRuntime {
    * terminal routes, so exposing them does not expose `/internal`.
    */
   readonly listener?: { readonly host: string; readonly port: number };
-  /** Takes WebSocket upgrades for `/v1/stream`; returns false for any other path. */
+  /** Takes WebSocket upgrades for `/v1/stream` and, with the solver API, `/v1/solver/stream`; false for any other path. */
   readonly upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => boolean;
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
@@ -305,11 +305,22 @@ export function loadPublicMarketRuntime(
       });
     const stream = createMarketStream({ exchange: store, nowValue });
     opened.push(stream);
+    const solverStream = solverState === undefined || registry === undefined
+      ? undefined
+      : createSolverStream({
+        store: solverState,
+        registry,
+        ...(delivery === undefined ? {} : { delivery }),
+        ...(evidence === undefined ? {} : { evidence }),
+        clockMs,
+      });
+    if (solverStream !== undefined) opened.push(solverStream);
     return Object.freeze({
       handler: (request: IncomingMessage, response: ServerResponse) =>
         (solverHandler?.(request, response) ?? false) || publicHandler(request, response),
       ...(listener === undefined ? {} : { listener: Object.freeze(listener) }),
-      upgrade: stream.upgrade,
+      upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) =>
+        stream.upgrade(request, socket, head) || (solverStream?.upgrade(request, socket, head) ?? false),
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,

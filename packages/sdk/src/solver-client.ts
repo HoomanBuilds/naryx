@@ -113,6 +113,65 @@ export class NaryxSolverClient {
     return result;
   }
 
+  /**
+   * The first message of a solver stream: the fields of a signed `GET /v1/solver/stream` request
+   * with an empty body and a fresh nonce. The server verifies it exactly as a signed HTTP request.
+   */
+  async streamAuthMessage(): Promise<Record<string, unknown>> {
+    const crypto = webCrypto();
+    const nonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    const timestampMs = Math.floor((this.#options.now ?? Date.now)());
+    const bodySha256 = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(0)));
+    const digest = solverRequestDigest({ method: 'GET', pathAndQuery: '/v1/solver/stream', bodySha256, solverId: this.#options.solverId, keyId: this.#options.keyId, timestampMs: BigInt(timestampMs), nonce });
+    const signature = await this.#options.sign(digest);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    return { op: 'auth', solverId: this.#options.solverId, keyId: this.#options.keyId, timestampMs, nonce, signature: toHex(signature) };
+  }
+
+  /**
+   * Opens the authenticated solver stream with the runtime's WebSocket and subscribes to the named
+   * channels. Every message is decoded from protocol JSON; open orders are re-hashed exactly as
+   * `pollOrders` does before `onMessage` sees them.
+   */
+  async openStream(channels: readonly ('orders' | 'private-rfqs')[], onMessage: (message: Record<string, unknown>) => void, options: { readonly ordersAfter?: number } = {}) {
+    const Socket = (globalThis as { WebSocket?: new (url: string) => { send(text: string): void; close(): void; addEventListener(type: string, listener: (event: { data?: unknown }) => void): void } }).WebSocket;
+    if (Socket === undefined) throw new TypeError('no WebSocket implementation is available');
+    const url = new URL(`${this.#baseUrl}/v1/solver/stream`);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new Socket(url.toString());
+    const auth = await this.streamAuthMessage();
+    socket.addEventListener('open', () => socket.send(JSON.stringify(toProtocolJson(auth))));
+    socket.addEventListener('message', (event) => {
+      let message: Record<string, unknown>;
+      try {
+        message = fromProtocolJson(JSON.parse(String(event.data))) as Record<string, unknown>;
+      } catch {
+        onMessage({ type: 'error', code: 'INVALID_MESSAGE', message: 'the stream sent a message that is not protocol JSON' });
+        return;
+      }
+      if (message.type === 'authenticated') {
+        for (const channel of channels) socket.send(JSON.stringify(toProtocolJson({ op: 'subscribe', channel, ...(channel === 'orders' ? { after: options.ordersAfter ?? 0 } : {}) })));
+      }
+      if (message.type === 'orders' && Array.isArray(message.orders)) {
+        for (const [index, entry] of (message.orders as Record<string, unknown>[]).entries()) {
+          let orderHash: string;
+          try {
+            orderHash = toHex(packageOrderHash(validatePackageOrderProfile(entry.order as PackageOrderInput)));
+          } catch {
+            onMessage({ type: 'error', code: 'INVALID_ORDER', message: `orders[${index}] failed validation` });
+            return;
+          }
+          if (entry.orderHash !== orderHash) {
+            onMessage({ type: 'error', code: 'ORDER_HASH_MISMATCH', message: `orders[${index}] does not hash to its served hash` });
+            return;
+          }
+        }
+      }
+      onMessage(message);
+    });
+    return { close: () => socket.close() };
+  }
+
   /** The template id may not contain a dot, so the first dot always splits the two parts. */
   static shardId(shard: Pick<PackageQuoteShardInput, 'templateId' | 'marketGroupId'>): string {
     if (shard.templateId.includes('.')) throw new Error('A quoted template id may not contain a dot.');

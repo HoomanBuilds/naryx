@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 import {
@@ -24,6 +24,7 @@ import {
   quoteHash,
   replayRouteDecision,
   routeHash,
+  solverRequestDigest,
   solverCapabilityManifestHash,
   solverSignatureDigest,
   terminalOutcomeHash,
@@ -705,6 +706,24 @@ describe('order intake and terminal evidence', () => {
     const simulated = await client({ 'POST /v1/packages/simulate': { body: body(local) } }).simulatePackageGraph(graph);
     assert.equal(simulated.failurePoints[0]?.recoverable, true);
     await assert.rejects(client({ 'POST /v1/packages/simulate': { body: body([]) } }).simulatePackageGraph(graph), /differ from the local simulation/);
+  });
+
+  test('the stream auth message signs a GET of the stream path with an empty body and a fresh nonce', async () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const solver = new NaryxSolverClient({ baseUrl: 'https://api.example', solverId: 'solver-a', keyId: 'q-1', sign: async (digest) => new Uint8Array(sign(null, digest, privateKey)), fetch: serve({}), now: () => 1_900_000_000_000 });
+    const first = await solver.streamAuthMessage();
+    const second = await solver.streamAuthMessage();
+    assert.notEqual(first.nonce, second.nonce);
+    const digest = solverRequestDigest({
+      method: 'GET',
+      pathAndQuery: '/v1/solver/stream',
+      bodySha256: new Uint8Array(createHash('sha256').update('').digest()),
+      solverId: 'solver-a',
+      keyId: 'q-1',
+      timestampMs: 1_900_000_000_000n,
+      nonce: first.nonce as string,
+    });
+    assert.equal(verify(null, digest, publicKey, Buffer.from(first.signature as string, 'hex')), true);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {

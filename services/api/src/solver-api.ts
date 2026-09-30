@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import {
   deriveImpliedPackageQuote,
   fromHex,
@@ -40,6 +41,7 @@ import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./sol
 import { clientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
+import { acceptWebSocket, type WebSocketConnection } from "./websocket.js";
 
 const MAX_BODY_BYTES = 65_536;
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -134,6 +136,54 @@ function validQuoteKeys(manifest: SolverCapabilityManifestInput, now: bigint) {
   return manifest.quoteVerificationKeys.filter((key) => key.scheme === "ED25519" && now >= key.validFromValue && now < key.validUntilValue);
 }
 
+interface SignedSolverRequest {
+  readonly method: SolverRequestMethod;
+  readonly pathAndQuery: string;
+  readonly body: Buffer;
+  readonly solverId: string;
+  readonly keyId: string;
+  readonly timestamp: string;
+  readonly nonce: string;
+  readonly signature: string;
+}
+
+/**
+ * Verifies one signed solver request: a registered, unexpired manifest; a currently valid Ed25519
+ * quote key; a timestamp inside the skew; a signature over `solverRequestDigest`; and a nonce used
+ * for the first time. The HTTP API and the solver stream both authenticate through it.
+ */
+function verifySolverRequest(
+  options: Pick<SolverApiOptions, "store" | "registry">,
+  request: SignedSolverRequest,
+  nowMs: number,
+  maxSkew: number,
+): { solverId: string; manifest: SolverCapabilityManifestInput } {
+  const { solverId, keyId, timestamp, nonce, signature } = request;
+  if (!ID.test(solverId) || !ID.test(keyId) || !MILLIS.test(timestamp) || !HEX32.test(nonce) || !HEX64.test(signature)) {
+    throw new SolverRequestError(401, "UNAUTHENTICATED", "Authentication fields are malformed.");
+  }
+  if (Math.abs(Number(timestamp) - nowMs) > maxSkew) throw new SolverRequestError(401, "STALE_REQUEST", "Request timestamp is outside the accepted clock skew.");
+  const entry = options.registry.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
+  if (entry === undefined) throw new SolverRequestError(401, "UNKNOWN_SOLVER", "No capability manifest is registered for this solver.");
+  const manifest = entry.document;
+  const now = manifestNow(manifest, nowMs);
+  if (now >= manifest.validUntilValue) throw new SolverRequestError(401, "MANIFEST_EXPIRED", "The solver's capability manifest has expired.");
+  const key = validQuoteKeys(manifest, now).find((candidate) => candidate.keyId === keyId);
+  if (key === undefined) throw new SolverRequestError(401, "KEY_NOT_VALID", "The key is unknown, not Ed25519, or outside its validity.");
+  const digest = solverRequestDigest({
+    method: request.method,
+    pathAndQuery: request.pathAndQuery,
+    bodySha256: new Uint8Array(createHash("sha256").update(request.body).digest()),
+    solverId,
+    keyId,
+    timestampMs: BigInt(timestamp),
+    nonce,
+  });
+  if (!verifyEd25519(key.verificationKey, digest, fromHex(signature))) throw new SolverRequestError(401, "INVALID_SIGNATURE", "Request signature does not verify.");
+  if (!options.store.consumeNonce(solverId, fromHex(nonce), maxSkew * 2)) throw new SolverRequestError(401, "REPLAYED_REQUEST", "This request nonce was already used.");
+  return { solverId, manifest };
+}
+
 /**
  * The authenticated solver API. Every request except manifest registration is signed by one of
  * the solver's registered, currently valid Ed25519 quote keys over `solverRequestDigest`, inside a
@@ -147,40 +197,22 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   const { windowMs, maxRequests } = options.rateLimit;
   const limited = createRateLimiter({ windowMs, maxRequests, clockMs });
 
-  function manifestOf(solverId: string): SolverCapabilityManifestInput {
-    const entry = registry.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
-    if (entry === undefined) throw new SolverRequestError(401, "UNKNOWN_SOLVER", "No capability manifest is registered for this solver.");
-    return entry.document;
-  }
-
   function authenticate(request: IncomingMessage, raw: Buffer): { solverId: string; manifest: SolverCapabilityManifestInput } {
-    const solverId = header(request, "x-naryx-solver");
-    const keyId = header(request, "x-naryx-key");
-    const timestamp = header(request, "x-naryx-timestamp");
-    const nonce = header(request, "x-naryx-nonce");
-    const signature = header(request, "x-naryx-signature");
-    if (!ID.test(solverId) || !ID.test(keyId) || !MILLIS.test(timestamp) || !HEX32.test(nonce) || !HEX64.test(signature)) {
-      throw new SolverRequestError(401, "UNAUTHENTICATED", "Authentication headers are malformed.");
-    }
-    const nowMs = clockMs();
-    if (Math.abs(Number(timestamp) - nowMs) > maxSkew) throw new SolverRequestError(401, "STALE_REQUEST", "Request timestamp is outside the accepted clock skew.");
-    const manifest = manifestOf(solverId);
-    const now = manifestNow(manifest, nowMs);
-    if (now >= manifest.validUntilValue) throw new SolverRequestError(401, "MANIFEST_EXPIRED", "The solver's capability manifest has expired.");
-    const key = validQuoteKeys(manifest, now).find((entry) => entry.keyId === keyId);
-    if (key === undefined) throw new SolverRequestError(401, "KEY_NOT_VALID", "The key is unknown, not Ed25519, or outside its validity.");
-    const digest = solverRequestDigest({
-      method: request.method as SolverRequestMethod,
-      pathAndQuery: request.url ?? "",
-      bodySha256: new Uint8Array(createHash("sha256").update(raw).digest()),
-      solverId,
-      keyId,
-      timestampMs: BigInt(timestamp),
-      nonce,
-    });
-    if (!verifyEd25519(key.verificationKey, digest, fromHex(signature))) throw new SolverRequestError(401, "INVALID_SIGNATURE", "Request signature does not verify.");
-    if (!store.consumeNonce(solverId, fromHex(nonce), maxSkew * 2)) throw new SolverRequestError(401, "REPLAYED_REQUEST", "This request nonce was already used.");
-    return { solverId, manifest };
+    return verifySolverRequest(
+      options,
+      {
+        method: request.method as SolverRequestMethod,
+        pathAndQuery: request.url ?? "",
+        body: raw,
+        solverId: header(request, "x-naryx-solver"),
+        keyId: header(request, "x-naryx-key"),
+        timestamp: header(request, "x-naryx-timestamp"),
+        nonce: header(request, "x-naryx-nonce"),
+        signature: header(request, "x-naryx-signature"),
+      },
+      clockMs(),
+      maxSkew,
+    );
   }
 
   /** A shard's own signature must come from one of the solver's currently valid quote keys. */
@@ -563,5 +595,183 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         return reply(500, "INTERNAL_ERROR", "Solver request failed.");
       });
     return true;
+  };
+}
+
+export interface SolverStreamOptions extends Pick<SolverApiOptions, "store" | "registry" | "evidence" | "delivery" | "clockMs" | "maxClockSkewMs"> {
+  readonly pollIntervalMs?: number;
+  readonly maximumConnectionsPerSolver?: number;
+}
+
+/** The request a solver signs to open its stream: `GET /v1/solver/stream` with an empty body. */
+export const SOLVER_STREAM_PATH = "/v1/solver/stream";
+
+/**
+ * The authenticated solver stream at `/v1/solver/stream`. The first message must be an `auth`
+ * message carrying the fields of a signed `GET /v1/solver/stream` request with an empty body; it
+ * is verified exactly as an HTTP request is, nonce included, and anything else first closes the
+ * connection. Then `orders` pushes open public orders after a cursor, as `GET /v1/solver/orders`
+ * pages them, and `private-rfqs` pushes each pending envelope addressed to this solver once per
+ * connection; acknowledgements and responses stay on the signed HTTP routes.
+ */
+export function createSolverStream(options: SolverStreamOptions): {
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean;
+  close(): void;
+} {
+  const clockMs = options.clockMs ?? Date.now;
+  const maxSkew = options.maxClockSkewMs ?? 30_000;
+  const perSolver = options.maximumConnectionsPerSolver ?? 4;
+  interface StreamClient {
+    readonly connection: WebSocketConnection;
+    solverId?: string;
+    orders?: { cursor: number };
+    privateRfqs?: Set<string>;
+    readonly authTimer: ReturnType<typeof setTimeout>;
+  }
+  const clients = new Set<StreamClient>();
+  const send = (client: StreamClient, message: Record<string, unknown>) => client.connection.send(JSON.stringify(toProtocolJson(message)));
+  const nowIn = (unit: string): bigint | undefined => {
+    if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
+    if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
+    return undefined;
+  };
+
+  const pushOrders = (client: StreamClient) => {
+    if (client.orders === undefined || options.evidence === undefined) return;
+    const page = options.evidence.openOrders(client.orders.cursor, 100, nowIn);
+    if (page.nextCursor === client.orders.cursor) return;
+    client.orders.cursor = page.nextCursor;
+    if (page.orders.length === 0) return;
+    send(client, {
+      type: "orders",
+      orders: page.orders.map((entry) => ({ cursor: entry.cursor, orderHash: entry.orderHashHex, order: entry.order, receivedAtMs: entry.receivedAtMs })),
+      nextCursor: page.nextCursor,
+    });
+  };
+
+  const pushPrivateRfqs = (client: StreamClient) => {
+    if (client.privateRfqs === undefined || client.solverId === undefined || options.delivery === undefined) return;
+    const fresh = options.delivery.pendingFor(client.solverId, clockMs()).filter((entry) => !client.privateRfqs?.has(entry.envelopeHashHex));
+    if (fresh.length === 0) return;
+    for (const entry of fresh) client.privateRfqs.add(entry.envelopeHashHex);
+    send(client, {
+      type: "private-rfqs",
+      envelopes: fresh.map((entry) => ({ envelopeHash: entry.envelopeHashHex, envelope: entry.envelope, ciphertext: entry.ciphertext, senderSignature: entry.senderSignature })),
+    });
+  };
+
+  const timer = setInterval(() => {
+    for (const client of clients) {
+      try {
+        pushOrders(client);
+        pushPrivateRfqs(client);
+      } catch {
+        send(client, { type: "error", code: "STREAM_READ_FAILED", message: "A subscribed feed could not be read." });
+      }
+    }
+  }, options.pollIntervalMs ?? 1_000);
+
+  const onText = (client: StreamClient, text: string) => {
+    let message: Record<string, unknown>;
+    try {
+      message = fromProtocolJson(JSON.parse(text)) as Record<string, unknown>;
+      if (typeof message !== "object" || message === null) throw new Error("not an object");
+    } catch {
+      send(client, { type: "error", code: "INVALID_MESSAGE", message: "Messages are protocol JSON objects." });
+      return;
+    }
+    if (client.solverId === undefined) {
+      if (message.op !== "auth") {
+        client.connection.close(4401);
+        return;
+      }
+      try {
+        const { solverId } = verifySolverRequest(
+          options,
+          {
+            method: "GET",
+            pathAndQuery: SOLVER_STREAM_PATH,
+            body: Buffer.alloc(0),
+            solverId: String(message.solverId),
+            keyId: String(message.keyId),
+            timestamp: String(message.timestampMs),
+            nonce: String(message.nonce),
+            signature: String(message.signature),
+          },
+          clockMs(),
+          maxSkew,
+        );
+        if ([...clients].filter((other) => other.solverId === solverId).length >= perSolver) {
+          send(client, { type: "error", code: "TOO_MANY_CONNECTIONS", message: `A solver holds at most ${perSolver} streams.` });
+          client.connection.close(4429);
+          return;
+        }
+        client.solverId = solverId;
+        clearTimeout(client.authTimer);
+        send(client, { type: "authenticated", solverId });
+      } catch (error) {
+        send(client, { type: "error", code: error instanceof SolverRequestError ? error.code : "UNAUTHENTICATED", message: "Authentication failed." });
+        client.connection.close(4401);
+      }
+      return;
+    }
+    if (message.op !== "subscribe" || (message.channel !== "orders" && message.channel !== "private-rfqs")) {
+      send(client, { type: "error", code: "INVALID_SUBSCRIPTION", message: "Subscribe to orders or private-rfqs." });
+      return;
+    }
+    if (message.channel === "orders") {
+      if (options.evidence === undefined) {
+        send(client, { type: "error", code: "EVIDENCE_UNAVAILABLE", message: "No evidence store is configured on this server." });
+        return;
+      }
+      const after = message.after ?? 0;
+      if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
+        send(client, { type: "error", code: "INVALID_SUBSCRIPTION", message: "after must be a nonnegative order cursor." });
+        return;
+      }
+      client.orders = { cursor: after };
+      send(client, { type: "subscribed", channel: "orders", after });
+      pushOrders(client);
+      return;
+    }
+    if (options.delivery === undefined) {
+      send(client, { type: "error", code: "PRIVATE_DELIVERY_UNAVAILABLE", message: "No private delivery relay is configured on this server." });
+      return;
+    }
+    client.privateRfqs = new Set();
+    send(client, { type: "subscribed", channel: "private-rfqs" });
+    pushPrivateRfqs(client);
+  };
+
+  return {
+    upgrade(request, socket) {
+      const url = new URL(request.url ?? "/", "http://solver-api.local");
+      if (url.pathname !== SOLVER_STREAM_PATH) return false;
+      acceptWebSocket(
+        request,
+        socket,
+        (connection) => {
+          const client: StreamClient = { connection, authTimer: setTimeout(() => connection.close(4408), 10_000) };
+          clients.add(client);
+          return {
+            onText: (text) => onText(client, text),
+            onClose: () => {
+              clearTimeout(client.authTimer);
+              clients.delete(client);
+            },
+          };
+        },
+        { maximumMessageBytes: 2_048, pingIntervalMs: 30_000 },
+      );
+      return true;
+    },
+    close() {
+      clearInterval(timer);
+      for (const client of clients) {
+        clearTimeout(client.authTimer);
+        client.connection.close(1001);
+      }
+      clients.clear();
+    },
   };
 }
