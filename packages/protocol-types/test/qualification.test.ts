@@ -112,6 +112,30 @@ describe('qualification records', () => {
     assert.deepEqual(verifyQualificationHistory([...history, unlinked], DELAY), { valid: false, index: 1, reason: 'CHAIN_BROKEN' });
   });
 
+  test('a monitor tightens ahead of a pending reviewed loosening and keeps governing after it', () => {
+    const restricted = { state: 'RESTRICTED' as const, effectiveLimits: { maximumNotionalQuoteAtoms: 500_000n, maximumOpenPackages: 5 } };
+    const monitor = { authorityKind: 'AUTOMATED_MONITOR' as const, reviewerIds: [] };
+    // Active from 1100; a reviewed raise observed at 2000 is pending until 5000.
+    const pending = chain(record(), record({ observedAtValue: 2_000n, effectiveAtValue: 5_000n, effectiveLimits: { maximumNotionalQuoteAtoms: 2_000_000n, maximumOpenPackages: 10 } }));
+    const quarantine = chain(...pending, record({ ...monitor, state: 'QUARANTINED', observedAtValue: 2_500n, effectiveAtValue: 2_500n, triggerCodes: ['CODE_DRIFT'] }));
+    assert.equal(checkQualificationAppend(pending, quarantine[2] as QualificationRecordInput, DELAY).accepted, true);
+    for (const at of [2_500n, 5_000n, 9_000n]) {
+      const verdict = currentQualification(quarantine, at);
+      assert.ok('current' in verdict && verdict.current.state === 'QUARANTINED', `quarantined at ${at}`);
+    }
+    // A monitor may not use an early effective time to loosen against the record governing then.
+    const looser = chain(...pending, record({ ...monitor, observedAtValue: 2_500n, effectiveAtValue: 2_500n, effectiveLimits: { maximumNotionalQuoteAtoms: 1_500_000n, maximumOpenPackages: 10 } }));
+    assert.deepEqual(checkQualificationAppend(pending, looser[2] as QualificationRecordInput, DELAY), { accepted: false, reason: 'MONITOR_CANNOT_LOOSEN' });
+    // Nor loosen against a pending tightening it would override.
+    const pendingTighter = chain(record(), record({ ...restricted, observedAtValue: 2_000n, effectiveAtValue: 5_000n }));
+    const undo = chain(...pendingTighter, record({ ...monitor, state: 'REDUCE_ONLY', observedAtValue: 2_500n, effectiveAtValue: 2_500n, effectiveLimits: { maximumNotionalQuoteAtoms: 900_000n, maximumOpenPackages: 5 } }));
+    assert.deepEqual(checkQualificationAppend(pendingTighter, undo[2] as QualificationRecordInput, DELAY), { accepted: false, reason: 'MONITOR_CANNOT_LOOSEN' });
+    // Before any record governs, a monitor cannot qualify the object early.
+    const beforeFirst = chain(record({ observedAtValue: 1_000n, effectiveAtValue: 3_000n }), record({ ...monitor, ...restricted, observedAtValue: 1_500n, effectiveAtValue: 1_500n }));
+    assert.deepEqual(checkQualificationAppend(beforeFirst.slice(0, 1), beforeFirst[1] as QualificationRecordInput, DELAY), { accepted: false, reason: 'MONITOR_CANNOT_LOOSEN' });
+    assert.deepEqual(verifyQualificationHistory(quarantine, DELAY), { valid: true });
+  });
+
   test('the current record is the latest in effect, and an expired one governs nothing', () => {
     const history = chain(
       record({ expiresAtValue: 5_000n }),

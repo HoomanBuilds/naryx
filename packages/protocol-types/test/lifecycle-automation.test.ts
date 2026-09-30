@@ -137,7 +137,13 @@ describe('activation conditions', () => {
 });
 
 describe('execution schedules', () => {
-  const progress = (executedQuantity: bigint, attemptedSlices: number, failedSlices = 0) => ({ executedQuantity, executedNotionalTicks: 0n, attemptedSlices, failedSlices });
+  const progress = (executedQuantity: bigint, attemptedSlices: number, failedSlices = 0, lastAttemptedSliceIndex = attemptedSlices - 1) => ({
+    executedQuantity,
+    executedNotionalTicks: 0n,
+    attemptedSlices,
+    failedSlices,
+    ...(attemptedSlices === 0 ? {} : { lastAttemptedSliceIndex }),
+  });
 
   test('slices come due in order, are capped by the aggregate limit, and are never doubled', () => {
     assert.deepEqual(nextScheduleSlice(schedule(), progress(0n, 0), 999n), { due: false, reason: 'NOT_STARTED' });
@@ -151,6 +157,17 @@ describe('execution schedules', () => {
     assert.throws(() => nextScheduleSlice(schedule(), progress(101n, 3), 1_180n), /exceeds the aggregate limit/);
   });
 
+  test('a window already attempted stays attempted after earlier windows were missed', () => {
+    // Slice 0 ran, slice 1 was missed, slice 2 ran at 1120: the rest of window 2 is not due again.
+    assert.deepEqual(nextScheduleSlice(schedule(), progress(60n, 2, 0, 2), 1_125n), { due: false, reason: 'NOT_DUE' });
+    assert.deepEqual(nextScheduleSlice(schedule(), progress(60n, 2, 0, 2), 1_180n), { due: true, sliceIndex: 3, maximumQuantity: 30n });
+    // An attempt in the last window completes the schedule even when earlier windows were missed.
+    assert.deepEqual(nextScheduleSlice(schedule(), progress(30n, 1, 0, 3), 1_181n), { due: false, reason: 'COMPLETE' });
+    assert.throws(() => nextScheduleSlice(schedule(), { executedQuantity: 30n, executedNotionalTicks: 0n, attemptedSlices: 1, failedSlices: 0 }, 1_060n), /inconsistent/);
+    assert.throws(() => nextScheduleSlice(schedule(), progress(60n, 3, 0, 1), 1_180n), /inconsistent/);
+    assert.throws(() => nextScheduleSlice(schedule(), progress(60n, 1, 0, 4), 1_180n), /inconsistent/);
+  });
+
   test('the stop rule decides what one failed slice does to the rest', () => {
     assert.deepEqual(nextScheduleSlice(schedule(), progress(0n, 1, 1), 1_060n), { due: false, reason: 'STOPPED' });
     assert.deepEqual(nextScheduleSlice(schedule({ stopRule: 'SKIP_FAILED_SLICE' }), progress(0n, 1, 1), 1_060n), { due: true, sliceIndex: 1, maximumQuantity: 30n });
@@ -158,7 +175,7 @@ describe('execution schedules', () => {
 
   test('a package TWAP keeps its running average inside the signed limit', () => {
     const twap = schedule({ kind: 'PACKAGE_TWAP', aggregateLimitPriceTicks: 100n });
-    const filled = { executedQuantity: 30n, executedNotionalTicks: 30n * 98n, attemptedSlices: 1, failedSlices: 0 };
+    const filled = { executedQuantity: 30n, executedNotionalTicks: 30n * 98n, attemptedSlices: 1, failedSlices: 0, lastAttemptedSliceIndex: 0 };
     assert.equal(twapSliceWithinLimit(twap, filled, 'BID', 102n, 30n), true);
     assert.equal(twapSliceWithinLimit(twap, filled, 'BID', 103n, 30n), false);
     assert.equal(twapSliceWithinLimit(twap, filled, 'ASK', 102n, 30n), true);
@@ -171,28 +188,31 @@ describe('execution schedules', () => {
 describe('package order activation', () => {
   const observed = [{ metric: 'BASIS' as const, value: 60n, observedAtValue: 1_000n }];
   const orderAt = (overrides: Parameters<typeof atomicInput>[0]) => atomicInput(overrides);
+  // The atomic fixture expires in Solana slots, so its condition and schedule are timed in slots.
+  const slotCondition = (overrides: Partial<ActivationConditionInput> = {}) => condition({ observationUnit: 'SOLANA_SLOT', ...overrides });
+  const slotSchedule = (overrides: Partial<ExecutionScheduleInput> = {}) => schedule({ timeUnit: 'SOLANA_SLOT', ...overrides });
 
   test('an immediate order binds no activation and executes in full', () => {
     const order = orderAt({ packageOrderType: 'LIMIT' });
     const full = activatePackageOrder(order, { observations: [], atValue: 1n });
     assert.equal(full.active, true);
-    assert.deepEqual(activatePackageOrder(orderAt({ packageOrderType: 'LIMIT', activationConditionHash: activationConditionHash(condition()) }), { observations: [], atValue: 1n }), {
+    assert.deepEqual(activatePackageOrder(orderAt({ packageOrderType: 'LIMIT', activationConditionHash: activationConditionHash(slotCondition()) }), { observations: [], atValue: 1n }), {
       active: false,
       reason: 'ACTIVATION_NOT_EXPECTED',
     });
   });
 
   test('a conditional order executes only under the exact condition it signed', () => {
-    const order = orderAt({ packageOrderType: 'CONDITIONAL', activationConditionHash: activationConditionHash(condition()) });
-    assert.equal(activatePackageOrder(order, { condition: condition(), observations: observed, atValue: 1_000n }).active, true);
-    assert.deepEqual(activatePackageOrder(order, { condition: condition({ threshold: 10n }), observations: observed, atValue: 1_000n }), { active: false, reason: 'CONDITION_MISMATCH' });
-    assert.deepEqual(activatePackageOrder(order, { condition: condition(), observations: [], atValue: 1_000n }), { active: false, reason: 'METRIC_UNAVAILABLE' });
+    const order = orderAt({ packageOrderType: 'CONDITIONAL', activationConditionHash: activationConditionHash(slotCondition()) });
+    assert.equal(activatePackageOrder(order, { condition: slotCondition(), observations: observed, atValue: 1_000n }).active, true);
+    assert.deepEqual(activatePackageOrder(order, { condition: slotCondition({ threshold: 10n }), observations: observed, atValue: 1_000n }), { active: false, reason: 'CONDITION_MISMATCH' });
+    assert.deepEqual(activatePackageOrder(order, { condition: slotCondition(), observations: [], atValue: 1_000n }), { active: false, reason: 'METRIC_UNAVAILABLE' });
     assert.deepEqual(activatePackageOrder(orderAt({ packageOrderType: 'CONDITIONAL' }), { observations: [], atValue: 1_000n }), { active: false, reason: 'ACTIVATION_NOT_BOUND' });
   });
 
   test('a scheduled order executes only the due slice of the schedule it signed, within its quantity', () => {
     const quantity = atomicInput().quantity;
-    const bounded = schedule({ aggregateQuantityLimit: quantity.atoms, maximumSliceQuantity: quantity.atoms / 4n });
+    const bounded = slotSchedule({ aggregateQuantityLimit: quantity.atoms, maximumSliceQuantity: quantity.atoms / 4n });
     const order = orderAt({ packageOrderType: 'SCHEDULED', executionScheduleHash: executionScheduleHash(bounded) });
     const progress = { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 };
     assert.deepEqual(activatePackageOrder(order, { schedule: bounded, progress, observations: [], atValue: 1_000n }), {
@@ -200,7 +220,7 @@ describe('package order activation', () => {
       maximumQuantityAtoms: quantity.atoms / 4n,
       sliceIndex: 0,
     });
-    const tooLarge = schedule({ aggregateQuantityLimit: quantity.atoms + 1n, maximumSliceQuantity: 1n });
+    const tooLarge = slotSchedule({ aggregateQuantityLimit: quantity.atoms + 1n, maximumSliceQuantity: 1n });
     assert.deepEqual(
       activatePackageOrder(orderAt({ packageOrderType: 'SCHEDULED', executionScheduleHash: executionScheduleHash(tooLarge) }), { schedule: tooLarge, progress, observations: [], atValue: 1_000n }),
       { active: false, reason: 'SCHEDULE_ABOVE_ORDER' },
@@ -208,6 +228,16 @@ describe('package order activation', () => {
     const twap = orderAt({ packageOrderType: 'PACKAGE_TWAP', executionScheduleHash: executionScheduleHash(bounded) });
     assert.deepEqual(activatePackageOrder(twap, { schedule: bounded, progress, observations: [], atValue: 1_000n }), { active: false, reason: 'SCHEDULE_MISMATCH' });
     assert.deepEqual(activatePackageOrder(order, { schedule: bounded, progress, observations: [], atValue: atomicInput().expiryValue }), { active: false, reason: 'ORDER_EXPIRED' });
+  });
+
+  test('a condition or schedule timed in another unit than the order never activates it', () => {
+    const secondsCondition = condition({ metric: 'TIME', threshold: 1_000n });
+    const conditional = orderAt({ packageOrderType: 'CONDITIONAL', activationConditionHash: activationConditionHash(secondsCondition) });
+    assert.deepEqual(activatePackageOrder(conditional, { condition: secondsCondition, observations: [], atValue: 1_000n }), { active: false, reason: 'TIME_UNIT_MISMATCH' });
+    const secondsSchedule = schedule({ aggregateQuantityLimit: 1n, maximumSliceQuantity: 1n });
+    const scheduled = orderAt({ packageOrderType: 'SCHEDULED', executionScheduleHash: executionScheduleHash(secondsSchedule) });
+    const progress = { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 };
+    assert.deepEqual(activatePackageOrder(scheduled, { schedule: secondsSchedule, progress, observations: [], atValue: 1_000n }), { active: false, reason: 'TIME_UNIT_MISMATCH' });
   });
 });
 
@@ -241,6 +271,9 @@ describe('strategy health and keeper actions', () => {
       [{}, { after: health({ marginHealthBps: 1_999n, deltaBaseAtoms: -10n }) }, 'RESULTING_RISK_ABOVE_BOUND'],
       [{}, { grantsAuthority: true }, 'NOT_RISK_REDUCING'],
       [{}, { before: health({ dependencyState: 'HALTED' }) }, 'DEPENDENCY_HALTED'],
+      [{}, { before: health({ observedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS' }) }, 'TIME_UNIT_MISMATCH'],
+      [{}, { after: health({ observedAtUnit: 'SOLANA_SLOT' }) }, 'TIME_UNIT_MISMATCH'],
+      [{ expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS' }, {}, 'TIME_UNIT_MISMATCH'],
     ];
     for (const [authorizationChange, requestChange, reason] of cases) {
       const verdict = authorizeKeeperAction(authorization(authorizationChange), request(requestChange));

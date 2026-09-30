@@ -371,6 +371,16 @@ test("solvers answer public orders with signed quotes that takers read back with
 
     const listed = (await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly { quoteHash: string; quoteMode: string; solverId: string; routeHash: string }[] };
     assert.deepEqual(listed.quotes.map((entry) => [entry.quoteHash, entry.quoteMode, entry.solverId]), [[accepted.body.quoteHashHex, "EXECUTION_COMMITMENT", "solver-a"]]);
+    // The exact manifest a quote binds is served for takers to verify the quote key against.
+    const bound = (await api.plain("GET", `/v1/solvers/solver-a/manifests/${manifestHash}`)).body as { manifestHash: string; manifest: { solverId: string } };
+    assert.equal(bound.manifestHash, manifestHash);
+    assert.equal(bound.manifest.solverId, "solver-a");
+    assert.equal((await api.plain("GET", `/v1/solvers/solver-b/manifests/${manifestHash}`)).status, 404);
+    // A newer quote from the same solver replaces its earlier one in the taker's view.
+    const replacement = await post({ quote: quote({ quoteNonce: 21n }), route });
+    assert.equal(replacement.status, 200);
+    const relisted = (await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly { quoteHash: string }[] };
+    assert.deepEqual(relisted.quotes.map((entry) => entry.quoteHash), [replacement.body.quoteHashHex]);
     // Expired quotes drop out of the taker's view.
     api.setClock(Number(NOW_S + 60n) * 1_000);
     assert.deepEqual(((await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly unknown[] }).quotes, []);

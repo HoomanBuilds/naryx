@@ -35,7 +35,7 @@ Orders and terminal evidence are covered end to end:
 - `getQualification` and `getQualificationHistory` re-hash every record, require it to name the requested object, check that a current record governs at its served time, and replay the history's chain, object, time-order, and never-loosen-by-monitor rules locally.
 - `getExecutionQuality` requires the `OBSERVED` label and a methodology, and checks that state counts sum to the outcome total, basis points stay in range, and percentiles are ordered.
 - `NaryxSolverClient.pollOrders` pages open signed orders and re-hashes each one before a solver can quote it, and `postOrderQuote` answers one with a signed quote and the route it binds.
-- `getOrderQuotes` re-hashes every served quote and route, requires both to bind the requested order and each other, requires the served labels to match the signed quote, and verifies the solver's Ed25519 signature locally through Web Crypto; a signature that fails is rejected, and `signatureVerified` is false only where the runtime has no Ed25519.
+- `getOrderQuotes` re-hashes every served quote and route, requires both to bind the requested order and each other, requires the served labels to match the signed quote, and verifies the solver's Ed25519 signature locally through Web Crypto. It then fetches the exact manifest the quote binds with `getSolverManifest`, which re-hashes it and verifies the operator's signature, and requires the quote key to be one the manifest registers. Any check that fails rejects the response; `signatureVerified` is false only where the runtime has no Ed25519 or the server has no registry.
 
 No terminal-internal route is wrapped.
 

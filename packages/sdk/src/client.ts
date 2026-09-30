@@ -5,6 +5,7 @@ import {
   commitmentHash,
   evidenceManifest,
   evidenceManifestHash,
+  fromHex,
   fromProtocolJson,
   packageAllocation,
   packageAllocationHash,
@@ -22,6 +23,8 @@ import {
   quoteHash as solverQuoteHash,
   routeHash,
   routePayload,
+  solverCapabilityManifest,
+  solverCapabilityManifestHash,
   solverQuote,
   solverSignatureDigest,
   replayRouteDecision,
@@ -57,6 +60,8 @@ import {
   type QualificationRecordInput,
   type RoutePayload,
   type RoutePayloadInput,
+  type SolverCapabilityManifest,
+  type SolverCapabilityManifestInput,
   type SolverQuote,
   type SolverQuoteInput,
   type SealedAuctionDefinitionInput,
@@ -299,10 +304,21 @@ export interface VerifiedOrderQuote {
   readonly route: RoutePayload;
   readonly receivedAtMs: number;
   /**
-   * True when this runtime verified the solver's Ed25519 signature over the quote locally. False
-   * only when the runtime has no Ed25519 support; a signature that fails to verify is rejected.
+   * True only when this runtime verified locally that the quote's Ed25519 signature is by a quote
+   * key the named solver's operator-signed manifest registers, and the manifest is the one the
+   * quote binds. False when that cannot be checked here: no Ed25519 support, or no registry on the
+   * server. A signature, manifest, or key binding that is checked and fails is rejected.
    */
   readonly signatureVerified: boolean;
+}
+
+export interface VerifiedSolverManifest {
+  readonly solverId: string;
+  readonly manifestHash: string;
+  readonly manifestNonce: number;
+  readonly manifest: SolverCapabilityManifest;
+  /** True when this runtime verified the operator's Ed25519 signature over the manifest hash. */
+  readonly operatorSignatureVerified: boolean;
 }
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -927,10 +943,51 @@ export class NaryxClient {
    * re-hash to its served hash, bind the served route and the requested order, and carry its own
    * quote mode; Ed25519 signatures are verified locally wherever the runtime supports Ed25519.
    */
+  /**
+   * One exact solver manifest by the hash a quote binds. The manifest is re-validated and
+   * re-hashed, and the operator's signature over its hash is verified here when the runtime can.
+   */
+  async getSolverManifest(solverId: string, manifestHash: string): Promise<VerifiedSolverManifest> {
+    const id = checkId(solverId, 'solver id');
+    const requested = hashHex(manifestHash, 'manifest hash');
+    const body = record(await this.#request('GET', `/v1/solvers/${id}/manifests/${requested}`), 'solver manifest');
+    let manifest: SolverCapabilityManifest;
+    let computed: string;
+    try {
+      manifest = solverCapabilityManifest(body.manifest as SolverCapabilityManifestInput);
+      computed = toHex(solverCapabilityManifestHash(body.manifest as SolverCapabilityManifestInput));
+    } catch (error) {
+      throw new NaryxEvidenceError(`solver manifest is malformed: ${(error as Error).message}`);
+    }
+    if (computed !== requested || body.manifestHash !== requested) throw new NaryxEvidenceError('solver manifest does not hash to the requested hash');
+    if (manifest.solverId !== id || body.solverId !== id) throw new NaryxEvidenceError('solver manifest is for another solver');
+    let operatorSignatureVerified = false;
+    if (manifest.operatorIdentityScheme === 'ED25519') {
+      const verdict = await webCryptoEd25519(manifest.operatorIdentityKey, fromHex(computed), manifest.signature);
+      if (verdict === false) throw new NaryxEvidenceError('solver manifest operator signature does not verify');
+      operatorSignatureVerified = verdict === true;
+    }
+    return Object.freeze({ solverId: id, manifestHash: computed, manifestNonce: count(body.manifestNonce, 'manifestNonce'), manifest, operatorSignatureVerified });
+  }
+
   async getOrderQuotes(orderHash: string): Promise<readonly VerifiedOrderQuote[]> {
     const requested = hashHex(orderHash, 'order hash');
     const body = record(await this.#request('GET', `/v1/orders/${requested}/quotes`), 'order quotes');
     if (body.orderHash !== requested) throw new NaryxEvidenceError('quotes are for another order');
+    const manifests = new Map<string, VerifiedSolverManifest | undefined>();
+    const manifestFor = async (quote: SolverQuote): Promise<VerifiedSolverManifest | undefined> => {
+      const key = `${quote.solverId}/${toHex(quote.solverCapabilityManifestHash)}`;
+      if (!manifests.has(key)) {
+        try {
+          manifests.set(key, await this.getSolverManifest(quote.solverId, toHex(quote.solverCapabilityManifestHash)));
+        } catch (error) {
+          // Without a registry on this server the binding cannot be checked; anything else is evidence.
+          if (!(error instanceof NaryxApiError) || error.status !== 503) throw error;
+          manifests.set(key, undefined);
+        }
+      }
+      return manifests.get(key);
+    };
     const quotes: VerifiedOrderQuote[] = [];
     for (const [index, entry] of list(body.quotes, 'quotes').entries()) {
       const served = record(entry, `quotes[${index}]`);
@@ -954,7 +1011,15 @@ export class NaryxClient {
       if (quote.solverSignatureScheme === 'ED25519') {
         const verdict = await webCryptoEd25519(quote.solverVerificationKey, solverSignatureDigest(served.quote as SolverQuoteInput), quote.signature);
         if (verdict === false) throw new NaryxEvidenceError(`quotes[${index}] signature does not verify`);
-        signatureVerified = verdict === true;
+        const registered = await manifestFor(quote);
+        if (registered !== undefined) {
+          const listed = registered.manifest.quoteVerificationKeys.some(
+            (key) => key.scheme === quote.solverSignatureScheme && bytesEqual(key.verificationKey, quote.solverVerificationKey),
+          );
+          if (!listed) throw new NaryxEvidenceError(`quotes[${index}] key is not registered in the solver's manifest`);
+          if (registered.manifest.environment !== quote.environment) throw new NaryxEvidenceError(`quotes[${index}] binds a manifest for another environment`);
+        }
+        signatureVerified = verdict === true && registered !== undefined && registered.operatorSignatureVerified;
       }
       quotes.push(Object.freeze({ quoteHash: computedQuoteHash, routeHash: computedRouteHash, quote, route, receivedAtMs: count(served.receivedAtMs, 'receivedAtMs'), signatureVerified }));
     }

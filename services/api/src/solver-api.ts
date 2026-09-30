@@ -211,11 +211,18 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     return delivery;
   }
 
-  /** Server time in an object's own unit; slot-timed objects cannot be judged against wall-clock time. */
-  function wallClockIn(unit: string): bigint {
+  /** Server time in an object's own unit, or undefined for slot-timed objects. */
+  function nowIn(unit: string): bigint | undefined {
     if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
     if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
-    throw new SolverRequestError(400, "TIME_UNIT_UNSUPPORTED", "Slot-timed objects cannot be judged against wall-clock time here.");
+    return undefined;
+  }
+
+  /** Server time in an object's own unit; slot-timed objects cannot be judged against wall-clock time. */
+  function wallClockIn(unit: string): bigint {
+    const now = nowIn(unit);
+    if (now === undefined) throw new SolverRequestError(400, "TIME_UNIT_UNSUPPORTED", "Slot-timed objects cannot be judged against wall-clock time here.");
+    return now;
   }
 
   function requireExchange() {
@@ -397,17 +404,17 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         throw new SolverRequestError(400, "QUOTE_MODE_MISLABELED", "Outside production a reserved quote is FIRM_SIMULATED, never FIRM_ONCHAIN.");
       }
       if (wallClockIn(quote.validUntilUnit) >= quote.validUntilValue) throw new SolverRequestError(400, "QUOTE_EXPIRED", "The quote has already expired.");
-      return { ...options.evidence.recordQuote(quoteInput, routeInput), quoteMode: quote.quoteMode };
+      return { ...options.evidence.recordQuote(quoteInput, routeInput, nowIn), quoteMode: quote.quoteMode };
     }
     if (method === "GET" && path === "/v1/solver/orders") {
       // Signed public orders without a terminal outcome, oldest first, paged by cursor.
       if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
       const after = url.searchParams.get("after") ?? "0";
       if (!/^(0|[1-9]\d{0,15})$/.test(after)) throw new SolverRequestError(400, "INVALID_REQUEST", "after must be a non-negative cursor.");
-      const orders = options.evidence.openOrders(Number(after), 100);
+      const page = options.evidence.openOrders(Number(after), 100, nowIn);
       return {
-        orders: orders.map((entry) => ({ cursor: entry.cursor, orderHash: entry.orderHashHex, order: entry.order, receivedAtMs: entry.receivedAtMs })),
-        nextCursor: orders.length === 0 ? Number(after) : (orders[orders.length - 1] as { cursor: number }).cursor,
+        orders: page.orders.map((entry) => ({ cursor: entry.cursor, orderHash: entry.orderHashHex, order: entry.order, receivedAtMs: entry.receivedAtMs })),
+        nextCursor: page.nextCursor,
       };
     }
     if (method === "GET" && path === "/v1/solver/private-rfqs") {

@@ -215,6 +215,15 @@ export class SqliteRegistryStore {
     return row === undefined ? undefined : this.decode<T>(row);
   }
 
+  /** One exact registered document of a subject, by its canonical hash, whatever its version. */
+  byHash<T = unknown>(kind: RegistryKind, subjectId: string, documentHashHex: string): RegisteredDocument<T> | undefined {
+    if (!/^[0-9a-f]{64}$/.test(documentHashHex)) return undefined;
+    const row = this.db
+      .prepare("SELECT * FROM registry_documents WHERE document_hash = ? AND kind = ? AND subject_id = ?")
+      .get(Buffer.from(documentHashHex, "hex"), kind, subjectId) as Row | undefined;
+    return row === undefined ? undefined : this.decode<T>(row);
+  }
+
   /** The highest version of every subject of one kind, ordered by subject id. */
   list<T = unknown>(kind: RegistryKind, limit = 200): readonly RegisteredDocument<T>[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new RegistryStoreError("INVALID_INPUT", "Limit must be between 1 and 500.");

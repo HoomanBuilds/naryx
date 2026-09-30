@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
   assetAmount,
@@ -16,6 +17,8 @@ import {
 import { createPublicApiHandler, SqliteEvidenceStore, SqlitePackageExchangeStore } from "../src/index.js";
 import { CLASS_SUPPORT, NOW, SERIES_SUPPORT } from "./exchange-fixtures.js";
 import { hash, manifest, outcome, receipt, signedOrder, terms, usdc } from "./evidence-fixtures.js";
+import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
+import { MAX_QUOTES_PER_SOLVER_PER_ORDER } from "../src/evidence-store.js";
 
 function withEvidence(run: (store: SqliteEvidenceStore, dir: string) => Promise<void> | void): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "naryx-evidence-"));
@@ -37,7 +40,40 @@ test("orders enter only with the owner's signature over exact bytes, one order p
     const sameNonce = { ...order, expiryValue: order.expiryValue + 1n };
     assert.throws(() => store.submitOrder(sameNonce, signOrder(sameNonce)), { code: "NONCE_REUSED" });
     assert.throws(() => store.submitOrder({ ...order, owner: "0x1111111111111111111111111111111111111111" }, signature), { code: "UNSUPPORTED_AUTHORIZATION" });
-    assert.deepEqual(store.openOrders(0, 10).map((entry) => entry.orderHashHex), [orderHashHex]);
+    const beforeExpiry = (unit: string) => (unit === "SOLANA_SLOT" ? order.expiryValue - 1n : undefined);
+    assert.deepEqual(store.openOrders(0, 10, beforeExpiry).orders.map((entry) => entry.orderHashHex), [orderHashHex]);
+    // An expired order is no longer offered to solvers, and the cursor still moves past it.
+    const expired = store.openOrders(0, 10, (unit) => (unit === "SOLANA_SLOT" ? order.expiryValue : undefined));
+    assert.deepEqual(expired, { orders: [], nextCursor: 1 });
+  });
+});
+
+test("each solver's newest live quote replaces its previous ones, and no solver can crowd an order", async () => {
+  await withEvidence((store) => {
+    const { order, orderHashHex, signature } = signedOrder();
+    store.submitOrder(order, signature);
+    const route = routeFor(orderHashHex, order.domain, order.environment);
+    const quoteKey = generateKeyPairSync("ed25519").privateKey;
+    const quote = (solverId: string, quoteNonce: bigint, validUntilValue = 2_000n) =>
+      signedQuoteFor({ orderHash: orderHashHex, route: { ...route, solver: solverId }, environment: order.environment, domain: order.domain, solverId, manifestHash: "ab".repeat(32), quoteKey, validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue, quoteNonce });
+    const record = (entry: ReturnType<typeof quote>, now: bigint, slot = order.expiryValue - 1n) =>
+      store.recordQuote(entry, { ...route, solver: entry.solverId }, (unit) => (unit === "EVM_UNIX_SECONDS" ? now : unit === "SOLANA_SLOT" ? slot : undefined));
+    const nowAt = (now: bigint) => (unit: string) => (unit === "EVM_UNIX_SECONDS" ? now : undefined);
+
+    const first = record(quote("solver-a", 1n), 1_000n);
+    const second = record(quote("solver-a", 2n), 1_000n);
+    const other = record(quote("solver-b", 1n), 1_000n);
+    assert.deepEqual(store.quotesFor(orderHashHex, nowAt(1_000n)).map((entry) => entry.quoteHashHex), [second.quoteHashHex, other.quoteHashHex]);
+    assert.notEqual(first.quoteHashHex, second.quoteHashHex);
+    // A replaced quote never reappears, even when the newer one expires first.
+    record(quote("solver-a", 3n, 1_500n), 1_000n);
+    assert.deepEqual(store.quotesFor(orderHashHex, nowAt(1_600n)).map((entry) => entry.quoteHashHex), [other.quoteHashHex]);
+
+    for (let nonce = 4n; nonce < BigInt(MAX_QUOTES_PER_SOLVER_PER_ORDER) + 1n; nonce += 1n) record(quote("solver-a", nonce), 1_000n);
+    assert.throws(() => record(quote("solver-a", 99n), 1_000n), { code: "SOLVER_QUOTES_FULL" });
+    // Solver A's flood leaves solver C free to quote.
+    record(quote("solver-c", 1n), 1_000n);
+    assert.throws(() => record(quote("solver-d", 1n), 1_000n, order.expiryValue), { code: "ORDER_EXPIRED" });
   });
 });
 

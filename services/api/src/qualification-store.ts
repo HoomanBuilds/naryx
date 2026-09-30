@@ -28,6 +28,8 @@ export class QualificationStoreError extends Error {
 }
 
 const MAX_HISTORY = 500;
+/** How far a record's observation time may sit from server time when it is appended. */
+const DEFAULT_MAXIMUM_OBSERVATION_SKEW_MS = 300_000;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS qualification_records (
@@ -54,17 +56,25 @@ export interface StoredQualificationRecord {
  * class, delivery path, solver, and execution class. A record is appended only with a valid
  * Ed25519 signature from a configured authority over its hash, and only when the kernel accepts it
  * as the next link of that object's chain: monitors tighten at once, and anything that loosens is
- * a reviewed activation taking effect no earlier than the activation delay.
+ * a reviewed activation taking effect no earlier than the activation delay. The delay counts from
+ * the record's observation time, so a record is appended only when that time is within the skew
+ * of server time; a signer cannot backdate a loosening into immediate effect.
  */
 export class SqliteQualificationStore {
   private readonly db: Database.Database;
   private readonly clock: () => number;
   private readonly authorities: ReadonlyMap<string, Uint8Array>;
   private readonly minimumActivationDelay: bigint;
+  private readonly maximumObservationSkewMs: number;
 
   constructor(
     dbPath: string,
-    options: { readonly authorities: ReadonlyMap<string, Uint8Array>; readonly minimumActivationDelay: bigint; readonly clock?: () => number },
+    options: {
+      readonly authorities: ReadonlyMap<string, Uint8Array>;
+      readonly minimumActivationDelay: bigint;
+      readonly clock?: () => number;
+      readonly maximumObservationSkewMs?: number;
+    },
   ) {
     if (options.authorities.size === 0) throw new QualificationStoreError("INVALID_CONFIGURATION", "At least one qualification authority key is required.");
     for (const key of options.authorities.values()) {
@@ -73,6 +83,11 @@ export class SqliteQualificationStore {
     if (typeof options.minimumActivationDelay !== "bigint" || options.minimumActivationDelay < 0n) {
       throw new QualificationStoreError("INVALID_CONFIGURATION", "The activation delay must be a nonnegative integer.");
     }
+    const skew = options.maximumObservationSkewMs ?? DEFAULT_MAXIMUM_OBSERVATION_SKEW_MS;
+    if (!Number.isSafeInteger(skew) || skew < 1_000) {
+      throw new QualificationStoreError("INVALID_CONFIGURATION", "The observation skew must be at least one second.");
+    }
+    this.maximumObservationSkewMs = skew;
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new QualificationStoreError(code, message));
     this.clock = options.clock ?? Date.now;
     this.authorities = options.authorities;
@@ -109,6 +124,7 @@ export class SqliteQualificationStore {
     const key = this.authorities.get(record.authority);
     if (key === undefined) throw new QualificationStoreError("UNKNOWN_AUTHORITY", "The record names no configured qualification authority.");
     if (!verifyEd25519(key, hash, record.signature)) throw new QualificationStoreError("INVALID_SIGNATURE", "The authority signature does not cover this record.");
+    this.checkObservedNow(record);
     return this.db.transaction(() => {
       const existing = this.db.prepare("SELECT 1 FROM qualification_records WHERE record_hash = ?").get(hash);
       if (existing !== undefined) return { recordHashHex: toHex(hash), replayed: true };
@@ -121,6 +137,25 @@ export class SqliteQualificationStore {
         .run(record.objectType, record.objectId, hash, stringifyProtocolJson(record), this.clock());
       return { recordHashHex: toHex(hash), replayed: false };
     }).immediate();
+  }
+
+  /** Records are judged on server wall-clock time; slot-timed records cannot be checked here. */
+  private checkObservedNow(record: QualificationRecord): void {
+    const nowMs = this.clock();
+    let now: bigint;
+    let skew: bigint;
+    if (record.timeUnit === "EVM_UNIX_SECONDS") {
+      now = BigInt(Math.floor(nowMs / 1_000));
+      skew = BigInt(Math.floor(this.maximumObservationSkewMs / 1_000));
+    } else if (record.timeUnit === "HYPERLIQUID_UNIX_MILLISECONDS") {
+      now = BigInt(Math.floor(nowMs));
+      skew = BigInt(this.maximumObservationSkewMs);
+    } else {
+      throw new QualificationStoreError("TIME_UNIT_UNSUPPORTED", "Only wall-clock-timed qualification records can be appended here.");
+    }
+    if (record.observedAtValue > now + skew || record.observedAtValue + skew < now) {
+      throw new QualificationStoreError("OBSERVATION_OUT_OF_WINDOW", "The record's observation time is not within the allowed skew of server time.");
+    }
   }
 
   history(objectType: QualificationObjectType, objectId: string): readonly StoredQualificationRecord[] {

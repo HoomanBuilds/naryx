@@ -75,6 +75,31 @@ test("orders match durably and replay returns the recorded allocation", () => {
   });
 });
 
+test("only filled allocations are trades, and a store opened before trades were indexed indexes them once", () => {
+  withStore((store, path) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    store.submitOrder(CLASS, order(3), NOW);
+    const tape = store.allocationTape(CLASS, 0, 10);
+    assert.deepEqual(tape.map((entry) => entry.cursor), [2]);
+    assert.equal(store.latestTrade(CLASS)?.cursor, 2);
+    const raw = new Database(path);
+    try {
+      raw.exec("DROP TABLE package_book_trades");
+    } finally {
+      raw.close();
+    }
+    const reopened = new SqlitePackageExchangeStore(path, { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+    try {
+      assert.deepEqual(reopened.allocationTape(CLASS, 0, 10).map((entry) => entry.allocationHashHex), tape.map((entry) => entry.allocationHashHex));
+      assert.equal(reopened.latestTrade(CLASS)?.allocationHashHex, tape[0]?.allocationHashHex);
+    } finally {
+      reopened.close();
+    }
+  });
+});
+
 test("a consumed source reservation cannot back new implied liquidity", () => {
   withStore((store) => {
     registerAll(store);

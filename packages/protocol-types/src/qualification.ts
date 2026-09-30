@@ -224,11 +224,22 @@ function loosens(previous: QualificationRecord, next: QualificationRecord): bool
   );
 }
 
+/** The index of the record governing at `at`: the latest appended record already in effect. */
+function governingIndex(records: readonly QualificationRecord[], at: bigint): number | undefined {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    if ((records[index] as QualificationRecord).effectiveAtValue <= at) return index;
+  }
+  return undefined;
+}
+
 /**
- * Checks that `next` may be appended to an object's history. Records chain by hash and never move
- * back in time. An automated monitor may keep or tighten qualification at once; anything that
- * loosens it, including the first record, must be a reviewed activation that takes effect no
- * earlier than `minimumActivationDelay` after it was observed.
+ * Checks that `next` may be appended to an object's history. Records chain by hash and are
+ * observed in order. The latest appended record in effect governs, so `next` governs from its
+ * effective time onward over the record governing then and every record still pending after it.
+ * An automated monitor may keep or tighten against all of those at once, even ahead of a pending
+ * reviewed change; anything that loosens against any of them, and any record taking effect before
+ * any record governs, must be a reviewed activation taking effect no earlier than
+ * `minimumActivationDelay` after it was observed.
  */
 export function checkQualificationAppend(
   history: readonly QualificationRecordInput[],
@@ -239,15 +250,19 @@ export function checkQualificationAppend(
   const delay = unsigned(minimumActivationDelay, U64_BITS, 'checkQualificationAppend.minimumActivationDelay');
   const next = qualificationRecord(nextInput, 'checkQualificationAppend.next');
   const reject = (reason: QualificationAppendRejection) => Object.freeze({ accepted: false as const, reason });
-  const lastInput = history[history.length - 1];
   const reviewedInTime = next.authorityKind === 'REVIEWED_ACTIVATION' && next.effectiveAtValue - next.observedAtValue >= delay;
-  if (lastInput === undefined) {
-    if (next.previousRecordHash !== undefined) return reject('CHAIN_BROKEN');
+  const requireReview = () => {
     if (next.authorityKind !== 'REVIEWED_ACTIVATION') return reject('MONITOR_CANNOT_LOOSEN');
     if (!reviewedInTime) return reject('ACTIVATION_TOO_EARLY');
-    return Object.freeze({ accepted: true as const, recordHash: qualificationRecordHash(next) });
+    return undefined;
+  };
+  const accept = () => Object.freeze({ accepted: true as const, recordHash: qualificationRecordHash(next) });
+  if (history.length === 0) {
+    if (next.previousRecordHash !== undefined) return reject('CHAIN_BROKEN');
+    return requireReview() ?? accept();
   }
-  const last = qualificationRecord(lastInput, 'checkQualificationAppend.last');
+  const records = history.map((entry) => qualificationRecord(entry, 'checkQualificationAppend.history'));
+  const last = records[records.length - 1] as QualificationRecord;
   if (
     last.environment !== next.environment ||
     last.objectType !== next.objectType ||
@@ -258,12 +273,12 @@ export function checkQualificationAppend(
     return reject('OBJECT_MISMATCH');
   }
   if (next.previousRecordHash === undefined || compareBytes(next.previousRecordHash, qualificationRecordHash(last)) !== 0) return reject('CHAIN_BROKEN');
-  if (next.observedAtValue < last.observedAtValue || next.effectiveAtValue < last.effectiveAtValue) return reject('TIME_REGRESSED');
-  if (loosens(last, next)) {
-    if (next.authorityKind !== 'REVIEWED_ACTIVATION') return reject('MONITOR_CANNOT_LOOSEN');
-    if (!reviewedInTime) return reject('ACTIVATION_TOO_EARLY');
-  }
-  return Object.freeze({ accepted: true as const, recordHash: qualificationRecordHash(next) });
+  if (next.observedAtValue < last.observedAtValue) return reject('TIME_REGRESSED');
+  const governing = governingIndex(records, next.effectiveAtValue);
+  // Before any record governs, the object is unqualified, and anything at all loosens that.
+  if (governing === undefined) return requireReview() ?? accept();
+  if (records.slice(governing).some((record) => loosens(record, next))) return requireReview() ?? accept();
+  return accept();
 }
 
 /** Verifies a whole history from its first record; returns the index of the first bad record, if any. */
@@ -282,8 +297,10 @@ export function verifyQualificationHistory(
 export type QualificationUnavailable = 'NO_RECORD' | 'NOT_YET_EFFECTIVE' | 'EXPIRED';
 
 /**
- * The record that governs an object at `atValue`: the latest one already in effect. When the latest
- * such record has expired, nothing governs and execution must treat the object as unqualified.
+ * The record that governs an object at `atValue`: the latest appended record already in effect.
+ * Append rules make it at least as strict as every earlier record it overrides unless a reviewed
+ * activation loosened it. When that record has expired, nothing governs and execution must treat
+ * the object as unqualified.
  */
 export function currentQualification(
   history: readonly QualificationRecordInput[],
@@ -292,12 +309,10 @@ export function currentQualification(
   if (!Array.isArray(history)) throw new MalformedInputError('currentQualification.history', 'expected an array');
   const at = unsigned(atValue, U64_BITS, 'currentQualification.atValue');
   if (history.length === 0) return Object.freeze({ unavailable: 'NO_RECORD' as const });
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const record = qualificationRecord(history[index] as QualificationRecordInput, 'currentQualification.history');
-    if (record.effectiveAtValue > at) continue;
-    if (record.expiresAtValue !== undefined && at >= record.expiresAtValue) return Object.freeze({ unavailable: 'EXPIRED' as const });
-    return Object.freeze({ current: record, index });
-  }
-  return Object.freeze({ unavailable: 'NOT_YET_EFFECTIVE' as const });
+  const records = history.map((entry) => qualificationRecord(entry, 'currentQualification.history'));
+  const index = governingIndex(records, at);
+  if (index === undefined) return Object.freeze({ unavailable: 'NOT_YET_EFFECTIVE' as const });
+  const record = records[index] as QualificationRecord;
+  if (record.expiresAtValue !== undefined && at >= record.expiresAtValue) return Object.freeze({ unavailable: 'EXPIRED' as const });
+  return Object.freeze({ current: record, index });
 }
-

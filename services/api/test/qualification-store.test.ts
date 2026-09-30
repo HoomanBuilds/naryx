@@ -47,10 +47,12 @@ function record(overrides: Partial<QualificationRecordInput> = {}): Qualificatio
 test("qualification records append only as signed links of their object's chain and are served with their hashes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-qualification-"));
   const key = authority();
+  // Server time tracks each record's observation, as an operator appending it live would.
+  let clockMs = Number(NOW_S - 1_000n) * 1_000;
   const store = new SqliteQualificationStore(join(dir, "qualification.sqlite"), {
     authorities: new Map([["qualification-key-1", key.raw]]),
     minimumActivationDelay: 100n,
-    clock: () => 5,
+    clock: () => clockMs,
   });
   const exchange = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
   const handler = createPublicApiHandler({
@@ -79,10 +81,15 @@ test("qualification records append only as signed links of their object's chain 
     assert.throws(() => store.append({ ...first, signature: new Uint8Array(64).fill(1) }), { code: "INVALID_SIGNATURE" });
     assert.throws(() => store.append(key.signRecord(record({ authority: "someone-else" }))), { code: "UNKNOWN_AUTHORITY" });
     assert.throws(() => store.append(key.signRecord(record({ effectiveAtValue: NOW_S - 950n }))), { code: "ACTIVATION_TOO_EARLY" });
+    // A backdated observation cannot start the activation delay early.
+    assert.throws(() => store.append(key.signRecord(record({ observedAtValue: NOW_S - 2_000n, effectiveAtValue: NOW_S - 1_000n }))), { code: "OBSERVATION_OUT_OF_WINDOW" });
+    assert.throws(() => store.append(key.signRecord(record({ observedAtValue: NOW_S - 600n, effectiveAtValue: NOW_S - 500n }))), { code: "OBSERVATION_OUT_OF_WINDOW" });
+    assert.throws(() => store.append(key.signRecord(record({ timeUnit: "SOLANA_SLOT" }))), { code: "TIME_UNIT_UNSUPPORTED" });
     assert.deepEqual(store.append(first), { recordHashHex: toHex(qualificationRecordHash(first)), replayed: false });
     assert.equal(store.append(first).replayed, true);
 
     // A monitor may tighten at once but may never loosen.
+    clockMs = Number(NOW_S - 500n) * 1_000;
     const downgrade = key.signRecord(record({
       state: "REDUCE_ONLY",
       triggerCodes: ["ORACLE_STALE"],
@@ -93,6 +100,7 @@ test("qualification records append only as signed links of their object's chain 
       previousRecordHash: qualificationRecordHash(first),
     }));
     store.append(downgrade);
+    clockMs = Number(NOW_S - 100n) * 1_000;
     const loosen = key.signRecord(record({
       observedAtValue: NOW_S - 100n,
       effectiveAtValue: NOW_S - 100n,
@@ -128,6 +136,7 @@ test("an expired current record governs nothing", async () => {
   const store = new SqliteQualificationStore(join(dir, "qualification.sqlite"), {
     authorities: new Map([["qualification-key-1", key.raw]]),
     minimumActivationDelay: 100n,
+    clock: () => Number(NOW_S - 1_000n) * 1_000,
   });
   try {
     store.append(key.signRecord(record({ expiresAtValue: NOW_S - 10n })));

@@ -79,7 +79,7 @@ export type PublicExchangeStore = Pick<
   | "latestTrade"
 >;
 
-export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest">;
+export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest" | "byHash">;
 
 export type PublicSolverState = Pick<SqliteSolverApiStore, "shardsForMarket" | "capacityStatus">;
 
@@ -321,10 +321,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const hash = match[1] as string;
       const store = requireEvidence();
       if (store.getOrder(hash) === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "No such order.");
-      const quotes = store.quotesFor(hash, (unit, validUntilValue) => {
-        const now = nowIn(unit);
-        return now !== undefined && now < validUntilValue;
-      });
+      const quotes = store.quotesFor(hash, nowIn);
       return {
         orderHash: hash,
         quotes: quotes.map((entry) => ({
@@ -439,6 +436,15 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === "/v1/solvers") {
       onlyParams(url, []);
       return { solvers: requireRegistry().list("SOLVER_CAPABILITY").map(solverSummary) };
+    }
+    if ((match = /^\/v1\/solvers\/([^/]+)\/manifests\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      // The exact operator-signed manifest a quote binds, so a taker can check that the quote key
+      // belongs to the named solver without trusting this server.
+      onlyParams(url, []);
+      const solverId = id(match[1], "Solver id");
+      const entry = requireRegistry().byHash<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId, match[2] as string);
+      if (entry === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver manifest.");
+      return { solverId, manifestHash: entry.documentHashHex, manifestNonce: entry.subjectVersion, manifest: entry.document };
     }
     if ((match = /^\/v1\/solvers\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);

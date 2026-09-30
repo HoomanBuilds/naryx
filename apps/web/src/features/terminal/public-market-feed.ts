@@ -158,6 +158,11 @@ export function usePublicMarketFeed(
       try {
         const depth = await read(base, `/v1/markets/${market}/package-depth`, controller.signal);
         if (depth.packageMarketId !== packageMarketId) throw new PublicApiError("depth is for another market");
+        // Parse everything before touching state: a malformed response marks the feed stale here,
+        // never throws inside a state updater during render.
+        const bids = levels(depth.bids, "bids");
+        const asks = levels(depth.asks, "asks");
+        const halted = depth.halted === true;
         const pages = first ? INITIAL_TAPE_PAGES : 5;
         for (let page = 0; page < pages; page += 1) {
           const body = await read(base, `/v1/markets/${market}/package-tape?after=${cursor}&limit=${TAPE_PAGE}`, controller.signal);
@@ -167,15 +172,10 @@ export function usePublicMarketFeed(
           if (next.trades.length === 0 || (body.trades as unknown[]).length < TAPE_PAGE) break;
         }
         first = false;
-        setLive((previous) => ({
-          bids: levels(depth.bids, "bids"),
-          asks: levels(depth.asks, "asks"),
-          trades,
-          cursor,
-          halted: depth.halted === true,
-          version: (previous?.version ?? 0) + 1,
-        }));
-        setStatus({ state: "live", detail: depth.halted === true ? "Market halted by the exchange." : "Live from the public market API.", updatedAtMs: Date.now() });
+        const observed = trades;
+        const observedCursor = cursor;
+        setLive((previous) => ({ bids, asks, trades: observed, cursor: observedCursor, halted, version: (previous?.version ?? 0) + 1 }));
+        setStatus({ state: "live", detail: halted ? "Market halted by the exchange." : "Live from the public market API.", updatedAtMs: Date.now() });
       } catch (error) {
         if (controller.signal.aborted) return;
         const detail = error instanceof Error ? error.message : "request failed";

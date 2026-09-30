@@ -15,6 +15,8 @@ import {
   qualificationRecordHash,
   quoteHash,
   routeHash,
+  solverCapabilityManifestHash,
+  solverSignatureDigest,
   terminalOutcomeHash,
   toHex,
   toProtocolJson,
@@ -25,6 +27,7 @@ import {
   type PrivateRfqEnvelopeInput,
   type QualificationRecordInput,
   type RoutePayloadInput,
+  type SolverCapabilityManifestInput,
   type SolverQuoteInput,
   type TerminalOutcomeInput,
 } from '@naryx/protocol-types';
@@ -455,9 +458,44 @@ describe('order intake and terminal evidence', () => {
     assert.deepEqual(expired, { objectType: 'VENUE', objectId: 'phoenix-sol-usdc', unavailable: 'EXPIRED' });
   });
 
-  test('order quotes must re-hash, bind their route and order, and carry a verifying signature', async () => {
-    const { quote, route } = ORDER_QUOTE;
-    const entry = (overrides: Record<string, unknown> = {}) => ({
+  test('order quotes must re-hash, bind their route and order, and carry a key the solver registered', async () => {
+    const keyPair = () => {
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      return { raw: new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32)), sign: (message: Uint8Array) => new Uint8Array(sign(null, message, privateKey)) };
+    };
+    const operator = keyPair();
+    const quoteKey = keyPair();
+    const manifestFor = (verificationKey: Uint8Array, overrides: Partial<SolverCapabilityManifestInput> = {}): SolverCapabilityManifestInput => {
+      const unsigned: SolverCapabilityManifestInput = {
+        manifestVersion: 1,
+        environment: 'testnet',
+        solverId: 'solver-a',
+        commonControlGroupId: 'org-a',
+        operatorIdentityScheme: 'ED25519',
+        operatorIdentityKey: operator.raw,
+        quoteVerificationKeys: [{ keyId: 'q-1', scheme: 'ED25519', verificationKey, validFromValue: 0n, validUntilValue: 4_000_000_000n }],
+        rfqEncryptionKeys: [],
+        supportedDomains: [ORDER_QUOTE.quote.domain],
+        supportedTemplateIds: ['cash-and-carry-v1'],
+        supportedQuoteModes: ['EXECUTION_COMMITMENT'],
+        maximumNotionalByMarket: [{ marketId: 'sol-carry', quoteAsset: usdc, maximumNotionalAtoms: 1_000n }],
+        rfqEndpoints: ['https://solver-a.example/rfq'],
+        validityUnit: 'EVM_UNIX_SECONDS',
+        validUntilValue: 4_000_000_000n,
+        manifestNonce: 1n,
+        signature: new Uint8Array(64),
+        ...overrides,
+      };
+      return { ...unsigned, signature: operator.sign(solverCapabilityManifestHash(unsigned)) };
+    };
+    const registered = manifestFor(quoteKey.raw);
+    const registeredHash = toHex(solverCapabilityManifestHash(registered));
+    const rebound = (manifestHash: string, key = quoteKey): SolverQuoteInput => {
+      const unsigned = { ...ORDER_QUOTE.quote, solverCapabilityManifestHash: manifestHash, solverVerificationKey: key.raw };
+      return { ...unsigned, signature: key.sign(solverSignatureDigest(unsigned)) };
+    };
+    const { route } = ORDER_QUOTE;
+    const entry = (quote: SolverQuoteInput, overrides: Record<string, unknown> = {}) => ({
       quoteHash: toHex(quoteHash(quote)),
       routeHash: toHex(routeHash(route)),
       quoteMode: quote.quoteMode,
@@ -467,17 +505,36 @@ describe('order intake and terminal evidence', () => {
       receivedAtMs: 5,
       ...overrides,
     });
-    const path = `GET /v1/orders/${ORDER_HASH}/quotes`;
-    const read = (quotes: unknown[]) => client({ [path]: { body: { orderHash: ORDER_HASH, quotes } } }).getOrderQuotes(ORDER_HASH);
-    const [verified] = await read([entry()]);
+    const quotesPath = `GET /v1/orders/${ORDER_HASH}/quotes`;
+    const manifestPath = (hash: string) => `GET /v1/solvers/solver-a/manifests/${hash}`;
+    const manifestBody = (manifest: SolverCapabilityManifestInput, overrides: Record<string, unknown> = {}) => ({
+      body: { solverId: 'solver-a', manifestHash: toHex(solverCapabilityManifestHash(manifest)), manifestNonce: 1, manifest, ...overrides },
+    });
+    const read = (quotes: unknown[], manifests: Record<string, { body: unknown; status?: number }> = { [manifestPath(registeredHash)]: manifestBody(registered) }) =>
+      client({ [quotesPath]: { body: { orderHash: ORDER_HASH, quotes } }, ...manifests }).getOrderQuotes(ORDER_HASH);
+
+    const quote = rebound(registeredHash);
+    const [verified] = await read([entry(quote)]);
     assert.equal(verified?.quoteHash, toHex(quoteHash(quote)));
-    // Node ships Ed25519 in Web Crypto, so the solver signature is checked locally here.
+    // Node ships Ed25519 in Web Crypto, so the quote and the operator's manifest are checked locally.
     assert.equal(verified?.signatureVerified, true);
-    await assert.rejects(read([entry({ quote: { ...quote, signature: new Uint8Array(64).fill(1) } })]), /signature does not verify/);
-    await assert.rejects(read([entry({ quoteHash: 'ab'.repeat(32) })]), /served hashes/);
-    await assert.rejects(read([entry({ quoteMode: 'FIRM_ONCHAIN' })]), /labels differ/);
+    await assert.rejects(read([entry({ ...quote, signature: new Uint8Array(64).fill(1) })]), /signature does not verify/);
+    await assert.rejects(read([entry(quote, { quoteHash: 'ab'.repeat(32) })]), /served hashes/);
+    await assert.rejects(read([entry(quote, { quoteMode: 'FIRM_ONCHAIN' })]), /labels differ/);
     const otherRoute = { ...route, routeExpiryValue: route.routeExpiryValue + 1n };
-    await assert.rejects(read([entry({ route: otherRoute, routeHash: toHex(routeHash(otherRoute)) })]), /does not bind its served route/);
+    await assert.rejects(read([entry(quote, { route: otherRoute, routeHash: toHex(routeHash(otherRoute)) })]), /does not bind its served route/);
+
+    // A quote signed by a key the solver never registered is refused, even when it verifies.
+    const stranger = keyPair();
+    await assert.rejects(read([entry(rebound(registeredHash, stranger))]), /not registered in the solver's manifest/);
+    // A manifest the operator did not sign, or one that does not hash to what the quote binds, is refused.
+    const forged = { ...registered, signature: new Uint8Array(64).fill(9) };
+    await assert.rejects(read([entry(quote)], { [manifestPath(registeredHash)]: manifestBody(forged) }), /operator signature does not verify/);
+    const other = manifestFor(quoteKey.raw, { manifestNonce: 2n });
+    await assert.rejects(read([entry(quote)], { [manifestPath(registeredHash)]: manifestBody(other, { manifestHash: registeredHash }) }), /does not hash/);
+    // Without a registry the binding cannot be checked, so the quote is served but not verified.
+    const [unverifiable] = await read([entry(quote)], { [manifestPath(registeredHash)]: { status: 503, body: { error: { code: 'REGISTRY_UNAVAILABLE', message: 'none' } } } });
+    assert.equal(unverifiable?.signatureVerified, false);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {

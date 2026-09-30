@@ -267,6 +267,8 @@ export interface ScheduleProgress {
   /** Slices already attempted, whether they executed or failed. */
   readonly attemptedSlices: number;
   readonly failedSlices: number;
+  /** The window index of the last attempted slice; required once any slice was attempted. */
+  readonly lastAttemptedSliceIndex?: number;
 }
 
 export type ScheduleSliceRejection = 'NOT_STARTED' | 'NOT_DUE' | 'COMPLETE' | 'STOPPED' | 'EXPIRED';
@@ -290,15 +292,24 @@ export function nextScheduleSlice(
   const attempted = Number(checkedUnsigned(BigInt(progress.attemptedSlices), U32_BITS, 'nextScheduleSlice.attemptedSlices'));
   const failed = Number(checkedUnsigned(BigInt(progress.failedSlices), U32_BITS, 'nextScheduleSlice.failedSlices'));
   if (failed > attempted || attempted > schedule.sliceCount) throw new MalformedInputError('nextScheduleSlice.progress', 'progress is inconsistent');
+  const last =
+    progress.lastAttemptedSliceIndex === undefined
+      ? undefined
+      : Number(checkedUnsigned(BigInt(progress.lastAttemptedSliceIndex), U32_BITS, 'nextScheduleSlice.lastAttemptedSliceIndex'));
+  // Each attempt uses its own window, so the attempts fit in the windows up to the last one.
+  if ((attempted === 0) !== (last === undefined) || (last !== undefined && (last >= schedule.sliceCount || attempted > last + 1))) {
+    throw new MalformedInputError('nextScheduleSlice.lastAttemptedSliceIndex', 'progress is inconsistent');
+  }
   if (executed > schedule.aggregateQuantityLimit) throw new MalformedInputError('nextScheduleSlice.executedQuantity', 'executed quantity exceeds the aggregate limit');
   const reject = (reason: ScheduleSliceRejection) => Object.freeze({ due: false as const, reason });
   if (failed > 0 && schedule.stopRule === 'STOP_ON_FIRST_FAILURE') return reject('STOPPED');
-  if (executed === schedule.aggregateQuantityLimit || attempted === schedule.sliceCount) return reject('COMPLETE');
+  if (executed === schedule.aggregateQuantityLimit || last === schedule.sliceCount - 1) return reject('COMPLETE');
   if (at < schedule.startValue) return reject('NOT_STARTED');
   const elapsedSlice = (at - schedule.startValue) / schedule.sliceInterval;
   if (elapsedSlice >= BigInt(schedule.sliceCount)) return reject('EXPIRED');
-  // The due slice is the one whose window contains `at`; slices before it were missed or attempted.
-  if (BigInt(attempted) > elapsedSlice) return reject('NOT_DUE');
+  // The due slice is the one whose window contains `at`; a window already attempted is never
+  // attempted again, and windows between the last attempt and now were missed.
+  if (last !== undefined && BigInt(last) >= elapsedSlice) return reject('NOT_DUE');
   const remaining = schedule.aggregateQuantityLimit - executed;
   return Object.freeze({
     due: true as const,
@@ -636,7 +647,8 @@ export type KeeperActionRejection =
   | 'REWARD_ABOVE_BOUND'
   | 'RESULTING_RISK_ABOVE_BOUND'
   | 'DEPENDENCY_HALTED'
-  | 'NOT_RISK_REDUCING';
+  | 'NOT_RISK_REDUCING'
+  | 'TIME_UNIT_MISMATCH';
 
 /**
  * Decides whether a keeper may execute an authorized action now. Every bound is checked against
@@ -656,6 +668,15 @@ export function authorizeKeeperAction(
   const before = strategyHealthSnapshot(request.before, 'authorizeKeeperAction.before');
   const after = strategyHealthSnapshot(request.after, 'authorizeKeeperAction.after');
   const keeperId = protocolId(request.keeperId, 'authorizeKeeperAction.keeperId');
+  // `atValue` is in the authorization's expiry unit, so every time it is compared with must be too.
+  const condition = activationCondition(request.condition, 'authorizeKeeperAction.condition');
+  if (
+    condition.observationUnit !== authorization.expiryUnit ||
+    before.observedAtUnit !== authorization.expiryUnit ||
+    after.observedAtUnit !== authorization.expiryUnit
+  ) {
+    return reject('TIME_UNIT_MISMATCH');
+  }
   if (at >= authorization.expiryValue) return reject('EXPIRED');
   if (bool(request.manualTakeover, 'authorizeKeeperAction.manualTakeover')) return reject('MANUAL_TAKEOVER');
   if (bool(request.nonceConsumed, 'authorizeKeeperAction.nonceConsumed')) return reject('REPLAY');
@@ -709,6 +730,7 @@ export type OrderActivationRejection =
   | 'SCHEDULE_MISMATCH'
   | 'SCHEDULE_ABOVE_ORDER'
   | 'ORDER_EXPIRED'
+  | 'TIME_UNIT_MISMATCH'
   | ConditionRejection
   | ScheduleSliceRejection;
 
@@ -754,6 +776,8 @@ export function activatePackageOrder(
     if (evidence.condition === undefined || compareBytes(activationConditionHash(evidence.condition), order.activationConditionHash) !== 0) {
       return reject('CONDITION_MISMATCH');
     }
+    // `atValue` is in the order's expiry unit; a condition timed in another unit cannot be judged.
+    if (activationCondition(evidence.condition).observationUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
     const verdict = evaluateActivationCondition(evidence.condition, evidence.observations, at);
     if (!verdict.satisfied) return reject(verdict.reason);
   }
@@ -763,6 +787,7 @@ export function activatePackageOrder(
   }
   const schedule = executionSchedule(evidence.schedule);
   if (schedule.kind !== type) return reject('SCHEDULE_MISMATCH');
+  if (schedule.timeUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
   if (schedule.aggregateQuantityLimit > order.quantity.atoms) return reject('SCHEDULE_ABOVE_ORDER');
   if (evidence.progress === undefined) throw new MalformedInputError('activatePackageOrder.progress', 'a scheduled order needs its progress');
   const slice = nextScheduleSlice(schedule, evidence.progress, at);

@@ -46,8 +46,15 @@ export class EvidenceStoreError extends Error {
   }
 }
 
-/** Quotes one public order may collect, so a quote flood cannot grow storage without bound. */
-export const MAX_QUOTES_PER_ORDER = 64;
+/** Quotes one public order may store in total, so a quote flood cannot grow storage without bound. */
+export const MAX_QUOTES_PER_ORDER = 512;
+/** Quotes, live or not, one solver may store for one order; each new one replaces its previous. */
+export const MAX_QUOTES_PER_SOLVER_PER_ORDER = 8;
+/** Solvers whose latest quote for one order may be live at once. */
+export const MAX_QUOTING_SOLVERS_PER_ORDER = 64;
+
+/** Server time in a unit, or undefined when this server cannot judge that unit. */
+export type NowIn = (unit: string) => bigint | undefined;
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
@@ -256,8 +263,12 @@ export class SqliteEvidenceStore {
     return row === undefined ? undefined : this.decodeOrder(row);
   }
 
-  /** Orders after a cursor that have no terminal outcome yet, oldest first, for solvers to quote. */
-  openOrders(afterCursor: number, limit: number): readonly StoredOrder[] {
+  /**
+   * Orders after a cursor that have no terminal outcome and have not expired, oldest first, for
+   * solvers to quote. An order timed in a unit this server cannot judge stays listed. `nextCursor`
+   * is the last cursor scanned, so a page of only expired orders still advances the caller.
+   */
+  openOrders(afterCursor: number, limit: number, now: NowIn): { readonly orders: readonly StoredOrder[]; readonly nextCursor: number } {
     const rows = this.db
       .prepare(
         `SELECT o.cursor, o.order_hash, o.order_json, o.owner, o.signature, o.received_at_ms FROM public_orders o
@@ -265,16 +276,21 @@ export class SqliteEvidenceStore {
          WHERE o.cursor > ? AND t.order_hash IS NULL ORDER BY o.cursor LIMIT ?`,
       )
       .all(afterCursor, Math.max(1, Math.min(limit, 200))) as Parameters<SqliteEvidenceStore["decodeOrder"]>[0][];
-    return Object.freeze(rows.map((row) => this.decodeOrder(row)));
+    const orders = rows.map((row) => this.decodeOrder(row)).filter((entry) => !orderExpired(entry.order, now));
+    const last = rows[rows.length - 1];
+    return Object.freeze({ orders: Object.freeze(orders), nextCursor: last === undefined ? afterCursor : last.cursor });
   }
 
   /**
    * Records a solver's quote for an open public order together with the route it binds. The caller
    * has already authenticated the solver and verified the quote signature; the store checks that
    * the quote names a stored order without a terminal outcome and that the route hashes to the
-   * quote's route hash. A repeat of the same quote is idempotent.
+   * quote's route hash. An expired order takes no quotes. A solver's newest quote for an order
+   * replaces its previous ones, each solver stores a bounded number per order, and only a bounded
+   * number of solvers may hold a live quote at once, so no one solver can crowd the others out.
+   * A repeat of the same quote is idempotent.
    */
-  recordQuote(quoteInput: SolverQuoteInput, routeInput: RoutePayloadInput): { readonly quoteHashHex: string; readonly replayed: boolean } {
+  recordQuote(quoteInput: SolverQuoteInput, routeInput: RoutePayloadInput, now: NowIn): { readonly quoteHashHex: string; readonly replayed: boolean } {
     const quote = guarded("INVALID_QUOTE", "The quote failed validation.", () => solverQuote(quoteInput));
     const route = guarded("INVALID_ROUTE", "The route failed validation.", () => routePayload(routeInput));
     if (toHex(routeHash(routeInput)) !== toHex(quote.routeHash)) throw new EvidenceStoreError("ROUTE_MISMATCH", "The route does not hash to the quote's route hash.");
@@ -285,14 +301,28 @@ export class SqliteEvidenceStore {
       const orderRow = this.db.prepare("SELECT order_json FROM public_orders WHERE order_hash = ?").get(quote.orderHash) as { order_json: string } | undefined;
       if (orderRow === undefined) throw new EvidenceStoreError("ORDER_NOT_FOUND", "The quote names no stored public order.");
       const order = parseProtocolJson(orderRow.order_json) as PackageOrderInput;
+      if (orderExpired(order, now)) throw new EvidenceStoreError("ORDER_EXPIRED", "The order has expired.");
       if (order.environment !== quote.environment || order.domain.domainId !== quote.domain.domainId || route.environment !== quote.environment) {
         throw new EvidenceStoreError("ENVIRONMENT_MISMATCH", "The quote, route, and order name different environments or domains.");
       }
       if (this.db.prepare("SELECT 1 FROM terminal_outcomes WHERE order_hash = ?").get(quote.orderHash) !== undefined) {
         throw new EvidenceStoreError("ORDER_TERMINAL", "The order already has a terminal outcome.");
       }
-      const count = this.db.prepare("SELECT COUNT(*) AS count FROM order_quotes WHERE order_hash = ?").get(quote.orderHash) as { count: number };
-      if (count.count >= MAX_QUOTES_PER_ORDER) throw new EvidenceStoreError("QUOTES_FULL", "This order has collected the maximum number of quotes.");
+      const stored = this.db
+        .prepare("SELECT solver_id, valid_until_unit, valid_until_value FROM order_quotes WHERE order_hash = ? ORDER BY cursor")
+        .all(quote.orderHash) as { solver_id: string; valid_until_unit: string; valid_until_value: string }[];
+      if (stored.length >= MAX_QUOTES_PER_ORDER) throw new EvidenceStoreError("QUOTES_FULL", "This order has stored the maximum number of quotes.");
+      if (stored.filter((row) => row.solver_id === quote.solverId).length >= MAX_QUOTES_PER_SOLVER_PER_ORDER) {
+        throw new EvidenceStoreError("SOLVER_QUOTES_FULL", "This solver has stored the maximum number of quotes for this order.");
+      }
+      const liveSolvers = new Set(
+        [...latestBySolver(stored, (row) => row.solver_id).values()]
+          .filter((row) => stillLive(row.valid_until_unit, BigInt(row.valid_until_value), now))
+          .map((row) => row.solver_id),
+      );
+      if (!liveSolvers.has(quote.solverId) && liveSolvers.size >= MAX_QUOTING_SOLVERS_PER_ORDER) {
+        throw new EvidenceStoreError("QUOTES_FULL", "This order already holds live quotes from the maximum number of solvers.");
+      }
       this.db
         .prepare(
           `INSERT INTO order_quotes (quote_hash, order_hash, solver_id, quote_json, route_json, valid_until_unit, valid_until_value, received_at_ms)
@@ -303,12 +333,17 @@ export class SqliteEvidenceStore {
     });
   }
 
-  /** Quotes for an order, oldest first, re-hashed on read; `stillValid` filters by each quote's own time unit. */
-  quotesFor(orderHashHex: string, stillValid: (unit: string, validUntilValue: bigint) => boolean): readonly StoredOrderQuote[] {
+  /**
+   * Each solver's latest quote for an order while it is still live, oldest first, re-hashed on
+   * read. A quote a solver has since replaced is not served; each quote is judged in its own unit.
+   */
+  quotesFor(orderHashHex: string, now: NowIn): readonly StoredOrderQuote[] {
     const rows = this.db
-      .prepare("SELECT quote_hash, quote_json, route_json, valid_until_unit, valid_until_value, received_at_ms FROM order_quotes WHERE order_hash = ? ORDER BY cursor")
+      .prepare("SELECT cursor, quote_hash, solver_id, quote_json, route_json, valid_until_unit, valid_until_value, received_at_ms FROM order_quotes WHERE order_hash = ? ORDER BY cursor")
       .all(Buffer.from(orderHashHex, "hex")) as {
+      cursor: number;
       quote_hash: Uint8Array;
+      solver_id: string;
       quote_json: string;
       route_json: string;
       valid_until_unit: string;
@@ -316,8 +351,9 @@ export class SqliteEvidenceStore {
       received_at_ms: number;
     }[];
     return Object.freeze(
-      rows
-        .filter((row) => stillValid(row.valid_until_unit, BigInt(row.valid_until_value)))
+      [...latestBySolver(rows, (row) => row.solver_id).values()]
+        .sort((left, right) => left.cursor - right.cursor)
+        .filter((row) => stillLive(row.valid_until_unit, BigInt(row.valid_until_value), now))
         .map((row) => {
           const quoteInput = parseProtocolJson(row.quote_json) as SolverQuoteInput;
           const route = parseProtocolJson(row.route_json) as RoutePayloadInput;
@@ -521,4 +557,21 @@ export class SqliteEvidenceStore {
       receiptFieldEvidence: Object.freeze(grades),
     });
   }
+}
+
+function orderExpired(order: PackageOrderInput, now: NowIn): boolean {
+  const current = now(order.expiryUnit);
+  return current !== undefined && current >= BigInt(order.expiryValue);
+}
+
+/** A quote is live only while this server can judge its unit and it has not yet expired. */
+function stillLive(unit: string, validUntilValue: bigint, now: NowIn): boolean {
+  const current = now(unit);
+  return current !== undefined && current < validUntilValue;
+}
+
+function latestBySolver<T>(rows: readonly T[], solverOf: (row: T) => string): Map<string, T> {
+  const latest = new Map<string, T>();
+  for (const row of rows) latest.set(solverOf(row), row);
+  return latest;
 }

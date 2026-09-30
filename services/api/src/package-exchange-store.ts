@@ -165,6 +165,20 @@ CREATE TRIGGER IF NOT EXISTS reject_consumed_source_delete
   BEFORE DELETE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
+CREATE TABLE IF NOT EXISTS package_book_trades (
+  allocation_rowid INTEGER PRIMARY KEY,
+  allocation_hash BLOB NOT NULL UNIQUE REFERENCES package_book_allocations(allocation_hash),
+  execution_class_id TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS package_book_trades_by_class ON package_book_trades(execution_class_id, allocation_rowid);
+CREATE INDEX IF NOT EXISTS package_book_trades_by_time ON package_book_trades(execution_class_id, recorded_at_ms, allocation_rowid);
+CREATE TRIGGER IF NOT EXISTS reject_trade_change
+  BEFORE UPDATE ON package_book_trades
+  BEGIN SELECT RAISE(ABORT, 'package trades are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_trade_delete
+  BEFORE DELETE ON package_book_trades
+  BEGIN SELECT RAISE(ABORT, 'package trades are append-only'); END;
 `;
 
 interface DocumentRow {
@@ -251,7 +265,15 @@ export class SqlitePackageExchangeStore {
       if (String(journalMode).toLowerCase() !== "wal" || db.pragma("foreign_keys", { simple: true }) !== 1) {
         throw new PackageExchangeStoreError("PRAGMA_FAILED", "Durability pragmas were not applied.");
       }
+      const indexedTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'package_book_trades'").get() !== undefined;
       db.exec(SCHEMA_SQL);
+      // Stores created before trades were indexed index their existing trades once.
+      if (!indexedTrades) {
+        db.exec(
+          `INSERT INTO package_book_trades (allocation_rowid, allocation_hash, execution_class_id, recorded_at_ms)
+           SELECT rowid, allocation_hash, execution_class_id, recorded_at_ms FROM package_book_allocations WHERE json_array_length(allocation_json, '$.fills') > 0`,
+        );
+      }
     } catch (error) {
       db.close();
       throw error;
@@ -375,9 +397,10 @@ export class SqlitePackageExchangeStore {
     if (this.getBook(executionClassId) === undefined) throw new PackageExchangeStoreError("BOOK_NOT_FOUND", "Package book is not open.");
     const rows = this.db
       .prepare(
-        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
-         WHERE execution_class_id = ? AND recorded_at_ms >= ? AND recorded_at_ms < ? AND json_array_length(allocation_json, '$.fills') > 0
-         ORDER BY recorded_at_ms, rowid LIMIT ?`,
+        `SELECT t.allocation_rowid AS cursor, a.allocation_hash, a.allocation_json, a.recorded_at_ms FROM package_book_trades t
+         JOIN package_book_allocations a ON a.allocation_hash = t.allocation_hash
+         WHERE t.execution_class_id = ? AND t.recorded_at_ms >= ? AND t.recorded_at_ms < ?
+         ORDER BY t.recorded_at_ms, t.allocation_rowid LIMIT ?`,
       )
       .all(executionClassId, fromMs, toMs, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
     return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
@@ -455,6 +478,14 @@ export class SqlitePackageExchangeStore {
           "INSERT INTO package_book_allocations (allocation_hash, taker_order_id, execution_class_id, allocation_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
         )
         .run(allocationHash, orderId, executionClassId, stringifyProtocolJson(result.allocation), this.clock());
+      // Only allocations that filled are trades; resting-only allocations never reach the tape.
+      if (result.allocation.fills.length > 0) {
+        this.db
+          .prepare(
+            "INSERT INTO package_book_trades (allocation_rowid, allocation_hash, execution_class_id, recorded_at_ms) SELECT rowid, allocation_hash, execution_class_id, recorded_at_ms FROM package_book_allocations WHERE allocation_hash = ?",
+          )
+          .run(allocationHash);
+      }
       const consume = this.db.prepare(
         "INSERT INTO package_book_consumed_sources (source_key, execution_class_id, allocation_hash) VALUES (?, ?, ?)",
       );
@@ -588,8 +619,9 @@ export class SqlitePackageExchangeStore {
     }
     const rows = this.db
       .prepare(
-        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
-         WHERE execution_class_id = ? AND rowid > ? AND json_array_length(allocation_json, '$.fills') > 0 ORDER BY rowid LIMIT ?`,
+        `SELECT t.allocation_rowid AS cursor, a.allocation_hash, a.allocation_json, a.recorded_at_ms FROM package_book_trades t
+         JOIN package_book_allocations a ON a.allocation_hash = t.allocation_hash
+         WHERE t.execution_class_id = ? AND t.allocation_rowid > ? ORDER BY t.allocation_rowid LIMIT ?`,
       )
       .all(executionClassId, afterCursor, limit) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown }[];
     return Object.freeze(rows.map((row) => this.tapeRecord(executionClassId, row)));
@@ -599,8 +631,9 @@ export class SqlitePackageExchangeStore {
   latestTrade(executionClassId: string): PackageTapeRecord | undefined {
     const row = this.db
       .prepare(
-        `SELECT rowid AS cursor, allocation_hash, allocation_json, recorded_at_ms FROM package_book_allocations
-         WHERE execution_class_id = ? AND json_array_length(allocation_json, '$.fills') > 0 ORDER BY rowid DESC LIMIT 1`,
+        `SELECT t.allocation_rowid AS cursor, a.allocation_hash, a.allocation_json, a.recorded_at_ms FROM package_book_trades t
+         JOIN package_book_allocations a ON a.allocation_hash = t.allocation_hash
+         WHERE t.execution_class_id = ? ORDER BY t.allocation_rowid DESC LIMIT 1`,
       )
       .get(executionClassId) as { cursor: unknown; allocation_hash: unknown; allocation_json: unknown; recorded_at_ms: unknown } | undefined;
     return row === undefined ? undefined : this.tapeRecord(executionClassId, row);
