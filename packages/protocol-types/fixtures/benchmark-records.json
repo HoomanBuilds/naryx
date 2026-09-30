@@ -1,0 +1,8 @@
+{
+  "description": "Golden digests for the benchmark fixtures in test/benchmark.test.ts; the cohort key, arm records, and pair record were recomputed independently from their canonical bytes.",
+  "feePromotionCohortKey": "db5fa762b8c16784bbec846794a62ccde606269f7e5d8b6ebd7820a916d32bd3",
+  "benchmarkManifestHash": "d404a169ef9e70e48301b9ff1b33b3e5de8e43c3dfff24e571581e7c1f17f8cf",
+  "packageArmRecordHash": "c35a7739b95fede0a23316fc185dbe6e1914017195e4438e6d7e3767111ce65d",
+  "sequentialArmRecordHash": "df4e773fba091cfe197876dedc1f09b67d2a4d682e6b4533d6f80bd1fad49c8d",
+  "benchmarkPairRecordHash": "ff55ba0d5abce8b86562b97ffe2cffb8a970ae1c8a9c7c0eded6c22e03e28653"
+}

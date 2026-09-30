@@ -133,6 +133,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/strategy-health',
         'CON/v1/keeper-action',
         'CON/v1/qualification-record',
+        'CON/v1/fee-promotion-cohort',
       ],
     );
   });

@@ -79,6 +79,7 @@ export const HASH_DOMAIN = Object.freeze({
   STRATEGY_HEALTH: 'CON/v1/strategy-health',
   KEEPER_ACTION: 'CON/v1/keeper-action',
   QUALIFICATION_RECORD: 'CON/v1/qualification-record',
+  FEE_PROMOTION_COHORT: 'CON/v1/fee-promotion-cohort',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];
