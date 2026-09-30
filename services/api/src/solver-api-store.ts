@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import {
   admitShardUpdate,
+  checkShardSettlement,
   commitSolverCapacity,
   openSolverCapacityLedger,
   packageQuoteShard,
@@ -8,6 +9,7 @@ import {
   parseProtocolJson,
   refreshSolverCapacity,
   releaseSolverCapacity,
+  shardFillCommitment,
   solverCapacityRecord,
   solverCapacityStatus,
   stringifyProtocolJson,
@@ -16,6 +18,8 @@ import {
 import type {
   PackageQuoteShard,
   PackageQuoteShardInput,
+  QuoteReferenceStateInput,
+  ShardSettlementRejection,
   ShardUpdateRejection,
   SolverCapacityCommitmentInput,
   SolverCapacityLedger,
@@ -36,6 +40,20 @@ export class SolverApiStoreError extends Error {
 }
 
 const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS shard_fills (
+  fill_commitment BLOB PRIMARY KEY,
+  solver_id TEXT NOT NULL,
+  shard_id TEXT NOT NULL,
+  shard_hash BLOB NOT NULL,
+  level_id TEXT NOT NULL,
+  size TEXT NOT NULL,
+  fill_json TEXT NOT NULL,
+  settled_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS shard_fills_by_state ON shard_fills(shard_hash, level_id);
+CREATE INDEX IF NOT EXISTS shard_fills_by_shard ON shard_fills(solver_id, shard_id, settled_at_ms);
+CREATE TRIGGER IF NOT EXISTS reject_shard_fill_change BEFORE UPDATE ON shard_fills BEGIN SELECT RAISE(ABORT, 'shard fills are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_shard_fill_delete BEFORE DELETE ON shard_fills BEGIN SELECT RAISE(ABORT, 'shard fills are append-only'); END;
 CREATE TABLE IF NOT EXISTS solver_request_nonces (
   solver_id TEXT NOT NULL,
   nonce BLOB NOT NULL,
@@ -149,6 +167,99 @@ export class SqliteSolverApiStore {
       }
       return { accepted: true as const, duplicate: result.duplicate, shard: result.shard, shardHashHex: toHex(hash) };
     });
+  }
+
+  /**
+   * The controller's settlement of one fill against an offchain shard level. Inside one
+   * transaction it reads the solver's current signed shard, re-checks its signature with the
+   * caller's verifier (a quote key may have been revoked since the shard was admitted), runs the
+   * kernel settlement check with everything this ledger already filled against that exact signed
+   * state, and records the fill under its commitment. The same fill settles once; a replay returns
+   * the recorded fill, and nothing here trusts the price a caller names.
+   */
+  settleShardFill(
+    solverId: string,
+    shardId: string,
+    request: {
+      readonly boundShardHash: string;
+      readonly referenceState: QuoteReferenceStateInput;
+      readonly levelId: bigint;
+      readonly takerSide: "BUY" | "SELL";
+      readonly size: bigint;
+      readonly fee: bigint;
+      readonly atValue: bigint;
+      readonly orderHash: string;
+      readonly quoteHash: string;
+      readonly routeHash: string;
+    },
+    verifySignature: (shard: PackageQuoteShard) => boolean,
+  ):
+    | { readonly settled: true; readonly replayed: boolean; readonly fillCommitmentHex: string; readonly priceTicks: bigint }
+    | { readonly settled: false; readonly reason: ShardSettlementRejection | "SHARD_UNKNOWN" | "SIGNATURE_INVALID" } {
+    return this.transaction(() => {
+      const fillFor = (levelOffset: bigint) => {
+        const priceTicks = request.referenceState.referencePriceTicks + levelOffset;
+        const fill = {
+          shardHash: request.boundShardHash,
+          levelId: request.levelId,
+          takerSide: request.takerSide,
+          size: request.size,
+          fee: request.fee,
+          priceTicks,
+          orderHash: request.orderHash,
+          quoteHash: request.quoteHash,
+          routeHash: request.routeHash,
+        };
+        return { fill, priceTicks, commitment: shardFillCommitment(fill) };
+      };
+      // A settled fill replays even after its solver moved the shard on: it is looked up against
+      // the exact signed state it bound, before any check of the current state.
+      const boundRow = this.db
+        .prepare("SELECT shard_json FROM quote_shard_history WHERE shard_hash = ? AND solver_id = ? AND shard_id = ?")
+        .get(Buffer.from(request.boundShardHash, "hex"), solverId, shardId) as { shard_json: string } | undefined;
+      const boundLevel = boundRow === undefined
+        ? undefined
+        : packageQuoteShard(parseProtocolJson(boundRow.shard_json) as PackageQuoteShardInput).quoteLevels.find((entry) => entry.levelId === request.levelId);
+      if (boundLevel !== undefined && typeof request.referenceState?.referencePriceTicks === "bigint") {
+        const replay = fillFor(boundLevel.referenceOffset);
+        if (this.db.prepare("SELECT 1 FROM shard_fills WHERE fill_commitment = ?").get(replay.commitment) !== undefined) {
+          return { settled: true as const, replayed: true, fillCommitmentHex: toHex(replay.commitment), priceTicks: replay.priceTicks };
+        }
+      }
+      const shard = this.getShard(solverId, shardId);
+      if (shard === undefined) return { settled: false as const, reason: "SHARD_UNKNOWN" as const };
+      if (!verifySignature(shard)) return { settled: false as const, reason: "SIGNATURE_INVALID" as const };
+      const stateHash = packageQuoteShardHash(shard);
+      const filled = this.db.prepare("SELECT level_id, size FROM shard_fills WHERE shard_hash = ?").all(stateHash) as { level_id: string; size: string }[];
+      const shardFilledSize = filled.reduce((sum, row) => sum + BigInt(row.size), 0n);
+      const levelFilledSize = filled.filter((row) => row.level_id === request.levelId.toString()).reduce((sum, row) => sum + BigInt(row.size), 0n);
+      const checked = checkShardSettlement(shard, {
+        boundShardHash: request.boundShardHash,
+        referenceState: request.referenceState,
+        levelId: request.levelId,
+        takerSide: request.takerSide,
+        size: request.size,
+        fee: request.fee,
+        atValue: request.atValue,
+        levelFilledSize,
+        shardFilledSize,
+      });
+      if (!checked.executable) return { settled: false as const, reason: checked.reason };
+      // The check passed, so the bound state is the current one and the price is its committed price.
+      const settled = fillFor(checked.priceTicks - request.referenceState.referencePriceTicks);
+      this.db
+        .prepare("INSERT INTO shard_fills (fill_commitment, solver_id, shard_id, shard_hash, level_id, size, fill_json, settled_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(settled.commitment, solverId, shardId, stateHash, request.levelId.toString(), request.size.toString(), stringifyProtocolJson(settled.fill), this.clock());
+      return { settled: true as const, replayed: false, fillCommitmentHex: toHex(settled.commitment), priceTicks: settled.priceTicks };
+    });
+  }
+
+  /** The fills settled against a solver's shard, newest first, so a maker can reconcile its inventory. */
+  shardFills(solverId: string, shardId: string, limit = 100): readonly { readonly fillCommitment: string; readonly shardHash: string; readonly fill: unknown; readonly settledAtMs: number }[] {
+    const rows = this.db
+      .prepare("SELECT fill_commitment, shard_hash, fill_json, settled_at_ms FROM shard_fills WHERE solver_id = ? AND shard_id = ? ORDER BY settled_at_ms DESC, rowid DESC LIMIT ?")
+      .all(solverId, shardId, Math.min(Math.max(1, limit), 500)) as { fill_commitment: Uint8Array; shard_hash: Uint8Array; fill_json: string; settled_at_ms: number }[];
+    return rows.map((row) => Object.freeze({ fillCommitment: toHex(row.fill_commitment), shardHash: toHex(row.shard_hash), fill: parseProtocolJson(row.fill_json), settledAtMs: row.settled_at_ms }));
   }
 
   getShard(solverId: string, shardId: string): PackageQuoteShard | undefined {

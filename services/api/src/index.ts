@@ -342,3 +342,4 @@ export { EvidenceStoreError, SOLVER_PERFORMANCE_ORDER_SAMPLE, SqliteEvidenceStor
 export { QualificationStoreError, SqliteQualificationStore, type StoredQualificationRecord } from "./qualification-store.js";
 export { PositionSnapshotStoreError, SqlitePositionSnapshotStore, type StoredPositionSnapshot } from "./position-snapshot-store.js";
 export { createMarketStream, type MarketStreamOptions } from "./market-stream.js";
+export { createOffchainShardSettlement, type OffchainShardFillRequest, type OffchainShardFillResult } from "./offchain-shard-settlement.js";

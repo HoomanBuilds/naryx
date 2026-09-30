@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { solverRequestDigest, type SolverRequestMethod } from '@naryx/protocol-types';
+import { shardFillCommitment, solverRequestDigest, toHex, toProtocolJson, type SolverRequestMethod } from '@naryx/protocol-types';
 import { NaryxApiError, NaryxSolverClient, type FetchLike } from '../src/index.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -61,5 +61,20 @@ describe('solver client', () => {
     const short = new NaryxSolverClient({ baseUrl: 'https://api.example', solverId: 'solver-a', keyId: 'q-1', sign: async () => new Uint8Array(10), fetch: verifyingFetch([]) });
     await assert.rejects(short.putCapacity({} as never), /64-byte signature/);
     assert.throws(() => new NaryxSolverClient({ baseUrl: 'http://api.example', solverId: 'a', keyId: 'b', sign: signer }), /HTTPS/);
+  });
+  test('shard fills are checked against their recomputed commitments and bound shard', async () => {
+    const fill = { shardHash: '51'.repeat(32), levelId: 2n, takerSide: 'BUY' as const, size: 6n, fee: 1n, priceTicks: 1_005n, orderHash: '61'.repeat(32), quoteHash: '62'.repeat(32), routeHash: '63'.repeat(32) };
+    const serving = (fills: unknown[]): FetchLike => async () => ({
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify(toProtocolJson({ shardId: 'cash-and-carry-v1.sol-carry', fills })),
+    });
+    const reader = (fills: unknown[]) => new NaryxSolverClient({ baseUrl: 'https://api.example', solverId: 'solver-a', keyId: 'q-1', sign: signer, fetch: serving(fills) });
+    const row = { fillCommitment: toHex(shardFillCommitment(fill)), shardHash: fill.shardHash, fill, settledAtMs: 1 };
+    const [verified] = await reader([row]).getShardFills('cash-and-carry-v1.sol-carry');
+    assert.equal(verified?.fill.size, 6n);
+    await assert.rejects(reader([{ ...row, fill: { ...fill, size: 7n } }]).getShardFills('cash-and-carry-v1.sol-carry'), /does not match its commitment/);
+    await assert.rejects(reader([{ ...row, shardHash: '52'.repeat(32) }]).getShardFills('cash-and-carry-v1.sol-carry'), /bound shard/);
+    await assert.rejects(reader([row]).getShardFills('cash-and-carry-v1.eth-carry'), /another shard/);
   });
 });

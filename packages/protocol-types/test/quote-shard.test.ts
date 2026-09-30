@@ -11,6 +11,7 @@ import {
   prepareShardKillSwitch,
   prepareShardReprice,
   quoteReferenceStateHash,
+  shardFillCommitment,
   toHex,
   type PackageQuoteLevel,
   type PackageQuoteShardInput,
@@ -136,5 +137,33 @@ describe('package quote shard', () => {
     assert.deepEqual(checkShardSettlement(expiring, settle({ boundShardHash: packageQuoteShardHash(expiring), atValue: 1_000n })), { executable: false, reason: 'LEVEL_EXPIRED' });
     const killed = prepareShardKillSwitch(shard, 'ACTIVE');
     assert.deepEqual(checkShardSettlement(killed, settle({ boundShardHash: packageQuoteShardHash(killed) })), { executable: false, reason: 'KILL_SWITCH_ACTIVE' });
+  });
+  test('a controller fill ledger bounds cumulative fills of one signed state by level size and inventory', () => {
+    assert.deepEqual(checkShardSettlement(shard, settle({ size: 5n, levelFilledSize: 5n, shardFilledSize: 5n })), { executable: true, priceTicks: 1_005n, direction: 'ASK', quoteMode: 'FIRM_ONCHAIN' });
+    assert.deepEqual(checkShardSettlement(shard, settle({ size: 6n, levelFilledSize: 5n, shardFilledSize: 5n })), { executable: false, reason: 'SIZE_ABOVE_LEVEL' });
+    // Fills on other levels of the same state still use up the shard's inventory.
+    assert.deepEqual(checkShardSettlement(shard, settle({ size: 10n, levelFilledSize: 0n, shardFilledSize: 91n })), { executable: false, reason: 'CAPACITY_UNAVAILABLE' });
+    assert.throws(() => checkShardSettlement(shard, settle({ levelFilledSize: 3n, shardFilledSize: 2n })), /more than its shard/);
+  });
+
+  test('a shard fill commitment binds every term and matches an independent encoding', () => {
+    const fill = {
+      shardHash: '51'.repeat(32),
+      levelId: 3n,
+      takerSide: 'BUY' as const,
+      size: 4n,
+      fee: 2n,
+      priceTicks: -1_005n,
+      orderHash: '61'.repeat(32),
+      quoteHash: '62'.repeat(32),
+      routeHash: '63'.repeat(32),
+    };
+    // sha256("CON/v1/shard-fill" || shard || u64 level || u8 side || u128 size || u128 fee || i128 price || order || quote || route)
+    assert.equal(toHex(shardFillCommitment(fill)), '55789143547231665b91c44fcba5ccfa675f6111ed5db3b0f968448680a52832');
+    const base = toHex(shardFillCommitment(fill));
+    for (const change of [{ levelId: 4n }, { takerSide: 'SELL' as const }, { size: 5n }, { fee: 3n }, { priceTicks: -1_004n }, { orderHash: '64'.repeat(32) }, { quoteHash: '65'.repeat(32) }, { routeHash: '66'.repeat(32) }, { shardHash: '52'.repeat(32) }]) {
+      assert.notEqual(toHex(shardFillCommitment({ ...fill, ...change })), base);
+    }
+    assert.throws(() => shardFillCommitment({ ...fill, size: 0n }), /fill size is zero/);
   });
 });

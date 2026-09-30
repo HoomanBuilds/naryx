@@ -397,6 +397,13 @@ export interface ShardSettlementRequest {
   readonly size: bigint;
   readonly fee: bigint;
   readonly atValue: bigint;
+  /**
+   * What the settling controller has already filled against this exact signed shard state: on the
+   * level, and across the shard. Offchain shards carry no onchain capacity counter, so the
+   * controller's durable fill ledger supplies it and a signed state can never be overfilled.
+   */
+  readonly levelFilledSize?: bigint;
+  readonly shardFilledSize?: bigint;
 }
 
 export type ShardSettlementRejection =
@@ -435,9 +442,12 @@ export function checkShardSettlement(
   if (level.direction !== (request.takerSide === 'BUY' ? 'ASK' : 'BID')) return reject('SIDE_MISMATCH');
   if (at >= level.validUntilValue) return reject('LEVEL_EXPIRED');
   const size = unsigned(request.size, U128_BITS, 'checkShardSettlement.size');
-  if (size === 0n || size > level.size) return reject('SIZE_ABOVE_LEVEL');
+  const levelFilled = unsigned(request.levelFilledSize ?? 0n, U128_BITS, 'checkShardSettlement.levelFilledSize');
+  const shardFilled = unsigned(request.shardFilledSize ?? 0n, U128_BITS, 'checkShardSettlement.shardFilledSize');
+  if (levelFilled > shardFilled) throw new MalformedInputError('checkShardSettlement.levelFilledSize', 'a level cannot have filled more than its shard');
+  if (size === 0n || levelFilled + size > level.size) return reject('SIZE_ABOVE_LEVEL');
   if (unsigned(request.fee, U128_BITS, 'checkShardSettlement.fee') > level.maximumFee) return reject('FEE_ABOVE_MAXIMUM');
-  if (shard.reservedCapacity + size > shard.inventoryCap) return reject('CAPACITY_UNAVAILABLE');
+  if (shard.reservedCapacity + shardFilled + size > shard.inventoryCap) return reject('CAPACITY_UNAVAILABLE');
   return Object.freeze({
     executable: true as const,
     // The price comes from the committed reference state, never from the settling party.
@@ -445,4 +455,45 @@ export function checkShardSettlement(
     direction: level.direction,
     quoteMode: level.quoteMode,
   });
+}
+
+/**
+ * One fill of an offchain shard level, bound to the exact signed shard state, the level, the
+ * taker's order, the accepted quote, and the route. Its commitment is the fill's identity, so a
+ * controller settles each fill once and refuses the same identity with different terms.
+ */
+export interface ShardFillInput {
+  readonly shardHash: Uint8Array | string;
+  readonly levelId: bigint;
+  readonly takerSide: 'BUY' | 'SELL';
+  readonly size: bigint;
+  readonly fee: bigint;
+  /** The executable price the settlement check derived from the committed reference state. */
+  readonly priceTicks: bigint;
+  readonly orderHash: Uint8Array | string;
+  readonly quoteHash: Uint8Array | string;
+  readonly routeHash: Uint8Array | string;
+}
+
+export function shardFillBytes(input: ShardFillInput): Uint8Array {
+  object(input, 'shardFill');
+  if (input.takerSide !== 'BUY' && input.takerSide !== 'SELL') throw new MalformedInputError('shardFill.takerSide', 'expected BUY or SELL');
+  const size = unsigned(input.size, U128_BITS, 'shardFill.size');
+  if (size === 0n) throw new MalformedInputError('shardFill.size', 'fill size is zero');
+  if (typeof input.priceTicks !== 'bigint') throw new MalformedInputError('shardFill.priceTicks', 'expected a bigint');
+  return canonicalBytes((writer) => {
+    encodeCommitmentHash(writer, commitmentHash(input.shardHash, 'shardFill.shardHash'), 'shardHash');
+    writer.writeU64(unsigned(input.levelId, U64_BITS, 'shardFill.levelId'), 'levelId');
+    writer.writeU8(input.takerSide === 'BUY' ? 1 : 2, 'takerSide');
+    writer.writeU128(size, 'size');
+    writer.writeU128(unsigned(input.fee, U128_BITS, 'shardFill.fee'), 'fee');
+    writer.writeI128(checkedSigned(input.priceTicks, I128_BITS, 'shardFill.priceTicks'), 'priceTicks');
+    encodeCommitmentHash(writer, commitmentHash(input.orderHash, 'shardFill.orderHash'), 'orderHash');
+    encodeCommitmentHash(writer, commitmentHash(input.quoteHash, 'shardFill.quoteHash'), 'quoteHash');
+    encodeCommitmentHash(writer, commitmentHash(input.routeHash, 'shardFill.routeHash'), 'routeHash');
+  });
+}
+
+export function shardFillCommitment(input: ShardFillInput): CommitmentHash {
+  return commitmentHash(domainHash(HASH_DOMAIN.SHARD_FILL, shardFillBytes(input)), 'shardFillCommitment');
 }

@@ -4,6 +4,7 @@ import {
   packageOrderHash,
   replayRouteDecision,
   solverRequestDigest,
+  shardFillCommitment,
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
@@ -16,6 +17,7 @@ import {
   type RoutePayloadInput,
   type SolverQuoteInput,
   type PackageQuoteShardInput,
+  type ShardFillInput,
   type SolverCapabilityManifestInput,
   type SolverCapacityCommitmentInput,
   type SolverCapacityRecordInput,
@@ -185,6 +187,32 @@ export class NaryxSolverClient {
 
   getShard(shardId: string) {
     return this.#call('GET', `/v1/solver/quote-shards/${shardId}`);
+  }
+
+  /**
+   * The fills the controller settled against one of this solver's shards. Each fill's commitment
+   * is recomputed from its terms, so a maker reconciles inventory on fills it can check itself.
+   */
+  async getShardFills(shardId: string): Promise<readonly { readonly fillCommitment: string; readonly shardHash: string; readonly fill: ShardFillInput; readonly settledAtMs: number }[]> {
+    const body = (await this.#call('GET', `/v1/solver/quote-shards/${shardId}/fills`)) as { shardId?: unknown; fills?: unknown };
+    if (body.shardId !== shardId || !Array.isArray(body.fills)) throw new NaryxEvidenceError('shard fills are for another shard or malformed');
+    return Object.freeze(
+      body.fills.map((entry, index) => {
+        const row = entry as { fillCommitment?: unknown; shardHash?: unknown; fill?: unknown; settledAtMs?: unknown };
+        let commitment: string;
+        try {
+          commitment = toHex(shardFillCommitment(row.fill as ShardFillInput));
+        } catch (error) {
+          throw new NaryxEvidenceError(`fills[${index}] is malformed: ${(error as Error).message}`);
+        }
+        const fill = row.fill as ShardFillInput;
+        const boundHash = typeof fill.shardHash === 'string' ? fill.shardHash.toLowerCase() : toHex(fill.shardHash);
+        if (row.fillCommitment !== commitment || row.shardHash !== boundHash || typeof row.settledAtMs !== 'number') {
+          throw new NaryxEvidenceError(`fills[${index}] does not match its commitment or bound shard`);
+        }
+        return Object.freeze({ fillCommitment: commitment, shardHash: boundHash, fill, settledAtMs: row.settledAtMs });
+      }),
+    );
   }
 
   putShard(shard: PackageQuoteShardInput) {

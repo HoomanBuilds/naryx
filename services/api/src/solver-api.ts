@@ -54,7 +54,7 @@ const SHARD_ID = /^[A-Za-z0-9._:-]{1,257}$/;
 export type AdmissionContext = Omit<PackageAdmissionInput, "order" | "quote" | "route" | "currentTime">;
 
 export interface SolverApiOptions {
-  readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity">;
+  readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity" | "shardFills">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "cancelEntry">;
@@ -288,6 +288,14 @@ export function createSolverApiHandler(options: SolverApiOptions) {
 
     const { solverId, manifest } = authenticate(request, raw);
     let match: RegExpExecArray | null;
+    if ((match = /^\/v1\/solver\/quote-shards\/([^/]+)\/fills$/.exec(path)) !== null) {
+      // The fills the controller settled against this solver's shard, so a maker can reconcile
+      // inventory and re-sign its reserved capacity.
+      const shardId = match[1] as string;
+      if (!SHARD_ID.test(shardId)) throw new SolverRequestError(400, "INVALID_REQUEST", "Shard id is malformed.");
+      if (method !== "GET") throw new SolverRequestError(405, "METHOD_NOT_ALLOWED", "Use GET for shard fills.");
+      return { shardId, fills: store.shardFills(solverId, shardId) };
+    }
     if ((match = /^\/v1\/solver\/quote-shards\/([^/]+)(?:\/(replace|cancel-all|heartbeat))?$/.exec(path)) !== null) {
       const shardId = match[1] as string;
       if (!SHARD_ID.test(shardId)) throw new SolverRequestError(400, "INVALID_REQUEST", "Shard id is malformed.");
