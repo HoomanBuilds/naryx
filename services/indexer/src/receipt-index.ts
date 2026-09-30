@@ -12,6 +12,7 @@ import {
   type IndexedEventKind,
   type IndexedPackageRecord,
 } from "./package-record.js";
+import { replayBondEvents, type BondEventType, type ObservedBond, type ObservedBondEvent } from "./bond-vault.js";
 
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const LOCATOR = /^[A-Za-z0-9:_.-]{1,160}$/;
@@ -42,6 +43,8 @@ export interface ObservedBlock {
   readonly blockHashHex: string;
   readonly parentHashHex: string;
   readonly events: readonly ObservedChainEvent[];
+  /** Decoded performance bond vault logs in this block, when the source follows a vault. */
+  readonly bondEvents?: readonly ObservedBondEvent[];
 }
 
 export interface ObservedVenueFill {
@@ -105,6 +108,23 @@ CREATE TABLE IF NOT EXISTS venue_fills (
   PRIMARY KEY (domain_id, fill_id)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS venue_fills_package ON venue_fills(package_id);
+CREATE TABLE IF NOT EXISTS bond_events (
+  domain_id TEXT NOT NULL,
+  block_hash TEXT NOT NULL,
+  locator TEXT NOT NULL,
+  log_index INTEGER NOT NULL CHECK (log_index >= 0),
+  vault TEXT NOT NULL,
+  bond_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  at_value TEXT NOT NULL,
+  evidence_grade TEXT NOT NULL,
+  fields TEXT NOT NULL,
+  PRIMARY KEY (domain_id, block_hash, locator),
+  FOREIGN KEY (domain_id, block_hash) REFERENCES blocks(domain_id, block_hash)
+) STRICT;
+CREATE INDEX IF NOT EXISTS bond_events_bond ON bond_events(domain_id, vault, bond_id);
+CREATE TRIGGER IF NOT EXISTS reject_bond_event_change BEFORE UPDATE ON bond_events BEGIN SELECT RAISE(ABORT, 'bond events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_bond_event_delete BEFORE DELETE ON bond_events BEGIN SELECT RAISE(ABORT, 'bond events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_event_change BEFORE UPDATE ON chain_events BEGIN SELECT RAISE(ABORT, 'chain events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_event_delete BEFORE DELETE ON chain_events BEGIN SELECT RAISE(ABORT, 'chain events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_fill_change BEFORE UPDATE ON venue_fills BEGIN SELECT RAISE(ABORT, 'venue fills are append-only'); END;
@@ -127,6 +147,29 @@ function id(value: string, field: string): string {
   } catch {
     throw new ReceiptIndexError("INVALID_INPUT", `${field} is not a protocol identifier.`);
   }
+}
+
+const BOND_EVENT_TYPES: ReadonlySet<BondEventType> = new Set(["BOND_OPENED", "CLAIM_FILED", "CLAIM_DISPUTED", "CLAIM_RESOLVED", "CLAIM_PAID", "BOND_RELEASED"]);
+
+function checkedBondEvent(event: ObservedBondEvent, index: number): ObservedBondEvent & { readonly logIndex: number } {
+  if (typeof event !== "object" || event === null) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} is not an object.`);
+  const match = typeof event.locator === "string" ? /^0x[0-9a-f]{64}:(\d{1,9})$/.exec(event.locator) : null;
+  if (match === null) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} locator is invalid.`);
+  if (!BOND_EVENT_TYPES.has(event.type)) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} type is unknown.`);
+  if (!Object.hasOwn(EVIDENCE_GRADE, event.evidenceGrade)) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} evidence grade is unknown.`);
+  if (typeof event.vault !== "string" || !/^0x[0-9a-f]{40}$/.test(event.vault)) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} vault is invalid.`);
+  if (typeof event.atValue !== "string" || !/^(0|[1-9]\d{0,19})$/.test(event.atValue)) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} time is invalid.`);
+  if (typeof event.fields !== "object" || event.fields === null) throw new ReceiptIndexError("INVALID_INPUT", `Bond event ${index} fields are missing.`);
+  return {
+    locator: event.locator,
+    logIndex: Number(match[1]),
+    vault: event.vault,
+    bondIdHex: hashHex(event.bondIdHex, `bondEvents[${index}].bondIdHex`),
+    type: event.type,
+    atValue: event.atValue,
+    evidenceGrade: event.evidenceGrade,
+    fields: event.fields,
+  };
 }
 
 function checkedEvent(event: ObservedChainEvent, index: number): ObservedChainEvent {
@@ -218,7 +261,18 @@ export class SqliteReceiptIndex {
     const events = block.events.map(checkedEvent);
     const locators = new Set(events.map((event) => event.locator));
     if (locators.size !== events.length) throw new ReceiptIndexError("INVALID_INPUT", "Event locators repeat inside the block.");
-    const contentKey = JSON.stringify([at, parentHash, [...events].sort((a, b) => (a.locator < b.locator ? -1 : 1))]);
+    if (block.bondEvents !== undefined && (!Array.isArray(block.bondEvents) || block.bondEvents.length > MAX_EVENTS_PER_BLOCK)) {
+      throw new ReceiptIndexError("INVALID_INPUT", `A block carries at most ${MAX_EVENTS_PER_BLOCK} bond events.`);
+    }
+    const bondEvents = (block.bondEvents ?? []).map(checkedBondEvent);
+    if (new Set(bondEvents.map((event) => event.locator)).size !== bondEvents.length) {
+      throw new ReceiptIndexError("INVALID_INPUT", "Bond event locators repeat inside the block.");
+    }
+    // Bond events join the content key only when present, so blocks indexed before them keep their keys.
+    const sortedEvents = [...events].sort((a, b) => (a.locator < b.locator ? -1 : 1));
+    const contentKey = JSON.stringify(
+      bondEvents.length === 0 ? [at, parentHash, sortedEvents] : [at, parentHash, sortedEvents, [...bondEvents].sort((a, b) => (a.locator < b.locator ? -1 : 1))],
+    );
 
     return this.transaction(() => {
       const { finalized } = this.ensureDomain(domainId);
@@ -264,6 +318,12 @@ export class SqliteReceiptIndex {
         );
         for (const event of events) {
           insert.run(domainId, blockHash, event.locator, event.packageId, event.attemptId, event.kind, event.evidenceGrade, event.fieldsHashHex);
+        }
+        const insertBond = this.db.prepare(
+          "INSERT INTO bond_events (domain_id, block_hash, locator, log_index, vault, bond_id, event_type, at_value, evidence_grade, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        );
+        for (const event of bondEvents) {
+          insertBond.run(domainId, blockHash, event.locator, event.logIndex, event.vault, event.bondIdHex, event.type, event.atValue, event.evidenceGrade, JSON.stringify(event.fields));
         }
       }
       return displaced.count > 0 ? { status: "REORGED" as const, orphanedBlocks: displaced.count } : { status: "APPENDED" as const };
@@ -348,6 +408,70 @@ export class SqliteReceiptIndex {
       finalizedHeight: row.finalized_height,
       reorgCount: row.reorg_count,
     });
+  }
+
+  /**
+   * One performance bond as its vault's canonical logs show it, replayed through the kernel's bond
+   * rules. Finality is the weakest of its events; undefined when the index holds no event for it.
+   */
+  bond(domainIdInput: string, vaultInput: string, bondIdHexInput: string): ObservedBond | undefined {
+    const domainId = id(domainIdInput, "domainId");
+    const vault = String(vaultInput).toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(vault)) throw new ReceiptIndexError("INVALID_INPUT", "vault must be a 20-byte hex address.");
+    const bondId = hashHex(String(bondIdHexInput).toLowerCase().replace(/^0x/, ""), "bondIdHex");
+    const rows = this.db
+      .prepare(
+        `SELECT e.locator, e.log_index, e.vault, e.bond_id, e.event_type, e.at_value, e.evidence_grade, e.fields, b.height, d.confirmed_height, d.finalized_height
+         FROM bond_events e
+         JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
+         JOIN domains d ON d.domain_id = e.domain_id
+         WHERE e.domain_id = ? AND e.vault = ? AND e.bond_id = ?
+         ORDER BY b.height ASC, e.log_index ASC`,
+      )
+      .all(domainId, vault, bondId) as {
+      locator: string;
+      log_index: number;
+      vault: string;
+      bond_id: string;
+      event_type: BondEventType;
+      at_value: string;
+      evidence_grade: EvidenceGrade;
+      fields: string;
+      height: number;
+      confirmed_height: number;
+      finalized_height: number;
+    }[];
+    if (rows.length === 0) return undefined;
+    const events = rows.map((row) => ({
+      locator: row.locator,
+      vault: row.vault,
+      bondIdHex: row.bond_id,
+      type: row.event_type,
+      atValue: row.at_value,
+      evidenceGrade: row.evidence_grade,
+      fields: JSON.parse(row.fields) as Record<string, string | number | boolean>,
+      height: row.height,
+    }));
+    const last = rows[rows.length - 1] as (typeof rows)[number];
+    const finality: Finality = last.height <= last.finalized_height ? "FINALIZED" : last.height <= last.confirmed_height ? "CONFIRMED" : "OBSERVED";
+    return replayBondEvents(events, finality);
+  }
+
+  /** The bonds a vault holds for one solver address, each replayed as `bond` does. */
+  bondsForSolver(domainIdInput: string, vaultInput: string, solverInput: string): readonly ObservedBond[] {
+    const domainId = id(domainIdInput, "domainId");
+    const vault = String(vaultInput).toLowerCase();
+    const solver = String(solverInput).toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(vault) || !/^0x[0-9a-f]{40}$/.test(solver)) throw new ReceiptIndexError("INVALID_INPUT", "vault and solver must be 20-byte hex addresses.");
+    const ids = this.db
+      .prepare(
+        `SELECT DISTINCT e.bond_id FROM bond_events e
+         JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
+         WHERE e.domain_id = ? AND e.vault = ? AND e.event_type = 'BOND_OPENED' AND json_extract(e.fields, '$.solver') = ?
+         ORDER BY e.bond_id LIMIT 256`,
+      )
+      .all(domainId, vault, solver) as { bond_id: string }[];
+    return Object.freeze(ids.map((row) => this.bond(domainId, vault, row.bond_id)).filter((bond): bond is ObservedBond => bond !== undefined));
   }
 
   /** The normalized package record from canonical chain events and committed venue fills only. */

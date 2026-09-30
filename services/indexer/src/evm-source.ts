@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { EvidenceGrade, IndexedEventKind } from "./package-record.js";
+import { BOND_VAULT_TOPICS, decodeBondVaultLog, type ObservedBondEvent } from "./bond-vault.js";
 import type { FinalityCheckpoint, ObservedBlock, ObservedChainEvent, SqliteReceiptIndex } from "./receipt-index.js";
 
 /** keccak256("PackageVerified(bytes32,address,uint8,address,bool,uint256,uint256,bytes32,bytes32)") */
@@ -19,6 +20,7 @@ export interface RpcBlock {
   readonly number: string;
   readonly hash: string;
   readonly parentHash: string;
+  readonly timestamp?: string;
 }
 
 export interface RpcLog {
@@ -125,6 +127,8 @@ export interface EvmIndexerSource {
   /** One endpoint, or several independent ones that must agree. */
   readonly rpcs: readonly EvmJsonRpc[];
   readonly startHeight: number;
+  /** Performance bond vaults whose logs are indexed alongside settlement logs. */
+  readonly bondVaults?: readonly string[];
 }
 
 /**
@@ -139,20 +143,40 @@ export async function readBlock(source: EvmIndexerSource, height: number): Promi
     source.rpcs.map(async (rpc) => {
       const block = await rpc.block(height);
       if (block === null) return null;
-      const logs = (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC]))
-        .filter((log) => log.removed !== true && log.blockHash.toLowerCase() === block.hash.toLowerCase());
-      return { block, events: logs.map((log) => decodeSettlementLog(log, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1)) };
+      const inBlock = (log: RpcLog) => log.removed !== true && log.blockHash.toLowerCase() === block.hash.toLowerCase();
+      const logs = (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC])).filter(inBlock);
+      let bondEvents: ObservedBondEvent[] = [];
+      if (source.bondVaults !== undefined && source.bondVaults.length > 0) {
+        const bondLogs = (await rpc.logs(height, height, source.bondVaults, BOND_VAULT_TOPICS)).filter(inBlock);
+        if (bondLogs.length > 0) {
+          // Claim times are block times, so a vault log is unusable without its block's timestamp.
+          const timestamp = quantity(block.timestamp, "block.timestamp");
+          bondEvents = bondLogs.map((log) => decodeBondVaultLog(log, timestamp, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1));
+        }
+      }
+      return { block, events: logs.map((log) => decodeSettlementLog(log, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1)), bondEvents };
     }),
   );
   if (views.some((view) => view === null)) return null;
-  const [first, ...rest] = views as { block: RpcBlock; events: ObservedChainEvent[] }[];
+  const [first, ...rest] = views as { block: RpcBlock; events: ObservedChainEvent[]; bondEvents: ObservedBondEvent[] }[];
   if (first === undefined) return null;
   for (const view of rest) {
-    if (view.block.hash !== first.block.hash || view.block.parentHash !== first.block.parentHash || JSON.stringify(view.events) !== JSON.stringify(first.events)) {
+    if (
+      view.block.hash !== first.block.hash ||
+      view.block.parentHash !== first.block.parentHash ||
+      JSON.stringify(view.events) !== JSON.stringify(first.events) ||
+      JSON.stringify(view.bondEvents) !== JSON.stringify(first.bondEvents)
+    ) {
       throw new Error(`endpoints disagree about block ${height}`);
     }
   }
-  return { height, blockHashHex: first.block.hash.slice(2).toLowerCase(), parentHashHex: first.block.parentHash.slice(2).toLowerCase(), events: first.events };
+  return {
+    height,
+    blockHashHex: first.block.hash.slice(2).toLowerCase(),
+    parentHashHex: first.block.parentHash.slice(2).toLowerCase(),
+    events: first.events,
+    ...(first.bondEvents.length === 0 ? {} : { bondEvents: first.bondEvents }),
+  };
 }
 
 /**

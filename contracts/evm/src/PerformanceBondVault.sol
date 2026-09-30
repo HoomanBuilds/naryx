@@ -70,12 +70,15 @@ contract PerformanceBondVault is ReentrancyGuard {
     error OpenClaims();
     error TransferAmountMismatch();
 
+    /// Carries every term a claim is judged against, so an indexer can replay the bond from logs.
     event BondOpened(
         bytes32 indexed bondId,
         address indexed solver,
         address indexed asset,
         uint256 bondAtoms,
         uint8 coveredFaults,
+        uint256 maximumPayoutPerClaim,
+        uint64 disputeWindow,
         uint64 expiresAt
     );
     event ClaimFiled(
@@ -142,7 +145,9 @@ contract PerformanceBondVault is ReentrancyGuard {
         uint256 before = asset.balanceOf(address(this));
         asset.safeTransferFrom(msg.sender, address(this), bondAtoms);
         if (asset.balanceOf(address(this)) - before != bondAtoms) revert TransferAmountMismatch();
-        emit BondOpened(bondId, msg.sender, address(asset), bondAtoms, coveredFaults, expiresAt);
+        emit BondOpened(
+            bondId, msg.sender, address(asset), bondAtoms, coveredFaults, maximumPayoutPerClaim, disputeWindow, expiresAt
+        );
     }
 
     /// @notice Files a claim for one objective fault, bound to its unique evidence hash.

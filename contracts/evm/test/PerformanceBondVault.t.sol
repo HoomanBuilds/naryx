@@ -56,6 +56,8 @@ contract PerformanceBondVaultTest is Test {
     }
 
     function _open(uint8 faults) private {
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit PerformanceBondVault.BondOpened(BOND, SOLVER, address(token), 1_000, faults, 600, 100, 5_000);
         vm.prank(SOLVER);
         vault.openBond(BOND, IERC20(address(token)), 1_000, faults, 600, 100, 5_000);
     }

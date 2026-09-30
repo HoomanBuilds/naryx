@@ -3,7 +3,7 @@ import { SqliteReceiptIndex } from "./receipt-index.js";
 
 /**
  * The read-only indexer process. It follows one EVM domain's settlement logs from its configured
- * contracts into the durable receipt index, replaying reorgs from their fork point and advancing
+ * contracts, and the logs of any performance bond vaults it is given, into the durable receipt index, replaying reorgs from their fork point and advancing
  * confirmation and finality only onto blocks it holds. It holds no key and sends no transaction.
  */
 export function loadEvmIndexerConfig(environment: NodeJS.ProcessEnv): { dbPath: string; intervalMs: number; source: EvmIndexerSource } | undefined {
@@ -19,11 +19,17 @@ export function loadEvmIndexerConfig(environment: NodeJS.ProcessEnv): { dbPath: 
   if (rpcUrls.length === 0 || rpcUrls.length > 5 || new Set(rpcUrls).size !== rpcUrls.length) fail("NARYX_INDEXER_EVM_RPC_URLS must list 1 to 5 distinct endpoints");
   const contracts = (environment.NARYX_INDEXER_EVM_CONTRACTS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter((value) => value !== "");
   if (contracts.length === 0 || contracts.some((address) => !/^0x[0-9a-f]{40}$/.test(address))) fail("NARYX_INDEXER_EVM_CONTRACTS must list settlement contract addresses");
+  const bondVaults = (environment.NARYX_INDEXER_EVM_BOND_VAULTS ?? "").split(",").map((value) => value.trim().toLowerCase()).filter((value) => value !== "");
+  if (bondVaults.some((address) => !/^0x[0-9a-f]{40}$/.test(address)) || new Set(bondVaults).size !== bondVaults.length) fail("NARYX_INDEXER_EVM_BOND_VAULTS must list distinct vault addresses");
   const startHeight = Number(environment.NARYX_INDEXER_EVM_START_HEIGHT ?? "");
   if (!Number.isSafeInteger(startHeight) || startHeight < 0) fail("NARYX_INDEXER_EVM_START_HEIGHT must be a block height");
   const intervalMs = Number(environment.NARYX_INDEXER_INTERVAL_MS ?? "5000");
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1_000) fail("NARYX_INDEXER_INTERVAL_MS must be at least 1000");
-  return { dbPath, intervalMs, source: { domainId, contracts, rpcs: rpcUrls.map((url) => new EvmJsonRpc(url)), startHeight } };
+  return {
+    dbPath,
+    intervalMs,
+    source: { domainId, contracts, rpcs: rpcUrls.map((url) => new EvmJsonRpc(url)), startHeight, ...(bondVaults.length === 0 ? {} : { bondVaults }) },
+  };
 }
 
 const config = loadEvmIndexerConfig(process.env);

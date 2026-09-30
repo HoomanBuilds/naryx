@@ -390,6 +390,18 @@
         "internalType": "uint8"
       },
       {
+        "name": "maximumPayoutPerClaim",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "disputeWindow",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
         "name": "expiresAt",
         "type": "uint64",
         "indexed": false,

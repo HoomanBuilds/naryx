@@ -46,3 +46,18 @@ export {
   type RpcBlock,
   type RpcLog,
 } from "./evm-source.js";
+export {
+  BOND_OPENED_TOPIC,
+  BOND_RELEASED_TOPIC,
+  BOND_VAULT_TOPICS,
+  CLAIM_DISPUTED_TOPIC,
+  CLAIM_FILED_TOPIC,
+  CLAIM_PAID_TOPIC,
+  CLAIM_RESOLVED_TOPIC,
+  decodeBondVaultLog,
+  replayBondEvents,
+  type BondEventType,
+  type ObservedBond,
+  type ObservedBondClaim,
+  type ObservedBondEvent,
+} from "./bond-vault.js";
