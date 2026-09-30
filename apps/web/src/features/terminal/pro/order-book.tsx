@@ -65,6 +65,7 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
   const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades"]);
   const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
   const book = useMemo(() => feed.depth(), [feed]);
+  const fixture = feed.label === "FIXTURE";
   const trades = useMemo(() => feed.tape(), [feed]);
   const steps = [book.tick, book.tick * 2, book.tick * 10];
   const [step, setStep] = useState(book.tick);
@@ -118,6 +119,13 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
       <div className={styles.panelTabs} role="tablist" aria-label="Book view" onKeyDown={handleTablistKeys}>
         <button type="button" role="tab" aria-selected={view === "book"} className={view === "book" ? styles.tabActive : undefined} onClick={() => setView("book")}>Order book</button>
         <button type="button" role="tab" aria-selected={view === "trades"} className={view === "trades" ? styles.tabActive : undefined} onClick={() => setView("trades")}>Trades</button>
+        {/* Depth from the public API is executable package book depth; trades are observed; a fixture is neither. */}
+        <span
+          className={`${fixture ? styles.labelFixture : styles.labelObserved} ${styles.tabTag}`}
+          title={fixture ? "Deterministic fixture levels for layout; not resting orders" : feed.sourceNote}
+        >
+          {fixture ? "FIXTURE" : view === "book" ? "EXECUTABLE" : "OBSERVED"}
+        </span>
       </div>
       {view === "book" ? (
         <div key="book" className={styles.viewFade}>
@@ -146,7 +154,7 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
           </div>
           <div className={styles.bookHeader} role="row">
             <span role="columnheader">Price ({unit})</span>
-            <span role="columnheader" title="Resting signed package orders">Direct</span>
+            <span role="columnheader" title={fixture ? "Fixture levels, not resting orders" : "Resting signed package orders"}>Direct</span>
             <span role="columnheader" title="Derived from leg sources; never merged into direct size">Implied</span>
             <span role="columnheader" title="Cumulative direct size">Total</span>
           </div>

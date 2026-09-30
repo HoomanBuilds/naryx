@@ -51,6 +51,8 @@ import type {
 } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
 
+/** How long a prepared Devnet review stays signable. */
+const REVIEW_TTL_MS = 45_000;
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
 const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
@@ -660,6 +662,7 @@ function protocolScalar(value: unknown): string {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
     if (record.$naryxType === "bigint" && typeof record.value === "string") return record.value;
+    if (record.$naryxType === "bytes" && typeof record.value === "string") return record.value;
   }
   return "-";
 }
@@ -668,6 +671,48 @@ function quoteAmount(quote: LocalSolverQuote, key: string): string {
   const value = quote.quote[key];
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "-";
   return protocolScalar((value as Record<string, unknown>).atoms);
+}
+
+const SETTLEMENT_GUARANTEE: Readonly<Record<string, string>> = {
+  ATOMIC_POSTCONDITION: "Every leg settles in one transaction, or none does",
+  BATCHED_IOC_WITH_RECOVERY: "Legs execute IOC; a partial state is completed or unwound within the signed recovery bounds",
+  ASYNC_BONDED_SOLVER: "The solver settles within its window or its bond pays the signed fault amount",
+};
+
+function assetAmountText(value: unknown): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "-";
+  const record = value as Record<string, unknown>;
+  const asset = record.asset as Record<string, unknown> | undefined;
+  return `${protocolScalar(record.atoms)} atoms ${typeof asset?.assetId === "string" ? asset.assetId : ""}`.trim();
+}
+
+/**
+ * The signed terms a quote and its route bind, read from the exact records the solver signed:
+ * template and registry record, settlement class with its guarantee, quantity and partial-fill
+ * policy, delivery path, margin, residual, and quote mode. A reservation outside production is
+ * labeled FIRM_SIMULATED, never firm.
+ */
+function QuoteTerms({ quote }: { quote: LocalSolverQuote }) {
+  const route = quote.route;
+  const settlementClass = protocolScalar(route.settlementClass);
+  const quoteMode = protocolScalar(quote.quote.quoteMode);
+  const residualBase = quote.quote.expectedTerminalResidualBaseQuantity;
+  const residualValue = quote.quote.expectedTerminalResidualQuoteValue;
+  return (
+    <div className={styles.reviewGrid}>
+      <span>Template</span><strong>{protocolScalar(route.templateId)} v{protocolScalar(route.templateVersion)}</strong>
+      <span>Registry record</span><strong title={protocolScalar(route.templateRegistryRecordHash)}>{compact(protocolScalar(route.templateRegistryRecordHash))}</strong>
+      <span>Settlement class</span><strong>{settlementClass}</strong>
+      <span>Guarantee</span><strong>{SETTLEMENT_GUARANTEE[settlementClass] ?? "Unknown settlement class; not executable"}</strong>
+      <span>Quantity policy</span><strong>{protocolScalar(route.quantityPolicyClass)}</strong>
+      <span>Partial fill</span><strong>{protocolScalar(route.partialFillPolicy)}</strong>
+      <span>Delivery</span><strong>Direct to the configured solver, not a public RFQ</strong>
+      <span>Quote mode</span><strong>{quoteMode === "FIRM_SIMULATED" ? "FIRM_SIMULATED (non-production reservation)" : quoteMode}</strong>
+      <span>Margin change</span><strong>{assetAmountText(quote.quote.expectedMarginDelta)}</strong>
+      {residualBase !== undefined ? <><span>Residual base</span><strong>{assetAmountText(residualBase)}</strong></> : null}
+      {residualValue !== undefined ? <><span>Residual value</span><strong>{assetAmountText(residualValue)}</strong></> : null}
+    </div>
+  );
 }
 
 function LocalExecutionPanel({
@@ -722,6 +767,7 @@ function LocalExecutionPanel({
           <span>Route bytes</span><strong>{quote.routeBytes.length / 2} B</strong>
         </div>
       ) : null}
+      {quote ? <QuoteTerms quote={quote} /> : null}
       {attempt ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Selected attempt</span>
@@ -753,12 +799,15 @@ function HyperliquidTestnetPanel({
   flow,
   enabled,
   size,
+  baseSymbol,
   slippage,
   onStep,
 }: {
   flow: HyperliquidFlowState | null;
   enabled: boolean;
   size: string;
+  /** The ticket's base asset, the unit the size was entered in. */
+  baseSymbol: string;
   slippage: SlippageBps;
   onStep: (step: "create" | "quote" | "select" | "execute") => void;
 }) {
@@ -793,7 +842,7 @@ function HyperliquidTestnetPanel({
           <span>Manifest</span><strong title={context.domain.domainManifestHash}>v{context.domain.domainManifestVersion} / {compact(context.domain.domainManifestHash)}</strong>
           <span>Environment</span><strong>{context.environment}</strong>
           <span>Authorization</span><strong>Dedicated Testnet account gate</strong>
-          <span>Requested size</span><strong>{size} {"BTC"}</strong>
+          <span>Requested size</span><strong>{size} {baseSymbol}</strong>
           <span>Slippage limit</span><strong>{slippage} bps</strong>
         </div>
       ) : null}
@@ -819,6 +868,7 @@ function HyperliquidTestnetPanel({
           <span>Recovery cap entries</span><strong>{Array.isArray(quote.quote.maxRecoveryCostAtomsByAsset) ? quote.quote.maxRecoveryCostAtomsByAsset.length : 0}</strong>
         </div>
       ) : null}
+      {quote ? <QuoteTerms quote={quote} /> : null}
       {attempt ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Selected Testnet attempt</span>
@@ -915,7 +965,7 @@ function ExecutionReviewPanel({
       <div className={styles.reviewEconomics}>
         <div>
           <span>Package</span>
-          <strong>{preview?.size.value ?? "-"} SOL</strong>
+          <strong>{preview === null || preview === undefined ? "-" : `${preview.size.value} ${preview.size.symbol}`}</strong>
         </div>
         <div>
           <span>Bound</span>
@@ -1149,6 +1199,14 @@ function Ticket({
         <div><dt>Account</dt><dd>{accountLabel}</dd></div>
         <div><dt>Package</dt><dd>{snapshot.market.packageId}</dd></div>
         <div><dt>Evidence</dt><dd className={styles.fixtureText}>{preview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</dd></div>
+        <div title="Marketable limit, exact all legs: the only package order policy the initial activation accepts. Every other type, time in force, or partial-fill policy is rejected before authorization.">
+          <dt>Order</dt>
+          <dd>Marketable limit, {READINESS_META[snapshot.selectedDomain].settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, exact</dd>
+        </div>
+        <div title={SETTLEMENT_GUARANTEE[READINESS_META[snapshot.selectedDomain].settlementClass]}>
+          <dt>Settlement</dt>
+          <dd>{READINESS_META[snapshot.selectedDomain].settlementClass}</dd>
+        </div>
       </dl>
 
       <div className={styles.sizeBox}>
@@ -1284,6 +1342,7 @@ function Ticket({
             flow={hyperliquidFlow}
             enabled={hyperliquidFlowEnabled}
             size={size}
+            baseSymbol={snapshot.market.base}
             slippage={slippage}
             onStep={onHyperliquidStep}
           />
@@ -1803,6 +1862,17 @@ export function TradingTerminal({
         ? runtimeHealth?.arbitrumTestnetAsync
         : runtimeHealth?.hyperliquidTestnet;
 
+  // A reviewed transaction is signable only while its review is fresh; the button says so the
+  // moment it lapses instead of failing on click.
+  const [expiredReviewAt, setExpiredReviewAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (!currentExecutionReview) return;
+    const preparedAt = currentExecutionReview.preparedAt;
+    const timer = setTimeout(() => setExpiredReviewAt(preparedAt), Math.max(0, preparedAt + REVIEW_TTL_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [currentExecutionReview]);
+  const reviewExpired = currentExecutionReview !== null && currentExecutionReview !== undefined && expiredReviewAt === currentExecutionReview.preparedAt;
+
   const actionState = useMemo(() => {
     if (selectedDomain !== "solana") {
       return { disabled: true, label: "Solana Devnet only", reason: "Select Solana to prepare the Devnet execution path." };
@@ -1861,8 +1931,12 @@ export function TradingTerminal({
     if (!currentExecutionReview) {
       return { disabled: true, label: "Sign and submit on Devnet", reason: "Prepare and review the unsigned Devnet transaction before signing." };
     }
+    if (reviewExpired) {
+      return { disabled: true, label: "Review expired", reason: "The reviewed Devnet transaction is older than 45 seconds. Prepare a fresh review before signing." };
+    }
     return { disabled: false, label: "Sign and submit on Devnet", reason: "The wallet will show the exact reviewed Devnet transaction before signing." };
   }, [
+    reviewExpired,
     currentExecutionReview,
     currentSubmission,
     preview,
@@ -1898,7 +1972,7 @@ export function TradingTerminal({
     setExecutionBusy(true);
     setExecutionError(null);
     try {
-      if (currentExecutionReview && Date.now() - currentExecutionReview.preparedAt > 45_000) {
+      if (currentExecutionReview && Date.now() - currentExecutionReview.preparedAt > REVIEW_TTL_MS) {
         setExecutionReview(null);
         setIdempotency(null);
         setExecutionError({ ticketKey, message: "The prior review expired. Prepare a fresh Devnet transaction." });

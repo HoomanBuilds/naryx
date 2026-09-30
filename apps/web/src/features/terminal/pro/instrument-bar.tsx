@@ -9,8 +9,8 @@ import styles from "./pro.module.css";
 const SHORT_LABELS: Readonly<Record<string, string>> = {
   "Spot reference": "Spot ref",
   "Perp reference": "Perp ref",
-  "Expected net annualized yield": "Net yield (model)",
-  "Funding annualized": "Funding APR",
+  "Expected net annualized yield": "Net carry (model)",
+  "Funding annualized": "Funding (current)",
   "Liquidity at size": "Depth at size",
   "Settlement class": "Settlement",
 };
@@ -38,6 +38,9 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
   const { unit, precision } = feed.seriesMeta("basis");
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const metrics = snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
+  // Reference metrics carry the snapshot's evidence grade; unattested values say so on screen,
+  // and a modeled return is never emphasized as if it were a promised yield.
+  const unattested = snapshot.environment.evidenceGrade === "FIXTURE_UNATTESTED";
 
   return (
     <section className={styles.instrumentBar} aria-label="Instrument">
@@ -78,10 +81,16 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
           <dt>24h volume</dt>
           <dd>{stats === null ? "-" : Math.round(stats.volume).toLocaleString("en-US")}</dd>
         </div>
+        {unattested ? (
+          <div className={styles.metricSource} title="These reference values are unattested fixtures, not market data.">
+            <dt>Reference</dt>
+            <dd><span className={styles.labelFixture}>FIXTURE</span></dd>
+          </div>
+        ) : null}
         {metrics.map((entry) => (
           <div key={entry.label} title={entry.detail === undefined ? entry.label : `${entry.label}. ${entry.detail}`}>
             <dt>{SHORT_LABELS[entry.label] ?? entry.label}</dt>
-            <dd className={entry.accent ? styles.accentValue : undefined}>{entry.value}</dd>
+            <dd className={entry.accent === true && !/yield|funding/i.test(entry.label) ? styles.accentValue : undefined}>{entry.value}</dd>
           </div>
         ))}
       </dl>
