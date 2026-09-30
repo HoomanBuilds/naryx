@@ -202,6 +202,9 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
   const y = (value: number) => PLOT.top + plotHeight - ((value - (minimum - pad)) / (maximum - minimum + 2 * pad)) * plotHeight;
   const breakeven = notional > 0 ? entryBasis - ((fees - funding) * 10_000) / notional : entryBasis;
   const converge = pnl(0);
+  // Days of funding at the snapshot rate that repay the previewed fees if basis exits where it entered.
+  const dailyFunding = fundingRate !== null && fundingRate > 0 ? (notional * fundingRate) / 100 / 365 : 0;
+  const paybackDays = valid && dailyFunding > 0 ? fees / dailyFunding : null;
   const zeroY = y(0);
   const basisTicks = niceTicks(low, high, 6);
   const pnlTicks = niceTicks(minimum - pad, maximum + pad, 5);
@@ -213,6 +216,7 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
         <div><span>Entry basis</span><strong>{entryBasis.toFixed(1)} bps</strong></div>
         <div><span>Notional</span><strong>{valid ? `$${notional.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "-"}</strong></div>
         <div><span>Break-even exit</span><strong>{valid ? `${breakeven.toFixed(1)} bps` : "-"}</strong></div>
+        <div title="Days of funding at the current rate that repay the previewed fees, exiting at the entry basis"><span>Fee payback</span><strong>{paybackDays === null ? "-" : `${paybackDays < 10 ? paybackDays.toFixed(1) : Math.round(paybackDays)} days`}</strong></div>
         <div><span>At full convergence</span><strong className={converge >= 0 ? styles.up : styles.down}>{valid ? `${converge >= 0 ? "+" : "-"}$${Math.abs(converge).toFixed(2)}` : "-"}</strong></div>
         <label className={styles.checkLabel}>
           <input type="checkbox" checked={withFunding} disabled={fundingRate === null} onChange={(event) => setWithFunding(event.target.checked)} />
