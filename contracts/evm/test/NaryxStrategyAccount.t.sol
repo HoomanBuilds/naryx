@@ -406,6 +406,71 @@ contract NaryxStrategyAccountTest is Test {
         assertFalse(verifier.hasOpenPackage(address(account)));
     }
 
+    function testDelegateSubmitsOnlyAnOwnerSignedRecoveryExitUntilExpiry() public {
+        address keeper = makeAddr("keeper");
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(NaryxStrategyAccount.UnauthorizedOwner.selector, keeper));
+        account.setDelegation(keeper, 1, uint64(block.timestamp + 1 hours));
+        vm.startPrank(owner);
+        vm.expectRevert(NaryxStrategyAccount.InvalidDelegation.selector);
+        account.setDelegation(keeper, 3, uint64(block.timestamp + 1 hours));
+        vm.expectRevert(NaryxStrategyAccount.InvalidDelegation.selector);
+        account.setDelegation(keeper, 1, uint64(block.timestamp + 31 days));
+        account.setDelegation(keeper, 1, uint64(block.timestamp + 1 hours));
+        vm.stopPrank();
+
+        bytes32 entryReceiptHash = _enter();
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =
+            _exit(entryReceiptHash, address(0));
+        _admit(admission);
+        bytes memory traderSignature = _signature(ownerKey, verifier.traderPermitDigest(execution, admission));
+        // A delegate may not withdraw.
+        vm.prank(keeper);
+        vm.expectRevert(NaryxStrategyAccount.UnauthorizedWithdrawal.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), keeper, 1);
+        vm.prank(keeper);
+        account.executeRecoveryExit(
+            execution, admission, traderSignature, _tradeArgs(int128(int256(QUANTITY)), -int128(int256(MARGIN)))
+        );
+        assertEq(base.balanceOf(address(account)), 0);
+        vm.warp(block.timestamp + 2 hours);
+        assertFalse(account.hasAuthority(keeper, 1));
+    }
+
+    function testNovationNeedsTheNewOwnersAcceptanceAndVoidsOldSignaturesAndDelegations() public {
+        address successor = vm.addr(0xB0B0);
+        address keeper = makeAddr("keeper");
+        vm.startPrank(owner);
+        account.setDelegation(keeper, 1, uint64(block.timestamp + 1 hours));
+        vm.expectRevert(NaryxStrategyAccount.InvalidTransfer.selector);
+        account.proposeOwnerTransfer(successor, uint64(block.timestamp + 8 days));
+        account.proposeOwnerTransfer(successor, uint64(block.timestamp + 1 days));
+        vm.stopPrank();
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(NaryxStrategyAccount.UnauthorizedOwner.selector, keeper));
+        account.acceptOwnerTransfer();
+
+        bytes32 digest = keccak256("strategy-intent");
+        assertEq(account.isValidSignature(digest, _signature(ownerKey, digest)), bytes4(0x1626ba7e));
+        vm.prank(successor);
+        account.acceptOwnerTransfer();
+        assertEq(account.owner(), successor);
+        assertEq(account.pendingOwner(), address(0));
+        assertEq(account.isValidSignature(digest, _signature(ownerKey, digest)), bytes4(0xffffffff));
+        assertEq(account.isValidSignature(digest, _signature(0xB0B0, digest)), bytes4(0x1626ba7e));
+        assertFalse(account.hasAuthority(keeper, 1), "a transfer ends every earlier delegation");
+        vm.prank(owner);
+        vm.expectRevert(NaryxStrategyAccount.UnauthorizedWithdrawal.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), owner, 1);
+
+        vm.prank(successor);
+        account.proposeOwnerTransfer(owner, uint64(block.timestamp + 1 hours));
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(owner);
+        vm.expectRevert(NaryxStrategyAccount.TransferExpired.selector);
+        account.acceptOwnerTransfer();
+    }
+
     function testExitRejectsZeroEntryReceipt() public {
         _enter();
         (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) =

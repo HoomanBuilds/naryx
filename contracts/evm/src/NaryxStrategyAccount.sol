@@ -28,10 +28,37 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     error OpenPackageExists();
     error UnauthorizedWithdrawal();
     error WithdrawalPostconditionFailed();
+    error UnauthorizedOwner(address caller);
+    error InvalidTransfer();
+    error TransferExpired();
+    error InvalidDelegation();
 
     event IdleTokenWithdrawn(address indexed token, address indexed recipient, uint256 amount);
+    event OwnerTransferProposed(address indexed owner, address indexed pendingOwner, uint64 expiresAt);
+    event OwnerTransferCancelled(address indexed owner, address indexed pendingOwner);
+    event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
+    event DelegationSet(address indexed delegate, uint8 authorities, uint64 expiresAt, uint256 epoch);
+    event DelegationRevoked(address indexed delegate);
 
-    address public immutable owner;
+    /// A delegate holding this authority may submit an owner-signed recovery exit, nothing else.
+    uint8 public constant AUTHORITY_RECOVERY_EXIT = 1;
+    uint64 public constant MAX_TRANSFER_WINDOW = 7 days;
+    uint64 public constant MAX_DELEGATION_WINDOW = 30 days;
+
+    struct Delegation {
+        uint8 authorities;
+        uint64 expiresAt;
+        uint256 epoch;
+    }
+
+    /// The account owner. A transfer moves the whole account, its balances and its venue positions,
+    /// to the new owner, whose acceptance is required; the old owner's signatures stop validating.
+    address public owner;
+    address public pendingOwner;
+    uint64 public pendingOwnerExpiresAt;
+    /// Every transfer advances the epoch, which voids every delegation granted before it.
+    uint256 public delegationEpoch;
+    mapping(address delegate => Delegation delegation) private _delegations;
     PackageVerifier public immutable verifier;
     uint256 public immutable deploymentChainId;
     bytes32 public immutable verifierCodeHash;
@@ -44,6 +71,72 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
         verifier = verifier_;
         deploymentChainId = block.chainid;
         verifierCodeHash = address(verifier_).codehash;
+    }
+
+    /// @notice Novation, step one: the owner names the new owner and a short acceptance window.
+    function proposeOwnerTransfer(address newOwner, uint64 expiresAt) external {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        if (
+            newOwner == address(0) || newOwner == address(this) || newOwner == owner || expiresAt <= block.timestamp
+                || expiresAt > block.timestamp + MAX_TRANSFER_WINDOW
+        ) revert InvalidTransfer();
+        pendingOwner = newOwner;
+        pendingOwnerExpiresAt = expiresAt;
+        emit OwnerTransferProposed(owner, newOwner, expiresAt);
+    }
+
+    function cancelOwnerTransfer() external {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        if (pendingOwner == address(0)) revert InvalidTransfer();
+        emit OwnerTransferCancelled(owner, pendingOwner);
+        pendingOwner = address(0);
+        pendingOwnerExpiresAt = 0;
+    }
+
+    /// @notice Novation, step two: only the named new owner accepts, inside the window. Every
+    /// delegation the previous owner granted ends with the transfer.
+    function acceptOwnerTransfer() external nonReentrant {
+        if (msg.sender != pendingOwner || pendingOwner == address(0)) revert UnauthorizedOwner(msg.sender);
+        if (block.timestamp >= pendingOwnerExpiresAt) revert TransferExpired();
+        if (block.chainid != deploymentChainId || address(verifier).codehash != verifierCodeHash) {
+            revert InvalidConfiguration();
+        }
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        pendingOwnerExpiresAt = 0;
+        delegationEpoch += 1;
+        emit OwnerTransferred(previous, msg.sender);
+    }
+
+    /// @notice Grants a bounded, expiring delegation. It can never move ownership, withdraw, or
+    /// sign; the only authority is submitting a recovery exit the owner already signed.
+    function setDelegation(address delegate, uint8 authorities, uint64 expiresAt) external {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        if (
+            delegate == address(0) || delegate == owner || authorities == 0
+                || authorities & ~AUTHORITY_RECOVERY_EXIT != 0 || expiresAt <= block.timestamp
+                || expiresAt > block.timestamp + MAX_DELEGATION_WINDOW
+        ) revert InvalidDelegation();
+        _delegations[delegate] = Delegation(authorities, expiresAt, delegationEpoch);
+        emit DelegationSet(delegate, authorities, expiresAt, delegationEpoch);
+    }
+
+    function revokeDelegation(address delegate) external {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        delete _delegations[delegate];
+        emit DelegationRevoked(delegate);
+    }
+
+    function delegationOf(address delegate) external view returns (Delegation memory) {
+        return _delegations[delegate];
+    }
+
+    function hasAuthority(address actor, uint8 authority) public view returns (bool) {
+        if (actor == owner) return true;
+        Delegation memory delegation = _delegations[actor];
+        return delegation.epoch == delegationEpoch && delegation.authorities & authority != 0
+            && block.timestamp < delegation.expiresAt;
     }
 
     function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4) {
@@ -85,7 +178,10 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
         bytes calldata traderSignature,
         bytes32[2] calldata perpArgs
     ) external nonReentrant returns (bytes32 receiptHash) {
-        if (msg.sender != owner || execution.action != EXIT || execution.solver != address(0)) {
+        if (
+            !hasAuthority(msg.sender, AUTHORITY_RECOVERY_EXIT) || execution.action != EXIT
+                || execution.solver != address(0)
+        ) {
             revert InvalidRecoveryExit();
         }
         _validateExecution(execution);

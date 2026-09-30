@@ -79,6 +79,8 @@ Record a completed qualification under `deployments/evm/fork-evidence/` only aft
 
 `PolicyRegistry` registers package template manifests and fee policy manifests. Activations and resumes are proposed by the proposer role and take effect only after the protocol config delay through the executor; the canceller withdraws pending proposals; the pauser pauses at once. A fee policy carries its maximum fee in basis points under a hard cap of 1000, a template none, and consumers check the exact version and manifest hash with `isActive`. The verifier still accepts only zero-fee shard fills, so no fee is charged onchain until a fee policy is both active and wired into verification.
 
+`NaryxStrategyAccount` supports novation and bounded delegation. The owner proposes a transfer to a named new owner with an acceptance window of at most seven days; only that address accepts, the whole account (balances and venue positions) moves with it, the previous owner's signatures stop validating, and every earlier delegation ends. A delegation can only submit a recovery exit the owner already signed and expires within thirty days; it can never sign, withdraw, or move ownership.
+
 ## Deployment preparation
 
 The scripts under `script/` prepare Base Sepolia and Arbitrum Sepolia deployments. None has been run against a public network, and none may be without explicit authorization for that exact action.
