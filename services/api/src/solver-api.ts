@@ -477,7 +477,8 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (quote.quoteMode === "FIRM_BONDED") {
         const ledger = await options.bonds?.(toHex(quote.performanceBondId as Uint8Array));
         if (ledger === undefined) throw new SolverRequestError(409, "BOND_UNVERIFIED", "No observed performance bond backs this quote.");
-        const backing = verifyQuoteBond(quote, ledger);
+        // The only bond vault is the EVM PerformanceBondVault, whose terms are in block seconds.
+        const backing = verifyQuoteBond(quote, ledger, "EVM_UNIX_SECONDS");
         if (!backing.backed) throw new SolverRequestError(409, "BOND_INSUFFICIENT", `The bond does not back the quote: ${backing.violations.join(", ")}.`);
       }
       return { ...options.evidence.recordQuote(quoteInput, routeInput, nowIn), quoteMode: quote.quoteMode };

@@ -609,8 +609,20 @@ export type QuoteBondViolation =
   | 'FAULT_NOT_COVERED'
   | 'BOND_RELEASED'
   | 'BOND_EXPIRES_BEFORE_QUOTE'
+  | 'BOND_TIME_UNIT_MISMATCH'
   | 'BOND_EXHAUSTED'
   | 'CAP_BELOW_FEE_EXPOSURE';
+
+/**
+ * A quote expiry in the bond's time unit, rounded later so a bond is never judged to outlive a
+ * quote it does not. Slots have no fixed relation to wall-clock time and never convert.
+ */
+function inBondTime(value: bigint, from: string, to: string): bigint | undefined {
+  if (from === to) return value;
+  if (from === 'HYPERLIQUID_UNIX_MILLISECONDS' && to === 'EVM_UNIX_SECONDS') return (value + 999n) / 1_000n;
+  if (from === 'EVM_UNIX_SECONDS' && to === 'HYPERLIQUID_UNIX_MILLISECONDS') return value * 1_000n;
+  return undefined;
+}
 
 /**
  * Whether a bond ledger backs a FIRM_BONDED quote: the quote names this bond, the bond belongs to
@@ -619,8 +631,10 @@ export type QuoteBondViolation =
  * taker would lose. The bond is compensation for a canonical fault, never a claim on liquidity.
  */
 export function verifyQuoteBond(
-  quote: { readonly quoteMode: QuoteMode; readonly solverId: string; readonly performanceBondId?: Uint8Array | string; readonly validUntilValue: bigint; readonly solverFee: { readonly atoms: bigint }; readonly protocolFee: { readonly atoms: bigint } },
+  quote: { readonly quoteMode: QuoteMode; readonly solverId: string; readonly performanceBondId?: Uint8Array | string; readonly validUntilUnit: string; readonly validUntilValue: bigint; readonly solverFee: { readonly atoms: bigint }; readonly protocolFee: { readonly atoms: bigint } },
   ledger: PerformanceBondLedger,
+  /** The unit the bond's expiry and dispute window are measured in, such as the vault's block seconds. */
+  bondTimeUnit: string,
 ): { readonly backed: true } | { readonly backed: false; readonly violations: readonly QuoteBondViolation[] } {
   const violations: QuoteBondViolation[] = [];
   if (quote.quoteMode !== 'FIRM_BONDED' || quote.performanceBondId === undefined) violations.push('NOT_BONDED_MODE');
@@ -628,7 +642,9 @@ export function verifyQuoteBond(
   if (ledger.bond.solverId !== quote.solverId) violations.push('SOLVER_MISMATCH');
   if (!ledger.bond.coveredFaults.includes('FAILED_TO_HONOR_FUNDED_RESERVATION')) violations.push('FAULT_NOT_COVERED');
   if (ledger.released) violations.push('BOND_RELEASED');
-  if (ledger.bond.expiresAtValue <= quote.validUntilValue + ledger.bond.disputeWindowValue) violations.push('BOND_EXPIRES_BEFORE_QUOTE');
+  const quoteUntil = inBondTime(quote.validUntilValue, quote.validUntilUnit, bondTimeUnit);
+  if (quoteUntil === undefined) violations.push('BOND_TIME_UNIT_MISMATCH');
+  else if (ledger.bond.expiresAtValue <= quoteUntil + ledger.bond.disputeWindowValue) violations.push('BOND_EXPIRES_BEFORE_QUOTE');
   if (encumbered(ledger) >= ledger.bond.bondAtoms) violations.push('BOND_EXHAUSTED');
   if (ledger.bond.maximumPayoutPerClaimAtoms < quote.solverFee.atoms + quote.protocolFee.atoms) violations.push('CAP_BELOW_FEE_EXPOSURE');
   return violations.length === 0 ? Object.freeze({ backed: true as const }) : Object.freeze({ backed: false as const, violations: Object.freeze(violations) });

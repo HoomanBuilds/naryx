@@ -182,15 +182,19 @@ describe('performance bonds', () => {
   });
 
   test('a bond backs a FIRM_BONDED quote only when it covers the reservation fault for the quote life', () => {
-    const quote = { quoteMode: 'FIRM_BONDED' as const, solverId: 'solver-a', performanceBondId: id(1), validUntilValue: 900n, solverFee: { atoms: 20n }, protocolFee: { atoms: 10n } };
-    assert.deepEqual(verifyQuoteBond(quote, bond()), { backed: true });
+    const quote = { quoteMode: 'FIRM_BONDED' as const, solverId: 'solver-a', performanceBondId: id(1), validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: 900n, solverFee: { atoms: 20n }, protocolFee: { atoms: 10n } };
+    assert.deepEqual(verifyQuoteBond(quote, bond(), 'EVM_UNIX_SECONDS'), { backed: true });
     const refused = (change: object, ledger = bond()) => {
-      const result = verifyQuoteBond({ ...quote, ...change }, ledger);
+      const result = verifyQuoteBond({ ...quote, ...change }, ledger, 'EVM_UNIX_SECONDS');
       return result.backed ? [] : result.violations;
     };
     assert.deepEqual(refused({ performanceBondId: id(2) }), ['BOND_MISMATCH']);
     assert.deepEqual(refused({ solverId: 'solver-b' }), ['SOLVER_MISMATCH']);
     assert.deepEqual(refused({ validUntilValue: 995n }), ['BOND_EXPIRES_BEFORE_QUOTE']);
+    // Milliseconds convert to the bond's seconds, rounded later; slots never compare with wall-clock time.
+    assert.deepEqual(refused({ validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', validUntilValue: 989_001n }), ['BOND_EXPIRES_BEFORE_QUOTE']);
+    assert.deepEqual(refused({ validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', validUntilValue: 989_000n }), []);
+    assert.deepEqual(refused({ validUntilUnit: 'SOLANA_SLOT', validUntilValue: 10n }), ['BOND_TIME_UNIT_MISMATCH']);
     assert.deepEqual(refused({ solverFee: { atoms: 55n } }), ['CAP_BELOW_FEE_EXPOSURE']);
     assert.deepEqual(refused({ quoteMode: 'FIRM_ONCHAIN' }), ['NOT_BONDED_MODE']);
     const drained = fileBondClaim(fileBondClaim(bond(), claim(2, 50n)), claim(3, 50n));

@@ -24,14 +24,14 @@ test("the bond reader turns the vault's bond state into the kernel ledger the ba
       return { ok: true, status: 200, json: async () => ({ result }) };
     },
   });
-  const quote = { quoteMode: "FIRM_BONDED" as const, solverId: "solver-a", performanceBondId: "b0".repeat(32), validUntilValue: 4_000n, solverFee: { atoms: 10n }, protocolFee: { atoms: 0n } };
+  const quote = { quoteMode: "FIRM_BONDED" as const, solverId: "solver-a", performanceBondId: "b0".repeat(32), validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: 4_000n, solverFee: { atoms: 10n }, protocolFee: { atoms: 0n } };
   const ledger = await reader("b0".repeat(32));
   assert.ok(ledger !== undefined);
-  assert.deepEqual(verifyQuoteBond(quote, ledger), { backed: true });
+  assert.deepEqual(verifyQuoteBond(quote, ledger, "EVM_UNIX_SECONDS"), { backed: true });
   result = state(1_000n, false);
-  assert.deepEqual(verifyQuoteBond(quote, (await reader("b0".repeat(32)))!), { backed: false, violations: ["BOND_EXHAUSTED"] });
+  assert.deepEqual(verifyQuoteBond(quote, (await reader("b0".repeat(32)))!, "EVM_UNIX_SECONDS"), { backed: false, violations: ["BOND_EXHAUSTED"] });
   result = state(0n, true);
-  assert.deepEqual(verifyQuoteBond(quote, (await reader("b0".repeat(32)))!), { backed: false, violations: ["BOND_RELEASED"] });
+  assert.deepEqual(verifyQuoteBond(quote, (await reader("b0".repeat(32)))!, "EVM_UNIX_SECONDS"), { backed: false, violations: ["BOND_RELEASED"] });
   result = `0x${word(0).repeat(11)}`;
   assert.equal(await reader("b0".repeat(32)), undefined, "an unopened bond reads as none");
   assert.equal(calls, 4);
