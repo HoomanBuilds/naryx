@@ -35,3 +35,14 @@ export {
   type ReportRow,
   type ReportRowField,
 } from "./reconciliation-report.js";
+export {
+  EvmJsonRpc,
+  PACKAGE_EXECUTED_TOPIC,
+  PACKAGE_VERIFIED_TOPIC,
+  decodeSettlementLog,
+  readBlock,
+  runEvmIndexerPass,
+  type EvmIndexerSource,
+  type RpcBlock,
+  type RpcLog,
+} from "./evm-source.js";
