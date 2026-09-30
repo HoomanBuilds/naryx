@@ -24,6 +24,7 @@ import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import { SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { createEvmBondReader } from "./evm-bond-reader.js";
 import { SqliteBuilderStore } from "./builder-store.js";
+import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -44,6 +45,8 @@ export interface PublicMarketRuntime {
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
   readonly solverApiEnabled: boolean;
+  /** Loopback keeper executor routes under `/internal/keeper/`; mount only on the private server. */
+  readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
 }
 
@@ -358,6 +361,19 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteBuilderStore(absolute(builderPath, "NARYX_BUILDER_DB"), { environment: publicEnvironment as string, evidence, clock: clockMs });
     if (builders !== undefined) opened.push(builders);
+    const keeperPath = optional(environment.NARYX_KEEPER_EXECUTOR_DB);
+    if (keeperPath !== undefined && strategies === undefined) {
+      throw new PublicMarketConfigError("NARYX_KEEPER_EXECUTOR_DB requires NARYX_STRATEGY_DB, whose current state hashes gate every keeper action.");
+    }
+    const keeper = keeperPath === undefined || strategies === undefined
+      ? undefined
+      : new SqliteKeeperExecutor(absolute(keeperPath, "NARYX_KEEPER_EXECUTOR_DB"), {
+        authorities: authorityKeys(environment.NARYX_HEALTH_AUTHORITIES, "NARYX_KEEPER_EXECUTOR_DB", "NARYX_HEALTH_AUTHORITIES"),
+        strategies,
+        ...(positions === undefined ? {} : { positions }),
+        clock: clockMs,
+      });
+    if (keeper !== undefined) opened.push(keeper);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -381,6 +397,7 @@ export function loadPublicMarketRuntime(
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
       ...(builders === undefined ? {} : { builders }),
+      ...(keeper === undefined ? {} : { health: keeper }),
       nowValue,
       rateLimit,
       clockMs,
@@ -425,6 +442,7 @@ export function loadPublicMarketRuntime(
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
+      ...(keeper === undefined ? {} : { internalHandler: createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) }) }),
       close: () => {
         for (const resource of opened.reverse()) resource.close();
       },

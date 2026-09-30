@@ -346,3 +346,4 @@ export { createOffchainShardSettlement, type OffchainShardFillRequest, type Offc
 export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";
 export { createEvmBondReader, type EvmBondReaderOptions } from "./evm-bond-reader.js";
 export { BuilderStoreError, SqliteBuilderStore, type BuilderAttributionView } from "./builder-store.js";
+export { createKeeperExecutorHandler, KeeperExecutorError, keeperClock, SqliteKeeperExecutor, type KeeperActionPlan } from "./keeper-executor.js";

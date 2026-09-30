@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadPublicMarketRuntime } from "./public-market-runtime.js";
@@ -301,6 +301,11 @@ const factories: PrivateTerminalRuntimeFactories = {
       } : {}),
     };
 const runtime = composePrivateTerminalRuntime(process.env, factories);
+type RouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
+function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[]): RouteHandler | undefined {
+  const present = handlers.filter((handler): handler is RouteHandler => handler !== undefined);
+  return present.length === 0 ? undefined : (request, response) => present.some((handler) => handler(request, response));
+}
 const orderContexts = (contextId: string) =>
   orderRuntime.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId);
 const orderClock = Object.freeze({
@@ -328,8 +333,9 @@ const server = createPrivateTerminalServer(
   hyperliquidOrderRuntime?.terminalContext,
   undefined,
   undefined,
-  // A dedicated public listener keeps the public API off the private terminal server entirely.
-  publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
+  // A dedicated public listener keeps the public API off the private terminal server entirely;
+  // keeper executor routes are loopback-only and never ride the public listener.
+  privateServerRoutes(publicMarket?.internalHandler, publicMarket?.listener === undefined ? publicMarket?.handler : undefined),
 );
 
 const publicServer = publicMarket?.listener === undefined

@@ -18,7 +18,7 @@ import { httpKeeperPorts, KeeperActionJournal, loadKeeperAutomationConfig, runKe
 const automation = loadKeeperAutomationConfig(process.env, (path) => readFileSync(path, 'utf8'));
 if (automation !== undefined) {
   const journal = new KeeperActionJournal(automation.journalPath);
-  const ports = { ...httpKeeperPorts(automation.executorOrigin), now: (unit: string) => (unit === 'EVM_UNIX_SECONDS' ? BigInt(Math.floor(Date.now() / 1_000)) : undefined) };
+  const ports = { ...httpKeeperPorts(automation.executorOrigin), now: (unit: string) => (unit === 'EVM_UNIX_SECONDS' ? BigInt(Math.floor(Date.now() / 1_000)) : unit === 'HYPERLIQUID_UNIX_MILLISECONDS' ? BigInt(Date.now()) : undefined) };
   let running = false;
   const pass = async () => {
     if (running) return;

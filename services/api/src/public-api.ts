@@ -38,6 +38,7 @@ import type {
   PackageTemplateManifestInput,
   PackageOrderInput,
   StrategyCommandInput,
+  StrategyHealthSnapshotInput,
   BuilderManifestInput,
   BuilderAttributionInput,
   PackageTakerOrderInput,
@@ -59,6 +60,7 @@ import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
+import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 
@@ -151,6 +153,8 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
+  /** Authority-signed strategy health; without it the health routes answer 503. */
+  readonly health?: Pick<SqliteKeeperExecutor, "publishHealth" | "health">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -394,6 +398,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const manifest = options.builders.latest(builderId);
       if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such builder.");
       return { builderId, manifest, manifestHash: toHex(builderManifestHash(manifest)) };
+    }
+    if ((match = /^\/v1\/strategies\/([^/]+)\/health$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.health === undefined) throw new RequestError(503, "HEALTH_UNAVAILABLE", "No strategy health store is configured on this server.");
+      // Only a snapshot that describes the strategy's current state hash is ever served as health.
+      const health = options.health.health(id(match[1], "Strategy id"));
+      if (health === undefined) throw new RequestError(404, "HEALTH_NOT_FOUND", "No signed health snapshot describes this strategy's current state.");
+      return { snapshot: health.before, stateHash: health.stateHash, manualTakeover: health.manualTakeover };
     }
     if ((match = /^\/v1\/strategies\/([^/]+)(\/history)?$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -894,6 +906,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/auctions/sealed",
       "/v1/orders",
       "/v1/position-snapshots",
+      "/v1/health-snapshots",
       "/v1/strategies/commands",
       "/v1/builders",
       "/v1/builders/attributions",
@@ -1041,6 +1054,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // signature, the observation time, and ordering; nothing here grants authority over positions.
       return requirePositions().append(object(body.record, "record") as unknown as PositionSnapshotRecordInput);
     }
+    if (path === "/v1/health-snapshots") {
+      // A health observation signed by a configured authority over the snapshot hash. It feeds the
+      // keeper gate only; nothing here grants authority over a strategy or its positions.
+      if (options.health === undefined) throw new RequestError(503, "HEALTH_UNAVAILABLE", "No strategy health store is configured on this server.");
+      if (typeof body.authority !== "string" || !(body.signature instanceof Uint8Array)) throw new RequestError(400, "INVALID_REQUEST", "authority is a string and signature is bytes.");
+      return options.health.publishHealth(object(body.snapshot, "snapshot") as unknown as StrategyHealthSnapshotInput, body.authority, body.signature);
+    }
     if (path === "/v1/auctions/sealed") {
       const definition = object(body.definition, "definition") as unknown as SealedAuctionDefinitionInput;
       wallClockIn(String((definition as { timeUnit?: unknown }).timeUnit));
@@ -1099,6 +1119,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyBookError) {
           const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : error.code === "STRATEGY_NOT_FOUND" || error.code === "ORIGIN_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof KeeperExecutorError) {
+          const status = error.code === "UNKNOWN_AUTHORITY" ? 403 : error.code === "CORRUPT_ROW" ? 500 : 400;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof PositionSnapshotStoreError) {

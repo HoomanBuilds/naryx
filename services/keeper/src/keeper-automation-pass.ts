@@ -35,11 +35,12 @@ export interface KeeperActionPlan {
 export interface KeeperAutomationPorts {
   readHealth(strategyId: string): Promise<{ readonly before: StrategyHealthSnapshotInput; readonly stateHash: string; readonly manualTakeover: boolean } | undefined>;
   plan(entry: KeeperAutomationEntry, before: StrategyHealthSnapshotInput): Promise<KeeperActionPlan | undefined>;
-  dispatch(action: { readonly authorizationHash: string; readonly entry: KeeperAutomationEntry; readonly plan: KeeperActionPlan }): Promise<'EXECUTED' | 'REJECTED'>;
+  /** QUEUED means the executor re-authorized the action and queued it once for its domain runtime. */
+  dispatch(action: { readonly keeperId: string; readonly authorizationHash: string; readonly entry: KeeperAutomationEntry; readonly plan: KeeperActionPlan }): Promise<'EXECUTED' | 'QUEUED' | 'REJECTED'>;
   now(unit: string): bigint | undefined;
 }
 
-export type KeeperPassStatus = 'SKIPPED_CONSUMED' | 'NOT_READY' | 'REJECTED' | 'EXECUTED' | 'EXECUTOR_REJECTED' | 'FAILED';
+export type KeeperPassStatus = 'SKIPPED_CONSUMED' | 'NOT_READY' | 'REJECTED' | 'EXECUTED' | 'QUEUED' | 'EXECUTOR_REJECTED' | 'FAILED';
 
 /**
  * The durable record of every authorization a keeper dispatched. A nonce is consumed the moment
@@ -70,7 +71,7 @@ export class KeeperActionJournal {
     return this.#states.get(authorizationHash);
   }
 
-  record(authorizationHash: string, state: 'DISPATCHING' | 'EXECUTED' | 'EXECUTOR_REJECTED' | 'OUTCOME_UNKNOWN', detail = ''): void {
+  record(authorizationHash: string, state: 'DISPATCHING' | 'EXECUTED' | 'QUEUED' | 'EXECUTOR_REJECTED' | 'OUTCOME_UNKNOWN', detail = ''): void {
     const fd = openSync(this.#path, 'a', 0o600);
     try {
       writeSync(fd, `${JSON.stringify({ authorizationHash, state, detail, atMs: Date.now() })}\n`);
@@ -151,17 +152,18 @@ export async function runKeeperAutomationPass(input: {
         continue;
       }
       input.journal.record(authorizationHash, 'DISPATCHING');
-      let outcome: 'EXECUTED' | 'REJECTED';
+      let outcome: 'EXECUTED' | 'QUEUED' | 'REJECTED';
       try {
-        outcome = await input.ports.dispatch({ authorizationHash, entry, plan });
+        outcome = await input.ports.dispatch({ keeperId: input.keeperId, authorizationHash, entry, plan });
       } catch (error) {
         // The executor may or may not have acted; the nonce stays consumed and the owner reconciles.
         input.journal.record(authorizationHash, 'OUTCOME_UNKNOWN', (error as Error).message);
         results.push({ strategyId, authorizationHash, status: 'FAILED' as const, detail: 'OUTCOME_UNKNOWN' });
         continue;
       }
-      input.journal.record(authorizationHash, outcome === 'EXECUTED' ? 'EXECUTED' : 'EXECUTOR_REJECTED');
-      results.push({ strategyId, authorizationHash, status: outcome === 'EXECUTED' ? ('EXECUTED' as const) : ('EXECUTOR_REJECTED' as const) });
+      const state = outcome === 'REJECTED' ? ('EXECUTOR_REJECTED' as const) : outcome;
+      input.journal.record(authorizationHash, state);
+      results.push({ strategyId, authorizationHash, status: state });
     } catch (error) {
       results.push({ strategyId, authorizationHash, status: 'FAILED' as const, detail: (error as Error).message });
     }
@@ -172,8 +174,9 @@ export async function runKeeperAutomationPass(input: {
 type Fetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
 /**
- * Ports to a loopback executor: `GET /keeper/strategies/{id}/health`, `POST /keeper/plan`, and
- * `POST /keeper/execute`. The executor holds the execution authority and re-checks every bound.
+ * Ports to a loopback executor: `GET /internal/keeper/strategies/{id}/health`,
+ * `POST /internal/keeper/plan`, and `POST /internal/keeper/execute`. The executor re-checks the
+ * owner signature and every bound against its own health view before it queues an action.
  */
 export function httpKeeperPorts(executorOrigin: string, fetcher: Fetch = fetch as unknown as Fetch): Omit<KeeperAutomationPorts, 'now'> {
   if (!/^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?$/.test(executorOrigin)) throw new Error('the keeper executor must be a loopback origin');
@@ -189,14 +192,20 @@ export function httpKeeperPorts(executorOrigin: string, fetcher: Fetch = fetch a
   };
   return {
     async readHealth(strategyId) {
-      return (await call('GET', `/keeper/strategies/${encodeURIComponent(strategyId)}/health`)) as Awaited<ReturnType<KeeperAutomationPorts['readHealth']>>;
+      return (await call('GET', `/internal/keeper/strategies/${encodeURIComponent(strategyId)}/health`)) as Awaited<ReturnType<KeeperAutomationPorts['readHealth']>>;
     },
     async plan(entry, before) {
-      return (await call('POST', '/keeper/plan', { authorization: entry.authorization, before })) as KeeperActionPlan | undefined;
+      return (await call('POST', '/internal/keeper/plan', { authorization: entry.authorization, before })) as KeeperActionPlan | undefined;
     },
     async dispatch(action) {
-      const answer = (await call('POST', '/keeper/execute', { authorizationHash: action.authorizationHash, authorization: action.entry.authorization, ownerSignature: action.entry.ownerSignature, plan: action.plan })) as { status?: string } | undefined;
-      return answer?.status === 'EXECUTED' ? 'EXECUTED' : 'REJECTED';
+      const answer = (await call('POST', '/internal/keeper/execute', {
+        keeperId: action.keeperId,
+        authorization: action.entry.authorization,
+        ownerSignature: action.entry.ownerSignature,
+        condition: action.entry.condition,
+        lifecycleGraphHash: action.entry.lifecycleGraphHash,
+      })) as { status?: string } | undefined;
+      return answer?.status === 'EXECUTED' || answer?.status === 'QUEUED' ? answer.status : 'REJECTED';
     },
   };
 }

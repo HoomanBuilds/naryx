@@ -76,3 +76,22 @@ test('the keeper dispatches an authorized risk-reducing action once and refuses 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the http ports send the executor every bound it re-checks and accept a queued answer', async () => {
+  const { httpKeeperPorts } = await import('../src/keeper-automation-pass.js');
+  const { parseProtocolJson } = await import('@naryx/protocol-types');
+  const calls: { url: string; body?: Record<string, unknown> }[] = [];
+  const ports = httpKeeperPorts('http://127.0.0.1:4100', async (url, init) => {
+    calls.push({ url, ...(init.body === undefined ? {} : { body: parseProtocolJson(init.body) as Record<string, unknown> }) });
+    return { ok: true, status: 200, text: async () => '{"status":"QUEUED"}' };
+  });
+  const signer = owner();
+  const entry: KeeperAutomationEntry = { authorization, ownerKey: signer.key, ownerSignature: signer.sign(keeperActionAuthorizationBytes(authorization)), condition, lifecycleGraphHash: '61'.repeat(32) };
+  const plan = { after: health(), costQuoteAtoms: 1n, rewardQuoteAtoms: 1n, grantsAuthority: false };
+  assert.equal(await ports.dispatch({ keeperId: 'keeper-1', authorizationHash: '00'.repeat(32), entry, plan }), 'QUEUED');
+  assert.equal(calls[0]?.url, 'http://127.0.0.1:4100/internal/keeper/execute');
+  assert.equal(calls[0]?.body?.keeperId, 'keeper-1');
+  assert.equal(calls[0]?.body?.lifecycleGraphHash, '61'.repeat(32));
+  assert.deepEqual(calls[0]?.body?.condition, condition);
+  assert.throws(() => httpKeeperPorts('http://10.0.0.1:4100'), /loopback/);
+});
