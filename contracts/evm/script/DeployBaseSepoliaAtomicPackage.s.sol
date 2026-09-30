@@ -6,6 +6,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
@@ -89,7 +90,10 @@ contract DeployBaseSepoliaAtomicPackage is Script {
             deployment.solverRegistry,
             deployment.resourceRegistry,
             deployment.cashCarrySeriesRegistry,
-            deployment.packageQuoteShardRegistry
+            deployment.packageQuoteShardRegistry,
+            // Solver fees stay disabled in this deployment; a fee-enabled verifier binds a PolicyRegistry fee subject.
+            PolicyRegistry(address(0)),
+            bytes32(0)
         );
         deployment.strategyAccount = new NaryxStrategyAccount(parameters.strategyOwner, deployment.verifier);
         deployment.spotPort = new UniswapV3SpotPort(address(deployment.verifier), _uniswapDeployment());

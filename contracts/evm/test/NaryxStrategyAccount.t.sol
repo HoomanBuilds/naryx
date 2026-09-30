@@ -10,7 +10,8 @@ import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {FirmInventoryReservationBook} from "../src/FirmInventoryReservationBook.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
-import {PackageVerifier} from "../src/PackageVerifier.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
+import {PackageVerifier, PackageVerifierValidation} from "../src/PackageVerifier.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
@@ -242,6 +243,8 @@ contract NaryxStrategyAccountTest is Test {
     StrategyAccountAdmissionRegistry private admissionRegistry;
     StrategyAccountSeriesRegistry private seriesRegistry;
     PackageVerifier private verifier;
+    PolicyRegistry private policyRegistry;
+    bytes32 private constant FEE_SUBJECT = keccak256("cash-carry-solver-fee");
     PackageQuoteShardRegistry private packageQuoteShardRegistry;
     PackageQuoteShard private packageQuoteShard;
     PackageQuoteShardRegistry.ShardReference private shardReference;
@@ -263,12 +266,15 @@ contract NaryxStrategyAccountTest is Test {
         admissionRegistry = new StrategyAccountAdmissionRegistry(config);
         seriesRegistry = new StrategyAccountSeriesRegistry(config, ResourceRegistry(address(admissionRegistry)));
         packageQuoteShardRegistry = new PackageQuoteShardRegistry(config);
+        policyRegistry = new PolicyRegistry(config);
         verifier = new PackageVerifier(
             config,
             solverRegistry,
             ResourceRegistry(address(admissionRegistry)),
             CashCarrySeriesRegistry(address(seriesRegistry)),
-            packageQuoteShardRegistry
+            packageQuoteShardRegistry,
+            policyRegistry,
+            FEE_SUBJECT
         );
         seriesRegistry.configure(_seriesBinding(), SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
         packageQuoteShard = new PackageQuoteShard(
@@ -693,16 +699,87 @@ contract NaryxStrategyAccountTest is Test {
         assertEq(packageQuoteShard.quoteLevel(LEVEL_ID).remainingCapacityUnits, uint128(10 * QUANTITY));
     }
 
-    function testQuotedPackageRejectsNonzeroFeeUntilAccountingExists() public {
+    function testQuotedPackageRejectsNonzeroFeeWithoutAnActiveFeePolicy() public {
+        _expectFeeRevert(1);
+    }
+
+    function testQuotedPackageFeeMustSitWithinTheActiveFeePolicyCap() public {
+        _activateFeePolicy(25);
+        // The notional is 2 ether, so 25 bps caps the fee at 0.005 ether.
         (
             PackageVerifier.Execution memory execution,
             ResourceRegistry.CashCarryAdmission memory admission,
             PackageVerifier.QuoteIntent memory intent
-        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 1, bytes32(0));
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), 0.005 ether, bytes32(0));
         _admit(admission);
         (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        bytes32 receiptHash = account.executeQuotedPackage(
+            execution,
+            admission,
+            intent,
+            traderSignature,
+            solverSignature,
+            _tradeArgs(-int128(int256(QUANTITY)), int128(int256(MARGIN)))
+        );
+        assertTrue(verifier.receipt(receiptHash).packageQuoteFillCommitment != bytes32(0));
+    }
 
-        vm.expectRevert(PackageVerifier.InvalidPackageQuote.selector);
+    function testQuotedPackageFeeAboveTheActiveFeePolicyCapReverts() public {
+        _activateFeePolicy(25);
+        _expectFeeRevert(0.005 ether + 1);
+    }
+
+    function testPausedFeePolicyRejectsEveryFee() public {
+        _activateFeePolicy(25);
+        vm.prank(PAUSER);
+        policyRegistry.pause(PolicyRegistry.PolicyKind.FEE_POLICY, FEE_SUBJECT);
+        _expectFeeRevert(1);
+    }
+
+    function testVerifierFeeBindingMustBeCoherent() public {
+        ProtocolConfig other = new ProtocolConfig(
+            "eip155:31337", 1, DOMAIN_MANIFEST_HASH, 1, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER
+        );
+        PolicyRegistry foreign = new PolicyRegistry(other);
+        ResourceRegistry resources = ResourceRegistry(address(admissionRegistry));
+        CashCarrySeriesRegistry series = CashCarrySeriesRegistry(address(seriesRegistry));
+        vm.expectRevert(PackageVerifierValidation.InvalidConfiguration.selector);
+        new PackageVerifier(
+            config,
+            solverRegistry,
+            resources,
+            series,
+            packageQuoteShardRegistry,
+            PolicyRegistry(address(0)),
+            FEE_SUBJECT
+        );
+        vm.expectRevert(PackageVerifierValidation.InvalidConfiguration.selector);
+        new PackageVerifier(config, solverRegistry, resources, series, packageQuoteShardRegistry, foreign, FEE_SUBJECT);
+        vm.expectRevert(PackageVerifierValidation.InvalidConfiguration.selector);
+        new PackageVerifier(
+            config, solverRegistry, resources, series, packageQuoteShardRegistry, policyRegistry, bytes32(0)
+        );
+    }
+
+    function _activateFeePolicy(uint16 maximumFeeBps) private {
+        vm.prank(PROPOSER);
+        policyRegistry.proposeActivation(
+            PolicyRegistry.PolicyKind.FEE_POLICY, FEE_SUBJECT, 1, keccak256("fee-policy-v1"), maximumFeeBps
+        );
+        vm.warp(block.timestamp + config.configDelaySeconds());
+        vm.prank(GOVERNANCE_EXECUTOR);
+        policyRegistry.activate(PolicyRegistry.PolicyKind.FEE_POLICY, FEE_SUBJECT);
+    }
+
+    function _expectFeeRevert(uint128 feeAtoms) private {
+        (
+            PackageVerifier.Execution memory execution,
+            ResourceRegistry.CashCarryAdmission memory admission,
+            PackageVerifier.QuoteIntent memory intent
+        ) = _quotedEntry(packageQuoteShard.EXECUTION_COMMITMENT(), feeAtoms, bytes32(0));
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        vm.expectRevert(PackageVerifierValidation.FeeNotPermitted.selector);
         account.executeQuotedPackage(
             execution,
             admission,

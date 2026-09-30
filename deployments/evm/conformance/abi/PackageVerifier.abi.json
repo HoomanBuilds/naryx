@@ -26,6 +26,16 @@
         "name": "packageQuoteShardRegistry_",
         "type": "address",
         "internalType": "contract PackageQuoteShardRegistry"
+      },
+      {
+        "name": "policyRegistry_",
+        "type": "address",
+        "internalType": "contract PolicyRegistry"
+      },
+      {
+        "name": "feePolicySubjectId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "nonpayable"

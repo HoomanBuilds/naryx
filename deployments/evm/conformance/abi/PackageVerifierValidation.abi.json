@@ -16,6 +16,21 @@
         "name": "cashCarrySeriesRegistry_",
         "type": "address",
         "internalType": "contract CashCarrySeriesRegistry"
+      },
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "policyRegistry_",
+        "type": "address",
+        "internalType": "contract PolicyRegistry"
+      },
+      {
+        "name": "feePolicySubjectId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "nonpayable"
@@ -29,6 +44,32 @@
         "name": "",
         "type": "address",
         "internalType": "contract CashCarrySeriesRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "feePolicySubjectId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "policyRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract PolicyRegistry"
       }
     ],
     "stateMutability": "view"
@@ -809,6 +850,24 @@
   },
   {
     "type": "function",
+    "name": "validateFee",
+    "inputs": [
+      {
+        "name": "feeAtoms",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "packageNotionalQuoteAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "verifier",
     "inputs": [],
     "outputs": [
@@ -819,6 +878,11 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "FeeNotPermitted",
+    "inputs": []
   },
   {
     "type": "error",

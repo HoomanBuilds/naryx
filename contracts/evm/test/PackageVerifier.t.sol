@@ -6,6 +6,7 @@ import {ERC20} from "openzeppelin-contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
 import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
@@ -269,7 +270,9 @@ contract PackageVerifierTest is Test {
             solverRegistry,
             ResourceRegistry(address(admissionRegistry)),
             CashCarrySeriesRegistry(address(seriesRegistry)),
-            packageQuoteShardRegistry
+            packageQuoteShardRegistry,
+            PolicyRegistry(address(0)),
+            bytes32(0)
         );
         seriesRegistry.configure(_seriesBinding(), SERIES_IDENTITY_KEY, SERIES_BINDING_HASH);
         spotPort = new UniswapV3SpotPort(address(verifier), _spotDeployment());

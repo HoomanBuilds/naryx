@@ -10,6 +10,7 @@ import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {CashCarrySeriesRegistry} from "./CashCarrySeriesRegistry.sol";
 import {PackageQuoteShard} from "./PackageQuoteShard.sol";
 import {PackageQuoteShardRegistry} from "./PackageQuoteShardRegistry.sol";
+import {PolicyRegistry} from "./PolicyRegistry.sol";
 import {ResourceRegistry} from "./ResourceRegistry.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
@@ -196,7 +197,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         SolverRegistry solverRegistry_,
         ResourceRegistry resourceRegistry_,
         CashCarrySeriesRegistry cashCarrySeriesRegistry_,
-        PackageQuoteShardRegistry packageQuoteShardRegistry_
+        PackageQuoteShardRegistry packageQuoteShardRegistry_,
+        PolicyRegistry policyRegistry_,
+        bytes32 feePolicySubjectId_
     ) EIP712("Naryx Package Verifier", "1") {
         if (
             address(config_).code.length == 0 || address(solverRegistry_).code.length == 0
@@ -221,7 +224,9 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         resourceRegistryCodeHash = address(resourceRegistry_).codehash;
         cashCarrySeriesRegistryCodeHash = address(cashCarrySeriesRegistry_).codehash;
         packageQuoteShardRegistryCodeHash = address(packageQuoteShardRegistry_).codehash;
-        validationHelper = new PackageVerifierValidation(address(this), resourceRegistry_, cashCarrySeriesRegistry_);
+        validationHelper = new PackageVerifierValidation(
+            address(this), resourceRegistry_, cashCarrySeriesRegistry_, config_, policyRegistry_, feePolicySubjectId_
+        );
         validationHelperCodeHash = address(validationHelper).codehash;
     }
 
@@ -611,7 +616,11 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         QuoteIntent calldata intent,
         CashCarrySeriesRegistry.CashCarrySeriesBindingV1 memory seriesBinding
     ) private returns (bytes32 fillCommitment) {
-        if (intent.consumeRequest.feeAtoms != 0) revert InvalidPackageQuote();
+        // A nonzero solver fee is the trader-signed amount in the consume request, and it must also
+        // sit within the active fee policy's cap on the package notional.
+        if (intent.consumeRequest.feeAtoms != 0) {
+            validationHelper.validateFee(intent.consumeRequest.feeAtoms, execution.packageNotionalQuoteAtoms);
+        }
         PackageQuoteShardRegistry.ShardBinding memory binding;
         try packageQuoteShardRegistry.validateEntry(intent.shardReference) returns (
             PackageQuoteShardRegistry.ShardBinding memory validatedBinding
@@ -866,29 +875,64 @@ contract PackageVerifierValidation {
     address public immutable verifier;
     ResourceRegistry public immutable resourceRegistry;
     CashCarrySeriesRegistry public immutable cashCarrySeriesRegistry;
+    /// @notice Zero when solver fees are disabled: every nonzero fee then rejects.
+    PolicyRegistry public immutable policyRegistry;
+    bytes32 public immutable feePolicySubjectId;
     bytes32 private immutable resourceRegistryCodeHash;
     bytes32 private immutable cashCarrySeriesRegistryCodeHash;
+    bytes32 private immutable policyRegistryCodeHash;
 
     error InvalidConfiguration();
     error UnauthorizedCaller();
     error ResourceAdmissionFailed();
     error InvalidSeriesBinding();
     error InvalidPackageUnits();
+    error FeeNotPermitted();
 
     constructor(
         address verifier_,
         ResourceRegistry resourceRegistry_,
-        CashCarrySeriesRegistry cashCarrySeriesRegistry_
+        CashCarrySeriesRegistry cashCarrySeriesRegistry_,
+        ProtocolConfig config_,
+        PolicyRegistry policyRegistry_,
+        bytes32 feePolicySubjectId_
     ) {
         if (
             verifier_ == address(0) || address(resourceRegistry_).code.length == 0
                 || address(cashCarrySeriesRegistry_).code.length == 0
         ) revert InvalidConfiguration();
+        // Fees are either disabled outright or bound to one fee policy subject of this protocol's registry.
+        if (address(policyRegistry_) == address(0)) {
+            if (feePolicySubjectId_ != bytes32(0)) revert InvalidConfiguration();
+        } else if (
+            address(policyRegistry_).code.length == 0 || address(policyRegistry_.config()) != address(config_)
+                || feePolicySubjectId_ == bytes32(0)
+        ) {
+            revert InvalidConfiguration();
+        }
         verifier = verifier_;
         resourceRegistry = resourceRegistry_;
         cashCarrySeriesRegistry = cashCarrySeriesRegistry_;
+        policyRegistry = policyRegistry_;
+        feePolicySubjectId = feePolicySubjectId_;
         resourceRegistryCodeHash = address(resourceRegistry_).codehash;
         cashCarrySeriesRegistryCodeHash = address(cashCarrySeriesRegistry_).codehash;
+        policyRegistryCodeHash = address(policyRegistry_).codehash;
+    }
+
+    /// @notice Reverts unless the active, unpaused fee policy caps this fee: fee * 10000 is at most
+    /// the package notional times the policy's maximum fee in basis points.
+    function validateFee(uint128 feeAtoms, uint256 packageNotionalQuoteAtoms) external view {
+        if (msg.sender != verifier) revert UnauthorizedCaller();
+        if (address(policyRegistry) == address(0) || address(policyRegistry).codehash != policyRegistryCodeHash) {
+            revert FeeNotPermitted();
+        }
+        PolicyRegistry.Policy memory active =
+            policyRegistry.policy(PolicyRegistry.PolicyKind.FEE_POLICY, feePolicySubjectId);
+        if (
+            active.version == 0 || active.paused
+                || uint256(feeAtoms) * 10_000 > packageNotionalQuoteAtoms * active.maximumFeeBps
+        ) revert FeeNotPermitted();
     }
 
     function validate(
