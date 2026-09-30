@@ -9,7 +9,7 @@ import type {
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
 import { SqliteRegistryStore } from "./registry-store.js";
-import { createSolverApiHandler } from "./solver-api.js";
+import { createSolverApiHandler, type AdmissionContext } from "./solver-api.js";
 import { SqliteSolverApiStore } from "./solver-api-store.js";
 import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
@@ -17,6 +17,7 @@ import { SqliteQualificationStore } from "./qualification-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
+const MAX_ADMISSION_CONTEXT_BYTES = 1_048_576;
 const DEFAULT_REQUESTS_PER_MINUTE = 120;
 
 export type PublicMarketClockUnit = "UNIX_SECONDS" | "UNIX_MILLISECONDS";
@@ -59,6 +60,36 @@ function object(value: unknown, field: string): Record<string, unknown> {
     throw new PublicMarketConfigError(`Support manifest field ${field} must be an object.`);
   }
   return value as Record<string, unknown>;
+}
+
+/**
+ * `{ "version": 1, "contexts": { "<domainId>": AdmissionContext } }` in protocol JSON: the domain
+ * manifest, template manifest and registry record, fee policy, and active registry records each
+ * domain's packages are admitted against. Each context must be keyed by its own domain.
+ */
+function loadAdmissionContexts(path: string): ReadonlyMap<string, AdmissionContext> {
+  if (statSync(path).size > MAX_ADMISSION_CONTEXT_BYTES) throw new PublicMarketConfigError("Admission contexts file is too large.");
+  let parsed: unknown;
+  try {
+    parsed = parseProtocolJson(readFileSync(path, "utf8"));
+  } catch {
+    throw new PublicMarketConfigError("Admission contexts file is not valid protocol JSON.");
+  }
+  const root = object(parsed, "root");
+  if (Object.keys(root).sort().join(",") !== "contexts,version" || root.version !== 1) {
+    throw new PublicMarketConfigError("Admission contexts file must be version 1 with exactly version and contexts.");
+  }
+  const contexts = new Map<string, AdmissionContext>();
+  for (const [domainId, value] of Object.entries(object(root.contexts, "contexts"))) {
+    const context = object(value, `contexts.${domainId}`);
+    const domainManifest = object(context.domainManifest, `contexts.${domainId}.domainManifest`);
+    if (domainManifest.domainId !== domainId) throw new PublicMarketConfigError(`Admission context ${domainId} carries another domain's manifest.`);
+    for (const field of ["templateManifest", "templateRegistryRecord", "feePolicyManifest"]) object(context[field], `contexts.${domainId}.${field}`);
+    if (!Array.isArray(context.activeRegistryRecords)) throw new PublicMarketConfigError(`Admission context ${domainId} needs activeRegistryRecords.`);
+    contexts.set(domainId, context as unknown as AdmissionContext);
+  }
+  if (contexts.size === 0) throw new PublicMarketConfigError("Admission contexts file names no domain.");
+  return contexts;
 }
 
 function loadSupport(path: string): {
@@ -214,6 +245,8 @@ export function loadPublicMarketRuntime(
       rateLimit,
       clockMs,
     });
+    const admissionPath = optional(environment.NARYX_ADMISSION_CONTEXTS);
+    const admission = admissionPath === undefined ? undefined : loadAdmissionContexts(absolute(admissionPath, "NARYX_ADMISSION_CONTEXTS"));
     const solverHandler = solverState === undefined || registry === undefined
       ? undefined
       : createSolverApiHandler({
@@ -222,6 +255,7 @@ export function loadPublicMarketRuntime(
         exchange: store,
         ...(delivery === undefined ? {} : { delivery }),
         ...(evidence === undefined ? {} : { evidence }),
+        ...(admission === undefined ? {} : { admission }),
         nowValue,
         clockMs,
         rateLimit,

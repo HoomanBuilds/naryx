@@ -75,7 +75,7 @@ export {
   type PublicRegistryStore,
   type PublicSolverState,
 } from "./public-api.js";
-export { createSolverApiHandler, type SolverApiOptions } from "./solver-api.js";
+export { createSolverApiHandler, type AdmissionContext, type SolverApiOptions } from "./solver-api.js";
 export { shardIdOf, SolverApiStoreError, SqliteSolverApiStore } from "./solver-api-store.js";
 export { PrivateDeliveryStoreError, SqlitePrivateDeliveryStore, type StoredEnvelope } from "./private-delivery-store.js";
 export {
@@ -338,5 +338,5 @@ export {
   type SolverAtomicQuoteResponse,
   type VerifiedSolverAtomicQuote,
 } from "./solver-quote-client.js";
-export { EvidenceStoreError, SqliteEvidenceStore, type ExecutionQualitySummary, type StoredOrder, type StoredOutcome } from "./evidence-store.js";
+export { EvidenceStoreError, SqliteEvidenceStore, type ExecutionQualitySummary, type StoredOrder, type StoredOutcome, type StoredRouteDecision } from "./evidence-store.js";
 export { QualificationStoreError, SqliteQualificationStore, type StoredQualificationRecord } from "./qualification-store.js";

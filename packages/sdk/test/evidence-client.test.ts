@@ -14,6 +14,7 @@ import {
   privateRfqEnvelopeHash,
   qualificationRecordHash,
   quoteHash,
+  replayRouteDecision,
   routeHash,
   solverCapabilityManifestHash,
   solverSignatureDigest,
@@ -537,6 +538,52 @@ describe('order intake and terminal evidence', () => {
     assert.equal(unverifiable?.signatureVerified, false);
   });
 
+  test('route decisions are replayed locally and must agree with the served hash and replay', async () => {
+    const eligible = (fill: number, expectedNetOutcomeAtoms: bigint) => ({
+      routeHash: new Uint8Array(32).fill(fill),
+      expectedNetOutcomeAtoms,
+      feesAtoms: 5n,
+      marginAtoms: 500n,
+      residualAtoms: 0n,
+      recoveryBoundAtoms: 20n,
+      completionCohortBps: 9_900n,
+      deliveryPolicyId: 'public-relay',
+      resourceHeadroomBps: 4_000n,
+    });
+    const decision = {
+      decisionVersion: 1,
+      orderHash: ORDER_HASH,
+      solverId: 'solver-a',
+      stateSnapshots: [{ domainId: 'svm:testnet', sourceId: 'rpc-a', sequence: 9n, receivedAtValue: 95n, stateHash: new Uint8Array(32).fill(1) }],
+      normalizationPolicyHash: new Uint8Array(32).fill(2),
+      objective: { kind: 'MAXIMIZE_NET_OUTCOME' as const, maximumResidualAtoms: 50n, maximumStateAgeValue: 50n, maximumSourceSkewValue: 20n },
+      eligible: [eligible(10, 100n), eligible(11, 90n)],
+      excluded: [],
+      selectedRouteHash: new Uint8Array(32).fill(10),
+      resourcePlanHash: new Uint8Array(32).fill(3),
+      decisionAtValue: 100n,
+      quoteToSubmitBudgetValue: 2n,
+    };
+    const replay = replayRouteDecision(decision);
+    const served = (overrides: Record<string, unknown> = {}) => ({
+      decisionHash: toHex(replay.decisionHash),
+      solverId: 'solver-a',
+      decision,
+      replay: { valid: replay.valid, discrepancies: replay.discrepancies },
+      receivedAtMs: 7,
+      ...overrides,
+    });
+    const path = `GET /v1/orders/${ORDER_HASH}/route-decisions`;
+    const read = (decisions: unknown[]) => client({ [path]: { body: { orderHash: ORDER_HASH, decisions } } }).getRouteDecisions(ORDER_HASH);
+    const [verified] = await read([served()]);
+    assert.equal(verified?.replay.valid, true);
+    await assert.rejects(read([served({ decisionHash: 'ab'.repeat(32) })]), /served hash/);
+    // A server cannot launder a bad decision by claiming its replay was clean.
+    const loser = { ...decision, selectedRouteHash: new Uint8Array(32).fill(11) };
+    await assert.rejects(read([served({ decision: loser, decisionHash: toHex(replayRouteDecision(loser).decisionHash) })]), /replay differs/);
+    await assert.rejects(read([served({ decision: { ...decision, orderHash: 'cd'.repeat(32) } })]), /another order/);
+  });
+
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {
     const { privateKey } = generateKeyPairSync('ed25519');
     const signer = async (digest: Uint8Array) => new Uint8Array(sign(null, digest, privateKey));
@@ -551,7 +598,9 @@ describe('order intake and terminal evidence', () => {
     assert.equal(page.nextCursor, 3);
     assert.equal(page.orders[0]?.orderHash, ORDER_HASH);
     await assert.rejects(solver({ orders: [{ cursor: 3, orderHash: 'ab'.repeat(32), order: ORDER, receivedAtMs: 9 }], nextCursor: 3 }).pollOrders(), /does not hash/);
-    await assert.rejects(solver({ orders: [{ cursor: 3, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 4 }).pollOrders(), /next cursor/);
+    // Expired orders are skipped server-side, so the cursor may run ahead, never behind.
+    assert.equal((await solver({ orders: [{ cursor: 3, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 7 }).pollOrders()).nextCursor, 7);
+    await assert.rejects(solver({ orders: [{ cursor: 3, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 2 }).pollOrders(), /next cursor/);
     await assert.rejects(solver({ orders: [{ cursor: 0, orderHash: ORDER_HASH, order: ORDER, receivedAtMs: 9 }], nextCursor: 0 }).pollOrders(), /strictly increase/);
     assert.equal((await solver({ orders: [], nextCursor: 0 }).pollOrders()).orders.length, 0);
   });

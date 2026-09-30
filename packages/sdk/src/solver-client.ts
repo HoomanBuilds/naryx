@@ -2,6 +2,7 @@ import {
   encodeUtf8,
   fromProtocolJson,
   packageOrderHash,
+  replayRouteDecision,
   solverRequestDigest,
   toHex,
   toProtocolJson,
@@ -11,6 +12,7 @@ import {
   type ImpliedPackageQuoteInput,
   type PackageOrder,
   type PackageOrderInput,
+  type RouteDecisionInput,
   type RoutePayloadInput,
   type SolverQuoteInput,
   type PackageQuoteShardInput,
@@ -180,6 +182,29 @@ export class NaryxSolverClient {
     return this.#call('POST', '/v1/solver/order-quotes', { quote, route });
   }
 
+  /**
+   * Records this solver's route decision for a public order it quoted. The server replays it from
+   * its bounded evidence and keeps it on the record whatever the replay finds; the replay is
+   * recomputed here and must agree.
+   */
+  async recordRouteDecision(decision: RouteDecisionInput) {
+    const expected = replayRouteDecision(decision);
+    const body = await this.#call('POST', '/v1/solver/routes/decision', { decision });
+    const served = body.replay as { valid?: unknown; decisionHash?: unknown } | undefined;
+    if (body.decisionHashHex !== toHex(expected.decisionHash) || served?.valid !== expected.valid) {
+      throw new NaryxEvidenceError('the recorded route decision does not replay as served');
+    }
+    return Object.freeze({ decisionHash: toHex(expected.decisionHash), replay: expected, replayed: body.replayed === true });
+  }
+
+  /**
+   * Dry-runs package admission of an order, quote, and route against the server's registry state
+   * for the order's domain. A slot-timed order is simulated at `atSlot`. Nothing is stored.
+   */
+  simulateRoute(input: { readonly order: PackageOrderInput; readonly quote: SolverQuoteInput; readonly route: RoutePayloadInput; readonly atSlot?: bigint }) {
+    return this.#call('POST', '/v1/solver/routes/simulate', input);
+  }
+
   /** This solver's settled receipts for one of its quotes. */
   async settlements(quoteHash: string) {
     if (!/^[0-9a-f]{64}$/.test(quoteHash)) throw new TypeError('quote hash must be 32 bytes of lowercase hex');
@@ -240,8 +265,12 @@ export class NaryxSolverClient {
       if (typeof receivedAtMs !== 'number' || !Number.isSafeInteger(receivedAtMs) || receivedAtMs < 0) throw new NaryxEvidenceError(`orders[${index}] has no receipt time`);
       return Object.freeze({ cursor, orderHash, order, receivedAtMs });
     });
-    if (body.nextCursor !== previous) throw new NaryxEvidenceError('the next cursor does not follow the last order');
-    return Object.freeze({ orders: Object.freeze(orders), nextCursor: previous });
+    // The server skips expired orders, so the next cursor may run past the last order served, but never behind it.
+    const nextCursor = body.nextCursor;
+    if (typeof nextCursor !== 'number' || !Number.isSafeInteger(nextCursor) || nextCursor < previous) {
+      throw new NaryxEvidenceError('the next cursor falls behind the last order');
+    }
+    return Object.freeze({ orders: Object.freeze(orders), nextCursor });
   }
 
   cancelQuote(packageMarketId: string, entryId: string) {

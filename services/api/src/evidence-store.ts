@@ -2,6 +2,7 @@ import { createPublicKey, verify } from "node:crypto";
 import type Database from "better-sqlite3";
 import bs58 from "bs58";
 import {
+  commitmentHash,
   evidenceManifest,
   quoteHash as solverQuoteHash,
   routeHash,
@@ -13,6 +14,8 @@ import {
   packageReceipt,
   packageReceiptHash,
   parseProtocolJson,
+  replayRouteDecision,
+  routeDecisionHash,
   requiresSuccessfulReceipt,
   stringifyProtocolJson,
   terminalOutcomeHash,
@@ -28,6 +31,8 @@ import type {
   PackageOrder,
   PackageOrderInput,
   PackageReceiptInput,
+  RouteDecisionInput,
+  RouteDecisionReplay,
   RoutePayloadInput,
   SolverQuote,
   SolverQuoteInput,
@@ -52,6 +57,9 @@ export const MAX_QUOTES_PER_ORDER = 512;
 export const MAX_QUOTES_PER_SOLVER_PER_ORDER = 8;
 /** Solvers whose latest quote for one order may be live at once. */
 export const MAX_QUOTING_SOLVERS_PER_ORDER = 64;
+
+/** Route decisions one solver may record for one order. */
+export const MAX_ROUTE_DECISIONS_PER_SOLVER_PER_ORDER = 8;
 
 /** Server time in a unit, or undefined when this server cannot judge that unit. */
 export type NowIn = (unit: string) => bigint | undefined;
@@ -99,6 +107,17 @@ CREATE TRIGGER IF NOT EXISTS reject_order_quote_change BEFORE UPDATE ON order_qu
 CREATE TRIGGER IF NOT EXISTS reject_order_quote_delete BEFORE DELETE ON order_quotes BEGIN SELECT RAISE(ABORT, 'quotes are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_public_order_change BEFORE UPDATE ON public_orders BEGIN SELECT RAISE(ABORT, 'orders are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_public_order_delete BEFORE DELETE ON public_orders BEGIN SELECT RAISE(ABORT, 'orders are append-only'); END;
+CREATE TABLE IF NOT EXISTS route_decisions (
+  cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_hash BLOB NOT NULL UNIQUE,
+  order_hash BLOB NOT NULL REFERENCES public_orders(order_hash),
+  solver_id TEXT NOT NULL,
+  decision_json TEXT NOT NULL,
+  received_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS route_decisions_by_order ON route_decisions(order_hash, solver_id, cursor);
+CREATE TRIGGER IF NOT EXISTS reject_route_decision_change BEFORE UPDATE ON route_decisions BEGIN SELECT RAISE(ABORT, 'route decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_route_decision_delete BEFORE DELETE ON route_decisions BEGIN SELECT RAISE(ABORT, 'route decisions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_outcome_change BEFORE UPDATE ON terminal_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_outcome_delete BEFORE DELETE ON terminal_outcomes BEGIN SELECT RAISE(ABORT, 'outcomes are append-only'); END;
 `;
@@ -130,6 +149,15 @@ export interface StoredOrderQuote {
   readonly routeHashHex: string;
   readonly quote: SolverQuote;
   readonly route: RoutePayloadInput;
+  readonly receivedAtMs: number;
+}
+
+export interface StoredRouteDecision {
+  readonly decisionHashHex: string;
+  readonly solverId: string;
+  readonly decision: RouteDecisionInput;
+  /** Recomputed from the stored decision on every read, never stored. */
+  readonly replay: RouteDecisionReplay;
   readonly receivedAtMs: number;
 }
 
@@ -331,6 +359,53 @@ export class SqliteEvidenceStore {
         .run(hash, quote.orderHash, quote.solverId, stringifyProtocolJson(quoteInput), stringifyProtocolJson(routeInput), quote.validUntilUnit, quote.validUntilValue.toString(), this.clock());
       return { quoteHashHex: toHex(hash), replayed: false };
     });
+  }
+
+  /**
+   * Records a solver's route decision for a public order it has quoted. The decision must select
+   * the route of one of that solver's own stored quotes for the order. It is replayed from its
+   * bounded evidence and stored whatever the replay finds, so a decision with discrepancies stays
+   * on the record as exactly that. A repeat of the same decision is idempotent.
+   */
+  recordRouteDecision(input: RouteDecisionInput): { readonly decisionHashHex: string; readonly replay: RouteDecisionReplay; readonly replayed: boolean } {
+    const replay = guarded("INVALID_DECISION", "The route decision failed validation.", () => replayRouteDecision(input));
+    const hash = replay.decisionHash;
+    const orderHash = Buffer.from(commitmentHash(input.orderHash, "routeDecision.orderHash"));
+    const selectedRouteHex = toHex(commitmentHash(input.selectedRouteHash, "routeDecision.selectedRouteHash"));
+    const solverId = input.solverId;
+    return this.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM route_decisions WHERE decision_hash = ?").get(hash) !== undefined) {
+        return { decisionHashHex: toHex(hash), replay, replayed: true };
+      }
+      if (this.db.prepare("SELECT 1 FROM public_orders WHERE order_hash = ?").get(orderHash) === undefined) {
+        throw new EvidenceStoreError("ORDER_NOT_FOUND", "The decision names no stored public order.");
+      }
+      const quoted = (this.db.prepare("SELECT quote_json FROM order_quotes WHERE order_hash = ? AND solver_id = ?").all(orderHash, solverId) as { quote_json: string }[])
+        .some((row) => toHex(solverQuote(parseProtocolJson(row.quote_json) as SolverQuoteInput).routeHash) === selectedRouteHex);
+      if (!quoted) throw new EvidenceStoreError("ROUTE_NOT_QUOTED", "The decision selects no route this solver quoted for the order.");
+      const count = this.db.prepare("SELECT COUNT(*) AS count FROM route_decisions WHERE order_hash = ? AND solver_id = ?").get(orderHash, solverId) as { count: number };
+      if (count.count >= MAX_ROUTE_DECISIONS_PER_SOLVER_PER_ORDER) {
+        throw new EvidenceStoreError("DECISIONS_FULL", "This solver has recorded the maximum number of route decisions for this order.");
+      }
+      this.db
+        .prepare("INSERT INTO route_decisions (decision_hash, order_hash, solver_id, decision_json, received_at_ms) VALUES (?, ?, ?, ?, ?)")
+        .run(hash, orderHash, solverId, stringifyProtocolJson(input), this.clock());
+      return { decisionHashHex: toHex(hash), replay, replayed: false };
+    });
+  }
+
+  /** Every route decision recorded for an order, oldest first, re-hashed and replayed on read. */
+  routeDecisionsFor(orderHashHex: string): readonly StoredRouteDecision[] {
+    const rows = this.db
+      .prepare("SELECT decision_hash, solver_id, decision_json, received_at_ms FROM route_decisions WHERE order_hash = ? ORDER BY cursor")
+      .all(Buffer.from(orderHashHex, "hex")) as { decision_hash: Uint8Array; solver_id: string; decision_json: string; received_at_ms: number }[];
+    return Object.freeze(
+      rows.map((row) => {
+        const decision = parseProtocolJson(row.decision_json) as RouteDecisionInput;
+        if (toHex(routeDecisionHash(decision)) !== toHex(row.decision_hash)) throw new EvidenceStoreError("CORRUPT_ROW", "A stored route decision does not match its hash.");
+        return Object.freeze({ decisionHashHex: toHex(row.decision_hash), solverId: row.solver_id, decision, replay: replayRouteDecision(decision), receivedAtMs: row.received_at_ms });
+      }),
+    );
   }
 
   /**

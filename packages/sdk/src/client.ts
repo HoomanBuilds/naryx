@@ -312,6 +312,15 @@ export interface VerifiedOrderQuote {
   readonly signatureVerified: boolean;
 }
 
+export interface VerifiedRouteDecision {
+  readonly decisionHash: string;
+  readonly solverId: string;
+  readonly decision: RouteDecisionInput;
+  /** Replayed locally; a decision with discrepancies stays on the record as exactly that. */
+  readonly replay: RouteDecisionReplay;
+  readonly receivedAtMs: number;
+}
+
 export interface VerifiedSolverManifest {
   readonly solverId: string;
   readonly manifestHash: string;
@@ -968,6 +977,37 @@ export class NaryxClient {
       operatorSignatureVerified = verdict === true;
     }
     return Object.freeze({ solverId: id, manifestHash: computed, manifestNonce: count(body.manifestNonce, 'manifestNonce'), manifest, operatorSignatureVerified });
+  }
+
+  /**
+   * Every solver route decision recorded for a public order. Each decision is replayed here from
+   * its bounded evidence, and the server's hash and replay must agree with the local one. A valid
+   * replay proves the declared selection under the declared objective, never global optimality.
+   */
+  async getRouteDecisions(orderHash: string): Promise<readonly VerifiedRouteDecision[]> {
+    const requested = hashHex(orderHash, 'order hash');
+    const body = record(await this.#request('GET', `/v1/orders/${requested}/route-decisions`), 'route decisions');
+    if (body.orderHash !== requested) throw new NaryxEvidenceError('route decisions are for another order');
+    return Object.freeze(
+      list(body.decisions, 'decisions').map((entry, index) => {
+        const served = record(entry, `decisions[${index}]`);
+        let replay: RouteDecisionReplay;
+        try {
+          replay = replayRouteDecision(served.decision as RouteDecisionInput);
+        } catch (error) {
+          throw new NaryxEvidenceError(`decisions[${index}] is malformed: ${(error as Error).message}`);
+        }
+        const decision = served.decision as RouteDecisionInput;
+        if (toHex(commitmentHash(decision.orderHash, 'decision.orderHash')) !== requested) throw new NaryxEvidenceError(`decisions[${index}] is for another order`);
+        if (served.decisionHash !== toHex(replay.decisionHash) || served.solverId !== decision.solverId) throw new NaryxEvidenceError(`decisions[${index}] does not hash to its served hash`);
+        const servedReplay = record(served.replay, `decisions[${index}].replay`);
+        const discrepancies = list(servedReplay.discrepancies, `decisions[${index}].replay.discrepancies`);
+        if (servedReplay.valid !== replay.valid || discrepancies.join(',') !== replay.discrepancies.join(',')) {
+          throw new NaryxEvidenceError(`decisions[${index}] replay differs from the local replay`);
+        }
+        return Object.freeze({ decisionHash: toHex(replay.decisionHash), solverId: decision.solverId, decision, replay, receivedAtMs: count(served.receivedAtMs, 'receivedAtMs') });
+      }),
+    );
   }
 
   async getOrderQuotes(orderHash: string): Promise<readonly VerifiedOrderQuote[]> {

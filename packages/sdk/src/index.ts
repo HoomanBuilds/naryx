@@ -16,6 +16,8 @@ export {
   type SeriesCurvePoint,
   type SizeQuoteView,
   type VerifiedOrderQuote,
+  type VerifiedRouteDecision,
+  type VerifiedSolverManifest,
   type VerifiedOutcome,
   type ExecutionQualityView,
   type FetchLike,

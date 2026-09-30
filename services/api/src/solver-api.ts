@@ -13,14 +13,18 @@ import {
   solverSignatureDigest,
   toHex,
   toProtocolJson,
+  validatePackageAdmission,
   verifyPrivateRfqResponse,
 } from "@naryx/protocol-types";
 import type {
   AssetRef,
   DomainRef,
   ImpliedPackageQuoteInput,
+  PackageAdmissionInput,
+  PackageOrderInput,
   PackageQuoteShard,
   PackageQuoteShardInput,
+  RouteDecisionInput,
   RoutePayloadInput,
   SolverCapabilityManifestInput,
   SolverQuote,
@@ -44,13 +48,18 @@ const MILLIS = /^[1-9]\d{0,15}$/;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const SHARD_ID = /^[A-Za-z0-9._:-]{1,257}$/;
 
+/** The registry state a domain's packages are admitted against: everything but the package and the time. */
+export type AdmissionContext = Omit<PackageAdmissionInput, "order" | "quote" | "route" | "currentTime">;
+
 export interface SolverApiOptions {
   readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
   readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "cancelEntry">;
   /** Optional: the open order feed answers 503 without it. */
-  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote">;
+  readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote" | "recordRouteDecision">;
+  /** Optional: route simulation answers 503 without the admission context of the package's domain. */
+  readonly admission?: ReadonlyMap<string, AdmissionContext>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -406,6 +415,65 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (wallClockIn(quote.validUntilUnit) >= quote.validUntilValue) throw new SolverRequestError(400, "QUOTE_EXPIRED", "The quote has already expired.");
       return { ...options.evidence.recordQuote(quoteInput, routeInput, nowIn), quoteMode: quote.quoteMode };
     }
+    if (method === "POST" && path === "/v1/solver/routes/decision") {
+      // The solver's route decision for a public order it quoted, replayed from its bounded
+      // evidence and kept on the record whatever the replay finds.
+      if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
+      const body = decodeBody(raw);
+      const decision = requireObject(body.decision, "decision") as unknown as RouteDecisionInput;
+      if (decision.solverId !== solverId) throw new SolverRequestError(403, "SOLVER_MISMATCH", "A solver can record only its own route decisions.");
+      return options.evidence.recordRouteDecision(decision);
+    }
+    if (method === "POST" && path === "/v1/solver/routes/simulate") {
+      // A dry run of package admission for an order, quote, and route against this server's
+      // registry state for the domain. Nothing is stored, reserved, or signed.
+      const body = decodeBody(raw);
+      const order = requireObject(body.order, "order") as unknown as PackageOrderInput;
+      const quoteInput = requireObject(body.quote, "quote") as unknown as SolverQuoteInput;
+      const routeInput = requireObject(body.route, "route") as unknown as RoutePayloadInput;
+      if ((quoteInput as { solverId?: unknown }).solverId !== solverId) throw new SolverRequestError(403, "SOLVER_MISMATCH", "A solver can simulate only its own quotes.");
+      const domainId = String((order as { domain?: { domainId?: unknown } }).domain?.domainId);
+      const context = options.admission?.get(domainId);
+      if (context === undefined) throw new SolverRequestError(503, "ADMISSION_UNAVAILABLE", "This server holds no admission context for the order's domain.");
+      // Wall-clock domains are judged on server time; a slot-timed domain on the slot the caller names.
+      const unit = String((order as { expiryUnit?: unknown }).expiryUnit);
+      const serverNow = nowIn(unit);
+      let currentTime: { unit: "SOLANA_SLOT" | "EVM_UNIX_SECONDS" | "HYPERLIQUID_UNIX_MILLISECONDS"; value: bigint };
+      let timeSource: "SERVER" | "CALLER";
+      if (serverNow !== undefined) {
+        currentTime = { unit: unit as "EVM_UNIX_SECONDS" | "HYPERLIQUID_UNIX_MILLISECONDS", value: serverNow };
+        timeSource = "SERVER";
+      } else {
+        if (unit !== "SOLANA_SLOT" || typeof body.atSlot !== "bigint" || body.atSlot <= 0n) {
+          throw new SolverRequestError(400, "TIME_REQUIRED", "A slot-timed order is simulated at an explicit positive atSlot.");
+        }
+        currentTime = { unit: "SOLANA_SLOT", value: body.atSlot };
+        timeSource = "CALLER";
+      }
+      let signatureValid = false;
+      try {
+        const quote = solverQuote(quoteInput);
+        signatureValid = quote.solverSignatureScheme === "ED25519" && verifyEd25519(quote.solverVerificationKey, solverSignatureDigest(quoteInput), quote.signature);
+      } catch {
+        signatureValid = false;
+      }
+      try {
+        const admission = validatePackageAdmission({ ...context, order, quote: quoteInput, route: routeInput, currentTime });
+        return {
+          simulated: true,
+          admitted: true,
+          orderHash: toHex(admission.orderHash),
+          quoteHash: toHex(admission.quoteHash),
+          routeHash: toHex(admission.routeHash),
+          signatureValid,
+          currentTime,
+          timeSource,
+        };
+      } catch (error) {
+        if (!(error instanceof ProtocolError)) throw error;
+        return { simulated: true, admitted: false, error: { code: error.code, context: error.context, detail: error.detail }, signatureValid, currentTime, timeSource };
+      }
+    }
     if (method === "GET" && path === "/v1/solver/orders") {
       // Signed public orders without a terminal outcome, oldest first, paged by cursor.
       if (options.evidence === undefined) throw new SolverRequestError(503, "EVIDENCE_UNAVAILABLE", "No evidence store is configured on this server.");
@@ -489,7 +557,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         if (error instanceof PackageExchangeStoreError) return reply(error.code === "BOOK_NOT_FOUND" ? 404 : 409, error.code, error.message);
         if (error instanceof PrivateDeliveryStoreError) return reply(error.code === "NOT_FOUND" ? 404 : 409, error.code, error.message);
         if (error instanceof EvidenceStoreError) {
-          const status = ["INVALID_QUOTE", "INVALID_ROUTE", "ROUTE_MISMATCH"].includes(error.code) ? 400 : error.code === "ORDER_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          const status = ["INVALID_QUOTE", "INVALID_ROUTE", "ROUTE_MISMATCH", "INVALID_DECISION"].includes(error.code) ? 400 : error.code === "ORDER_NOT_FOUND" ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
           return reply(status, error.code, error.message);
         }
         return reply(500, "INTERNAL_ERROR", "Solver request failed.");

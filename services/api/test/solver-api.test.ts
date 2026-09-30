@@ -14,6 +14,7 @@ import {
   packageQuoteShardHash,
   packageReceiptHash,
   privateRfqEnvelopeHash,
+  routeHash,
   sealedQuoteCommitment,
   solverRequestDigest,
   toHex,
@@ -31,6 +32,7 @@ import {
   SqlitePrivateDeliveryStore,
   SqliteRegistryStore,
   SqliteSolverApiStore,
+  type AdmissionContext,
 } from "../src/index.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } from "./exchange-fixtures.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
@@ -71,7 +73,11 @@ interface Harness {
   setClock(ms: number): void;
 }
 
-async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSuiteIds: readonly string[] = [RFQ_SUITE]): Promise<void> {
+async function withSolverApi(
+  run: (harness: Harness) => Promise<void>,
+  pinnedSuiteIds: readonly string[] = [RFQ_SUITE],
+  admission?: ReadonlyMap<string, AdmissionContext>,
+): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "naryx-solver-api-"));
   let clock = NOW_MS;
   const registry = new SqliteRegistryStore(join(dir, "registry.sqlite"));
@@ -91,7 +97,7 @@ async function withSolverApi(run: (harness: Harness) => Promise<void>, pinnedSui
     }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, evidence, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
@@ -386,6 +392,93 @@ test("solvers answer public orders with signed quotes that takers read back with
     assert.deepEqual(((await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly unknown[] }).quotes, []);
     assert.equal((await api.plain("GET", `/v1/orders/${"ee".repeat(32)}/quotes`)).status, 404);
   });
+});
+
+test("a solver records route decisions only for routes it quoted, and takers read them replayed", async () => {
+  await withSolverApi(async (api) => {
+    const { order, orderHashHex, signature } = signedOrder();
+    api.evidence.submitOrder(order, signature);
+    const manifestHash = ((await api.plain("GET", "/v1/solvers/solver-a")).body as { manifestHash: string }).manifestHash;
+    const route = routeFor(orderHashHex, order.domain, order.environment);
+    const quote = signedQuoteFor({ orderHash: orderHashHex, route, environment: order.environment, domain: order.domain, solverId: "solver-a", manifestHash, quoteKey: api.solverKey, validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: NOW_S + 60n });
+    assert.equal((await api.call("POST", "/v1/solver/order-quotes", { quote, route })).status, 200);
+    const quotedRoute = toHex(routeHash(route));
+    const eligible = (routeHashHex: string, expectedNetOutcomeAtoms: bigint) => ({
+      routeHash: routeHashHex,
+      expectedNetOutcomeAtoms,
+      feesAtoms: 5n,
+      marginAtoms: 500n,
+      residualAtoms: 0n,
+      recoveryBoundAtoms: 20n,
+      completionCohortBps: 9_900n,
+      deliveryPolicyId: "public-relay",
+      resourceHeadroomBps: 4_000n,
+    });
+    const decision = (overrides: Record<string, unknown> = {}) => ({
+      decisionVersion: 1,
+      orderHash: orderHashHex,
+      solverId: "solver-a",
+      stateSnapshots: [{ domainId: order.domain.domainId, sourceId: "rpc-a", sequence: 9n, receivedAtValue: 95n, stateHash: "a1".repeat(32) }],
+      normalizationPolicyHash: "a2".repeat(32),
+      objective: { kind: "MAXIMIZE_NET_OUTCOME", maximumResidualAtoms: 50n, maximumStateAgeValue: 50n, maximumSourceSkewValue: 20n },
+      eligible: [eligible(quotedRoute, 100n), eligible("a3".repeat(32), 90n)],
+      excluded: [],
+      selectedRouteHash: quotedRoute,
+      resourcePlanHash: "a4".repeat(32),
+      decisionAtValue: 100n,
+      quoteToSubmitBudgetValue: 2n,
+      ...overrides,
+    });
+    const post = (body: unknown) => api.call("POST", "/v1/solver/routes/decision", { decision: body });
+    const recorded = await post(decision());
+    assert.equal(recorded.status, 200, JSON.stringify(toProtocolJson(recorded.body)));
+    assert.equal((recorded.body.replay as { valid: boolean }).valid, true);
+    assert.equal((await post(decision())).body.replayed, true);
+    // A decision that picks the wrong winner is kept on the record, marked by its replay.
+    const loser = await post(decision({ eligible: [eligible(quotedRoute, 80n), eligible("a3".repeat(32), 90n)] }));
+    assert.deepEqual((loser.body.replay as { discrepancies: readonly string[] }).discrepancies, ["SELECTED_NOT_WINNER"]);
+    const code = (response: { body: Record<string, unknown> }) => (response.body.error as { code: string }).code;
+    assert.equal(code(await post(decision({ selectedRouteHash: "a3".repeat(32) }))), "ROUTE_NOT_QUOTED");
+    assert.equal(code(await post(decision({ solverId: "solver-b" }))), "SOLVER_MISMATCH");
+    assert.equal(code(await post(decision({ orderHash: "ee".repeat(32) }))), "ORDER_NOT_FOUND");
+    assert.equal(code(await post(decision({ decisionVersion: 2 }))), "INVALID_DECISION");
+
+    const read = (await api.plain("GET", `/v1/orders/${orderHashHex}/route-decisions`)).body as { decisions: readonly { decisionHash: string; replay: { valid: boolean } }[] };
+    assert.deepEqual(read.decisions.map((entry) => [entry.decisionHash, entry.replay.valid]), [
+      [recorded.body.decisionHashHex, true],
+      [loser.body.decisionHashHex, false],
+    ]);
+  });
+});
+
+test("route simulation dry-runs admission on the server's registry state and reports failures honestly", async () => {
+  const { order, orderHashHex } = signedOrder();
+  const unavailable = async (api: Harness) => {
+    const manifestHash = ((await api.plain("GET", "/v1/solvers/solver-a")).body as { manifestHash: string }).manifestHash;
+    const route = routeFor(orderHashHex, order.domain, order.environment);
+    const quote = signedQuoteFor({ orderHash: orderHashHex, route, environment: order.environment, domain: order.domain, solverId: "solver-a", manifestHash, quoteKey: api.solverKey, validUntilUnit: "EVM_UNIX_SECONDS", validUntilValue: NOW_S + 60n });
+    return { route, quote };
+  };
+  await withSolverApi(async (api) => {
+    const { route, quote } = await unavailable(api);
+    const response = await api.call("POST", "/v1/solver/routes/simulate", { order, quote, route, atSlot: 1_000_600n });
+    assert.equal((response.body.error as { code: string }).code, "ADMISSION_UNAVAILABLE");
+  });
+  // A context for another domain's manifest cannot admit this order, and says why.
+  const context = { domainManifest: DOMAIN_MANIFEST, templateManifest: {}, templateRegistryRecord: {}, feePolicyManifest: {}, activeRegistryRecords: [] } as unknown as AdmissionContext;
+  await withSolverApi(async (api) => {
+    const { route, quote } = await unavailable(api);
+    const code = (response: { body: Record<string, unknown> }) => (response.body.error as { code: string }).code;
+    assert.equal(code(await api.call("POST", "/v1/solver/routes/simulate", { order, quote, route })), "TIME_REQUIRED");
+    assert.equal(code(await api.call("POST", "/v1/solver/routes/simulate", { order, quote: { ...quote, solverId: "solver-b" }, route, atSlot: 1n })), "SOLVER_MISMATCH");
+    const simulated = await api.call("POST", "/v1/solver/routes/simulate", { order, quote, route, atSlot: 1_000_600n });
+    assert.equal(simulated.status, 200, JSON.stringify(toProtocolJson(simulated.body)));
+    assert.equal(simulated.body.simulated, true);
+    assert.equal(simulated.body.admitted, false);
+    assert.equal(simulated.body.timeSource, "CALLER");
+    assert.equal(simulated.body.signatureValid, true);
+    assert.equal(typeof (simulated.body.error as { detail: string }).detail, "string");
+  }, [RFQ_SUITE], new Map([[order.domain.domainId, context]]));
 });
 
 test("the private RFQ relay stores ciphertext only, fails closed without a pinned suite, and binds responses", async () => {
