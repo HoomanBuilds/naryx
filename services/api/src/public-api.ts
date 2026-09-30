@@ -14,6 +14,10 @@ import {
   packageBookLevels,
   packageOrderHash,
   planCoordinatedDeRisk,
+  compilePackageGraph,
+  packageGraph,
+  packageGraphHash,
+  simulatePackageGraphFailures,
   privateRfqEnvelopeHash,
   ProtocolError,
   replayRouteDecision,
@@ -27,6 +31,10 @@ import type {
   DeRiskPolicy,
   NormalizedPositionInput,
   PositionSnapshotRecordInput,
+  DomainRegistryRecordInput,
+  DomainResourceLimit,
+  PackageGraphInput,
+  PackageTemplateManifestInput,
   PackageOrderInput,
   PackageTakerOrderInput,
   PrivateRfqEnvelopeInput,
@@ -100,6 +108,8 @@ export interface PublicApiOptions {
   readonly evidence?: Pick<SqliteEvidenceStore, "submitOrder" | "getOrder" | "getOutcome" | "executionQuality" | "quotesFor" | "routeDecisionsFor">;
   /** Optional: qualification reads answer 503 without it. Records are appended by operators, never here. */
   readonly qualification?: Pick<SqliteQualificationStore, "history" | "current">;
+  /** Optional: graph compilation answers 503 without the active registry records and resource limits it runs against. */
+  readonly graphContext?: { readonly activeRegistryRecords: readonly DomainRegistryRecordInput[]; readonly resourceLimits: readonly DomainResourceLimit[] };
   /** Optional: position and risk reads answer 503 without it. Snapshots are accepted only when signed by a configured authority. */
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
@@ -786,6 +796,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/compare",
       "/v1/clearing/simulate",
       "/v1/de-risk/validate",
+      "/v1/packages/compile",
+      "/v1/packages/simulate",
       "/v1/rfqs/private",
       "/v1/auctions/sealed",
       "/v1/orders",
@@ -876,6 +888,37 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const results = decided.map((entry) => (entry.store === undefined ? entry.admission : { admitted: true, ...stored.shift() }));
       // Stored is not delivered: private success is reported only after a recipient acknowledges.
       return { results, deliveryStatusRoute: "/v1/rfqs/private/{envelopeHash}" };
+    }
+    if (path === "/v1/packages/simulate") {
+      // The graph's structure, its dependency stages, and every point at which it can stop part
+      // way, with the signed recovery that applies. Nothing is compiled against live state.
+      const input = object(body.graph, "graph") as unknown as PackageGraphInput;
+      const graph = packageGraph(input);
+      return { label: "SIMULATED", graphHash: toHex(packageGraphHash(input)), stages: graph.stages, failurePoints: simulatePackageGraphFailures(input) };
+    }
+    if (path === "/v1/packages/compile") {
+      // Compiles a graph against the registered template it binds, this server's active registry
+      // records, and each domain's resource limits. Wall-clock graphs compile at server time; a
+      // slot-timed graph at the caller's atSlot, and the response says which.
+      const context = options.graphContext;
+      if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
+      const input = object(body.graph, "graph") as unknown as PackageGraphInput;
+      const graph = packageGraph(input);
+      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
+      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
+      const serverNow = nowIn(graph.expiryUnit);
+      let currentTime: { unit: typeof graph.expiryUnit; value: bigint };
+      let timeSource: "SERVER" | "CALLER";
+      if (serverNow !== undefined) {
+        currentTime = { unit: graph.expiryUnit, value: serverNow };
+        timeSource = "SERVER";
+      } else {
+        if (typeof body.atSlot !== "bigint" || body.atSlot <= 0n) throw new RequestError(400, "TIME_REQUIRED", "A slot-timed graph compiles at an explicit positive atSlot.");
+        currentTime = { unit: graph.expiryUnit, value: body.atSlot };
+        timeSource = "CALLER";
+      }
+      const result = compilePackageGraph(input, { templateManifest: template.document, activeRegistryRecords: context.activeRegistryRecords, resourceLimits: context.resourceLimits, currentTime });
+      return { ...result, currentTime, timeSource };
     }
     if (path === "/v1/position-snapshots") {
       // A signed read-only observation from a position source. The store verifies the authority

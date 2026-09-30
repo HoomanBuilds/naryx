@@ -15,6 +15,8 @@ import {
   packageOrderBytes,
   packageOrderHash,
   packageCloseCostIndex,
+  packageGraphHash,
+  simulatePackageGraphFailures,
   packageReceipt,
   packageReceiptHash,
   positionSnapshotRecord,
@@ -58,6 +60,7 @@ import {
   type PackageReceipt,
   type PackageReceiptInput,
   type PackageTakerOrderInput,
+  type PackageGraphInput,
   type NormalizedPosition,
   type PositionSnapshotRecord,
   type PositionSnapshotRecordInput,
@@ -1002,6 +1005,26 @@ export class NaryxClient {
       operatorSignatureVerified = verdict === true;
     }
     return Object.freeze({ solverId: id, manifestHash: computed, manifestNonce: count(body.manifestNonce, 'manifestNonce'), manifest, operatorSignatureVerified });
+  }
+
+  /**
+   * Compiles a package graph on the server against its registered template and registry state.
+   * The served graph hash must equal the local one; a slot-timed graph compiles at `atSlot`.
+   */
+  async compilePackageGraph(graph: PackageGraphInput, atSlot?: bigint) {
+    const expected = toHex(packageGraphHash(graph));
+    const body = record(await this.#request('POST', '/v1/packages/compile', { graph, ...(atSlot === undefined ? {} : { atSlot }) }), 'compiled graph');
+    if (body.compiled === true && toHex(commitmentHash(body.graphHash as Uint8Array, 'graphHash')) !== expected) throw new NaryxEvidenceError('the compiled graph hash differs from the local hash');
+    return body;
+  }
+
+  /** Simulates a graph's failure points on the server; they must equal the local simulation exactly. */
+  async simulatePackageGraph(graph: PackageGraphInput) {
+    const local = simulatePackageGraphFailures(graph);
+    const body = record(await this.#request('POST', '/v1/packages/simulate', { graph }), 'simulated graph');
+    if (body.label !== 'SIMULATED' || body.graphHash !== toHex(packageGraphHash(graph))) throw new NaryxEvidenceError('the simulation is unlabeled or for another graph');
+    if (JSON.stringify(toProtocolJson(body.failurePoints)) !== JSON.stringify(toProtocolJson(local))) throw new NaryxEvidenceError('the served failure points differ from the local simulation');
+    return Object.freeze({ graphHash: body.graphHash as string, stages: body.stages, failurePoints: local });
   }
 
   /**

@@ -3,10 +3,14 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 import {
+  adapterRef,
+  versionedManifestRef,
   assetAmount,
   assetRef,
   buildExposureGraph,
   packageCloseCostIndex,
+  packageGraphHash,
+  simulatePackageGraphFailures,
   positionSnapshotRecord,
   positionSnapshotRecordHash,
   domainRef,
@@ -649,6 +653,58 @@ describe('order intake and terminal evidence', () => {
     assert.equal(risk.byAccountingAsset.length, 1);
     const inflated = { ...buildExposureGraph(normalized.positions, usdc), byUnderlying: [] };
     await assert.rejects(reader(positionsBody(), riskBody(inflated)).getRisk('strategy-1'), /differs from the local computation/);
+  });
+
+  test('graph simulations must match the local failure-point walk and graph hash', async () => {
+    const legFor = (legId: string) => ({
+      legId,
+      legFamily: 'SPOT_SWAP' as const,
+      legTypeId: 'spot-purchase',
+      domain,
+      adapter: adapterRef({ adapterId: 'spot-adapter-v1', adapterManifestVersion: 1, adapterManifestHash: new Uint8Array(32).fill(5) }),
+      venue: versionedManifestRef('venue-a', 1, new Uint8Array(32).fill(6)),
+      market: versionedManifestRef('sol-usdc', 1, new Uint8Array(32).fill(7)),
+      assets: [usdc],
+      side: 'BUY' as const,
+      quantityAsset: usdc,
+      quantityAtoms: 10n,
+      minimumQuantityAtoms: 10n,
+      maximumFeeQuoteAtoms: 1n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC' as const,
+      legExpiryValue: 100n,
+    });
+    const graph = {
+      graphVersion: 1,
+      environment: 'testnet',
+      templateId: 'basis-graph-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: new Uint8Array(32).fill(8),
+      seriesId: 'series',
+      executionClassId: 'class',
+      lifecycleAction: 'ENTRY' as const,
+      owner: 'trader',
+      strategyAccountRefs: ['strategy'],
+      legs: [legFor('a'), legFor('b')],
+      dependencyEdges: [{ fromLegId: 'a', toLegId: 'b' }],
+      executionGroups: [],
+      settlementClass: 'BATCHED_IOC_WITH_RECOVERY' as const,
+      policyHashes: { netting: new Uint8Array(32).fill(1), privacy: new Uint8Array(32).fill(1), solver: new Uint8Array(32).fill(1), delivery: new Uint8Array(32).fill(1), resource: new Uint8Array(32).fill(1), portfolioRiskLimits: new Uint8Array(32).fill(1) },
+      recoverySlots: [
+        { legId: 'a', action: 'ROLLBACK' as const, maximumQuantityAtoms: 10n, maximumCostQuoteAtoms: 2n },
+        { legId: 'b', action: 'COMPLETE' as const, maximumQuantityAtoms: 10n, maximumCostQuoteAtoms: 3n },
+      ],
+      maximumRecoveryCostQuoteAtoms: 5n,
+      expiryUnit: 'EVM_UNIX_SECONDS' as const,
+      packageExpiryValue: 100n,
+      nonce: 1n,
+    };
+    const local = simulatePackageGraphFailures(graph);
+    const body = (failurePoints: unknown) => ({ label: 'SIMULATED', graphHash: toHex(packageGraphHash(graph)), stages: [['a'], ['b']], failurePoints });
+    const simulated = await client({ 'POST /v1/packages/simulate': { body: body(local) } }).simulatePackageGraph(graph);
+    assert.equal(simulated.failurePoints[0]?.recoverable, true);
+    await assert.rejects(client({ 'POST /v1/packages/simulate': { body: body([]) } }).simulatePackageGraph(graph), /differ from the local simulation/);
   });
 
   test('a solver polls open orders and rejects any whose served hash it cannot recompute', async () => {

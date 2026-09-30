@@ -5,6 +5,8 @@ import { parseProtocolJson } from "@naryx/protocol-types";
 import type {
   EconomicStrategySeriesSupportInput,
   SeriesExecutionClassSupportInput,
+  DomainRegistryRecordInput,
+  DomainResourceLimit,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
@@ -91,6 +93,25 @@ function loadAdmissionContexts(path: string): ReadonlyMap<string, AdmissionConte
   }
   if (contexts.size === 0) throw new PublicMarketConfigError("Admission contexts file names no domain.");
   return contexts;
+}
+
+/** `{ "version": 1, "activeRegistryRecords": [...], "resourceLimits": [...] }` in protocol JSON, for graph compilation. */
+function loadGraphContext(path: string): { activeRegistryRecords: readonly DomainRegistryRecordInput[]; resourceLimits: readonly DomainResourceLimit[] } {
+  if (statSync(path).size > MAX_ADMISSION_CONTEXT_BYTES) throw new PublicMarketConfigError("Graph compilation context file is too large.");
+  let parsed: unknown;
+  try {
+    parsed = parseProtocolJson(readFileSync(path, "utf8"));
+  } catch {
+    throw new PublicMarketConfigError("Graph compilation context file is not valid protocol JSON.");
+  }
+  const root = object(parsed, "root");
+  if (Object.keys(root).sort().join(",") !== "activeRegistryRecords,resourceLimits,version" || root.version !== 1) {
+    throw new PublicMarketConfigError("Graph compilation context must be version 1 with exactly activeRegistryRecords and resourceLimits.");
+  }
+  if (!Array.isArray(root.activeRegistryRecords) || !Array.isArray(root.resourceLimits) || root.resourceLimits.length === 0) {
+    throw new PublicMarketConfigError("Graph compilation context needs registry records and at least one domain resource limit.");
+  }
+  return { activeRegistryRecords: root.activeRegistryRecords as DomainRegistryRecordInput[], resourceLimits: root.resourceLimits as DomainResourceLimit[] };
 }
 
 function loadSupport(path: string): {
@@ -248,6 +269,8 @@ export function loadPublicMarketRuntime(
       ? () => BigInt(Math.floor(clockMs() / 1_000))
       : () => BigInt(Math.floor(clockMs()));
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
+    const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
+    const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
     const publicHandler = createPublicApiHandler({
       exchange: store,
       ...(registry === undefined ? {} : { registry }),
@@ -256,6 +279,7 @@ export function loadPublicMarketRuntime(
       ...(evidence === undefined ? {} : { evidence }),
       ...(qualification === undefined ? {} : { qualification }),
       ...(positions === undefined ? {} : { positions }),
+      ...(graphContext === undefined ? {} : { graphContext }),
       nowValue,
       rateLimit,
       clockMs,
