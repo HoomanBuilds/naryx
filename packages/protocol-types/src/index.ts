@@ -1295,3 +1295,15 @@ export {
   type ManualRecoveryIncidentInput,
   type ManualRecoveryState,
 } from './manual-recovery.js';
+
+export {
+  MAINNET_FUNDS_MANIFEST_VERSION,
+  mainnetFundsManifestBytes,
+  mainnetFundsManifestHash,
+  mainnetOperationGate,
+  type MainnetFundedOperationInput,
+  type MainnetFundsManifestInput,
+  type MainnetGateReason,
+  type MainnetOperationContext,
+  type MainnetOperationRequest,
+} from './mainnet-funds.js';

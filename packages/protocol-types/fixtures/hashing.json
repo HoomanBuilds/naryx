@@ -84,6 +84,7 @@
     { "name": "strategy-command-shared-payload", "domain": "CON/v1/strategy-command", "payloadHex": "deadbeef", "digestHex": "0a47f7561e69cdb3a0287afb1b300cde78e761b9bcf5ef93d4d077b3feb0cba1" },
     { "name": "cross-domain-plan-shared-payload", "domain": "CON/v1/cross-domain-plan", "payloadHex": "deadbeef", "digestHex": "6521c0b5bc3a0da4a65e7a953a31f323abe6764708e512c21fea7894f6c9ba43" },
     { "name": "manual-recovery-incident-shared-payload", "domain": "CON/v1/manual-recovery-incident", "payloadHex": "deadbeef", "digestHex": "aa8780125276274ebd5f201e2f6a06045bb9687cc8e6d638387780b4c8000965" },
+    { "name": "mainnet-funds-manifest-shared-payload", "domain": "CON/v1/mainnet-funds-manifest", "payloadHex": "deadbeef", "digestHex": "f6fb916af3ce8dfd3ea68612c8b60b47f889b256e321f2d1b2ba51dc54cffcd2" },
     { "name": "order-empty-payload", "domain": "CON/v1/order", "payloadHex": "", "digestHex": "5a3eb7121f1fbfaafab3ae44e1efb742f9b0cbcb4dba9149079978277179dfda" },
     { "name": "receipt-empty-payload", "domain": "CON/v1/receipt", "payloadHex": "", "digestHex": "3033128fb059808ccfe0bf45ae48efa1093e2364141daa057de0961a9aef28a4" },
     { "name": "order-canonical-asset-amount-payload", "domain": "CON/v1/order", "payloadHex": "00000018736f6c616e613a6d61696e6e65742d626574612f75736463000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f06ffffffffffffffffffffffffffe91ca0", "digestHex": "9046ad81da3fcda79191f3c311612a1b94bfe1f700dbffa2ca54b27e56eb6ab0" },
