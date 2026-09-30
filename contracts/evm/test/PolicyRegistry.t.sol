@@ -87,4 +87,18 @@ contract PolicyRegistryTest is Test {
         registry.activate(PolicyRegistry.PolicyKind.TEMPLATE, TEMPLATE);
         assertTrue(registry.isActive(PolicyRegistry.PolicyKind.TEMPLATE, TEMPLATE, 1, keccak256("template-v1")));
     }
+
+    function testAVersionQueuedBeforeAPauseActivatesStillPaused() public {
+        _activate(FEE, FEES, 1, keccak256("fees-v1"), 25);
+        vm.prank(PROPOSER);
+        registry.proposeActivation(FEE, FEES, 2, keccak256("fees-v2"), 25);
+        vm.prank(PAUSER);
+        registry.pause(FEE, FEES);
+        vm.warp(block.timestamp + 60);
+        vm.prank(EXECUTOR);
+        registry.activate(FEE, FEES);
+        assertEq(registry.policy(FEE, FEES).version, 2);
+        assertTrue(registry.policy(FEE, FEES).paused);
+        assertFalse(registry.isActive(FEE, FEES, 2, keccak256("fees-v2")));
+    }
 }

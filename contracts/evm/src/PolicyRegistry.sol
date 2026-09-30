@@ -143,7 +143,8 @@ contract PolicyRegistry {
         if (proposal.version <= _active[key].version) {
             revert VersionNotIncreasing(_active[key].version, proposal.version);
         }
-        _active[key] = Policy(proposal.version, proposal.manifestHash, proposal.maximumFeeBps, false);
+        // A pause survives a newer version queued before it; only a delayed resume lifts it.
+        _active[key] = Policy(proposal.version, proposal.manifestHash, proposal.maximumFeeBps, _active[key].paused);
         emit PolicyActivated(kind, subjectId, proposal.version, proposal.manifestHash, proposal.maximumFeeBps);
     }
 
