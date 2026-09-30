@@ -367,6 +367,8 @@ export {
   decideRfq,
   makerQuoteSurface,
   generateMakerQuotes,
+  verifyQuoteBond,
+  type QuoteBondViolation,
   openPerformanceBond,
   fileBondClaim,
   disputeBondClaim,

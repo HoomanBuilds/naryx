@@ -19,6 +19,8 @@ import {
   solverRequestDigest,
   toHex,
   toProtocolJson,
+  openPerformanceBond,
+  type PerformanceBondLedger,
   type PackageQuoteLevel,
   type PackageQuoteShardInput,
   type PrivateRfqEnvelopeInput,
@@ -40,6 +42,8 @@ import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, r
 import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
 
 const NOW_MS = 1_900_000_000_000;
+/** Observed bond ledgers the harness's solver API reads by bond id. */
+const OBSERVED_BONDS = new Map<string, PerformanceBondLedger>();
 const RFQ_SUITE = "hpke-x25519-sha256-aes256gcm";
 const NOW_S = BigInt(NOW_MS / 1_000);
 const FAR = NOW_S + 86_400n;
@@ -97,7 +101,7 @@ async function withSolverApi(
     }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, bonds: (id) => OBSERVED_BONDS.get(id), ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, evidence, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
@@ -387,6 +391,15 @@ test("solvers answer public orders with signed quotes that takers read back with
     assert.equal(replacement.status, 200);
     const relisted = (await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly { quoteHash: string }[] };
     assert.deepEqual(relisted.quotes.map((entry) => entry.quoteHash), [replacement.body.quoteHashHex]);
+    // A bonded quote is accepted only when an observed bond backs it for its whole life.
+    const bonded = (quoteNonce: bigint) => quote({ quoteMode: "FIRM_BONDED", reservationId: "cd".repeat(32), performanceBondId: "b0".repeat(32), quoteNonce });
+    assert.equal(errorCode(await post({ quote: bonded(31n), route })), "BOND_UNVERIFIED");
+    const bondFor = (expiresAtValue: bigint) => openPerformanceBond({ version: 1, bondId: "b0".repeat(32), solverId: "solver-a", asset: { assetId: "usdc", assetManifestHash: new Uint8Array(32).fill(3), decimals: 6 } as never, bondAtoms: 1_000_000_000n, coveredFaults: ["FAILED_TO_HONOR_FUNDED_RESERVATION"], maximumPayoutPerClaimAtoms: 500_000_000n, disputeWindowValue: 60n, expiresAtValue });
+    OBSERVED_BONDS.set("b0".repeat(32), bondFor(NOW_S + 61n));
+    assert.equal(errorCode(await post({ quote: bonded(32n), route })), "BOND_INSUFFICIENT");
+    OBSERVED_BONDS.set("b0".repeat(32), bondFor(NOW_S + 86_400n));
+    assert.equal((await post({ quote: bonded(33n), route })).status, 200);
+    OBSERVED_BONDS.clear();
     // Expired quotes drop out of the taker's view.
     api.setClock(Number(NOW_S + 60n) * 1_000);
     assert.deepEqual(((await api.plain("GET", `/v1/orders/${orderHashHex}/quotes`)).body as { quotes: readonly unknown[] }).quotes, []);

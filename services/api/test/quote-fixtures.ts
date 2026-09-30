@@ -145,6 +145,7 @@ export function signedQuoteFor(input: {
   readonly quoteMode?: QuoteMode;
   readonly reservationId?: string;
   readonly quoteNonce?: bigint;
+  readonly performanceBondId?: string;
 }): SolverQuoteInput {
   const f = QUOTE_FIXTURE;
   const raw = new Uint8Array((createPublicKey(input.quoteKey).export({ format: "der", type: "spki" }) as Buffer).subarray(-32));
@@ -187,6 +188,7 @@ export function signedQuoteFor(input: {
     validUntilUnit: input.validUntilUnit,
     validUntilValue: input.validUntilValue,
     ...(input.reservationId === undefined ? {} : { reservationId: input.reservationId }),
+    ...(input.performanceBondId === undefined ? {} : { performanceBondId: input.performanceBondId }),
     quoteNonce: input.quoteNonce ?? BigInt(f.quoteNonce),
     signature: new Uint8Array(64),
   };

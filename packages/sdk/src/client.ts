@@ -812,7 +812,7 @@ export class NaryxClient {
   async getMarketQuotes(packageMarketId: string): Promise<readonly Record<string, unknown>[]> {
     checkId(packageMarketId, 'package market id');
     const body = record(await this.#request('GET', `/v1/markets/${packageMarketId}/quotes`), 'quotes');
-    const modes = new Set(['IMPLIED', 'EXECUTION_COMMITMENT', 'FIRM_SIMULATED', 'FIRM_ONCHAIN']);
+    const modes = new Set(['IMPLIED', 'EXECUTION_COMMITMENT', 'FIRM_SIMULATED', 'FIRM_ONCHAIN', 'FIRM_BONDED']);
     return list(body.quotes, 'quotes').map((entry, index) => {
       const quote = record(entry, `quotes[${index}]`);
       if (typeof quote.quoteMode !== 'string' || !modes.has(quote.quoteMode)) throw new NaryxEvidenceError('every quote must carry a known quote mode');

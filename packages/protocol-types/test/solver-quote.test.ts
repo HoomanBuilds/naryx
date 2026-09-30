@@ -216,6 +216,17 @@ describe('solver quote', () => {
     );
   });
 
+  test('a FIRM_BONDED quote carries its reservation and bond, and other modes keep their bytes', () => {
+    assert.throws(() => solverQuote(baseInput({ quoteMode: 'FIRM_BONDED', reservationId: 'aa'.repeat(32) })), /performance bond is required/);
+    assert.throws(() => solverQuote(baseInput({ quoteMode: 'FIRM_BONDED', performanceBondId: 'bb'.repeat(32) })), /reservation is required/);
+    assert.throws(() => solverQuote(baseInput({ quoteMode: 'FIRM_ONCHAIN', reservationId: 'aa'.repeat(32), performanceBondId: 'bb'.repeat(32) })), /exactly for FIRM_BONDED/);
+    const bonded = baseInput({ quoteMode: 'FIRM_BONDED', reservationId: 'aa'.repeat(32), performanceBondId: 'bb'.repeat(32) });
+    assert.equal(toHex(solverQuote(bonded).performanceBondId as Uint8Array), 'bb'.repeat(32));
+    const onchain = unsignedSolverQuoteBytes(baseInput({ quoteMode: 'FIRM_ONCHAIN', reservationId: 'aa'.repeat(32) }));
+    assert.equal(unsignedSolverQuoteBytes(bonded).length, onchain.length + 32, 'only the bonded mode appends its bond');
+    assert.notEqual(toHex(quoteHash(bonded)), toHex(quoteHash({ ...bonded, performanceBondId: 'bc'.repeat(32) })));
+  });
+
   test('enforces firm reservation and residual structural boundaries', () => {
     assert.throws(
       () => solverQuote(baseInput({ quoteMode: 'FIRM_ONCHAIN' })),

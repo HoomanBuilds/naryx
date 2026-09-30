@@ -149,6 +149,7 @@ describe('frozen enum discriminants', () => {
       EXECUTION_COMMITMENT: 2,
       FIRM_SIMULATED: 3,
       FIRM_ONCHAIN: 4,
+      FIRM_BONDED: 5,
     });
     assert.deepEqual(QUOTED_OUTCOME_KIND, {
       ENTRY_SPREAD: 1,

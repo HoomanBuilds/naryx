@@ -232,6 +232,8 @@ export const QUOTE_MODE = Object.freeze({
   EXECUTION_COMMITMENT: 2,
   FIRM_SIMULATED: 3,
   FIRM_ONCHAIN: 4,
+  /** A funded reservation plus a performance bond that pays if the solver fails to honor it. */
+  FIRM_BONDED: 5,
 } as const);
 export type QuoteMode = keyof typeof QUOTE_MODE;
 

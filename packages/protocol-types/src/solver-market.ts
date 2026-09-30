@@ -136,11 +136,12 @@ export interface RfqDecision {
 // Firmer quote modes win exact ties; they never outrank a better net outcome.
 const FIRMNESS: Readonly<Record<QuoteMode, number>> = Object.freeze({
   FIRM_ONCHAIN: 0,
-  FIRM_SIMULATED: 1,
-  EXECUTION_COMMITMENT: 2,
-  IMPLIED: 3,
+  FIRM_BONDED: 1,
+  FIRM_SIMULATED: 2,
+  EXECUTION_COMMITMENT: 3,
+  IMPLIED: 4,
 });
-const FIRM_MODES: ReadonlySet<QuoteMode> = new Set(['FIRM_ONCHAIN', 'FIRM_SIMULATED']);
+const FIRM_MODES: ReadonlySet<QuoteMode> = new Set(['FIRM_ONCHAIN', 'FIRM_BONDED', 'FIRM_SIMULATED']);
 
 /**
  * Collects multi-dealer responses into a replayable decision. Every response is either ranked
@@ -599,4 +600,36 @@ export function releasePerformanceBond(ledger: PerformanceBondLedger, atValue: b
   }
   const paid = ledger.claims.filter((claim) => claim.state === 'PAID').reduce((sum, claim) => sum + claim.payoutAtoms, 0n);
   return { ledger: withClaims(ledger, ledger.claims, true), returnedAtoms: ledger.bond.bondAtoms - paid };
+}
+
+export type QuoteBondViolation =
+  | 'NOT_BONDED_MODE'
+  | 'BOND_MISMATCH'
+  | 'SOLVER_MISMATCH'
+  | 'FAULT_NOT_COVERED'
+  | 'BOND_RELEASED'
+  | 'BOND_EXPIRES_BEFORE_QUOTE'
+  | 'BOND_EXHAUSTED'
+  | 'CAP_BELOW_FEE_EXPOSURE';
+
+/**
+ * Whether a bond ledger backs a FIRM_BONDED quote: the quote names this bond, the bond belongs to
+ * the quoting solver, covers failure to honor a funded reservation, is unreleased, outlives the
+ * quote, still has an unencumbered balance, and its per-claim cap covers at least the fees the
+ * taker would lose. The bond is compensation for a canonical fault, never a claim on liquidity.
+ */
+export function verifyQuoteBond(
+  quote: { readonly quoteMode: QuoteMode; readonly solverId: string; readonly performanceBondId?: Uint8Array | string; readonly validUntilValue: bigint; readonly solverFee: { readonly atoms: bigint }; readonly protocolFee: { readonly atoms: bigint } },
+  ledger: PerformanceBondLedger,
+): { readonly backed: true } | { readonly backed: false; readonly violations: readonly QuoteBondViolation[] } {
+  const violations: QuoteBondViolation[] = [];
+  if (quote.quoteMode !== 'FIRM_BONDED' || quote.performanceBondId === undefined) violations.push('NOT_BONDED_MODE');
+  else if (toHex(commitmentHash(quote.performanceBondId, 'verifyQuoteBond.performanceBondId')) !== toHex(commitmentHash(ledger.bond.bondId, 'verifyQuoteBond.bondId'))) violations.push('BOND_MISMATCH');
+  if (ledger.bond.solverId !== quote.solverId) violations.push('SOLVER_MISMATCH');
+  if (!ledger.bond.coveredFaults.includes('FAILED_TO_HONOR_FUNDED_RESERVATION')) violations.push('FAULT_NOT_COVERED');
+  if (ledger.released) violations.push('BOND_RELEASED');
+  if (ledger.bond.expiresAtValue <= quote.validUntilValue + ledger.bond.disputeWindowValue) violations.push('BOND_EXPIRES_BEFORE_QUOTE');
+  if (encumbered(ledger) >= ledger.bond.bondAtoms) violations.push('BOND_EXHAUSTED');
+  if (ledger.bond.maximumPayoutPerClaimAtoms < quote.solverFee.atoms + quote.protocolFee.atoms) violations.push('CAP_BELOW_FEE_EXPOSURE');
+  return violations.length === 0 ? Object.freeze({ backed: true as const }) : Object.freeze({ backed: false as const, violations: Object.freeze(violations) });
 }

@@ -7,6 +7,7 @@ import {
   generateMakerQuotes,
   makerQuoteSurface,
   openPerformanceBond,
+  verifyQuoteBond,
   releasePerformanceBond,
   settleBondClaim,
   toHex,
@@ -178,6 +179,22 @@ describe('performance bonds', () => {
     fault: 'FAILED_TO_HONOR_FUNDED_RESERVATION' as const,
     payoutAtoms,
     atValue,
+  });
+
+  test('a bond backs a FIRM_BONDED quote only when it covers the reservation fault for the quote life', () => {
+    const quote = { quoteMode: 'FIRM_BONDED' as const, solverId: 'solver-a', performanceBondId: id(1), validUntilValue: 900n, solverFee: { atoms: 20n }, protocolFee: { atoms: 10n } };
+    assert.deepEqual(verifyQuoteBond(quote, bond()), { backed: true });
+    const refused = (change: object, ledger = bond()) => {
+      const result = verifyQuoteBond({ ...quote, ...change }, ledger);
+      return result.backed ? [] : result.violations;
+    };
+    assert.deepEqual(refused({ performanceBondId: id(2) }), ['BOND_MISMATCH']);
+    assert.deepEqual(refused({ solverId: 'solver-b' }), ['SOLVER_MISMATCH']);
+    assert.deepEqual(refused({ validUntilValue: 995n }), ['BOND_EXPIRES_BEFORE_QUOTE']);
+    assert.deepEqual(refused({ solverFee: { atoms: 55n } }), ['CAP_BELOW_FEE_EXPOSURE']);
+    assert.deepEqual(refused({ quoteMode: 'FIRM_ONCHAIN' }), ['NOT_BONDED_MODE']);
+    const drained = fileBondClaim(fileBondClaim(bond(), claim(2, 50n)), claim(3, 50n));
+    assert.deepEqual(refused({}, drained), ['BOND_EXHAUSTED']);
   });
 
   test('only objective covered faults within caps can claim, and evidence claims once', () => {

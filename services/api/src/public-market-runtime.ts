@@ -22,6 +22,7 @@ import { SqliteQualificationStore } from "./qualification-store.js";
 import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import { SqliteStrategyBookStore } from "./strategy-book-store.js";
+import { createEvmBondReader } from "./evm-bond-reader.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -217,6 +218,28 @@ function loadCatalogueSigner(environment: NodeJS.ProcessEnv): { authority: strin
   return { authority, environment: publicEnvironment, signHash: (hash) => new Uint8Array(sign(null, hash, key)) };
 }
 
+/**
+ * NARYX_BOND_READER_CONFIG names an absolute JSON file: `rpcUrl`, `vault`, `solvers` (address to
+ * solver id), and `assets` (address to asset reference). FIRM_BONDED quotes are refused without it.
+ */
+function loadBondReader(path: string) {
+  let raw: Record<string, unknown>;
+  try {
+    raw = parseProtocolJson(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    throw new PublicMarketConfigError("NARYX_BOND_READER_CONFIG must be protocol JSON.");
+  }
+  const solvers = object(raw.solvers, "solvers");
+  const assets = object(raw.assets, "assets");
+  if (typeof raw.rpcUrl !== "string" || typeof raw.vault !== "string") throw new PublicMarketConfigError("NARYX_BOND_READER_CONFIG needs rpcUrl and vault.");
+  return createEvmBondReader({
+    rpcUrl: raw.rpcUrl,
+    vault: raw.vault,
+    solverByAddress: new Map(Object.entries(solvers).map(([address, id]) => [address.toLowerCase(), String(id)])),
+    assetByAddress: new Map(Object.entries(assets).map(([address, asset]) => [address.toLowerCase(), asset as never])),
+  });
+}
+
 function activationDelay(value: string | undefined): bigint {
   if (value === undefined || !/^(0|[1-9]\d{0,18})$/.test(value)) {
     throw new PublicMarketConfigError("NARYX_QUALIFICATION_DB requires NARYX_QUALIFICATION_ACTIVATION_DELAY in the records' time unit.");
@@ -342,6 +365,8 @@ export function loadPublicMarketRuntime(
     });
     const admissionPath = optional(environment.NARYX_ADMISSION_CONTEXTS);
     const admission = admissionPath === undefined ? undefined : loadAdmissionContexts(absolute(admissionPath, "NARYX_ADMISSION_CONTEXTS"));
+    const bondConfigPath = optional(environment.NARYX_BOND_READER_CONFIG);
+    const bonds = bondConfigPath === undefined ? undefined : loadBondReader(absolute(bondConfigPath, "NARYX_BOND_READER_CONFIG"));
     const solverHandler = solverState === undefined || registry === undefined
       ? undefined
       : createSolverApiHandler({
@@ -351,6 +376,7 @@ export function loadPublicMarketRuntime(
         ...(delivery === undefined ? {} : { delivery }),
         ...(evidence === undefined ? {} : { evidence }),
         ...(admission === undefined ? {} : { admission }),
+        ...(bonds === undefined ? {} : { bonds }),
         nowValue,
         clockMs,
         rateLimit,

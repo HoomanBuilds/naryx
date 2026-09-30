@@ -710,7 +710,7 @@ function QuoteTerms({ quote }: { quote: LocalSolverQuote }) {
       <span>Quantity policy</span><strong>{protocolScalar(route.quantityPolicyClass)}</strong>
       <span>Partial fill</span><strong>{protocolScalar(route.partialFillPolicy)}</strong>
       <span>Delivery</span><strong>Direct to the configured solver, not a public RFQ</strong>
-      <span>Quote mode</span><strong>{quoteMode === "FIRM_SIMULATED" ? "FIRM_SIMULATED (non-production reservation)" : quoteMode}</strong>
+      <span>Quote mode</span><strong>{quoteMode === "FIRM_SIMULATED" ? "FIRM_SIMULATED (non-production reservation)" : quoteMode === "FIRM_BONDED" ? "FIRM_BONDED (reservation plus performance bond)" : quoteMode}</strong>
       <span>Margin change</span><strong>{assetAmountText(quote.quote.expectedMarginDelta)}</strong>
       {residualBase !== undefined ? <><span>Residual base</span><strong>{assetAmountText(residualBase)}</strong></> : null}
       {residualValue !== undefined ? <><span>Residual value</span><strong>{assetAmountText(residualValue)}</strong></> : null}

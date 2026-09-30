@@ -663,7 +663,8 @@ function validateExecutableQuoteShape(
   quote: SolverQuote,
 ): void {
   requireCondition(quote.quoteMode !== 'IMPLIED', 'packageAdmission.quote.quoteMode', 'implied quotes are not executable');
-  const firm = quote.quoteMode === 'FIRM_SIMULATED' || quote.quoteMode === 'FIRM_ONCHAIN';
+  const firm = quote.quoteMode === 'FIRM_SIMULATED' || quote.quoteMode === 'FIRM_ONCHAIN' || quote.quoteMode === 'FIRM_BONDED';
+  requireCondition((quote.quoteMode === 'FIRM_BONDED') === (quote.performanceBondId !== undefined), 'packageAdmission.quote.performanceBondId', 'a performance bond backs exactly FIRM_BONDED quotes');
   if (order.settlementClass === 'BATCHED_IOC_WITH_RECOVERY') {
     requireCondition(quote.quoteMode === 'EXECUTION_COMMITMENT', 'packageAdmission.quote.quoteMode', 'Hyperliquid requires an execution commitment');
   }

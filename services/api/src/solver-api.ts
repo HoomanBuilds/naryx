@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import {
   deriveImpliedPackageQuote,
+  verifyQuoteBond,
+  type PerformanceBondLedger,
   fromHex,
   fromProtocolJson,
   packageQuoteShard,
@@ -62,6 +64,11 @@ export interface SolverApiOptions {
   readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote" | "recordRouteDecision">;
   /** Optional: route simulation answers 503 without the admission context of the package's domain. */
   readonly admission?: ReadonlyMap<string, AdmissionContext>;
+  /**
+   * Optional: the observed ledger of a performance bond by id. FIRM_BONDED quotes are refused
+   * without it, and accepted only when the kernel confirms the bond backs the quote.
+   */
+  readonly bonds?: (bondIdHex: string) => PerformanceBondLedger | undefined | Promise<PerformanceBondLedger | undefined>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -453,6 +460,12 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         throw new SolverRequestError(400, "QUOTE_MODE_MISLABELED", "Outside production a reserved quote is FIRM_SIMULATED, never FIRM_ONCHAIN.");
       }
       if (wallClockIn(quote.validUntilUnit) >= quote.validUntilValue) throw new SolverRequestError(400, "QUOTE_EXPIRED", "The quote has already expired.");
+      if (quote.quoteMode === "FIRM_BONDED") {
+        const ledger = await options.bonds?.(toHex(quote.performanceBondId as Uint8Array));
+        if (ledger === undefined) throw new SolverRequestError(409, "BOND_UNVERIFIED", "No observed performance bond backs this quote.");
+        const backing = verifyQuoteBond(quote, ledger);
+        if (!backing.backed) throw new SolverRequestError(409, "BOND_INSUFFICIENT", `The bond does not back the quote: ${backing.violations.join(", ")}.`);
+      }
       return { ...options.evidence.recordQuote(quoteInput, routeInput, nowIn), quoteMode: quote.quoteMode };
     }
     if (method === "POST" && path === "/v1/solver/routes/decision") {

@@ -106,6 +106,8 @@ export interface SolverQuoteInput {
   readonly validUntilValue: bigint;
   readonly reservationId?: Uint8Array | string;
   readonly quoteNonce: bigint;
+  /** The performance bond backing a FIRM_BONDED quote; present exactly for that mode. */
+  readonly performanceBondId?: Uint8Array | string;
   readonly signature: Uint8Array;
 }
 
@@ -142,6 +144,7 @@ export interface SolverQuote {
   readonly validUntilValue: bigint;
   readonly reservationId?: CommitmentHash;
   readonly quoteNonce: bigint;
+  readonly performanceBondId?: CommitmentHash;
   readonly signature: Uint8Array;
 }
 
@@ -385,6 +388,7 @@ function frozenSolverQuote(
     | 'routeHash'
     | 'feePolicyManifestHash'
     | 'reservationId'
+    | 'performanceBondId'
     | 'signature'
   >,
   hashes: Readonly<{
@@ -393,6 +397,7 @@ function frozenSolverQuote(
     routeHash: CommitmentHash;
     feePolicyManifestHash: ManifestHash;
     reservationId?: CommitmentHash;
+    performanceBondId?: CommitmentHash;
   }>,
   verificationKey: Uint8Array,
   signature: Uint8Array,
@@ -433,6 +438,15 @@ function frozenSolverQuote(
       enumerable: true,
       get(): CommitmentHash {
         return Uint8Array.from(reservationId) as CommitmentHash;
+      },
+    });
+  }
+  const performanceBondId = hashes.performanceBondId === undefined ? undefined : (Uint8Array.from(hashes.performanceBondId) as CommitmentHash);
+  if (performanceBondId !== undefined) {
+    Object.defineProperty(quote, 'performanceBondId', {
+      enumerable: true,
+      get(): CommitmentHash {
+        return Uint8Array.from(performanceBondId) as CommitmentHash;
       },
     });
   }
@@ -592,7 +606,11 @@ export function solverQuote(input: SolverQuoteInput, context = 'solverQuote'): S
     );
   }
 
-  const isFirm = input.quoteMode === 'FIRM_SIMULATED' || input.quoteMode === 'FIRM_ONCHAIN';
+  const isFirm = input.quoteMode === 'FIRM_SIMULATED' || input.quoteMode === 'FIRM_ONCHAIN' || input.quoteMode === 'FIRM_BONDED';
+  if ((input.quoteMode === 'FIRM_BONDED') !== (input.performanceBondId !== undefined)) {
+    throw new MalformedInputError(`${context}.performanceBondId`, 'a performance bond is required exactly for FIRM_BONDED quotes');
+  }
+  const performanceBondId = input.performanceBondId === undefined ? undefined : commitmentHash(input.performanceBondId, `${context}.performanceBondId`);
   const hasReservation = input.reservationId !== undefined;
   if (isFirm !== hasReservation) {
     throw new MalformedInputError(
@@ -668,6 +686,7 @@ export function solverQuote(input: SolverQuoteInput, context = 'solverQuote'): S
       routeHash,
       feePolicyManifestHash,
       ...(reservationId === undefined ? {} : { reservationId }),
+      ...(performanceBondId === undefined ? {} : { performanceBondId }),
     },
     signatureMaterial.verificationKey,
     signatureMaterial.signature,
@@ -681,7 +700,8 @@ function revalidate(value: SolverQuote, context: string): SolverQuote {
     !(value.solverCapabilityManifestHash instanceof Uint8Array) ||
     !(value.routeHash instanceof Uint8Array) ||
     !(value.feePolicyManifestHash instanceof Uint8Array) ||
-    (value.reservationId !== undefined && !(value.reservationId instanceof Uint8Array))
+    (value.reservationId !== undefined && !(value.reservationId instanceof Uint8Array)) ||
+    (value.performanceBondId !== undefined && !(value.performanceBondId instanceof Uint8Array))
   ) {
     throw new MalformedInputError(context, 'expected canonical hash bytes');
   }
@@ -770,6 +790,8 @@ function encodeUnsignedChecked(writer: CanonicalWriter, value: SolverQuote): voi
     'solverQuote.reservationId',
   );
   writer.writeU256(value.quoteNonce, 'solverQuote.quoteNonce');
+  // Written only for FIRM_BONDED, so every quote of another mode keeps its existing bytes and hash.
+  if (value.quoteMode === 'FIRM_BONDED') encodeCommitmentHash(writer, value.performanceBondId as CommitmentHash, 'solverQuote.performanceBondId');
 }
 
 export function encodeUnsignedSolverQuote(writer: CanonicalWriter, value: SolverQuote): void {
