@@ -94,6 +94,7 @@ function snapshot(
       availableToTrade: ['0', '1'],
       markPx: '100000',
     }],
+    abstraction: 'disabled',
   };
 }
 
@@ -165,6 +166,17 @@ test('activates INITIALIZING only for the exact authority inventory', async () =
     await preflight.qualify(admission());
     assert.equal(store.state(), 'ACTIVE');
   });
+});
+
+test('a unified or default abstraction account never qualifies', async () => {
+  for (const abstraction of ['unifiedAccount', 'default', 'portfolioMargin'] as const) {
+    await withStore(async (store) => {
+      await assert.rejects(
+        new HyperliquidTestnetAuthorityPreflight(reader({ ...snapshot(), abstraction }), store, config, () => nowMs).qualify(admission()),
+        /is not the configured account mode/,
+      );
+    });
+  }
 });
 
 test('incident lock cannot auto-reopen after a later exact inventory', async () => {

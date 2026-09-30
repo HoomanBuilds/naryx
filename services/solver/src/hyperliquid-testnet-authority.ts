@@ -8,6 +8,7 @@ import type {
   SpotClearinghouseStateResponse,
   SubAccountsResponse,
   UserRoleResponse,
+  UserAbstractionResponse,
 } from '@nktkas/hyperliquid/api/info';
 import type { PackageAdmission } from '@naryx/protocol-types';
 import type { HyperliquidSubmissionAccount } from './index.js';
@@ -63,6 +64,8 @@ export interface HyperliquidTestnetAuthoritySnapshot {
   readonly perpetualState: ClearinghouseStateResponse;
   readonly spotState: SpotClearinghouseStateResponse;
   readonly assetModes: readonly ActiveAssetDataResponse[];
+  /** The trading account's abstraction state; `disabled` is Standard mode with separate spot and perp ledgers. */
+  readonly abstraction: UserAbstractionResponse;
 }
 
 export interface HyperliquidTestnetAuthorityReadPort {
@@ -290,7 +293,7 @@ export class HyperliquidSdkTestnetAuthorityReader implements HyperliquidTestnetA
     perpetualCoins: readonly string[],
   ): Promise<HyperliquidTestnetAuthoritySnapshot> {
     const requestedAtMs = this.#currentTimeMs();
-    const [agents, agentRole, masterRole, tradingRole, subAccounts, perpetualState, spotState] = await Promise.all([
+    const [agents, agentRole, masterRole, tradingRole, subAccounts, perpetualState, spotState, abstraction] = await Promise.all([
       this.#client.extraAgents({ user: account.masterAccount }),
       this.#client.userRole({ user: approvedAgent }),
       this.#client.userRole({ user: account.masterAccount }),
@@ -298,6 +301,7 @@ export class HyperliquidSdkTestnetAuthorityReader implements HyperliquidTestnetA
       this.#client.subAccounts({ user: account.masterAccount }),
       this.#client.clearinghouseState({ user: account.tradingAccount }),
       this.#client.spotClearinghouseState({ user: account.tradingAccount }),
+      this.#client.userAbstraction({ user: account.tradingAccount }),
     ]);
     const assetModes = await Promise.all(perpetualCoins.map((coin) =>
       this.#client.activeAssetData({ user: account.tradingAccount, coin })));
@@ -314,6 +318,7 @@ export class HyperliquidSdkTestnetAuthorityReader implements HyperliquidTestnetA
       perpetualState,
       spotState,
       assetModes: Object.freeze(assetModes),
+      abstraction,
     });
   }
 }
@@ -459,6 +464,10 @@ export class HyperliquidTestnetAuthorityPreflight {
     requireCondition(snapshot.spotState.portfolioMarginEnabled
       === this.#config.expectedPortfolioMarginEnabled,
     'portfolio margin mode does not match the configured account mode');
+    // V1 runs in Standard mode (abstraction disabled) with spot and perp ledgers funded
+    // separately; unified accounts share collateral in ways v1 accounting does not model.
+    requireCondition(snapshot.abstraction === (this.#config.expectedPortfolioMarginEnabled ? 'portfolioMargin' : 'disabled'),
+      `account abstraction ${String(snapshot.abstraction)} is not the configured account mode`);
     const allowedTokens = new Set(this.#config.allowedSpotTokenIndices);
     for (const balance of snapshot.spotState.balances) {
       if (!('token' in balance)) {
