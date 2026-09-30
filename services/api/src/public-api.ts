@@ -22,6 +22,7 @@ import {
   ProtocolError,
   replayRouteDecision,
   toHex,
+  builderManifestHash,
   toProtocolJson,
   validatePackageOrderProfile,
 } from "@naryx/protocol-types";
@@ -37,6 +38,8 @@ import type {
   PackageTemplateManifestInput,
   PackageOrderInput,
   StrategyCommandInput,
+  BuilderManifestInput,
+  BuilderAttributionInput,
   PackageTakerOrderInput,
   PrivateRfqEnvelopeInput,
   SealedAuctionDefinitionInput,
@@ -55,6 +58,7 @@ import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.j
 import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
+import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 
@@ -145,6 +149,8 @@ export interface PublicApiOptions {
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
+  /** Builder manifests and attributions; without it the builder routes answer 503. */
+  readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -373,6 +379,21 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       if (options.catalogue === undefined) throw new RequestError(503, "CATALOGUE_UNAVAILABLE", "No catalogue authority is configured on this server.");
       return options.catalogue.current();
+    }
+    if ((match = /^\/v1\/builders\/([^/]+)(\/attribution|\/revenue)?$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.builders === undefined) throw new RequestError(503, "BUILDERS_UNAVAILABLE", "No builder registry is configured on this server.");
+      const builderId = id(match[1], "Builder id");
+      if (match[2] === "/attribution") {
+        return {
+          builderId,
+          attributions: options.builders.attributions(builderId).map((view) => ({ ...view, label: "OBSERVED" })),
+        };
+      }
+      if (match[2] === "/revenue") return { builderId, label: "OBSERVED", payableByAsset: options.builders.revenue(builderId) };
+      const manifest = options.builders.latest(builderId);
+      if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such builder.");
+      return { builderId, manifest, manifestHash: toHex(builderManifestHash(manifest)) };
     }
     if ((match = /^\/v1\/strategies\/([^/]+)(\/history)?$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -874,6 +895,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/orders",
       "/v1/position-snapshots",
       "/v1/strategies/commands",
+      "/v1/builders",
+      "/v1/builders/attributions",
     ].includes(path)) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
@@ -899,6 +922,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const result = options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization.signature);
       if (!result.accepted) throw new RequestError(409, result.rejection, `The strategy command was rejected${result.remedy === undefined ? "" : `; remedy: ${result.remedy}`}.`);
       return result;
+    }
+    if (path === "/v1/builders" || path === "/v1/builders/attributions") {
+      if (options.builders === undefined) throw new RequestError(503, "BUILDERS_UNAVAILABLE", "No builder registry is configured on this server.");
+      if (path === "/v1/builders") return options.builders.registerManifest(object(body.manifest, "manifest") as unknown as BuilderManifestInput);
+      // Only the order's owner attributes it, over the attribution hash; a builder gains no authority.
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519" || typeof authorization.signature !== "string") throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Attributions carry an ED25519 signature in base58.");
+      return options.builders.attribute(object(body.attribution, "attribution") as unknown as BuilderAttributionInput, authorization.signature);
     }
     if (path === "/v1/orders/validate") {
       try {
@@ -1060,6 +1091,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
         if (error instanceof EvidenceStoreError) {
           const status = ["INVALID_ORDER", "INVALID_SIGNATURE", "UNSUPPORTED_AUTHORIZATION"].includes(error.code) ? 400 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof BuilderStoreError) {
+          const status = ["INVALID_MANIFEST", "INVALID_ATTRIBUTION", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT"].includes(error.code) ? 400 : error.code.endsWith("NOT_FOUND") ? 404 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof StrategyBookError) {

@@ -23,6 +23,7 @@ import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import { SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { createEvmBondReader } from "./evm-bond-reader.js";
+import { SqliteBuilderStore } from "./builder-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -349,6 +350,14 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (strategies !== undefined) opened.push(strategies);
+    const builderPath = optional(environment.NARYX_BUILDER_DB);
+    if (builderPath !== undefined && (evidence === undefined || publicEnvironment === undefined || publicEnvironment.toLowerCase().includes("mainnet"))) {
+      throw new PublicMarketConfigError("NARYX_BUILDER_DB requires NARYX_EVIDENCE_DB and a non-mainnet NARYX_PUBLIC_ENVIRONMENT.");
+    }
+    const builders = builderPath === undefined || evidence === undefined
+      ? undefined
+      : new SqliteBuilderStore(absolute(builderPath, "NARYX_BUILDER_DB"), { environment: publicEnvironment as string, evidence, clock: clockMs });
+    if (builders !== undefined) opened.push(builders);
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -371,6 +380,7 @@ export function loadPublicMarketRuntime(
       ...(graphContext === undefined ? {} : { graphContext }),
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
+      ...(builders === undefined ? {} : { builders }),
       nowValue,
       rateLimit,
       clockMs,

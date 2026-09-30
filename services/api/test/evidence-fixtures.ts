@@ -166,5 +166,6 @@ export function signedOrder(idempotencyKey = "evidence-order-0001") {
     currentClock: 1_000_500n,
   });
   const signOrder = (order: PackageOrderInput) => bs58.encode(sign(null, Buffer.from(packageOrderBytes(order)), privateKey));
-  return { order: created.order as PackageOrderInput, orderHashHex: toHex(created.orderHash), signature: signOrder(created.order), signOrder };
+  const signBytes = (bytes: Uint8Array) => bs58.encode(sign(null, Buffer.from(bytes), privateKey));
+  return { order: created.order as PackageOrderInput, orderHashHex: toHex(created.orderHash), signature: signOrder(created.order), signOrder, signBytes };
 }

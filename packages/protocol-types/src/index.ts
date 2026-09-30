@@ -1309,3 +1309,16 @@ export {
   type MainnetOperationContext,
   type MainnetOperationRequest,
 } from './mainnet-funds.js';
+
+export {
+  BUILDER_ATTRIBUTION_VERSION,
+  BUILDER_MANIFEST_VERSION,
+  builderAttributionBytes,
+  builderAttributionHash,
+  builderManifestBytes,
+  builderManifestHash,
+  checkBuilderFee,
+  type BuilderAttributionInput,
+  type BuilderFeeViolation,
+  type BuilderManifestInput,
+} from './builder-attribution.js';

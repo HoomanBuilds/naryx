@@ -88,6 +88,8 @@ export const HASH_DOMAIN = Object.freeze({
   CROSS_DOMAIN_PLAN: 'CON/v1/cross-domain-plan',
   MANUAL_RECOVERY_INCIDENT: 'CON/v1/manual-recovery-incident',
   MAINNET_FUNDS_MANIFEST: 'CON/v1/mainnet-funds-manifest',
+  BUILDER_MANIFEST: 'CON/v1/builder-manifest',
+  BUILDER_ATTRIBUTION: 'CON/v1/builder-attribution',
 } as const);
 
 export type HashDomain = (typeof HASH_DOMAIN)[keyof typeof HASH_DOMAIN];

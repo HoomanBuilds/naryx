@@ -15,6 +15,8 @@ import {
   positionSnapshotRecordHash,
   marketCatalogueHash,
   applyStrategyCommand,
+  builderAttributionHash,
+  builderManifestHash,
   strategyCommandHash,
   strategyState,
   strategyStateHash,
@@ -879,5 +881,20 @@ describe('order intake and terminal evidence', () => {
     assert.equal(submitted.commandHash, toHex(strategyCommandHash(assign)));
     const wrong = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: 'ef'.repeat(32), states: [] } } });
     await assert.rejects(wrong.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey))), /different strategy command/);
+  });
+  test('builder attributions acknowledge the local hash and builder manifests are re-hashed', async () => {
+    const attribution = { attributionVersion: 1, orderHash: '11'.repeat(32), builderId: 'builder-a', builderManifestHash: '22'.repeat(32), maximumBuilderFeeBps: 5n };
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const signer = async (hash: Uint8Array) => new Uint8Array(sign(null, hash, privateKey));
+    const ack = client({ 'POST /v1/builders/attributions': { body: { attributionHash: toHex(builderAttributionHash(attribution)), replayed: false } } });
+    assert.equal((await ack.submitBuilderAttribution(attribution, signer)).attributionHash, toHex(builderAttributionHash(attribution)));
+    const wrong = client({ 'POST /v1/builders/attributions': { body: { attributionHash: 'ab'.repeat(32), replayed: false } } });
+    await assert.rejects(wrong.submitBuilderAttribution(attribution, signer), /different attribution/);
+    const manifest = { manifestVersion: 1, environment: 'testnet', builderId: 'builder-a', identityKey: new Uint8Array(32).fill(7), payoutAccounts: [{ domainId: 'svm:testnet', account: 'payout-a' }], supportedDomainIds: ['svm:testnet'], maximumBuilderFeeBpsByTemplate: [{ templateId: 'cash-and-carry-v1', maximumFeeBps: 10n }], validFromMs: 0n, validUntilMs: 10n, nonce: 1n, signature: new Uint8Array(64) };
+    const read = (hash: string) => client({ 'GET /v1/builders/builder-a': { body: { builderId: 'builder-a', manifest, manifestHash: hash } } }).getBuilder('builder-a');
+    assert.equal((await read(toHex(builderManifestHash(manifest)))).manifestHash, toHex(builderManifestHash(manifest)));
+    await assert.rejects(read('ab'.repeat(32)), /does not match its hash/);
+    const revenue = await client({ 'GET /v1/builders/builder-a/revenue': { body: { builderId: 'builder-a', label: 'OBSERVED', payableByAsset: [{ assetId: 'usdc', atoms: 70n, orders: 1 }] } } }).getBuilderRevenue('builder-a');
+    assert.deepEqual(revenue, [{ assetId: 'usdc', atoms: 70n, orders: 1 }]);
   });
 });

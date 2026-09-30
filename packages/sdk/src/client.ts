@@ -22,6 +22,10 @@ import {
   positionSnapshotRecord,
   positionSnapshotRecordHash,
   strategyCommandHash,
+  builderAttributionHash,
+  builderManifestHash,
+  type BuilderAttributionInput,
+  type BuilderManifestInput,
   strategyState,
   strategyStateHash,
   type StrategyCommandInput,
@@ -1190,6 +1194,45 @@ export class NaryxClient {
     const body = record(await this.#request('POST', '/v1/strategies/commands', { command, authorization: { scheme: 'ED25519', signature: base58Encode(signature) } }), 'strategy command');
     if (body.accepted !== true || body.commandHashHex !== toHex(commandHash)) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
     return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
+  }
+
+  /**
+   * Attributes the caller's order to a builder. Only the attribution hash goes to the owner's
+   * signer, and the server must acknowledge that exact hash.
+   */
+  async submitBuilderAttribution(attribution: BuilderAttributionInput, sign: StrategyCommandSigner) {
+    const hash = builderAttributionHash(attribution);
+    const signature = await sign(hash);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    const body = record(await this.#request('POST', '/v1/builders/attributions', { attribution, authorization: { scheme: 'ED25519', signature: base58Encode(signature) } }), 'builder attribution');
+    if (body.attributionHash !== toHex(hash)) throw new NaryxEvidenceError('the server acknowledged a different attribution');
+    return Object.freeze({ attributionHash: toHex(hash), replayed: body.replayed === true });
+  }
+
+  /** A builder's current manifest, re-hashed here; the served hash must match. */
+  async getBuilder(builderId: string): Promise<{ readonly manifest: BuilderManifestInput; readonly manifestHash: string }> {
+    const id = checkId(builderId, 'builder id');
+    const body = record(await this.#request('GET', `/v1/builders/${id}`), 'builder');
+    const manifest = body.manifest as BuilderManifestInput;
+    let hash: string;
+    try {
+      hash = toHex(builderManifestHash(manifest));
+    } catch (error) {
+      throw new NaryxEvidenceError(`builder manifest is malformed: ${(error as Error).message}`);
+    }
+    if (manifest.builderId !== id || body.manifestHash !== hash) throw new NaryxEvidenceError('the builder manifest is another builder or does not match its hash');
+    return Object.freeze({ manifest, manifestHash: hash });
+  }
+
+  /** Payable builder fees by asset, labeled OBSERVED. */
+  async getBuilderRevenue(builderId: string): Promise<readonly { readonly assetId: string; readonly atoms: bigint; readonly orders: number }[]> {
+    const id = checkId(builderId, 'builder id');
+    const body = record(await this.#request('GET', `/v1/builders/${id}/revenue`), 'builder revenue');
+    if (body.builderId !== id || body.label !== 'OBSERVED') throw new NaryxEvidenceError('builder revenue is another builder or unlabeled');
+    return Object.freeze(list(body.payableByAsset, 'payableByAsset').map((entry, index) => {
+      const row = record(entry, `payableByAsset[${index}]`);
+      return Object.freeze({ assetId: String(row.assetId), atoms: big(row.atoms, `payableByAsset[${index}].atoms`), orders: count(row.orders, `payableByAsset[${index}].orders`) });
+    }));
   }
 
   /** A strategy's current state, re-validated and re-hashed here; the served hash must match. */
