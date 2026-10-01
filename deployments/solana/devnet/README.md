@@ -40,11 +40,31 @@ Generate or retrieve the five Devnet program keypairs from an external secret di
 Sync one reviewed normal program at a time:
 
 ```bash
-anchor keys sync -p naryx_orca_adapter --provider.cluster https://api.devnet.solana.com
-anchor keys sync -p naryx_rise_adapter --provider.cluster https://api.devnet.solana.com
-anchor keys sync -p naryx_inventory_reservation --provider.cluster https://api.devnet.solana.com
-anchor keys sync -p naryx_package_book --provider.cluster https://api.devnet.solana.com
-anchor keys sync -p naryx_core --provider.cluster https://api.devnet.solana.com
+anchor keys sync -p naryx_orca_adapter
+anchor keys sync -p naryx_rise_adapter
+anchor keys sync -p naryx_inventory_reservation
+anchor keys sync -p naryx_package_book
+anchor keys sync -p naryx_core
+node scripts/sync-core-program-ids.mjs
+```
+
+`anchor keys sync` rewrites each program's `declare_id!` and its entry in the `Anchor.toml` section that matches the provider cluster, which is `[programs.localnet]` here. It does not rewrite `PACKAGE_BOOK_PROGRAM_ID` and `INVENTORY_RESERVATION_PROGRAM_ID` in `programs/naryx_core/src/constants.rs`, which `naryx_core` uses as CPI targets and PDA owners and cannot import because both programs depend on `naryx_core`. `scripts/sync-core-program-ids.mjs` rewrites those two constants from the synced `declare_id!` values, and `--check` exits nonzero without writing when they differ. The `naryx_core` unit test `constants::tests::cross_program_ids_match_declared_ids` also fails while they differ.
+
+Do not pass a URL as `--provider.cluster`: Anchor CLI 1.2.0 treats it as a custom cluster that matches no `Anchor.toml` section, so no entry is updated. `anchor keys sync` never creates a section, and `--provider.cluster devnet` also rewrites `[provider] cluster`. Add the Devnet section to `Anchor.toml` by hand with the same five synced IDs that `[programs.localnet]` now lists. `naryx_conformance_venue` is not part of it.
+
+```toml
+[programs.devnet]
+naryx_core = "<synced naryx_core ID>"
+naryx_inventory_reservation = "<synced naryx_inventory_reservation ID>"
+naryx_orca_adapter = "<synced naryx_orca_adapter ID>"
+naryx_package_book = "<synced naryx_package_book ID>"
+naryx_rise_adapter = "<synced naryx_rise_adapter ID>"
+```
+
+Then confirm the core constants and rebuild against the injected keypairs:
+
+```bash
+node scripts/sync-core-program-ids.mjs --check
 anchor build
 ```
 
