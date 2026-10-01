@@ -13,12 +13,12 @@
         "internalType": "bytes32"
       },
       {
-        "name": "account_",
+        "name": "factory_",
         "type": "address",
-        "internalType": "contract GmxV2IsolatedAccount"
+        "internalType": "contract GmxV2IsolatedAccountFactory"
       },
       {
-        "name": "accountCodeHash_",
+        "name": "factoryCodeHash_",
         "type": "bytes32",
         "internalType": "bytes32"
       },
@@ -205,24 +205,17 @@
   },
   {
     "type": "function",
-    "name": "account",
-    "inputs": [],
-    "outputs": [
+    "name": "activeExitRequestKey",
+    "inputs": [
       {
-        "name": "",
+        "name": "account",
         "type": "address",
-        "internalType": "contract GmxV2IsolatedAccount"
+        "internalType": "address"
       }
     ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "activeExitRequestKey",
-    "inputs": [],
     "outputs": [
       {
-        "name": "",
+        "name": "requestKey",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -2304,6 +2297,19 @@
   },
   {
     "type": "function",
+    "name": "factory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract GmxV2IsolatedAccountFactory"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "finalPackageReceipt",
     "inputs": [
       {
@@ -2430,10 +2436,16 @@
   {
     "type": "function",
     "name": "nextNonce",
-    "inputs": [],
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
-        "name": "",
+        "name": "nonce",
         "type": "uint256",
         "internalType": "uint256"
       }

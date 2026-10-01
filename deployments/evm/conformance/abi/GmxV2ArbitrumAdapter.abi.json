@@ -13,16 +13,6 @@
         "internalType": "bytes32"
       },
       {
-        "name": "fundingAuthority_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "beneficiary_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "market_",
         "type": "address",
         "internalType": "address"
@@ -43,9 +33,14 @@
         "internalType": "bytes32"
       },
       {
-        "name": "isolatedAccount_",
+        "name": "factory_",
         "type": "address",
-        "internalType": "contract GmxV2IsolatedAccount"
+        "internalType": "contract GmxV2IsolatedAccountFactory"
+      },
+      {
+        "name": "factoryCodeHash_",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
         "name": "orderVerifier_",
@@ -204,11 +199,17 @@
   },
   {
     "type": "function",
-    "name": "activePackageId",
-    "inputs": [],
+    "name": "activePackageOf",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
-        "name": "",
+        "name": "packageId",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -217,11 +218,17 @@
   },
   {
     "type": "function",
-    "name": "activeRequestKey",
-    "inputs": [],
+    "name": "activeRequestKeyOf",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [
       {
-        "name": "",
+        "name": "requestKey",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -2186,6 +2193,19 @@
   },
   {
     "type": "function",
+    "name": "factory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract GmxV2IsolatedAccountFactory"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "finalizeExitedPosition",
     "inputs": [
       {
@@ -2370,9 +2390,19 @@
         "name": "packageId",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "outputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      },
       {
         "name": "requestPayloadHash",
         "type": "bytes32",
@@ -2402,19 +2432,6 @@
         "name": "consumed",
         "type": "bool",
         "internalType": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "isolatedAccount",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract GmxV2IsolatedAccount"
       }
     ],
     "stateMutability": "view"
@@ -2468,6 +2485,25 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "requestAccount",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2570,6 +2606,19 @@
     "stateMutability": "nonpayable"
   },
   {
+    "type": "function",
+    "name": "unconsumedFundingAtoms",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
     "type": "event",
     "name": "EvidenceRelayed",
     "inputs": [
@@ -2622,6 +2671,12 @@
         "type": "bytes32",
         "indexed": true,
         "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -2710,6 +2765,12 @@
         "type": "bytes32",
         "indexed": true,
         "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       },
       {
         "name": "requestPayloadHash",
@@ -2822,6 +2883,11 @@
   {
     "type": "error",
     "name": "UnauthorizedCaller",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownAccount",
     "inputs": []
   }
 ]

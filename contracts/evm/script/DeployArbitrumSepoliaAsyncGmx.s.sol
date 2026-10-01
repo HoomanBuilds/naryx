@@ -8,6 +8,7 @@ import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
 import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
 import {GmxV2ExitOrderVerifier} from "../src/GmxV2ExitOrderVerifier.sol";
 import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
+import {GmxV2IsolatedAccountFactory} from "../src/GmxV2IsolatedAccountFactory.sol";
 import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
 import {GmxV2, IGmxV2ExchangeRouter} from "../src/interfaces/IGmxV2.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
@@ -43,37 +44,25 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
         address canceller;
         address executor;
         address pauser;
-        address fundingAuthority;
-        address beneficiary;
         address market;
         bytes32 marketCodeHash;
         IERC20 collateralToken;
         bytes32 collateralTokenCodeHash;
         bytes32 executionClassManifestHash;
         GmxCodeHashes gmxCodeHashes;
+        UniswapV3SpotPort.Deployment spot;
     }
 
     struct Deployment {
         ProtocolConfig config;
         AsyncBondedPackageCoordinator coordinator;
         GmxV2OrderVerifier orderVerifier;
-        GmxV2IsolatedAccount isolatedAccount;
-        GmxV2ArbitrumAdapter adapter;
-    }
-
-    struct ExitAndSpotParameters {
-        GmxV2ArbitrumAdapter adapter;
-        bytes32 adapterCodeHash;
-        GmxV2IsolatedAccount isolatedAccount;
-        bytes32 isolatedAccountCodeHash;
-        GmxCodeHashes gmxCodeHashes;
-        UniswapV3SpotPort.Deployment spot;
-    }
-
-    struct ExitAndSpotDeployment {
         GmxV2ExitOrderVerifier exitOrderVerifier;
+        GmxV2IsolatedAccountFactory accountFactory;
+        GmxV2ArbitrumAdapter adapter;
         GmxV2ExitController exitController;
         UniswapV3SpotPort spotPort;
+        GmxV2IsolatedAccount accountImplementation;
     }
 
     error InvalidChain();
@@ -85,10 +74,18 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
         vm.stopBroadcast();
     }
 
+    /// @notice Deploys the whole shared route in one stage and binds it into the account factory, so no
+    /// per-user account exists or is configured here. Any wallet later creates its own account with
+    /// `accountFactory.create(owner)`. Entry stays paused; the configure script admits the single shared
+    /// adapter. The spot venue identities are reviewed operator input.
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
         if (block.chainid != ARBITRUM_SEPOLIA_CHAIN_ID) revert InvalidChain();
         GmxV2.Deployment memory gmx = _gmxDeployment(parameters.gmxCodeHashes);
         _verifyDependencies(parameters, gmx);
+        if (
+            parameters.spot.chainId != ARBITRUM_SEPOLIA_CHAIN_ID
+                || address(parameters.spot.quoteToken) != address(parameters.collateralToken)
+        ) revert InvalidDependency(address(parameters.spot.quoteToken));
 
         deployment.config = new ProtocolConfig(
             DOMAIN_ID,
@@ -104,60 +101,55 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
             deployment.config, parameters.collateralToken, parameters.executionClassManifestHash
         );
         deployment.orderVerifier = new GmxV2OrderVerifier();
-        deployment.isolatedAccount = new GmxV2IsolatedAccount(
-            parameters.beneficiary, parameters.fundingAuthority, parameters.market, parameters.collateralToken, gmx
-        );
+        deployment.exitOrderVerifier = new GmxV2ExitOrderVerifier();
+        deployment.accountFactory = new GmxV2IsolatedAccountFactory(parameters.market, parameters.collateralToken, gmx);
         deployment.adapter = new GmxV2ArbitrumAdapter(
             deployment.coordinator,
             address(deployment.coordinator).codehash,
-            parameters.fundingAuthority,
-            parameters.beneficiary,
             parameters.market,
             parameters.marketCodeHash,
             parameters.collateralToken,
             parameters.collateralTokenCodeHash,
-            deployment.isolatedAccount,
+            deployment.accountFactory,
+            address(deployment.accountFactory).codehash,
             deployment.orderVerifier,
             address(deployment.orderVerifier).codehash,
             gmx
         );
-    }
-
-    function runExitAndSpot(ExitAndSpotParameters calldata parameters)
-        external
-        returns (ExitAndSpotDeployment memory deployment)
-    {
-        vm.startBroadcast();
-        deployment = deployExitAndSpot(parameters);
-        vm.stopBroadcast();
-    }
-
-    /// @notice Second stage, run after the account owner binds the entry controller, which the exit
-    /// controller requires at construction. Binds nothing: the account owner binds both contracts
-    /// through the configure script. The spot venue identities are reviewed operator input.
-    function deployExitAndSpot(ExitAndSpotParameters calldata parameters)
-        public
-        returns (ExitAndSpotDeployment memory deployment)
-    {
-        if (block.chainid != ARBITRUM_SEPOLIA_CHAIN_ID) revert InvalidChain();
-        _requireCode(address(parameters.adapter), parameters.adapterCodeHash);
-        _requireCode(address(parameters.isolatedAccount), parameters.isolatedAccountCodeHash);
-        if (
-            parameters.spot.chainId != ARBITRUM_SEPOLIA_CHAIN_ID
-                || address(parameters.spot.quoteToken) != address(parameters.isolatedAccount.collateralToken())
-        ) revert InvalidDependency(address(parameters.spot.quoteToken));
-
-        deployment.exitOrderVerifier = new GmxV2ExitOrderVerifier();
         deployment.exitController = new GmxV2ExitController(
-            parameters.adapter,
-            parameters.adapterCodeHash,
-            parameters.isolatedAccount,
-            parameters.isolatedAccountCodeHash,
+            deployment.adapter,
+            address(deployment.adapter).codehash,
+            deployment.accountFactory,
+            address(deployment.accountFactory).codehash,
             deployment.exitOrderVerifier,
             address(deployment.exitOrderVerifier).codehash,
-            _gmxDeployment(parameters.gmxCodeHashes)
+            gmx
         );
-        deployment.spotPort = new UniswapV3SpotPort(address(parameters.isolatedAccount), parameters.spot);
+        deployment.spotPort = new UniswapV3SpotPort(address(deployment.accountFactory), parameters.spot);
+        deployment.accountImplementation = new GmxV2IsolatedAccount(
+            GmxV2IsolatedAccount.Binding({
+                factory: address(deployment.accountFactory),
+                market: parameters.market,
+                collateralToken: parameters.collateralToken,
+                deployment: gmx,
+                entryController: address(deployment.adapter),
+                entryControllerCodeHash: address(deployment.adapter).codehash,
+                exitController: address(deployment.exitController),
+                exitControllerCodeHash: address(deployment.exitController).codehash,
+                spotPort: deployment.spotPort,
+                spotPortCodeHash: address(deployment.spotPort).codehash
+            })
+        );
+        deployment.accountFactory
+            .configure(
+                address(deployment.adapter),
+                address(deployment.adapter).codehash,
+                address(deployment.exitController),
+                address(deployment.exitController).codehash,
+                deployment.spotPort,
+                address(deployment.spotPort).codehash,
+                deployment.accountImplementation
+            );
     }
 
     function _verifyDependencies(Parameters calldata parameters, GmxV2.Deployment memory gmx) private view {

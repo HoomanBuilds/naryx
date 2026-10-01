@@ -27,6 +27,7 @@ readonly -a ARTIFACTS=(
     "src/PolicyRegistry.sol:PolicyRegistry|PolicyRegistry.abi.json"
     "src/GmxV2ArbitrumAdapter.sol:GmxV2ArbitrumAdapter|GmxV2ArbitrumAdapter.abi.json"
     "src/GmxV2IsolatedAccount.sol:GmxV2IsolatedAccount|GmxV2IsolatedAccount.abi.json"
+    "src/GmxV2IsolatedAccountFactory.sol:GmxV2IsolatedAccountFactory|GmxV2IsolatedAccountFactory.abi.json"
     "src/GmxV2ExitController.sol:GmxV2ExitController|GmxV2ExitController.abi.json"
     "src/GmxV2OrderVerifier.sol:GmxV2OrderVerifier|GmxV2OrderVerifier.abi.json"
     "src/GmxV2ExitOrderVerifier.sol:GmxV2ExitOrderVerifier|GmxV2ExitOrderVerifier.abi.json"

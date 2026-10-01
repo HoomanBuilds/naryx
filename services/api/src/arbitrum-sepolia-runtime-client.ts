@@ -25,6 +25,7 @@ import {
 import {
   ARBITRUM_SEPOLIA_CHAIN_REFERENCE,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
+  arbitrumSepoliaAccountCodeHash,
   createArbitrumSepoliaAsyncContextProvider,
   validateArbitrumSepoliaAsyncDeploymentConfiguration,
   type ArbitrumSepoliaAsyncAttemptEvidence,
@@ -50,7 +51,11 @@ const DEPLOYMENT_ABI = parseAbi([
   "function admissions(address) view returns (address handler, bytes32 adapterCodeHash, bytes32 handlerCodeHash, bool active, uint64 generation)",
   "function entryController() view returns (address)",
   "function entryControllerCodeHash() view returns (bytes32)",
-  "function isolatedAccount() view returns (address)",
+  "function factory() view returns (address)",
+  "function adapter() view returns (address)",
+  "function adapterCodeHash() view returns (bytes32)",
+  "function implementation() view returns (address)",
+  "function accountCodeHash() view returns (bytes32)",
 ]);
 
 export interface ArbitrumSepoliaRuntimeManifest {
@@ -118,7 +123,8 @@ function identities(configuration: ArbitrumSepoliaAsyncDeploymentConfiguration):
   return [
     configuration.protocolConfig,
     configuration.coordinator,
-    configuration.isolatedAccount,
+    configuration.accountFactory,
+    configuration.accountImplementation,
     configuration.entryAdapter,
     configuration.orderVerifier,
     configuration.market,
@@ -168,20 +174,27 @@ async function validateLiveDeployment(
 
   const coordinator = requiredEvmAddress(configuration.coordinator.address, "coordinator");
   const adapter = requiredEvmAddress(configuration.entryAdapter.address, "entryAdapter");
-  const account = requiredEvmAddress(configuration.isolatedAccount.address, "isolatedAccount");
+  const factory = requiredEvmAddress(configuration.accountFactory.address, "accountFactory");
+  const implementation = requiredEvmAddress(configuration.accountImplementation.address, "accountImplementation");
   const config = requiredEvmAddress(configuration.protocolConfig.address, "protocolConfig");
   const token = requiredEvmAddress(configuration.collateralToken.address, "collateralToken");
-  const [boundConfig, bondToken, chainId, domainIdHash, executionClassHash, admission, controller, controllerHash, boundAccount] =
-    await Promise.all([
+  const [
+    boundConfig, bondToken, chainId, domainIdHash, executionClassHash, admission, controller, controllerHash, boundFactory,
+    factoryAdapter, factoryAdapterHash, factoryImplementation, accountCodeHash,
+  ] = await Promise.all([
       read(client, coordinator, "config"),
       read(client, coordinator, "bondToken"),
       read(client, coordinator, "deploymentChainId"),
       read(client, coordinator, "deploymentDomainIdHash"),
       read(client, coordinator, "executionClassManifestHash"),
       read(client, coordinator, "admissions", [adapter]),
-      read(client, account, "entryController"),
-      read(client, account, "entryControllerCodeHash"),
-      read(client, adapter, "isolatedAccount"),
+      read(client, implementation, "entryController"),
+      read(client, implementation, "entryControllerCodeHash"),
+      read(client, adapter, "factory"),
+      read(client, factory, "adapter"),
+      read(client, factory, "adapterCodeHash"),
+      read(client, factory, "implementation"),
+      read(client, factory, "accountCodeHash"),
     ]);
   const admissionRecord = admission as readonly unknown[] & Record<string, unknown>;
   const handler = admissionRecord.handler ?? admissionRecord[0];
@@ -199,7 +212,11 @@ async function validateLiveDeployment(
     || active !== true
     || !equalAddress(addressValue(controller, "entry controller"), adapter)
     || !equalHash(hashValue(controllerHash, "entry controller code"), configuration.entryAdapter.expectedCodeHash)
-    || !equalAddress(addressValue(boundAccount, "adapter isolated account"), account)) {
+    || !equalAddress(addressValue(boundFactory, "adapter factory"), factory)
+    || !equalAddress(addressValue(factoryAdapter, "factory adapter"), adapter)
+    || !equalHash(hashValue(factoryAdapterHash, "factory adapter code"), configuration.entryAdapter.expectedCodeHash)
+    || !equalAddress(addressValue(factoryImplementation, "factory implementation"), implementation)
+    || !equalHash(hashValue(accountCodeHash, "factory account code"), arbitrumSepoliaAccountCodeHash(configuration))) {
     throw new Error("Arbitrum Sepolia live deployment relationships do not match the runtime manifest.");
   }
 }

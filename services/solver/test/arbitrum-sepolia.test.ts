@@ -23,7 +23,8 @@ import {
   SqliteArbitrumSepoliaExecutionJournal,
   arbitrumAsyncPackageId,
   arbitrumAsyncReserveTypedData,
-  arbitrumSepoliaOwnerSigner,
+  arbitrumSepoliaAccountCodeHash,
+  arbitrumSepoliaAccountOf,
   createArbitrumSepoliaQuoteRuntime,
   gmxIncreaseExecutionFeeWei,
   gmxPositionFeeFactorKey,
@@ -44,7 +45,9 @@ const quote = assetRef('eip155:421614:usdc', hash('3'), 6);
 const spotAdapter = adapterRef({ adapterId: 'uniswap-v3-spot', adapterManifestVersion: 1, adapterManifestHash: hash('4') });
 const perpetualAdapter = adapterRef({ adapterId: 'gmx-v2-arbitrum', adapterManifestVersion: 1, adapterManifestHash: hash('5') });
 const owner = address('3');
-const isolatedAccount = address('4');
+const accountFactory = address('4');
+const accountImplementation = address('8');
+const ownerAccountAddress = arbitrumSepoliaAccountOf(accountFactory, accountImplementation, owner);
 const priceFeed = { address: address('5'), expectedCodeHash: hex('5') };
 const dataStore = { address: address('6'), expectedCodeHash: hex('6') };
 const market = address('7');
@@ -77,7 +80,7 @@ function orderInput(): PackageOrderInput {
   return {
     version: 1, environment: 'testnet', domain,
     templateId: 'cash-and-carry-v1', templateVersion: 1, packageTemplateManifestHash: hash('9'),
-    owner, settlementAccount: isolatedAccount, nonce: 3n,
+    owner, settlementAccount: ownerAccountAddress, nonce: 3n,
     expiryUnit: 'EVM_UNIX_SECONDS', expiryValue: NOW + 600n,
     direction: 'LONG_SPOT_SHORT_PERP', action: 'ENTRY', packageOrderType: 'MARKETABLE_LIMIT',
     packageTimeInForce: 'FOK', partialFillPolicy: 'EXACT_ALL_LEGS',
@@ -112,7 +115,7 @@ function quoteRuntime() {
     feePolicyVersion: 1, feePolicyManifestHash: hash('c'),
     routeTtlSeconds: 120n, venueWindowSeconds: 600n, recoveryWindowSeconds: 600n,
     marginBps: 1_000, perpSlippageBps: 100, rollbackSlippageBps: 200,
-    baseAsset: base, quoteAsset: quote, owner, settlementAccount: isolatedAccount,
+    baseAsset: base, quoteAsset: quote, accountFactory, accountImplementation,
     priceFeed, priceFeedDecimals: 8, maxPriceAgeSeconds: 60n,
     gmxDataStore: dataStore, gmxMarket: market,
     spot: { adapter: spotAdapter, venue, market: versionedManifestRef('weth-usdc-spot', 1, hash('7')), action: action(0, spotAdapter) },
@@ -158,6 +161,13 @@ test('quotes Arbitrum entry from the live reference price and GMX fee factor, ro
   assert.equal(decision.route.executionPlanKind, 'EVM_ASYNC_REQUEST');
   assert.equal(decision.route.routeExpiryValue, NOW + 120n);
   assert.equal(terms.validUntilValue, NOW + 120n);
+  // Same vector as the Solidity factory test: the clone CREATE2 address and shared code hash.
+  assert.equal(arbitrumSepoliaAccountOf(address('1'), address('2'), address('3')), '0x0d50ef2e4dbd10cbcc4c7dcd30844c4ccfbd7007');
+  assert.equal(arbitrumSepoliaAccountCodeHash(address('2')),
+    '0xe6af2b4f1b2990d958cc03616b93f13224b27afa9f6dec6780bb2ba5a295fa80');
+  // A settlement account other than the owner's factory account is never quoted.
+  const foreign = validatePackageOrderProfile({ ...orderInput(), settlementAccount: address('9') });
+  await assert.rejects(async () => runtime.candidates({ order: foreign, orderHash: packageOrderHash(foreign) }), /factory account/);
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const der = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
   const signed = await signAtomicEntryQuote({
@@ -183,7 +193,8 @@ function executorConfig(): ArbitrumSepoliaExecutorConfig {
   const identity = (target: Address, byte: string) => ({ address: target, expectedCodeHash: hex(byte) });
   return {
     domain, coordinator: identity(coordinator, 'a'), adapter: identity(adapter, 'b'),
-    isolatedAccount: identity(isolatedAccount, '4'), collateralToken: identity(collateral, 'c'),
+    accountFactory: identity(accountFactory, '4'), accountImplementation: identity(accountImplementation, '8'),
+    collateralToken: identity(collateral, 'c'),
     spotPort: identity(address('e'), 'e'), spotBaseToken: identity(address('f'), 'f'),
     gmxDataStore: dataStore, gmxMarket: market, quoteAssetDecimals: 6,
     executionClassManifestHash: hex('8'), seriesIdentityKey: hex('9'), seriesBindingVersion: 1, seriesBindingHash: hex('7'),
@@ -197,6 +208,7 @@ function executorConfig(): ArbitrumSepoliaExecutorConfig {
 const ATTEMPT_ID = `arbitrum-async-${'1'.repeat(48)}`;
 const ownerAccount = privateKeyToAccount(generatePrivateKey());
 const executorOwner = ownerAccount.address.toLowerCase() as Address;
+const executorAccount = arbitrumSepoliaAccountOf(accountFactory, accountImplementation, executorOwner);
 
 function attempt(): ArbitrumSepoliaExecutionAttempt {
   const limit = { quoteAtoms: 2_475n, baseAtoms: 10n ** 15n };
@@ -204,11 +216,11 @@ function attempt(): ArbitrumSepoliaExecutionAttempt {
     attemptId: ATTEMPT_ID, orderHash: hex('1'), quoteHash: hex('2'), routeHash: hex('3'),
     order: {
       domain, settlementClass: 'ASYNC_BONDED_SOLVER', action: 'ENTRY', owner: executorOwner,
-      settlementAccount: isolatedAccount,
+      settlementAccount: executorAccount,
       quantity: { asset: base, atoms: QUANTITY }, maxSpotQuoteIn: { asset: quote, atoms: 26_000_000n },
     },
     route: {
-      executionPlanKind: 'EVM_ASYNC_REQUEST', settlementAccount: isolatedAccount, routeExpiryValue: NOW + 120n,
+      executionPlanKind: 'EVM_ASYNC_REQUEST', settlementAccount: executorAccount, routeExpiryValue: NOW + 120n,
       legs: [{ legRole: 'PERPETUAL', limitPrice: limit }],
       recoveryPlan: {
         maxActionExpiryValue: NOW + 720n, deadlineValue: NOW + 1_320n,
@@ -222,12 +234,14 @@ function attempt(): ArbitrumSepoliaExecutionAttempt {
 function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId = 421_614n) {
   const config = executorConfig();
   const codes = new Map<string, Hex>([
-    config.coordinator, config.adapter, config.isolatedAccount, config.collateralToken,
+    config.coordinator, config.adapter, config.accountFactory, config.accountImplementation, config.collateralToken,
     config.spotPort, config.spotBaseToken, config.gmxDataStore,
   ].map((identity) => [identity.address, identity.expectedCodeHash]));
+  codes.set(executorAccount, arbitrumSepoliaAccountCodeHash(accountImplementation));
   const writes: string[] = [];
+  const reserveArgs: Hex[] = [];
   const allowances = new Map<string, bigint>();
-  let fundedHash = hex('0');
+  const state = { fundedHash: hex('0') };
   let packageRecord: { terms: unknown; state: number; stateVersion: bigint; requestKey: Hex } = {
     terms: undefined, state: 0, stateVersion: 0n, requestKey: hex('0'),
   };
@@ -244,7 +258,11 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
       const terms = args?.[0] as Record<string, Hex>;
       switch (functionName) {
         case 'owner': return executorOwner;
-        case 'fundingAuthority': return solverAccount;
+        case 'accountOf': return executorAccount;
+        case 'ownerOf': return executorOwner;
+        case 'implementation': return accountImplementation;
+        case 'accountCodeHash': return arbitrumSepoliaAccountCodeHash(accountImplementation);
+        case 'adapter': return adapter;
         case 'spotPort': return config.spotPort.address;
         case 'spotBaseToken': return config.spotBaseToken.address;
         case 'getUint':
@@ -259,7 +277,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
         case 'reservationCommitment': return terms.reservationHash;
         case 'recoveryPolicyCommitment': return terms.recoveryPolicyHash;
         case 'allowance': return allowances.get(String(args?.[1])) ?? 0n;
-        case 'funding': return [fundedHash, 0n, 0n, 0n, 0n, false];
+        case 'funding': return [executorAccount, state.fundedHash, 0n, 0n, 0n, 0n, false];
         case 'packageState': return packageRecord;
         case 'requestEvidence': return [1, hex('0'), 0n, 0n, 1n];
         default: throw new Error(`unexpected read ${functionName}`);
@@ -268,7 +286,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
     writeContract: async ({ functionName, args }) => {
       writes.push(functionName);
       if (functionName === 'approve') allowances.set(String(args?.[0]), args?.[1] as bigint);
-      if (functionName === 'fundRequest') fundedHash = journal().plan(ATTEMPT_ID)!.terms.requestPayloadHash;
+      if (functionName === 'reserve') reserveArgs.push(args?.[1] as Hex);
       if (functionName === 'reserve') {
         packageRecord = { ...packageRecord, terms: args?.[0] };
         advanceState(1);
@@ -279,7 +297,9 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
     },
     receipt: async () => 'success',
   };
-  return { port, writes };
+  // The owner's own wallet funds the request; the executor never sends that transaction.
+  const ownerFunds = () => { state.fundedHash = journal().plan(ATTEMPT_ID)!.terms.requestPayloadHash; };
+  return { port, writes, reserveArgs, ownerFunds };
 }
 
 function executor(port: ArbitrumSepoliaWritePort, journal: SqliteArbitrumSepoliaExecutionJournal) {
@@ -288,7 +308,6 @@ function executor(port: ArbitrumSepoliaWritePort, journal: SqliteArbitrumSepolia
     config: executorConfig(),
     attempts: { resolve: async () => { resolved += 1; return attempt(); } },
     chain: port,
-    owner: arbitrumSepoliaOwnerSigner(ownerAccount),
     journal,
   });
   return { instance, resolved: () => resolved };
@@ -310,29 +329,54 @@ test('Arbitrum executor refuses to plan or write when eth_chainId is not 421614'
   }
 });
 
-test('Arbitrum executor journals each coordinator step once and never resends after a restart', async () => {
+test('Arbitrum executor reserves only with the owner wallet signature and owner funding, once, across restarts', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
   const path = join(directory, 'journal.db');
   let journal = new SqliteArbitrumSepoliaExecutionJournal(path);
   try {
-    const { port, writes } = fakeChain(() => journal);
+    const { port, writes, reserveArgs, ownerFunds } = fakeChain(() => journal);
+    const unsigned = await executor(port, journal).instance.advance(ATTEMPT_ID);
+    assert.equal(unsigned.status, 'AWAITING_OWNER_SIGNATURE');
+    assert.deepEqual(writes, []);
+
+    const prepared = await executor(port, journal).instance.prepare(ATTEMPT_ID);
+    assert.equal(prepared.owner, executorOwner);
+    assert.equal(prepared.account, executorAccount);
+    assert.equal(prepared.signed, false);
+    assert.equal(prepared.funding.spender, adapter);
+    assert.equal(prepared.funding.fundRequest.to, adapter);
+    assert.equal(journal.plan(ATTEMPT_ID)?.request.spot.fundingOwner, executorOwner);
+    assert.equal(prepared.digest, hashTypedData(prepared.typedData as never));
+
+    const stranger = privateKeyToAccount(generatePrivateKey());
+    await assert.rejects(
+      executor(port, journal).instance.authorize(ATTEMPT_ID, await stranger.signTypedData(prepared.typedData as never)),
+      (error: Error & { code?: string }) => error.code === 'INVALID_SIGNATURE',
+    );
+    const signature = await ownerAccount.signTypedData(prepared.typedData as never);
+    assert.equal((await executor(port, journal).instance.authorize(ATTEMPT_ID, signature)).signed, true);
+
+    const unfunded = await executor(port, journal).instance.advance(ATTEMPT_ID);
+    assert.equal(unfunded.status, 'AWAITING_OWNER_FUNDING');
+    assert.deepEqual(writes, []);
+
+    ownerFunds();
     const first = await executor(port, journal).instance.advance(ATTEMPT_ID);
     assert.equal(first.status, 'VENUE_PENDING');
     assert.equal(first.coordinatorState, 'VENUE_PENDING');
-    assert.deepEqual(writes, ['approve', 'fundRequest', 'approve', 'reserve', 'submitRequest', 'markVenuePending']);
+    assert.deepEqual(writes, ['approve', 'reserve', 'submitRequest', 'markVenuePending']);
+    assert.deepEqual(reserveArgs, [signature]);
     assert.deepEqual(first.transactions.map((entry) => entry.step),
-      ['APPROVE_ADAPTER', 'FUND', 'APPROVE_COORDINATOR', 'RESERVE', 'SUBMIT', 'MARK_PENDING']);
+      ['APPROVE_COORDINATOR', 'RESERVE', 'SUBMIT', 'MARK_PENDING']);
     // The bond and recovery reserve are approved exactly, in collateral atoms.
     assert.equal(journal.plan(ATTEMPT_ID)?.terms.bondAtoms, 5_000_000n);
 
-    const again = await executor(port, journal).instance.advance(ATTEMPT_ID);
     journal.close();
     journal = new SqliteArbitrumSepoliaExecutionJournal(path);
     const { instance, resolved } = executor(port, journal);
     const restarted = await instance.advance(ATTEMPT_ID);
-    assert.equal(writes.length, 6);
+    assert.equal(writes.length, 4);
     assert.equal(resolved(), 0);
-    assert.equal(again.packageId, first.packageId);
     assert.equal(restarted.packageId, first.packageId);
     assert.equal(restarted.status, 'VENUE_PENDING');
   } finally {

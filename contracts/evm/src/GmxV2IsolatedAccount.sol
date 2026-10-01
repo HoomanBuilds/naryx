@@ -9,7 +9,25 @@ import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
 import {GmxV2, IGmxV2DataStore, IGmxV2ExchangeRouter} from "./interfaces/IGmxV2.sol";
 import {ISpotFillRecorder} from "./interfaces/ISpotFillRecorder.sol";
 
+/// @notice One owner's isolated GMX V2 strategy account. `GmxV2IsolatedAccountFactory` deploys a single
+/// implementation and gives each owner a deterministic minimal clone of it at a CREATE2 address derived
+/// from the owner, so every account shares one runtime code hash. The owner funds and receives every
+/// leg; the shared entry adapter, exit controller, and spot port are implementation immutables pinned by
+/// code hash.
 contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
+    struct Binding {
+        address factory;
+        address market;
+        IERC20 collateralToken;
+        GmxV2.Deployment deployment;
+        address entryController;
+        bytes32 entryControllerCodeHash;
+        address exitController;
+        bytes32 exitControllerCodeHash;
+        IExactSpotPort spotPort;
+        bytes32 spotPortCodeHash;
+    }
+
     using SafeERC20 for IERC20;
 
     bytes32 public constant SIZE_IN_USD = keccak256(abi.encode("SIZE_IN_USD"));
@@ -22,9 +40,6 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     error InvalidRequest();
     error FundingMismatch();
 
-    event ExitControllerConfigured(address indexed controller, bytes32 codeHash);
-    event EntryControllerConfigured(address indexed controller, bytes32 codeHash);
-    event SpotPortConfigured(address indexed port, bytes32 codeHash, address indexed baseToken, address quoteToken);
     event SpotInventoryOpened(
         bytes32 indexed packageId,
         bytes32 indexed requestKey,
@@ -61,10 +76,15 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         uint256 minQuoteAtoms;
     }
 
-    address public entryController;
-    bytes32 public entryControllerCodeHash;
-    address public immutable owner;
-    address public immutable fundingAuthority;
+    address public immutable factory;
+    address public immutable entryController;
+    bytes32 public immutable entryControllerCodeHash;
+    address public immutable exitController;
+    bytes32 public immutable exitControllerCodeHash;
+    IExactSpotPort public immutable spotPort;
+    bytes32 public immutable spotPortCodeHash;
+    IERC20 public immutable spotBaseToken;
+    bytes32 public immutable spotBaseTokenCodeHash;
     address public immutable market;
     IERC20 public immutable collateralToken;
 
@@ -84,12 +104,10 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     bytes32 private immutable roleStoreCodeHash;
     bytes32 public immutable deploymentHash;
 
-    address public exitController;
-    bytes32 public exitControllerCodeHash;
-    IExactSpotPort public spotPort;
-    bytes32 public spotPortCodeHash;
-    IERC20 public spotBaseToken;
-    bytes32 public spotBaseTokenCodeHash;
+    address private immutable implementation;
+
+    /// @notice Set once by the factory in the clone's storage. Zero forever on the implementation.
+    address public owner;
 
     GmxV2.SpotEntryRegistration private _spotRegistration;
     bytes32 public activeSpotRequestKey;
@@ -98,76 +116,63 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     SpotFillContext private _spotFillContext;
     uint256 private _recordedSpotQuoteAtoms;
 
-    constructor(
-        address owner_,
-        address fundingAuthority_,
-        address market_,
-        IERC20 collateralToken_,
-        GmxV2.Deployment memory deployment
-    ) {
+    constructor(Binding memory p) {
         if (
-            owner_ == address(0) || fundingAuthority_ == address(0) || market_ == address(0)
-                || address(collateralToken_) == address(0)
+            p.factory.code.length == 0 || p.market == address(0) || address(p.collateralToken) == address(0)
+                || p.entryController == address(0) || p.entryControllerCodeHash == bytes32(0)
+                || p.entryController.codehash != p.entryControllerCodeHash || p.exitController == address(0)
+                || p.exitControllerCodeHash == bytes32(0) || p.exitController.codehash != p.exitControllerCodeHash
+                || address(p.spotPort) == address(0) || p.spotPortCodeHash == bytes32(0)
+                || address(p.spotPort).codehash != p.spotPortCodeHash || p.spotPort.verifier() != p.factory
+                || p.spotPort.verifierCodeHash() != p.factory.codehash
+                || address(p.spotPort.quoteToken()) != address(p.collateralToken)
+                || address(p.spotPort.baseToken()) == address(0)
+                || address(p.spotPort.baseToken()) == address(p.collateralToken)
         ) revert InvalidConfiguration();
-        _validateDeployment(deployment);
+        _validateDeployment(p.deployment);
+        p.spotPort.assertDeployment();
+        implementation = address(this);
+        factory = p.factory;
+        market = p.market;
+        collateralToken = p.collateralToken;
+        entryController = p.entryController;
+        entryControllerCodeHash = p.entryControllerCodeHash;
+        exitController = p.exitController;
+        exitControllerCodeHash = p.exitControllerCodeHash;
+        spotPort = p.spotPort;
+        spotPortCodeHash = p.spotPortCodeHash;
+        spotBaseToken = p.spotPort.baseToken();
+        spotBaseTokenCodeHash = address(p.spotPort.baseToken()).codehash;
+        dataStore = p.deployment.dataStore;
+        eventEmitter = p.deployment.eventEmitter;
+        exchangeRouter = p.deployment.exchangeRouter;
+        router = p.deployment.router;
+        orderVault = p.deployment.orderVault;
+        orderHandler = p.deployment.orderHandler;
+        roleStore = p.deployment.roleStore;
+        dataStoreCodeHash = p.deployment.dataStoreCodeHash;
+        eventEmitterCodeHash = p.deployment.eventEmitterCodeHash;
+        exchangeRouterCodeHash = p.deployment.exchangeRouterCodeHash;
+        routerCodeHash = p.deployment.routerCodeHash;
+        orderVaultCodeHash = p.deployment.orderVaultCodeHash;
+        orderHandlerCodeHash = p.deployment.orderHandlerCodeHash;
+        roleStoreCodeHash = p.deployment.roleStoreCodeHash;
+        deploymentHash = keccak256(abi.encode(p.deployment));
+    }
+
+    /// @notice Called once by the factory in the same transaction that clones the account.
+    function initialize(address owner_) external {
+        if (msg.sender != factory || address(this) == implementation || owner != address(0) || owner_ == address(0))
+        {
+            revert UnauthorizedCaller();
+        }
         owner = owner_;
-        fundingAuthority = fundingAuthority_;
-        market = market_;
-        collateralToken = collateralToken_;
-        dataStore = deployment.dataStore;
-        eventEmitter = deployment.eventEmitter;
-        exchangeRouter = deployment.exchangeRouter;
-        router = deployment.router;
-        orderVault = deployment.orderVault;
-        orderHandler = deployment.orderHandler;
-        roleStore = deployment.roleStore;
-        dataStoreCodeHash = deployment.dataStoreCodeHash;
-        eventEmitterCodeHash = deployment.eventEmitterCodeHash;
-        exchangeRouterCodeHash = deployment.exchangeRouterCodeHash;
-        routerCodeHash = deployment.routerCodeHash;
-        orderVaultCodeHash = deployment.orderVaultCodeHash;
-        orderHandlerCodeHash = deployment.orderHandlerCodeHash;
-        roleStoreCodeHash = deployment.roleStoreCodeHash;
-        deploymentHash = keccak256(abi.encode(deployment));
     }
 
-    function configureEntryController(address controller, bytes32 codeHash) external {
-        if (msg.sender != owner) revert UnauthorizedCaller();
-        if (
-            entryController != address(0) || controller == address(0) || codeHash == bytes32(0)
-                || controller.codehash != codeHash
-        ) revert InvalidConfiguration();
-        entryController = controller;
-        entryControllerCodeHash = codeHash;
-        emit EntryControllerConfigured(controller, codeHash);
-    }
-
-    function configureExitController(address controller, bytes32 codeHash) external {
-        if (msg.sender != owner) revert UnauthorizedCaller();
-        if (
-            exitController != address(0) || controller == address(0) || codeHash == bytes32(0)
-                || controller.codehash != codeHash
-        ) revert InvalidConfiguration();
-        exitController = controller;
-        exitControllerCodeHash = codeHash;
-        emit ExitControllerConfigured(controller, codeHash);
-    }
-
-    function configureSpotPort(IExactSpotPort port, bytes32 codeHash) external {
-        if (msg.sender != owner) revert UnauthorizedCaller();
-        if (
-            address(spotPort) != address(0) || address(port) == address(0) || codeHash == bytes32(0)
-                || address(port).codehash != codeHash || port.verifier() != address(this)
-                || port.verifierCodeHash() != address(this).codehash
-                || address(port.quoteToken()) != address(collateralToken) || address(port.baseToken()) == address(0)
-                || address(port.baseToken()) == address(collateralToken)
-        ) revert InvalidConfiguration();
-        port.assertDeployment();
-        spotPort = port;
-        spotPortCodeHash = codeHash;
-        spotBaseToken = port.baseToken();
-        spotBaseTokenCodeHash = address(port.baseToken()).codehash;
-        emit SpotPortConfigured(address(port), codeHash, address(port.baseToken()), address(port.quoteToken()));
+    /// @notice The owner is also the funding owner: it funds collateral and spot quote and receives every
+    /// refund, rollback, and exit proceed.
+    function fundingAuthority() external view returns (address) {
+        return owner;
     }
 
     function createPackageEntry(
@@ -181,7 +186,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         GmxV2.RequestRegistration memory registration = _entryRegistration(packageId, requestPayloadHash, venueRequest);
         if (
             registration.packageId == bytes32(0) || registration.requestPayloadHash == bytes32(0)
-                || registration.beneficiary != owner || registration.refundRecipient != fundingAuthority
+                || registration.beneficiary != owner || registration.refundRecipient != owner
                 || registration.market != market || registration.collateralToken != address(collateralToken)
                 || registration.isLong || registration.sizeDeltaUsd == 0 || registration.collateralAtoms == 0
                 || registration.acceptablePrice == 0 || registration.executionFeeWei != msg.value
@@ -425,7 +430,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     ) external {
         SpotFillContext memory expected = _spotFillContext;
         if (
-            msg.sender != address(spotPort) || msg.sender.codehash != spotPortCodeHash || expected.action == 0
+            msg.sender != factory || address(spotPort).codehash != spotPortCodeHash || expected.action == 0
                 || strategyAccount != address(this) || packageNonce != expected.packageNonce
                 || spotFillCommitment != expected.fillCommitment || orderHash != expected.orderHash
                 || quoteHash != expected.quoteHash || routeHash != expected.routeHash || action != expected.action
@@ -497,7 +502,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     ) private view {
         IAsyncVenueAdapter.SpotEntry calldata spotEntry = venueRequest.spot;
         if (
-            packageId == bytes32(0) || requestPayloadHash == bytes32(0) || spotEntry.fundingOwner != fundingAuthority
+            packageId == bytes32(0) || requestPayloadHash == bytes32(0) || spotEntry.fundingOwner != owner
                 || spotEntry.port != address(spotPort) || venueRequest.marketId != bytes32(uint256(uint160(market)))
                 || venueRequest.collateralToken != address(collateralToken) || venueRequest.sizeDelta >= 0
                 || venueRequest.sizeDelta == type(int256).min || venueRequest.collateralAtoms == 0
@@ -520,7 +525,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
             packageId: packageId,
             requestPayloadHash: requestPayloadHash,
             beneficiary: owner,
-            refundRecipient: fundingAuthority,
+            refundRecipient: owner,
             market: market,
             collateralToken: address(collateralToken),
             sizeDeltaUsd: uint256(-venueRequest.sizeDelta),
@@ -724,8 +729,8 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     function _assertSpotDeployment() private view {
         if (
             address(spotPort) == address(0) || address(spotPort).codehash != spotPortCodeHash
-                || address(spotBaseToken).codehash != spotBaseTokenCodeHash || spotPort.verifier() != address(this)
-                || spotPort.verifierCodeHash() != address(this).codehash
+                || address(spotBaseToken).codehash != spotBaseTokenCodeHash || spotPort.verifier() != factory
+                || spotPort.verifierCodeHash() != factory.codehash
                 || address(spotPort.baseToken()) != address(spotBaseToken)
                 || address(spotPort.quoteToken()) != address(collateralToken)
         ) revert DeploymentChanged();

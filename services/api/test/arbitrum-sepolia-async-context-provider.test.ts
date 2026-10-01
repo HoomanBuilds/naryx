@@ -16,6 +16,7 @@ import {
   type ExecutionIntentStore,
   type InternalOrderStore,
 } from "../src/index.js";
+import { arbitrumSepoliaAccountCodeHash } from "../src/arbitrum-sepolia-async-context-provider.js";
 
 const hash = (byte: number): Hash32 => new Uint8Array(32).fill(byte) as Hash32;
 
@@ -50,7 +51,8 @@ function configuration(
     domainManifest,
     protocolConfig: identity(evmAddress(1), 1),
     coordinator: identity(evmAddress(2), 2),
-    isolatedAccount: identity(evmAddress(3), 3),
+    accountFactory: identity(evmAddress(3), 3),
+    accountImplementation: identity(evmAddress(8), 8),
     entryAdapter: identity(evmAddress(4), 4),
     orderVerifier: identity(evmAddress(5), 5),
     market: identity(evmAddress(6), 6),
@@ -143,7 +145,8 @@ function liveClient(
   const identities = [
     deployment.protocolConfig,
     deployment.coordinator,
-    deployment.isolatedAccount,
+    deployment.accountFactory,
+    deployment.accountImplementation,
     deployment.entryAdapter,
     deployment.orderVerifier,
     deployment.market,
@@ -175,7 +178,11 @@ function liveClient(
         };
         case "entryController": return deployment.entryAdapter.address;
         case "entryControllerCodeHash": return deployment.entryAdapter.expectedCodeHash;
-        case "isolatedAccount": return deployment.isolatedAccount.address;
+        case "factory": return deployment.accountFactory.address;
+        case "adapter": return deployment.entryAdapter.address;
+        case "adapterCodeHash": return deployment.entryAdapter.expectedCodeHash;
+        case "implementation": return deployment.accountImplementation.address;
+        case "accountCodeHash": return arbitrumSepoliaAccountCodeHash(deployment);
         default: throw new Error(`unexpected read ${read.functionName}`);
       }
     },

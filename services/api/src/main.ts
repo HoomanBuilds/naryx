@@ -67,6 +67,7 @@ import {
   HttpArbitrumSepoliaAttemptExecutor,
   withArbitrumSepoliaExecutionHandoff,
 } from "./arbitrum-sepolia-executor-client.js";
+import { createArbitrumSepoliaOwnerRoutes } from "./arbitrum-sepolia-owner-routes.js";
 import { HyperliquidTestnetPriceFeed } from "./hyperliquid-testnet-price-feed.js";
 import {
   createBaseSepoliaMarketSource,
@@ -241,9 +242,10 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
     reportRuntimeFailure("arbitrumTestnetAsync", error);
   }
 }
-// Arbitrum Sepolia entry path. The order context prices from a live on-chain reference feed and only
-// admits the deployed isolated account's owner. The executor handoff makes the gated observe-async
-// route advance the solver-held coordinator steps first. Both are disabled unless explicitly enabled.
+// Arbitrum Sepolia entry path. The order context prices from a live on-chain reference feed and admits
+// any wallet trading through its own factory account. The executor handoff makes the gated
+// observe-async route advance the solver-held coordinator steps first, and the owner routes let the
+// browser wallet sign the reservation itself. All are disabled unless explicitly enabled.
 let arbitrumOrderRuntime: ArbitrumSepoliaOrderRuntime | undefined;
 if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
   try {
@@ -263,12 +265,26 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
     reportRuntimeFailure("arbitrumSepoliaOrderContext", error);
   }
 }
+let arbitrumOwnerRoutes: ReturnType<typeof createArbitrumSepoliaOwnerRoutes> | undefined;
 if (arbitrumRuntime !== undefined && explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED")) {
   try {
-    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, new HttpArbitrumSepoliaAttemptExecutor({
+    const arbitrumExecutor = new HttpArbitrumSepoliaAttemptExecutor({
       executorOrigin: process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN ?? "",
-    }));
+    });
+    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, arbitrumExecutor);
+    arbitrumOwnerRoutes = createArbitrumSepoliaOwnerRoutes({
+      terminalOrigin: config.terminalOrigin,
+      deployment: loadArbitrumSepoliaRuntimeManifest(absolutePath(
+        process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
+        "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
+      )).deployment,
+      executor: arbitrumExecutor,
+      port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
+      intents: executionIntentStore,
+      orders: orderStore,
+    });
   } catch (error) {
+    arbitrumOwnerRoutes = undefined;
     arbitrumRuntime = undefined;
     arbitrumRuntimeError = error;
     reportRuntimeFailure("arbitrumSepoliaExecutor", error);
@@ -461,7 +477,11 @@ const server = createPrivateTerminalServer(
   executionScopes,
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
-  privateServerRoutes(publicMarket?.internalHandler, publicMarket?.listener === undefined ? publicMarket?.handler : undefined),
+  privateServerRoutes(
+    publicMarket?.internalHandler,
+    publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
+    arbitrumOwnerRoutes,
+  ),
   baseOrderRuntime === undefined
     ? terminalMarkets
     : { ...terminalMarkets, base: createBaseSepoliaMarketSource(baseOrderRuntime) },

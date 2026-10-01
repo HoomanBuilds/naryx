@@ -37,6 +37,7 @@ import type {
 import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
 import {
   ARBITRUM_SEPOLIA_DOMAIN_ID,
+  arbitrumSepoliaAccountOf,
   createViemArbitrumSepoliaReadPort,
   priceArbitrumEntry,
   readArbitrumSepoliaReferencePrice,
@@ -90,10 +91,10 @@ export interface ArbitrumSepoliaQuoteMarketConfig {
   readonly rollbackSlippageBps: number;
   readonly baseAsset: AssetRef;
   readonly quoteAsset: AssetRef;
-  /** The isolated account owner (beneficiary). Per-user accounts are not supported yet. */
-  readonly owner: Address;
-  /** The GmxV2IsolatedAccount that settles every package. */
-  readonly settlementAccount: Address;
+  /** The GmxV2IsolatedAccountFactory; any owner settles through its own `accountOf(owner)`. */
+  readonly accountFactory: Address;
+  /** The factory's account implementation, which fixes every account address and code hash. */
+  readonly accountImplementation: Address;
   readonly priceFeed: ArbitrumSepoliaContractIdentity;
   readonly priceFeedDecimals: number;
   readonly maxPriceAgeSeconds: bigint;
@@ -172,7 +173,7 @@ function validateConfiguration(input: ArbitrumSepoliaQuoteRuntimeInput): void {
       || input.capacityBaseAtoms <= 0n
       || typeof input.nonceSource?.next !== 'function'
       || typeof input.chain?.chainId !== 'function'
-      || !ADDRESS.test(input.owner) || !ADDRESS.test(input.settlementAccount)
+      || !ADDRESS.test(input.accountFactory) || !ADDRESS.test(input.accountImplementation)
       || !ADDRESS.test(input.gmxMarket.toLowerCase())
       || !Number.isSafeInteger(input.priceFeedDecimals) || input.priceFeedDecimals < 0
       || input.priceFeedDecimals > 36
@@ -225,9 +226,10 @@ function requireOrder(order: PackageOrder, input: ArbitrumSepoliaQuoteRuntimeInp
     || !bytesEqual(order.packageTemplateManifestHash, manifestHash(input.packageTemplateManifestHash))) {
     throw new Error('order package template does not match the configured manifest');
   }
-  // Until a per-user isolated account factory exists, only the configured account may trade.
-  if (order.owner.toLowerCase() !== input.owner || order.settlementAccount.toLowerCase() !== input.settlementAccount) {
-    throw new Error('order owner or settlement account is not the configured isolated account');
+  // Any wallet may trade, but only through its own factory account.
+  if (!ADDRESS.test(order.owner.toLowerCase()) || order.settlementAccount.toLowerCase()
+    !== arbitrumSepoliaAccountOf(input.accountFactory, input.accountImplementation, order.owner.toLowerCase() as Address)) {
+    throw new Error('order settlement account is not the owner factory account');
   }
   if (!order.permittedSpotAdapters.some((adapter) => sameAdapter(adapter, input.spot.adapter))
     || !order.permittedPerpAdapters.some((adapter) => sameAdapter(adapter, input.perpetual.adapter))) {

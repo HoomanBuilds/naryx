@@ -8,6 +8,7 @@ import {DeployArbitrumSepoliaAsyncGmx} from "../script/DeployArbitrumSepoliaAsyn
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
+import {GmxSpotFactory, GmxSpotPool, GmxTestToken} from "./GmxV2ArbitrumAdapter.t.sol";
 
 contract DeployArbitrumSepoliaAsyncGmxTest is Test {
     uint256 private constant FORK_BLOCK = 313_856_606;
@@ -21,8 +22,6 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
     address private canceller;
     address private executor;
     address private pauser;
-    address private fundingAuthority;
-    address private beneficiary;
 
     function testComposesExactPausedRouteAndRejectsWrongDependencyAndEarlyActivation() public {
         vm.createSelectFork("https://sepolia-rollup.arbitrum.io/rpc", FORK_BLOCK);
@@ -31,8 +30,6 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
         canceller = makeAddr("canceller");
         executor = makeAddr("executor");
         pauser = makeAddr("pauser");
-        fundingAuthority = makeAddr("fundingAuthority");
-        beneficiary = makeAddr("beneficiary");
 
         DeployArbitrumSepoliaAsyncGmx deployer = new DeployArbitrumSepoliaAsyncGmx();
         DeployArbitrumSepoliaAsyncGmx.Parameters memory parameters = _parameters(deployer);
@@ -48,11 +45,13 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
         assertEq(deployment.coordinator.deploymentChainId(), deployer.ARBITRUM_SEPOLIA_CHAIN_ID());
         assertEq(deployment.coordinator.deploymentDomainIdHash(), keccak256(bytes(deployer.DOMAIN_ID())));
         assertEq(deployment.coordinator.executionClassManifestHash(), EXECUTION_CLASS_MANIFEST_HASH);
-        assertEq(deployment.isolatedAccount.owner(), beneficiary);
-        assertEq(deployment.isolatedAccount.fundingAuthority(), fundingAuthority);
-        assertEq(deployment.isolatedAccount.market(), ETH_USD_MARKET);
-        assertEq(address(deployment.isolatedAccount.collateralToken()), USDC);
-        assertEq(address(deployment.adapter.isolatedAccount()), address(deployment.isolatedAccount));
+        assertEq(deployment.accountFactory.market(), ETH_USD_MARKET);
+        assertEq(address(deployment.accountFactory.collateralToken()), USDC);
+        assertEq(address(deployment.adapter.factory()), address(deployment.accountFactory));
+        assertEq(deployment.accountFactory.adapter(), address(deployment.adapter));
+        assertEq(deployment.accountFactory.exitController(), address(deployment.exitController));
+        assertEq(address(deployment.accountFactory.spotPort()), address(deployment.spotPort));
+        assertEq(deployment.accountImplementation.owner(), address(0));
 
         parameters.gmxCodeHashes.eventEmitter = keccak256("wrong-event-emitter-code");
         vm.expectRevert(
@@ -70,17 +69,17 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
             domainManifestHash: DOMAIN_MANIFEST_HASH,
             coordinator: deployment.coordinator,
             coordinatorCodeHash: address(deployment.coordinator).codehash,
-            isolatedAccount: deployment.isolatedAccount,
-            isolatedAccountCodeHash: address(deployment.isolatedAccount).codehash,
+            accountFactory: deployment.accountFactory,
+            accountFactoryCodeHash: address(deployment.accountFactory).codehash,
             adapter: deployment.adapter,
             adapterCodeHash: address(deployment.adapter).codehash,
-            exitController: GmxV2ExitController(address(0)),
-            exitControllerCodeHash: bytes32(0),
-            spotPort: UniswapV3SpotPort(address(0)),
-            spotPortCodeHash: bytes32(0)
+            exitController: deployment.exitController,
+            exitControllerCodeHash: address(deployment.exitController).codehash,
+            spotPort: deployment.spotPort,
+            spotPortCodeHash: address(deployment.spotPort).codehash,
+            accountCodeHash: deployment.accountFactory.accountCodeHash()
         });
 
-        operator.runBindEntryController(route, beneficiary);
         operator.runProposeAdmission(route, proposer);
         uint64 readyAt = uint64(block.timestamp) + DELAY;
         vm.prank(executor);
@@ -96,7 +95,6 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
         assertEq(handlerCodeHash, address(deployment.adapter).codehash);
         assertTrue(active);
         assertEq(generation, 1);
-        assertEq(deployment.isolatedAccount.entryController(), address(deployment.adapter));
         assertTrue(deployment.config.entryPaused());
 
         vm.chainId(42161);
@@ -106,9 +104,13 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
 
     function _parameters(DeployArbitrumSepoliaAsyncGmx deployer)
         private
-        view
         returns (DeployArbitrumSepoliaAsyncGmx.Parameters memory parameters)
     {
+        // No reviewed Arbitrum Sepolia Uniswap V3 pool is pinned, so the spot venue is a local test double.
+        GmxTestToken baseToken = new GmxTestToken();
+        GmxSpotFactory spotFactory = new GmxSpotFactory();
+        GmxSpotPool pool = new GmxSpotPool(address(spotFactory), address(baseToken), USDC, 3000);
+        spotFactory.setPool(address(baseToken), USDC, 3000, address(pool));
         parameters = DeployArbitrumSepoliaAsyncGmx.Parameters({
             domainManifestVersion: 1,
             domainManifestHash: DOMAIN_MANIFEST_HASH,
@@ -117,8 +119,6 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
             canceller: canceller,
             executor: executor,
             pauser: pauser,
-            fundingAuthority: fundingAuthority,
-            beneficiary: beneficiary,
             market: ETH_USD_MARKET,
             marketCodeHash: ETH_USD_MARKET.codehash,
             collateralToken: IERC20(USDC),
@@ -132,6 +132,20 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
                 orderVault: deployer.GMX_ORDER_VAULT().codehash,
                 orderHandler: deployer.GMX_ORDER_HANDLER().codehash,
                 roleStore: deployer.GMX_ROLE_STORE().codehash
+            }),
+            spot: UniswapV3SpotPort.Deployment({
+                chainId: block.chainid,
+                factory: address(spotFactory),
+                pool: address(pool),
+                baseToken: baseToken,
+                quoteToken: IERC20(USDC),
+                baseTokenDecimals: 18,
+                quoteTokenDecimals: 6,
+                poolFee: 3000,
+                factoryCodeHash: address(spotFactory).codehash,
+                poolCodeHash: address(pool).codehash,
+                baseTokenCodeHash: address(baseToken).codehash,
+                quoteTokenCodeHash: USDC.codehash
             })
         });
     }

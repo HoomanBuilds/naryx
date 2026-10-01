@@ -1,6 +1,8 @@
 import {
+  concat,
   createPublicClient,
   encodeAbiParameters,
+  getContractAddress,
   http,
   keccak256,
   parseAbi,
@@ -253,4 +255,26 @@ export function createViemArbitrumSepoliaReadPort(rpcUrl: string): ArbitrumSepol
       ...(request.args === undefined ? {} : { args: request.args }),
     } as never),
   });
+}
+
+const CLONE_INIT_PREFIX = '0x3d602d80600a3d3981f3363d3d373d3d3d363d73';
+const CLONE_RUNTIME_PREFIX = '0x363d3d373d3d3d363d73';
+const CLONE_SUFFIX = '0x5af43d82803e903d91602b57fd5bf3';
+
+/**
+ * The GmxV2IsolatedAccountFactory account of `owner`: the CREATE2 address of an ERC-1167 clone of the
+ * reviewed implementation, salted by `keccak256(abi.encode(owner))`. Pure, so it needs no RPC.
+ */
+export function arbitrumSepoliaAccountOf(factory: Address, implementation: Address, owner: Address): Address {
+  return getContractAddress({
+    opcode: 'CREATE2',
+    from: factory,
+    salt: keccak256(encodeAbiParameters([{ type: 'address' }], [owner])),
+    bytecode: concat([CLONE_INIT_PREFIX, implementation, CLONE_SUFFIX]),
+  }).toLowerCase() as Address;
+}
+
+/** The runtime code hash every factory account shares. */
+export function arbitrumSepoliaAccountCodeHash(implementation: Address): Hex {
+  return keccak256(concat([CLONE_RUNTIME_PREFIX, implementation, CLONE_SUFFIX]));
 }

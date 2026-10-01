@@ -3,97 +3,129 @@
     "type": "constructor",
     "inputs": [
       {
-        "name": "owner_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "fundingAuthority_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "market_",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "collateralToken_",
-        "type": "address",
-        "internalType": "contract IERC20"
-      },
-      {
-        "name": "deployment",
+        "name": "p",
         "type": "tuple",
-        "internalType": "struct GmxV2.Deployment",
+        "internalType": "struct GmxV2IsolatedAccount.Binding",
         "components": [
           {
-            "name": "dataStore",
+            "name": "factory",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "eventEmitter",
+            "name": "market",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "exchangeRouter",
+            "name": "collateralToken",
+            "type": "address",
+            "internalType": "contract IERC20"
+          },
+          {
+            "name": "deployment",
+            "type": "tuple",
+            "internalType": "struct GmxV2.Deployment",
+            "components": [
+              {
+                "name": "dataStore",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "eventEmitter",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "exchangeRouter",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "router",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "orderVault",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "orderHandler",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "roleStore",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "dataStoreCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "eventEmitterCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "exchangeRouterCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "routerCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "orderVaultCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "orderHandlerCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "roleStoreCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "entryController",
             "type": "address",
             "internalType": "address"
           },
           {
-            "name": "router",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "orderVault",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "orderHandler",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "roleStore",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
-            "name": "dataStoreCodeHash",
+            "name": "entryControllerCodeHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
           {
-            "name": "eventEmitterCodeHash",
+            "name": "exitController",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "exitControllerCodeHash",
             "type": "bytes32",
             "internalType": "bytes32"
           },
           {
-            "name": "exchangeRouterCodeHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
+            "name": "spotPort",
+            "type": "address",
+            "internalType": "contract IExactSpotPort"
           },
           {
-            "name": "routerCodeHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "orderVaultCodeHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "orderHandlerCodeHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "roleStoreCodeHash",
+            "name": "spotPortCodeHash",
             "type": "bytes32",
             "internalType": "bytes32"
           }
@@ -505,60 +537,6 @@
   },
   {
     "type": "function",
-    "name": "configureEntryController",
-    "inputs": [
-      {
-        "name": "controller",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "configureExitController",
-    "inputs": [
-      {
-        "name": "controller",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "configureSpotPort",
-    "inputs": [
-      {
-        "name": "port",
-        "type": "address",
-        "internalType": "contract IExactSpotPort"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "createFullClose",
     "inputs": [
       {
@@ -943,6 +921,19 @@
   },
   {
     "type": "function",
+    "name": "factory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "fundingAuthority",
     "inputs": [],
     "outputs": [
@@ -966,6 +957,19 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initialize",
+    "inputs": [
+      {
+        "name": "owner_",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1153,44 +1157,6 @@
   },
   {
     "type": "event",
-    "name": "EntryControllerConfigured",
-    "inputs": [
-      {
-        "name": "controller",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "ExitControllerConfigured",
-    "inputs": [
-      {
-        "name": "controller",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "SpotInventoryOpened",
     "inputs": [
       {
@@ -1259,37 +1225,6 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "SpotPortConfigured",
-    "inputs": [
-      {
-        "name": "port",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "codeHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "baseToken",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "quoteToken",
-        "type": "address",
-        "indexed": false,
-        "internalType": "address"
       }
     ],
     "anonymous": false

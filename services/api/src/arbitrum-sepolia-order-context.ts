@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { equalAddress, equalHash, requiredEvmAddress, type EvmContractIdentity } from "@naryx/adapter-evm";
+import { equalHash, requiredEvmAddress, type EvmContractIdentity } from "@naryx/adapter-evm";
 import {
   domainRefFromManifest,
   exactPrice,
@@ -26,9 +26,8 @@ const PRICE_FEED_ABI = parseAbi([
   "function decimals() view returns (uint8)",
   "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
 ]);
-const ISOLATED_ACCOUNT_ABI = parseAbi(["function owner() view returns (address)"]);
 
-/** Reviewed order limits for the single configured Arbitrum Sepolia isolated account. */
+/** Reviewed order limits for Arbitrum Sepolia. Any wallet trades through its own factory account. */
 export interface ArbitrumSepoliaOrderContextConfig {
   readonly schemaVersion: 1;
   readonly contextId: string;
@@ -40,8 +39,6 @@ export interface ArbitrumSepoliaOrderContextConfig {
   readonly quoteAsset: AssetRef;
   readonly spotAdapter: AdapterRef;
   readonly perpetualAdapter: AdapterRef;
-  /** Lowercase owner of the deployed GmxV2IsolatedAccount; verified on chain at startup. */
-  readonly owner: string;
   readonly priceFeed: EvmContractIdentity;
   readonly priceFeedDecimals: number;
   readonly maxStalenessSeconds: bigint;
@@ -90,7 +87,6 @@ function positive(value: unknown, name: string): bigint {
 
 function validateConfig(config: ArbitrumSepoliaOrderContextConfig): void {
   if (config?.schemaVersion !== 1 || typeof config.contextId !== "string" || !CONTEXT_ID.test(config.contextId)
-    || typeof config.owner !== "string" || !ADDRESS.test(config.owner)
     || !Number.isSafeInteger(config.priceFeedDecimals) || config.priceFeedDecimals < 0 || config.priceFeedDecimals > 36
     || !Number.isSafeInteger(config.pollIntervalMs) || config.pollIntervalMs < 250
     || !Number.isSafeInteger(config.maxSlippageBps) || config.maxSlippageBps < 1 || config.maxSlippageBps > 10_000
@@ -206,8 +202,9 @@ export class ArbitrumSepoliaReferencePriceFeed {
 }
 
 /**
- * Builds the Arbitrum Sepolia entry context. Only the deployed isolated account and its on-chain
- * owner may trade: per-user isolated accounts need an account factory that does not exist yet.
+ * Builds the Arbitrum Sepolia entry context. Any wallet may trade through its own factory account;
+ * the settlement account is enforced against `accountOf(owner)` by the solver quote and executor,
+ * by the async attempt context, and on chain by the adapter, which only ever uses that account.
  */
 export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
   config: ArbitrumSepoliaOrderContextConfig;
@@ -220,15 +217,14 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
   if (await port.chainId() !== BigInt(ARBITRUM_SEPOLIA_CHAIN_REFERENCE)) {
     throw new Error("Arbitrum Sepolia RPC eth_chainId is not 421614.");
   }
-  const account = requiredEvmAddress(deployment.isolatedAccount.address, "isolatedAccount");
-  const onchainOwner = await port.readContract({ address: account, abi: ISOLATED_ACCOUNT_ABI, functionName: "owner" });
-  if (typeof onchainOwner !== "string" || !equalAddress(requiredEvmAddress(onchainOwner, "isolatedAccount.owner"), config.owner as Address)) {
-    throw new Error("Configured Arbitrum owner is not the isolated account owner on chain.");
+  const factory = requiredEvmAddress(deployment.accountFactory.address, "accountFactory");
+  const factoryCode = await port.codeHash(factory);
+  if (factoryCode === undefined || !equalHash(factoryCode, deployment.accountFactory.expectedCodeHash)) {
+    throw new Error("Arbitrum Sepolia account factory code does not match the reviewed identity.");
   }
   const feed = new ArbitrumSepoliaReferencePriceFeed(config, port);
   await feed.refresh();
   const domain = domainRefFromManifest(deployment.domainManifest);
-  const settlementAccount = account.toLowerCase();
   const maximumQuantityAtoms = config.maximumQuantityAtoms < deployment.bounds.maximumPackageQuantityAtoms
     ? config.maximumQuantityAtoms
     : deployment.bounds.maximumPackageQuantityAtoms;
@@ -269,8 +265,6 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       minVenueReserveReturnedAtoms: 0n,
       minWalletQuoteBalanceDeltaAtoms: 0n,
       maxResidualBaseQuantityAtoms: 0n,
-      requiredOwner: config.owner,
-      requiredSettlementAccount: settlementAccount,
     });
     cached = Object.freeze({ snapshot, context });
     return context;

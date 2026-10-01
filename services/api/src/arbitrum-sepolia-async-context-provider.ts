@@ -24,7 +24,15 @@ import {
   type RoutePayloadInput,
   type SolverQuoteInput,
 } from "@naryx/protocol-types";
-import { keccak256, stringToHex, type Address, type Hex } from "viem";
+import {
+  concat,
+  encodeAbiParameters,
+  getContractAddress,
+  keccak256,
+  stringToHex,
+  type Address,
+  type Hex,
+} from "viem";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import type { EvmTestnetAsyncAttemptContext } from "./evm-testnet-runtime-ports.js";
@@ -32,6 +40,41 @@ import type { EvmTestnetAsyncAttemptContext } from "./evm-testnet-runtime-ports.
 export const ARBITRUM_SEPOLIA_CHAIN_REFERENCE = "421614" as const;
 export const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614" as const;
 export const ARBITRUM_ASYNC_SETTLEMENT_CLASS = "ASYNC_BONDED_SOLVER" as const;
+
+const CLONE_INIT_PREFIX = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73";
+const CLONE_RUNTIME_PREFIX = "0x363d3d373d3d3d363d73";
+const CLONE_SUFFIX = "0x5af43d82803e903d91602b57fd5bf3";
+
+/**
+ * The factory account of `owner`: the CREATE2 address of the ERC-1167 clone of the reviewed
+ * implementation with salt `keccak256(abi.encode(owner))`. Pure, so order admission needs no RPC.
+ */
+export function arbitrumSepoliaAccountOf(
+  configuration: Pick<ArbitrumSepoliaAsyncDeploymentConfiguration, "accountFactory" | "accountImplementation">,
+  owner: string,
+): Address {
+  return getContractAddress({
+    opcode: "CREATE2",
+    from: requiredEvmAddress(configuration.accountFactory.address, "accountFactory"),
+    salt: keccak256(encodeAbiParameters([{ type: "address" }], [requiredEvmAddress(owner, "owner")])),
+    bytecode: concat([
+      CLONE_INIT_PREFIX,
+      requiredEvmAddress(configuration.accountImplementation.address, "accountImplementation"),
+      CLONE_SUFFIX,
+    ]),
+  }).toLowerCase() as Address;
+}
+
+/** The runtime code hash every factory account shares. */
+export function arbitrumSepoliaAccountCodeHash(
+  configuration: Pick<ArbitrumSepoliaAsyncDeploymentConfiguration, "accountImplementation">,
+): Hex {
+  return keccak256(concat([
+    CLONE_RUNTIME_PREFIX,
+    requiredEvmAddress(configuration.accountImplementation.address, "accountImplementation"),
+    CLONE_SUFFIX,
+  ]));
+}
 
 export const ARBITRUM_SEPOLIA_GMX_DEPENDENCIES = Object.freeze({
   dataStore: "0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201",
@@ -50,7 +93,10 @@ export interface ArbitrumSepoliaAsyncDeploymentConfiguration {
   readonly domainManifest: DomainManifest;
   readonly protocolConfig: EvmContractIdentity;
   readonly coordinator: EvmContractIdentity;
-  readonly isolatedAccount: EvmContractIdentity;
+  /** The shared GmxV2IsolatedAccountFactory. Every owner settles through its own `accountOf(owner)`. */
+  readonly accountFactory: EvmContractIdentity;
+  /** The factory's account implementation; it fixes every account address and code hash. */
+  readonly accountImplementation: EvmContractIdentity;
   readonly entryAdapter: EvmContractIdentity;
   readonly orderVerifier: EvmContractIdentity;
   readonly market: EvmContractIdentity;
@@ -157,7 +203,8 @@ export function validateArbitrumSepoliaAsyncDeploymentConfiguration(
     fail("WRONG_DOMAIN", "Deployment is not the recognized Arbitrum Sepolia async EVM runtime.");
   }
   for (const field of [
-    "protocolConfig", "coordinator", "isolatedAccount", "entryAdapter", "orderVerifier", "market", "collateralToken",
+    "protocolConfig", "coordinator", "accountFactory", "accountImplementation", "entryAdapter", "orderVerifier", "market",
+    "collateralToken",
   ] as const) contract(configuration[field], field);
   for (const [name, expectedAddress] of Object.entries(ARBITRUM_SEPOLIA_GMX_DEPENDENCIES)) {
     const identity = configuration.gmx[name as keyof typeof configuration.gmx];
@@ -275,7 +322,11 @@ export function createArbitrumSepoliaAsyncContextProvider(
     if (route.settlementClass !== ARBITRUM_ASYNC_SETTLEMENT_CLASS
       || route.executionPlanKind !== "EVM_ASYNC_REQUEST" || route.recoveryPlan === undefined
       || route.owner.toLowerCase() !== order.owner.toLowerCase()
-      || !equalAddress(requiredEvmAddress(route.settlementAccount, "route.settlementAccount"), configuration.isolatedAccount.address)
+      || route.settlementAccount.toLowerCase() !== order.settlementAccount.toLowerCase()
+      || !equalAddress(
+        requiredEvmAddress(route.settlementAccount, "route.settlementAccount"),
+        arbitrumSepoliaAccountOf(configuration, order.owner),
+      )
       || perpetual?.adapter.adapterId !== configuration.route.perpetualAdapterId
     || perpetual.market.subjectId !== configuration.route.perpetualMarketId
     || perpetual.venue.subjectId !== configuration.route.perpetualVenueId

@@ -6,6 +6,7 @@ import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol"
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {AsyncBondedPackageCoordinator} from "./AsyncBondedPackageCoordinator.sol";
 import {GmxV2IsolatedAccount} from "./GmxV2IsolatedAccount.sol";
+import {GmxV2IsolatedAccountFactory} from "./GmxV2IsolatedAccountFactory.sol";
 import {IAsyncVenueAdapter} from "./interfaces/IAsyncVenueAdapter.sol";
 import {
     GmxV2,
@@ -16,6 +17,9 @@ import {
     IGmxV2RoleStore
 } from "./interfaces/IGmxV2.sol";
 
+/// @notice The shared GMX V2 entry adapter for every account of one `GmxV2IsolatedAccountFactory`. One
+/// coordinator admission of this adapter covers all factory accounts. A package's account is always the
+/// factory account of the package owner, which funds the request and receives every refund.
 contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -36,6 +40,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     }
 
     struct Funding {
+        address account;
         bytes32 requestPayloadHash;
         uint256 collateralAtoms;
         uint256 spotQuoteAtoms;
@@ -46,6 +51,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
 
     struct RequestRecord {
         GmxV2.RequestRegistration registration;
+        address account;
         Status status;
         bytes32 evidenceHash;
         bytes32 callbackDataHash;
@@ -64,9 +70,11 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     error FundingMismatch();
     error DeadlinePassed();
     error InvalidOutcome();
+    error UnknownAccount();
 
     event RequestFunded(
         bytes32 indexed packageId,
+        address indexed owner,
         bytes32 requestPayloadHash,
         uint256 collateralAtoms,
         uint256 spotQuoteAtoms,
@@ -76,74 +84,60 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     event OutcomeRecorded(bytes32 indexed requestKey, Status status, uint64 revision, bytes32 evidenceHash);
     event EvidenceRelayed(bytes32 indexed requestKey, bytes32 indexed packageId, uint64 revision);
     event RecoveryRequested(bytes32 indexed packageId, bytes32 indexed requestKey);
-    event ExpiredFundingReclaimed(bytes32 indexed packageId);
+    event ExpiredFundingReclaimed(bytes32 indexed packageId, address indexed owner);
     event UnfilledRequestReleased(bytes32 indexed packageId, bytes32 indexed requestKey, Status status);
     event ExitedPositionReleased(bytes32 indexed packageId, bytes32 indexed requestKey);
 
     AsyncBondedPackageCoordinator private immutable coordinator;
-    address private immutable fundingAuthority;
-    address private immutable beneficiary;
     address private immutable market;
     IERC20 private immutable collateralToken;
     address private immutable dataStore;
-    address private immutable eventEmitter;
-    address private immutable exchangeRouter;
-    address private immutable router;
-    address private immutable orderVault;
     address private immutable orderHandler;
     address private immutable roleStore;
     IGmxV2OrderVerifier private immutable orderVerifier;
     bytes32 private immutable coordinatorCodeHash;
     bytes32 private immutable marketCodeHash;
     bytes32 private immutable collateralTokenCodeHash;
-    bytes32 private immutable dataStoreCodeHash;
-    bytes32 private immutable eventEmitterCodeHash;
-    bytes32 private immutable exchangeRouterCodeHash;
-    bytes32 private immutable routerCodeHash;
-    bytes32 private immutable orderVaultCodeHash;
-    bytes32 private immutable orderHandlerCodeHash;
-    bytes32 private immutable roleStoreCodeHash;
     bytes32 private immutable orderVerifierCodeHash;
-    GmxV2IsolatedAccount public immutable isolatedAccount;
-    bytes32 private immutable isolatedAccountCodeHash;
+    GmxV2IsolatedAccountFactory public immutable factory;
+    bytes32 private immutable factoryCodeHash;
+    bytes32 private immutable orderHandlerCodeHash;
 
-    bytes32 public activePackageId;
-    bytes32 public activeRequestKey;
-    mapping(bytes32 packageId => Funding requestFunding) public funding;
+    /// @notice Funded but not yet consumed or reclaimed collateral and spot quote, across all owners.
+    uint256 public unconsumedFundingAtoms;
+    mapping(address account => bytes32 packageId) public activePackageOf;
+    mapping(address account => bytes32 requestKey) public activeRequestKeyOf;
+    mapping(bytes32 packageId => mapping(address owner => Funding requestFunding)) public funding;
     mapping(bytes32 requestKey => RequestRecord requestData) private _requests;
     mapping(bytes32 packageId => bytes32 requestKey) private _packageRequestKey;
 
     constructor(
         AsyncBondedPackageCoordinator coordinator_,
         bytes32 coordinatorCodeHash_,
-        address fundingAuthority_,
-        address beneficiary_,
         address market_,
         bytes32 marketCodeHash_,
         IERC20 collateralToken_,
         bytes32 collateralTokenCodeHash_,
-        GmxV2IsolatedAccount isolatedAccount_,
+        GmxV2IsolatedAccountFactory factory_,
+        bytes32 factoryCodeHash_,
         IGmxV2OrderVerifier orderVerifier_,
         bytes32 orderVerifierCodeHash_,
         GmxV2.Deployment memory deployment
     ) {
         if (
-            address(coordinator_) == address(0) || fundingAuthority_ == address(0) || beneficiary_ == address(0)
-                || market_ == address(0) || address(collateralToken_) == address(0)
+            address(coordinator_) == address(0) || market_ == address(0) || address(collateralToken_) == address(0)
                 || address(coordinator_).codehash != coordinatorCodeHash_ || market_.codehash != marketCodeHash_
                 || address(collateralToken_).codehash != collateralTokenCodeHash_ || coordinatorCodeHash_ == bytes32(0)
                 || address(orderVerifier_).codehash != orderVerifierCodeHash_ || marketCodeHash_ == bytes32(0)
                 || collateralTokenCodeHash_ == bytes32(0) || orderVerifierCodeHash_ == bytes32(0)
                 || address(coordinator_.bondToken()) != address(collateralToken_)
-                || address(isolatedAccount_).code.length == 0 || isolatedAccount_.owner() != beneficiary_
-                || isolatedAccount_.fundingAuthority() != fundingAuthority_ || isolatedAccount_.market() != market_
-                || address(isolatedAccount_.collateralToken()) != address(collateralToken_)
-                || isolatedAccount_.deploymentHash() != keccak256(abi.encode(deployment))
+                || address(factory_).code.length == 0 || factoryCodeHash_ == bytes32(0)
+                || address(factory_).codehash != factoryCodeHash_ || factory_.market() != market_
+                || address(factory_.collateralToken()) != address(collateralToken_)
+                || factory_.deploymentHash() != keccak256(abi.encode(deployment))
         ) revert InvalidConfiguration();
         _validateDeployment(deployment);
         coordinator = coordinator_;
-        fundingAuthority = fundingAuthority_;
-        beneficiary = beneficiary_;
         market = market_;
         collateralToken = collateralToken_;
         coordinatorCodeHash = coordinatorCodeHash_;
@@ -152,21 +146,15 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         orderVerifier = orderVerifier_;
         orderVerifierCodeHash = orderVerifierCodeHash_;
         dataStore = deployment.dataStore;
-        eventEmitter = deployment.eventEmitter;
-        exchangeRouter = deployment.exchangeRouter;
-        router = deployment.router;
-        orderVault = deployment.orderVault;
         orderHandler = deployment.orderHandler;
         roleStore = deployment.roleStore;
-        dataStoreCodeHash = deployment.dataStoreCodeHash;
-        eventEmitterCodeHash = deployment.eventEmitterCodeHash;
-        exchangeRouterCodeHash = deployment.exchangeRouterCodeHash;
-        routerCodeHash = deployment.routerCodeHash;
-        orderVaultCodeHash = deployment.orderVaultCodeHash;
+        factory = factory_;
+        factoryCodeHash = factoryCodeHash_;
         orderHandlerCodeHash = deployment.orderHandlerCodeHash;
-        roleStoreCodeHash = deployment.roleStoreCodeHash;
-        isolatedAccount = isolatedAccount_;
-        isolatedAccountCodeHash = address(isolatedAccount_).codehash;
+    }
+
+    function requestAccount(bytes32 requestKey) external view returns (address) {
+        return _requests[requestKey].account;
     }
 
     function requestEvidence(bytes32 requestKey)
@@ -189,18 +177,23 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         return keccak256(abi.encode(_requests[requestKey].registration));
     }
 
+    /// @notice The package owner funds its own request from its wallet: collateral plus the spot quote
+    /// bound, and the GMX execution fee as `msg.value`. The owner's factory account must already exist.
     function fundRequest(bytes32 packageId, VenueRequest calldata venueRequest) external payable nonReentrant {
         _assertDeployment();
-        if (msg.sender != fundingAuthority) revert UnauthorizedCaller();
+        address account = _accountOf(msg.sender);
         _validateRequest(venueRequest);
-        if (packageId == bytes32(0)) revert InvalidRequest();
-        if (activePackageId != bytes32(0) || funding[packageId].requestPayloadHash != bytes32(0)) {
+        if (packageId == bytes32(0) || venueRequest.spot.fundingOwner != msg.sender) revert InvalidRequest();
+        if (activePackageOf[account] != bytes32(0) || funding[packageId][msg.sender].requestPayloadHash != bytes32(0))
+        {
             revert AlreadyFunded();
         }
         if (msg.value != venueRequest.executionFeeWei) revert FundingMismatch();
         bytes32 requestPayloadHash = keccak256(abi.encode(venueRequest));
-        activePackageId = packageId;
-        funding[packageId] = Funding({
+        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
+        activePackageOf[account] = packageId;
+        funding[packageId][msg.sender] = Funding({
+            account: account,
             requestPayloadHash: requestPayloadHash,
             collateralAtoms: venueRequest.collateralAtoms,
             spotQuoteAtoms: venueRequest.spot.maxQuoteAtoms,
@@ -208,7 +201,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             submissionDeadline: venueRequest.submissionDeadline,
             consumed: false
         });
-        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
+        unconsumedFundingAtoms += totalFunding;
         uint256 beforeBalance = collateralToken.balanceOf(address(this));
         collateralToken.safeTransferFrom(msg.sender, address(this), totalFunding);
         if (collateralToken.balanceOf(address(this)) - beforeBalance != totalFunding) {
@@ -216,6 +209,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         }
         emit RequestFunded(
             packageId,
+            msg.sender,
             requestPayloadHash,
             venueRequest.collateralAtoms,
             venueRequest.spot.maxQuoteAtoms,
@@ -225,16 +219,17 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
 
     function reclaimExpiredFunding(bytes32 packageId) external nonReentrant {
         _assertDeployment();
-        if (msg.sender != fundingAuthority) revert UnauthorizedCaller();
-        Funding memory reserved = funding[packageId];
+        Funding memory reserved = funding[packageId][msg.sender];
         if (reserved.requestPayloadHash == bytes32(0) || reserved.consumed) revert FundingMissing();
         if (block.timestamp < reserved.submissionDeadline) revert DeadlinePassed();
-        delete funding[packageId];
-        activePackageId = bytes32(0);
-        _transferExactCollateral(fundingAuthority, reserved.collateralAtoms + reserved.spotQuoteAtoms);
-        (bool sent,) = payable(fundingAuthority).call{value: reserved.executionFeeWei}("");
+        uint256 totalFunding = reserved.collateralAtoms + reserved.spotQuoteAtoms;
+        delete funding[packageId][msg.sender];
+        if (activePackageOf[reserved.account] == packageId) activePackageOf[reserved.account] = bytes32(0);
+        unconsumedFundingAtoms -= totalFunding;
+        _transferExactCollateral(msg.sender, totalFunding);
+        (bool sent,) = payable(msg.sender).call{value: reserved.executionFeeWei}("");
         if (!sent) revert FundingMismatch();
-        emit ExpiredFundingReclaimed(packageId);
+        emit ExpiredFundingReclaimed(packageId, msg.sender);
     }
 
     function createRequest(bytes32 packageId, VenueRequest calldata venueRequest)
@@ -245,23 +240,27 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         _assertDeployment();
         if (msg.sender != address(coordinator)) revert UnauthorizedCaller();
         _validateRequest(venueRequest);
-        Funding storage reserved = funding[packageId];
         bytes32 requestPayloadHash = keccak256(abi.encode(venueRequest));
-        _validatePackageBinding(packageId, requestPayloadHash, venueRequest);
+        address owner = _validatePackageBinding(packageId, requestPayloadHash, venueRequest);
+        GmxV2IsolatedAccount account = GmxV2IsolatedAccount(_accountOf(owner));
+        Funding storage reserved = funding[packageId][owner];
         if (
-            activePackageId != packageId || reserved.requestPayloadHash != requestPayloadHash || reserved.consumed
+            activePackageOf[address(account)] != packageId || reserved.account != address(account)
+                || reserved.requestPayloadHash != requestPayloadHash || reserved.consumed
                 || reserved.collateralAtoms != venueRequest.collateralAtoms
                 || reserved.spotQuoteAtoms != venueRequest.spot.maxQuoteAtoms
                 || reserved.executionFeeWei != venueRequest.executionFeeWei
         ) revert FundingMismatch();
         if (block.timestamp >= venueRequest.submissionDeadline) revert DeadlinePassed();
         reserved.consumed = true;
+        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
+        unconsumedFundingAtoms -= totalFunding;
 
         GmxV2.RequestRegistration memory registration = GmxV2.RequestRegistration({
             packageId: packageId,
             requestPayloadHash: requestPayloadHash,
-            beneficiary: beneficiary,
-            refundRecipient: fundingAuthority,
+            beneficiary: owner,
+            refundRecipient: owner,
             market: market,
             collateralToken: address(collateralToken),
             sizeDeltaUsd: _absoluteSize(venueRequest.sizeDelta),
@@ -274,23 +273,23 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             venueDeadline: venueRequest.venueDeadline,
             recoveryDeadline: venueRequest.recoveryDeadline
         });
-        uint256 totalFunding = venueRequest.collateralAtoms + venueRequest.spot.maxQuoteAtoms;
-        uint256 beforeBalance = collateralToken.balanceOf(address(isolatedAccount));
-        collateralToken.safeTransfer(address(isolatedAccount), totalFunding);
-        if (collateralToken.balanceOf(address(isolatedAccount)) - beforeBalance != totalFunding) {
+        uint256 beforeBalance = collateralToken.balanceOf(address(account));
+        collateralToken.safeTransfer(address(account), totalFunding);
+        if (collateralToken.balanceOf(address(account)) - beforeBalance != totalFunding) {
             revert FundingMismatch();
         }
-        requestKey = isolatedAccount.createPackageEntry{value: venueRequest.executionFeeWei}(
+        requestKey = account.createPackageEntry{value: venueRequest.executionFeeWei}(
             packageId, requestPayloadHash, venueRequest
         );
         if (
             requestKey == bytes32(0) || _requests[requestKey].status != Status.NONE
                 || _packageRequestKey[packageId] != bytes32(0)
         ) revert InvalidRequest();
-        uint256 positionSizeBefore = _positionSize(venueRequest.sizeDelta > 0);
+        uint256 positionSizeBefore = _positionSize(address(account), venueRequest.sizeDelta > 0);
         if (positionSizeBefore != 0) revert InvalidRequest();
         _requests[requestKey] = RequestRecord({
             registration: registration,
+            account: address(account),
             status: Status.PENDING,
             evidenceHash: bytes32(0),
             callbackDataHash: bytes32(0),
@@ -300,7 +299,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             recovering: false
         });
         _packageRequestKey[packageId] = requestKey;
-        activeRequestKey = requestKey;
+        activeRequestKeyOf[address(account)] = requestKey;
         emit RequestCreated(packageId, requestKey, requestPayloadHash);
     }
 
@@ -336,14 +335,14 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (stored.status == Status.CANCELLED) {
             if (
                 IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
-                    || _positionSize(stored.registration.isLong) != stored.positionSizeBefore
+                    || _positionSize(stored.account, stored.registration.isLong) != stored.positionSizeBefore
             ) return false;
             _record(stored, requestKey, Status.RECOVERED, _recoveryHash(requestKey), stored.positionSizeBefore);
             return true;
         }
         if (IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)) {
             if (block.timestamp < stored.registration.venueDeadline) return false;
-            try isolatedAccount.cancelEntry(requestKey) {}
+            try GmxV2IsolatedAccount(stored.account).cancelEntry(requestKey) {}
             catch {
                 return false;
             }
@@ -357,7 +356,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
             _record(stored, requestKey, Status.RECOVERED, _recoveryHash(requestKey), stored.positionSizeBefore);
             return true;
         }
-        uint256 currentSize = _positionSize(stored.registration.isLong);
+        uint256 currentSize = _positionSize(stored.account, stored.registration.isLong);
         if (currentSize == stored.positionSizeBefore) {
             _record(stored, requestKey, Status.RECOVERED, _recoveryHash(requestKey), currentSize);
             return true;
@@ -370,53 +369,59 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         return true;
     }
 
+    /// @notice Sells the rolled-back spot inventory to the owner and frees the owner's account. Callable by
+    /// the package owner or the package solver; every amount goes to the owner.
     function finalizeUnfilledRequest(bytes32 requestKey) external nonReentrant {
         _assertDeployment();
-        if (msg.sender != fundingAuthority) revert UnauthorizedCaller();
         RequestRecord storage stored = _request(requestKey);
+        bytes32 packageId = stored.registration.packageId;
+        if (
+            msg.sender != stored.registration.beneficiary
+                && msg.sender != coordinator.packageState(packageId).terms.solver
+        ) revert UnauthorizedCaller();
         if (stored.status != Status.CANCELLED && stored.status != Status.RECOVERED) revert InvalidOutcome();
         if (
             IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
-                || _positionSize(stored.registration.isLong) != stored.positionSizeBefore
+                || _positionSize(stored.account, stored.registration.isLong) != stored.positionSizeBefore
         ) revert InvalidOutcome();
-        isolatedAccount.rollbackSpot(stored.registration.packageId, requestKey);
-        isolatedAccount.assertSpotCleared();
-        uint256 collateralBalance = collateralToken.balanceOf(address(this));
-        if (collateralBalance != 0) _transferExactCollateral(fundingAuthority, collateralBalance);
-        bytes32 packageId = stored.registration.packageId;
-        delete funding[packageId];
-        if (activePackageId == packageId) activePackageId = bytes32(0);
-        if (activeRequestKey == requestKey) activeRequestKey = bytes32(0);
+        GmxV2IsolatedAccount account = _requireAccount(stored.account);
+        account.rollbackSpot(packageId, requestKey);
+        account.assertSpotCleared();
+        delete funding[packageId][stored.registration.beneficiary];
+        if (activePackageOf[address(account)] == packageId) activePackageOf[address(account)] = bytes32(0);
+        if (activeRequestKeyOf[address(account)] == requestKey) activeRequestKeyOf[address(account)] = bytes32(0);
         emit UnfilledRequestReleased(packageId, requestKey, stored.status);
     }
 
+    /// @notice Returns collateral held by the adapter beyond every owner's unconsumed funding. GMX never
+    /// pays the adapter, so this is only stray balance; the owner of a terminal request receives it.
     function sweepUnpositionedCollateral(bytes32 requestKey) external nonReentrant {
         _assertDeployment();
-        if (msg.sender != fundingAuthority) revert UnauthorizedCaller();
         RequestRecord storage stored = _request(requestKey);
+        if (msg.sender != stored.registration.beneficiary) revert UnauthorizedCaller();
         if (stored.status != Status.EXECUTED && stored.status != Status.CANCELLED && stored.status != Status.RECOVERED) revert InvalidOutcome();
-        uint256 amount = collateralToken.balanceOf(address(this));
+        uint256 amount = _residualAtoms();
         if (amount == 0) revert InvalidOutcome();
-        _transferExactCollateral(fundingAuthority, amount);
+        _transferExactCollateral(msg.sender, amount);
     }
 
     function finalizeExitedPosition(bytes32 packageId, bytes32 entryRequestKey) external nonReentrant {
         _assertDeployment();
         if (
-            msg.sender != isolatedAccount.exitController()
-                || msg.sender.codehash != isolatedAccount.exitControllerCodeHash()
+            msg.sender != factory.exitController() || msg.sender.codehash != factory.exitControllerCodeHash()
         ) revert UnauthorizedCaller();
         RequestRecord storage stored = _request(entryRequestKey);
+        GmxV2IsolatedAccount account = _requireAccount(stored.account);
         if (
-            activePackageId != packageId || activeRequestKey != entryRequestKey
+            activePackageOf[address(account)] != packageId || activeRequestKeyOf[address(account)] != entryRequestKey
                 || stored.registration.packageId != packageId || stored.status != Status.EXECUTED
-                || isolatedAccount.positionSize(false) != 0 || isolatedAccount.positionSize(true) != 0
-                || isolatedAccount.hasActiveSpotInventory()
+                || account.positionSize(false) != 0 || account.positionSize(true) != 0
+                || account.hasActiveSpotInventory()
         ) revert InvalidOutcome();
-        isolatedAccount.assertSpotCleared();
-        delete funding[packageId];
-        activePackageId = bytes32(0);
-        activeRequestKey = bytes32(0);
+        account.assertSpotCleared();
+        delete funding[packageId][stored.registration.beneficiary];
+        activePackageOf[address(account)] = bytes32(0);
+        activeRequestKeyOf[address(account)] = bytes32(0);
         emit ExitedPositionReleased(packageId, entryRequestKey);
     }
 
@@ -427,13 +432,13 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
-        uint256 currentSize = _positionSize(stored.registration.isLong);
+        orderVerifier.verify(stored.account, address(this), stored.registration, orderData);
+        uint256 currentSize = _positionSize(stored.account, stored.registration.isLong);
         bytes32 callbackDataHash = keccak256(abi.encode(orderData, eventData));
         if (
             currentSize < stored.positionSizeBefore
                 || currentSize - stored.positionSizeBefore != stored.registration.sizeDeltaUsd
-                || !isolatedAccount.hasActiveSpotInventory()
+                || !GmxV2IsolatedAccount(stored.account).hasActiveSpotInventory()
         ) {
             _record(stored, requestKey, Status.CONFLICT, callbackDataHash, currentSize);
             return;
@@ -448,9 +453,9 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
+        orderVerifier.verify(stored.account, address(this), stored.registration, orderData);
         Status status = stored.recovering ? Status.RECOVERED : Status.CANCELLED;
-        uint256 currentSize = _positionSize(stored.registration.isLong);
+        uint256 currentSize = _positionSize(stored.account, stored.registration.isLong);
         if (
             currentSize != stored.positionSizeBefore
                 || IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
@@ -465,8 +470,8 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     ) external {
         _assertCallbackCaller();
         RequestRecord storage stored = _request(requestKey);
-        orderVerifier.verify(address(isolatedAccount), address(this), stored.registration, orderData);
-        uint256 currentSize = _positionSize(stored.registration.isLong);
+        orderVerifier.verify(stored.account, address(this), stored.registration, orderData);
+        uint256 currentSize = _positionSize(stored.account, stored.registration.isLong);
         Status status = currentSize == stored.positionSizeBefore
             && IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
             ? Status.FROZEN
@@ -495,13 +500,13 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         AsyncBondedPackageCoordinator.Package memory packageData =
             coordinator.packageState(stored.registration.packageId);
         if (packageData.terms.residualAsset != address(collateralToken)) revert InvalidOutcome();
-        uint256 terminalResidualAtoms = collateralToken.balanceOf(address(this));
+        uint256 terminalResidualAtoms = _residualAtoms();
         if (
             (stored.status == Status.EXECUTED || stored.status == Status.CANCELLED || stored.status == Status.RECOVERED)
                 && terminalResidualAtoms != 0
         ) revert InvalidOutcome();
         if (stored.status == Status.CANCELLED || stored.status == Status.RECOVERED) {
-            isolatedAccount.assertSpotCleared();
+            _requireAccount(stored.account).assertSpotCleared();
         }
         coordinator.recordVenueEvidence(
             stored.registration.packageId,
@@ -574,7 +579,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
                 || venueRequest.acceptablePrice == 0 || venueRequest.executionFeeWei == 0
                 || venueRequest.callbackGasLimit == 0 || venueRequest.orderHash == bytes32(0)
                 || venueRequest.quoteHash == bytes32(0) || venueRequest.routeHash == bytes32(0)
-                || venueRequest.spot.fundingOwner != fundingAuthority || venueRequest.spot.maxQuoteAtoms == 0
+                || venueRequest.spot.maxQuoteAtoms == 0
                 || block.timestamp >= venueRequest.submissionDeadline
                 || venueRequest.submissionDeadline >= venueRequest.venueDeadline
                 || venueRequest.venueDeadline >= venueRequest.recoveryDeadline
@@ -586,21 +591,42 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     function _validatePackageBinding(bytes32 packageId, bytes32 requestPayloadHash, VenueRequest calldata venueRequest)
         private
         view
+        returns (address owner)
     {
         AsyncBondedPackageCoordinator.Package memory packageData = coordinator.packageState(packageId);
         AsyncBondedPackageCoordinator.Terms memory terms = packageData.terms;
         if (
-            terms.adapter != address(this) || terms.handler != address(this) || terms.solver != fundingAuthority
-                || terms.owner != beneficiary || terms.adapterCodeHash != address(this).codehash
+            terms.adapter != address(this) || terms.handler != address(this) || terms.owner == address(0)
+                || terms.adapterCodeHash != address(this).codehash
                 || terms.handlerCodeHash != address(this).codehash || terms.requestPayloadHash != requestPayloadHash
                 || terms.orderHash != venueRequest.orderHash || terms.quoteHash != venueRequest.quoteHash
                 || terms.routeHash != venueRequest.routeHash || terms.nonce != venueRequest.packageNonce
-                || venueRequest.spot.fundingOwner != terms.solver || terms.lossAsset != address(collateralToken)
+                || venueRequest.spot.fundingOwner != terms.owner || terms.lossAsset != address(collateralToken)
                 || terms.residualAsset != address(collateralToken)
                 || terms.submissionDeadline != venueRequest.submissionDeadline
                 || terms.venueDeadline != venueRequest.venueDeadline
                 || terms.recoveryDeadline != venueRequest.recoveryDeadline
         ) revert InvalidRequest();
+        return terms.owner;
+    }
+
+    /// @notice The owner's account, required to be a live factory account bound to this adapter.
+    function _accountOf(address owner) private view returns (address account) {
+        account = address(factory.requireAccount(owner));
+        _requireAccount(account);
+    }
+
+    function _requireAccount(address account) private view returns (GmxV2IsolatedAccount) {
+        if (!factory.isAccount(account) || GmxV2IsolatedAccount(account).entryController() != address(this)) {
+            revert UnknownAccount();
+        }
+        return GmxV2IsolatedAccount(account);
+    }
+
+    function _residualAtoms() private view returns (uint256) {
+        uint256 balance = collateralToken.balanceOf(address(this));
+        if (balance < unconsumedFundingAtoms) revert FundingMismatch();
+        return balance - unconsumedFundingAtoms;
     }
 
     function _request(bytes32 requestKey) private view returns (RequestRecord storage stored) {
@@ -608,8 +634,8 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         if (stored.status == Status.NONE) revert InvalidRequest();
     }
 
-    function _positionSize(bool isLong) private view returns (uint256) {
-        bytes32 positionKey = keccak256(abi.encode(address(isolatedAccount), market, address(collateralToken), isLong));
+    function _positionSize(address account, bool isLong) private view returns (uint256) {
+        bytes32 positionKey = keccak256(abi.encode(account, market, address(collateralToken), isLong));
         return IGmxV2DataStore(dataStore).getUint(keccak256(abi.encode(positionKey, SIZE_IN_USD)));
     }
 
@@ -639,21 +665,17 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         ) revert UnauthorizedCaller();
     }
 
+    /// @notice Pins this adapter's own dependencies by code hash, then has the factory's reviewed account
+    /// implementation, which carries the identical GMX deployment (equal `deploymentHash`), verify every
+    /// GMX contract's code hash and the exchange router's wiring.
     function _assertDeployment() private view {
         if (
             address(coordinator).codehash != coordinatorCodeHash || market.codehash != marketCodeHash
                 || address(collateralToken).codehash != collateralTokenCodeHash
-                || address(orderVerifier).codehash != orderVerifierCodeHash || dataStore.codehash != dataStoreCodeHash
-                || address(isolatedAccount).codehash != isolatedAccountCodeHash
-                || eventEmitter.codehash != eventEmitterCodeHash || exchangeRouter.codehash != exchangeRouterCodeHash
-                || router.codehash != routerCodeHash || orderVault.codehash != orderVaultCodeHash
-                || orderHandler.codehash != orderHandlerCodeHash || roleStore.codehash != roleStoreCodeHash
+                || address(orderVerifier).codehash != orderVerifierCodeHash
+                || address(factory).codehash != factoryCodeHash
         ) revert DeploymentChanged();
-        IGmxV2ExchangeRouter exchange = IGmxV2ExchangeRouter(exchangeRouter);
-        if (
-            exchange.dataStore() != dataStore || exchange.eventEmitter() != eventEmitter || exchange.router() != router
-                || exchange.orderHandler() != orderHandler || exchange.roleStore() != roleStore
-        ) revert DeploymentChanged();
+        GmxV2IsolatedAccount(factory.implementation()).assertDeployment();
     }
 
     function _validateDeployment(GmxV2.Deployment memory deployment) private view {

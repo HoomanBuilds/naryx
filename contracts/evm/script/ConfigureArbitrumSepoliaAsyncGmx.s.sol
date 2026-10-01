@@ -6,6 +6,7 @@ import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinato
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
 import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
 import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
+import {GmxV2IsolatedAccountFactory} from "../src/GmxV2IsolatedAccountFactory.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 
@@ -13,7 +14,6 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
     uint256 public constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
     bytes32 public constant DOMAIN_ID_HASH = keccak256("eip155:421614");
 
-    uint8 private constant ACCOUNT_OWNER = 0;
     uint8 private constant PROPOSER = 1;
     uint8 private constant EXECUTOR = 2;
 
@@ -24,14 +24,15 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         bytes32 domainManifestHash;
         AsyncBondedPackageCoordinator coordinator;
         bytes32 coordinatorCodeHash;
-        GmxV2IsolatedAccount isolatedAccount;
-        bytes32 isolatedAccountCodeHash;
+        GmxV2IsolatedAccountFactory accountFactory;
+        bytes32 accountFactoryCodeHash;
         GmxV2ArbitrumAdapter adapter;
         bytes32 adapterCodeHash;
         GmxV2ExitController exitController;
         bytes32 exitControllerCodeHash;
         UniswapV3SpotPort spotPort;
         bytes32 spotPortCodeHash;
+        bytes32 accountCodeHash;
     }
 
     error InvalidChain();
@@ -68,19 +69,10 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         vm.stopBroadcast();
     }
 
-    function runBindEntryController(Route calldata route, address operatorAddress) external {
-        _requireOperator(route, operatorAddress, ACCOUNT_OWNER);
-        vm.startBroadcast(operatorAddress);
-        _verifyPausedRoute(route);
-        route.isolatedAccount.configureEntryController(address(route.adapter), route.adapterCodeHash);
-        vm.stopBroadcast();
-    }
-
     function runProposeAdmission(Route calldata route, address operatorAddress) external {
         _requireOperator(route, operatorAddress, PROPOSER);
         vm.startBroadcast(operatorAddress);
         _verifyPausedRoute(route);
-        _verifyEntryController(route);
         route.coordinator
             .proposeAdmission(
                 address(route.adapter), address(route.adapter), route.adapterCodeHash, route.adapterCodeHash
@@ -94,27 +86,6 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         _verifyPausedRoute(route);
         route.coordinator.activateAdmission(address(route.adapter));
         if (!route.config.entryPaused()) revert InvalidRoute();
-        vm.stopBroadcast();
-    }
-
-    /// @notice Binds the exit controller and the coordinated spot port. Entry stays paused until both
-    /// are bound: without the spot port every submission reverts, and without the exit controller an
-    /// opened position has no exit path.
-    function runBindExitAndSpot(Route calldata route, address operatorAddress) external {
-        _requireOperator(route, operatorAddress, ACCOUNT_OWNER);
-        vm.startBroadcast(operatorAddress);
-        _verifyPausedRoute(route);
-        _verifyEntryController(route);
-        if (
-            route.exitControllerCodeHash == bytes32(0) || route.spotPortCodeHash == bytes32(0)
-                || address(route.exitController).codehash != route.exitControllerCodeHash
-                || address(route.spotPort).codehash != route.spotPortCodeHash
-                || address(route.exitController.account()) != address(route.isolatedAccount)
-                || address(route.exitController.entryAdapter()) != address(route.adapter)
-                || route.spotPort.verifier() != address(route.isolatedAccount)
-        ) revert InvalidRoute();
-        route.isolatedAccount.configureExitController(address(route.exitController), route.exitControllerCodeHash);
-        route.isolatedAccount.configureSpotPort(route.spotPort, route.spotPortCodeHash);
         vm.stopBroadcast();
     }
 
@@ -155,42 +126,48 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         if (
             address(route.config).codehash != route.configCodeHash
                 || address(route.coordinator).codehash != route.coordinatorCodeHash
-                || address(route.isolatedAccount).codehash != route.isolatedAccountCodeHash
+                || address(route.accountFactory).codehash != route.accountFactoryCodeHash
                 || address(route.adapter).codehash != route.adapterCodeHash || route.configCodeHash == bytes32(0)
-                || route.coordinatorCodeHash == bytes32(0) || route.isolatedAccountCodeHash == bytes32(0)
+                || route.coordinatorCodeHash == bytes32(0) || route.accountFactoryCodeHash == bytes32(0)
                 || route.adapterCodeHash == bytes32(0) || address(route.coordinator.config()) != address(route.config)
                 || route.coordinator.deploymentChainId() != ARBITRUM_SEPOLIA_CHAIN_ID
                 || route.coordinator.deploymentDomainIdHash() != DOMAIN_ID_HASH
-                || address(route.coordinator.bondToken()) != address(route.isolatedAccount.collateralToken())
-                || address(route.adapter.isolatedAccount()) != address(route.isolatedAccount)
+                || address(route.coordinator.bondToken()) != address(route.accountFactory.collateralToken())
+                || address(route.adapter.factory()) != address(route.accountFactory)
                 || keccak256(bytes(domainId)) != DOMAIN_ID_HASH || manifestVersion != route.domainManifestVersion
                 || manifestHash != route.domainManifestHash
         ) revert InvalidRoute();
+        _verifyFactoryBinding(route);
     }
 
-    function _verifyEntryController(Route calldata route) private view {
+    /// @notice The factory binds exactly this adapter, exit controller, spot port, and account code.
+    function _verifyFactoryBinding(Route calldata route) private view {
+        GmxV2IsolatedAccountFactory factory = route.accountFactory;
         if (
-            route.isolatedAccount.entryController() != address(route.adapter)
-                || route.isolatedAccount.entryControllerCodeHash() != route.adapterCodeHash
+            route.exitControllerCodeHash == bytes32(0) || route.spotPortCodeHash == bytes32(0)
+                || route.accountCodeHash == bytes32(0)
+                || address(route.exitController).codehash != route.exitControllerCodeHash
+                || address(route.spotPort).codehash != route.spotPortCodeHash
+                || factory.adapter() != address(route.adapter) || factory.adapterCodeHash() != route.adapterCodeHash
+                || factory.exitController() != address(route.exitController)
+                || factory.exitControllerCodeHash() != route.exitControllerCodeHash
+                || address(factory.spotPort()) != address(route.spotPort)
+                || factory.spotPortCodeHash() != route.spotPortCodeHash
+                || factory.accountCodeHash() != route.accountCodeHash
+                || address(route.exitController.entryAdapter()) != address(route.adapter)
+                || address(route.exitController.factory()) != address(factory)
+                || route.spotPort.verifier() != address(factory)
         ) revert InvalidRoute();
     }
 
     function _verifyEntryReady(Route calldata route) private view {
-        _verifyEntryController(route);
         (address handler, bytes32 adapterCodeHash, bytes32 handlerCodeHash, bool active,) =
             route.coordinator.admissions(address(route.adapter));
         if (
             !active || handler != address(route.adapter) || adapterCodeHash != route.adapterCodeHash
                 || handlerCodeHash != route.adapterCodeHash
-                || route.isolatedAccount.exitController() != address(route.exitController)
-                || route.isolatedAccount.exitControllerCodeHash() != route.exitControllerCodeHash
-                || address(route.exitController).codehash != route.exitControllerCodeHash
-                || address(route.isolatedAccount.spotPort()) != address(route.spotPort)
-                || route.isolatedAccount.spotPortCodeHash() != route.spotPortCodeHash
-                || address(route.spotPort).codehash != route.spotPortCodeHash
-                || route.exitControllerCodeHash == bytes32(0) || route.spotPortCodeHash == bytes32(0)
         ) revert InvalidRoute();
-        route.isolatedAccount.assertDeployment();
+        GmxV2IsolatedAccount(route.accountFactory.implementation()).assertDeployment();
         route.spotPort.assertDeployment();
     }
 
@@ -201,12 +178,6 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
     }
 
     function _requireOperator(Route calldata route, address operatorAddress, uint8 role) private view {
-        if (role == ACCOUNT_OWNER) {
-            if (operatorAddress == address(0) || operatorAddress != route.isolatedAccount.owner()) {
-                revert InvalidOperator();
-            }
-            return;
-        }
         _requireConfigRole(route.config, operatorAddress, role);
     }
 

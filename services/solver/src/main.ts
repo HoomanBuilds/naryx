@@ -21,7 +21,6 @@ import {
   ArbitrumSepoliaExecutor,
   HttpArbitrumSepoliaAttemptProvider,
   SqliteArbitrumSepoliaExecutionJournal,
-  arbitrumSepoliaOwnerSigner,
   createArbitrumSepoliaExecutorServer,
   createViemArbitrumSepoliaWritePort,
   loadArbitrumSepoliaExecutorConfig,
@@ -34,6 +33,8 @@ import {
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
+import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
+import { loadBaseSepoliaSolverRuntime } from './base-sepolia-solver-authorization.js';
 import { explicitBoolean, loadSolverProcessConfig, tcpPort } from './solver-process-config.js';
 
 const ED25519_SPKI_PREFIX_BYTES = 12;
@@ -105,11 +106,19 @@ const hyperliquidQuoteRuntime = loadHyperliquidTestnetQuoteRuntime(process.env, 
 const arbitrumQuoteProviders = loadArbitrumSepoliaQuoteRuntime(process.env, {
   nonceSource: new SqliteAtomicQuoteNonceSource(store, 'eip155:421614'),
 });
-const quoteProviders = composeQuoteProviders(
+// Base Sepolia: disabled unless NARYX_BASE_SEPOLIA_QUOTE_ENABLED=true.
+const baseSolver = await loadBaseSepoliaSolverRuntime(process.env, {
+  nonceSource: new SqliteAtomicQuoteNonceSource(store, 'eip155:84532'),
+  quoteVerificationKey: executionSigner.verificationKey,
+  apiOrigin,
+  reservedPorts: [listenPort],
+});
+await baseSolver?.listen(host);
+const quoteProviders = withBaseSepoliaQuoteProviders(baseSolver?.providers, composeQuoteProviders(
   localRuntime?.providers,
   hyperliquidQuoteRuntime?.providers,
   arbitrumQuoteProviders,
-);
+));
 const clockRefresh = manifestRuntime === undefined
   ? undefined
   : setInterval(() => {
@@ -182,8 +191,9 @@ if (executorEnabled) {
   executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory);
 }
 
-// Arbitrum Sepolia async executor: disabled unless explicitly enabled. Both keys come from external
-// files, the solver and owner are separate wallets, and eth_chainId must be 421614 before any write.
+// Arbitrum Sepolia async executor: disabled unless explicitly enabled. Only the solver key is loaded,
+// from an external file; owners sign reservations in their own wallets. eth_chainId must be 421614
+// before any write.
 const arbitrumExecutorEnabled = explicitBoolean(
   process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ENABLED,
   'NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ENABLED',
@@ -205,11 +215,6 @@ if (arbitrumExecutorEnabled) {
     process.env.NARYX_ARBITRUM_SEPOLIA_SOLVER_ADDRESS ?? '',
     'Arbitrum Sepolia solver key',
   );
-  const ownerAccount = loadArbitrumSepoliaKey(
-    process.env.NARYX_ARBITRUM_SEPOLIA_OWNER_KEY_PATH ?? '',
-    process.env.NARYX_ARBITRUM_SEPOLIA_OWNER_ADDRESS ?? '',
-    'Arbitrum Sepolia owner key',
-  );
   const arbitrumChain = createViemArbitrumSepoliaWritePort(
     process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? '',
     solverAccount,
@@ -222,7 +227,6 @@ if (arbitrumExecutorEnabled) {
     config: loadArbitrumSepoliaExecutorConfig(process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CONFIG ?? ''),
     attempts: new HttpArbitrumSepoliaAttemptProvider(apiOrigin, executionSigner.verificationKey),
     chain: arbitrumChain,
-    owner: arbitrumSepoliaOwnerSigner(ownerAccount),
     journal: arbitrumJournal,
   }));
 }
@@ -233,7 +237,7 @@ function shutdown(): void {
   shuttingDown = true;
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
-    close(quoteServer), close(executorServer), close(arbitrumExecutorServer),
+    close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
   ]).then((results) => {
     executorRuntime?.close();
     arbitrumJournal?.close();

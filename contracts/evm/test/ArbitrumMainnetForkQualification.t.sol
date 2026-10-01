@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
-import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
+import {GmxV2IsolatedAccountFactory} from "../src/GmxV2IsolatedAccountFactory.sol";
 import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
 import {GmxV2, IGmxV2ExchangeRouter, IGmxV2RoleStore} from "../src/interfaces/IGmxV2.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
@@ -13,13 +13,11 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 contract ArbitrumForkAdapterDeployer {
     struct Inputs {
         AsyncBondedPackageCoordinator coordinator;
-        address fundingAuthority;
-        address beneficiary;
         address market;
         bytes32 marketCodeHash;
         IERC20 collateralToken;
         bytes32 collateralCodeHash;
-        GmxV2IsolatedAccount account;
+        GmxV2IsolatedAccountFactory factory;
         GmxV2OrderVerifier verifier;
     }
 
@@ -27,13 +25,12 @@ contract ArbitrumForkAdapterDeployer {
         adapter = new GmxV2ArbitrumAdapter(
             inputs.coordinator,
             address(inputs.coordinator).codehash,
-            inputs.fundingAuthority,
-            inputs.beneficiary,
             inputs.market,
             inputs.marketCodeHash,
             inputs.collateralToken,
             inputs.collateralCodeHash,
-            inputs.account,
+            inputs.factory,
+            address(inputs.factory).codehash,
             inputs.verifier,
             address(inputs.verifier).codehash,
             gmx
@@ -73,11 +70,13 @@ contract ArbitrumMainnetForkQualificationTest is Test {
         assertEq(exchange.roleStore(), gmx.roleStore);
         assertTrue(IGmxV2RoleStore(gmx.roleStore).hasRole(gmx.orderHandler, CONTROLLER_ROLE));
 
-        (GmxV2ArbitrumAdapter adapter, GmxV2IsolatedAccount account) =
+        (GmxV2ArbitrumAdapter adapter, GmxV2IsolatedAccountFactory factory) =
             _deployAdapter(gmx, market, collateralToken, marketCodeHash, collateralCodeHash);
 
-        account.assertDeployment();
-        vm.expectRevert(GmxV2ArbitrumAdapter.UnauthorizedCaller.selector);
+        assertEq(factory.deploymentHash(), keccak256(abi.encode(gmx)));
+        assertEq(address(adapter.factory()), address(factory));
+        // The factory route is unbound on the fork, so every entry fails closed.
+        vm.expectRevert();
         adapter.fundRequest(bytes32(uint256(1)), _emptyRequest());
     }
 
@@ -87,9 +86,7 @@ contract ArbitrumMainnetForkQualificationTest is Test {
         IERC20 collateralToken,
         bytes32 marketCodeHash,
         bytes32 collateralCodeHash
-    ) private returns (GmxV2ArbitrumAdapter adapter, GmxV2IsolatedAccount account) {
-        address fundingAuthority = makeAddr("forkFundingAuthority");
-        address beneficiary = makeAddr("forkBeneficiary");
+    ) private returns (GmxV2ArbitrumAdapter adapter, GmxV2IsolatedAccountFactory factory) {
         ProtocolConfig config = new ProtocolConfig(
             "eip155:42161",
             1,
@@ -103,18 +100,16 @@ contract ArbitrumMainnetForkQualificationTest is Test {
         AsyncBondedPackageCoordinator coordinator =
             new AsyncBondedPackageCoordinator(config, collateralToken, keccak256("gmx-v2-async-bonded"));
         GmxV2OrderVerifier verifier = new GmxV2OrderVerifier();
-        account = new GmxV2IsolatedAccount(beneficiary, fundingAuthority, market, collateralToken, gmx);
+        factory = new GmxV2IsolatedAccountFactory(market, collateralToken, gmx);
         ArbitrumForkAdapterDeployer deployer = new ArbitrumForkAdapterDeployer();
         adapter = deployer.deploy(
             ArbitrumForkAdapterDeployer.Inputs({
                 coordinator: coordinator,
-                fundingAuthority: fundingAuthority,
-                beneficiary: beneficiary,
                 market: market,
                 marketCodeHash: marketCodeHash,
                 collateralToken: collateralToken,
                 collateralCodeHash: collateralCodeHash,
-                account: account,
+                factory: factory,
                 verifier: verifier
             }),
             gmx

@@ -249,18 +249,20 @@ export RPC_URL="$ARBITRUM_SEPOLIA_RPC_URL"
 
 The GMX Arbitrum Sepolia addresses are pinned constants in `DeployArbitrumSepoliaAsyncGmx`. Their code hashes are reviewed operator input: read each with `cast codehash` and compare it with the review before use. Every deployment step fails on a mismatch.
 
-### 1. Deploy the coordinator route
+### 1. Deploy the shared route
 
-`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `fundingAuthority` (funds collateral, spot quote, and execution fees), `beneficiary` (isolated account owner), `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, and the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`.
+One stage deploys everything and binds it into the account factory. There is no per-user account here: any wallet later creates its own account with `GmxV2IsolatedAccountFactory.create(owner)`, an ERC-1167 clone of the reviewed implementation at a CREATE2 address salted by `keccak256(abi.encode(owner))`. One coordinator admission of the shared adapter covers every factory account.
+
+`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The spot quote token must be the collateral token. No reviewed Arbitrum Sepolia Uniswap V3 pool against the GMX collateral token is pinned in this repository; without one, do not deploy.
 
 ```bash
 forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsyncGmx \
-  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,address,address,bytes32,address,bytes32,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)))" \
+  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,bytes32,address,bytes32,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32),(uint256,address,address,address,address,uint8,uint8,uint24,bytes32,bytes32,bytes32,bytes32)))" \
   "$ARBITRUM_DEPLOY_PARAMETERS" \
   --rpc-url "$RPC_URL" --account naryx-arbitrum-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
 
-`.returns` lists `ProtocolConfig`, `AsyncBondedPackageCoordinator`, `GmxV2OrderVerifier`, `GmxV2IsolatedAccount`, `GmxV2ArbitrumAdapter`.
+`.returns` lists `ProtocolConfig`, `AsyncBondedPackageCoordinator`, `GmxV2OrderVerifier`, `GmxV2ExitOrderVerifier`, `GmxV2IsolatedAccountFactory`, `GmxV2ArbitrumAdapter`, `GmxV2ExitController`, `UniswapV3SpotPort` (verified by the factory), and the `GmxV2IsolatedAccount` implementation. The deployer is the factory's one-time configurator; `configure` runs inside the same script and cannot run again. Read the shared account code hash with `cast call "$ACCOUNT_FACTORY" "accountCodeHash()(bytes32)"`.
 
 ### 2. Rotate to the reviewed domain manifest
 
@@ -268,10 +270,10 @@ Compute the reviewed hash with `DOMAIN_ID=eip155:421614`, `CHAIN_REFERENCE=42161
 
 ### 3. Configure
 
-`ConfigureArbitrumSepoliaAsyncGmx.Route`, in order: `config`, `configCodeHash`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `coordinator`, `coordinatorCodeHash`, `isolatedAccount`, `isolatedAccountCodeHash`, `adapter`, `adapterCodeHash`, `exitController`, `exitControllerCodeHash`, `spotPort`, `spotPortCodeHash`. The last four are zero until step 3b deploys those contracts; only the steps from `runBindExitAndSpot` on read them.
+`ConfigureArbitrumSepoliaAsyncGmx.Route`, in order: `config`, `configCodeHash`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `coordinator`, `coordinatorCodeHash`, `accountFactory`, `accountFactoryCodeHash`, `adapter`, `adapterCodeHash`, `exitController`, `exitControllerCodeHash`, `spotPort`, `spotPortCodeHash`, `accountCodeHash` (the factory's `accountCodeHash()`). Every step checks that the factory binds exactly this adapter, exit controller, spot port, and account code.
 
 ```bash
-ARBITRUM_ROUTE_TYPE='(address,bytes32,uint32,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32)'
+ARBITRUM_ROUTE_TYPE='(address,bytes32,uint32,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,bytes32)'
 arbitrum_step() { # function, operator address, keystore name, extra flags
   forge script script/ConfigureArbitrumSepoliaAsyncGmx.s.sol:ConfigureArbitrumSepoliaAsyncGmx \
     --sig "$1($ARBITRUM_ROUTE_TYPE,address)" "$ARBITRUM_ROUTE" "$2" \
@@ -279,28 +281,16 @@ arbitrum_step() { # function, operator address, keystore name, extra flags
 }
 ```
 
-a. `runBindEntryController` as the beneficiary (the isolated account owner).
-
-b. Deploy the exit controller and the coordinated spot port. The exit controller requires the bound entry controller at construction. `ExitAndSpotParameters`, in order: `adapter`, `adapterCodeHash`, `isolatedAccount`, `isolatedAccountCodeHash`, the GMX code hashes, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The quote token must be the collateral token. No reviewed Arbitrum Sepolia Uniswap V3 pool against the GMX collateral token is pinned in this repository; without one, stop here and leave entry paused.
-
-```bash
-forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsyncGmx \
-  --sig "runExitAndSpot((address,bytes32,address,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32),(uint256,address,address,address,address,uint8,uint8,uint24,bytes32,bytes32,bytes32,bytes32)))" \
-  "$ARBITRUM_EXIT_AND_SPOT_PARAMETERS" \
-  --rpc-url "$RPC_URL" --account naryx-arbitrum-deployer --sender "$DEPLOYER" --broadcast --slow
-```
-
-`.returns` lists `GmxV2ExitOrderVerifier`, `GmxV2ExitController`, `UniswapV3SpotPort`. Fill the route's last four fields from it.
-
-c. Remaining steps, in order:
+Steps, in order:
 
 | Step | Operator |
 |---|---|
 | `runProposeAdmission` | proposer |
 | `runActivateAdmission` (after `configDelaySeconds`) | executor |
-| `runBindExitAndSpot` | beneficiary |
-| `runScheduleUnpause` (requires the active admission, both controllers, and the spot port bound exactly as the route names them) | proposer |
+| `runScheduleUnpause` (requires the active admission and the exact factory binding) | proposer |
 | `runActivateEntry` (after `configDelaySeconds`) | executor |
+
+No owner step exists. A trader's own wallet creates its account (`create(owner)` on the factory, permissionless and idempotent), signs each reservation, and funds each request with `fundRequest` on the adapter; the solver only bonds and submits.
 
 Then confirm the final state without a signer:
 
@@ -328,13 +318,13 @@ Base (`schemaVersion` `1`, `activationState` `"ACTIVE"`, `deployment`):
 - `uniswapV3.spotPort`, `uniswapV3.pool`, `uniswapV3.factory`: the same identities as the spot adapter, market, and venue.
 - `conformancePerpetual`: `instrument` and `observer` are `NaryxTestPerpMarket`, `evidenceLabel` `"BASE_SEPOLIA_CONFORMANCE_ONLY"`. The subject ID an owner passes to `depositPerpMargin` is `deployment.perpetual.venue.subjectId`.
 - `seriesBindingInput`: the binding registered in step 4 (route `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, and units per package).
-- `atomicEvidenceClass`: `"PACKAGE_VERIFIER_ATOMIC_V1"`. `finality.manifestHash` equals the domain manifest's `finalityPolicyHash`. `admission` and `executionBounds` are reviewed configuration, not deployment output.
+- `atomicEvidenceClass`: `"PACKAGE_VERIFIER_ATOMIC_V1"`. `finality.manifestHash` equals the domain manifest's `finalityPolicyHash`. `admission` and `executionPolicy` are reviewed configuration, not deployment output.
 
 Arbitrum (`schemaVersion` `1`, `activationState` `"ACTIVE"`, `observationStartBlock`, `deployment`):
 
 - `observationStartBlock`: bigint, the coordinator's deployment block from `.receipts`.
 - `deployment.domainManifest`: the reviewed version `2` manifest.
-- `deployment.protocolConfig`, `coordinator`, `isolatedAccount`, `entryAdapter` (`GmxV2ArbitrumAdapter`), `orderVerifier` (`GmxV2OrderVerifier`), `market`, `collateralToken`: deployed or reviewed identities.
+- `deployment.protocolConfig`, `coordinator`, `accountFactory` (`GmxV2IsolatedAccountFactory`), `accountImplementation` (the factory's `implementation()`), `entryAdapter` (`GmxV2ArbitrumAdapter`), `orderVerifier` (`GmxV2OrderVerifier`), `market`, `collateralToken`: deployed or reviewed identities. An order's settlement account must equal the owner's factory account, which the API and solver derive offline from `accountFactory` and `accountImplementation`; the API checks at startup that the factory binds the adapter and implementation and that `accountCodeHash()` is the clone code hash.
 - `deployment.gmx`: `dataStore`, `eventEmitter`, `exchangeRouter`, `router`, `orderVault`, `orderHandler`, `roleStore` at the pinned addresses with their reviewed code hashes.
 - `deployment.executionClassManifestHash`: bytes of the deploy parameter. `deployment.route.coordinatorEvidenceSchemaHash`: bytes of `cast keccak "NARYX_ASYNC_VENUE_EVIDENCE_V1"`. The series identity key, binding version, and binding hash are the ones solvers put in reserved terms.
 

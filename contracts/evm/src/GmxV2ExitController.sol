@@ -6,6 +6,7 @@ import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/Signat
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {GmxV2ArbitrumAdapter} from "./GmxV2ArbitrumAdapter.sol";
 import {GmxV2IsolatedAccount} from "./GmxV2IsolatedAccount.sol";
+import {GmxV2IsolatedAccountFactory} from "./GmxV2IsolatedAccountFactory.sol";
 import {
     GmxV2,
     IGmxV2DataStore,
@@ -14,6 +15,9 @@ import {
     IGmxV2RoleStore
 } from "./interfaces/IGmxV2.sol";
 
+/// @notice The shared full-close controller for every account of one `GmxV2IsolatedAccountFactory`. Each
+/// exit is authorized by the EIP-712 signature of the account's factory-recorded owner, and nonces and the
+/// single active exit are tracked per account.
 contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyGuard {
     uint8 public constant TERMINAL_COMPLETE = 1;
     bytes32 public constant EXIT_AUTHORIZATION_TYPEHASH = keccak256(
@@ -117,10 +121,10 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     );
 
     GmxV2ArbitrumAdapter public immutable entryAdapter;
-    GmxV2IsolatedAccount public immutable account;
+    GmxV2IsolatedAccountFactory public immutable factory;
     IGmxV2ExitOrderVerifier public immutable orderVerifier;
     bytes32 private immutable entryAdapterCodeHash;
-    bytes32 private immutable accountCodeHash;
+    bytes32 private immutable factoryCodeHash;
     bytes32 private immutable orderVerifierCodeHash;
     bytes32 private immutable deploymentHash;
     address private immutable dataStore;
@@ -130,37 +134,35 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     bytes32 private immutable orderHandlerCodeHash;
     bytes32 private immutable roleStoreCodeHash;
 
-    uint256 public nextNonce;
-    bytes32 public activeExitRequestKey;
+    mapping(address account => uint256 nonce) public nextNonce;
+    mapping(address account => bytes32 requestKey) public activeExitRequestKey;
     mapping(bytes32 requestKey => ExitRecord record) private _exits;
     mapping(bytes32 requestKey => FinalPackageReceipt receipt) private _finalReceipts;
 
     constructor(
         GmxV2ArbitrumAdapter entryAdapter_,
         bytes32 entryAdapterCodeHash_,
-        GmxV2IsolatedAccount account_,
-        bytes32 accountCodeHash_,
+        GmxV2IsolatedAccountFactory factory_,
+        bytes32 factoryCodeHash_,
         IGmxV2ExitOrderVerifier orderVerifier_,
         bytes32 orderVerifierCodeHash_,
         GmxV2.Deployment memory deployment
     ) EIP712("Naryx GMX V2 Exit", "1") {
         if (
-            address(entryAdapter_) == address(0) || address(account_) == address(0)
+            address(entryAdapter_) == address(0) || address(factory_) == address(0)
                 || address(orderVerifier_) == address(0) || entryAdapterCodeHash_ == bytes32(0)
-                || accountCodeHash_ == bytes32(0) || orderVerifierCodeHash_ == bytes32(0)
+                || factoryCodeHash_ == bytes32(0) || orderVerifierCodeHash_ == bytes32(0)
                 || address(entryAdapter_).codehash != entryAdapterCodeHash_
-                || address(account_).codehash != accountCodeHash_
+                || address(factory_).codehash != factoryCodeHash_
                 || address(orderVerifier_).codehash != orderVerifierCodeHash_
-                || address(entryAdapter_.isolatedAccount()) != address(account_)
-                || account_.entryController() != address(entryAdapter_)
-                || account_.deploymentHash() != keccak256(abi.encode(deployment))
+                || address(entryAdapter_.factory()) != address(factory_)
+                || factory_.deploymentHash() != keccak256(abi.encode(deployment))
         ) revert InvalidConfiguration();
-        account_.assertDeployment();
         entryAdapter = entryAdapter_;
-        account = account_;
+        factory = factory_;
         orderVerifier = orderVerifier_;
         entryAdapterCodeHash = entryAdapterCodeHash_;
-        accountCodeHash = accountCodeHash_;
+        factoryCodeHash = factoryCodeHash_;
         orderVerifierCodeHash = orderVerifierCodeHash_;
         deploymentHash = keccak256(abi.encode(deployment));
         dataStore = deployment.dataStore;
@@ -199,19 +201,21 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         returns (bytes32 requestKey)
     {
         _assertDeployment();
+        GmxV2IsolatedAccount account = _account(authorization.account);
         if (
-            activeExitRequestKey != bytes32(0) || msg.value != authorization.executionFeeWei
+            activeExitRequestKey[address(account)] != bytes32(0) || msg.value != authorization.executionFeeWei
                 || msg.sender != authorization.feePayer
         ) {
             revert FundingMismatch();
         }
-        _validateAuthorization(authorization);
+        address owner = factory.ownerOf(address(account));
+        _validateAuthorization(authorization, account, owner);
         bytes32 authorizationHash = _hashTypedDataV4(_authorizationHash(authorization));
-        if (!SignatureChecker.isValidSignatureNow(account.owner(), authorizationHash, ownerSignature)) {
+        if (!SignatureChecker.isValidSignatureNow(owner, authorizationHash, ownerSignature)) {
             revert InvalidSignature();
         }
         GmxV2.ExitRegistration memory registration = _registration(authorization, authorizationHash);
-        nextNonce++;
+        nextNonce[address(account)]++;
         requestKey = account.createFullClose{value: msg.value}(registration);
         if (
             requestKey == bytes32(0) || _exits[requestKey].status != Status.NONE
@@ -226,7 +230,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
             reconciling: false,
             released: false
         });
-        activeExitRequestKey = requestKey;
+        activeExitRequestKey[address(account)] = requestKey;
         emit ExitSubmitted(authorization.packageId, requestKey, authorizationHash);
     }
 
@@ -239,7 +243,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         if (stored.status == Status.CANCELLED || stored.status == Status.RECOVERED) return true;
         stored.reconciling = true;
         if (IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)) {
-            try account.cancelExit(requestKey) {} catch {}
+            try _account(stored.registration.account).cancelExit(requestKey) {} catch {}
         }
         if (stored.status == Status.EXECUTED) return _release(stored, requestKey);
         if (stored.status == Status.CANCELLED || stored.status == Status.RECOVERED) return true;
@@ -258,6 +262,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     function finalizeExecutedExit(bytes32 requestKey) external nonReentrant returns (bool released) {
         _assertDeployment();
         ExitRecord storage stored = _exit(requestKey);
+        GmxV2IsolatedAccount account = _account(stored.registration.account);
         if (stored.status != Status.EXECUTED || account.positionSize(false) != 0 || account.positionSize(true) != 0) {
             revert InvalidOutcome();
         }
@@ -273,6 +278,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         ExitRecord storage stored = _exit(requestKey);
         orderVerifier.verify(address(this), stored.registration, orderData);
         bytes32 callbackDataHash = keccak256(abi.encode(orderData, eventData));
+        GmxV2IsolatedAccount account = _account(stored.registration.account);
         if (account.positionSize(false) != 0 || account.positionSize(true) != 0) {
             _record(stored, requestKey, Status.CONFLICT, callbackDataHash);
             return;
@@ -290,6 +296,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         ExitRecord storage stored = _exit(requestKey);
         orderVerifier.verify(address(this), stored.registration, orderData);
         bytes32 callbackDataHash = keccak256(abi.encode(orderData, eventData));
+        GmxV2IsolatedAccount account = _account(stored.registration.account);
         uint256 shortSize = account.positionSize(false);
         uint256 longSize = account.positionSize(true);
         if (shortSize == 0 && longSize == 0) {
@@ -305,7 +312,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         }
         Status status = stored.reconciling ? Status.RECOVERED : Status.CANCELLED;
         _record(stored, requestKey, status, callbackDataHash);
-        if (activeExitRequestKey == requestKey) activeExitRequestKey = bytes32(0);
+        _clearActiveExit(stored, requestKey);
     }
 
     function afterOrderFrozen(
@@ -317,6 +324,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         ExitRecord storage stored = _exit(requestKey);
         orderVerifier.verify(address(this), stored.registration, orderData);
         bytes32 callbackDataHash = keccak256(abi.encode(orderData, eventData));
+        GmxV2IsolatedAccount account = _account(stored.registration.account);
         uint256 shortSize = account.positionSize(false);
         uint256 longSize = account.positionSize(true);
         if (shortSize == 0 && longSize == 0) {
@@ -330,17 +338,23 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         _record(stored, requestKey, status, callbackDataHash);
     }
 
-    function _validateAuthorization(ExitAuthorization calldata authorization) private view {
+    function _validateAuthorization(
+        ExitAuthorization calldata authorization,
+        GmxV2IsolatedAccount account,
+        address owner
+    ) private view {
         uint256 cancellationDelay = IGmxV2DataStore(dataStore).getUint(REQUEST_EXPIRATION_TIME);
         GmxV2.SpotEntryRegistration memory spotRegistration = account.activeSpotRegistration();
         if (
-            authorization.packageId != entryAdapter.activePackageId()
-                || authorization.entryRequestKey != entryAdapter.activeRequestKey() || !account.hasActiveSpotInventory()
-                || authorization.entryRequestKey != account.activeSpotRequestKey()
+            owner == address(0) || account.owner() != owner
+                || authorization.packageId != entryAdapter.activePackageOf(address(account))
+                || authorization.entryRequestKey != entryAdapter.activeRequestKeyOf(address(account))
+                || entryAdapter.requestAccount(authorization.entryRequestKey) != address(account)
+                || !account.hasActiveSpotInventory() || authorization.entryRequestKey != account.activeSpotRequestKey()
                 || authorization.spotRegistrationHash != keccak256(abi.encode(spotRegistration))
                 || authorization.packageId != spotRegistration.packageId || authorization.account != address(account)
-                || authorization.owner != account.owner() || authorization.receiver != account.owner()
-                || authorization.market != account.market() || authorization.spotProceedsRecipient != account.owner()
+                || authorization.owner != owner || authorization.receiver != owner
+                || authorization.market != account.market() || authorization.spotProceedsRecipient != owner
                 || authorization.feePayer == address(0) || authorization.executionFeeRefundRecipient == address(0)
                 || authorization.collateralToken != address(account.collateralToken()) || authorization.isLong
                 || authorization.fullCloseSizeUsd == 0 || authorization.fullCloseSizeUsd != account.positionSize(false)
@@ -352,7 +366,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
                 || authorization.exitFillCommitment == spotRegistration.rollbackFillCommitment
                 || account.positionSize(true) != 0 || authorization.acceptablePrice == 0
                 || authorization.minOutputAmount == 0 || authorization.executionFeeWei == 0
-                || authorization.callbackGasLimit == 0 || authorization.nonce != nextNonce
+                || authorization.callbackGasLimit == 0 || authorization.nonce != nextNonce[address(account)]
                 || block.timestamp >= authorization.authorizationExpiry
                 || authorization.authorizationExpiry >= authorization.cancelAfter
                 || cancellationDelay > type(uint64).max - block.timestamp
@@ -442,6 +456,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     function _reconcile(ExitRecord storage stored, bytes32 requestKey) private returns (bool) {
         if (stored.status == Status.EXECUTED) return _release(stored, requestKey);
         if (stored.status == Status.CANCELLED || stored.status == Status.RECOVERED) return true;
+        GmxV2IsolatedAccount account = _account(stored.registration.account);
         uint256 shortSize = account.positionSize(false);
         uint256 longSize = account.positionSize(true);
         if (shortSize == 0 && longSize == 0) {
@@ -454,7 +469,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         }
         if (IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)) return false;
         _record(stored, requestKey, Status.RECOVERED, _reconciliationHash(requestKey, shortSize, longSize));
-        if (activeExitRequestKey == requestKey) activeExitRequestKey = bytes32(0);
+        _clearActiveExit(stored, requestKey);
         return true;
     }
 
@@ -462,7 +477,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         if (stored.released) return true;
         FinalPackageReceipt storage receipt = _finalReceipts[requestKey];
         if (receipt.commitment == bytes32(0)) {
-            try account.completeSuccessfulExit(stored.registration, requestKey) returns (
+            try _account(stored.registration.account).completeSuccessfulExit(stored.registration, requestKey) returns (
                 GmxV2.SpotExitResult memory spotResult
             ) {
                 _storeFinalReceipt(stored, requestKey, spotResult);
@@ -472,7 +487,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         }
         try entryAdapter.finalizeExitedPosition(stored.registration.packageId, stored.registration.entryRequestKey) {
             stored.released = true;
-            if (activeExitRequestKey == requestKey) activeExitRequestKey = bytes32(0);
+            _clearActiveExit(stored, requestKey);
             emit IsolatedPositionReleased(stored.registration.packageId, requestKey);
             return true;
         } catch {
@@ -560,7 +575,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
                 FINAL_RECEIPT_DOMAIN,
                 block.chainid,
                 address(this),
-                address(account),
+                stored.registration.account,
                 receiptIdentityHash,
                 outcomesHash,
                 economicsHash,
@@ -580,8 +595,8 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
                 stored.registration.authorizationHash,
                 status,
                 callbackDataHash,
-                account.positionSize(false),
-                account.positionSize(true)
+                GmxV2IsolatedAccount(stored.registration.account).positionSize(false),
+                GmxV2IsolatedAccount(stored.registration.account).positionSize(true)
             )
         );
         if (stored.status == status && stored.evidenceHash == evidenceHash) return;
@@ -620,14 +635,31 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
 
     function _assertDeployment() private view {
         if (
-            address(entryAdapter).codehash != entryAdapterCodeHash || address(account).codehash != accountCodeHash
+            address(entryAdapter).codehash != entryAdapterCodeHash || address(factory).codehash != factoryCodeHash
                 || address(orderVerifier).codehash != orderVerifierCodeHash
-                || account.deploymentHash() != deploymentHash || dataStore.codehash != dataStoreCodeHash
+                || factory.deploymentHash() != deploymentHash || dataStore.codehash != dataStoreCodeHash
                 || orderHandler.codehash != orderHandlerCodeHash || roleStore.codehash != roleStoreCodeHash
-                || account.exitController() != address(this)
-                || account.exitControllerCodeHash() != address(this).codehash
+                || factory.exitController() != address(this)
+                || factory.exitControllerCodeHash() != address(this).codehash
         ) revert DeploymentChanged();
-        account.assertDeployment();
+    }
+
+    /// @notice A live factory account bound to this controller and the pinned GMX deployment.
+    function _account(address account) private view returns (GmxV2IsolatedAccount) {
+        if (!factory.isAccount(account)) revert InvalidAuthorization();
+        GmxV2IsolatedAccount isolated = GmxV2IsolatedAccount(account);
+        if (
+            isolated.deploymentHash() != deploymentHash || isolated.exitController() != address(this)
+                || isolated.exitControllerCodeHash() != address(this).codehash
+        ) revert DeploymentChanged();
+        isolated.assertDeployment();
+        return isolated;
+    }
+
+    function _clearActiveExit(ExitRecord storage stored, bytes32 requestKey) private {
+        if (activeExitRequestKey[stored.registration.account] == requestKey) {
+            activeExitRequestKey[stored.registration.account] = bytes32(0);
+        }
     }
 
     function _reconciliationHash(bytes32 requestKey, uint256 shortSize, uint256 longSize)

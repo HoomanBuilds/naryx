@@ -27,10 +27,12 @@ import {
   createPublicClient,
   createWalletClient,
   encodeAbiParameters,
+  encodeFunctionData,
   hashTypedData,
   http,
   keccak256,
   parseAbi,
+  recoverTypedDataAddress,
   stringToHex,
   type Address,
   type Hex,
@@ -42,6 +44,8 @@ import {
   ARBITRUM_SEPOLIA_CHAIN_ID,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   GMX_DATA_STORE_KEYS,
+  arbitrumSepoliaAccountCodeHash,
+  arbitrumSepoliaAccountOf,
   ceilDiv,
   createViemArbitrumSepoliaReadPort,
   gmxIncreaseExecutionFeeWei,
@@ -55,6 +59,8 @@ import {
 } from './arbitrum-sepolia-gmx.js';
 
 export const SOLVER_ARBITRUM_SEPOLIA_EXECUTE_PATH = '/internal/solver/arbitrum-sepolia/execute';
+export const SOLVER_ARBITRUM_SEPOLIA_PREPARE_PATH = '/internal/solver/arbitrum-sepolia/prepare';
+export const SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_PATH = '/internal/solver/arbitrum-sepolia/authorize';
 export const API_ARBITRUM_SEPOLIA_ATTEMPT_PATH = '/internal/solver/attempts/';
 export const ARBITRUM_SEPOLIA_EXECUTOR_CONFIG_VERSION = 1;
 
@@ -65,7 +71,8 @@ const PRIVATE_KEY = /^0x[0-9a-f]{64}$/;
 const ZERO_HASH = `0x${'0'.repeat(64)}` as Hex;
 const BPS_SCALE = 10_000n;
 const GMX_USD_DECIMALS = 30;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const MAX_BODY_BYTES = 1_024;
 const MAX_RESPONSE_BYTES = 262_144;
 const MAX_KEY_FILE_BYTES = 4_096;
@@ -101,16 +108,23 @@ export const ARBITRUM_ASYNC_COORDINATOR_ABI = parseAbi([
 ]);
 export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
   ...STRUCTS,
-  'function funding(bytes32 packageId) view returns (bytes32 requestPayloadHash, uint256 collateralAtoms, uint256 spotQuoteAtoms, uint256 executionFeeWei, uint64 submissionDeadline, bool consumed)',
+  'function funding(bytes32 packageId, address owner) view returns (address account, bytes32 requestPayloadHash, uint256 collateralAtoms, uint256 spotQuoteAtoms, uint256 executionFeeWei, uint64 submissionDeadline, bool consumed)',
   'function requestEvidence(bytes32 requestKey) view returns (uint8 status, bytes32 evidenceHash, uint256 positionSizeBefore, uint256 positionSizeAfter, uint64 revision)',
   'function fundRequest(bytes32 packageId, VenueRequest venueRequest) payable',
   'function relayEvidence(bytes32 requestKey, uint64 expectedVersion)',
 ]);
 export const ARBITRUM_ISOLATED_ACCOUNT_ABI = parseAbi([
   'function owner() view returns (address)',
-  'function fundingAuthority() view returns (address)',
   'function spotPort() view returns (address)',
   'function spotBaseToken() view returns (address)',
+]);
+export const ARBITRUM_ACCOUNT_FACTORY_ABI = parseAbi([
+  'function accountOf(address owner) view returns (address)',
+  'function ownerOf(address account) view returns (address)',
+  'function implementation() view returns (address)',
+  'function accountCodeHash() view returns (bytes32)',
+  'function adapter() view returns (address)',
+  'function create(address owner) returns (address)',
 ]);
 export const ERC20_ABI = parseAbi([
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -129,7 +143,10 @@ export interface ArbitrumSepoliaExecutorConfig {
   readonly domain: DomainRef;
   readonly coordinator: ArbitrumSepoliaContractIdentity;
   readonly adapter: ArbitrumSepoliaContractIdentity;
-  readonly isolatedAccount: ArbitrumSepoliaContractIdentity;
+  /** The shared GmxV2IsolatedAccountFactory; every owner settles through `accountOf(owner)`. */
+  readonly accountFactory: ArbitrumSepoliaContractIdentity;
+  /** The factory's account implementation, which every account clones. */
+  readonly accountImplementation: ArbitrumSepoliaContractIdentity;
   readonly collateralToken: ArbitrumSepoliaContractIdentity;
   readonly spotPort: ArbitrumSepoliaContractIdentity;
   readonly spotBaseToken: ArbitrumSepoliaContractIdentity;
@@ -180,18 +197,15 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
   receipt(hash: Hex, waitMs: number): Promise<'success' | 'reverted' | null>;
 }
 
-export interface ArbitrumSepoliaOwnerSigner {
-  readonly address: Address;
-  signTypedData(typedData: Parameters<typeof hashTypedData>[0]): Promise<Hex>;
-}
-
 export type ArbitrumSepoliaExecutionStep =
-  | 'APPROVE_ADAPTER' | 'FUND' | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE';
+  | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE';
 
 export interface ArbitrumSepoliaExecutionResult {
   readonly version: 1;
   readonly attemptId: string;
-  readonly status: 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'RECOVERY_REQUIRED' | 'FAILED';
+  readonly status:
+    | 'AWAITING_OWNER_SIGNATURE' | 'AWAITING_OWNER_FUNDING'
+    | 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'RECOVERY_REQUIRED' | 'FAILED';
   readonly packageId: Hex;
   readonly coordinatorState: string;
   readonly requestKey: Hex | null;
@@ -299,13 +313,6 @@ export function createViemArbitrumSepoliaWritePort(rpcUrl: string, account: Loca
   });
 }
 
-export function arbitrumSepoliaOwnerSigner(account: LocalAccount): ArbitrumSepoliaOwnerSigner {
-  return Object.freeze({
-    address: lower(account.address),
-    signTypedData: (typedData: Parameters<typeof hashTypedData>[0]) => account.signTypedData(typedData as never),
-  });
-}
-
 type Terms = Readonly<{
   domain: Readonly<{ domainIdHash: Hex; manifestVersion: number; manifestHash: Hex }>;
   owner: Address; solver: Address; adapter: Address; handler: Address;
@@ -332,12 +339,60 @@ type VenueRequest = Readonly<{
   submissionDeadline: bigint; venueDeadline: bigint; recoveryDeadline: bigint;
 }>;
 
+/** The unsigned, journaled plan. The owner's reservation signature is journaled separately. */
 export interface ArbitrumSepoliaExecutionPlan {
   readonly attemptId: string;
   readonly packageId: Hex;
+  readonly account: Address;
   readonly terms: Terms;
   readonly request: VenueRequest;
-  readonly ownerSignature: Hex;
+}
+
+/**
+ * What the owner's browser wallet needs: the EIP-712 reservation to sign, and the two wallet
+ * transactions that fund the request (collateral approval, then `fundRequest` with the GMX fee).
+ * Every integer is a decimal string.
+ */
+export interface ArbitrumSepoliaOwnerAuthorizationRequest {
+  readonly version: 1;
+  readonly attemptId: string;
+  readonly packageId: Hex;
+  readonly chainId: number;
+  readonly owner: Address;
+  readonly account: Address;
+  readonly accountFactory: Address;
+  readonly coordinator: Address;
+  readonly adapter: Address;
+  readonly typedData: Readonly<{
+    domain: Readonly<{ name: string; version: string; chainId: number; verifyingContract: Address }>;
+    types: Readonly<{ ReserveAsyncPackage: readonly Readonly<{ name: 'termsHash'; type: 'bytes32' }>[] }>;
+    primaryType: 'ReserveAsyncPackage';
+    message: Readonly<{ termsHash: Hex }>;
+  }>;
+  readonly digest: Hex;
+  readonly signed: boolean;
+  readonly funding: Readonly<{
+    token: Address;
+    spender: Address;
+    approveAtoms: string;
+    collateralAtoms: string;
+    spotQuoteAtoms: string;
+    executionFeeWei: string;
+    fundRequest: Readonly<{ to: Address; data: Hex; value: string }>;
+    reclaimAfterUnixSeconds: string;
+  }>;
+  readonly summary: Readonly<{
+    nonce: string;
+    sizeDeltaUsd: string;
+    acceptablePrice: string;
+    spotBaseAtoms: string;
+    rollbackMinQuoteAtoms: string;
+    bondAtoms: string;
+    solver: Address;
+    submissionDeadline: string;
+    venueDeadline: string;
+    recoveryDeadline: string;
+  }>;
 }
 
 function tupleType(name: 'Terms' | 'VenueRequest') {
@@ -393,7 +448,7 @@ function requirePositive(value: bigint, cap: bigint, name: string): bigint {
 
 function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
   const identities = [
-    config.coordinator, config.adapter, config.isolatedAccount, config.collateralToken,
+    config.coordinator, config.adapter, config.accountFactory, config.accountImplementation, config.collateralToken,
     config.spotPort, config.spotBaseToken, config.gmxDataStore,
   ];
   if (config.domain?.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
@@ -436,6 +491,7 @@ export class SqliteArbitrumSepoliaExecutionJournal {
         attempt_id TEXT PRIMARY KEY,
         package_id TEXT NOT NULL UNIQUE,
         plan_json TEXT NOT NULL,
+        owner_signature TEXT,
         failed_reason TEXT
       ) STRICT;
       CREATE TABLE IF NOT EXISTS arbitrum_execution_transactions (
@@ -471,6 +527,22 @@ export class SqliteArbitrumSepoliaExecutionJournal {
       fail('JOURNAL_CONFLICT', 'a different plan is already journaled for the attempt');
     }
     return stored;
+  }
+
+  ownerSignature(attemptId: string): Hex | undefined {
+    const row = this.#db.prepare('SELECT owner_signature FROM arbitrum_execution_plans WHERE attempt_id = ?')
+      .get(attemptId) as { owner_signature: string | null } | undefined;
+    return (row?.owner_signature ?? undefined) as Hex | undefined;
+  }
+
+  /** Records the owner's signature once; a different signature for the same plan is refused. */
+  saveOwnerSignature(attemptId: string, signature: Hex): void {
+    this.#db.prepare(`
+      UPDATE arbitrum_execution_plans SET owner_signature = ? WHERE attempt_id = ? AND owner_signature IS NULL
+    `).run(signature, attemptId);
+    if (this.ownerSignature(attemptId) !== signature) {
+      fail('JOURNAL_CONFLICT', 'a different owner signature is already journaled for the attempt');
+    }
   }
 
   failed(attemptId: string): string | undefined {
@@ -517,7 +589,6 @@ export interface ArbitrumSepoliaExecutorOptions {
   readonly config: ArbitrumSepoliaExecutorConfig;
   readonly attempts: ArbitrumSepoliaAttemptProvider;
   readonly chain: ArbitrumSepoliaWritePort;
-  readonly owner: ArbitrumSepoliaOwnerSigner;
   readonly journal: SqliteArbitrumSepoliaExecutionJournal;
 }
 
@@ -530,20 +601,111 @@ export class ArbitrumSepoliaExecutor {
 
   constructor(options: ArbitrumSepoliaExecutorOptions) {
     validateConfig(options.config);
-    if (!ADDRESS.test(options.chain.account) || !ADDRESS.test(options.owner.address)) {
-      throw new Error('Arbitrum Sepolia solver and owner accounts must be lowercase addresses');
-    }
-    if (options.chain.account === options.owner.address) {
-      throw new Error('Arbitrum Sepolia solver and owner accounts must be separate wallets');
+    if (!ADDRESS.test(options.chain.account)) {
+      throw new Error('Arbitrum Sepolia solver account must be a lowercase address');
     }
     this.#options = options;
   }
 
   advance(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
+    return this.#enqueue(attemptId, () => this.#advance(attemptId));
+  }
+
+  /** Builds and journals the unsigned plan, then returns what the owner's wallet must sign and send. */
+  prepare(attemptId: string): Promise<ArbitrumSepoliaOwnerAuthorizationRequest> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      if (this.#options.journal.failed(attemptId) !== undefined) fail('ATTEMPT_FAILED', 'attempt already failed closed');
+      return this.#authorizationRequest(await this.#journaledPlan(attemptId));
+    });
+  }
+
+  /**
+   * Journals the owner's EIP-712 reservation signature after recovering it to the plan owner. No
+   * transaction is sent here; the readiness-gated handoff later calls `advance`.
+   */
+  authorize(attemptId: string, ownerSignature: string): Promise<ArbitrumSepoliaOwnerAuthorizationRequest> {
+    return this.#enqueue(attemptId, async () => {
+      if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
+      }
+      const { journal } = this.#options;
+      const plan = journal.plan(attemptId);
+      if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared owner authorization');
+      if (journal.failed(attemptId) !== undefined) fail('ATTEMPT_FAILED', 'attempt already failed closed');
+      let signer: Address;
+      try {
+        signer = lower(await recoverTypedDataAddress({
+          ...arbitrumAsyncReserveTypedData(plan.terms, this.#coordinator()),
+          signature: ownerSignature as Hex,
+        } as never));
+      } catch {
+        fail('INVALID_SIGNATURE', 'owner signature is malformed');
+      }
+      if (signer !== lower(plan.terms.owner)) fail('INVALID_SIGNATURE', 'signature was not made by the package owner');
+      journal.saveOwnerSignature(attemptId, ownerSignature as Hex);
+      return this.#authorizationRequest(plan);
+    });
+  }
+
+  #enqueue<T>(attemptId: string, run: () => Promise<T>): Promise<T> {
     if (!ATTEMPT_ID.test(attemptId)) return Promise.reject(new ArbitrumSepoliaExecutorError('INVALID_ATTEMPT', 'attempt ID is invalid'));
-    const next = this.#queue.then(() => this.#advance(attemptId));
+    const next = this.#queue.then(run);
     this.#queue = next.catch(() => undefined);
     return next;
+  }
+
+  async #journaledPlan(attemptId: string): Promise<ArbitrumSepoliaExecutionPlan> {
+    const { journal } = this.#options;
+    return journal.plan(attemptId) ?? journal.savePlan(await this.#plan(attemptId));
+  }
+
+  #authorizationRequest(plan: ArbitrumSepoliaExecutionPlan): ArbitrumSepoliaOwnerAuthorizationRequest {
+    const coordinator = this.#coordinator();
+    const typedData = arbitrumAsyncReserveTypedData(plan.terms, coordinator);
+    const { request, terms } = plan;
+    return Object.freeze({
+      version: 1,
+      attemptId: plan.attemptId,
+      packageId: plan.packageId,
+      chainId: Number(ARBITRUM_SEPOLIA_CHAIN_ID),
+      owner: lower(terms.owner),
+      account: plan.account,
+      accountFactory: lower(this.#options.config.accountFactory.address),
+      coordinator,
+      adapter: lower(terms.adapter),
+      typedData,
+      digest: hashTypedData(typedData as never),
+      signed: this.#options.journal.ownerSignature(plan.attemptId) !== undefined,
+      funding: Object.freeze({
+        token: lower(this.#options.config.collateralToken.address),
+        spender: lower(terms.adapter),
+        approveAtoms: (request.collateralAtoms + request.spot.maxQuoteAtoms).toString(),
+        collateralAtoms: request.collateralAtoms.toString(),
+        spotQuoteAtoms: request.spot.maxQuoteAtoms.toString(),
+        executionFeeWei: request.executionFeeWei.toString(),
+        fundRequest: Object.freeze({
+          to: lower(terms.adapter),
+          data: encodeFunctionData({
+            abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'fundRequest', args: [plan.packageId, request as never],
+          }),
+          value: request.executionFeeWei.toString(),
+        }),
+        reclaimAfterUnixSeconds: request.submissionDeadline.toString(),
+      }),
+      summary: Object.freeze({
+        nonce: terms.nonce.toString(),
+        sizeDeltaUsd: (-request.sizeDelta).toString(),
+        acceptablePrice: request.acceptablePrice.toString(),
+        spotBaseAtoms: request.spot.baseAtoms.toString(),
+        rollbackMinQuoteAtoms: request.spot.rollbackMinQuoteAtoms.toString(),
+        bondAtoms: terms.bondAtoms.toString(),
+        solver: lower(terms.solver),
+        submissionDeadline: request.submissionDeadline.toString(),
+        venueDeadline: request.venueDeadline.toString(),
+        recoveryDeadline: request.recoveryDeadline.toString(),
+      }),
+    });
   }
 
   async #advance(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
@@ -551,25 +713,29 @@ export class ArbitrumSepoliaExecutor {
     await this.#requireChain();
     const failure = journal.failed(attemptId);
     if (failure !== undefined) return this.#result(attemptId, journal.plan(attemptId)!, 'FAILED', undefined);
-    const plan = journal.plan(attemptId) ?? journal.savePlan(await this.#plan(attemptId));
+    const plan = await this.#journaledPlan(attemptId);
     try {
-      await this.#ensureAllowance(plan, 'APPROVE_ADAPTER', plan.terms.adapter,
-        plan.request.collateralAtoms + plan.request.spot.maxQuoteAtoms);
-      const funded = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'funding', [plan.packageId]) as readonly unknown[];
-      if (hashValue(funded[0], 'funding request hash') !== plan.terms.requestPayloadHash) {
-        if (funded[0] !== ZERO_HASH) fail('CHAIN_MISMATCH', 'adapter funding belongs to another request');
-        await this.#send(plan, 'FUND', {
-          address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'fundRequest',
-          args: [plan.packageId, plan.request], value: plan.request.executionFeeWei,
-        });
-      }
       let state = await this.#state(plan);
       if (state.state === STATE.NONE) {
+        // The service holds no owner key: nothing is reserved until the owner has signed the
+        // reservation and funded the request from its own wallet.
+        const ownerSignature = journal.ownerSignature(attemptId);
+        if (ownerSignature === undefined) return this.#result(attemptId, plan, 'AWAITING_OWNER_SIGNATURE', state);
+        if (await chain.latestBlockTimestamp() >= plan.terms.submissionDeadline) {
+          journal.markFailed(attemptId, 'submission deadline passed before the owner signed and funded');
+          return this.#result(attemptId, plan, 'FAILED', state);
+        }
+        const funded = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'funding', [plan.packageId, plan.terms.owner]) as readonly unknown[];
+        const fundedHash = hashValue(funded[1], 'funding request hash');
+        if (fundedHash === ZERO_HASH) return this.#result(attemptId, plan, 'AWAITING_OWNER_FUNDING', state);
+        if (fundedHash !== plan.terms.requestPayloadHash || !sameAddress(funded[0], plan.account) || funded[6] !== false) {
+          fail('CHAIN_MISMATCH', 'owner funding belongs to another request or account');
+        }
         await this.#ensureAllowance(plan, 'APPROVE_COORDINATOR', this.#coordinator(),
           plan.terms.bondAtoms + plan.terms.recoveryReserveAtoms);
         await this.#send(plan, 'RESERVE', {
           address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'reserve',
-          args: [plan.terms, plan.ownerSignature],
+          args: [plan.terms, ownerSignature],
         });
         state = await this.#state(plan);
       }
@@ -692,7 +858,7 @@ export class ArbitrumSepoliaExecutor {
   }
 
   async #plan(attemptId: string): Promise<ArbitrumSepoliaExecutionPlan> {
-    const { config, chain, owner } = this.#options;
+    const { config, chain } = this.#options;
     const attempt = await this.#options.attempts.resolve(attemptId);
     if (attempt === undefined || attempt.attemptId !== attemptId) fail('ATTEMPT_NOT_FOUND', 'selected attempt was not found');
     const { order, route, quote } = attempt;
@@ -707,25 +873,42 @@ export class ArbitrumSepoliaExecutor {
     const solver = chain.account;
     const coordinator = this.#coordinator();
     const adapter = lower(config.adapter.address);
-    const account = lower(config.isolatedAccount.address);
-    if (ownerAddress !== owner.address || lower(route.settlementAccount) !== account
-      || lower(order.settlementAccount) !== account) {
-      fail('ACCOUNT_MISMATCH', 'only the configured isolated account owner can be executed');
+    const factory = lower(config.accountFactory.address);
+    const implementation = lower(config.accountImplementation.address);
+    if (!ADDRESS.test(ownerAddress) || ownerAddress === solver) {
+      fail('ACCOUNT_MISMATCH', 'package owner must be a wallet other than the solver');
+    }
+    // Any wallet may trade, but only through its own factory account.
+    const account = arbitrumSepoliaAccountOf(factory, implementation, ownerAddress);
+    if (lower(route.settlementAccount) !== account || lower(order.settlementAccount) !== account) {
+      fail('ACCOUNT_MISMATCH', 'settlement account is not the owner factory account');
     }
     for (const [identity, name] of [
-      [config.coordinator, 'coordinator'], [config.adapter, 'adapter'], [config.isolatedAccount, 'isolated account'],
+      [config.coordinator, 'coordinator'], [config.adapter, 'adapter'], [config.accountFactory, 'account factory'],
+      [config.accountImplementation, 'account implementation'],
       [config.collateralToken, 'collateral token'], [config.spotPort, 'spot port'],
       [config.spotBaseToken, 'spot base token'], [config.gmxDataStore, 'GMX data store'],
     ] as const) await requireArbitrumSepoliaCode(chain, identity, name);
-    const [onchainOwner, fundingAuthority, spotPort, spotBase] = await Promise.all([
-      this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'owner'),
-      this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'fundingAuthority'),
-      this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'spotPort'),
-      this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'spotBaseToken'),
-    ]);
-    if (!sameAddress(onchainOwner, ownerAddress) || !sameAddress(fundingAuthority, solver)
+    const accountCodeHash = arbitrumSepoliaAccountCodeHash(implementation);
+    if ((await chain.codeHash(account))?.toLowerCase() !== accountCodeHash) {
+      fail('ACCOUNT_NOT_CREATED', 'the owner must create its factory account before authorizing');
+    }
+    const [predicted, recordedOwner, boundImplementation, boundCodeHash, boundAdapter, onchainOwner, spotPort, spotBase] =
+      await Promise.all([
+        this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'accountOf', [ownerAddress]),
+        this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'ownerOf', [account]),
+        this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'implementation'),
+        this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'accountCodeHash'),
+        this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'adapter'),
+        this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'owner'),
+        this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'spotPort'),
+        this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'spotBaseToken'),
+      ]);
+    if (!sameAddress(predicted, account) || !sameAddress(recordedOwner, ownerAddress)
+      || !sameAddress(boundImplementation, implementation) || hashValue(boundCodeHash, 'account code hash') !== accountCodeHash
+      || !sameAddress(boundAdapter, adapter) || !sameAddress(onchainOwner, ownerAddress)
       || !sameAddress(spotPort, config.spotPort.address) || !sameAddress(spotBase, config.spotBaseToken.address)) {
-      fail('CHAIN_MISMATCH', 'isolated account owner, funding authority, or spot binding does not match');
+      fail('CHAIN_MISMATCH', 'factory account, owner, adapter, or spot binding does not match');
     }
 
     const now = await chain.latestBlockTimestamp();
@@ -776,7 +959,7 @@ export class ArbitrumSepoliaExecutor {
       quoteHash: attempt.quoteHash,
       routeHash: attempt.routeHash,
       spot: Object.freeze({
-        fundingOwner: solver,
+        fundingOwner: ownerAddress,
         port: lower(config.spotPort.address),
         portCodeHash: config.spotPort.expectedCodeHash,
         baseToken: lower(config.spotBaseToken.address),
@@ -840,8 +1023,7 @@ export class ArbitrumSepoliaExecutor {
       || hashValue(recoveryPolicy, 'recoveryPolicyCommitment') !== terms.recoveryPolicyHash) {
       fail('CHAIN_MISMATCH', 'coordinator commitments do not match the locally derived terms');
     }
-    const ownerSignature = await owner.signTypedData(typedData as never);
-    return Object.freeze({ attemptId, packageId, terms, request, ownerSignature });
+    return Object.freeze({ attemptId, packageId, account, terms, request });
   }
 }
 
@@ -932,11 +1114,11 @@ function isLoopbackPeer(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
-function send(response: ServerResponse, status: number, body: unknown): void {
+function send(response: ServerResponse, status: number, body: unknown, plain = false): void {
   response.statusCode = status;
   response.setHeader('content-type', 'application/json; charset=utf-8');
   response.setHeader('cache-control', 'no-store');
-  response.end(status === 200 ? stringifyProtocolJson(body as never, 'arbitrumExecutionResult') : JSON.stringify(body));
+  response.end(status === 200 && !plain ? stringifyProtocolJson(body as never, 'arbitrumExecutionResult') : JSON.stringify(body));
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {
@@ -954,28 +1136,45 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-export function createArbitrumSepoliaExecutorServer(executor: Pick<ArbitrumSepoliaExecutor, 'advance'>): Server {
+function requestBody(body: unknown, keys: string): Record<string, string> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body) || Object.keys(body).sort().join(',') !== keys
+    || Object.values(body).some((value) => typeof value !== 'string')) {
+    fail('INVALID_REQUEST', `request must contain only ${keys}`);
+  }
+  return body as Record<string, string>;
+}
+
+export function createArbitrumSepoliaExecutorServer(
+  executor: Pick<ArbitrumSepoliaExecutor, 'advance' | 'prepare' | 'authorize'>,
+): Server {
   return createServer((request, response) => {
     void (async () => {
       if (!isLoopbackPeer(request.socket.remoteAddress)) {
         send(response, 403, { error: { code: 'LOOPBACK_REQUIRED', message: 'Executor access is loopback-only.' } });
         return;
       }
-      if (request.url !== SOLVER_ARBITRUM_SEPOLIA_EXECUTE_PATH || request.method !== 'POST') {
+      const route = request.method !== 'POST' ? undefined
+        : request.url === SOLVER_ARBITRUM_SEPOLIA_EXECUTE_PATH ? 'execute'
+          : request.url === SOLVER_ARBITRUM_SEPOLIA_PREPARE_PATH ? 'prepare'
+            : request.url === SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_PATH ? 'authorize' : undefined;
+      if (route === undefined) {
         send(response, 404, { error: { code: 'NOT_FOUND', message: 'Unknown executor route.' } });
         return;
       }
       try {
         const body = await readBody(request);
-        if (typeof body !== 'object' || body === null || Object.keys(body).join(',') !== 'attemptId'
-          || typeof (body as { attemptId?: unknown }).attemptId !== 'string') {
-          fail('INVALID_REQUEST', 'request must contain only attemptId');
+        if (route === 'execute') {
+          send(response, 200, await executor.advance(requestBody(body, 'attemptId').attemptId!));
+        } else if (route === 'prepare') {
+          send(response, 200, await executor.prepare(requestBody(body, 'attemptId').attemptId!), true);
+        } else {
+          const fields = requestBody(body, 'attemptId,ownerSignature');
+          send(response, 200, await executor.authorize(fields.attemptId!, fields.ownerSignature!), true);
         }
-        send(response, 200, await executor.advance((body as { attemptId: string }).attemptId));
       } catch (error) {
         const code = error instanceof ArbitrumSepoliaExecutorError ? error.code : 'EXECUTION_FAILED';
-        const status = code === 'INVALID_REQUEST' || code === 'INVALID_ATTEMPT' ? 400
-          : code === 'ATTEMPT_NOT_FOUND' ? 404 : code === 'WRONG_CHAIN' ? 503 : 409;
+        const status = code === 'INVALID_REQUEST' || code === 'INVALID_ATTEMPT' || code === 'INVALID_SIGNATURE' ? 400
+          : code === 'ATTEMPT_NOT_FOUND' || code === 'NOT_PREPARED' ? 404 : code === 'WRONG_CHAIN' ? 503 : 409;
         send(response, error instanceof ArbitrumSepoliaExecutorError ? status : 502, {
           error: { code, message: error instanceof ArbitrumSepoliaExecutorError ? error.message : 'Arbitrum execution failed closed.' },
         });

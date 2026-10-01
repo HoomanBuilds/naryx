@@ -7,6 +7,7 @@ import {ConfigureArbitrumSepoliaAsyncGmx} from "../script/ConfigureArbitrumSepol
 import {DeployArbitrumSepoliaAsyncGmx} from "../script/DeployArbitrumSepoliaAsyncGmx.s.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
+import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
@@ -62,6 +63,7 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
         token = new GmxTestToken();
         baseToken = new GmxTestToken();
         market = new GmxTestCode();
+        UniswapV3SpotPort.Deployment memory spot = _spotDeployment();
 
         deployment = deployer.deploy(
             DeployArbitrumSepoliaAsyncGmx.Parameters({
@@ -72,14 +74,13 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
                 canceller: makeAddr("canceller"),
                 executor: executor,
                 pauser: makeAddr("pauser"),
-                fundingAuthority: address(this),
-                beneficiary: owner,
                 market: address(market),
                 marketCodeHash: address(market).codehash,
                 collateralToken: IERC20(address(token)),
                 collateralTokenCodeHash: address(token).codehash,
                 executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH,
-                gmxCodeHashes: _gmxCodeHashes()
+                gmxCodeHashes: _gmxCodeHashes(),
+                spot: spot
             })
         );
         route.config = deployment.config;
@@ -88,52 +89,46 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
         route.domainManifestHash = DOMAIN_MANIFEST_HASH;
         route.coordinator = deployment.coordinator;
         route.coordinatorCodeHash = address(deployment.coordinator).codehash;
-        route.isolatedAccount = deployment.isolatedAccount;
-        route.isolatedAccountCodeHash = address(deployment.isolatedAccount).codehash;
+        route.accountFactory = deployment.accountFactory;
+        route.accountFactoryCodeHash = address(deployment.accountFactory).codehash;
         route.adapter = deployment.adapter;
         route.adapterCodeHash = address(deployment.adapter).codehash;
+        route.exitController = deployment.exitController;
+        route.exitControllerCodeHash = address(deployment.exitController).codehash;
+        route.spotPort = deployment.spotPort;
+        route.spotPortCodeHash = address(deployment.spotPort).codehash;
+        route.accountCodeHash = deployment.accountFactory.accountCodeHash();
     }
 
     function testFullSequenceOpensEntryOnlyAfterReviewedDomainBindingsAndDelayedUnpause() public {
         vm.expectRevert(ConfigureArbitrumSepoliaAsyncGmx.InvalidRoute.selector);
-        operator.runBindEntryController(route, owner);
+        operator.runProposeAdmission(route, proposer);
         // A script step that reverts leaves its broadcast open.
         vm.stopBroadcast();
         operator.runProposeDomain(route.config, 2, DOMAIN_MANIFEST_HASH, proposer);
         vm.warp(block.timestamp + DELAY);
         operator.runActivateDomain(route.config, 2, DOMAIN_MANIFEST_HASH, executor);
 
-        operator.runBindEntryController(route, owner);
-        DeployArbitrumSepoliaAsyncGmx.ExitAndSpotDeployment memory completion = deployer.deployExitAndSpot(
-            DeployArbitrumSepoliaAsyncGmx.ExitAndSpotParameters({
-                adapter: deployment.adapter,
-                adapterCodeHash: route.adapterCodeHash,
-                isolatedAccount: deployment.isolatedAccount,
-                isolatedAccountCodeHash: route.isolatedAccountCodeHash,
-                gmxCodeHashes: _gmxCodeHashes(),
-                spot: _spotDeployment()
-            })
-        );
-        route.exitController = completion.exitController;
-        route.exitControllerCodeHash = address(completion.exitController).codehash;
-        route.spotPort = completion.spotPort;
-        route.spotPortCodeHash = address(completion.spotPort).codehash;
+        vm.expectRevert(ConfigureArbitrumSepoliaAsyncGmx.InvalidRoute.selector);
+        operator.runScheduleUnpause(route, proposer);
+        vm.stopBroadcast();
         operator.runProposeAdmission(route, proposer);
         vm.warp(block.timestamp + DELAY);
         operator.runActivateAdmission(route, executor);
 
-        vm.expectRevert(ConfigureArbitrumSepoliaAsyncGmx.InvalidRoute.selector);
-        operator.runScheduleUnpause(route, proposer);
-        vm.stopBroadcast();
-        operator.runBindExitAndSpot(route, owner);
         operator.runScheduleUnpause(route, proposer);
         uint64 readyAt = uint64(block.timestamp) + DELAY;
 
         IAsyncVenueAdapter.VenueRequest memory request = _request(readyAt);
         AsyncBondedPackageCoordinator.Terms memory terms = _terms(request);
         bytes memory signature = _signature(deployment.coordinator.reserveDigest(terms));
-        token.mint(address(this), COLLATERAL + MAX_SPOT_QUOTE + terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.mint(address(this), terms.bondAtoms + terms.recoveryReserveAtoms);
         token.approve(address(deployment.coordinator), terms.bondAtoms + terms.recoveryReserveAtoms);
+        // The owner's own wallet creates its account and funds the request; the solver only bonds.
+        GmxV2IsolatedAccount account = deployment.accountFactory.create(owner);
+        token.mint(owner, COLLATERAL + MAX_SPOT_QUOTE);
+        vm.deal(owner, EXECUTION_FEE);
+        vm.prank(owner);
         token.approve(address(deployment.adapter), COLLATERAL + MAX_SPOT_QUOTE);
 
         vm.warp(readyAt - 1);
@@ -150,6 +145,7 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
 
         bytes32 id = deployment.coordinator.reserve(terms, signature);
         assertEq(id, deployment.coordinator.packageId(terms));
+        vm.prank(owner);
         deployment.adapter.fundRequest{value: EXECUTION_FEE}(id, request);
         bytes32 requestKey = deployment.coordinator.submitRequest(id, 1, request);
         assertNotEq(requestKey, bytes32(0));
@@ -157,8 +153,8 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
             uint8(deployment.coordinator.packageState(id).state),
             uint8(AsyncBondedPackageCoordinator.State.REQUEST_SUBMITTED)
         );
-        assertTrue(deployment.isolatedAccount.hasActiveSpotInventory());
-        assertEq(baseToken.balanceOf(address(deployment.isolatedAccount)), SPOT_BASE);
+        assertTrue(account.hasActiveSpotInventory());
+        assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
     }
 
     function _etchGmx() private {
@@ -230,7 +226,7 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
             quoteHash: keccak256("arbitrum-quote"),
             routeHash: keccak256("arbitrum-route"),
             spot: IAsyncVenueAdapter.SpotEntry({
-                fundingOwner: address(this),
+                fundingOwner: owner,
                 port: address(route.spotPort),
                 portCodeHash: route.spotPortCodeHash,
                 baseToken: address(baseToken),
