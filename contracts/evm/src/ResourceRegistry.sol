@@ -220,7 +220,6 @@ contract ResourceRegistry {
     );
 
     ProtocolConfig public immutable config;
-    bytes32 public immutable cashCarryTemplateManifestHash;
 
     mapping(bytes32 recordKey => ResourceBinding binding) private _records;
     mapping(bytes32 recordKey => ResourceControl control) private _controls;
@@ -229,12 +228,16 @@ contract ResourceRegistry {
     mapping(bytes32 subjectKey => PendingRegistration proposal) private _pendingRegistrations;
     mapping(bytes32 subjectKey => PendingControl proposal) private _pendingControls;
 
-    constructor(ProtocolConfig config_, bytes32 cashCarryTemplateManifestHash_) {
-        if (address(config_).code.length == 0 || cashCarryTemplateManifestHash_ == bytes32(0)) {
-            revert InvalidConfiguration();
-        }
+    constructor(ProtocolConfig config_) {
+        if (address(config_).code.length == 0) revert InvalidConfiguration();
         config = config_;
-        cashCarryTemplateManifestHash = cashCarryTemplateManifestHash_;
+    }
+
+    /// @notice The active cash-and-carry template manifest hash, governed in `ProtocolConfig`. It is not an
+    /// immutable so that this registry's code hash does not depend on it: the template commits to the domain
+    /// manifest, which commits to the verifier code hash, which pins this registry's code hash.
+    function cashCarryTemplateManifestHash() public view returns (bytes32) {
+        return config.cashCarryTemplateManifestHash();
     }
 
     function proposeRegistration(ResourceBinding calldata binding, ResourceControl calldata control) external {
@@ -755,9 +758,9 @@ contract ResourceRegistry {
     }
 
     function _validTemplate(TemplateRef memory template) private view returns (bool) {
-        return template.templateId == CASH_AND_CARRY_TEMPLATE_ID
+        return template.templateManifestHash != bytes32(0) && template.templateId == CASH_AND_CARRY_TEMPLATE_ID
             && template.templateVersion == CASH_AND_CARRY_TEMPLATE_VERSION
-            && template.templateManifestHash == cashCarryTemplateManifestHash;
+            && template.templateManifestHash == cashCarryTemplateManifestHash();
     }
 
     function _validSettlementClass(SettlementClassRef memory settlementClass) private pure returns (bool) {

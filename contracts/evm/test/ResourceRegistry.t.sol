@@ -70,7 +70,8 @@ contract ResourceRegistryTest is Test {
         config = new ProtocolConfig(
             "eip155:84532", 1, DOMAIN_MANIFEST_HASH, DELAY, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER
         );
-        registry = new ResourceRegistry(config, TEMPLATE_MANIFEST_HASH);
+        registry = new ResourceRegistry(config);
+        _activateTemplate(TEMPLATE_MANIFEST_HASH);
 
         baseAsset = new RegistryAsset("Base", "BASE", 18);
         quoteAsset = new RegistryAsset("Quote", "QUOTE", 6);
@@ -435,6 +436,46 @@ contract ResourceRegistryTest is Test {
         admission.domain.manifestHash = nextDomainHash;
         vm.expectRevert(ResourceRegistry.DomainMismatch.selector);
         registry.validateCashCarry(admission);
+    }
+
+    function testStaleTemplateBlocksRegistrationAndAdmission() public {
+        ResourceRegistry.ManifestRef memory nextRef =
+            _manifestRef(SPOT_ADAPTER_ID, 2, keccak256("spot-adapter-manifest-2"));
+        ResourceRegistry.ResourceBinding memory next = _adapterManifest(
+            nextRef,
+            address(spotAdapter),
+            ResourceRegistry.LegRole.SPOT,
+            registry.BASE_SPOT_ADAPTER_CLASS(),
+            spotVenueRef,
+            spotMarketRef
+        );
+        vm.prank(PROPOSER);
+        registry.proposeRegistration(next, _control(quoteRef, DEFAULT_LIMIT));
+
+        bytes32 nextTemplateHash = keccak256("cash-carry-template-manifest-2");
+        _activateTemplate(nextTemplateHash);
+        assertEq(registry.cashCarryTemplateManifestHash(), nextTemplateHash);
+
+        // The pending adapter was proposed under the retired template, so its activation fails closed.
+        vm.prank(GOVERNANCE_EXECUTOR);
+        vm.expectRevert(ResourceRegistry.InvalidBinding.selector);
+        registry.activateRegistration(ResourceRegistry.ResourceKind.ADAPTER, SPOT_ADAPTER_ID);
+
+        // Active adapters bound to the retired template no longer admit, under either template reference.
+        ResourceRegistry.CashCarryAdmission memory admission = _admission(1, registry.ENTRY());
+        vm.expectRevert(ResourceRegistry.InvalidAdmission.selector);
+        registry.validateCashCarry(admission);
+        admission.template.templateManifestHash = nextTemplateHash;
+        vm.expectRevert();
+        registry.validateCashCarry(admission);
+    }
+
+    function _activateTemplate(bytes32 templateManifestHash) private {
+        vm.prank(PROPOSER);
+        config.proposeCashCarryTemplate(templateManifestHash);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateCashCarryTemplate();
     }
 
     function _register(

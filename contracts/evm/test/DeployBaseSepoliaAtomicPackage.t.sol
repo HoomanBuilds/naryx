@@ -12,7 +12,6 @@ import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 contract DeployBaseSepoliaAtomicPackageTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-manifest-v1");
-    bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("cash-carry-template-manifest-v1");
     address private constant ETH_USD_FEED = 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1;
 
     function testDeploysWiredPausedCompositionAndFailsClosedAcrossChains() public {
@@ -27,7 +26,6 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         DeployBaseSepoliaAtomicPackage.Parameters memory parameters = DeployBaseSepoliaAtomicPackage.Parameters({
             domainManifestVersion: 1,
             domainManifestHash: DOMAIN_MANIFEST_HASH,
-            cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
             configDelaySeconds: 1 days,
             proposer: proposer,
             canceller: canceller,
@@ -47,7 +45,7 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         assertTrue(deployment.solverRegistry.isActiveSolver(solver));
         assertEq(deployment.solverRegistry.activeSolverCount(), 1);
         assertEq(address(deployment.resourceRegistry.config()), address(deployment.config));
-        assertEq(deployment.resourceRegistry.cashCarryTemplateManifestHash(), TEMPLATE_MANIFEST_HASH);
+        assertEq(deployment.resourceRegistry.cashCarryTemplateManifestHash(), bytes32(0));
         assertEq(address(deployment.cashCarrySeriesRegistry.resources()), address(deployment.resourceRegistry));
         assertEq(address(deployment.packageQuoteShardRegistry.config()), address(deployment.config));
         assertEq(address(deployment.verifier.config()), address(deployment.config));

@@ -11,6 +11,11 @@ contract ProtocolConfig {
         uint64 activationTimestamp;
     }
 
+    struct PendingTemplate {
+        bytes32 manifestHash;
+        uint64 activationTimestamp;
+    }
+
     error DomainIdEmpty();
     error DomainIdTooLong();
     error DomainIdNotAscii();
@@ -30,6 +35,11 @@ contract ProtocolConfig {
     error UnpauseAlreadyScheduled();
     error UnpauseNotScheduled();
     error UnpauseNotReady(uint64 activationTimestamp);
+    error TemplateManifestHashZero();
+    error TemplateManifestHashUsed(bytes32 manifestHash);
+    error TemplateProposalExists();
+    error TemplateProposalMissing();
+    error TemplateProposalNotReady(uint64 activationTimestamp);
 
     event ProtocolConfigInitialized(
         address indexed actor,
@@ -61,6 +71,13 @@ contract ProtocolConfig {
     event DomainActivated(
         address indexed actor, uint32 previousVersion, bytes32 previousHash, uint32 newVersion, bytes32 newHash
     );
+    event CashCarryTemplateProposed(
+        address indexed actor, bytes32 previousHash, bytes32 proposedHash, uint64 activationTimestamp
+    );
+    event CashCarryTemplateProposalCancelled(
+        address indexed actor, bytes32 activeHash, bytes32 cancelledHash, uint64 activationTimestamp
+    );
+    event CashCarryTemplateActivated(address indexed actor, bytes32 previousHash, bytes32 newHash);
     event EntryPaused(address indexed actor);
     event UnpauseScheduled(address indexed actor, uint64 activationTimestamp);
     event UnpauseCancelled(address indexed actor, uint64 activationTimestamp);
@@ -73,6 +90,13 @@ contract ProtocolConfig {
     bool private _hasPendingDomain;
     bool private _entryPaused;
     uint64 private _pendingUnpauseTimestamp;
+    /// The active cash-and-carry template manifest hash. It is governed storage rather than a constructor
+    /// argument because the template manifest commits to the reviewed domain manifest, which commits to the
+    /// execution verifier code hash, which in turn pins the registries' code hashes. It starts unset, so every
+    /// template-bound registration and admission fails closed until the first delayed activation.
+    bytes32 private _cashCarryTemplateManifestHash;
+    PendingTemplate private _pendingTemplate;
+    mapping(bytes32 manifestHash => bool used) private _usedTemplateManifestHashes;
 
     address private immutable _PROPOSER;
     address private immutable _CANCELLER;
@@ -156,6 +180,19 @@ contract ProtocolConfig {
         return (_hasPendingDomain, pending.manifestVersion, pending.manifestHash, pending.activationTimestamp);
     }
 
+    function cashCarryTemplateManifestHash() external view returns (bytes32) {
+        return _cashCarryTemplateManifestHash;
+    }
+
+    function pendingCashCarryTemplate()
+        external
+        view
+        returns (bool exists, bytes32 manifestHash, uint64 activationTimestamp)
+    {
+        PendingTemplate memory pending = _pendingTemplate;
+        return (pending.activationTimestamp != 0, pending.manifestHash, pending.activationTimestamp);
+    }
+
     function roles() external view returns (address proposer, address canceller, address executor, address pauser) {
         return (_PROPOSER, _CANCELLER, _EXECUTOR, _PAUSER);
     }
@@ -224,6 +261,45 @@ contract ProtocolConfig {
         _hasPendingDomain = false;
 
         emit DomainActivated(msg.sender, previousVersion, previousHash, pending.manifestVersion, pending.manifestHash);
+    }
+
+    /// @notice Proposes the cash-and-carry template manifest hash. Only while entry is paused; a hash that was
+    /// ever active is never accepted again, so records registered under a retired template cannot revive.
+    function proposeCashCarryTemplate(bytes32 manifestHash) external onlyProposer {
+        if (!_entryPaused) revert EntryNotPaused();
+        if (_pendingTemplate.activationTimestamp != 0) revert TemplateProposalExists();
+        if (manifestHash == bytes32(0)) revert TemplateManifestHashZero();
+        if (_usedTemplateManifestHashes[manifestHash]) revert TemplateManifestHashUsed(manifestHash);
+
+        uint64 activationTimestamp = _activationTimestamp();
+        _pendingTemplate = PendingTemplate({manifestHash: manifestHash, activationTimestamp: activationTimestamp});
+        emit CashCarryTemplateProposed(msg.sender, _cashCarryTemplateManifestHash, manifestHash, activationTimestamp);
+    }
+
+    function cancelCashCarryTemplateProposal() external onlyCanceller {
+        PendingTemplate memory pending = _pendingTemplate;
+        if (pending.activationTimestamp == 0) revert TemplateProposalMissing();
+        delete _pendingTemplate;
+        emit CashCarryTemplateProposalCancelled(
+            msg.sender, _cashCarryTemplateManifestHash, pending.manifestHash, pending.activationTimestamp
+        );
+    }
+
+    /// @notice Activates the pending template only while entry is paused. Every registry compares its records
+    /// with the active hash, so records bound to the previous template stop validating.
+    function activateCashCarryTemplate() external onlyExecutor {
+        PendingTemplate memory pending = _pendingTemplate;
+        if (pending.activationTimestamp == 0) revert TemplateProposalMissing();
+        if (block.timestamp < pending.activationTimestamp) {
+            revert TemplateProposalNotReady(pending.activationTimestamp);
+        }
+        if (!_entryPaused) revert EntryNotPaused();
+
+        bytes32 previousHash = _cashCarryTemplateManifestHash;
+        _cashCarryTemplateManifestHash = pending.manifestHash;
+        _usedTemplateManifestHashes[pending.manifestHash] = true;
+        delete _pendingTemplate;
+        emit CashCarryTemplateActivated(msg.sender, previousHash, pending.manifestHash);
     }
 
     function pauseEntry() external onlyPauser {

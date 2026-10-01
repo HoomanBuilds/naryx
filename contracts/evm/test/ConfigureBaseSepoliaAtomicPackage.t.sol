@@ -17,8 +17,6 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
     uint64 private constant DELAY = 10;
     bytes32 private constant PROVISIONAL_DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-provisional-domain-manifest");
-    bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-manifest-v2");
-    bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("cash-carry-template-manifest-v1");
     bytes32 private constant SERIES_MANIFEST_HASH = keccak256("base-weth-usdc-cash-carry-series-v1");
     bytes32 private constant EXECUTION_CLASS_MANIFEST_HASH = keccak256("base-atomic-execution-class-v1");
     bytes32 private constant SHARD_MANIFEST_HASH = keccak256("base-package-quote-shard-v1");
@@ -45,7 +43,6 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
             DeployBaseSepoliaAtomicPackage.Parameters({
                 domainManifestVersion: 1,
                 domainManifestHash: PROVISIONAL_DOMAIN_MANIFEST_HASH,
-                cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
                 configDelaySeconds: DELAY,
                 proposer: proposer,
                 canceller: canceller,
@@ -90,8 +87,14 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
 
         operator = new ConfigureBaseSepoliaAtomicPackage();
         route.config = deployed.config;
+        // The reviewed domain manifest commits to the deployed verifier's runtime code hash, and the template
+        // manifest lists that domain reference, so both hashes exist only after deployment.
         route.domainManifestVersion = 2;
-        route.domainManifestHash = DOMAIN_MANIFEST_HASH;
+        route.domainManifestHash =
+            keccak256(abi.encode("naryx-domain-manifest", uint32(2), address(deployed.verifier).codehash));
+        route.cashCarryTemplateManifestHash = keccak256(
+            abi.encode("naryx-cash-carry-template-manifest", route.domainManifestVersion, route.domainManifestHash)
+        );
         route.solverRegistry = deployed.solverRegistry;
         route.resources = deployed.resourceRegistry;
         route.seriesRegistry = deployed.cashCarrySeriesRegistry;
@@ -128,9 +131,32 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         operator.runProposeQuoteAsset(route, proposer);
         // A script step that reverts leaves its broadcast open.
         vm.stopBroadcast();
-        operator.runProposeDomain(route.config, 2, DOMAIN_MANIFEST_HASH, proposer);
+        bytes32 verifierCodeHash = address(route.verifier).codehash;
+        bytes32 resourcesCodeHash = address(route.resources).codehash;
+        bytes32 seriesCodeHash = address(route.seriesRegistry).codehash;
+        operator.runProposeDomain(route.config, 2, route.domainManifestHash, proposer);
         vm.warp(block.timestamp + DELAY);
-        operator.runActivateDomain(route.config, 2, DOMAIN_MANIFEST_HASH, executor);
+        operator.runActivateDomain(route.config, 2, route.domainManifestHash, executor);
+
+        // Registrations bind the active template, so none can run before it is set.
+        vm.expectRevert(ConfigureBaseSepoliaAtomicPackage.InvalidRoute.selector);
+        operator.runProposeQuoteAsset(route, proposer);
+        vm.stopBroadcast();
+        operator.runProposeTemplate(
+            route.config, 2, route.domainManifestHash, route.cashCarryTemplateManifestHash, proposer
+        );
+        vm.warp(block.timestamp + DELAY);
+        operator.runActivateTemplate(
+            route.config, 2, route.domainManifestHash, route.cashCarryTemplateManifestHash, executor
+        );
+        assertEq(route.resources.cashCarryTemplateManifestHash(), route.cashCarryTemplateManifestHash);
+        assertEq(route.seriesRegistry.cashCarryTemplateManifestHash(), route.cashCarryTemplateManifestHash);
+        // Setting the template changes no code hash, so the domain manifest's verifier code hash still holds.
+        assertEq(address(route.verifier).codehash, verifierCodeHash);
+        assertEq(address(route.resources).codehash, resourcesCodeHash);
+        assertEq(address(route.seriesRegistry).codehash, seriesCodeHash);
+        assertEq(route.verifier.resourceRegistryCodeHash(), resourcesCodeHash);
+        assertEq(route.verifier.cashCarrySeriesRegistryCodeHash(), seriesCodeHash);
 
         operator.runProposeQuoteAsset(route, proposer);
         uint64 readyAt = uint64(block.timestamp) + DELAY;

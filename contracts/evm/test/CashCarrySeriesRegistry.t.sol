@@ -65,7 +65,12 @@ contract CashCarrySeriesRegistryTest is Test {
         config = new ProtocolConfig(
             "eip155:8453", 7, DOMAIN_MANIFEST_HASH, DELAY, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER
         );
-        resources = new ResourceRegistry(config, TEMPLATE_MANIFEST_HASH);
+        resources = new ResourceRegistry(config);
+        vm.prank(PROPOSER);
+        config.proposeCashCarryTemplate(TEMPLATE_MANIFEST_HASH);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateCashCarryTemplate();
         baseToken = new SeriesRegistryAsset("Base", "BASE", 9);
         quoteToken = new SeriesRegistryAsset("Quote", "QUOTE", 6);
 

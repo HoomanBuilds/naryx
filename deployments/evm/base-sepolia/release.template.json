@@ -44,10 +44,11 @@
     "supportedSettlementClasses": ["ATOMIC_POSTCONDITION"]
   },
   "domainCheck": { "contract": "protocolConfig" },
+  "templateCheck": { "contract": "protocolConfig", "definition": "templateManifestHash" },
   "definitions": {
     "domain": { "$release": "domainRef" },
     "res": {
-      "baseAsset": { "subjectId": { "$operator": "WETH asset subject id registered in configure step 4 (route baseAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "WETH asset manifest hash" } } },
+      "baseAsset": { "subjectId": { "$operator": "WETH asset subject id registered in configure step 5 (route baseAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "WETH asset manifest hash" } } },
       "quoteAsset": { "subjectId": { "$operator": "USDC asset subject id (route quoteAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "USDC asset manifest hash" } } },
       "spotVenue": { "subjectId": { "$operator": "Uniswap V3 venue subject id (route spotVenue)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot venue manifest hash" } } },
       "perpetualVenue": { "subjectId": { "$operator": "test perp venue subject id (route perpetualVenue)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual venue manifest hash" } } },

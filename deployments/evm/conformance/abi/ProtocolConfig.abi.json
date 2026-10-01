@@ -47,6 +47,13 @@
   },
   {
     "type": "function",
+    "name": "activateCashCarryTemplate",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "activateDomain",
     "inputs": [],
     "outputs": [],
@@ -55,6 +62,13 @@
   {
     "type": "function",
     "name": "activateUnpause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelCashCarryTemplateProposal",
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
@@ -72,6 +86,19 @@
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cashCarryTemplateManifestHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -144,6 +171,29 @@
   },
   {
     "type": "function",
+    "name": "pendingCashCarryTemplate",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "exists",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "pendingDomain",
     "inputs": [],
     "outputs": [
@@ -187,6 +237,19 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proposeCashCarryTemplate",
+    "inputs": [
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -240,6 +303,93 @@
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "CashCarryTemplateActivated",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "previousHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CashCarryTemplateProposalCancelled",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "activeHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "cancelledHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "CashCarryTemplateProposed",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "previousHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "proposedHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -580,6 +730,43 @@
     "type": "error",
     "name": "GovernanceRoleZero",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TemplateManifestHashUsed",
+    "inputs": [
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TemplateManifestHashZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TemplateProposalExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TemplateProposalMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TemplateProposalNotReady",
+    "inputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
   },
   {
     "type": "error",

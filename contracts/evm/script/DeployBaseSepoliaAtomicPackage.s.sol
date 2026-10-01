@@ -33,7 +33,6 @@ contract DeployBaseSepoliaAtomicPackage is Script {
     struct Parameters {
         uint32 domainManifestVersion;
         bytes32 domainManifestHash;
-        bytes32 cashCarryTemplateManifestHash;
         uint64 configDelaySeconds;
         address proposer;
         address canceller;
@@ -80,7 +79,10 @@ contract DeployBaseSepoliaAtomicPackage is Script {
             parameters.pauser
         );
         deployment.solverRegistry = new SolverRegistry(deployment.config, parameters.solver);
-        deployment.resourceRegistry = new ResourceRegistry(deployment.config, parameters.cashCarryTemplateManifestHash);
+        // The cash-and-carry template manifest hash is not a deploy parameter: the template commits to the reviewed
+        // domain manifest, which commits to the verifier code hash, so it is set after the domain rotation through
+        // the delayed ProtocolConfig template steps.
+        deployment.resourceRegistry = new ResourceRegistry(deployment.config);
         deployment.cashCarrySeriesRegistry = new CashCarrySeriesRegistry(deployment.config, deployment.resourceRegistry);
         deployment.packageQuoteShardRegistry = new PackageQuoteShardRegistry(deployment.config);
         deployment.verifier = new PackageVerifier(

@@ -265,6 +265,47 @@ contract ProtocolConfigTest is Test {
         config.activateUnpause();
     }
 
+    function testTemplateIsDelayedPausedOnlyAndNeverReused() public {
+        bytes32 first = keccak256("template-1");
+        bytes32 second = keccak256("template-2");
+        assertEq(config.cashCarryTemplateManifestHash(), bytes32(0));
+
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolConfig.UnauthorizedRole.selector, OUTSIDER, PROPOSER));
+        config.proposeCashCarryTemplate(first);
+        vm.prank(PROPOSER);
+        vm.expectRevert(ProtocolConfig.TemplateManifestHashZero.selector);
+        config.proposeCashCarryTemplate(bytes32(0));
+
+        uint64 readyAt = uint64(block.timestamp) + CONFIG_DELAY_SECONDS;
+        vm.prank(PROPOSER);
+        config.proposeCashCarryTemplate(first);
+        vm.prank(EXECUTOR);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolConfig.TemplateProposalNotReady.selector, readyAt));
+        config.activateCashCarryTemplate();
+        vm.warp(readyAt);
+        vm.prank(EXECUTOR);
+        config.activateCashCarryTemplate();
+        assertEq(config.cashCarryTemplateManifestHash(), first);
+
+        vm.prank(PROPOSER);
+        vm.expectRevert(abi.encodeWithSelector(ProtocolConfig.TemplateManifestHashUsed.selector, first));
+        config.proposeCashCarryTemplate(first);
+
+        // A pending template cannot activate once entry is open.
+        vm.prank(PROPOSER);
+        config.proposeCashCarryTemplate(second);
+        vm.prank(PROPOSER);
+        config.scheduleUnpause();
+        vm.warp(block.timestamp + CONFIG_DELAY_SECONDS);
+        vm.prank(EXECUTOR);
+        config.activateUnpause();
+        vm.prank(EXECUTOR);
+        vm.expectRevert(ProtocolConfig.EntryNotPaused.selector);
+        config.activateCashCarryTemplate();
+        assertEq(config.cashCarryTemplateManifestHash(), first);
+    }
+
     function _deploy(
         string memory domainId_,
         uint32 manifestVersion,

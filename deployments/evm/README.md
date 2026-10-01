@@ -53,6 +53,7 @@ Every propose step records `activation = proposal block timestamp + configDelayS
 cast call "$CONFIG" "configDelaySeconds()(uint64)" --rpc-url "$RPC_URL"
 cast block latest --field timestamp --rpc-url "$RPC_URL"
 cast call "$CONFIG" "pendingDomain()(bool,uint32,bytes32,uint64)" --rpc-url "$RPC_URL"
+cast call "$CONFIG" "pendingCashCarryTemplate()(bool,bytes32,uint64)" --rpc-url "$RPC_URL"
 cast call "$CONFIG" "pendingUnpause()(bool,uint64)" --rpc-url "$RPC_URL"
 ```
 
@@ -73,9 +74,16 @@ The procedure is a delayed domain rotation before any configuration:
 
 2. Read the execution verifier's code hash from the chain and compute the reviewed manifest hash with manifest version `2`.
 3. Propose the reviewed manifest, wait `configDelaySeconds`, and activate it with `runProposeDomain` and `runActivateDomain`. Both refuse while entry is open, and activation refuses unless the pending proposal is exactly the reviewed version and hash.
-4. Only then register anything. `ResourceRegistry`, `CashCarrySeriesRegistry`, and `PackageQuoteShardRegistry` record the active domain with each registration and accept a record only while that domain is active, and every later configure step requires the active domain to equal the route's `domainManifestVersion` and `domainManifestHash`. `FirmInventoryReservationBook` and `DirectInventorySpotPort` pin the active domain at construction, so `DeployBaseSepoliaFirmLiquidity` runs after the rotation.
+4. On Base, set the reviewed cash-and-carry template manifest hash (see below).
+5. Only then register anything. `ResourceRegistry`, `CashCarrySeriesRegistry`, and `PackageQuoteShardRegistry` record the active domain with each registration and accept a record only while that domain is active, and every later configure step requires the active domain to equal the route's `domainManifestVersion` and `domainManifestHash` and the active template to equal its `cashCarryTemplateManifestHash`. `FirmInventoryReservationBook` and `DirectInventorySpotPort` pin the active domain at construction, so `DeployBaseSepoliaFirmLiquidity` runs after the rotation.
 
-Nothing is signed or registered under the provisional manifest, and entry is paused throughout. A precomputed hash is not used because the verifier's code hash depends on its address, so it would hold only if the deployer sent no other transaction between the simulation and the broadcast.
+Nothing is signed or registered under the provisional manifest, and entry is paused throughout.
+
+## Template manifest hash
+
+The cash-and-carry `PackageTemplateManifest` lists the reviewed domain reference (version `2` and its hash) in `supportedDomains`, so its hash also exists only after the domain rotation. It is therefore not a deploy parameter. `ProtocolConfig` holds it as governed storage that starts unset (`cashCarryTemplateManifestHash()` returns zero, and every template-bound registration and admission fails closed). `ResourceRegistry` and `CashCarrySeriesRegistry` read it from `ProtocolConfig` on every call, so their code hashes, and through them the `PackageVerifier` code hash that the domain manifest commits to, do not depend on it.
+
+The proposer calls `proposeCashCarryTemplate(hash)`, and after `configDelaySeconds` the executor calls `activateCashCarryTemplate()`; the canceller can withdraw it with `cancelCashCarryTemplateProposal()`. Both the proposal and the activation require entry to be paused, the hash must be nonzero, and a hash that was ever active is refused, so records bound to a retired template cannot revive. Adapter records, admissions, and series bindings must carry exactly the active hash: after a later template change, records registered under the old one stop validating, as they do after a domain rotation, and are re-registered under the new one. A precomputed hash is not used because the verifier's code hash depends on its address, so it would hold only if the deployer sent no other transaction between the simulation and the broadcast.
 
 Compute the reviewed hash from the repository root with the protocol codec (build `packages/protocol-types` first). The object must be byte-for-byte the `domainManifest` later written into the runtime manifest:
 
@@ -114,11 +122,11 @@ export RPC_URL="$BASE_SEPOLIA_RPC_URL"
 
 ### 1. Deploy the atomic package
 
-`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `cashCarryTemplateManifestHash` (the reviewed cash-and-carry template manifest hash that orders sign), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), and `perpetualMarket` (the `NaryxTestPerpMarket.Parameters` tuple below). The Uniswap V3 factory, pool, WETH, and USDC identities and code hashes are pinned constants in the script. The script deploys no strategy account: accounts are created per owner through `NaryxStrategyAccountFactory`.
+`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), and `perpetualMarket` (the `NaryxTestPerpMarket.Parameters` tuple below). The Uniswap V3 factory, pool, WETH, and USDC identities and code hashes are pinned constants in the script. The script deploys no strategy account: accounts are created per owner through `NaryxStrategyAccountFactory`.
 
 ```bash
 forge script script/DeployBaseSepoliaAtomicPackage.s.sol:DeployBaseSepoliaAtomicPackage \
-  --sig "run((uint32,bytes32,bytes32,uint64,address,address,address,address,address,(address,address,address,address,address,uint32,uint32,uint16,uint16,uint16,uint128,uint16,uint16,uint16,uint128,uint128,uint128)))" \
+  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,(address,address,address,address,address,uint32,uint32,uint16,uint16,uint16,uint128,uint16,uint16,uint16,uint128,uint128,uint128)))" \
   "$BASE_DEPLOY_PARAMETERS" \
   --rpc-url "$RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
@@ -191,7 +199,23 @@ forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepolia
   --rpc-url "$RPC_URL" --account naryx-base-executor --sender "$EXECUTOR" --broadcast
 ```
 
-### 3. Deploy the firm liquidity layer
+### 3. Set the reviewed template manifest
+
+Compute the reviewed cash-and-carry template manifest hash (`packageTemplateManifestHash` in `packages/protocol-types`) with `supportedDomains` holding the reviewed version `2` domain reference from step 2. It must equal the `templateManifestHash` the release generator derives, which is the hash every order signs.
+
+```bash
+forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepoliaAtomicPackage \
+  --sig "runProposeTemplate(address,uint32,bytes32,bytes32,address)" "$CONFIG" 2 "$DOMAIN_MANIFEST_HASH" "$TEMPLATE_MANIFEST_HASH" "$PROPOSER" \
+  --rpc-url "$RPC_URL" --account naryx-base-proposer --sender "$PROPOSER" --broadcast
+# wait configDelaySeconds
+forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepoliaAtomicPackage \
+  --sig "runActivateTemplate(address,uint32,bytes32,bytes32,address)" "$CONFIG" 2 "$DOMAIN_MANIFEST_HASH" "$TEMPLATE_MANIFEST_HASH" "$EXECUTOR" \
+  --rpc-url "$RPC_URL" --account naryx-base-executor --sender "$EXECUTOR" --broadcast
+```
+
+Both steps refuse unless entry is paused and the active domain is exactly the reviewed version `2` manifest, and activation refuses unless the pending proposal is exactly the reviewed hash. Confirm with `cast call "$CONFIG" "cashCarryTemplateManifestHash()(bytes32)"`.
+
+### 4. Deploy the firm liquidity layer
 
 `DeployBaseSepoliaFirmLiquidity.Parameters`, in order: `config`, `configCodeHash`, `verifier`, `verifierCodeHash` (both read from the chain), `reservationMaximumTtlSeconds`, `maximumBaseAtomsPerReservation`, `maximumReservedBaseAtomsPerSolver`, `shardSolver`, `seriesManifestHash`, `executionClassManifestHash`, `shardLimits` as `(maxHeartbeatSeconds,maxBatchSize,maxLevelCount)`, `bondClaimsAuthority`, `bondDisputeResolver`. The shard's series and execution class hashes must equal the route's below.
 
@@ -204,16 +228,16 @@ forge script script/DeployBaseSepoliaFirmLiquidity.s.sol:DeployBaseSepoliaFirmLi
 
 `.returns` lists `FirmInventoryReservationBook`, `DirectInventorySpotPort`, `PackageQuoteShard`, `PerformanceBondVault`. No configure step registers `DirectInventorySpotPort` as a spot adapter yet; the route below uses `UniswapV3SpotPort`.
 
-### 4. Configure
+### 5. Configure
 
-`ConfigureBaseSepoliaAtomicPackage.Route`, in order: `config`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `solverRegistry`, `resources`, `seriesRegistry`, `quoteRegistry`, `verifier`, `strategyAccountFactory`, `spotPort`, `testPerpMarket`, `quoteShard`, `solver`, then eight `(subjectId,manifestVersion,manifestHash)` references for `baseAsset`, `quoteAsset`, `spotVenue`, `perpetualVenue`, `spotMarket`, `perpetualMarket`, `spotAdapter`, `perpetualAdapter`, then `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, `spotBaseAtomsPerPackageUnit`, `perpetualQuantityWadPerPackageUnit`, `quoteShardManifestVersion`, `quoteShardManifestHash`, `maximumPackageNotionalQuoteAtoms`, and `spotMarketParameters` and `perpetualMarketParameters` as `(baseLotAtoms,quoteTickAtomsPerBaseLot,minimumQuoteNotionalAtoms,contractMultiplierNumerator,contractMultiplierDenominator,baseDecimals,quoteDecimals)`.
+`ConfigureBaseSepoliaAtomicPackage.Route`, in order: `config`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `cashCarryTemplateManifestHash` (reviewed, active from step 3), `solverRegistry`, `resources`, `seriesRegistry`, `quoteRegistry`, `verifier`, `strategyAccountFactory`, `spotPort`, `testPerpMarket`, `quoteShard`, `solver`, then eight `(subjectId,manifestVersion,manifestHash)` references for `baseAsset`, `quoteAsset`, `spotVenue`, `perpetualVenue`, `spotMarket`, `perpetualMarket`, `spotAdapter`, `perpetualAdapter`, then `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, `spotBaseAtomsPerPackageUnit`, `perpetualQuantityWadPerPackageUnit`, `quoteShardManifestVersion`, `quoteShardManifestHash`, `maximumPackageNotionalQuoteAtoms`, and `spotMarketParameters` and `perpetualMarketParameters` as `(baseLotAtoms,quoteTickAtomsPerBaseLot,minimumQuoteNotionalAtoms,contractMultiplierNumerator,contractMultiplierDenominator,baseDecimals,quoteDecimals)`.
 
-Each `subjectId` is `cast keccak "<subjectId>"` of the same string the runtime manifest uses, and each version and manifest hash is the runtime manifest's. Every step re-verifies the deployment relationships (including that the market's collateral is the spot quote token and that the factory binds this verifier), the shard, the Uniswap pool, and the active domain before it sends anything.
+Each `subjectId` is `cast keccak "<subjectId>"` of the same string the runtime manifest uses, and each version and manifest hash is the runtime manifest's. Every step re-verifies the deployment relationships (including that the market's collateral is the spot quote token and that the factory binds this verifier), the shard, the Uniswap pool, and the active domain and template before it sends anything.
 
 The perpetual venue and market records are `NaryxTestPerpMarket`. The perpetual adapter record is `PackageVerifier`: the verifier is the Base perpetual port, observing the venue position before and after the trade, and it admits only a perpetual adapter whose local address is itself.
 
 ```bash
-BASE_ROUTE_TYPE='(address,uint32,bytes32,address,address,address,address,address,address,address,address,address,address,(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),bytes32,bytes32,uint32,uint128,uint128,uint32,bytes32,uint256,(uint256,uint256,uint256,uint256,uint256,uint8,uint8),(uint256,uint256,uint256,uint256,uint256,uint8,uint8))'
+BASE_ROUTE_TYPE='(address,uint32,bytes32,bytes32,address,address,address,address,address,address,address,address,address,address,(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),bytes32,bytes32,uint32,uint128,uint128,uint32,bytes32,uint256,(uint256,uint256,uint256,uint256,uint256,uint8,uint8),(uint256,uint256,uint256,uint256,uint256,uint8,uint8))'
 base_step() { # function, operator address, keystore name, extra flags
   forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepoliaAtomicPackage \
     --sig "$1($BASE_ROUTE_TYPE,address)" "$BASE_ROUTE" "$2" \
@@ -314,10 +338,10 @@ Base (`schemaVersion` `1`, `activationState` `"ACTIVE"`, `deployment`):
 - `deployment.spot`: `adapter` is `UniswapV3SpotPort`, `market` the Uniswap pool, `venue` the Uniswap factory, `adapterClassId` `"base-strategy-spot-adapter-v1"`, `adapterClassVersion` `1`, `baseLotAtoms` equal to the route's spot `baseLotAtoms`.
 - `deployment.perpetual`: `adapter` is `PackageVerifier`, `market` and `venue` are `NaryxTestPerpMarket`, `adapterClassId` `"base-strategy-perp-port-v1"`, `adapterClassVersion` `1`. `deployment.perpetualObserver` is `NaryxTestPerpMarket`.
 - `deployment.baseAsset` and `deployment.quoteAsset`: WETH (`decimals` `18`) and USDC (`decimals` `6`).
-- Each resource identity also carries `subjectId`, `manifestVersion`, and `manifestHash`, equal to the route references registered in step 4.
+- Each resource identity also carries `subjectId`, `manifestVersion`, and `manifestHash`, equal to the route references registered in step 5.
 - `uniswapV3.spotPort`, `uniswapV3.pool`, `uniswapV3.factory`: the same identities as the spot adapter, market, and venue.
 - `conformancePerpetual`: `instrument` and `observer` are `NaryxTestPerpMarket`, `evidenceLabel` `"BASE_SEPOLIA_CONFORMANCE_ONLY"`. The subject ID an owner passes to `depositPerpMargin` is `deployment.perpetual.venue.subjectId`.
-- `seriesBindingInput`: the binding registered in step 4 (route `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, and units per package).
+- `seriesBindingInput`: the binding registered in step 5 (route `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, and units per package).
 - `atomicEvidenceClass`: `"PACKAGE_VERIFIER_ATOMIC_V1"`. `finality.manifestHash` equals the domain manifest's `finalityPolicyHash`. `admission` and `executionPolicy` are reviewed configuration, not deployment output.
 
 Arbitrum (`schemaVersion` `1`, `activationState` `"ACTIVE"`, `observationStartBlock`, `deployment`):
@@ -344,6 +368,7 @@ After a reviewed lane completes, commit a non-secret record under `deployments/e
 - solc `0.8.37`, optimizer runs `200`, EVM version `cancun`, and the Forge version;
 - each contract's name, address, deployment transaction, block, and runtime code hash;
 - the provisional and the reviewed domain manifest (version, hash, and the full reviewed manifest);
+- on Base, the reviewed cash-and-carry template manifest and its hash, and the transactions that proposed and activated it;
 - the four governance roles, `configDelaySeconds`, and every governance transaction with its activation time;
 - every external dependency identity and code hash that was pinned (Uniswap V3, GMX, tokens);
 - known limitations: the Base perpetual leg is the Naryx test perpetual market (oracle-priced, house counterparty, keeper-set funding), not a venue; strategy accounts are created per owner through the factory;

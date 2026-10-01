@@ -126,7 +126,6 @@ contract CashCarrySeriesRegistry {
     bytes32 public immutable configCodeHash;
     bytes32 public immutable resourceRegistryCodeHash;
     bytes32 public immutable deploymentDomainIdIdentityHash;
-    bytes32 public immutable cashCarryTemplateManifestHash;
     uint64 public immutable configDelaySeconds;
 
     mapping(bytes32 identityKey => uint32 version) public latestVersion;
@@ -148,7 +147,6 @@ contract CashCarrySeriesRegistry {
         if (
             bytes(domainId).length == 0 || manifestVersion == 0 || manifestHash == bytes32(0) || delaySeconds == 0
                 || address(resources_.config()) != address(config_)
-                || resources_.cashCarryTemplateManifestHash() == bytes32(0)
         ) revert InvalidConfiguration();
 
         config = config_;
@@ -157,8 +155,13 @@ contract CashCarrySeriesRegistry {
         configCodeHash = address(config_).codehash;
         resourceRegistryCodeHash = address(resources_).codehash;
         deploymentDomainIdIdentityHash = _protocolIdIdentityHash(domainId);
-        cashCarryTemplateManifestHash = resources_.cashCarryTemplateManifestHash();
         configDelaySeconds = delaySeconds;
+    }
+
+    /// @notice The active cash-and-carry template manifest hash, governed in `ProtocolConfig` and read on every
+    /// call so that this registry's code hash does not depend on it.
+    function cashCarryTemplateManifestHash() public view returns (bytes32) {
+        return config.cashCarryTemplateManifestHash();
     }
 
     function cashCarryTemplateIdentityHash() public pure returns (bytes32) {
@@ -382,7 +385,6 @@ contract CashCarrySeriesRegistry {
                 || address(config).codehash != configCodeHash || config.configDelaySeconds() != configDelaySeconds
                 || address(resources).code.length == 0 || address(resources).codehash != resourceRegistryCodeHash
                 || address(resources.config()) != address(config)
-                || resources.cashCarryTemplateManifestHash() != cashCarryTemplateManifestHash
         ) revert DeploymentChanged();
         (string memory domainId, uint32 manifestVersion, bytes32 manifestHash) = config.domain();
         if (
@@ -399,8 +401,8 @@ contract CashCarrySeriesRegistry {
                 || binding.domainRefIdentityHash != currentDomainRefIdentityHash()
                 || binding.seriesManifestHash == bytes32(0) || binding.executionClassManifestHash == bytes32(0)
                 || binding.templateIdentityHash != cashCarryTemplateIdentityHash()
-                || binding.templateVersion != TEMPLATE_VERSION
-                || binding.templateManifestHash != cashCarryTemplateManifestHash
+                || binding.templateVersion != TEMPLATE_VERSION || binding.templateManifestHash == bytes32(0)
+                || binding.templateManifestHash != cashCarryTemplateManifestHash()
                 || binding.settlementClassIdentityHash != atomicPostconditionIdentityHash()
                 || binding.baseAsset.subjectIdentity == bytes32(0) || binding.baseAsset.manifestVersion == 0
                 || binding.baseAsset.manifestHash == bytes32(0) || binding.quoteAsset.subjectIdentity == bytes32(0)

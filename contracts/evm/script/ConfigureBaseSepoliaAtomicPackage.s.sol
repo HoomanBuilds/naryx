@@ -21,6 +21,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         ProtocolConfig config;
         uint32 domainManifestVersion;
         bytes32 domainManifestHash;
+        bytes32 cashCarryTemplateManifestHash;
         SolverRegistry solverRegistry;
         ResourceRegistry resources;
         CashCarrySeriesRegistry seriesRegistry;
@@ -83,6 +84,39 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         (bool exists, uint32 pendingVersion, bytes32 pendingHash,) = config.pendingDomain();
         if (!exists || pendingVersion != manifestVersion || pendingHash != manifestHash) revert InvalidRoute();
         config.activateDomain();
+        vm.stopBroadcast();
+    }
+
+    /// @notice Proposes the reviewed cash-and-carry template manifest hash. The template manifest lists the
+    /// reviewed domain reference among its supported domains, so this runs only after the domain rotation, and
+    /// every registration below binds the active template, so it runs before any of them.
+    function runProposeTemplate(
+        ProtocolConfig config,
+        uint32 domainManifestVersion,
+        bytes32 domainManifestHash,
+        bytes32 templateManifestHash,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, true);
+        _start(operatorAddress);
+        _verifyTemplateStep(config, domainManifestVersion, domainManifestHash);
+        config.proposeCashCarryTemplate(templateManifestHash);
+        vm.stopBroadcast();
+    }
+
+    function runActivateTemplate(
+        ProtocolConfig config,
+        uint32 domainManifestVersion,
+        bytes32 domainManifestHash,
+        bytes32 templateManifestHash,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, false);
+        _start(operatorAddress);
+        _verifyTemplateStep(config, domainManifestVersion, domainManifestHash);
+        (bool exists, bytes32 pendingHash,) = config.pendingCashCarryTemplate();
+        if (!exists || pendingHash != templateManifestHash) revert InvalidRoute();
+        config.activateCashCarryTemplate();
         vm.stopBroadcast();
     }
 
@@ -308,12 +342,21 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         if (keccak256(bytes(domainId)) != DOMAIN_ID_HASH || !config.entryPaused()) revert InvalidRoute();
     }
 
+    function _verifyTemplateStep(ProtocolConfig config, uint32 domainManifestVersion, bytes32 domainManifestHash)
+        private
+        view
+    {
+        _verifyDomainStep(config);
+        (, uint32 manifestVersion, bytes32 manifestHash) = config.domain();
+        if (manifestVersion != domainManifestVersion || manifestHash != domainManifestHash) revert InvalidRoute();
+    }
+
     function _verifyDependencies(Route calldata route) private view {
-        _verifyDomainStep(route.config);
-        (, uint32 manifestVersion, bytes32 manifestHash) = route.config.domain();
-        if (manifestVersion != route.domainManifestVersion || manifestHash != route.domainManifestHash) {
-            revert InvalidRoute();
-        }
+        _verifyTemplateStep(route.config, route.domainManifestVersion, route.domainManifestHash);
+        if (
+            route.cashCarryTemplateManifestHash == bytes32(0)
+                || route.config.cashCarryTemplateManifestHash() != route.cashCarryTemplateManifestHash
+        ) revert InvalidRoute();
         if (
             address(route.solverRegistry.config()) != address(route.config)
                 || address(route.resources.config()) != address(route.config)
@@ -333,8 +376,6 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
                 || route.quoteShard.seriesManifestHash() != route.seriesManifestHash
                 || route.quoteShard.executionClassManifestHash() != route.executionClassManifestHash
                 || route.quoteShard.consumerCodeHash() != address(route.verifier).codehash
-                || route.resources.cashCarryTemplateManifestHash()
-                    != route.seriesRegistry.cashCarryTemplateManifestHash()
         ) revert InvalidRoute();
         route.spotPort.assertDeployment();
         route.quoteShard.assertDeployment();
@@ -455,7 +496,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         binding.allowedTemplate = ResourceRegistry.TemplateRef({
             templateId: route.resources.CASH_AND_CARRY_TEMPLATE_ID(),
             templateVersion: route.resources.CASH_AND_CARRY_TEMPLATE_VERSION(),
-            templateManifestHash: route.resources.cashCarryTemplateManifestHash()
+            templateManifestHash: route.cashCarryTemplateManifestHash
         });
         binding.settlementClass = ResourceRegistry.SettlementClassRef({
             classId: route.resources.ATOMIC_POSTCONDITION_ID(),
@@ -476,7 +517,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
             executionClassManifestHash: route.executionClassManifestHash,
             templateIdentityHash: route.seriesRegistry.cashCarryTemplateIdentityHash(),
             templateVersion: route.seriesRegistry.TEMPLATE_VERSION(),
-            templateManifestHash: route.resources.cashCarryTemplateManifestHash(),
+            templateManifestHash: route.cashCarryTemplateManifestHash,
             settlementClassIdentityHash: route.seriesRegistry.atomicPostconditionIdentityHash(),
             baseAsset: _seriesAsset(route.baseAsset),
             quoteAsset: _seriesAsset(route.quoteAsset),
@@ -520,7 +561,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         configured.template = ResourceRegistry.TemplateRef({
             templateId: route.resources.CASH_AND_CARRY_TEMPLATE_ID(),
             templateVersion: route.resources.CASH_AND_CARRY_TEMPLATE_VERSION(),
-            templateManifestHash: route.resources.cashCarryTemplateManifestHash()
+            templateManifestHash: route.cashCarryTemplateManifestHash
         });
         configured.settlementClass = ResourceRegistry.SettlementClassRef({
             classId: route.resources.ATOMIC_POSTCONDITION_ID(),

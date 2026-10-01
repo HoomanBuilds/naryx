@@ -369,6 +369,22 @@ async function evmDomainCheck(release, ctx) {
   ctx.release.entryPaused = await ctx.client.readContract({ address: config.address, abi, functionName: 'entryPaused' });
 }
 
+// The cash-and-carry template manifest commits to the reviewed domain reference, so it is activated in
+// ProtocolConfig after the domain rotation rather than passed at deployment. Refuse output until it is.
+async function evmTemplateCheck(release, ctx) {
+  if (release.templateCheck === undefined || ctx.client === undefined) return;
+  const expected = ctx.defs[release.templateCheck.definition];
+  if (expected === undefined || containsMissing(expected)) return;
+  const v = viem();
+  const config = ctx.release.contracts[release.templateCheck.contract] ?? fail(`${ctx.file}: templateCheck names an unknown contract.`);
+  const abi = v.parseAbi(['function cashCarryTemplateManifestHash() view returns (bytes32)']);
+  const hash = await ctx.client.readContract({ address: config.address, abi, functionName: 'cashCarryTemplateManifestHash' });
+  const expectedHash = `0x${hexOf(expected, `${ctx.file}: templateCheck.definition`)}`;
+  if (hash.toLowerCase() !== expectedHash) {
+    fail(`${ctx.file}: ProtocolConfig.cashCarryTemplateManifestHash() is ${hash}; the reviewed template manifest hash is ${expectedHash}. Activate the reviewed template first.`);
+  }
+}
+
 async function svmLive(release, ctx) {
   const adapter = await dist('packages/adapters/solana', 'index.js');
   const { PublicKey } = requireFrom('packages/adapters/solana')('@solana/web3.js');
@@ -487,6 +503,7 @@ async function prepareRelease(path, options) {
   for (const [name, raw] of Object.entries(release.definitions ?? {})) {
     ctx.defs[name] = resolveNode(raw, `definitions.${name}`);
   }
+  if (network.family === 'evm') await evmTemplateCheck(release, ctx);
   const outputs = {};
   for (const [relative, spec] of Object.entries(release.outputs ?? {})) {
     const file = safeRelative(relative, `${path}: outputs key`);
