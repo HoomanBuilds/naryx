@@ -27,6 +27,7 @@ import type {
 export * from './firm-plan.js';
 export * from './materializer.js';
 export * from './public-exit-plan.js';
+export * from './perp-venue.js';
 export * from './cash-carry-accounts.js';
 export * from './deployment-identity.js';
 export * from './mainnet-shadow.js';

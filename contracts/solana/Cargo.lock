@@ -2025,6 +2025,7 @@ dependencies = [
  "naryx_conformance_venue",
  "naryx_orca_adapter",
  "naryx_rise_adapter",
+ "naryx_test_perp_adapter",
  "solana-ed25519-program",
  "solana-instructions-sysvar 3.0.1",
  "solana-keypair",
@@ -2077,6 +2078,30 @@ dependencies = [
  "anchor-lang",
  "phoenix-rise",
  "phoenix-rise-accounts",
+]
+
+[[package]]
+name = "naryx_test_perp"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "litesvm",
+ "naryx_test_perp_adapter",
+ "solana-account 3.4.0",
+ "solana-keypair",
+ "solana-message 3.1.0",
+ "solana-signer",
+ "solana-transaction",
+]
+
+[[package]]
+name = "naryx_test_perp_adapter"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "naryx_test_perp",
 ]
 
 [[package]]

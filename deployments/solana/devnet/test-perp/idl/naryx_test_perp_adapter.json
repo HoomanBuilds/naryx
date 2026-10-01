@@ -1,0 +1,663 @@
+{
+  "address": "CvMLjMW9zwP4ue6j3Q716QRCZgGA6e17zvo3mKJri6hN",
+  "metadata": {
+    "name": "naryx_test_perp_adapter",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Typed Naryx execution boundary for the Naryx Devnet test perpetual venue"
+  },
+  "instructions": [
+    {
+      "name": "initialize_test_perp_strategy",
+      "discriminator": [
+        236,
+        87,
+        135,
+        89,
+        24,
+        193,
+        120,
+        86
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "strategy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "args.strategy_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "InitializeTestPerpStrategyArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_perp_close_short",
+      "discriminator": [
+        212,
+        150,
+        16,
+        163,
+        216,
+        222,
+        38,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TestPerpMarketOrderArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_perp_enter_short",
+      "discriminator": [
+        105,
+        184,
+        51,
+        115,
+        237,
+        81,
+        78,
+        112
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TestPerpMarketOrderArgs"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "TestPerpStrategy",
+      "discriminator": [
+        178,
+        201,
+        97,
+        164,
+        200,
+        224,
+        194,
+        167
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "StrategyIdZero",
+      "msg": "Strategy identifier is all zero"
+    },
+    {
+      "code": 6001,
+      "name": "ControllerZero",
+      "msg": "Controller is the default public key"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidMaxBaseLots",
+      "msg": "Maximum base lots is invalid"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidBaseLots",
+      "msg": "Order base lots is invalid"
+    },
+    {
+      "code": 6004,
+      "name": "LimitPriceZero",
+      "msg": "Limit price in ticks is zero"
+    },
+    {
+      "code": 6005,
+      "name": "OrderExpired",
+      "msg": "Order deadline has expired"
+    },
+    {
+      "code": 6006,
+      "name": "UnauthorizedController",
+      "msg": "Strategy controller is unauthorized"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidMarketIdentity",
+      "msg": "Test perp market or position does not match the strategy"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidPositionAuthority",
+      "msg": "Test perp position has not delegated trading to this strategy"
+    },
+    {
+      "code": 6009,
+      "name": "UnexpectedRemainingAccounts",
+      "msg": "Test perp orders take no extra accounts"
+    },
+    {
+      "code": 6010,
+      "name": "EntryPositionNotFlat",
+      "msg": "Entry requires a flat position"
+    },
+    {
+      "code": 6011,
+      "name": "ClosePositionMismatch",
+      "msg": "Close requires the exact current short position"
+    },
+    {
+      "code": 6012,
+      "name": "PositionPostconditionFailed",
+      "msg": "Authoritative test perp position postcondition failed"
+    },
+    {
+      "code": 6013,
+      "name": "CollateralPostconditionFailed",
+      "msg": "Authoritative test perp collateral postcondition failed"
+    }
+  ],
+  "types": [
+    {
+      "name": "InitializeTestPerpStrategyArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "strategy_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "controller",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_base_lots",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpMarket",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "funding_keeper",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle",
+            "type": "pubkey"
+          },
+          {
+            "name": "feed_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "collateral_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "insurance_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "base_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u32"
+          },
+          {
+            "name": "max_confidence_bps",
+            "type": "u16"
+          },
+          {
+            "name": "taker_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "half_spread_bps",
+            "type": "u16"
+          },
+          {
+            "name": "impact_bps_per_unit",
+            "type": "u16"
+          },
+          {
+            "name": "max_slippage_bps",
+            "type": "u16"
+          },
+          {
+            "name": "initial_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maintenance_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_penalty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "impact_unit_lots",
+            "type": "u64"
+          },
+          {
+            "name": "base_lot_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "quote_tick_atoms_per_base_lot",
+            "type": "u64"
+          },
+          {
+            "name": "max_position_lots",
+            "type": "u64"
+          },
+          {
+            "name": "max_funding_rate_per_second",
+            "type": "i64"
+          },
+          {
+            "name": "funding_rate_per_second",
+            "type": "i64"
+          },
+          {
+            "name": "cumulative_funding_index",
+            "type": "i128"
+          },
+          {
+            "name": "last_funding_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "open_interest_long_lots",
+            "type": "u64"
+          },
+          {
+            "name": "open_interest_short_lots",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "pause_opens",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpMarketOrderArgs",
+      "docs": [
+        "Same field set and meaning as `naryx_rise_adapter::RiseMarketOrderArgs`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "limit_price_in_ticks",
+            "type": "u64"
+          },
+          {
+            "name": "last_valid_slot",
+            "type": "u64"
+          },
+          {
+            "name": "min_post_collateral_quote_lots",
+            "type": "i64"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "delegate",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "entry_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "entry_funding_index",
+            "type": "i128"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpStrategy",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "controller",
+            "type": "pubkey"
+          },
+          {
+            "name": "strategy_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}

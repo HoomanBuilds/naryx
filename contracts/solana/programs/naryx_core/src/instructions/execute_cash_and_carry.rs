@@ -8,10 +8,6 @@ use anchor_lang::{
 };
 use anchor_spl::token::{Token, TokenAccount};
 use naryx_orca_adapter::{program::NaryxOrcaAdapter, ORCA_WHIRLPOOL_PROGRAM_ID};
-use naryx_rise_adapter::{
-    program::NaryxRiseAdapter, read_position_and_collateral, RiseMarketOrderArgs, RiseStrategy,
-    RISE_GLOBAL_CONFIG, RISE_LOG_AUTHORITY, RISE_PROGRAM_ID,
-};
 use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_sha256_hasher::hashv;
 
@@ -34,6 +30,13 @@ use crate::{
             signed_ed25519_public_key, verify_ed25519_signature, Ed25519SignatureError,
         },
         program_identity::program_data_header_identity,
+    },
+    perp_venue::{
+        invoke_perp_order, perp_position_and_collateral, perp_venue_account_keys,
+        validate_perp_accounts, CashCarryRiseAccounts, CashCarryRiseAccountsBumps,
+        PerpAdapterProgram, PerpMarketOrderArgs, PerpOrderContext, PerpStrategy,
+        __client_accounts_cash_carry_rise_accounts, __cpi_client_accounts_cash_carry_rise_accounts,
+        PERP_VENUE_PROGRAM_ID,
     },
     state::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
@@ -203,7 +206,7 @@ pub struct ExecuteCashAndCarry<'info> {
         constraint = rise_strategy.owner == trader.key() @ ErrorCode::CashCarryResourceAccountMismatch,
         constraint = rise_strategy.controller == executor_authority.key() @ ErrorCode::CashCarryResourceAccountMismatch
     )]
-    pub rise_strategy: Box<Account<'info, RiseStrategy>>,
+    pub rise_strategy: Box<Account<'info, PerpStrategy>>,
     pub rise: CashCarryRiseAccounts<'info>,
     pub runtime: CashCarryRuntimeAccounts<'info>,
     pub system_program: Program<'info, System>,
@@ -234,7 +237,7 @@ pub struct CashCarryProgramAccounts<'info> {
     pub spot_adapter_program: Program<'info, NaryxOrcaAdapter>,
     /// CHECK: Its deterministic address and bytes are verified against the admitted adapter record.
     pub spot_adapter_program_data: UncheckedAccount<'info>,
-    pub perp_adapter_program: Program<'info, NaryxRiseAdapter>,
+    pub perp_adapter_program: Program<'info, PerpAdapterProgram>,
     /// CHECK: Its deterministic address and bytes are verified against the admitted adapter record.
     pub perp_adapter_program_data: UncheckedAccount<'info>,
     /// CHECK: Fixed to Orca and verified against admitted venue records that reference its code.
@@ -242,8 +245,8 @@ pub struct CashCarryProgramAccounts<'info> {
     pub spot_venue_program: UncheckedAccount<'info>,
     /// CHECK: Its deterministic address and bytes are verified against admitted venue records.
     pub spot_venue_program_data: UncheckedAccount<'info>,
-    /// CHECK: Fixed to Rise and verified against admitted venue records that reference its code.
-    #[account(address = RISE_PROGRAM_ID, executable)]
+    /// CHECK: Fixed to the perp venue and verified against admitted venue records that reference its code.
+    #[account(address = PERP_VENUE_PROGRAM_ID, executable)]
     pub perp_venue_program: UncheckedAccount<'info>,
     /// CHECK: Its deterministic address and bytes are verified against admitted venue records.
     pub perp_venue_program_data: UncheckedAccount<'info>,
@@ -277,34 +280,6 @@ pub struct CashCarrySpotAccounts<'info> {
     /// CHECK: Its canonical PDA is checked before the swap.
     #[account(mut)]
     pub whirlpool_oracle: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CashCarryRiseAccounts<'info> {
-    /// CHECK: Fixed to the Rise log authority.
-    #[account(address = RISE_LOG_AUTHORITY)]
-    pub rise_log_authority: UncheckedAccount<'info>,
-    /// CHECK: The adapter decodes this with the official Rise account layout.
-    #[account(mut, address = RISE_GLOBAL_CONFIG, owner = RISE_PROGRAM_ID)]
-    pub rise_global_config: UncheckedAccount<'info>,
-    /// CHECK: The adapter decodes and binds this account to the strategy.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_trader_account: UncheckedAccount<'info>,
-    /// CHECK: The adapter decodes and binds this market map to the strategy.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_perp_asset_map: UncheckedAccount<'info>,
-    /// CHECK: The adapter derives this address from the Rise global configuration.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_global_trader_index_header: UncheckedAccount<'info>,
-    /// CHECK: The adapter derives this address from the Rise global configuration.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_active_trader_buffer_header: UncheckedAccount<'info>,
-    /// CHECK: The adapter decodes and binds this market to the strategy.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_orderbook: UncheckedAccount<'info>,
-    /// CHECK: The adapter derives and decodes this spline collection.
-    #[account(mut, owner = RISE_PROGRAM_ID)]
-    pub rise_spline_collection: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -613,10 +588,8 @@ fn execute<'info>(
     }
 
     let (base_is_a, pre_base_balance, pre_quote_balance) = token_route_and_balances(&ctx.accounts)?;
-    let (pre_rise_base_lots, pre_rise_collateral_quote_lots) = read_position_and_collateral(
-        &ctx.accounts.rise.rise_trader_account,
-        ctx.accounts.rise_strategy.asset_id,
-    )?;
+    let (pre_rise_base_lots, pre_rise_collateral_quote_lots) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
     let (perp_base_lots, perp_limit_ticks, spot_quote_limit_atoms) =
         execution_units(&admission, &ctx.accounts.resources)?;
     validate_preconditions(
@@ -656,7 +629,7 @@ fn execute<'info>(
             )?;
             execute_rise(
                 &ctx,
-                RiseMarketOrderArgs {
+                PerpMarketOrderArgs {
                     base_lots: perp_base_lots,
                     limit_price_in_ticks: perp_limit_ticks,
                     last_valid_slot: args.expiry_slot - 1,
@@ -670,7 +643,7 @@ fn execute<'info>(
         CashCarryAction::Exit => {
             execute_rise(
                 &ctx,
-                RiseMarketOrderArgs {
+                PerpMarketOrderArgs {
                     base_lots: perp_base_lots,
                     limit_price_in_ticks: perp_limit_ticks,
                     last_valid_slot: args.expiry_slot - 1,
@@ -694,10 +667,8 @@ fn execute<'info>(
     ctx.accounts.spot.trader_token_a.reload()?;
     ctx.accounts.spot.trader_token_b.reload()?;
     let (_, post_base_balance, post_quote_balance) = token_route_and_balances(&ctx.accounts)?;
-    let (post_rise_base_lots, post_rise_collateral_quote_lots) = read_position_and_collateral(
-        &ctx.accounts.rise.rise_trader_account,
-        ctx.accounts.rise_strategy.asset_id,
-    )?;
+    let (post_rise_base_lots, post_rise_collateral_quote_lots) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
     let spot_quote_delta_atoms = enforce_postconditions(
         &args,
         pre_base_balance,
@@ -1437,44 +1408,20 @@ fn validate_live_resource_accounts(accounts: &ExecuteCashAndCarry) -> Result<()>
         accounts.spot.whirlpool.key(),
         ErrorCode::CashCarryResourceAccountMismatch
     );
-    require_keys_eq!(
+    validate_perp_accounts(
+        &accounts.rise_strategy,
+        &accounts.rise,
         accounts
             .resources
             .perp_venue_record
             .manifest
             .subject_address,
-        accounts.rise.rise_global_config.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
         accounts
             .resources
             .perp_market_record
             .manifest
             .subject_address,
-        accounts.rise.rise_orderbook.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.trader_account,
-        accounts.rise.rise_trader_account.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.perp_asset_map,
-        accounts.rise.rise_perp_asset_map.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.orderbook,
-        accounts.rise.rise_orderbook.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.spline_collection,
-        accounts.rise.rise_spline_collection.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
+    )?;
     let expected_oracle = Pubkey::find_program_address(
         &[b"oracle", accounts.spot.whirlpool.key().as_ref()],
         &ORCA_WHIRLPOOL_PROGRAM_ID,
@@ -1744,32 +1691,10 @@ fn execute_spot<'info>(
 
 fn execute_rise<'info>(
     ctx: &Context<'info, ExecuteCashAndCarry<'info>>,
-    args: RiseMarketOrderArgs,
+    args: PerpMarketOrderArgs,
     entry: bool,
     remaining_accounts: &[AccountInfo<'info>],
 ) -> Result<()> {
-    let cpi_accounts = naryx_rise_adapter::cpi::accounts::ExecuteRiseOrder {
-        strategy: ctx.accounts.rise_strategy.to_account_info(),
-        controller: ctx.accounts.executor_authority.to_account_info(),
-        phoenix_program: ctx.accounts.programs.perp_venue_program.to_account_info(),
-        log_authority: ctx.accounts.rise.rise_log_authority.to_account_info(),
-        global_config: ctx.accounts.rise.rise_global_config.to_account_info(),
-        permission_account: ctx.accounts.rise_strategy.to_account_info(),
-        trader_account: ctx.accounts.rise.rise_trader_account.to_account_info(),
-        perp_asset_map: ctx.accounts.rise.rise_perp_asset_map.to_account_info(),
-        global_trader_index_header: ctx
-            .accounts
-            .rise
-            .rise_global_trader_index_header
-            .to_account_info(),
-        active_trader_buffer_header: ctx
-            .accounts
-            .rise
-            .rise_active_trader_buffer_header
-            .to_account_info(),
-        orderbook: ctx.accounts.rise.rise_orderbook.to_account_info(),
-        spline_collection: ctx.accounts.rise.rise_spline_collection.to_account_info(),
-    };
     let bump = [ctx.accounts.executor_authority.bump];
     let signer_seeds: &[&[u8]] = &[
         CASH_CARRY_EXECUTOR_SEED,
@@ -1777,18 +1702,20 @@ fn execute_rise<'info>(
         ctx.accounts.rise_strategy.to_account_info().key.as_ref(),
         bump.as_ref(),
     ];
-    let signer_seed_groups = [signer_seeds];
-    let cpi = CpiContext::new_with_signer(
-        ctx.accounts.programs.perp_adapter_program.key(),
-        cpi_accounts,
-        &signer_seed_groups,
+    invoke_perp_order(
+        PerpOrderContext {
+            strategy: ctx.accounts.rise_strategy.to_account_info(),
+            controller: ctx.accounts.executor_authority.to_account_info(),
+            adapter_program: ctx.accounts.programs.perp_adapter_program.key(),
+            venue_program: ctx.accounts.programs.perp_venue_program.to_account_info(),
+            perp: &ctx.accounts.rise,
+            token_program: ctx.accounts.runtime.token_program.to_account_info(),
+            remaining_accounts,
+        },
+        &[signer_seeds],
+        args,
+        entry,
     )
-    .with_remaining_accounts(remaining_accounts.to_vec());
-    if entry {
-        naryx_rise_adapter::cpi::rise_enter_short(cpi, args)
-    } else {
-        naryx_rise_adapter::cpi::rise_close_short(cpi, args)
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1969,15 +1896,8 @@ fn route_accounts_commitment(
         accounts.spot.tick_array_2.key(),
         accounts.spot.whirlpool_oracle.key(),
         accounts.rise_strategy.key(),
-        accounts.rise.rise_log_authority.key(),
-        accounts.rise.rise_global_config.key(),
-        accounts.rise.rise_trader_account.key(),
-        accounts.rise.rise_perp_asset_map.key(),
-        accounts.rise.rise_global_trader_index_header.key(),
-        accounts.rise.rise_active_trader_buffer_header.key(),
-        accounts.rise.rise_orderbook.key(),
-        accounts.rise.rise_spline_collection.key(),
     ];
+    keys.extend(perp_venue_account_keys(&accounts.rise));
     keys.extend(remaining.iter().map(AccountInfo::key));
     hash_pubkeys(ROUTE_ACCOUNTS_DOMAIN, &keys)
 }
@@ -2069,14 +1989,9 @@ fn execution_account_keys(
         accounts.spot.tick_array_2.key(),
         accounts.spot.whirlpool_oracle.key(),
         accounts.rise_strategy.key(),
-        accounts.rise.rise_log_authority.key(),
-        accounts.rise.rise_global_config.key(),
-        accounts.rise.rise_trader_account.key(),
-        accounts.rise.rise_perp_asset_map.key(),
-        accounts.rise.rise_global_trader_index_header.key(),
-        accounts.rise.rise_active_trader_buffer_header.key(),
-        accounts.rise.rise_orderbook.key(),
-        accounts.rise.rise_spline_collection.key(),
+    ]);
+    keys.extend_from_slice(&perp_venue_account_keys(&accounts.rise));
+    keys.extend_from_slice(&[
         accounts.runtime.token_program.key(),
         accounts.system_program.key(),
         accounts.runtime.instructions_sysvar.key(),

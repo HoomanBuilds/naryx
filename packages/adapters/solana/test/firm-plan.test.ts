@@ -20,7 +20,9 @@ import {
   compileFirmCashCarryPlan,
   decodeCashCarryExecutionReceipt,
   FIRM_CASH_CARRY_ACCOUNT_NAMES,
+  NARYX_TEST_PERP_ACCOUNT_NAMES,
   PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES,
+  RISE_VENUE_ACCOUNT_NAMES,
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_MAINNET_BETA_GENESIS_HASH,
   SolanaUnsignedTransactionMaterializer,
@@ -1162,7 +1164,7 @@ test('rejects replayed reservation and mismatched quote lock evidence', () => {
 
 test('rejects six dynamic Rise accounts', () => {
   const { admission, binding } = fixture(6);
-  assert.throws(() => compileFirmCashCarryPlan(admission, binding), /at most five Rise dynamic accounts/);
+  assert.throws(() => compileFirmCashCarryPlan(admission, binding), /at most 5 perp venue dynamic accounts/);
 });
 
 test('accepts the exact 64 resolved-address boundary', () => {
@@ -1360,4 +1362,71 @@ test('rejects wrong genesis and an uncompressed oversized entry before materiali
     }),
     /1232-byte wire limit|encoding overruns Uint8Array/,
   );
+});
+
+test('compiles a Devnet test perp firm entry against the devnet-test-perp core IDL', () => {
+  const testPerpIdl = JSON.parse(readFileSync(new URL('../../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json', import.meta.url), 'utf8')) as Idl;
+  const fixedAddress = (name: string): PublicKey => {
+    const instruction = testPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
+    const flat = (items: typeof instruction.accounts): { name: string; address?: string }[] =>
+      items.flatMap((item) => ('accounts' in item ? flat(item.accounts) : [item]));
+    return new PublicKey(flat(instruction.accounts).find((item) => item.name === name)!.address!);
+  };
+  const { admission, binding: riseBinding } = fixture();
+  const { publicExit: unusedExit, ...binding } = riseBinding;
+  void unusedExit;
+  const adapterProgram = fixedAddress('perp_adapter_program');
+  const venueProgram = fixedAddress('perp_venue_program');
+  const testPerp = Object.fromEntries(NARYX_TEST_PERP_ACCOUNT_NAMES.map((name, index) => [name, address(230 + index).toBase58()]));
+  const riseNames = new Set<string>(RISE_VENUE_ACCOUNT_NAMES);
+  const accounts = Object.fromEntries([
+    ...Object.entries(binding.accounts).filter(([name]) => !riseNames.has(name)),
+    ...NARYX_TEST_PERP_ACCOUNT_NAMES.map((name) => [name, { address: testPerp[name]!, routeBindingId: `firm-${name}` }]),
+  ]) as Record<string, { address: string; routeBindingId: string }>;
+  accounts.perpAdapterProgram = { ...accounts.perpAdapterProgram!, address: adapterProgram.toBase58() };
+  accounts.perpVenueProgram = { ...accounts.perpVenueProgram!, address: venueProgram.toBase58() };
+  const testAdmission = {
+    ...admission,
+    route: {
+      ...admission.route,
+      accountBindings: [
+        ...admission.route.accountBindings
+          .filter((route) => !riseNames.has(route.routeBindingId.replace(/^firm-/, '')))
+          .map((route) => route.routeBindingId === 'firm-perpAdapterProgram' ? { ...route, accountIdentity: adapterProgram.toBase58() }
+            : route.routeBindingId === 'firm-perpVenueProgram' ? { ...route, accountIdentity: venueProgram.toBase58() } : route),
+        ...NARYX_TEST_PERP_ACCOUNT_NAMES.map((name) => ({ routeBindingId: `firm-${name}`, accountIdentity: testPerp[name]! })),
+      ],
+    },
+  } as PackageAdmission;
+  const deployments = {
+    ...binding.deployments,
+    perpAdapter: { ...binding.deployments.perpAdapter, programId: adapterProgram },
+    perpVenue: { ...binding.deployments.perpVenue, programId: venueProgram },
+  };
+  const testBinding: FirmCashCarryBinding<'NARYX_TEST_PERP'> = {
+    ...binding,
+    perpVenueKind: 'NARYX_TEST_PERP',
+    coreIdl: testPerpIdl,
+    expectedCoreIdlHash: solanaIdlContentHash(testPerpIdl),
+    deployments,
+    accounts: accounts as FirmCashCarryBinding<'NARYX_TEST_PERP'>['accounts'],
+    riseDynamicAccounts: [],
+    resources: {
+      ...binding.resources,
+      perpAdapter: { ...binding.resources.perpAdapter, subjectAddress: adapterProgram, programId: adapterProgram },
+      perpVenue: { ...binding.resources.perpVenue, subjectAddress: testPerp.testPerpMarket!, programId: venueProgram },
+      perpMarket: { ...binding.resources.perpMarket, subjectAddress: testPerp.testPerpMarket!, programId: venueProgram },
+    },
+  };
+
+  const result = compileFirmCashCarryPlan(testAdmission, testBinding);
+  const entryKeys = result.traderEntry.instructions[2]!.keys.map((key) => key.pubkey.toBase58());
+  const strategyIndex = entryKeys.indexOf(binding.accounts.riseStrategy.address as string);
+  assert.deepEqual(entryKeys.slice(strategyIndex + 1, strategyIndex + 7), NARYX_TEST_PERP_ACCOUNT_NAMES.map((name) => testPerp[name]));
+  assert(result.traderEntry.resolvedAddressCount < 64);
+
+  const mixed = { ...testBinding, accounts: { ...testBinding.accounts, riseGlobalConfig: binding.accounts.riseGlobalConfig } } as FirmCashCarryBinding<'NARYX_TEST_PERP'>;
+  assert.throws(() => compileFirmCashCarryPlan(testAdmission, mixed), /riseGlobalConfig does not match NARYX_TEST_PERP/);
+  const riseIdl: FirmCashCarryBinding<'NARYX_TEST_PERP'> = { ...testBinding, coreIdl, expectedCoreIdlHash: solanaIdlContentHash(coreIdl) };
+  assert.throws(() => compileFirmCashCarryPlan(testAdmission, riseIdl), /IDL/);
 });

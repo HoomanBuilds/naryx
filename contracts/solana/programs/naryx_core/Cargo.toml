@@ -20,6 +20,7 @@ conformance = [
     "anchor-spl/idl-build",
     "naryx_conformance_venue/idl-build",
 ]
+devnet-test-perp = ["dep:naryx_test_perp_adapter"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
@@ -31,6 +32,7 @@ anchor-spl = { version = "=1.2.0", features = ["associated_token", "token"] }
 naryx_conformance_venue = { path = "../naryx_conformance_venue", features = ["cpi"], optional = true }
 naryx_orca_adapter = { path = "../naryx_orca_adapter", features = ["cpi"] }
 naryx_rise_adapter = { path = "../naryx_rise_adapter", features = ["cpi"] }
+naryx_test_perp_adapter = { path = "../naryx_test_perp_adapter", features = ["cpi"], optional = true }
 solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 solana-instructions-sysvar = "=3.0.1"
 solana-sdk-ids = "=3.1.0"

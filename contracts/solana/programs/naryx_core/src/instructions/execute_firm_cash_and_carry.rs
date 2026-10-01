@@ -9,10 +9,6 @@ use anchor_spl::{
     associated_token::get_associated_token_address,
     token::{self, TokenAccount, Transfer},
 };
-use naryx_rise_adapter::{
-    program::NaryxRiseAdapter, read_position_and_collateral, RiseMarketOrderArgs, RiseStrategy,
-    RISE_PROGRAM_ID,
-};
 use solana_sha256_hasher::hashv;
 
 use crate::{
@@ -33,14 +29,20 @@ use crate::{
             validate_basic_inputs, validate_expiry, validate_package_book_accounts,
             validate_preconditions, validate_quote_series_binding_pair, validate_resource_indices,
             CashCarryAction, CashCarryExecutionArgs, CashCarryQuoteArgs, CashCarryResourceAccounts,
-            CashCarryRiseAccounts, CashCarryRuntimeAccounts, QuoteEvidence, OPEN_PACKAGE_VERSION,
-            PACKAGE_ACCOUNTS_DOMAIN, PACKAGE_BOOK_ACCOUNT_COUNT,
-            PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN, PACKAGE_BOOK_QUOTE_SIDE_ASK,
-            ROUTE_ACCOUNTS_DOMAIN,
+            CashCarryRuntimeAccounts, QuoteEvidence, OPEN_PACKAGE_VERSION, PACKAGE_ACCOUNTS_DOMAIN,
+            PACKAGE_BOOK_ACCOUNT_COUNT, PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN,
+            PACKAGE_BOOK_QUOTE_SIDE_ASK, ROUTE_ACCOUNTS_DOMAIN,
         },
         resource_registry::{
             validate_cash_carry_admission, verify_code_identity, CashCarryResources,
         },
+    },
+    perp_venue::{
+        invoke_perp_order, perp_position_and_collateral, perp_venue_account_keys,
+        validate_perp_accounts, CashCarryRiseAccounts, CashCarryRiseAccountsBumps,
+        PerpAdapterProgram, PerpMarketOrderArgs, PerpOrderContext, PerpStrategy,
+        __client_accounts_cash_carry_rise_accounts, __cpi_client_accounts_cash_carry_rise_accounts,
+        PERP_VENUE_ACCOUNT_COUNT, PERP_VENUE_PROGRAM_ID,
     },
     reservation_policy::reservation_policy_hash,
     state::{
@@ -49,11 +51,9 @@ use crate::{
         ProtocolConfig, SolverRegistry, FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID,
     },
     wire::{DomainRef, ProtocolId, HASH_BYTE_LENGTH},
-    CashCarryResourceAccountsBumps, CashCarryRiseAccountsBumps, CashCarryRuntimeAccountsBumps,
-    __client_accounts_cash_carry_resource_accounts, __client_accounts_cash_carry_rise_accounts,
-    __client_accounts_cash_carry_runtime_accounts,
+    CashCarryResourceAccountsBumps, CashCarryRuntimeAccountsBumps,
+    __client_accounts_cash_carry_resource_accounts, __client_accounts_cash_carry_runtime_accounts,
     __cpi_client_accounts_cash_carry_resource_accounts,
-    __cpi_client_accounts_cash_carry_rise_accounts,
     __cpi_client_accounts_cash_carry_runtime_accounts,
 };
 
@@ -68,7 +68,7 @@ const RESERVATION_ID_DOMAIN: &[u8] = b"CON/v1/reservation-id";
 const FIRM_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/firm-cash-carry-execution/v1";
 const FIRM_QUOTE_LOCK_SEED: &[u8] = b"firm-quote-lock";
 const FIRM_QUOTE_ARGS_DOMAIN: &[u8] = b"NARYX/firm-quote-args/v1";
-pub const FIRM_FIXED_ACCOUNT_COUNT: usize = 57;
+pub const FIRM_FIXED_ACCOUNT_COUNT: usize = 49 + PERP_VENUE_ACCOUNT_COUNT;
 pub const FIRM_AUXILIARY_PROGRAM_COUNT: usize = 2;
 pub const MAX_FIRM_RISE_EXTRA_ACCOUNTS: usize =
     64 - FIRM_FIXED_ACCOUNT_COUNT - FIRM_AUXILIARY_PROGRAM_COUNT;
@@ -397,11 +397,11 @@ pub struct ExecuteFirmCashAndCarry<'info> {
     pub quote_lock: Box<Account<'info, FirmQuoteLock>>,
     pub series_index: Box<Account<'info, CashCarrySeriesBindingIndex>>,
     pub series_record: Box<Account<'info, CashCarrySeriesBindingRecord>>,
-    pub perp_adapter_program: Program<'info, NaryxRiseAdapter>,
+    pub perp_adapter_program: Program<'info, PerpAdapterProgram>,
     /// CHECK: The admitted adapter record pins this ProgramData and its bytes.
     pub perp_adapter_program_data: UncheckedAccount<'info>,
     /// CHECK: The admitted venue record pins this executable program.
-    #[account(address = RISE_PROGRAM_ID, executable)]
+    #[account(address = PERP_VENUE_PROGRAM_ID, executable)]
     pub perp_venue_program: UncheckedAccount<'info>,
     /// CHECK: The admitted venue record pins this ProgramData and its bytes.
     pub perp_venue_program_data: UncheckedAccount<'info>,
@@ -410,7 +410,7 @@ pub struct ExecuteFirmCashAndCarry<'info> {
         constraint = rise_strategy.owner == trader.key() @ ErrorCode::CashCarryResourceAccountMismatch,
         constraint = rise_strategy.controller == executor_authority.key() @ ErrorCode::CashCarryResourceAccountMismatch
     )]
-    pub rise_strategy: Box<Account<'info, RiseStrategy>>,
+    pub rise_strategy: Box<Account<'info, PerpStrategy>>,
     pub rise: CashCarryRiseAccounts<'info>,
     pub runtime: CashCarryRuntimeAccounts<'info>,
     pub system_program: Program<'info, System>,
@@ -592,10 +592,8 @@ pub(crate) fn handler<'info>(
         firm_quote_atoms <= spot_quote_limit_atoms,
         ErrorCode::CashCarryPostconditionFailed
     );
-    let (pre_rise_base_lots, pre_collateral) = read_position_and_collateral(
-        &ctx.accounts.rise.rise_trader_account,
-        ctx.accounts.rise_strategy.asset_id,
-    )?;
+    let (pre_rise_base_lots, pre_collateral) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
     validate_preconditions(&args, pre_rise_base_lots, pre_collateral, perp_base_lots)?;
 
     let pre_base = ctx.accounts.firm.trader_base.amount;
@@ -612,7 +610,7 @@ pub(crate) fn handler<'info>(
     deliver_base(&ctx, args.spot_quantity_atoms)?;
     execute_rise(
         &ctx,
-        RiseMarketOrderArgs {
+        PerpMarketOrderArgs {
             base_lots: perp_base_lots,
             limit_price_in_ticks: perp_limit_ticks,
             last_valid_slot: args.expiry_slot - 1,
@@ -627,10 +625,8 @@ pub(crate) fn handler<'info>(
         ctx.accounts.firm.executor_base.amount == 0,
         ErrorCode::CashCarryPostconditionFailed
     );
-    let (post_rise_base_lots, post_collateral) = read_position_and_collateral(
-        &ctx.accounts.rise.rise_trader_account,
-        ctx.accounts.rise_strategy.asset_id,
-    )?;
+    let (post_rise_base_lots, post_collateral) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
     let spot_quote_delta_atoms = enforce_postconditions(
         &args,
         pre_base,
@@ -1103,37 +1099,12 @@ fn validate_firm_accounts(
             &accounts.perp_venue_program_data,
         )?;
     }
-    require_keys_eq!(
+    validate_perp_accounts(
+        &accounts.rise_strategy,
+        &accounts.rise,
         resources.perp_venue_record.manifest.subject_address,
-        accounts.rise.rise_global_config.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
         resources.perp_market_record.manifest.subject_address,
-        accounts.rise.rise_orderbook.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.trader_account,
-        accounts.rise.rise_trader_account.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.perp_asset_map,
-        accounts.rise.rise_perp_asset_map.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.orderbook,
-        accounts.rise.rise_orderbook.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    require_keys_eq!(
-        accounts.rise_strategy.spline_collection,
-        accounts.rise.rise_spline_collection.key(),
-        ErrorCode::CashCarryResourceAccountMismatch
-    );
-    Ok(())
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1193,15 +1164,8 @@ fn firm_route_accounts_commitment(ctx: &Context<ExecuteFirmCashAndCarry>) -> [u8
         accounts.series_index.key(),
         accounts.series_record.key(),
         accounts.rise_strategy.key(),
-        accounts.rise.rise_log_authority.key(),
-        accounts.rise.rise_global_config.key(),
-        accounts.rise.rise_trader_account.key(),
-        accounts.rise.rise_perp_asset_map.key(),
-        accounts.rise.rise_global_trader_index_header.key(),
-        accounts.rise.rise_active_trader_buffer_header.key(),
-        accounts.rise.rise_orderbook.key(),
-        accounts.rise.rise_spline_collection.key(),
     ];
+    keys.extend(perp_venue_account_keys(&accounts.rise));
     keys.extend(ctx.remaining_accounts.iter().map(AccountInfo::key));
     hash_pubkeys(ROUTE_ACCOUNTS_DOMAIN, &keys)
 }
@@ -1252,14 +1216,9 @@ fn firm_execution_account_keys(ctx: &Context<ExecuteFirmCashAndCarry>) -> Vec<Pu
         accounts.series_index.key(),
         accounts.series_record.key(),
         accounts.rise_strategy.key(),
-        accounts.rise.rise_log_authority.key(),
-        accounts.rise.rise_global_config.key(),
-        accounts.rise.rise_trader_account.key(),
-        accounts.rise.rise_perp_asset_map.key(),
-        accounts.rise.rise_global_trader_index_header.key(),
-        accounts.rise.rise_active_trader_buffer_header.key(),
-        accounts.rise.rise_orderbook.key(),
-        accounts.rise.rise_spline_collection.key(),
+    ]);
+    keys.extend(perp_venue_account_keys(&accounts.rise));
+    keys.extend([
         accounts.runtime.token_program.key(),
         accounts.runtime.instructions_sysvar.key(),
         accounts.system_program.key(),
@@ -1383,29 +1342,9 @@ fn deliver_base(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> Result<(
 
 fn execute_rise<'info>(
     ctx: &Context<'info, ExecuteFirmCashAndCarry<'info>>,
-    args: RiseMarketOrderArgs,
+    args: PerpMarketOrderArgs,
 ) -> Result<()> {
     let accounts = &ctx.accounts;
-    let cpi_accounts = naryx_rise_adapter::cpi::accounts::ExecuteRiseOrder {
-        strategy: accounts.rise_strategy.to_account_info(),
-        controller: accounts.executor_authority.to_account_info(),
-        phoenix_program: accounts.perp_venue_program.to_account_info(),
-        log_authority: accounts.rise.rise_log_authority.to_account_info(),
-        global_config: accounts.rise.rise_global_config.to_account_info(),
-        permission_account: accounts.rise_strategy.to_account_info(),
-        trader_account: accounts.rise.rise_trader_account.to_account_info(),
-        perp_asset_map: accounts.rise.rise_perp_asset_map.to_account_info(),
-        global_trader_index_header: accounts
-            .rise
-            .rise_global_trader_index_header
-            .to_account_info(),
-        active_trader_buffer_header: accounts
-            .rise
-            .rise_active_trader_buffer_header
-            .to_account_info(),
-        orderbook: accounts.rise.rise_orderbook.to_account_info(),
-        spline_collection: accounts.rise.rise_spline_collection.to_account_info(),
-    };
     let trader = accounts.trader.key();
     let strategy = accounts.rise_strategy.key();
     let bump = [accounts.executor_authority.bump];
@@ -1415,14 +1354,20 @@ fn execute_rise<'info>(
         strategy.as_ref(),
         bump.as_ref(),
     ];
-    let signer_groups = [signer];
-    let cpi = CpiContext::new_with_signer(
-        accounts.perp_adapter_program.key(),
-        cpi_accounts,
-        &signer_groups,
+    invoke_perp_order(
+        PerpOrderContext {
+            strategy: accounts.rise_strategy.to_account_info(),
+            controller: accounts.executor_authority.to_account_info(),
+            adapter_program: accounts.perp_adapter_program.key(),
+            venue_program: accounts.perp_venue_program.to_account_info(),
+            perp: &accounts.rise,
+            token_program: accounts.runtime.token_program.to_account_info(),
+            remaining_accounts: ctx.remaining_accounts,
+        },
+        &[signer],
+        args,
+        true,
     )
-    .with_remaining_accounts(ctx.remaining_accounts.to_vec());
-    naryx_rise_adapter::cpi::rise_enter_short(cpi, args)
 }
 
 #[cfg(test)]
@@ -1557,6 +1502,7 @@ mod tests {
         assert!(check(&lock, &quote, 25, 98).is_err());
     }
 
+    #[cfg(not(feature = "devnet-test-perp"))]
     #[test]
     fn firm_rise_account_limit_reserves_auxiliary_programs() {
         assert_eq!(FIRM_FIXED_ACCOUNT_COUNT, 57);

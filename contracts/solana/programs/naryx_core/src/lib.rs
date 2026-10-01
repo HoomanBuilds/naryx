@@ -2,6 +2,7 @@ pub mod constants;
 pub mod error;
 pub mod events;
 pub mod instructions;
+pub mod perp_venue;
 pub mod reservation_policy;
 pub mod state;
 pub mod wire;

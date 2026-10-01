@@ -14,6 +14,8 @@ The normal cash-and-carry route requires these Naryx programs to be built from o
 
 The normal `naryx_core` binary is compiled without the `conformance` feature.
 
+Phoenix Rise has no Devnet deployment, so the Devnet perp leg uses the Naryx Devnet test perp lane described in [Naryx Devnet test perp lane](#naryx-devnet-test-perp-lane). That lane adds `naryx_test_perp` and `naryx_test_perp_adapter`, replaces `naryx_rise_adapter` in the Devnet release, and compiles `naryx_core` with `--features devnet-test-perp`.
+
 `naryx_conformance_venue` is local deterministic test infrastructure. It is not a Phoenix Rise substitute and the normal core does not call it. The feature-gated conformance core binary must never replace the normal Devnet core at the same program identity. A future Phoenix-compatible public Devnet conformance dependency needs its own reviewed program, identity, deployment record, and `CONFORMANCE_DEPENDENCY` label.
 
 ## Safety gates
@@ -138,3 +140,65 @@ Dump the deployed bytes to an external temporary directory and compare their tri
 - a statement that no initialization, market creation, asset funding, or package execution is implied by program deployment.
 
 Commit only the public identity changes and the completed non-secret release manifest. Program keypairs, payer keys, raw CLI logs, temporary dumps, and local deployment records remain untracked.
+
+## Naryx Devnet test perp lane
+
+Phoenix Rise is not deployed on Devnet and Drift Devnet is abandoned. `naryx_test_perp` is a Naryx-operated, oracle-priced perpetual venue for Solana Devnet. It is test infrastructure with an explicit `CONFORMANCE_DEPENDENCY` label, not a public market, and no result from it is a claim about Rise liquidity or mainnet readiness.
+
+### What it models
+
+- One market per owner and Pyth feed id. The market pins a Pyth Solana Receiver `PriceUpdateV2` account (owner `rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`), its feed id, a maximum price age, and a maximum confidence width in bps. Every price read requires the exact account, the receiver owner, the `PriceUpdateV2` discriminator, `Full` verification, the feed id, a positive price, `publish_time + max_age >= now`, and `conf <= max_confidence_bps * price`.
+- Market orders are immediate-or-cancel for the full size. A sell fills at `floor(oracle * (10000 - s) / 10000)` and a buy at `ceil(oracle * (10000 + s) / 10000)` per base lot, where `s = half_spread_bps + impact_bps_per_unit * ceil(base_lots / impact_unit_lots)` and `s <= max_slippage_bps`. An order whose fill is worse than its limit, expressed as `limit_price_in_ticks * quote_tick_atoms_per_base_lot`, fails.
+- The taker fee is `ceil(notional * taker_fee_bps / 10000)` collateral atoms, moved to the fee vault PDA. Any order that opens or increases exposure needs post-trade equity at or above initial margin at the oracle price; reductions are always allowed. `pause_opens` blocks only exposure increases.
+- PnL is realized on every reduction with the closed cost basis rounded against the trader. The insurance vault PDA is the venue counterparty: it pays trader gains and funding credits and receives trader losses and funding debits. A trade that needs more than the insurance vault holds fails closed. A loss beyond collateral floors collateral at zero and is recorded as `bad_debt_atoms`.
+- Funding accrues into a cumulative index as `rate_per_second * elapsed_seconds * oracle_price_per_lot`, with the rate scaled by `1e12`. A positive rate makes longs pay shorts. Funding settles on every order, withdrawal, and liquidation, rounded toward the trader paying more.
+- Anyone can liquidate a position whose equity, including unsettled funding, is below maintenance margin. The whole position closes at the oracle price and the liquidation penalty goes to the fee vault.
+- A position has one owner and an optional delegate. The delegate can place orders but never withdraw, which mirrors the Rise position authority. Withdrawals are owner-only and limited to collateral above initial margin.
+
+`naryx_test_perp_adapter` mirrors `naryx_rise_adapter`: a strategy PDA per owner and strategy id, a controller, a maximum size, `test_perp_enter_short` from flat and `test_perp_close_short` reduce-only from the exact short, and the same pre and post position and collateral postconditions. One collateral quote lot is one collateral atom.
+
+### Building core for Devnet
+
+```bash
+cd contracts/solana
+anchor build --ignore-keys
+anchor build -p naryx_core --ignore-keys --no-idl -- --features devnet-test-perp
+node scripts/build-devnet-test-perp-artifacts.mjs
+```
+
+The first command produces every program, with the default Rise core. The second replaces `target/deploy/naryx_core.so` with the Devnet core; rebuild the default core before any non-Devnet use, because both builds write the same path. A `devnet-test-perp` core must never be registered or deployed under a mainnet identity. Its perp leg keeps the `rise_strategy` account slot for the test perp strategy PDA and replaces the eight Rise venue accounts with `test_perp_market`, `test_perp_position`, `test_perp_oracle`, `test_perp_collateral_vault`, `test_perp_fee_vault`, and `test_perp_insurance_vault`, and it takes no remaining accounts. The firm entry resolves 55 fixed addresses, inside the 64-address limit. The script publishes the ABI-only core, venue, and adapter IDLs to `deployments/solana/devnet/test-perp/idl`. The TypeScript planner selects this shape with `perpVenueKind: 'NARYX_TEST_PERP'`; there is no fallback between kinds.
+
+The Devnet release then contains `naryx_orca_adapter`, `naryx_test_perp`, `naryx_test_perp_adapter`, `naryx_inventory_reservation`, `naryx_package_book`, and the `devnet-test-perp` `naryx_core`. Sync `naryx_test_perp` and `naryx_test_perp_adapter` with `anchor keys sync -p` like the other programs; the adapter imports the venue ID from the venue crate, so no extra constant sync is needed.
+
+### Initialization, after a reviewed deployment only
+
+Every step below is a Devnet write. None of it is authorized by this README; each needs the same genesis-hash check and an external Devnet-only signer.
+
+1. `initialize_market` by the market owner with the Devnet USDC mint as `collateral_mint`, the Devnet SOL/USD sponsored price account `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE` as `oracle`, and feed id `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d`. Recommended parameters, close to a real venue:
+
+   | Parameter | Value |
+   |---|---|
+   | `base_decimals` | `9` |
+   | `base_lot_atoms` | `1000000` (0.001 SOL) |
+   | `quote_tick_atoms_per_base_lot` | `1` |
+   | `taker_fee_bps` | `5` |
+   | `half_spread_bps` | `2` |
+   | `impact_bps_per_unit` / `impact_unit_lots` | `1` / `10000` (1 bps per 10 SOL) |
+   | `max_slippage_bps` | `100` |
+   | `initial_margin_bps` / `maintenance_margin_bps` | `1000` / `500` |
+   | `liquidation_penalty_bps` | `100` |
+   | `max_price_age_seconds` | `60` |
+   | `max_confidence_bps` | `50` |
+   | `max_position_lots` | `1000000` |
+   | `max_funding_rate_per_second` | `10000` (1e-8 per second) |
+   | `funding_keeper` | a separate Devnet-only keeper key |
+
+2. Fund the insurance vault PDA with Devnet USDC by a plain token transfer. It is the counterparty for trader gains and funding credits.
+3. Per trader: `initialize_position`, `deposit`, `naryx_test_perp_adapter.initialize_test_perp_strategy` with the core executor authority PDA as `controller`, then `set_delegate` to the strategy PDA. The adapter rejects a strategy whose position is not delegated to it.
+4. Register the core resources: the perp adapter record subject is the `naryx_test_perp_adapter` program, and both the perp venue and perp market record subjects are the test perp market account under the `naryx_test_perp` program code identity, with the market record lot and tick equal to `base_lot_atoms` and `quote_tick_atoms_per_base_lot`.
+
+The sponsored Pyth feed was observed live and fully verified with read-only RPC on 2026-10-01: about 36 seconds old, confidence about 2 bps. A stale or wide feed fails every order closed, so Devnet execution stops rather than trading on a bad price.
+
+### Funding keeper duty
+
+The keeper is the only signer of `set_funding_rate`. It accrues the index at the previous rate up to now and then sets a new rate bounded by `max_funding_rate_per_second`. A reasonable Devnet policy is to set the rate every hour from a public reference funding rate converted to a per-second fraction scaled by `1e12`, and to set `0` when no reference is available. The keeper never moves funds. The market owner can rotate the keeper and toggle `pause_opens` with `update_market_controls`.

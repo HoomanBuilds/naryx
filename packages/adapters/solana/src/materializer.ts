@@ -12,7 +12,7 @@ import {
 import { bytesEqual, type DomainRef, type PackageAdmission } from '@naryx/protocol-types';
 import {
   compileFirmCashCarryPlan,
-  type FirmCashCarryBinding,
+  type AnyFirmCashCarryBinding,
   type SolanaMessageContext,
   type UnsignedSolanaTransactionPlan,
 } from './firm-plan.js';
@@ -112,7 +112,7 @@ export class ConnectionSolanaReadOnlyRpc implements SolanaReadOnlyRpc {
 export interface SolanaMaterializationRequest {
   readonly planKind: SolanaMaterializedPlanKind;
   readonly admission: PackageAdmission;
-  readonly binding: FirmCashCarryBinding;
+  readonly binding: AnyFirmCashCarryBinding;
 }
 
 export interface SolanaLookupTableCommitment {
@@ -388,7 +388,7 @@ export class SolanaUnsignedTransactionMaterializer {
       recentBlockhash: latest.blockhash,
       addressLookupTables: Object.freeze(lookupAccounts),
     });
-    let binding: FirmCashCarryBinding;
+    let binding: AnyFirmCashCarryBinding;
     if (request.planKind === 'SOLVER_LOCK' || request.planKind === 'TRADER_ENTRY') {
       const { publicExit: unusedExit, ...entryBinding } = request.binding;
       void unusedExit;

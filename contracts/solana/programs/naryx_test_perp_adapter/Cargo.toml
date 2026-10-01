@@ -1,0 +1,29 @@
+[package]
+name = "naryx_test_perp_adapter"
+version = "0.1.0"
+description = "Typed Naryx execution boundary for the Naryx Devnet test perpetual venue"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "naryx_test_perp_adapter"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "naryx_test_perp/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+
+[dependencies]
+anchor-lang = "=1.2.0"
+anchor-spl = { version = "=1.2.0", features = ["token"] }
+naryx_test_perp = { path = "../naryx_test_perp", features = ["cpi"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

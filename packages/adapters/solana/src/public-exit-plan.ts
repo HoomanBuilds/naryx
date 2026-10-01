@@ -19,6 +19,15 @@ import type {
   SolanaRouteAccountBinding,
   UnsignedSolanaTransactionPlan,
 } from './firm-plan.js';
+import {
+  type NaryxTestPerpAccountName,
+  type RiseVenueAccountName,
+  type SolanaPerpVenueKind,
+  type SolanaPerpVenueProfile,
+  RISE_VENUE_ACCOUNT_NAMES,
+  requireOnlyProfileVenueAccounts,
+  solanaPerpVenueProfile,
+} from './perp-venue.js';
 
 const { BN, BorshCoder } = anchor;
 const U64_MAX = (1n << 64n) - 1n;
@@ -26,7 +35,8 @@ const U128_MAX = (1n << 128n) - 1n;
 const I64_MIN = -(1n << 63n);
 const I64_MAX = (1n << 63n) - 1n;
 const MAX_RESOLVED_ADDRESSES = 64;
-const FIXED_EXIT_ADDRESS_COUNT = 54;
+// Fixed exit addresses other than the perp venue accounts: 54 with the eight Rise accounts.
+const FIXED_EXIT_BASE_ADDRESS_COUNT = 46;
 const LEGACY_TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 
 const HASH_DOMAINS = {
@@ -93,6 +103,17 @@ export const PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES = [
 ] as const;
 
 export type PublicCashCarryExitAccountName = typeof PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES[number];
+export type PublicCashCarryExitTestPerpAccountName =
+  | Exclude<PublicCashCarryExitAccountName, RiseVenueAccountName>
+  | NaryxTestPerpAccountName;
+type ExitAccountKey = PublicCashCarryExitAccountName | NaryxTestPerpAccountName;
+export type AnyPublicCashCarryExitBinding = PublicCashCarryExitBinding<SolanaPerpVenueKind>;
+export type PublicCashCarryExitAccountsFor<K extends SolanaPerpVenueKind> = K extends 'NARYX_TEST_PERP'
+  ? Readonly<Record<PublicCashCarryExitTestPerpAccountName, SolanaRouteAccountBinding>>
+  : Readonly<Record<PublicCashCarryExitAccountName, SolanaRouteAccountBinding>>;
+const EXIT_COMMON_ACCOUNT_NAMES = PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.filter(
+  (name) => !(RISE_VENUE_ACCOUNT_NAMES as readonly string[]).includes(name),
+);
 export type PublicCashCarryExitTokenAccountName = 'traderTokenA' | 'traderTokenB' | 'spotVaultA' | 'spotVaultB';
 export type PublicCashCarryResourceName =
   | 'spotAdapter'
@@ -225,7 +246,7 @@ export type PublicCashCarryExitAuthorization =
       acknowledgedOpenPackage: PublicKey | string;
     }>;
 
-export interface PublicCashCarryExitBinding {
+export interface PublicCashCarryExitBinding<K extends SolanaPerpVenueKind = 'PHOENIX_RISE'> {
   readonly admission: PackageAdmission;
   readonly activeDomain: DomainRef;
   readonly deployments: Readonly<{
@@ -235,7 +256,9 @@ export interface PublicCashCarryExitBinding {
     spotVenue: SolanaProgramDeploymentRef;
     perpVenue: SolanaProgramDeploymentRef;
   }>;
-  readonly accounts: Readonly<Record<PublicCashCarryExitAccountName, SolanaRouteAccountBinding>>;
+  /** Selected by the Devnet manifest. Omitted means the default Phoenix Rise core build. */
+  readonly perpVenueKind?: K;
+  readonly accounts: PublicCashCarryExitAccountsFor<K>;
   readonly riseDynamicAccounts: readonly (SolanaRouteAccountBinding & Readonly<{ isWritable: boolean }>)[];
   readonly resources: PublicCashCarryExitResources;
   readonly tokenAccounts: Readonly<Record<PublicCashCarryExitTokenAccountName, PublicCashCarryExitTokenEvidence>>;
@@ -311,7 +334,7 @@ export type PublicCashCarryExitPlan = UnsignedSolanaTransactionPlan & Readonly<{
 
 interface AccountSpec {
   readonly idlName: string;
-  readonly bindingName: PublicCashCarryExitAccountName;
+  readonly bindingName: ExitAccountKey;
   readonly signer: boolean;
   readonly writable: boolean;
 }
@@ -323,7 +346,7 @@ interface FlatIdlAccount {
   readonly address?: string;
 }
 
-const EXIT_IDL_SPECS: readonly AccountSpec[] = [
+const EXIT_PREFIX_SPECS: readonly AccountSpec[] = [
   { idlName: 'trader', bindingName: 'trader', signer: true, writable: true },
   { idlName: 'config', bindingName: 'config', signer: false, writable: false },
   { idlName: 'solver_registry', bindingName: 'solverRegistry', signer: false, writable: false },
@@ -355,17 +378,27 @@ const EXIT_IDL_SPECS: readonly AccountSpec[] = [
     ['tick_array_2', 'tickArray2'], ['whirlpool_oracle', 'whirlpoolOracle'],
   ].map(([idlName, bindingName]) => ({ idlName: idlName!, bindingName: bindingName! as PublicCashCarryExitAccountName, signer: false, writable: true })),
   { idlName: 'rise_strategy', bindingName: 'riseStrategy', signer: false, writable: true },
-  { idlName: 'rise_log_authority', bindingName: 'riseLogAuthority', signer: false, writable: false },
-  ...[
-    ['rise_global_config', 'riseGlobalConfig'], ['rise_trader_account', 'riseTraderAccount'],
-    ['rise_perp_asset_map', 'risePerpAssetMap'], ['rise_global_trader_index_header', 'riseGlobalTraderIndexHeader'],
-    ['rise_active_trader_buffer_header', 'riseActiveTraderBufferHeader'], ['rise_orderbook', 'riseOrderbook'],
-    ['rise_spline_collection', 'riseSplineCollection'],
-  ].map(([idlName, bindingName]) => ({ idlName: idlName!, bindingName: bindingName! as PublicCashCarryExitAccountName, signer: false, writable: true })),
+] as const;
+
+const EXIT_SUFFIX_SPECS: readonly AccountSpec[] = [
   { idlName: 'token_program', bindingName: 'tokenProgram', signer: false, writable: false },
   { idlName: 'instructions_sysvar', bindingName: 'instructionsSysvar', signer: false, writable: false },
   { idlName: 'system_program', bindingName: 'systemProgram', signer: false, writable: false },
 ] as const;
+
+function exitIdlSpecs(profile: SolanaPerpVenueProfile): readonly AccountSpec[] {
+  return [
+    ...EXIT_PREFIX_SPECS,
+    ...profile.accounts.map((account) => ({ ...account, signer: false })),
+    ...EXIT_SUFFIX_SPECS,
+  ];
+}
+
+function accountBinding(binding: AnyPublicCashCarryExitBinding, name: ExitAccountKey): SolanaRouteAccountBinding {
+  const account = (binding.accounts as Readonly<Record<string, SolanaRouteAccountBinding | undefined>>)[name];
+  if (account === undefined) throw new Error(`missing ${name} account binding`);
+  return account;
+}
 
 const RESOURCE_BINDINGS: Readonly<Record<PublicCashCarryResourceName, Readonly<{ index: PublicCashCarryExitAccountName; record: PublicCashCarryExitAccountName; kindSeed: string }>>> = {
   spotAdapter: { index: 'spotAdapterIndex', record: 'spotAdapterRecord', kindSeed: 'adapter' },
@@ -485,7 +518,7 @@ function flattenIdlAccounts(items: readonly unknown[]): FlatIdlAccount[] {
   });
 }
 
-function exitIdlAccounts(idl: Idl): readonly FlatIdlAccount[] {
+function exitIdlAccounts(idl: Idl, specs: readonly AccountSpec[]): readonly FlatIdlAccount[] {
   const instruction = idl.instructions.find((item) => item.name === 'execute_cash_and_carry');
   requireCondition(instruction !== undefined, 'published core IDL is missing execute_cash_and_carry');
   const expectedArgs = ['order_hash', 'quote_hash', 'route_hash', 'args'];
@@ -495,8 +528,8 @@ function exitIdlAccounts(idl: Idl): readonly FlatIdlAccount[] {
     'execute_cash_and_carry IDL argument shape mismatch',
   );
   const accounts = flattenIdlAccounts(instruction.accounts);
-  requireCondition(accounts.length === EXIT_IDL_SPECS.length, 'execute_cash_and_carry IDL account count mismatch');
-  for (const [index, spec] of EXIT_IDL_SPECS.entries()) {
+  requireCondition(accounts.length === specs.length, 'execute_cash_and_carry IDL account count mismatch');
+  for (const [index, spec] of specs.entries()) {
     const account = accounts[index]!;
     requireCondition(
       account.name === spec.idlName
@@ -543,9 +576,9 @@ function resourceReference(
 
 function validateResources(
   admission: PackageAdmission,
-  binding: PublicCashCarryExitBinding,
+  binding: AnyPublicCashCarryExitBinding,
   context: PublicCashCarryEntryContext,
-  addresses: ReadonlyMap<PublicCashCarryExitAccountName, PublicKey>,
+  addresses: ReadonlyMap<ExitAccountKey, PublicKey>,
   routes: ReadonlyMap<string, PackageAdmission['route']['accountBindings'][number]>,
 ): { baseMint: PublicKey; quoteMint: PublicKey } {
   const spot = admission.route.legs[0]!;
@@ -577,7 +610,7 @@ function validateResources(
     ], context.coreProgram)[0];
     requireKey(addresses.get(accountNames.index)!, expectedIndex, `${name} index PDA`);
     requireKey(addresses.get(accountNames.record)!, expectedRecord, `${name} record PDA`);
-    const route = routes.get(binding.accounts[accountNames.record].routeBindingId)!;
+    const route = routes.get(accountBinding(binding, accountNames.record).routeBindingId)!;
     requireCondition(route.ownerIdentity === context.coreProgram.toBase58(), `${name} record owner mismatch`);
   }
 
@@ -603,7 +636,7 @@ function validateResources(
   ] as const) {
     requireKey(addresses.get(programAccount)!, deployment.programId, `${name} program`);
     requireKey(addresses.get(dataAccount)!, deployment.programDataAddress, `${name} program data`);
-    const route = routes.get(binding.accounts[programAccount].routeBindingId)!;
+    const route = routes.get(accountBinding(binding, programAccount).routeBindingId)!;
     requireCondition(route.codeIdentity === Buffer.from(hash32(deployment.codeIdentity, `${name} code identity`)).toString('hex'), `${name} route code identity mismatch`);
   }
 
@@ -612,8 +645,8 @@ function validateResources(
     ['perpAdapter', deployments.perpAdapter, deployments.perpAdapter.programId],
     ['spotVenue', deployments.spotVenue, addresses.get('whirlpool')!],
     ['spotMarket', deployments.spotVenue, addresses.get('whirlpool')!],
-    ['perpVenue', deployments.perpVenue, addresses.get('riseGlobalConfig')!],
-    ['perpMarket', deployments.perpVenue, addresses.get('riseOrderbook')!],
+    ['perpVenue', deployments.perpVenue, addresses.get(solanaPerpVenueProfile(binding.perpVenueKind).venueSubject)!],
+    ['perpMarket', deployments.perpVenue, addresses.get(solanaPerpVenueProfile(binding.perpVenueKind).marketSubject)!],
   ] as const) {
     const resource = binding.resources[name];
     requireKey(resource.subjectAddress, subject, `${name} subject`);
@@ -624,7 +657,7 @@ function validateResources(
   return { baseMint, quoteMint };
 }
 
-function validatePackage(admission: PackageAdmission, binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext): void {
+function validatePackage(admission: PackageAdmission, binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext): void {
   const { order, quote, route } = admission;
   requireCondition(order.environment === context.environment && quote.environment === context.environment && route.environment === context.environment, 'exit environment mismatch');
   requireCondition(sameDomain(order.domain, context.domain) && sameDomain(quote.domain, context.domain) && sameDomain(route.domain, context.domain), 'exit must use the historical open-package domain');
@@ -662,7 +695,7 @@ function validatePackage(admission: PackageAdmission, binding: PublicCashCarryEx
   requireCondition(!bytesEqual(admission.orderHash, context.entryOrderHash), 'exit order replays the entry order');
 }
 
-function validateHistoricalPackage(binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext): void {
+function validateHistoricalPackage(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext): void {
   const open = binding.openPackage;
   const receipt = binding.entryReceipt;
   requireCondition(open.version === 2, 'open package version mismatch');
@@ -738,7 +771,7 @@ function validateHistoricalPackage(binding: PublicCashCarryExitBinding, context:
   ], context.coreProgram)[0], 'historical series record PDA');
 }
 
-function resourceCommitment(binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<PublicCashCarryExitAccountName, PublicKey>): Uint8Array {
+function resourceCommitment(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<ExitAccountKey, PublicKey>): Uint8Array {
   const ordered = Object.keys(RESOURCE_BINDINGS) as PublicCashCarryResourceName[];
   return domainHash(
     HASH_DOMAINS.resources,
@@ -755,7 +788,7 @@ function resourceCommitment(binding: PublicCashCarryExitBinding, context: Public
   );
 }
 
-function economicPackageCommitment(binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<PublicCashCarryExitAccountName, PublicKey>): Uint8Array {
+function economicPackageCommitment(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<ExitAccountKey, PublicKey>): Uint8Array {
   const ordered: readonly PublicCashCarryResourceName[] = ['perpAdapter', 'perpMarket', 'perpVenue', 'baseAsset', 'quoteAsset'];
   return domainHash(
     HASH_DOMAINS.economicPackage,
@@ -772,7 +805,7 @@ function economicPackageCommitment(binding: PublicCashCarryExitBinding, context:
   );
 }
 
-function validateAmounts(binding: PublicCashCarryExitBinding): void {
+function validateAmounts(binding: AnyPublicCashCarryExitBinding): void {
   const admission = binding.admission;
   const args = binding.executionArgs;
   const spot = admission.route.legs[0]!;
@@ -810,7 +843,7 @@ function validateAmounts(binding: PublicCashCarryExitBinding): void {
   checkedPositiveU64(args.nonce, 'execution nonce');
 }
 
-function validateTokens(binding: PublicCashCarryExitBinding, addresses: ReadonlyMap<PublicCashCarryExitAccountName, PublicKey>, routes: ReadonlyMap<string, PackageAdmission['route']['accountBindings'][number]>, baseMint: PublicKey, quoteMint: PublicKey, trader: PublicKey): void {
+function validateTokens(binding: AnyPublicCashCarryExitBinding, addresses: ReadonlyMap<ExitAccountKey, PublicKey>, routes: ReadonlyMap<string, PackageAdmission['route']['accountBindings'][number]>, baseMint: PublicKey, quoteMint: PublicKey, trader: PublicKey): void {
   requireKey(addresses.get('tokenProgram')!, LEGACY_TOKEN_PROGRAM_ID, 'legacy SPL Token program');
   requireKey(addresses.get('instructionsSysvar')!, SYSVAR_INSTRUCTIONS_PUBKEY, 'instructions sysvar');
   requireKey(addresses.get('systemProgram')!, SystemProgram.programId, 'system program');
@@ -827,13 +860,13 @@ function validateTokens(binding: PublicCashCarryExitBinding, addresses: Readonly
     requireKey(evidence.mint, expected[name].mint, `${name} mint`);
     requireKey(evidence.authority, expected[name].authority, `${name} authority`);
     checkedUnsigned(evidence.amountAtoms, U64_MAX, `${name} amount`);
-    const route = routes.get(binding.accounts[name].routeBindingId)!;
+    const route = routes.get(accountBinding(binding, name).routeBindingId)!;
     requireCondition(route.ownerIdentity === LEGACY_TOKEN_PROGRAM_ID.toBase58(), `${name} token program binding mismatch`);
     requireCondition(route.authorityIdentity === expected[name].authority.toBase58(), `${name} authority binding mismatch`);
   }
 }
 
-function executionDigest(binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<PublicCashCarryExitAccountName, PublicKey>, resource: Uint8Array): Uint8Array {
+function executionDigest(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext, addresses: ReadonlyMap<ExitAccountKey, PublicKey>, resource: Uint8Array): Uint8Array {
   const solver = binding.authorization.mode === 'SOLVER_AUTHORIZED'
     ? publicKey(binding.authorization.activeSolver, 'active solver')
     : PublicKey.default;
@@ -843,7 +876,7 @@ function executionDigest(binding: PublicCashCarryExitBinding, context: PublicCas
     addresses.get('config')!,
     addresses.get('solverRegistry')!,
     solver,
-    ...EXIT_IDL_SPECS.slice(3).map((spec) => addresses.get(spec.bindingName)!),
+    ...exitIdlSpecs(solanaPerpVenueProfile(binding.perpVenueKind)).slice(3).map((spec) => addresses.get(spec.bindingName)!),
     ...binding.riseDynamicAccounts.map((account) => publicKey(account.address, 'Rise dynamic account')),
   ];
   const args = binding.executionArgs;
@@ -915,14 +948,20 @@ function messageSize(payer: PublicKey, instructions: readonly TransactionInstruc
   });
 }
 
-export function compilePublicCashCarryExitPlan(binding: PublicCashCarryExitBinding, context: PublicCashCarryEntryContext): PublicCashCarryExitPlan {
+export function compilePublicCashCarryExitPlan(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext): PublicCashCarryExitPlan {
   validatePackage(binding.admission, binding, context);
   validateHistoricalPackage(binding, context);
   requireKey(binding.deployments.core.programId, context.coreProgram, 'exit core deployment');
-  const idlAccounts = exitIdlAccounts(context.coreIdl);
+  const profile = solanaPerpVenueProfile(binding.perpVenueKind);
+  requireOnlyProfileVenueAccounts(binding.accounts, profile);
+  // The resolved-address limit bounds Rise arena accounts on exit; the test perp takes none.
+  requireCondition(profile.maxDynamicAccounts > 0 || binding.riseDynamicAccounts.length === 0, `${profile.kind} public exit takes no dynamic accounts`);
+  const exitSpecs = exitIdlSpecs(profile);
+  const exitAccountNames = [...EXIT_COMMON_ACCOUNT_NAMES, ...profile.accounts.map((account) => account.bindingName)];
+  const idlAccounts = exitIdlAccounts(context.coreIdl, exitSpecs);
   const routes = routeBindings(binding.admission);
-  const addresses = new Map<PublicCashCarryExitAccountName, PublicKey>();
-  for (const name of PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES) addresses.set(name, validateRouteAccount(binding.accounts[name], routes, name));
+  const addresses = new Map<ExitAccountKey, PublicKey>();
+  for (const name of exitAccountNames) addresses.set(name, validateRouteAccount(accountBinding(binding, name), routes, name));
   for (const [index, account] of binding.riseDynamicAccounts.entries()) validateRouteAccount(account, routes, `Rise dynamic account ${index}`);
   requireCondition(binding.accounts.trader.routeBindingId === binding.traderRouteBindingId, 'exit trader authority binding mismatch');
   requireCondition(binding.admission.route.actions.length > 0 && binding.admission.route.actions.every((action) => action.authorityBindingId === binding.traderRouteBindingId), 'exit route actions must use trader authority');
@@ -945,7 +984,7 @@ export function compilePublicCashCarryExitPlan(binding: PublicCashCarryExitBindi
   ], context.coreProgram)[0], 'executor authority PDA');
 
   const routeIds = new Set<string>([
-    ...PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES.map((name) => binding.accounts[name].routeBindingId),
+    ...exitAccountNames.map((name) => accountBinding(binding, name).routeBindingId),
     ...binding.riseDynamicAccounts.map((account) => account.routeBindingId),
     ...(binding.authorization.mode === 'SOLVER_AUTHORIZED' ? [binding.authorization.solverRouteBindingId] : []),
   ]);
@@ -968,14 +1007,15 @@ export function compilePublicCashCarryExitPlan(binding: PublicCashCarryExitBindi
   const traderTokenAddresses = [addresses.get('traderTokenA')!, addresses.get('traderTokenB')!];
   requireCondition(traderTokenAddresses.some((account) => account.equals(context.traderBase)) && traderTokenAddresses.some((account) => account.equals(context.traderQuote)), 'exit trader token accounts do not match the open package');
 
-  const keys = EXIT_IDL_SPECS.map((spec, index) => {
+  const keys = exitSpecs.map((spec, index) => {
     const account = idlAccounts[index]!;
     const pubkey = addresses.get(spec.bindingName)!;
     if (account.address !== undefined) requireKey(pubkey, account.address, `IDL account ${account.name}`);
     return { pubkey, isSigner: spec.signer, isWritable: spec.writable };
   });
   const fixedCount = new Set([context.coreProgram.toBase58(), ...keys.map((key) => key.pubkey.toBase58())]).size;
-  requireCondition(fixedCount === FIXED_EXIT_ADDRESS_COUNT, `public exit must resolve exactly ${FIXED_EXIT_ADDRESS_COUNT} fixed addresses, resolved ${fixedCount}`);
+  const expectedFixedCount = FIXED_EXIT_BASE_ADDRESS_COUNT + profile.accounts.length;
+  requireCondition(fixedCount === expectedFixedCount, `public exit must resolve exactly ${expectedFixedCount} fixed addresses, resolved ${fixedCount}`);
   const recovery = binding.authorization.mode === 'TRADER_RECOVERY';
   const instruction = new TransactionInstruction({
     programId: context.coreProgram,

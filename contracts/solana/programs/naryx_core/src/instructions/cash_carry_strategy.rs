@@ -1,6 +1,5 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::Mint;
-use naryx_rise_adapter::RiseStrategy;
 use solana_sha256_hasher::hashv;
 
 use crate::{
@@ -9,6 +8,7 @@ use crate::{
     },
     error::ErrorCode,
     events::CashCarryStrategyAuthorityInitialized,
+    perp_venue::PerpStrategy,
     state::{
         CashCarryStrategyAuthority, ExecutionRole, ProtocolConfig, ResourceIndex, ResourceKind,
         ResourceRecord,
@@ -37,7 +37,7 @@ pub struct InitializeCashCarryStrategy<'info> {
         constraint = rise_strategy.owner == trader.key() @ ErrorCode::CashCarryStrategyAuthorityInvalid,
         constraint = rise_strategy.controller == executor_authority.key() @ ErrorCode::CashCarryStrategyAuthorityInvalid
     )]
-    pub rise_strategy: Box<Account<'info, RiseStrategy>>,
+    pub rise_strategy: Box<Account<'info, PerpStrategy>>,
     #[account(
         init,
         payer = trader,

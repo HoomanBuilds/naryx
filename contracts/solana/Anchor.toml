@@ -12,6 +12,8 @@ naryx_inventory_reservation = "8Dby697KuRBW1TsGucdXdQugVoko4WoJXRUTZdHfy4Dx"
 naryx_orca_adapter = "Ao5mbjTPVAoM4SVobYMyaQwPRKruk9Rd7CF1ENL1xjUU"
 naryx_package_book = "EvE2mjwHrtfQgNu8Whh6QGZBmkzxRjKadsHi4Uqk96dc"
 naryx_rise_adapter = "9FAYFVXcJYqxcpw7bf6eK6iY6SkwYx6T4PT7NF3VjfzQ"
+naryx_test_perp = "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs"
+naryx_test_perp_adapter = "CvMLjMW9zwP4ue6j3Q716QRCZgGA6e17zvo3mKJri6hN"
 
 [provider]
 cluster = "localnet"

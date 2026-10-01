@@ -1,0 +1,1239 @@
+{
+  "address": "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs",
+  "metadata": {
+    "name": "naryx_test_perp",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Oracle-priced Naryx test perpetual venue for Solana Devnet"
+  },
+  "instructions": [
+    {
+      "name": "deposit",
+      "discriminator": [
+        242,
+        35,
+        198,
+        137,
+        82,
+        225,
+        242,
+        182
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "market",
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "owner_collateral",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_market",
+      "discriminator": [
+        35,
+        35,
+        189,
+        193,
+        155,
+        48,
+        170,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "collateral_mint"
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "args.feed_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  99,
+                  111,
+                  108,
+                  108,
+                  97,
+                  116,
+                  101,
+                  114,
+                  97,
+                  108,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  102,
+                  101,
+                  101,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  105,
+                  110,
+                  115,
+                  117,
+                  114,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "InitializeMarketArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_position",
+      "discriminator": [
+        219,
+        192,
+        234,
+        71,
+        190,
+        191,
+        102,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market"
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "liquidate",
+      "discriminator": [
+        223,
+        179,
+        226,
+        125,
+        48,
+        46,
+        39,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "place_market_order",
+      "discriminator": [
+        90,
+        118,
+        192,
+        252,
+        192,
+        99,
+        39,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "PlaceMarketOrderArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_delegate",
+      "discriminator": [
+        242,
+        30,
+        46,
+        76,
+        108,
+        235,
+        128,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "delegate",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_funding_rate",
+      "discriminator": [
+        113,
+        127,
+        53,
+        135,
+        107,
+        37,
+        58,
+        65
+      ],
+      "accounts": [
+        {
+          "name": "funding_keeper",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        }
+      ],
+      "args": [
+        {
+          "name": "funding_rate_per_second",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "update_market_controls",
+      "discriminator": [
+        161,
+        26,
+        242,
+        90,
+        234,
+        0,
+        63,
+        80
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "pause_opens",
+          "type": "bool"
+        },
+        {
+          "name": "funding_keeper",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [
+        183,
+        18,
+        70,
+        156,
+        148,
+        109,
+        161,
+        34
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "owner_collateral",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "TestPerpMarket",
+      "discriminator": [
+        86,
+        79,
+        229,
+        187,
+        233,
+        172,
+        84,
+        21
+      ]
+    },
+    {
+      "name": "TestPerpPosition",
+      "discriminator": [
+        134,
+        153,
+        205,
+        41,
+        103,
+        191,
+        240,
+        250
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "FundingRateSet",
+      "discriminator": [
+        102,
+        154,
+        147,
+        158,
+        38,
+        156,
+        18,
+        55
+      ]
+    },
+    {
+      "name": "OrderFilled",
+      "discriminator": [
+        120,
+        124,
+        109,
+        66,
+        249,
+        116,
+        174,
+        30
+      ]
+    },
+    {
+      "name": "PositionLiquidated",
+      "discriminator": [
+        40,
+        107,
+        90,
+        214,
+        96,
+        30,
+        61,
+        128
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidMarketParameters",
+      "msg": "Market parameters are invalid"
+    },
+    {
+      "code": 6001,
+      "name": "OracleOwnerInvalid",
+      "msg": "Oracle account is not owned by the Pyth receiver"
+    },
+    {
+      "code": 6002,
+      "name": "OracleAccountMismatch",
+      "msg": "Oracle account is not the market oracle"
+    },
+    {
+      "code": 6003,
+      "name": "OracleDataInvalid",
+      "msg": "Oracle account data is invalid"
+    },
+    {
+      "code": 6004,
+      "name": "OracleNotFullyVerified",
+      "msg": "Oracle update is not fully verified"
+    },
+    {
+      "code": 6005,
+      "name": "OracleFeedMismatch",
+      "msg": "Oracle feed id does not match the market"
+    },
+    {
+      "code": 6006,
+      "name": "OracleStale",
+      "msg": "Oracle price is stale"
+    },
+    {
+      "code": 6007,
+      "name": "OracleConfidenceTooWide",
+      "msg": "Oracle confidence is too wide"
+    },
+    {
+      "code": 6008,
+      "name": "OraclePriceInvalid",
+      "msg": "Oracle price is not positive"
+    },
+    {
+      "code": 6009,
+      "name": "ArithmeticOverflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6010,
+      "name": "Unauthorized",
+      "msg": "Signer is not authorized for this position"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidBaseLots",
+      "msg": "Order base lots is invalid"
+    },
+    {
+      "code": 6012,
+      "name": "LimitPriceZero",
+      "msg": "Order limit price is zero"
+    },
+    {
+      "code": 6013,
+      "name": "OrderExpired",
+      "msg": "Order deadline has expired"
+    },
+    {
+      "code": 6014,
+      "name": "LimitPriceExceeded",
+      "msg": "Fill price is worse than the limit"
+    },
+    {
+      "code": 6015,
+      "name": "SlippageTooLarge",
+      "msg": "Order size exceeds the maximum slippage"
+    },
+    {
+      "code": 6016,
+      "name": "ReduceOnlyViolation",
+      "msg": "Reduce-only order would open or increase exposure"
+    },
+    {
+      "code": 6017,
+      "name": "OpensPaused",
+      "msg": "Market is paused for opening exposure"
+    },
+    {
+      "code": 6018,
+      "name": "PositionLimitExceeded",
+      "msg": "Position exceeds the market maximum"
+    },
+    {
+      "code": 6019,
+      "name": "InsufficientInitialMargin",
+      "msg": "Initial margin requirement is not met"
+    },
+    {
+      "code": 6020,
+      "name": "InsufficientFreeCollateral",
+      "msg": "Withdrawal exceeds free collateral"
+    },
+    {
+      "code": 6021,
+      "name": "InsufficientInsurance",
+      "msg": "Insurance vault cannot cover the trader credit"
+    },
+    {
+      "code": 6022,
+      "name": "NotLiquidatable",
+      "msg": "Position is not liquidatable"
+    },
+    {
+      "code": 6023,
+      "name": "FundingRateOutOfBounds",
+      "msg": "Funding rate exceeds the market bound"
+    },
+    {
+      "code": 6024,
+      "name": "ZeroAmount",
+      "msg": "Amount is zero"
+    },
+    {
+      "code": 6025,
+      "name": "InvalidPositionAccount",
+      "msg": "Position account is invalid"
+    }
+  ],
+  "types": [
+    {
+      "name": "FundingRateSet",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "funding_rate_per_second",
+            "type": "i64"
+          },
+          {
+            "name": "cumulative_funding_index",
+            "type": "i128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "InitializeMarketArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "feed_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "funding_keeper",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u32"
+          },
+          {
+            "name": "max_confidence_bps",
+            "type": "u16"
+          },
+          {
+            "name": "taker_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "half_spread_bps",
+            "type": "u16"
+          },
+          {
+            "name": "impact_bps_per_unit",
+            "type": "u16"
+          },
+          {
+            "name": "impact_unit_lots",
+            "type": "u64"
+          },
+          {
+            "name": "max_slippage_bps",
+            "type": "u16"
+          },
+          {
+            "name": "initial_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maintenance_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_penalty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "base_lot_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "quote_tick_atoms_per_base_lot",
+            "type": "u64"
+          },
+          {
+            "name": "max_position_lots",
+            "type": "u64"
+          },
+          {
+            "name": "max_funding_rate_per_second",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderFilled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "OrderSide"
+              }
+            }
+          },
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "oracle_price_per_lot",
+            "type": "u64"
+          },
+          {
+            "name": "fill_price_per_lot",
+            "type": "u64"
+          },
+          {
+            "name": "fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "realized_pnl_atoms",
+            "type": "i64"
+          },
+          {
+            "name": "funding_atoms",
+            "type": "i64"
+          },
+          {
+            "name": "post_base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "post_collateral_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderSide",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Bid"
+          },
+          {
+            "name": "Ask"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlaceMarketOrderArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "OrderSide"
+              }
+            }
+          },
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "limit_price_in_ticks",
+            "type": "u64"
+          },
+          {
+            "name": "last_valid_slot",
+            "type": "u64"
+          },
+          {
+            "name": "reduce_only",
+            "type": "bool"
+          },
+          {
+            "name": "client_order_id",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PositionLiquidated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "liquidator",
+            "type": "pubkey"
+          },
+          {
+            "name": "base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "oracle_price_per_lot",
+            "type": "u64"
+          },
+          {
+            "name": "penalty_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "post_collateral_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt_atoms",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpMarket",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "funding_keeper",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "oracle",
+            "type": "pubkey"
+          },
+          {
+            "name": "feed_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "collateral_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "insurance_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "base_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u32"
+          },
+          {
+            "name": "max_confidence_bps",
+            "type": "u16"
+          },
+          {
+            "name": "taker_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "half_spread_bps",
+            "type": "u16"
+          },
+          {
+            "name": "impact_bps_per_unit",
+            "type": "u16"
+          },
+          {
+            "name": "max_slippage_bps",
+            "type": "u16"
+          },
+          {
+            "name": "initial_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maintenance_margin_bps",
+            "type": "u16"
+          },
+          {
+            "name": "liquidation_penalty_bps",
+            "type": "u16"
+          },
+          {
+            "name": "impact_unit_lots",
+            "type": "u64"
+          },
+          {
+            "name": "base_lot_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "quote_tick_atoms_per_base_lot",
+            "type": "u64"
+          },
+          {
+            "name": "max_position_lots",
+            "type": "u64"
+          },
+          {
+            "name": "max_funding_rate_per_second",
+            "type": "i64"
+          },
+          {
+            "name": "funding_rate_per_second",
+            "type": "i64"
+          },
+          {
+            "name": "cumulative_funding_index",
+            "type": "i128"
+          },
+          {
+            "name": "last_funding_timestamp",
+            "type": "i64"
+          },
+          {
+            "name": "open_interest_long_lots",
+            "type": "u64"
+          },
+          {
+            "name": "open_interest_short_lots",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "pause_opens",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "TestPerpPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "delegate",
+            "type": "pubkey"
+          },
+          {
+            "name": "collateral_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "entry_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "entry_funding_index",
+            "type": "i128"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
