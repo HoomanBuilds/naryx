@@ -4,25 +4,26 @@ import { ChainIcon } from "@/features/brand/chain-icons";
 import { SolverMetrics } from "../pro/solver-metrics";
 import type { RuntimeBoundaryHealth } from "../private-http-terminal-provider";
 import type { DomainId } from "../terminal-view-model";
-import { DOMAIN_META, DOMAIN_ORDER, domainHealth, useTerminal, type HealthState } from "../shell/terminal-context";
+import { DOMAIN_META, DOMAIN_ORDER, domainHealth, domainLive, useTerminal, type HealthState } from "../shell/terminal-context";
 import t from "../trading-terminal.module.css";
 import styles from "./pages.module.css";
 
 type Status = "Available" | "Checking" | "Unavailable" | "Preview";
 
-function statusOf(healthState: HealthState, health: RuntimeBoundaryHealth | null): Status {
+function statusOf(healthState: HealthState, health: RuntimeBoundaryHealth | null, gateUp: boolean): Status {
   if (healthState === "unconfigured") return "Preview";
   if (!health) return healthState === "checking" ? "Checking" : "Unavailable";
-  return health.available ? "Available" : "Unavailable";
+  return health.available && gateUp ? "Available" : "Unavailable";
 }
 
-function blockerOf(healthState: HealthState, health: RuntimeBoundaryHealth | null, domain: DomainId): string {
-  if (healthState === "unconfigured") return "Private service not configured. Market data and tickets use the local fixture.";
-  if (!health) return healthState === "checking" ? "Checking private service health." : "Health unavailable. Local fixture data only.";
+function blockerOf(healthState: HealthState, health: RuntimeBoundaryHealth | null, domain: DomainId, gateUp: boolean): string {
+  if (healthState === "unconfigured") return "Private service not configured. No testnet execution from this terminal.";
+  if (!health) return healthState === "checking" ? "Checking private service health." : "Service health unavailable.";
   if (health.available) {
-    if (domain === "solana") return "Ready. Every Devnet signature follows an explicit review.";
-    if (domain === "hyperliquid") return "Ready. The dedicated testnet account gate runs after explicit review.";
-    return "Runtime ready. Contracts are not deployed on this testnet yet.";
+    if (!gateUp) return "Runtime up, but the execution safety gate is not configured, so trades are refused.";
+    if (domain === "solana") return "Live. Every Devnet signature follows an explicit review.";
+    if (domain === "hyperliquid") return "Live. The dedicated testnet account runs each reviewed package.";
+    return "Live. Your wallet signs each reviewed package.";
   }
   if (health.reason === "DISABLED_BY_CONFIGURATION") return "Disabled in service configuration.";
   if (health.reason === "RUNTIME_FACTORY_NOT_INJECTED") return "Runtime not wired in the service.";
@@ -37,6 +38,8 @@ function pillFor(status: Status) {
 
 export function NetworkView() {
   const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, refreshHealth, publicApiBaseUrl } = useTerminal();
+  const gateUp = runtimeHealth?.controls.executionReadinessAvailable === true;
+  const anyTestnetLive = DOMAIN_ORDER.some((domain) => domainLive(domain, runtimeHealth));
   const selectedMeta = DOMAIN_META[selectedDomain];
   const selectedHealth = domainHealth(selectedDomain, runtimeHealth);
   const localVerified = runtimeHealth !== null &&
@@ -46,7 +49,7 @@ export function NetworkView() {
     runtimeHealth.controls.solverQuotingAvailable;
   const stages = [
     { label: "Local verification", state: localVerified ? "VERIFIED" : "UNKNOWN", tone: localVerified ? t.stageDone : t.stageUnknown },
-    { label: "Public testnet", state: "DEPLOYMENT DEFERRED", tone: t.stageDeferred },
+    { label: "Public testnet", state: anyTestnetLive ? "LIVE" : healthState === "unconfigured" ? "NOT CONNECTED" : "NOT LIVE", tone: anyTestnetLive ? t.stageDone : t.stageDeferred },
     { label: "Pinned fork", state: "HARNESS READY, RPC DEPENDENT", tone: t.stageConditional },
     { label: "Mainnet shadow", state: "SIGNERLESS READ ONLY", tone: t.stageConditional },
     { label: "Mainnet writes", state: "PROHIBITED", tone: t.stageProhibited },
@@ -82,7 +85,7 @@ export function NetworkView() {
         {DOMAIN_ORDER.map((domain) => {
           const meta = DOMAIN_META[domain];
           const health = domainHealth(domain, runtimeHealth);
-          const status = statusOf(healthState, health);
+          const status = statusOf(healthState, health, gateUp);
           const selected = domain === selectedDomain;
           return (
             <button
@@ -102,7 +105,7 @@ export function NetworkView() {
                 </span>
                 <span className={pillFor(status)}>{status}</span>
               </span>
-              <p>{blockerOf(healthState, health, domain)}</p>
+              <p>{blockerOf(healthState, health, domain, gateUp)}</p>
               <dl className={styles.facts}>
                 <dt>Runtime</dt><dd>{meta.runtime}</dd>
                 <dt>Settlement</dt><dd title={meta.settlementClass}>{meta.settlement}</dd>

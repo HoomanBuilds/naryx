@@ -25,6 +25,7 @@ export function StatusBar({
   feedStatus = null,
   domainLabel,
   domainNote,
+  executionLive,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
@@ -33,6 +34,8 @@ export function StatusBar({
   feedStatus?: PublicFeedStatus | null;
   domainLabel: string;
   domainNote: string;
+  /** The selected domain's testnet runtime and the execution gate are both up. */
+  executionLive: boolean;
 }) {
   const connection = providerConnection === "connected" ? "Service connected" : providerConnection === "connecting" ? "Connecting" : "Service offline";
   return (
@@ -57,9 +60,13 @@ export function StatusBar({
         )}
       </span>
       <span className={styles.statusSpacer} />
-      <span className={styles.statusWarn}>Public deployment deferred</span>
+      <span className={executionLive ? styles.statusItem : styles.statusWarn}>
+        {executionLive ? <>Testnet execution <em>live</em></> : "Testnet execution off"}
+      </span>
       <span className={styles.statusDanger}>Mainnet writes prohibited</span>
-      <span className={styles.statusItem} title="Snapshot capture time">Captured {snapshot.environment.capturedAt}</span>
+      {snapshot.environment.source === "LOCAL_CONFORMANCE" ? (
+        <span className={styles.statusItem} title="Fixture capture time">Fixture {snapshot.environment.capturedAt}</span>
+      ) : null}
       <UtcClock />
     </footer>
   );

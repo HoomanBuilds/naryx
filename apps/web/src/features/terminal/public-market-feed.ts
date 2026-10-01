@@ -175,7 +175,7 @@ export function usePublicMarketFeed(
       setStatus((previous) =>
         previous.state === "live" || previous.state === "stale"
           ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
-          : { state: "unavailable", detail: `Public market API unavailable (${detail}); showing fixture data.` },
+          : { state: "unavailable", detail: `Public market API unavailable (${detail}); no market data is shown.` },
       );
     };
     const schedule = (delayMs: number) => {
@@ -291,7 +291,20 @@ export function usePublicMarketFeed(
   }, [baseUrl, packageMarketId]);
 
   const feed = useMemo<MarketFeed>(() => {
-    if (!configured || live === null) return fallback;
+    if (!configured) return fallback;
+    // A configured market never shows fixture data: until the API answers, the feed is empty.
+    if (live === null) {
+      return {
+        label: "OBSERVED",
+        sourceNote: `Package ${packageMarketId}: waiting for the public market API.`,
+        candles: () => [],
+        depth: () => ({ bids: [], asks: [], tick: 1 }),
+        tape: () => [],
+        seriesMeta: (series: ChartSeriesKey) => series === "basis"
+          ? { title: "Package price", unit: "ticks", precision: 0 }
+          : { title: series === "spot" ? "Spot leg (not published)" : "Perp leg (not published)", unit: "ticks", precision: 0 },
+      };
+    }
     const candleCache = new Map<ChartInterval, Candle[]>();
     return {
       label: "OBSERVED",

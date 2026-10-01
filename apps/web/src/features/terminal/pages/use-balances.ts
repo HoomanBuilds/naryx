@@ -11,13 +11,21 @@ import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
  * Hyperliquid through the testnet info endpoint.
  */
 
-/** Circle's test USDC on each network. */
+/**
+ * The quote asset each deployment settles in. Set these to the exact token the deployed package
+ * route uses (its runtime manifest's quote asset); Circle's test USDC is only the fallback.
+ */
+function evmAddress(value: string | undefined, fallback: `0x${string}`): `0x${string}` {
+  return value && /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : fallback;
+}
 const EVM_USDC: Readonly<Record<EvmDomain, `0x${string}`>> = {
-  base: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  arbitrum: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+  base: evmAddress(process.env.NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN, "0x036CbD53842c5426634e7929541eC2318f3dCF7e"),
+  arbitrum: evmAddress(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN, "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"),
 };
-const SOLANA_DEVNET_RPC = "https://api.devnet.solana.com";
-const SOLANA_DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+const SOLANA_DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_DEVNET_RPC_URL || "https://api.devnet.solana.com";
+const SOLANA_DEVNET_USDC = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT ?? "")
+  ? process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT as string
+  : "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const HYPERLIQUID_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info";
 
 export type Amount = Readonly<{ value: string; symbol: string }> | null;

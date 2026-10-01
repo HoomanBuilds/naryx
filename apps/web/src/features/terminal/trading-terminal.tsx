@@ -35,7 +35,7 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
-import { DOMAIN_META, domainHealth, useTerminal } from "./shell/terminal-context";
+import { DOMAIN_META, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -622,6 +622,7 @@ function Ticket({
   account,
   localFlow,
   localFlowEnabled,
+  conformanceMode,
   localCanSignMessage,
   hyperliquidFlow,
   executionReview,
@@ -649,6 +650,8 @@ function Ticket({
   account: string | null;
   localFlow: LocalFlowState | null;
   localFlowEnabled: boolean;
+  /** The service runs the local Phase 4 fixture runtime; its step-by-step lifecycle is local-only. */
+  conformanceMode: boolean;
   localCanSignMessage: boolean;
   hyperliquidFlow: HyperliquidFlowState | null;
   executionReview: ExecutionReview | null;
@@ -883,7 +886,7 @@ function Ticket({
             slippage={slippage}
           />
         </details>
-      ) : selectedDomain === "solana" ? (
+      ) : selectedDomain === "solana" && conformanceMode ? (
         <details className={styles.flowDetails}>
           <summary>
             <span>Local conformance lifecycle</span>
@@ -1099,7 +1102,8 @@ export function TradingTerminal({
   } = useTerminal();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
-  const [preview, setPreview] = useState<TerminalPreview | null>(initialPreview);
+  // With a configured service the ticket waits for its preview instead of showing the local one.
+  const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
   const [mode, setMode] = useState<PackageMode>("entry");
   const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
   const [slippage, setSlippage] = useState<SlippageBps>(
@@ -1196,11 +1200,8 @@ export function TradingTerminal({
         if (controller.signal.aborted) {
           return;
         }
-        const localSnapshot = await localConformanceTerminalProvider.getSnapshot(
-          selectedDomain,
-        );
+        // A configured service that fails is shown as offline; fixture data is never swapped in.
         if (active) {
-          setSnapshot(localSnapshot);
           setSnapshotDomain(selectedDomain);
           setProviderConnection("disconnected");
         }
@@ -1277,16 +1278,9 @@ export function TradingTerminal({
         if (controller.signal.aborted) {
           return;
         }
-        try {
-          const localPreview = await localConformanceTerminalProvider.getPreview(input);
-          if (active) {
-            setPreview(localPreview);
-            setProviderConnection("disconnected");
-          }
-        } catch {
-          if (active) {
-            setPreview(null);
-          }
+        if (active) {
+          setPreview(null);
+          if (privateProvider) setProviderConnection("disconnected");
         }
       }
     }, 200);
@@ -1357,13 +1351,15 @@ export function TradingTerminal({
   }, [currentExecutionReview]);
   const reviewExpired = currentExecutionReview !== null && currentExecutionReview !== undefined && expiredReviewAt === currentExecutionReview.preparedAt;
 
-  const localFlowEnabled = selectedDomain === "solana" && mode === "entry" &&
+  const conformanceMode = runtimeHealth?.controls.localAtomicRuntimeMode === "PHASE4_FIXTURE";
+  const executionGateUp = runtimeHealth?.controls.executionReadinessAvailable === true;
+  const localFlowEnabled = conformanceMode && selectedDomain === "solana" && mode === "entry" &&
     privateProvider !== null && providerConnection === "connected" &&
     wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
     quoteMode === "coordinated_limits";
   const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" && mode === "entry" &&
     privateProvider !== null && providerConnection === "connected" &&
-    runtimeHealth?.hyperliquidTestnet.available === true &&
+    runtimeHealth?.hyperliquidTestnet.available === true && executionGateUp &&
     preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
   const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
@@ -1400,6 +1396,8 @@ export function TradingTerminal({
             ? "Hyperliquid testnet orders need the private terminal service."
             : !runtimeHealth?.hyperliquidTestnet.available
               ? "Hyperliquid testnet execution is disabled in the service configuration."
+              : !executionGateUp
+                ? "The service's execution safety gate is not configured, so no testnet order can run."
               : mode !== "entry"
                 ? "Exit runs from an open package."
                 : quoteMode !== "coordinated_limits"
@@ -1424,6 +1422,9 @@ export function TradingTerminal({
     }
     if (!runtimeHealth?.solanaDevnet.available) {
       return { kind: "none", disabled: true, label: "Devnet runtime unavailable", reason: "The private service is connected, but its Solana Devnet execution runtime is not active." };
+    }
+    if (!executionGateUp) {
+      return { kind: "none", disabled: true, label: "Execution gate offline", reason: "The service's execution safety gate is not configured, so no Devnet transaction can be prepared." };
     }
     if (!wallet.canSignAndSendV0) {
       return { kind: "none", disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet does not advertise Devnet v0 sign-and-send capability." };
@@ -1485,6 +1486,7 @@ export function TradingTerminal({
     evmTarget,
     evmWallet.account,
     evmWallet.switching,
+    executionGateUp,
     hyperliquidFlowEnabled,
     mode,
     nextHyperliquidStep,
@@ -1883,6 +1885,7 @@ export function TradingTerminal({
             account={ticketAccount}
             localFlow={currentLocalFlow}
             localFlowEnabled={localFlowEnabled}
+            conformanceMode={conformanceMode}
             localCanSignMessage={wallet.canSignMessage}
             hyperliquidFlow={currentHyperliquidFlow}
             executionReview={currentExecutionReview}
@@ -1927,7 +1930,8 @@ export function TradingTerminal({
         feedLabel={feed.label}
         feedStatus={feedStatus}
         domainLabel={selectedDomainModel?.label ?? selectedDomain}
-        domainNote={selectedRuntimeHealth?.available ? "Testnet execution available" : `${selectedDomainModel?.state ?? "Fixture"} data only`}
+        domainNote={domainLive(selectedDomain, runtimeHealth) ? "Testnet" : selectedRuntimeHealth?.available ? "Execution gate offline" : "Execution off"}
+        executionLive={domainLive(selectedDomain, runtimeHealth)}
       />
     </div>
   );

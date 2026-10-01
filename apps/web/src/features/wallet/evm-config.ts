@@ -12,9 +12,10 @@ export const evmConfig = createConfig({
   chains: [baseSepolia, arbitrumSepolia],
   connectors: [injected({ shimDisconnect: true })],
   multiInjectedProviderDiscovery: true,
+  // Dedicated RPC endpoints when configured; the chains' public endpoints otherwise.
   transports: {
-    [baseSepolia.id]: http(),
-    [arbitrumSepolia.id]: http(),
+    [baseSepolia.id]: http(process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL || undefined),
+    [arbitrumSepolia.id]: http(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL || undefined),
   },
   ssr: true,
 });

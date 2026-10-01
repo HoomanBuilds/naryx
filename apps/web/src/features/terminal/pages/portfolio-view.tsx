@@ -6,7 +6,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
-import { DOMAIN_META, DOMAIN_ORDER, domainHealth, useTerminal } from "../shell/terminal-context";
+import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "../shell/terminal-context";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import styles from "./pages.module.css";
 
@@ -18,19 +18,19 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
     ["Signer", "Your Wallet Standard account signs every package"],
     ["Settlement", "Atomic: every leg settles in one transaction, or none does"],
     ["Review", "The exact transaction is shown before any Devnet signature"],
-    ["Deployment", "Solana Devnet program deployment is deferred"],
+    ["Perp venue", "Drift on Solana Devnet"],
   ],
   base: [
     ["Strategy account", "NaryxStrategyAccount, one per owner"],
     ["Authority", "Owner signs every package; a delegate may only submit an owner-signed recovery exit"],
     ["Ownership transfer", "Two-step: the new owner must accept"],
-    ["Deployment", "Base Sepolia deployment is deferred"],
+    ["Perp venue", "Naryx test perpetual market on Base Sepolia, not a third-party exchange"],
   ],
   arbitrum: [
     ["Strategy account", "NaryxStrategyAccount, one per owner"],
     ["Settlement", "The solver settles within its window or its bond pays the signed fault amount"],
     ["Ownership transfer", "Two-step: the new owner must accept"],
-    ["Deployment", "Arbitrum Sepolia deployment is deferred"],
+    ["Perp venue", "GMX V2 on Arbitrum Sepolia"],
   ],
   hyperliquid: [
     ["Account mode", "Standard only; unified, default, and portfolio-margin accounts are refused"],
@@ -138,8 +138,7 @@ export function PortfolioView() {
                 const meta = DOMAIN_META[domain];
                 const account = accountFor(domain);
                 const balance = balances[domain];
-                const health = domainHealth(domain, runtimeHealth);
-                const live = health?.available === true;
+                const live = domainLive(domain, runtimeHealth);
                 return (
                   <tr key={domain}>
                     <td>

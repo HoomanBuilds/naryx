@@ -21,7 +21,8 @@ const LOCAL_ATTEMPT_ID_PATTERN = /^local-atomic-[0-9a-f]{64}$/;
 const LOCAL_CONTEXT_ID = "local:svm:sol-carry-v1";
 const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia" as const;
 const BASE_SEPOLIA_CHAIN_REFERENCE = "84532" as const;
-const ARBITRUM_SEPOLIA_DOMAIN_ID = "evm:arbitrum-sepolia" as const;
+// The Arbitrum coordinator commits to keccak256("eip155:421614"), so the service reports this exact id.
+const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614" as const;
 const ARBITRUM_SEPOLIA_CHAIN_REFERENCE = "421614" as const;
 const EVM_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const EVM_HASH_PATTERN = /^0x[0-9a-f]{64}$/;

@@ -56,6 +56,14 @@ export function domainHealth(domain: DomainId, health: PrivateTerminalRuntimeHea
   return health.hyperliquidTestnet;
 }
 
+/**
+ * A domain executes for real only when its testnet runtime is up and the service's execution
+ * readiness gate is composed; without the gate every execution handoff is refused.
+ */
+export function domainLive(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): boolean {
+  return health !== null && health.controls.executionReadinessAvailable && domainHealth(domain, health)?.available === true;
+}
+
 const TerminalContext = createContext<TerminalContextValue | null>(null);
 
 export function TerminalProvider({ config, children }: { config: TerminalServiceConfig; children: ReactNode }) {
