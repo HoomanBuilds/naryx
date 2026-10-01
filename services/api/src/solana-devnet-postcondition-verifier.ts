@@ -14,6 +14,7 @@ import type {
   SolanaReadOnlyAccountSnapshot,
 } from "./solana-devnet-runtime-ports.js";
 import { SOLANA_DEVNET_GENESIS_HASH } from "./terminal-execution.js";
+import { decodeTestPerpPosition } from "./solana-devnet-test-perp.js";
 
 type SolanaCoreIdl = Parameters<typeof decodeCashCarryExecutionReceipt>[0];
 
@@ -98,6 +99,21 @@ function verifyOpenPackage(record: PreparedSolanaDevnetRecord, receipt: DecodedC
   }
 }
 
+/** The trader's own test perp position: exact market, owner, strategy delegate, and resulting short. */
+function verifyTestPerpPosition(record: PreparedSolanaDevnetRecord, account: { owner: string; data: Uint8Array } | null | undefined): string | null {
+  const expected = record.postconditionBinding?.testPerpPosition;
+  if (expected === undefined) return null;
+  if (account === null || account === undefined || account.owner !== expected.venueProgram) {
+    throw new Error("Solana postcondition test perp position is absent or has wrong owner.");
+  }
+  const position = decodeTestPerpPosition(account.data);
+  requireEqual(position.market, expected.market, "test perp market");
+  requireEqual(position.owner, expected.owner, "test perp position owner");
+  requireEqual(position.delegate, expected.delegate, "test perp position delegate");
+  requireEqual(position.baseLots, BigInt(expected.expectedBaseLots), "test perp position size");
+  return hash(account.data);
+}
+
 export class ReadOnlySolanaDevnetPostconditionVerifier implements SolanaDevnetPostconditionVerifier {
   readonly #rpc: SolanaDevnetPostconditionRpc;
   readonly #coreIdl: SolanaCoreIdl;
@@ -115,7 +131,9 @@ export class ReadOnlySolanaDevnetPostconditionVerifier implements SolanaDevnetPo
     if (await this.#rpc.getGenesisHash() !== SOLANA_DEVNET_GENESIS_HASH) throw new Error("Solana postcondition RPC is not Devnet.");
     const expected = record.postconditionBinding;
     if (expected === undefined) throw new Error("Solana postcondition binding is missing.");
-    const snapshot = await this.#rpc.getMultipleAccounts([expected.receiptAccount, expected.openPackageAccount], finalizedSlot);
+    const addresses = [expected.receiptAccount, expected.openPackageAccount];
+    if (expected.testPerpPosition !== undefined) addresses.push(expected.testPerpPosition.position);
+    const snapshot = await this.#rpc.getMultipleAccounts(addresses, finalizedSlot);
     const receiptAccount = snapshot.accounts[0];
     const openAccount = snapshot.accounts[1];
     if (receiptAccount === null || receiptAccount === undefined || receiptAccount.owner !== expected.coreProgram) {
@@ -131,6 +149,7 @@ export class ReadOnlySolanaDevnetPostconditionVerifier implements SolanaDevnetPo
     } else if (openAccount !== null) {
       throw new Error("Solana exit postcondition open package still exists.");
     }
+    verifyTestPerpPosition(record, snapshot.accounts[2]);
     return Object.freeze({
       action: record.lifecycleBinding.action,
       finalizedSlot,

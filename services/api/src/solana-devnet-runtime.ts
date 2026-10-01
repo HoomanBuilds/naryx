@@ -7,6 +7,7 @@ import {
   SolanaUnsignedTransactionMaterializer,
   solanaIdlContentHash,
   verifySolanaDevnetDeploymentIdentity,
+  type AnyFirmCashCarryBinding,
   type FirmCashCarryBinding,
   type SolanaDeploymentIdentityReadPort,
   type SolanaDevnetProgramExpectation,
@@ -28,9 +29,26 @@ import {
   type SolanaDevnetReadOnlyRpc,
 } from "./solana-devnet-runtime-ports.js";
 import type { PrivateTerminalExecutionPorts } from "./terminal-execution.js";
+import {
+  SOLANA_DEVNET_SOL_USD_FEED_ID_HEX,
+  SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT,
+  deriveSolanaDevnetTraderAccounts,
+} from "./solana-devnet-test-perp.js";
 
 type AdmissionConfiguration = Omit<PackageAdmissionInput, "order" | "quote" | "route" | "currentTime">;
 type SolanaCoreIdl = Parameters<typeof solanaIdlContentHash>[0];
+
+/**
+ * The Devnet perp leg is the Naryx test perp (Phoenix Rise has no Devnet deployment). The manifest
+ * pins the venue kind, the market account, the Pyth SOL/USD PriceUpdateV2 account and feed, and the
+ * strategy id every trader's strategy PDA is derived from. There is no fallback to another kind.
+ */
+export type SolanaDevnetTestPerpConfiguration = Readonly<{
+  market: string;
+  oracle: typeof SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT;
+  feedIdHex: typeof SOLANA_DEVNET_SOL_USD_FEED_ID_HEX;
+  strategyIdHex: string;
+}>;
 
 export type SolanaDevnetRuntimeManifest = Readonly<{
   schemaVersion: 1;
@@ -41,6 +59,8 @@ export type SolanaDevnetRuntimeManifest = Readonly<{
   lookupTables: readonly SolanaLookupTableConfig[];
   coreIdl: SolanaCoreIdl;
   expectedCoreIdlHash: Uint8Array;
+  perpVenueKind: "NARYX_TEST_PERP";
+  testPerp: SolanaDevnetTestPerpConfiguration;
   admission: AdmissionConfiguration;
   evidence: Readonly<{
     evidenceClass: "SOLANA_FINALIZED_ACCOUNT_EVIDENCE_V1";
@@ -73,7 +93,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function requireManifest(value: unknown): SolanaDevnetRuntimeManifest {
   if (!isRecord(value)
-    || Object.keys(value).sort().join(",") !== "activationState,admission,coreIdl,domain,evidence,expectedCoreIdlHash,expectedGenesisHash,lookupTables,programs,schemaVersion"
+    || Object.keys(value).sort().join(",") !== "activationState,admission,coreIdl,domain,evidence,expectedCoreIdlHash,expectedGenesisHash,lookupTables,perpVenueKind,programs,schemaVersion,testPerp"
     || value.schemaVersion !== 1
     || value.activationState !== "ACTIVE") {
     throw new Error("Solana Devnet runtime manifest must be schema version 1 and ACTIVE.");
@@ -103,7 +123,35 @@ function requireManifest(value: unknown): SolanaDevnetRuntimeManifest {
   if (new PublicKey(manifest.coreIdl.address).toBase58() !== new PublicKey(core.programId).toBase58()) {
     throw new Error("Solana Devnet core IDL address does not match the reviewed core program.");
   }
+  requireTestPerpConfiguration(manifest);
   return manifest;
+}
+
+function idlAccountNames(items: readonly unknown[]): string[] {
+  return items.flatMap((item) => {
+    if (!isRecord(item) || typeof item.name !== "string") return [];
+    return Array.isArray(item.accounts) ? idlAccountNames(item.accounts) : [item.name];
+  });
+}
+
+function requireTestPerpConfiguration(manifest: SolanaDevnetRuntimeManifest): void {
+  const testPerp = manifest.testPerp;
+  if (manifest.perpVenueKind !== "NARYX_TEST_PERP"
+    || !isRecord(testPerp)
+    || Object.keys(testPerp).sort().join(",") !== "feedIdHex,market,oracle,strategyIdHex"
+    || testPerp.oracle !== SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT
+    || testPerp.feedIdHex !== SOLANA_DEVNET_SOL_USD_FEED_ID_HEX
+    || typeof testPerp.strategyIdHex !== "string"
+    || !/^[0-9a-f]{64}$/.test(testPerp.strategyIdHex)
+    || /^0+$/.test(testPerp.strategyIdHex)) {
+    throw new Error("Solana Devnet runtime manifest must select NARYX_TEST_PERP with the reviewed Pyth SOL/USD feed.");
+  }
+  new PublicKey(testPerp.market);
+  const entry = manifest.coreIdl.instructions.find((instruction) => instruction.name === "execute_firm_cash_and_carry");
+  const names = entry === undefined ? [] : idlAccountNames(entry.accounts as readonly unknown[]);
+  if (!names.includes("test_perp_market") || !names.includes("test_perp_oracle") || names.some((name) => name.startsWith("rise_") && name !== "rise_strategy")) {
+    throw new Error("Solana Devnet core IDL is not the devnet-test-perp feature build.");
+  }
 }
 
 export function loadSolanaDevnetRuntimeManifest(path: string): SolanaDevnetRuntimeManifest {
@@ -111,10 +159,47 @@ export function loadSolanaDevnetRuntimeManifest(path: string): SolanaDevnetRunti
   return requireManifest(parseProtocolJson(readFileSync(resolve(path), "utf8"), "solanaDevnetRuntimeManifest"));
 }
 
+function requireTestPerpBinding(
+  binding: FirmCashCarryBinding,
+  manifest: SolanaDevnetRuntimeManifest,
+  trader: string,
+): void {
+  const candidate = binding as unknown as AnyFirmCashCarryBinding;
+  const accounts = candidate.accounts as unknown as Readonly<Record<string, { address: PublicKey | string } | undefined>>;
+  const address = (name: string) => {
+    const account = accounts[name];
+    if (account === undefined) throw new Error(`Solana Devnet live binding is missing ${name}.`);
+    return new PublicKey(account.address).toBase58();
+  };
+  const program = (name: string) => manifest.programs.find((item) => item.name === name)!;
+  const derived = deriveSolanaDevnetTraderAccounts({
+    owner: trader,
+    strategyIdHex: manifest.testPerp.strategyIdHex,
+    market: manifest.testPerp.market,
+    coreProgram: new PublicKey(program("core").programId).toBase58(),
+    perpAdapterProgram: new PublicKey(program("perp_adapter").programId).toBase58(),
+    perpVenueProgram: new PublicKey(program("perp_venue").programId).toBase58(),
+    baseMint: new PublicKey(candidate.resources.baseAsset.subjectAddress).toBase58(),
+    quoteMint: new PublicKey(candidate.resources.quoteAsset.subjectAddress).toBase58(),
+  });
+  if (candidate.perpVenueKind !== manifest.perpVenueKind
+    || !bytesEqual(candidate.expectedCoreIdlHash, manifest.expectedCoreIdlHash)
+    || address("testPerpMarket") !== new PublicKey(manifest.testPerp.market).toBase58()
+    || address("testPerpOracle") !== manifest.testPerp.oracle
+    || address("trader") !== derived.trader
+    || address("riseStrategy") !== derived.strategy
+    || address("testPerpPosition") !== derived.position
+    || address("executorAuthority") !== derived.executorAuthority
+    || address("openPackage") !== derived.openPackage) {
+    throw new Error("Solana Devnet live binding does not match the reviewed test perp venue or the trader's own accounts.");
+  }
+}
+
 function checkedBindingSource(
   source: SolanaDevnetLiveBindingSource,
   expectations: readonly SolanaDevnetProgramExpectation[],
   rpc: SolanaDeploymentIdentityReadPort,
+  manifest: SolanaDevnetRuntimeManifest,
 ): SolanaDevnetLiveBindingSource {
   const keyByName = {
     core: "core",
@@ -127,6 +212,7 @@ function checkedBindingSource(
     readBinding: async (input: Parameters<SolanaDevnetLiveBindingSource["readBinding"]>[0]) => {
       const programs = (await verifySolanaDevnetDeploymentIdentity(expectations, rpc)).programs;
       const binding = await source.readBinding(input);
+      requireTestPerpBinding(binding, manifest, input.request.traderPublicKey);
       for (const program of programs) {
         const deployment = binding.deployments[keyByName[program.name as keyof typeof keyByName]];
         if (deployment === undefined
@@ -156,7 +242,7 @@ export async function createSolanaDevnetRuntime(options: SolanaDevnetRuntimeOpti
     orders: options.orders,
     configuration: { admission: manifest.admission, evidenceClass: manifest.evidence.evidenceClass },
     currentSlot,
-    bindings: checkedBindingSource(options.bindings, manifest.programs, deploymentRpc),
+    bindings: checkedBindingSource(options.bindings, manifest.programs, deploymentRpc, manifest),
   });
   const lifecycleRecorder = new SolanaDevnetLifecycleStoreRecorder(options.lifecycle);
   return createSolanaDevnetExecutionPorts({

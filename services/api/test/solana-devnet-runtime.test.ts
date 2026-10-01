@@ -20,7 +20,7 @@ import { SqlitePackageLifecycleStore } from "../src/package-lifecycle-store.js";
 import { createSolanaDevnetRuntime, type SolanaDevnetRuntimeManifest } from "../src/solana-devnet-runtime.js";
 
 const coreIdl = JSON.parse(readFileSync(
-  new URL("../../../../deployments/solana/program/idl/naryx_core.json", import.meta.url),
+  new URL("../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json", import.meta.url),
   "utf8",
 ));
 const hash = (byte: number) => new Uint8Array(32).fill(byte);
@@ -86,6 +86,13 @@ function manifest(expectations: readonly SolanaDevnetProgramExpectation[] = prog
     lookupTables: [],
     coreIdl,
     expectedCoreIdlHash: solanaIdlContentHash(coreIdl),
+    perpVenueKind: "NARYX_TEST_PERP",
+    testPerp: {
+      market: new PublicKey(hash(120)).toBase58(),
+      oracle: "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+      feedIdHex: "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+      strategyIdHex: "11".repeat(32),
+    },
     admission: {} as SolanaDevnetRuntimeManifest["admission"],
     evidence: {
       evidenceClass: "SOLANA_FINALIZED_ACCOUNT_EVIDENCE_V1",
@@ -180,6 +187,16 @@ test("rejects wrong genesis, program identity, and evidence configuration", asyn
         ...dependencies,
       }),
       /unsupported domain, bound, or evidence class/,
+    );
+    await assert.rejects(
+      createSolanaDevnetRuntime({
+        manifest: {
+          ...manifest(expectations),
+          testPerp: { ...manifest(expectations).testPerp, oracle: new PublicKey(hash(121)).toBase58() } as never,
+        },
+        ...dependencies,
+      }),
+      /must select NARYX_TEST_PERP with the reviewed Pyth SOL\/USD feed/,
     );
   } finally {
     dependencies.lifecycle.close();

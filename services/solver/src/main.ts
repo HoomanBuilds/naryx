@@ -35,6 +35,7 @@ import {
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
 import { loadBaseSepoliaSolverRuntime } from './base-sepolia-solver-authorization.js';
+import { loadSolanaDevnetSolverRuntime } from './solana-devnet-solver-runtime.js';
 import { explicitBoolean, loadSolverProcessConfig, tcpPort } from './solver-process-config.js';
 
 const ED25519_SPKI_PREFIX_BYTES = 12;
@@ -152,7 +153,15 @@ const authorization = manifestRuntime === undefined || authorizationStore === un
     store: authorizationStore,
     readSlot: manifestRuntime.readSlot,
   });
-const quoteServer = createInternalAtomicQuoteServer(coordinator, authorization);
+// Solana Devnet: disabled unless NARYX_SOLANA_DEVNET_SOLVER_ENABLED=true. FIRM_ONCHAIN quotes for
+// svm:devnet orders and the loopback attempt-binding endpoint the API's Devnet runtime calls.
+const solanaDevnetSolver = await loadSolanaDevnetSolverRuntime(process.env, {
+  nonceSource: new SqliteAtomicQuoteNonceSource(store, 'svm:devnet'),
+  apiOrigin,
+  reservedPorts: [listenPort],
+});
+await solanaDevnetSolver?.listen(host);
+const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(coordinator) ?? coordinator, authorization);
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
   'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED',
@@ -238,6 +247,7 @@ function shutdown(): void {
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
+    solanaDevnetSolver?.close(),
   ]).then((results) => {
     executorRuntime?.close();
     arbitrumJournal?.close();

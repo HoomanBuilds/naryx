@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import bs58 from "bs58";
@@ -170,4 +171,52 @@ test("verifies finalized exit receipt only after the open package is absent", as
   const proof = await verifier.verify(prepared, 200);
   assert.equal(proof.action, "EXIT");
   assert.equal(proof.openPackageDataHashHex, null);
+});
+
+test("requires the trader's test perp position to hold the exact short after entry", async () => {
+  const base = record("ENTRY");
+  const venue = address(40);
+  const prepared = {
+    ...base,
+    postconditionBinding: {
+      ...base.postconditionBinding!,
+      testPerpPosition: {
+        venueProgram: venue,
+        position: address(41),
+        market: address(42),
+        owner: address(21),
+        delegate: address(43),
+        expectedBaseLots: "-11",
+      },
+    },
+  } as PreparedSolanaDevnetRecord;
+  const position = (lots: bigint) => Buffer.concat([
+    createHash("sha256").update("account:TestPerpPosition").digest().subarray(0, 8),
+    Buffer.from(bs58.decode(address(42))),
+    Buffer.from(bs58.decode(address(21))),
+    Buffer.from(bs58.decode(address(43))),
+    u64(500n),
+    i64(lots),
+    u64(0n),
+    Buffer.alloc(17),
+  ]);
+  const verifierFor = (lots: bigint) => new ReadOnlySolanaDevnetPostconditionVerifier({
+    coreIdl,
+    rpc: {
+      getGenesisHash: async () => SOLANA_DEVNET_GENESIS_HASH,
+      getMultipleAccounts: async (addresses) => {
+        assert.deepEqual(addresses.at(-1), address(41));
+        return {
+          contextSlot: 101,
+          accounts: [
+            { owner: prepared.postconditionBinding!.coreProgram, data: receiptData(1, false, prepared.postconditionBinding!.receiptAccount) },
+            { owner: prepared.postconditionBinding!.coreProgram, data: openPackageData(prepared.postconditionBinding!.receiptAccount) },
+            { owner: venue, data: position(lots) },
+          ],
+        };
+      },
+    },
+  });
+  assert.equal((await verifierFor(-11n).verify(prepared, 100)).action, "ENTRY");
+  await assert.rejects(verifierFor(-10n).verify(prepared, 100), /test perp position size mismatch/);
 });

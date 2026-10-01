@@ -43,6 +43,7 @@ type StoredEnvelope = Readonly<{
     resourceAdmissionCommitmentHex: string;
     packageFillCommitmentHex: string;
     expectedOpenPackage?: SolanaDevnetPostconditionBinding["expectedOpenPackage"];
+    testPerpPosition?: SolanaDevnetPostconditionBinding["testPerpPosition"];
     recovery: boolean;
   }>;
 }>;
@@ -159,6 +160,9 @@ function deserialize(payload: string, signature: string | null): PreparedSolanaD
     packageFillCommitmentHex: storedPostcondition.packageFillCommitmentHex,
     ...(storedPostcondition.expectedOpenPackage === undefined ? {} : {
       expectedOpenPackage: storedPostcondition.expectedOpenPackage,
+    }),
+    ...(storedPostcondition.testPerpPosition === undefined ? {} : {
+      testPerpPosition: storedPostcondition.testPerpPosition,
     }),
     recovery: storedPostcondition.recovery,
   };

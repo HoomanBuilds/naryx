@@ -43,6 +43,14 @@ import {
   loadSolanaDevnetRuntimeManifest,
 } from "./solana-devnet-runtime.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
+import {
+  HttpSolanaDevnetMarketReadPort,
+  createSolanaDevnetOrderRuntime,
+  loadSolanaDevnetOrderContextConfig,
+  type SolanaDevnetOrderRuntime,
+} from "./solana-devnet-order-context.js";
+import { withSolanaDevnetFirmQuoteVerification } from "./solana-devnet-firm-quote.js";
+import { createSolanaDevnetMarketSource } from "./private-terminal-manifest.js";
 import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
 import { Connection } from "@solana/web3.js";
 import {
@@ -220,6 +228,28 @@ if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
   } catch (error) {
     solanaDevnetRuntimeError = error;
     reportRuntimeFailure("solanaDevnet", error);
+  }
+}
+// Solana Devnet entry path: live Pyth SOL/USD order context, per-wallet onboarding reads, the
+// test perp terminal market, and FIRM_ONCHAIN quote verification. Disabled unless explicitly enabled.
+let solanaDevnetOrderRuntime: SolanaDevnetOrderRuntime | undefined;
+if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
+  try {
+    solanaDevnetOrderRuntime = await createSolanaDevnetOrderRuntime({
+      manifest: loadSolanaDevnetRuntimeManifest(absolutePath(
+        process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
+        "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
+      )),
+      config: loadSolanaDevnetOrderContextConfig(absolutePath(
+        process.env.NARYX_SOLANA_DEVNET_ORDER_CONTEXT ?? "",
+        "NARYX_SOLANA_DEVNET_ORDER_CONTEXT",
+      )),
+      port: new HttpSolanaDevnetMarketReadPort(process.env.NARYX_SOLANA_DEVNET_RPC_URL ?? ""),
+    });
+    solanaDevnetOrderRuntime.feed.start();
+  } catch (error) {
+    solanaDevnetOrderRuntime = undefined;
+    reportRuntimeFailure("solanaDevnetOrderContext", error);
   }
 }
 let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
@@ -418,7 +448,8 @@ function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[])
 }
 const orderContexts = (contextId: string) =>
   orderRuntime?.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId)
-  ?? arbitrumOrderRuntime?.contexts(contextId) ?? baseOrderRuntime?.contexts(contextId);
+  ?? arbitrumOrderRuntime?.contexts(contextId) ?? baseOrderRuntime?.contexts(contextId)
+  ?? solanaDevnetOrderRuntime?.contexts(contextId);
 const orderClock = Object.freeze({
   currentClock: async (context: ActiveOrderContext) => {
     if (arbitrumOrderRuntime !== undefined && context.settlementClass === "ASYNC_BONDED_SOLVER") {
@@ -426,6 +457,9 @@ const orderClock = Object.freeze({
     }
     if (baseOrderRuntime !== undefined && context.contextId === baseOrderRuntime.config.contextId) {
       return baseOrderRuntime.clock.currentClock(context);
+    }
+    if (solanaDevnetOrderRuntime !== undefined && context.contextId === solanaDevnetOrderRuntime.config.contextId) {
+      return solanaDevnetOrderRuntime.clock.currentClock(context);
     }
     if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
       return hyperliquidOrderRuntime.clock.currentClock(context);
@@ -465,7 +499,7 @@ const server = createPrivateTerminalServer(
     ? runtime.evmTestnet
     : { ...runtime.evmTestnet, account: baseOrderRuntime.account },
   lifecycleStore,
-  solverClient,
+  solanaDevnetOrderRuntime === undefined ? solverClient : withSolanaDevnetFirmQuoteVerification(solverClient),
   executionIntentStore,
   localExecutionCoordinator,
   runtime.health,
@@ -481,10 +515,13 @@ const server = createPrivateTerminalServer(
     publicMarket?.internalHandler,
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
     arbitrumOwnerRoutes,
+    solanaDevnetOrderRuntime?.handler,
   ),
-  baseOrderRuntime === undefined
-    ? terminalMarkets
-    : { ...terminalMarkets, base: createBaseSepoliaMarketSource(baseOrderRuntime) },
+  {
+    ...terminalMarkets,
+    ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
+    ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
+  },
 );
 
 const publicServer = publicMarket?.listener === undefined
@@ -511,6 +548,7 @@ if (publicServer !== undefined && publicMarket?.listener !== undefined) {
 function shutdown(): void {
   hyperliquidPriceFeed?.stop();
   baseOrderRuntime?.feed.stop();
+  solanaDevnetOrderRuntime?.feed.stop();
   publicServer?.close();
   server.close(() => {
     orderStore.close();

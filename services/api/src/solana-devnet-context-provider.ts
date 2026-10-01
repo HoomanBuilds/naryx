@@ -41,6 +41,24 @@ export type SolanaDevnetContextProviderOptions = Readonly<{
   bindings: SolanaDevnetLiveBindingSource;
 }>;
 
+/**
+ * The solver reads live account state at its own finalized slot, which is never exactly the slot
+ * this provider admitted at. A binding is accepted when its slot is at most this many slots behind
+ * (a lagging RPC node) or ahead (finality advanced while the solver read and signed) of the
+ * admission slot. Expiry stays enforced at both slots: admission checks `slot < expiry` and the plan
+ * compiler checks `binding.currentSlot < expiry`, and the program re-checks against its own clock.
+ * About 64 seconds of Devnet slots either way.
+ */
+export const SOLANA_DEVNET_MAX_BINDING_SLOT_LAG = 32n;
+export const SOLANA_DEVNET_MAX_BINDING_SLOT_ADVANCE = 160n;
+
+export function solanaDevnetBindingSlotWithinWindow(admittedSlot: bigint, bindingSlot: bigint): boolean {
+  return typeof bindingSlot === "bigint"
+    && bindingSlot > 0n
+    && bindingSlot + SOLANA_DEVNET_MAX_BINDING_SLOT_LAG >= admittedSlot
+    && bindingSlot <= admittedSlot + SOLANA_DEVNET_MAX_BINDING_SLOT_ADVANCE;
+}
+
 function fail(message: string): never {
   throw new Error(`Solana Devnet context rejected: ${message}`);
 }
@@ -105,8 +123,8 @@ export function createSolanaDevnetContextProvider(options: SolanaDevnetContextPr
       || binding.domain.domainId !== "svm:devnet"
       || binding.domain.domainManifestVersion !== order.domain.domainManifestVersion
       || !bytesEqual(binding.domain.domainManifestHash, order.domain.domainManifestHash)
-      || binding.currentSlot !== slot) {
-      fail("live binding domain or finalized slot does not match admitted evidence");
+      || !solanaDevnetBindingSlotWithinWindow(slot, binding.currentSlot)) {
+      fail("live binding domain or finalized slot is outside the admitted window");
     }
     try {
       compileFirmCashCarryPlan(admission, binding);

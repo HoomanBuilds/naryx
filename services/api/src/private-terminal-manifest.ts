@@ -2,6 +2,7 @@ import { baseSepoliaSpotAsk, type BaseSepoliaOrderRuntime } from "./base-sepolia
 import type { HyperliquidTestnetPriceSource } from "./hyperliquid-testnet-price-feed.js";
 import type { HyperliquidTestnetRuntimeConfig } from "./hyperliquid-testnet-runtime-client.js";
 import type { DomainId, QuoteMode, SlippageBps } from "./terminal-types.js";
+import type { SolanaDevnetOrderRuntime } from "./solana-devnet-order-context.js";
 
 // Package identity for the Solana Devnet preparation boundary. It carries no prices: terminal
 // snapshot and preview numbers come only from a domain's live TerminalMarketSource.
@@ -157,6 +158,57 @@ export function createBaseSepoliaMarketSource(
         perpAsk: decimalString(snapshot.oracleAnswer * (10_000n + snapshot.halfSpreadBps), oracleScale),
         spotTakerRate: decimalString(snapshot.poolFee, 1_000_000n),
         perpTakerRate: decimalString(snapshot.takerFeeBps, 10_000n),
+        capturedAtMs: snapshot.observedAtMs,
+      });
+    },
+  });
+}
+
+/**
+ * Solana Devnet: the perpetual is the Naryx test perp priced from the live Pyth SOL/USD
+ * PriceUpdateV2 account with its half spread and taker fee; spot is the solver's firm inventory,
+ * quoted at the same oracle plus the configured inventory spread. Every value comes from the live
+ * finalized read, never from the manifest.
+ */
+export function createSolanaDevnetMarketSource(
+  runtime: Pick<SolanaDevnetOrderRuntime, "config" | "feed">,
+): TerminalMarketSource {
+  const { config, feed } = runtime;
+  // Solana asset ids are mint addresses, so the symbols come from the package identity.
+  const base = PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1.baseSymbol;
+  const quote = PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1.quoteSymbol;
+  const descriptor: TerminalMarketDescriptor = Object.freeze({
+    environment: "DEVNET",
+    packageId: config.contextId,
+    baseSymbol: base,
+    quoteSymbol: quote,
+    baseDecimals: config.baseAsset.decimals,
+    quoteDecimals: config.quoteAsset.decimals,
+    maximumSizeAtoms: config.maximumQuantityAtoms,
+    maxSlippageBps: config.maxSlippageBps,
+    // About 0.4 seconds per slot; the order context itself enforces staleness in slots.
+    maxStalenessMs: Number(config.maxStalenessSlots) * 400,
+    settlement: Object.freeze({ label: "Atomic postcondition", detail: "Firm reservation, one transaction" }),
+    spot: Object.freeze({ instrument: `${base} / ${quote}`, venue: "Naryx solver inventory on Solana Devnet" }),
+    perp: Object.freeze({ instrument: `${base}-PERP`, venue: "Naryx test perpetual (Pyth-priced)" }),
+  });
+  return Object.freeze({
+    descriptor,
+    latest(): TerminalMarketObservation | undefined {
+      const snapshot = feed.latest();
+      if (snapshot === undefined) return undefined;
+      // Quote units per base unit = price per lot * 10^baseDecimals / (lot atoms * 10^quoteDecimals).
+      const numerator = snapshot.oraclePricePerLot * 10n ** BigInt(config.baseAsset.decimals);
+      const denominator = snapshot.market.baseLotAtoms * 10n ** BigInt(config.quoteAsset.decimals) * 10_000n;
+      const at = (bps: number) => decimalString(numerator * BigInt(10_000 + bps), denominator);
+      const halfSpread = snapshot.market.halfSpreadBps;
+      return Object.freeze({
+        spotBid: at(-config.inventorySpreadBps),
+        spotAsk: at(config.inventorySpreadBps),
+        perpBid: at(-halfSpread),
+        perpAsk: at(halfSpread),
+        spotTakerRate: "0",
+        perpTakerRate: decimalString(BigInt(snapshot.market.takerFeeBps), 10_000n),
         capturedAtMs: snapshot.observedAtMs,
       });
     },

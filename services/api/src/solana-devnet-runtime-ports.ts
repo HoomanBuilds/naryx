@@ -61,7 +61,19 @@ export type SolanaDevnetPostconditionBinding = Readonly<{
     economicPackageCommitmentHex: string;
     packageAccountsCommitmentHex: string;
   }>;
+  /** Present for the NARYX_TEST_PERP venue: the trader's position must hold the exact short. */
+  testPerpPosition?: SolanaDevnetTestPerpPositionBinding;
   recovery: boolean;
+}>;
+
+export type SolanaDevnetTestPerpPositionBinding = Readonly<{
+  venueProgram: string;
+  position: string;
+  market: string;
+  owner: string;
+  delegate: string;
+  /** Decimal i64 base lots expected after the action: the negative short after entry, "0" after exit. */
+  expectedBaseLots: string;
 }>;
 
 export type SolanaDevnetPostconditionProof = Readonly<{
@@ -235,9 +247,19 @@ function copyPostconditionBinding(value: SolanaDevnetPostconditionBinding): Sola
     }
     expectedOpenPackage = Object.freeze({ ...value.expectedOpenPackage });
   }
+  let testPerpPosition: SolanaDevnetTestPerpPositionBinding | undefined;
+  if (value.testPerpPosition !== undefined) {
+    const position = value.testPerpPosition;
+    if ([position.venueProgram, position.position, position.market, position.owner, position.delegate].some((address) => !isAddress(address))
+      || !/^(?:0|-[1-9][0-9]{0,18})$/.test(position.expectedBaseLots)) {
+      throw new Error("Postcondition binding test perp position is invalid.");
+    }
+    testPerpPosition = Object.freeze({ ...position });
+  }
   return Object.freeze({
     ...value,
     ...(expectedOpenPackage === undefined ? {} : { expectedOpenPackage }),
+    ...(testPerpPosition === undefined ? {} : { testPerpPosition }),
   });
 }
 
@@ -623,6 +645,29 @@ function solanaAddress(value: unknown, name: string): string {
   return candidate;
 }
 
+function testPerpPositionBinding(
+  binding: FirmCashCarryBinding,
+  accounts: Record<string, { address: unknown }>,
+  trader: string,
+  perpQuantityAtoms: bigint,
+): { testPerpPosition?: SolanaDevnetTestPerpPositionBinding } {
+  if ((binding as unknown as { perpVenueKind?: string }).perpVenueKind !== "NARYX_TEST_PERP") return {};
+  const lot = binding.resources.perpBaseLotAtoms;
+  if (typeof lot !== "bigint" || lot <= 0n || perpQuantityAtoms % lot !== 0n) {
+    throw new Error("Postcondition test perp quantity is not an exact market lot.");
+  }
+  return {
+    testPerpPosition: Object.freeze({
+      venueProgram: solanaAddress(binding.deployments.perpVenue.programId, "postcondition perp venue program"),
+      position: solanaAddress(accounts.testPerpPosition?.address, "postcondition test perp position"),
+      market: solanaAddress(accounts.testPerpMarket?.address, "postcondition test perp market"),
+      owner: trader,
+      delegate: solanaAddress(accounts.riseStrategy?.address, "postcondition test perp strategy"),
+      expectedBaseLots: (-(perpQuantityAtoms / lot)).toString(),
+    }),
+  };
+}
+
 function deriveSolanaDevnetPostconditionBinding(args: Readonly<{
   request: NormalizedCashCarryExecutionRequest;
   admission: PackageAdmission;
@@ -664,6 +709,7 @@ function deriveSolanaDevnetPostconditionBinding(args: Readonly<{
       resourceAdmissionCommitmentHex: toCanonicalHex32(binding.resourceAdmissionCommitment, "postcondition resource admission"),
       packageFillCommitmentHex: toCanonicalHex32(binding.quoteArgs.expectedFillCommitment, "postcondition package fill"),
       ...(expectedOpenPackage === undefined ? {} : { expectedOpenPackage }),
+      ...testPerpPositionBinding(binding, accounts, trader, binding.executionArgs.perpQuantityAtoms),
       recovery: false,
     });
   }
@@ -686,6 +732,9 @@ function deriveSolanaDevnetPostconditionBinding(args: Readonly<{
     perpQuantityAtoms: exit.executionArgs.perpQuantityAtoms,
     resourceAdmissionCommitmentHex: toCanonicalHex32(exit.resourceAdmissionCommitment, "postcondition resource admission"),
     packageFillCommitmentHex: "0".repeat(64),
+    ...((exit as unknown as { perpVenueKind?: string }).perpVenueKind === "NARYX_TEST_PERP"
+      ? testPerpPositionBinding(binding, accounts, trader, 0n)
+      : {}),
     recovery: exit.authorization.mode === "TRADER_RECOVERY",
   });
 }
