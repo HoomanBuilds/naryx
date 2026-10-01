@@ -93,7 +93,7 @@ function manifest(): DomainManifest {
   return domainManifest({
     manifestVersion: 1,
     environment: "testnet",
-    domainId: "evm:base-sepolia",
+    domainId: "eip155:84532",
     runtimeClassId: EVM_RUNTIME_IDENTITY.runtimeClassId,
     runtimeClassVersion: EVM_RUNTIME_IDENTITY.runtimeClassVersion,
     chainNamespace: EVM_RUNTIME_IDENTITY.chainNamespace,

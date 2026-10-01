@@ -284,7 +284,7 @@ test("Base Sepolia quote selection is durable and readable before trader permit"
   const context = Object.freeze({
     ...activeContext(),
     contextId: "base-sepolia-atomic-v1",
-    domain: domainRef("evm:base-sepolia", 1, "81".repeat(32)),
+    domain: domainRef("eip155:84532", 1, "81".repeat(32)),
     expiryUnit: "EVM_UNIX_SECONDS" as const,
   });
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
@@ -359,7 +359,7 @@ test("Base Sepolia quote selection is durable and readable before trader permit"
     };
     assert.equal(selected.status, "BASE_ATOMIC_QUOTE_SELECTED");
     assert.equal(selected.attempt.status, "BASE_ATOMIC_QUOTE_SELECTED");
-    assert.equal(selected.attempt.domainId, "evm:base-sepolia");
+    assert.equal(selected.attempt.domainId, "eip155:84532");
     assert.match(selected.attempt.attemptId, /^base-atomic-[0-9a-f]{52}$/);
 
     const readResponse = await fetch(

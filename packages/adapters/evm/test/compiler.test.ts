@@ -94,7 +94,7 @@ function manifest(domainId: string, chainReference: bigint, manifestVersion = 1)
 }
 
 test('prepares the PackageVerifier TraderPermit typed data from the unsigned execution', () => {
-  const domain = manifest('evm:base-sepolia', 84_532n);
+  const domain = manifest('eip155:84532', 84_532n);
   const admitted = admission(domain);
   const identity = deployment(domain, 84_532n);
   const authorization = prepareEvmTraderPermitAuthorization(
@@ -457,7 +457,7 @@ test('matches the published strategy account executePackage selector', () => {
 });
 
 for (const network of [
-  { name: 'Base', domainId: 'evm:base-sepolia', chainReference: 84_532n },
+  { name: 'Base', domainId: 'eip155:84532', chainReference: 84_532n },
   { name: 'Arbitrum', domainId: 'evm:arbitrum-sepolia', chainReference: 421_614n },
 ] as const) {
   test(`compiles deterministic unsigned atomic calldata for ${network.name}`, () => {
@@ -491,7 +491,7 @@ for (const network of [
 }
 
 test('rejects non-EVM and non-atomic routes', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   assert.throws(
     () => compileEvmAtomicPackage({ ...admitted, route: { ...admitted.route, executionPlanKind: 'HYPERCORE_BATCHED_IOC' } }, deployment(domainManifest, 84_532n), seriesBinding(domainManifest), bounds),
@@ -504,7 +504,7 @@ test('rejects non-EVM and non-atomic routes', () => {
 });
 
 test('rejects an unrecognized atomic settlement identity or version', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
@@ -518,7 +518,7 @@ test('rejects an unrecognized atomic settlement identity or version', () => {
 });
 
 test('rejects non-65-byte ECDSA signatures', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
@@ -532,7 +532,7 @@ test('rejects non-65-byte ECDSA signatures', () => {
 });
 
 test('rejects domain and deployment chain mismatches', () => {
-  const baseManifest = manifest('evm:base-sepolia', 84_532n);
+  const baseManifest = manifest('eip155:84532', 84_532n);
   const arbitrumManifest = manifest('evm:arbitrum-sepolia', 421_614n);
   assert.throws(
     () => compileEvmAtomicPackage(admission(arbitrumManifest), deployment(baseManifest, 84_532n), seriesBinding(baseManifest), bounds),
@@ -545,7 +545,7 @@ test('rejects domain and deployment chain mismatches', () => {
 });
 
 test('rejects missing and zero deployment addresses', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
@@ -567,7 +567,7 @@ test('rejects an expired route at its exact boundary', () => {
 });
 
 test('derives package units and rejects nondivisible or unequal leg ratios', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
@@ -591,14 +591,14 @@ test('derives package units and rejects nondivisible or unequal leg ratios', () 
 });
 
 test('requires an entry binding for the exact active domain and asset manifests', () => {
-  const domainManifest = manifest('evm:base-sepolia', 84_532n);
+  const domainManifest = manifest('eip155:84532', 84_532n);
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
     () => compileEvmAtomicPackage(
       admitted,
       identity,
-      seriesBinding(manifest('evm:base-sepolia', 84_532n, 2)),
+      seriesBinding(manifest('eip155:84532', 84_532n, 2)),
       bounds,
     ),
     /entry series binding domain mismatch/,

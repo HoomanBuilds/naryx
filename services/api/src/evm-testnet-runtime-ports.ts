@@ -41,7 +41,7 @@ import {
 } from "viem";
 
 export const EVM_TESTNET_ENVIRONMENT = "TESTNET" as const;
-export const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia" as const;
+export const BASE_SEPOLIA_DOMAIN_ID = "eip155:84532" as const;
 export const BASE_SEPOLIA_CHAIN_REFERENCE = "84532" as const;
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;

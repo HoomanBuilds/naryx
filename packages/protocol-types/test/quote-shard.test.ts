@@ -48,7 +48,7 @@ const level = (levelId: bigint, direction: 'BID' | 'ASK', referenceOffset: bigin
 const shard: PackageQuoteShardInput = {
   shardVersion: 1,
   environment: 'local',
-  domain: domainRef('evm:base-sepolia', 1, '22'.repeat(32)),
+  domain: domainRef('eip155:84532', 1, '22'.repeat(32)),
   solverId: 'solver-a',
   templateId: 'cash-and-carry-v1',
   marketGroupId: 'sol-carry',

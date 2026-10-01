@@ -19,7 +19,7 @@ function policyText(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     version: 1,
     domains: [{
-      domainId: "evm:base-sepolia",
+      domainId: "eip155:84532",
       quoteAssetId: USDC,
       maxPrincipalAtomsPerOperation: "1000000000",
       maxPrincipalAtomsPerDay: "2500000000",
@@ -35,7 +35,7 @@ function scope(attemptId: string, principalAtoms: bigint, extra: Partial<Testnet
     attemptId,
     idempotencyKey: `${attemptId}-key`,
     environment: "testnet",
-    domainId: "evm:base-sepolia",
+    domainId: "eip155:84532",
     orderHash: `order-${attemptId}`,
     quoteAssetId: USDC,
     principalAtoms,
@@ -143,7 +143,7 @@ function order(fields: { quote?: string; spot?: bigint; margin?: bigint; loss?: 
   const asset = (assetId: string) => ({ assetId, assetManifestHash: new Uint8Array(32), decimals: 6 });
   return {
     environment: "testnet",
-    domain: { domainId: "evm:base-sepolia", domainManifestVersion: 1, domainManifestHash: new Uint8Array(32) },
+    domain: { domainId: "eip155:84532", domainManifestVersion: 1, domainManifestHash: new Uint8Array(32) },
     maxSpotQuoteIn: { asset: asset(fields.spotAsset ?? fields.quote ?? USDC), atoms: fields.spot ?? 700n },
     maxMarginAdded: { asset: asset(fields.quote ?? USDC), atoms: fields.margin ?? 300n },
     maxAggregateRecoveryLossQuote: { asset: asset(fields.quote ?? USDC), atoms: fields.loss ?? 0n },

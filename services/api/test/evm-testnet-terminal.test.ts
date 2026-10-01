@@ -337,7 +337,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
   const origin = "http://127.0.0.1:3000";
   const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
 
-  const baseDomainId = "evm:base-sepolia";
+  const baseDomainId = "eip155:84532";
   const baseChain = 84_532n;
   const manifest = baseManifest(baseDomainId, baseChain);
   const admission = baseAdmission(manifest);
@@ -774,7 +774,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
 test("evm testnet rejects mismatched atomic binding before hash binding", async () => {
   const origin = "http://127.0.0.1:3000";
   const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
-  const baseDomainId = "evm:base-sepolia";
+  const baseDomainId = "eip155:84532";
   const baseChain = 84_532n;
   const manifest = baseManifest(baseDomainId, baseChain);
   const admission = baseAdmission(manifest);
@@ -980,7 +980,7 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
         attemptId: request.attemptId,
         idempotencyKey: request.idempotencyKey,
         environment: "TESTNET",
-        domainId: "evm:base-sepolia",
+        domainId: "eip155:84532",
         domainManifestVersion: 1,
         domainManifestHash: hashHex(71),
         chainReference: "84532",
@@ -1164,14 +1164,14 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
     await close(nullCoordinatorServer);
   }
 
-  const baseDomainIdHash = keccak256(stringToHex("evm:base-sepolia")) as Hex;
+  const baseDomainIdHash = keccak256(stringToHex("eip155:84532")) as Hex;
   const receiptMismatchPorts = {
     atomicObservation: {
       observe: async (request: { attemptId: string; idempotencyKey: string; transactionHash: string }) => ({
         attemptId: request.attemptId,
         idempotencyKey: request.idempotencyKey,
         environment: "TESTNET",
-        domainId: "evm:base-sepolia",
+        domainId: "eip155:84532",
         domainManifestVersion: 1,
         domainManifestHash: hashHex(71),
         chainReference: "84532",
@@ -1225,7 +1225,7 @@ test("durable Base prepared store keeps replay and observation binding across a 
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-prepared-"));
   const dbPath = join(scratch, "base-preparations.db");
   const baseChain = 84_532n;
-  const manifest = baseManifest("evm:base-sepolia", baseChain);
+  const manifest = baseManifest("eip155:84532", baseChain);
   const admission = baseAdmission(manifest);
   const hashes = admission as unknown as { orderHash: Uint8Array; quoteHash: Uint8Array; routeHash: Uint8Array };
   const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString("hex")}` as Hex;

@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
 import { attemptOutcome, SqliteReceiptIndex, type ObservedBlock, type ObservedChainEvent } from "../src/index.js";
 
 const SOL = "svm:solana-devnet";
-const BASE = "evm:base-sepolia";
+const BASE = "eip155:84532";
 const hash = (label: string): string => {
   let value = 0n;
   for (const char of label) value = (value * 131n + BigInt(char.charCodeAt(0))) % (1n << 250n);

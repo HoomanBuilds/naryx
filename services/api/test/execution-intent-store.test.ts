@@ -142,7 +142,7 @@ test("durably selects a Base Sepolia quote before trader permit authorization", 
   const baseContext = Object.freeze({
     ...localContext,
     contextId: "base-sepolia-atomic-v1",
-    domain: domainRef("evm:base-sepolia", 1, "81".repeat(32)),
+    domain: domainRef("eip155:84532", 1, "81".repeat(32)),
     environment: "testnet",
     expiryUnit: "EVM_UNIX_SECONDS" as const,
   });
@@ -156,7 +156,7 @@ test("durably selects a Base Sepolia quote before trader permit authorization", 
     const attempt = intents.selectQuoteForOrder(baseOrder, baseContext.domain, firstQuote.quoteHash);
     assert.match(attempt.attemptId, /^base-atomic-[0-9a-f]{52}$/);
     assert.equal(attempt.status, "BASE_ATOMIC_QUOTE_SELECTED");
-    assert.equal(attempt.domainId, "evm:base-sepolia");
+    assert.equal(attempt.domainId, "eip155:84532");
     assert.equal(attempt.domainManifestVersion, 1);
     assert.equal(attempt.domainManifestHash, "81".repeat(32));
     assert.deepEqual(

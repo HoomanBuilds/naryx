@@ -16,7 +16,7 @@ const LOCAL_ATTEMPT_ID = /^local-atomic-[0-9a-f]{64}$/;
 const BASE_ATTEMPT_ID = /^base-atomic-[0-9a-f]{52}$/;
 const ARBITRUM_ATTEMPT_ID = /^arbitrum-async-[0-9a-f]{48}$/;
 const HYPERLIQUID_ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
-const BASE_SEPOLIA_DOMAIN_ID = "evm:base-sepolia";
+const BASE_SEPOLIA_DOMAIN_ID = "eip155:84532";
 const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614";
 const HYPERLIQUID_TESTNET_DOMAIN_ID = "hypercore:testnet";
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -44,7 +44,7 @@ export interface BaseSelectedExecutionAttempt {
   readonly quoteHash: string;
   readonly status: "BASE_ATOMIC_QUOTE_SELECTED";
   readonly selectedAtMs: number;
-  readonly domainId: "evm:base-sepolia";
+  readonly domainId: "eip155:84532";
   readonly domainManifestVersion: number;
   readonly domainManifestHash: string;
 }
@@ -321,7 +321,7 @@ export class SqliteExecutionIntentStore implements ExecutionIntentStore {
         order_hash TEXT NOT NULL UNIQUE,
         route_hash TEXT NOT NULL,
         quote_hash TEXT NOT NULL UNIQUE,
-        domain_id TEXT NOT NULL CHECK (domain_id = 'evm:base-sepolia'),
+        domain_id TEXT NOT NULL CHECK (domain_id = 'eip155:84532'),
         domain_manifest_version INTEGER NOT NULL CHECK (domain_manifest_version > 0),
         domain_manifest_hash TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status = 'BASE_ATOMIC_QUOTE_SELECTED'),
