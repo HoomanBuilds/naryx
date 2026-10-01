@@ -1008,3 +1008,4 @@ export {
   type WatchedPositionAccount,
 } from './position-snapshot-pass.js';
 export * from './keeper-automation-pass.js';
+export * from './funding-mirror.js';

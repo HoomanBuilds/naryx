@@ -51,3 +51,29 @@ The position snapshot pass reads HyperCore testnet accounts only (`clearinghouse
 Keeper automation (`runKeeperAutomationPass`, `NARYX_KEEPER_AUTOMATION_CONFIG`): for every owner-signed keeper authorization, the pass verifies the owner's Ed25519 signature over the authorization bytes, skips a nonce its journal already consumed, reads the strategy's observed health and state hash from a loopback executor, asks it to project the action, and lets the kernel decide with every bound (condition, cost, reward, resulting risk, risk reduction, manual takeover, expiry). Only an authorized action is dispatched, and its nonce is journaled (fsynced, append-only) as consumed before dispatch, so a lost response can never cause a second execution. The executor routes are the API private server's `/internal/keeper/` routes; the executor re-verifies the owner signature and every bound itself and answers `QUEUED` when it queues the action once, which the journal records. The keeper holds no trading key.
 
 The keeper's clock reads `EVM_UNIX_SECONDS` and `HYPERLIQUID_UNIX_MILLISECONDS` from its wall clock. `SOLANA_SLOT` comes only from the `solana:devnet` URL in `NARYX_KEEPER_RPC_URLS`: each read first proves the Devnet genesis hash, then reads `getSlot` at `confirmed` commitment. Expiry is reached when the clock is at or past the expiry slot, and observation age grows with the clock, so the later reading is the conservative one; `finalized` trails `confirmed` by about 32 slots and would let an action through that long after its expiry. Without a Devnet URL, or for any other unit, an authorization stays `NOT_READY` with `TIME_UNIT_UNSUPPORTED`. A failed or mismatched slot read reports the authorization as `FAILED` without consuming its nonce. Each `SOLANA_SLOT` authorization costs two read-only calls per pass.
+
+## Funding mirror
+
+The Naryx test perpetuals must charge the funding the real venue charges, so a testnet strategy predicts mainnet carry. The funding mirror in `src/funding-mirror.ts` reads `metaAndAssetCtxs` from the pinned Hyperliquid mainnet Info API (`POST https://api.hyperliquid.xyz/info`, no URL override, no signer, no exchange client) and sets the mirrored rate on each configured test market.
+
+Conversion is exact rational arithmetic on the decimal strings Hyperliquid returns; a non-plain decimal fails closed. Results truncate toward zero, so a mirrored rate never exceeds the venue's magnitude.
+
+- Base Sepolia `NaryxTestPerpMarket.setFundingRatePerSecond(int256)` takes an absolute quote WAD per base unit per second. The hourly fraction is applied to the Hyperliquid `oraclePx`, the price Hyperliquid charges funding against: `funding * oraclePx * 1e18 / 3600`.
+- Solana Devnet `naryx_test_perp.set_funding_rate(i64)` takes a fraction of oracle notional per second scaled by `1e12`: `funding * 1e12 / 3600`. Accounts are the funding keeper signer, the writable market, and the market's oracle read from the market account.
+
+Each target is clamped to the bound read from the market itself (`maxAbsFundingRatePerSecond`, `max_funding_rate_per_second`), and a clamp is logged. Before reading a market, every pass verifies `eth_chainId` 84532 or the Solana Devnet genesis hash from chain data, then checks that the market's funding keeper is the loaded key before any submission. A change smaller than the market's `minChange` (native units) against the current onchain rate is skipped. A confirmed submission is written to the durable last-submitted record file (atomic replace after fsync). The current onchain rate, not the record, decides the next submission, so a lost record cannot cause a duplicate effect.
+
+Only `eip155:84532` and `solana:devnet` markets are accepted. The job is off without `NARYX_FUNDING_MIRROR_CONFIG`, runs as a dry run unless `NARYX_FUNDING_MIRROR_WRITES=enabled`, and loads keeper keys only from the absolute paths in `NARYX_FUNDING_KEEPER_EVM_KEY_FILE` and `NARYX_FUNDING_KEEPER_SOLANA_KEY_FILE`. RPC URLs come from `NARYX_KEEPER_RPC_URLS`.
+
+```json
+{
+  "intervalMs": 300000,
+  "recordPath": "/absolute/path/to/funding-mirror-record.json",
+  "markets": [
+    { "id": "base-sepolia-eth", "chainRef": "eip155:84532", "market": "0xReviewedTestPerpMarket", "coin": "ETH", "minChange": "1000000000" },
+    { "id": "solana-devnet-sol", "chainRef": "solana:devnet", "market": "ReviewedMarketPubkey", "programId": "ReviewedTestPerpProgramId", "coin": "SOL", "minChange": "10" }
+  ]
+}
+```
+
+`viem` `2.56.8` and `@solana/web3.js` `1.99.0` are pinned to the versions the other services use. `npm audit --omit=dev` reports moderate advisories in `@solana/web3.js`'s transitive `jayson`, `stream-json`, and `uuid` dependencies; the keeper only talks to its configured RPC endpoint.

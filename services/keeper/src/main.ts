@@ -7,6 +7,18 @@ import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './
 import { loadKeeperRpcUrls, solanaSlotReader } from './chain-identity.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
 import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
+import {
+  baseSepoliaFundingPort,
+  BASE_SEPOLIA_CHAIN_REF,
+  FundingSubmissionRecordFile,
+  hyperliquidMainnetFundingSource,
+  loadEvmKeeperAccount,
+  loadFundingMirrorConfig,
+  loadSolanaKeeperKeypair,
+  runFundingMirrorPass,
+  solanaDevnetFundingPort,
+  type FundingMarketPort,
+} from './funding-mirror.js';
 import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
@@ -83,7 +95,52 @@ if (positionWatch !== undefined) {
   positionTimer = setInterval(() => void pass(), positionWatch.intervalMs);
 }
 
+// Funding mirror: reads Hyperliquid mainnet funding signerless and mirrors it onto the Base Sepolia
+// and Solana Devnet test perps. Off without NARYX_FUNDING_MIRROR_CONFIG; a dry run unless
+// NARYX_FUNDING_MIRROR_WRITES=enabled. Keys come only from the external files the env names.
+const fundingMirror = loadFundingMirrorConfig(process.env, (path) => readFileSync(path, 'utf8'));
+let fundingTimer: ReturnType<typeof setInterval> | undefined;
+if (fundingMirror !== undefined) {
+  const rpcUrls = loadKeeperRpcUrls(process.env);
+  const evmAccount = fundingMirror.writesEnabled && fundingMirror.evmKeyPath !== undefined ? loadEvmKeeperAccount(readFileSync(fundingMirror.evmKeyPath, 'utf8')) : undefined;
+  const solanaKeeper = fundingMirror.writesEnabled && fundingMirror.solanaKeyPath !== undefined ? loadSolanaKeeperKeypair(readFileSync(fundingMirror.solanaKeyPath, 'utf8')) : undefined;
+  const ports = new Map<string, FundingMarketPort>();
+  for (const market of fundingMirror.markets) {
+    const url = rpcUrls.get(market.chainRef);
+    if (url === undefined) throw new Error(`NARYX_KEEPER_RPC_URLS has no ${market.chainRef} endpoint for ${market.id}`);
+    ports.set(
+      market.id,
+      market.chainRef === BASE_SEPOLIA_CHAIN_REF
+        ? baseSepoliaFundingPort(url, market.market, evmAccount)
+        : solanaDevnetFundingPort(url, market.market, market.programId as string, solanaKeeper),
+    );
+  }
+  const source = hyperliquidMainnetFundingSource();
+  const record = new FundingSubmissionRecordFile(fundingMirror.recordPath);
+  const log = (line: string) => process.stdout.write(`${line}\n`);
+  let running = false;
+  const pass = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const results = await runFundingMirrorPass({ markets: fundingMirror.markets, source, ports, record, writesEnabled: fundingMirror.writesEnabled, nowMs: Date.now, log });
+      for (const result of results) {
+        if (result.status === 'SKIPPED_BELOW_THRESHOLD') continue;
+        const line = `Funding mirror ${result.marketId} ${result.status}${result.targetRate === undefined ? '' : ` target ${result.targetRate} current ${result.currentRate}`}${result.transaction === undefined ? '' : ` tx ${result.transaction}`}${result.detail === undefined ? '' : ` (${result.detail})`}`;
+        (result.status === 'FAILED' ? process.stderr : process.stdout).write(`${line}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`Funding mirror pass failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
+    } finally {
+      running = false;
+    }
+  };
+  void pass();
+  fundingTimer = setInterval(() => void pass(), fundingMirror.intervalMs);
+}
+
 function shutdown(): void {
+  if (fundingTimer !== undefined) clearInterval(fundingTimer);
   if (monitorTimer !== undefined) clearInterval(monitorTimer);
   if (positionTimer !== undefined) clearInterval(positionTimer);
   server.close(() => {
