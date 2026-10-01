@@ -13,7 +13,8 @@ import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 contract ConfigureBaseSepoliaAtomicPackageTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
     uint64 private constant DELAY = 10;
-    bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-manifest-v1");
+    bytes32 private constant PROVISIONAL_DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-provisional-domain-manifest");
+    bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-manifest-v2");
     bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("cash-carry-template-manifest-v1");
     bytes32 private constant SERIES_MANIFEST_HASH = keccak256("base-weth-usdc-cash-carry-series-v1");
     bytes32 private constant EXECUTION_CLASS_MANIFEST_HASH = keccak256("base-atomic-execution-class-v1");
@@ -40,7 +41,7 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         DeployBaseSepoliaAtomicPackage.Deployment memory deployed = deployer.deploy(
             DeployBaseSepoliaAtomicPackage.Parameters({
                 domainManifestVersion: 1,
-                domainManifestHash: DOMAIN_MANIFEST_HASH,
+                domainManifestHash: PROVISIONAL_DOMAIN_MANIFEST_HASH,
                 cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
                 configDelaySeconds: DELAY,
                 proposer: proposer,
@@ -73,6 +74,8 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
 
         operator = new ConfigureBaseSepoliaAtomicPackage();
         route.config = deployed.config;
+        route.domainManifestVersion = 2;
+        route.domainManifestHash = DOMAIN_MANIFEST_HASH;
         route.solverRegistry = deployed.solverRegistry;
         route.resources = deployed.resourceRegistry;
         route.seriesRegistry = deployed.cashCarrySeriesRegistry;
@@ -104,6 +107,14 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
     }
 
     function testDelayedStagesRejectPrematureActivationAndEnableOnlyExactRoute() public {
+        vm.expectRevert(ConfigureBaseSepoliaAtomicPackage.InvalidRoute.selector);
+        operator.runProposeQuoteAsset(route, proposer);
+        // A script step that reverts leaves its broadcast open.
+        vm.stopBroadcast();
+        operator.runProposeDomain(route.config, 2, DOMAIN_MANIFEST_HASH, proposer);
+        vm.warp(block.timestamp + DELAY);
+        operator.runActivateDomain(route.config, 2, DOMAIN_MANIFEST_HASH, executor);
+
         operator.runProposeQuoteAsset(route, proposer);
         uint64 readyAt = uint64(block.timestamp) + DELAY;
 

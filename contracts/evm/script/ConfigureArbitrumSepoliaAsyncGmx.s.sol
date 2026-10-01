@@ -4,44 +4,83 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
+import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
 import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 
 contract ConfigureArbitrumSepoliaAsyncGmx is Script {
     uint256 public constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
     bytes32 public constant DOMAIN_ID_HASH = keccak256("eip155:421614");
 
+    uint8 private constant ACCOUNT_OWNER = 0;
+    uint8 private constant PROPOSER = 1;
+    uint8 private constant EXECUTOR = 2;
+
     struct Route {
         ProtocolConfig config;
         bytes32 configCodeHash;
+        uint32 domainManifestVersion;
+        bytes32 domainManifestHash;
         AsyncBondedPackageCoordinator coordinator;
         bytes32 coordinatorCodeHash;
         GmxV2IsolatedAccount isolatedAccount;
         bytes32 isolatedAccountCodeHash;
         GmxV2ArbitrumAdapter adapter;
         bytes32 adapterCodeHash;
+        GmxV2ExitController exitController;
+        bytes32 exitControllerCodeHash;
+        UniswapV3SpotPort spotPort;
+        bytes32 spotPortCodeHash;
     }
 
     error InvalidChain();
     error InvalidOperator();
     error InvalidRoute();
 
-    function runBindEntryController(Route calldata route, address operatorAddress) external {
-        _requireOperator(route, operatorAddress, 0);
+    /// @notice Proposes the reviewed domain manifest. The deployment starts on a provisional manifest
+    /// because the reviewed one commits to execution verifier code that exists only after deployment.
+    function runProposeDomain(
+        ProtocolConfig config,
+        uint32 manifestVersion,
+        bytes32 manifestHash,
+        address operatorAddress
+    ) external {
+        _requireConfigRole(config, operatorAddress, PROPOSER);
         vm.startBroadcast(operatorAddress);
-        _verifyRoute(route);
+        _verifyDomainStep(config);
+        config.proposeDomain(manifestVersion, manifestHash);
+        vm.stopBroadcast();
+    }
+
+    function runActivateDomain(
+        ProtocolConfig config,
+        uint32 manifestVersion,
+        bytes32 manifestHash,
+        address operatorAddress
+    ) external {
+        _requireConfigRole(config, operatorAddress, EXECUTOR);
+        vm.startBroadcast(operatorAddress);
+        _verifyDomainStep(config);
+        (bool exists, uint32 pendingVersion, bytes32 pendingHash,) = config.pendingDomain();
+        if (!exists || pendingVersion != manifestVersion || pendingHash != manifestHash) revert InvalidRoute();
+        config.activateDomain();
+        vm.stopBroadcast();
+    }
+
+    function runBindEntryController(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, ACCOUNT_OWNER);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
         route.isolatedAccount.configureEntryController(address(route.adapter), route.adapterCodeHash);
         vm.stopBroadcast();
     }
 
     function runProposeAdmission(Route calldata route, address operatorAddress) external {
-        _requireOperator(route, operatorAddress, 1);
+        _requireOperator(route, operatorAddress, PROPOSER);
         vm.startBroadcast(operatorAddress);
-        _verifyRoute(route);
-        if (
-            route.isolatedAccount.entryController() != address(route.adapter)
-                || route.isolatedAccount.entryControllerCodeHash() != route.adapterCodeHash
-        ) revert InvalidRoute();
+        _verifyPausedRoute(route);
+        _verifyEntryController(route);
         route.coordinator
             .proposeAdmission(
                 address(route.adapter), address(route.adapter), route.adapterCodeHash, route.adapterCodeHash
@@ -50,16 +89,69 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
     }
 
     function runActivateAdmission(Route calldata route, address operatorAddress) external {
-        _requireOperator(route, operatorAddress, 2);
+        _requireOperator(route, operatorAddress, EXECUTOR);
         vm.startBroadcast(operatorAddress);
-        _verifyRoute(route);
+        _verifyPausedRoute(route);
         route.coordinator.activateAdmission(address(route.adapter));
         if (!route.config.entryPaused()) revert InvalidRoute();
         vm.stopBroadcast();
     }
 
+    /// @notice Binds the exit controller and the coordinated spot port. Entry stays paused until both
+    /// are bound: without the spot port every submission reverts, and without the exit controller an
+    /// opened position has no exit path.
+    function runBindExitAndSpot(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, ACCOUNT_OWNER);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
+        _verifyEntryController(route);
+        if (
+            route.exitControllerCodeHash == bytes32(0) || route.spotPortCodeHash == bytes32(0)
+                || address(route.exitController).codehash != route.exitControllerCodeHash
+                || address(route.spotPort).codehash != route.spotPortCodeHash
+                || address(route.exitController.account()) != address(route.isolatedAccount)
+                || address(route.exitController.entryAdapter()) != address(route.adapter)
+                || route.spotPort.verifier() != address(route.isolatedAccount)
+        ) revert InvalidRoute();
+        route.isolatedAccount.configureExitController(address(route.exitController), route.exitControllerCodeHash);
+        route.isolatedAccount.configureSpotPort(route.spotPort, route.spotPortCodeHash);
+        vm.stopBroadcast();
+    }
+
+    function runScheduleUnpause(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, PROPOSER);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
+        _verifyEntryReady(route);
+        route.config.scheduleUnpause();
+        vm.stopBroadcast();
+    }
+
+    function runActivateEntry(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, EXECUTOR);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
+        _verifyEntryReady(route);
+        route.config.activateUnpause();
+        verifyActiveRoute(route);
+        vm.stopBroadcast();
+    }
+
+    /// @notice Read-only check of the final state: the exact route is bound and entry is open.
+    function verifyActiveRoute(Route calldata route) public view {
+        _verifyRoute(route);
+        _verifyEntryReady(route);
+        if (route.config.entryPaused()) revert InvalidRoute();
+    }
+
+    function _verifyPausedRoute(Route calldata route) private view {
+        _verifyRoute(route);
+        if (!route.config.entryPaused()) revert InvalidRoute();
+    }
+
     function _verifyRoute(Route calldata route) private view {
         if (block.chainid != ARBITRUM_SEPOLIA_CHAIN_ID) revert InvalidChain();
+        (string memory domainId, uint32 manifestVersion, bytes32 manifestHash) = route.config.domain();
         if (
             address(route.config).codehash != route.configCodeHash
                 || address(route.coordinator).codehash != route.coordinatorCodeHash
@@ -71,13 +163,57 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
                 || route.coordinator.deploymentDomainIdHash() != DOMAIN_ID_HASH
                 || address(route.coordinator.bondToken()) != address(route.isolatedAccount.collateralToken())
                 || address(route.adapter.isolatedAccount()) != address(route.isolatedAccount)
-                || !route.config.entryPaused()
+                || keccak256(bytes(domainId)) != DOMAIN_ID_HASH || manifestVersion != route.domainManifestVersion
+                || manifestHash != route.domainManifestHash
         ) revert InvalidRoute();
     }
 
+    function _verifyEntryController(Route calldata route) private view {
+        if (
+            route.isolatedAccount.entryController() != address(route.adapter)
+                || route.isolatedAccount.entryControllerCodeHash() != route.adapterCodeHash
+        ) revert InvalidRoute();
+    }
+
+    function _verifyEntryReady(Route calldata route) private view {
+        _verifyEntryController(route);
+        (address handler, bytes32 adapterCodeHash, bytes32 handlerCodeHash, bool active,) =
+            route.coordinator.admissions(address(route.adapter));
+        if (
+            !active || handler != address(route.adapter) || adapterCodeHash != route.adapterCodeHash
+                || handlerCodeHash != route.adapterCodeHash
+                || route.isolatedAccount.exitController() != address(route.exitController)
+                || route.isolatedAccount.exitControllerCodeHash() != route.exitControllerCodeHash
+                || address(route.exitController).codehash != route.exitControllerCodeHash
+                || address(route.isolatedAccount.spotPort()) != address(route.spotPort)
+                || route.isolatedAccount.spotPortCodeHash() != route.spotPortCodeHash
+                || address(route.spotPort).codehash != route.spotPortCodeHash
+                || route.exitControllerCodeHash == bytes32(0) || route.spotPortCodeHash == bytes32(0)
+        ) revert InvalidRoute();
+        route.isolatedAccount.assertDeployment();
+        route.spotPort.assertDeployment();
+    }
+
+    function _verifyDomainStep(ProtocolConfig config) private view {
+        if (block.chainid != ARBITRUM_SEPOLIA_CHAIN_ID) revert InvalidChain();
+        (string memory domainId,,) = config.domain();
+        if (keccak256(bytes(domainId)) != DOMAIN_ID_HASH || !config.entryPaused()) revert InvalidRoute();
+    }
+
     function _requireOperator(Route calldata route, address operatorAddress, uint8 role) private view {
-        (address proposer,, address executor,) = route.config.roles();
-        address required = role == 0 ? route.isolatedAccount.owner() : role == 1 ? proposer : executor;
-        if (operatorAddress == address(0) || operatorAddress != required) revert InvalidOperator();
+        if (role == ACCOUNT_OWNER) {
+            if (operatorAddress == address(0) || operatorAddress != route.isolatedAccount.owner()) {
+                revert InvalidOperator();
+            }
+            return;
+        }
+        _requireConfigRole(route.config, operatorAddress, role);
+    }
+
+    function _requireConfigRole(ProtocolConfig config, address operatorAddress, uint8 role) private view {
+        (address proposer,, address executor,) = config.roles();
+        if (operatorAddress == address(0) || operatorAddress != (role == PROPOSER ? proposer : executor)) {
+            revert InvalidOperator();
+        }
     }
 }

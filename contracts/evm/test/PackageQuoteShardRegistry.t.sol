@@ -193,6 +193,43 @@ contract PackageQuoteShardRegistryTest is Test {
         registry.proposeLifecycle(key, PackageQuoteShardRegistry.Lifecycle.ACTIVE);
     }
 
+    function testDomainRotationRetiresRecordsUntilReregisteredUnderTheActiveDomain() public {
+        PackageQuoteShard shard1 = _deployShard(identity);
+        uint64 readyAt = _propose(identity, 1, SHARD_MANIFEST_HASH_1, shard1);
+        vm.warp(readyAt);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        registry.activateRegistration(key);
+        PackageQuoteShardRegistry.ShardReference memory firstReference = _reference(1, SHARD_MANIFEST_HASH_1, shard1);
+        _propose(identity, 2, SHARD_MANIFEST_HASH_2, _deployShard(identity));
+
+        bytes32 rotatedDomainHash = keccak256("domain-manifest-2");
+        vm.prank(PROPOSER);
+        config.proposeDomain(2, rotatedDomainHash);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateDomain();
+
+        vm.expectRevert(PackageQuoteShardRegistry.DomainChanged.selector);
+        registry.validateEntry(firstReference);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        vm.expectRevert(PackageQuoteShardRegistry.DomainChanged.selector);
+        registry.activateRegistration(key);
+
+        vm.prank(CANCELLER);
+        registry.cancelRegistration(key);
+        bytes32 thirdManifestHash = keccak256("shard-manifest-3");
+        PackageQuoteShard shard3 = _deployShard(identity);
+        readyAt = _propose(identity, 3, thirdManifestHash, shard3);
+        vm.warp(readyAt);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        registry.activateRegistration(key);
+
+        assertEq(registry.validateEntry(_reference(3, thirdManifestHash, shard3)).shard, address(shard3));
+        PackageQuoteShardRegistry.DomainPin memory pinned = registry.recordDomain(key, 3);
+        assertEq(pinned.manifestVersion, 2);
+        assertEq(pinned.manifestHash, rotatedDomainHash);
+    }
+
     function _deployShard(PackageQuoteShardRegistry.ShardIdentity memory shardIdentity)
         private
         returns (PackageQuoteShard)

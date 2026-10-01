@@ -6,6 +6,8 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {ConfigureArbitrumSepoliaAsyncGmx} from "../script/ConfigureArbitrumSepoliaAsyncGmx.s.sol";
 import {DeployArbitrumSepoliaAsyncGmx} from "../script/DeployArbitrumSepoliaAsyncGmx.s.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
+import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
+import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 
 contract DeployArbitrumSepoliaAsyncGmxTest is Test {
     uint256 private constant FORK_BLOCK = 313_856_606;
@@ -64,12 +66,18 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
         ConfigureArbitrumSepoliaAsyncGmx.Route memory route = ConfigureArbitrumSepoliaAsyncGmx.Route({
             config: deployment.config,
             configCodeHash: address(deployment.config).codehash,
+            domainManifestVersion: 1,
+            domainManifestHash: DOMAIN_MANIFEST_HASH,
             coordinator: deployment.coordinator,
             coordinatorCodeHash: address(deployment.coordinator).codehash,
             isolatedAccount: deployment.isolatedAccount,
             isolatedAccountCodeHash: address(deployment.isolatedAccount).codehash,
             adapter: deployment.adapter,
-            adapterCodeHash: address(deployment.adapter).codehash
+            adapterCodeHash: address(deployment.adapter).codehash,
+            exitController: GmxV2ExitController(address(0)),
+            exitControllerCodeHash: bytes32(0),
+            spotPort: UniswapV3SpotPort(address(0)),
+            spotPortCodeHash: bytes32(0)
         });
 
         operator.runBindEntryController(route, beneficiary);

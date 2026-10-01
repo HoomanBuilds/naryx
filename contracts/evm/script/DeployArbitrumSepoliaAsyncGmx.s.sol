@@ -5,10 +5,13 @@ import {Script} from "forge-std/Script.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {GmxV2ArbitrumAdapter} from "../src/GmxV2ArbitrumAdapter.sol";
+import {GmxV2ExitController} from "../src/GmxV2ExitController.sol";
+import {GmxV2ExitOrderVerifier} from "../src/GmxV2ExitOrderVerifier.sol";
 import {GmxV2IsolatedAccount} from "../src/GmxV2IsolatedAccount.sol";
 import {GmxV2OrderVerifier} from "../src/GmxV2OrderVerifier.sol";
 import {GmxV2, IGmxV2ExchangeRouter} from "../src/interfaces/IGmxV2.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 
 contract DeployArbitrumSepoliaAsyncGmx is Script {
     uint256 public constant ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
@@ -58,6 +61,21 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
         GmxV2ArbitrumAdapter adapter;
     }
 
+    struct ExitAndSpotParameters {
+        GmxV2ArbitrumAdapter adapter;
+        bytes32 adapterCodeHash;
+        GmxV2IsolatedAccount isolatedAccount;
+        bytes32 isolatedAccountCodeHash;
+        GmxCodeHashes gmxCodeHashes;
+        UniswapV3SpotPort.Deployment spot;
+    }
+
+    struct ExitAndSpotDeployment {
+        GmxV2ExitOrderVerifier exitOrderVerifier;
+        GmxV2ExitController exitController;
+        UniswapV3SpotPort spotPort;
+    }
+
     error InvalidChain();
     error InvalidDependency(address dependency);
 
@@ -103,6 +121,43 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
             address(deployment.orderVerifier).codehash,
             gmx
         );
+    }
+
+    function runExitAndSpot(ExitAndSpotParameters calldata parameters)
+        external
+        returns (ExitAndSpotDeployment memory deployment)
+    {
+        vm.startBroadcast();
+        deployment = deployExitAndSpot(parameters);
+        vm.stopBroadcast();
+    }
+
+    /// @notice Second stage, run after the account owner binds the entry controller, which the exit
+    /// controller requires at construction. Binds nothing: the account owner binds both contracts
+    /// through the configure script. The spot venue identities are reviewed operator input.
+    function deployExitAndSpot(ExitAndSpotParameters calldata parameters)
+        public
+        returns (ExitAndSpotDeployment memory deployment)
+    {
+        if (block.chainid != ARBITRUM_SEPOLIA_CHAIN_ID) revert InvalidChain();
+        _requireCode(address(parameters.adapter), parameters.adapterCodeHash);
+        _requireCode(address(parameters.isolatedAccount), parameters.isolatedAccountCodeHash);
+        if (
+            parameters.spot.chainId != ARBITRUM_SEPOLIA_CHAIN_ID
+                || address(parameters.spot.quoteToken) != address(parameters.isolatedAccount.collateralToken())
+        ) revert InvalidDependency(address(parameters.spot.quoteToken));
+
+        deployment.exitOrderVerifier = new GmxV2ExitOrderVerifier();
+        deployment.exitController = new GmxV2ExitController(
+            parameters.adapter,
+            parameters.adapterCodeHash,
+            parameters.isolatedAccount,
+            parameters.isolatedAccountCodeHash,
+            deployment.exitOrderVerifier,
+            address(deployment.exitOrderVerifier).codehash,
+            _gmxDeployment(parameters.gmxCodeHashes)
+        );
+        deployment.spotPort = new UniswapV3SpotPort(address(parameters.isolatedAccount), parameters.spot);
     }
 
     function _verifyDependencies(Parameters calldata parameters, GmxV2.Deployment memory gmx) private view {

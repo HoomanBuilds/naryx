@@ -19,6 +19,8 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
 
     struct Route {
         ProtocolConfig config;
+        uint32 domainManifestVersion;
+        bytes32 domainManifestHash;
         SolverRegistry solverRegistry;
         ResourceRegistry resources;
         CashCarrySeriesRegistry seriesRegistry;
@@ -52,6 +54,37 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
     error InvalidChain();
     error InvalidOperator();
     error InvalidRoute();
+
+    /// @notice Proposes the reviewed domain manifest. The deployment starts on a provisional manifest
+    /// because the reviewed one commits to the package verifier code hash, which exists only after
+    /// deployment. Every registration below records the active domain, so this comes first.
+    function runProposeDomain(
+        ProtocolConfig config,
+        uint32 manifestVersion,
+        bytes32 manifestHash,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, true);
+        _start(operatorAddress);
+        _verifyDomainStep(config);
+        config.proposeDomain(manifestVersion, manifestHash);
+        vm.stopBroadcast();
+    }
+
+    function runActivateDomain(
+        ProtocolConfig config,
+        uint32 manifestVersion,
+        bytes32 manifestHash,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, false);
+        _start(operatorAddress);
+        _verifyDomainStep(config);
+        (bool exists, uint32 pendingVersion, bytes32 pendingHash,) = config.pendingDomain();
+        if (!exists || pendingVersion != manifestVersion || pendingHash != manifestHash) revert InvalidRoute();
+        config.activateDomain();
+        vm.stopBroadcast();
+    }
 
     function runProposeQuoteAsset(Route calldata route, address operatorAddress) external {
         _requireOperator(route.config, operatorAddress, true);
@@ -267,10 +300,18 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         if (operatorAddress != (proposerRole ? proposer : executor)) revert InvalidOperator();
     }
 
-    function _verifyDependencies(Route calldata route) private view {
+    function _verifyDomainStep(ProtocolConfig config) private view {
         if (block.chainid != BASE_SEPOLIA_CHAIN_ID) revert InvalidChain();
-        (string memory domainId,,) = route.config.domain();
-        if (keccak256(bytes(domainId)) != DOMAIN_ID_HASH || !route.config.entryPaused()) revert InvalidRoute();
+        (string memory domainId,,) = config.domain();
+        if (keccak256(bytes(domainId)) != DOMAIN_ID_HASH || !config.entryPaused()) revert InvalidRoute();
+    }
+
+    function _verifyDependencies(Route calldata route) private view {
+        _verifyDomainStep(route.config);
+        (, uint32 manifestVersion, bytes32 manifestHash) = route.config.domain();
+        if (manifestVersion != route.domainManifestVersion || manifestHash != route.domainManifestHash) {
+            revert InvalidRoute();
+        }
         if (
             address(route.solverRegistry.config()) != address(route.config)
                 || address(route.resources.config()) != address(route.config)

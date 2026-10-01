@@ -60,6 +60,11 @@ contract PackageQuoteShardRegistry {
         bool exists;
     }
 
+    struct DomainPin {
+        uint32 manifestVersion;
+        bytes32 manifestHash;
+    }
+
     error InvalidConfiguration();
     error DeploymentChanged();
     error DomainChanged();
@@ -118,14 +123,16 @@ contract PackageQuoteShardRegistry {
     uint256 public immutable deploymentChainId;
     bytes32 public immutable configCodeHash;
     bytes32 public immutable domainIdHash;
-    uint32 public immutable domainManifestVersion;
-    bytes32 public immutable domainManifestHash;
     uint64 public immutable configDelaySeconds;
 
     mapping(bytes32 identityKey => uint32 version) public latestVersion;
     mapping(bytes32 identityKey => bytes32 recordKey) private _currentRecords;
     mapping(bytes32 recordKey => ShardBinding binding) private _records;
     mapping(bytes32 recordKey => Lifecycle state) private _lifecycles;
+    // The domain manifest each record was proposed under. A domain rotation retires every record
+    // until it is registered again under the active domain, instead of retiring the registry that
+    // the verifier pins by code hash.
+    mapping(bytes32 recordKey => DomainPin domain) private _recordDomains;
     mapping(bytes32 recordKey => bool current) private _isCurrent;
     mapping(bytes32 identityKey => PendingRegistration proposal) private _pendingRegistrations;
     mapping(bytes32 identityKey => PendingLifecycle proposal) private _pendingLifecycles;
@@ -142,8 +149,6 @@ contract PackageQuoteShardRegistry {
         deploymentChainId = block.chainid;
         configCodeHash = address(config_).codehash;
         domainIdHash = keccak256(bytes(domainId));
-        domainManifestVersion = manifestVersion;
-        domainManifestHash = manifestHash;
         configDelaySeconds = delaySeconds;
     }
 
@@ -160,7 +165,7 @@ contract PackageQuoteShardRegistry {
         address consumer,
         bytes32 consumerCodeHash
     ) external {
-        _assertConfig();
+        DomainPin memory activeDomain = _assertConfig();
         _checkProposer();
         bytes32 key = _identityKey(identity);
         if (_pendingRegistrations[key].exists) revert RegistrationProposalExists();
@@ -185,6 +190,7 @@ contract PackageQuoteShardRegistry {
 
         bytes32 keyForRecord = _recordKey(key, manifestVersion);
         _records[keyForRecord] = binding;
+        _recordDomains[keyForRecord] = activeDomain;
         latestVersion[key] = manifestVersion;
         uint64 activationTimestamp = _activationTimestamp();
         _pendingRegistrations[key] =
@@ -211,13 +217,14 @@ contract PackageQuoteShardRegistry {
     }
 
     function activateRegistration(bytes32 key) external {
-        _assertConfig();
+        DomainPin memory activeDomain = _assertConfig();
         _checkExecutor();
         PendingRegistration memory pending = _pendingRegistrations[key];
         if (!pending.exists) revert RegistrationProposalMissing();
         if (block.timestamp < pending.activationTimestamp) {
             revert RegistrationProposalNotReady(pending.activationTimestamp);
         }
+        _requireRecordDomain(pending.recordKey, activeDomain);
 
         ShardBinding memory binding = _records[pending.recordKey];
         if (binding.identityKey != key) revert StaleProposal();
@@ -269,7 +276,7 @@ contract PackageQuoteShardRegistry {
     }
 
     function activateLifecycle(bytes32 key) external {
-        _assertConfig();
+        DomainPin memory activeDomain = _assertConfig();
         _checkExecutor();
         PendingLifecycle memory pending = _pendingLifecycles[key];
         if (!pending.exists) revert LifecycleProposalMissing();
@@ -278,6 +285,7 @@ contract PackageQuoteShardRegistry {
         }
         bytes32 currentRecord = _requireCurrent(key);
         if (pending.recordKey != currentRecord) revert StaleProposal();
+        _requireRecordDomain(currentRecord, activeDomain);
         Lifecycle currentState = _lifecycles[currentRecord];
         if (currentState == Lifecycle.DEPRECATED || uint8(pending.state) >= uint8(currentState)) {
             revert InvalidLifecycleRelaxation();
@@ -306,8 +314,9 @@ contract PackageQuoteShardRegistry {
     }
 
     function validateEntry(ShardReference calldata exactRef) external view returns (ShardBinding memory binding) {
-        _assertConfig();
+        DomainPin memory activeDomain = _assertConfig();
         bytes32 currentRecord = _requireCurrent(exactRef.identityKey);
+        _requireRecordDomain(currentRecord, activeDomain);
         binding = _records[currentRecord];
         if (
             binding.identityKey != exactRef.identityKey || binding.manifestVersion != exactRef.manifestVersion
@@ -336,6 +345,12 @@ contract PackageQuoteShardRegistry {
         return (binding, _lifecycles[keyForRecord], _isCurrent[keyForRecord]);
     }
 
+    function recordDomain(bytes32 key, uint32 manifestVersion) external view returns (DomainPin memory) {
+        bytes32 keyForRecord = _recordKey(key, manifestVersion);
+        if (_records[keyForRecord].manifestVersion == 0) revert ShardUnknown(key);
+        return _recordDomains[keyForRecord];
+    }
+
     function pendingRegistration(bytes32 key) external view returns (PendingRegistration memory) {
         return _pendingRegistrations[key];
     }
@@ -344,16 +359,24 @@ contract PackageQuoteShardRegistry {
         return _pendingLifecycles[key];
     }
 
-    function _assertConfig() private view {
+    function _assertConfig() private view returns (DomainPin memory activeDomain) {
         if (
             block.chainid != deploymentChainId || address(config).code.length == 0
                 || address(config).codehash != configCodeHash || config.configDelaySeconds() != configDelaySeconds
         ) revert DeploymentChanged();
         (string memory domainId, uint32 manifestVersion, bytes32 manifestHash) = config.domain();
-        if (
-            keccak256(bytes(domainId)) != domainIdHash || manifestVersion != domainManifestVersion
-                || manifestHash != domainManifestHash
-        ) revert DomainChanged();
+        if (keccak256(bytes(domainId)) != domainIdHash || manifestVersion == 0 || manifestHash == bytes32(0)) {
+            revert DomainChanged();
+        }
+        activeDomain = DomainPin({manifestVersion: manifestVersion, manifestHash: manifestHash});
+    }
+
+    function _requireRecordDomain(bytes32 recordKey, DomainPin memory activeDomain) private view {
+        DomainPin memory pinned = _recordDomains[recordKey];
+        if (pinned.manifestVersion != activeDomain.manifestVersion || pinned.manifestHash != activeDomain.manifestHash)
+        {
+            revert DomainChanged();
+        }
     }
 
     function _validateShard(ShardBinding memory binding) private view {
