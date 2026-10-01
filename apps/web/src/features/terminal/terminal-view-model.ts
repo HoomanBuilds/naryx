@@ -127,7 +127,7 @@ export type SolanaExecutionPreparation = {
   idempotencyKey: string;
   domainManifestVersion: number;
   domainManifestHash: string;
-  genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+  genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
   planKind: "TRADER_ENTRY" | "TRADER_RECOVERY_EXIT";
   transactionBase64: string;
   messageBase64: string;

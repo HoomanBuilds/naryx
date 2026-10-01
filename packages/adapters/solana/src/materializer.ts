@@ -18,8 +18,8 @@ import {
 } from './firm-plan.js';
 import type { PublicCashCarryExitPlan } from './public-exit-plan.js';
 
-export const SOLANA_DEVNET_GENESIS_HASH = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
-export const SOLANA_MAINNET_BETA_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+export const SOLANA_DEVNET_GENESIS_HASH = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
+export const SOLANA_MAINNET_BETA_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 
 const MAX_RESOLVED_ADDRESSES = 64;
 const MAX_ROUTE_COMPUTE_UNITS = 1_260_000;

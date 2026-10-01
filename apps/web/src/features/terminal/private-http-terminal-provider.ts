@@ -10,7 +10,7 @@ import type {
 import { getTransactionDecoder } from "@solana/transactions";
 import bs58 from "bs58";
 
-const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const MAX_TRANSACTION_BYTES = 1232;
 const MAX_RESOLVED_ACCOUNTS = 64;
 const MAX_COMPUTE_UNITS = 1_260_000;

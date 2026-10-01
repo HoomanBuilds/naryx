@@ -11,7 +11,7 @@ import {
   type SlippageBps,
 } from "./terminal-types.js";
 
-export const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+export const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 
 const PREPARE_KEYS = [
   "domain",
