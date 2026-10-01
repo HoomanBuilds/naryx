@@ -9,6 +9,7 @@ import type {
 } from "./terminal-view-model";
 import { getTransactionDecoder } from "@solana/transactions";
 import bs58 from "bs58";
+import { decodeFunctionData, hashTypedData, parseAbi } from "viem";
 
 const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const MAX_TRANSACTION_BYTES = 1232;
@@ -657,6 +658,357 @@ function requireBaseSelectedAttempt(value: unknown, quote: BaseSolverQuote): Bas
   });
 }
 
+/** Unsigned wallet call the Arbitrum owner routes hand back; its value is decimal wei. */
+export type ArbitrumWalletCall = Readonly<{ to: string; data: string; value: string }>;
+
+/** The owner's Arbitrum Sepolia factory account, and the creation call when it is not deployed yet. */
+export type ArbitrumAccountStatus = Readonly<{
+  owner: string;
+  account: string;
+  accountFactory: string;
+  deployed: boolean;
+  createAccount: Readonly<{ to: string; data: string; value: "0" }> | null;
+}>;
+
+export type ArbitrumOrderRecord = BaseOrderRecord;
+export type ArbitrumSolverQuote = LocalSolverQuote;
+
+export type ArbitrumSelectedAttempt = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  routeHash: string;
+  quoteHash: string;
+  status: "ARBITRUM_ASYNC_QUOTE_SELECTED";
+  selectedAtMs: number;
+}>;
+
+/** The reservation the owner signs and the exact funding the adapter pulls, prepared by the solver. */
+export type ArbitrumOwnerAuthorization = Readonly<{
+  attemptId: string;
+  packageId: string;
+  chainId: 421614;
+  owner: string;
+  account: string;
+  accountFactory: string;
+  coordinator: string;
+  adapter: string;
+  typedData: Readonly<{
+    domain: Readonly<{ name: "Naryx Async Bonded Package"; version: "1"; chainId: 421614; verifyingContract: string }>;
+    types: Readonly<{ ReserveAsyncPackage: readonly [Readonly<{ name: "termsHash"; type: "bytes32" }>] }>;
+    primaryType: "ReserveAsyncPackage";
+    message: Readonly<{ termsHash: string }>;
+  }>;
+  digest: string;
+  signed: boolean;
+  funding: Readonly<{
+    token: string;
+    spender: string;
+    approveAtoms: string;
+    collateralAtoms: string;
+    spotQuoteAtoms: string;
+    executionFeeWei: string;
+    fundRequest: ArbitrumWalletCall;
+    reclaimAfterUnixSeconds: string;
+  }>;
+  summary: Readonly<{
+    nonce: string;
+    sizeDeltaUsd: string;
+    acceptablePrice: string;
+    spotBaseAtoms: string;
+    rollbackMinQuoteAtoms: string;
+    bondAtoms: string;
+    submissionDeadline: string;
+    venueDeadline: string;
+    recoveryDeadline: string;
+    solver: string;
+  }>;
+}>;
+
+/** An observe-async refusal; the caller decides whether a 502 before reservation is still pending. */
+export class ArbitrumObservationError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(`Arbitrum async observation failed with ${status}.`);
+    this.name = "ArbitrumObservationError";
+    this.status = status;
+  }
+}
+
+const ARBITRUM_ATTEMPT_ID_PATTERN = /^arbitrum-async-[0-9a-f]{48}$/;
+const ARBITRUM_CALLDATA_PATTERN = /^0x(?:[0-9a-f]{2}){4,4096}$/;
+const ARBITRUM_SUMMARY_DECIMALS = [
+  "nonce", "sizeDeltaUsd", "acceptablePrice", "spotBaseAtoms", "rollbackMinQuoteAtoms", "bondAtoms",
+  "submissionDeadline", "venueDeadline", "recoveryDeadline",
+] as const;
+const ARBITRUM_FACTORY_ABI = parseAbi(["function create(address owner) returns (address)"]);
+const ARBITRUM_ADAPTER_ABI = parseAbi([
+  "struct SpotEntry { address fundingOwner; address port; bytes32 portCodeHash; address baseToken; address quoteToken; uint256 baseAtoms; uint256 maxQuoteAtoms; uint256 rollbackMinQuoteAtoms; bytes32 entryFillCommitment; bytes32 rollbackFillCommitment; }",
+  "struct VenueRequest { bytes32 marketId; address collateralToken; int256 sizeDelta; uint256 collateralAtoms; uint256 acceptablePrice; uint256 executionFeeWei; uint256 callbackGasLimit; uint256 packageNonce; bytes32 orderHash; bytes32 quoteHash; bytes32 routeHash; SpotEntry spot; uint64 submissionDeadline; uint64 venueDeadline; uint64 recoveryDeadline; }",
+  "function fundRequest(bytes32 packageId, VenueRequest venueRequest) payable",
+]);
+
+function sameAddress(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function requireArbitrumCalldata(value: unknown, name: string): string {
+  if (typeof value !== "string" || !ARBITRUM_CALLDATA_PATTERN.test(value)) throw new Error(`${name} is invalid.`);
+  return value;
+}
+
+function requireArbitrumAccountStatus(value: unknown, owner: string): ArbitrumAccountStatus {
+  if (!isRecord(value)) throw new Error("Arbitrum account status is invalid.");
+  requireExactKeys(value, [
+    "version", "domainId", "chainId", "owner", "account", "accountFactory", "deployed", "createAccount",
+  ], "Arbitrum account status");
+  if (value.version !== 1 || value.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID ||
+      value.chainId !== Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE) || typeof value.deployed !== "boolean" ||
+      !sameAddress(requireEvmAddress(value.owner, "Arbitrum account owner"), owner)) {
+    throw new Error("Arbitrum account status binding is invalid.");
+  }
+  const account = requireEvmAddress(value.account, "Arbitrum strategy account");
+  const accountFactory = requireEvmAddress(value.accountFactory, "Arbitrum account factory");
+  let createAccount: ArbitrumAccountStatus["createAccount"] = null;
+  if (value.deployed) {
+    if (value.createAccount !== null) throw new Error("Arbitrum account status is inconsistent.");
+  } else {
+    const call = value.createAccount;
+    if (!isRecord(call)) throw new Error("Arbitrum account creation call is invalid.");
+    requireExactKeys(call, ["to", "data", "value"], "Arbitrum account creation call");
+    const data = requireArbitrumCalldata(call.data, "Arbitrum account creation calldata");
+    if (call.value !== "0" || !sameAddress(requireEvmAddress(call.to, "Arbitrum factory target"), accountFactory)) {
+      throw new Error("Arbitrum account creation call is invalid.");
+    }
+    let decoded;
+    try {
+      decoded = decodeFunctionData({ abi: ARBITRUM_FACTORY_ABI, data: data as `0x${string}` });
+    } catch {
+      decoded = undefined;
+    }
+    if (decoded?.functionName !== "create" || !sameAddress(String(decoded.args[0]), owner)) {
+      throw new Error("Arbitrum account creation call is not for this wallet.");
+    }
+    createAccount = Object.freeze({ to: call.to as string, data, value: "0" as const });
+  }
+  return Object.freeze({
+    owner: (value.owner as string).toLowerCase(),
+    account: account.toLowerCase(),
+    accountFactory: accountFactory.toLowerCase(),
+    deployed: value.deployed,
+    createAccount,
+  });
+}
+
+function requireEvmOrderCreateResponse(
+  value: unknown,
+  expected: Readonly<{ contextId: string; owner: string; settlementAccount: string; idempotencyKey: string }>,
+  domainId: string,
+  label: string,
+): BaseOrderRecord {
+  if (!isRecord(value) || !isRecord(value.order) || value.status !== "UNSIGNED_CREATED" ||
+      value.traderAuthorization !== "REQUIRED" || value.solverQuoting !== "REQUIRED") {
+    throw new Error(`${label} canonical order response is invalid.`);
+  }
+  const order = value.order;
+  const domainManifestVersion = requireInteger(order.domainManifestVersion, `${label} order domain manifest version`);
+  if (order.idempotencyKey !== expected.idempotencyKey || order.contextId !== expected.contextId ||
+      order.domainId !== domainId || domainManifestVersion === 0 ||
+      order.owner !== expected.owner || order.settlementAccount !== expected.settlementAccount ||
+      order.status !== "UNSIGNED_CREATED") {
+    throw new Error(`${label} canonical order does not match the requested owner account.`);
+  }
+  return Object.freeze({
+    orderHashHex: requireHex32(order.orderHashHex, `${label} order hash`),
+    contextId: expected.contextId,
+    owner: expected.owner,
+    settlementAccount: expected.settlementAccount,
+    domainManifestVersion,
+    domainManifestHashHex: requireHex32(order.domainManifestHashHex, `${label} order domain manifest hash`),
+  });
+}
+
+function requireArbitrumSolverQuote(
+  value: unknown,
+  order: ArbitrumOrderRecord,
+  idempotencyKey: string,
+): ArbitrumSolverQuote {
+  const quote = requireSolverQuote(value, order.orderHashHex, idempotencyKey, "testnet", "ASYNC_BONDED_SOLVER");
+  if (quote.route.routeExpiryUnit !== "EVM_UNIX_SECONDS" || quote.quote.validUntilUnit !== "EVM_UNIX_SECONDS" ||
+      quote.route.executionPlanKind !== "EVM_ASYNC_REQUEST" ||
+      typeof quote.route.settlementAccount !== "string" || typeof quote.route.owner !== "string" ||
+      !sameAddress(quote.route.settlementAccount, order.settlementAccount) ||
+      !sameAddress(quote.route.owner, order.owner)) {
+    throw new Error("Arbitrum quote is not bound to the owner's strategy account.");
+  }
+  return quote;
+}
+
+function requireArbitrumSelectedAttempt(value: unknown, quote: ArbitrumSolverQuote): ArbitrumSelectedAttempt {
+  if (!isRecord(value) || value.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED" || !isRecord(value.attempt)) {
+    throw new Error("Arbitrum quote selection response is invalid.");
+  }
+  requireExactKeys(value.attempt, [
+    "attemptId", "domainId", "domainManifestHash", "domainManifestVersion", "orderHash",
+    "quoteHash", "routeHash", "selectedAtMs", "status",
+  ], "Arbitrum selected attempt");
+  const attempt = value.attempt;
+  const selectedAtMs = requireInteger(attempt.selectedAtMs, "Arbitrum selection time");
+  if (attempt.orderHash !== quote.orderHash || attempt.routeHash !== quote.routeHash ||
+      attempt.quoteHash !== quote.quoteHash || attempt.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED" ||
+      attempt.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID || selectedAtMs === 0 ||
+      typeof attempt.attemptId !== "string" || !ARBITRUM_ATTEMPT_ID_PATTERN.test(attempt.attemptId)) {
+    throw new Error("Arbitrum selected attempt binding is invalid.");
+  }
+  return Object.freeze({
+    attemptId: attempt.attemptId,
+    orderHash: quote.orderHash,
+    routeHash: quote.routeHash,
+    quoteHash: quote.quoteHash,
+    status: "ARBITRUM_ASYNC_QUOTE_SELECTED",
+    selectedAtMs,
+  });
+}
+
+/**
+ * Binds the solver's prepared reservation to the attempt, the wallet, and its factory account, then
+ * recomputes the EIP-712 digest and decodes the funding call so the wallet is never asked to sign
+ * or send anything other than what the review shows.
+ */
+function requireArbitrumOwnerAuthorization(
+  value: unknown,
+  expected: Readonly<{ attemptId: string; owner: string; account: string; signed: boolean | null }>,
+): ArbitrumOwnerAuthorization {
+  if (!isRecord(value)) throw new Error("Arbitrum owner authorization is invalid.");
+  requireExactKeys(value, [
+    "version", "attemptId", "packageId", "chainId", "owner", "account", "accountFactory", "coordinator",
+    "adapter", "typedData", "digest", "signed", "funding", "summary",
+  ], "Arbitrum owner authorization");
+  if (value.version !== 1 || value.attemptId !== expected.attemptId ||
+      value.chainId !== Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE) || typeof value.signed !== "boolean" ||
+      (expected.signed !== null && value.signed !== expected.signed)) {
+    throw new Error("Arbitrum owner authorization binding is invalid.");
+  }
+  const owner = requireEvmAddress(value.owner, "Arbitrum authorization owner");
+  const account = requireEvmAddress(value.account, "Arbitrum authorization account");
+  if (!sameAddress(owner, expected.owner) || !sameAddress(account, expected.account)) {
+    throw new Error("Arbitrum owner authorization is not for this wallet's strategy account.");
+  }
+  const packageId = requireEvmHash(value.packageId, "Arbitrum package id");
+  const coordinator = requireEvmAddress(value.coordinator, "Arbitrum coordinator");
+  const adapter = requireEvmAddress(value.adapter, "Arbitrum adapter");
+  const accountFactory = requireEvmAddress(value.accountFactory, "Arbitrum account factory");
+
+  const typedData = value.typedData;
+  if (!isRecord(typedData)) throw new Error("Arbitrum typed data is invalid.");
+  requireExactKeys(typedData, ["domain", "types", "primaryType", "message"], "Arbitrum typed data");
+  if (!isRecord(typedData.domain) || !isRecord(typedData.types) || !isRecord(typedData.message) ||
+      typedData.primaryType !== "ReserveAsyncPackage") {
+    throw new Error("Arbitrum typed data is invalid.");
+  }
+  requireExactKeys(typedData.domain, ["name", "version", "chainId", "verifyingContract"], "Arbitrum typed data domain");
+  requireExactKeys(typedData.types, ["ReserveAsyncPackage"], "Arbitrum typed data types");
+  requireExactKeys(typedData.message, ["termsHash"], "Arbitrum reservation");
+  const fields = typedData.types.ReserveAsyncPackage;
+  if (typedData.domain.name !== "Naryx Async Bonded Package" || typedData.domain.version !== "1" ||
+      typedData.domain.chainId !== Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE) ||
+      !sameAddress(requireEvmAddress(typedData.domain.verifyingContract, "Arbitrum verifier"), coordinator) ||
+      !Array.isArray(fields) || fields.length !== 1 || !isRecord(fields[0]) ||
+      Object.keys(fields[0]).length !== 2 || fields[0].name !== "termsHash" || fields[0].type !== "bytes32") {
+    throw new Error("Arbitrum typed data is invalid.");
+  }
+  const termsHash = requireEvmHash(typedData.message.termsHash, "Arbitrum terms hash");
+  const verifyingContract = typedData.domain.verifyingContract as string;
+  const digest = requireEvmHash(value.digest, "Arbitrum reservation digest");
+  const recomputed = hashTypedData({
+    domain: { name: "Naryx Async Bonded Package", version: "1", chainId: 421614, verifyingContract: verifyingContract as `0x${string}` },
+    types: { ReserveAsyncPackage: [{ name: "termsHash", type: "bytes32" }] },
+    primaryType: "ReserveAsyncPackage",
+    message: { termsHash: termsHash as `0x${string}` },
+  });
+  if (recomputed.toLowerCase() !== digest) throw new Error("Arbitrum reservation digest does not match its typed data.");
+
+  const funding = value.funding;
+  if (!isRecord(funding)) throw new Error("Arbitrum funding is invalid.");
+  requireExactKeys(funding, [
+    "token", "spender", "approveAtoms", "collateralAtoms", "spotQuoteAtoms", "executionFeeWei",
+    "fundRequest", "reclaimAfterUnixSeconds",
+  ], "Arbitrum funding");
+  const token = requireEvmAddress(funding.token, "Arbitrum collateral token");
+  const spender = requireEvmAddress(funding.spender, "Arbitrum funding spender");
+  const approveAtoms = requireEvmDecimal(funding.approveAtoms, "Arbitrum approval amount");
+  const collateralAtoms = requireEvmDecimal(funding.collateralAtoms, "Arbitrum collateral amount");
+  const spotQuoteAtoms = requireEvmDecimal(funding.spotQuoteAtoms, "Arbitrum spot quote amount");
+  const executionFeeWei = requireEvmDecimal(funding.executionFeeWei, "Arbitrum execution fee");
+  const reclaimAfterUnixSeconds = requireEvmDecimal(funding.reclaimAfterUnixSeconds, "Arbitrum reclaim time");
+  if (!sameAddress(spender, adapter) || BigInt(approveAtoms) === BigInt(0) ||
+      BigInt(approveAtoms) !== BigInt(collateralAtoms) + BigInt(spotQuoteAtoms) ||
+      BigInt(reclaimAfterUnixSeconds) === BigInt(0)) {
+    throw new Error("Arbitrum funding amounts are invalid.");
+  }
+  const fundRequest = funding.fundRequest;
+  if (!isRecord(fundRequest)) throw new Error("Arbitrum funding call is invalid.");
+  requireExactKeys(fundRequest, ["to", "data", "value"], "Arbitrum funding call");
+  const fundData = requireArbitrumCalldata(fundRequest.data, "Arbitrum funding calldata");
+  const fundValue = requireEvmDecimal(fundRequest.value, "Arbitrum funding call value");
+  if (!sameAddress(requireEvmAddress(fundRequest.to, "Arbitrum funding target"), spender) || fundValue !== executionFeeWei) {
+    throw new Error("Arbitrum funding call is invalid.");
+  }
+  let decoded;
+  try {
+    decoded = decodeFunctionData({ abi: ARBITRUM_ADAPTER_ABI, data: fundData as `0x${string}` });
+  } catch {
+    decoded = undefined;
+  }
+  const request = decoded?.args?.[1] as {
+    collateralToken?: string; collateralAtoms?: bigint; executionFeeWei?: bigint;
+    spot?: { fundingOwner?: string; maxQuoteAtoms?: bigint };
+  } | undefined;
+  if (decoded?.functionName !== "fundRequest" || String(decoded.args?.[0]).toLowerCase() !== packageId ||
+      typeof request?.spot?.fundingOwner !== "string" || !sameAddress(request.spot.fundingOwner, owner) ||
+      typeof request.collateralToken !== "string" || !sameAddress(request.collateralToken, token) ||
+      request.collateralAtoms !== BigInt(collateralAtoms) || request.spot.maxQuoteAtoms !== BigInt(spotQuoteAtoms) ||
+      request.executionFeeWei !== BigInt(executionFeeWei)) {
+    throw new Error("Arbitrum funding call does not match the reviewed funding.");
+  }
+
+  const summary = value.summary;
+  if (!isRecord(summary)) throw new Error("Arbitrum reservation summary is invalid.");
+  requireExactKeys(summary, [...ARBITRUM_SUMMARY_DECIMALS, "solver"], "Arbitrum reservation summary");
+  const checkedSummary: Record<string, string> = { solver: requireEvmAddress(summary.solver, "Arbitrum solver") };
+  for (const key of ARBITRUM_SUMMARY_DECIMALS) checkedSummary[key] = requireEvmDecimal(summary[key], `Arbitrum ${key}`);
+
+  return Object.freeze({
+    attemptId: expected.attemptId,
+    packageId,
+    chainId: 421614,
+    owner,
+    account,
+    accountFactory,
+    coordinator,
+    adapter,
+    typedData: Object.freeze({
+      domain: Object.freeze({ name: "Naryx Async Bonded Package", version: "1", chainId: 421614, verifyingContract }),
+      types: Object.freeze({ ReserveAsyncPackage: Object.freeze([Object.freeze({ name: "termsHash", type: "bytes32" })] as const) }),
+      primaryType: "ReserveAsyncPackage",
+      message: Object.freeze({ termsHash }),
+    }),
+    digest,
+    signed: value.signed,
+    funding: Object.freeze({
+      token,
+      spender,
+      approveAtoms,
+      collateralAtoms,
+      spotQuoteAtoms,
+      executionFeeWei,
+      fundRequest: Object.freeze({ to: fundRequest.to as string, data: fundData, value: fundValue }),
+      reclaimAfterUnixSeconds,
+    }),
+    summary: Object.freeze(checkedSummary) as ArbitrumOwnerAuthorization["summary"],
+  });
+}
+
 const PACKAGE_LIFECYCLE_STATES = new Set<PackageLifecycleState>([
   "PACKAGE_CREATED",
   "ENTRY_PREPARED",
@@ -1114,7 +1466,7 @@ function requireSolverQuote(
   orderHash: string,
   idempotencyKey: string,
   environment: "local" | "testnet",
-  settlementClass: "ATOMIC_POSTCONDITION" | "BATCHED_IOC_WITH_RECOVERY",
+  settlementClass: "ATOMIC_POSTCONDITION" | "BATCHED_IOC_WITH_RECOVERY" | "ASYNC_BONDED_SOLVER",
 ): LocalSolverQuote {
   if (!isRecord(value)) throw new Error("Solver quote response is invalid.");
   requireExactKeys(value, [
@@ -2761,7 +3113,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       body: JSON.stringify(request),
       signal,
     });
-    if (!response.ok) throw new Error(`Arbitrum async observation failed with ${response.status}.`);
+    if (!response.ok) throw new ArbitrumObservationError(response.status);
     return requireArbitrumAsyncObservation(await response.json() as unknown, request);
   }
 
@@ -2989,6 +3341,138 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw await serviceFailure(response, "Base quote selection");
     return requireBaseSelectedAttempt(await response.json() as unknown, quote);
+  }
+
+  async getArbitrumAccountStatus(owner: string, signal?: AbortSignal): Promise<ArbitrumAccountStatus> {
+    const query = new URLSearchParams({ owner: requireEvmAddress(owner, "Arbitrum owner") });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/arbitrum-sepolia/account?${query.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum account status");
+    return requireArbitrumAccountStatus(await response.json() as unknown, owner);
+  }
+
+  async createArbitrumOrder(
+    account: ArbitrumAccountStatus,
+    input: Readonly<{ contextId: string; size: string; slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumOrderRecord> {
+    if (!account.deployed) throw new Error("Create the Arbitrum strategy account first.");
+    const request = {
+      contextId: requireProtocolId(input.contextId, "Arbitrum context id"),
+      owner: account.owner,
+      settlementAccount: account.account,
+      size: requireString(input.size, "Arbitrum order size"),
+      slippageBps: requireInteger(input.slippageBps, "Arbitrum order slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    if (request.slippageBps === 0 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(request.size)) {
+      throw new Error("Arbitrum order limits are invalid.");
+    }
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum order creation");
+    return requireEvmOrderCreateResponse(await response.json() as unknown, request, ARBITRUM_SEPOLIA_DOMAIN_ID, "Arbitrum");
+  }
+
+  async requestArbitrumQuote(
+    order: ArbitrumOrderRecord,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumSolverQuote> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders/${order.orderHashHex}/quote`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: key }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum quote request");
+    return requireArbitrumSolverQuote(await response.json() as unknown, order, key);
+  }
+
+  async selectArbitrumQuote(quote: ArbitrumSolverQuote, signal?: AbortSignal): Promise<ArbitrumSelectedAttempt> {
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders/${quote.orderHash}/select`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quoteHash: quote.quoteHash }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum quote selection");
+    return requireArbitrumSelectedAttempt(await response.json() as unknown, quote);
+  }
+
+  async prepareArbitrumOwnerAuthorization(
+    attempt: ArbitrumSelectedAttempt,
+    account: ArbitrumAccountStatus,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumOwnerAuthorization> {
+    if (!ARBITRUM_ATTEMPT_ID_PATTERN.test(attempt.attemptId)) throw new Error("Arbitrum attempt id is invalid.");
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/arbitrum-sepolia/prepare-owner-authorization`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: attempt.attemptId }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum reservation preparation");
+    return requireArbitrumOwnerAuthorization(await response.json() as unknown, {
+      attemptId: attempt.attemptId,
+      owner: account.owner,
+      account: account.account,
+      signed: null,
+    });
+  }
+
+  async authorizeArbitrumOwner(
+    prepared: ArbitrumOwnerAuthorization,
+    ownerSignature: string,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumOwnerAuthorization> {
+    if (!EVM_SIGNATURE_PATTERN.test(ownerSignature)) throw new Error("Arbitrum owner signature is invalid.");
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/arbitrum-sepolia/authorize-owner`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: prepared.attemptId, ownerSignature }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum reservation authorization");
+    const authorized = requireArbitrumOwnerAuthorization(await response.json() as unknown, {
+      attemptId: prepared.attemptId,
+      owner: prepared.owner,
+      account: prepared.account,
+      signed: true,
+    });
+    // The signed reservation must be the one the owner reviewed, not a fresh preparation.
+    if (authorized.packageId !== prepared.packageId || authorized.digest !== prepared.digest ||
+        authorized.funding.fundRequest.data !== prepared.funding.fundRequest.data ||
+        authorized.funding.approveAtoms !== prepared.funding.approveAtoms ||
+        authorized.funding.reclaimAfterUnixSeconds !== prepared.funding.reclaimAfterUnixSeconds) {
+      throw new Error("Arbitrum authorization changed after review. Prepare the reservation again.");
+    }
+    return authorized;
   }
 
   async createLocalOrder(

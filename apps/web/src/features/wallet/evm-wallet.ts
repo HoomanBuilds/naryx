@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
-import { useConnect, useConnection, useConnectors, useDisconnect, useSendTransaction, useSignTypedData, useSwitchChain } from "wagmi";
+import { useConfig, useConnect, useConnection, useConnectors, useDisconnect, useSendTransaction, useSignTypedData, useSwitchChain } from "wagmi";
+import { waitForTransactionReceipt } from "wagmi/actions";
 import type { Connector } from "wagmi";
 import { EVM_CHAINS, type EvmDomain } from "./evm-config";
 
@@ -20,8 +21,15 @@ export type EvmWalletSession = {
   onChain(domain: EvmDomain): boolean;
   switchNetwork(domain: EvmDomain): Promise<void>;
   signTypedData(domain: EvmDomain, typedData: unknown): Promise<string>;
-  sendTransaction(domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: "0" }>): Promise<string>;
+  /** `value` is decimal wei; only a reviewed call (such as a venue execution fee) carries a nonzero value. */
+  sendTransaction(domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: string }>): Promise<string>;
+  /** Waits for the transaction's receipt on the domain's testnet; true when it succeeded. */
+  waitForReceipt(domain: EvmDomain, hash: string): Promise<boolean>;
 };
+
+/** A ceiling on any wallet-sent value: testnet execution fees are far below 0.1 ETH. */
+const MAX_TRANSACTION_VALUE_WEI = BigInt("100000000000000000");
+const RECEIPT_TIMEOUT_MS = 180_000;
 
 const noSubscription = () => () => undefined;
 
@@ -51,6 +59,7 @@ function walletError(cause: unknown, action: "connect" | "switch" | "sign" | "su
  * signature is requested from the user's own wallet on a configured testnet.
  */
 export function useEvmWallet(): EvmWalletSession {
+  const config = useConfig();
   const connection = useConnection();
   const allConnectors = useConnectors();
   const connectMutation = useConnect();
@@ -127,9 +136,10 @@ export function useEvmWallet(): EvmWalletSession {
     }
   }, [requireReady, typedDataMutation]);
 
-  const sendTransaction = useCallback(async (domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: "0" }>) => {
+  const sendTransaction = useCallback(async (domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: string }>) => {
     requireReady(domain);
-    if (!/^0x[0-9a-f]{40}$/i.test(transaction.to) || !/^0x(?:[0-9a-f]{2})+$/i.test(transaction.data) || transaction.value !== "0") {
+    if (!/^0x[0-9a-f]{40}$/i.test(transaction.to) || !/^0x(?:[0-9a-f]{2})+$/i.test(transaction.data) ||
+        !/^(0|[1-9][0-9]{0,30})$/.test(transaction.value) || BigInt(transaction.value) > MAX_TRANSACTION_VALUE_WEI) {
       throw new Error("Prepared transaction is invalid.");
     }
     try {
@@ -137,7 +147,7 @@ export function useEvmWallet(): EvmWalletSession {
         chainId: EVM_CHAINS[domain].id,
         to: transaction.to as `0x${string}`,
         data: transaction.data as `0x${string}`,
-        value: BigInt(0),
+        value: BigInt(transaction.value),
       });
       return hash.toLowerCase();
     } catch (cause) {
@@ -146,6 +156,20 @@ export function useEvmWallet(): EvmWalletSession {
       throw new Error(message);
     }
   }, [requireReady, transactionMutation]);
+
+  const waitForReceipt = useCallback(async (domain: EvmDomain, hash: string) => {
+    if (!/^0x[0-9a-f]{64}$/i.test(hash)) throw new Error("Transaction hash is invalid.");
+    try {
+      const receipt = await waitForTransactionReceipt(config, {
+        chainId: EVM_CHAINS[domain].id,
+        hash: hash as `0x${string}`,
+        timeout: RECEIPT_TIMEOUT_MS,
+      });
+      return receipt.status === "success";
+    } catch {
+      throw new Error(`The transaction has not confirmed on ${EVM_CHAINS[domain].name} yet. Check it in your wallet, then retry.`);
+    }
+  }, [config]);
 
   return {
     connectors,
@@ -161,5 +185,6 @@ export function useEvmWallet(): EvmWalletSession {
     switchNetwork,
     signTypedData,
     sendTransaction,
+    waitForReceipt,
   };
 }

@@ -13,7 +13,7 @@ export type RecordedAttempt = Readonly<{
   domain: DomainId;
   mode: PackageMode;
   size: string;
-  flow: "devnet" | "conformance" | "hyperliquid" | "base";
+  flow: "devnet" | "conformance" | "hyperliquid" | "base" | "arbitrum";
   createdAt: number;
 }>;
 
@@ -22,7 +22,7 @@ const CHANGE_EVENT = "naryx-terminal-attempts";
 const LIMIT = 50;
 const EMPTY: readonly RecordedAttempt[] = Object.freeze([]);
 const DOMAINS: readonly string[] = ["solana", "base", "arbitrum", "hyperliquid"];
-const FLOWS: readonly string[] = ["devnet", "conformance", "hyperliquid", "base"];
+const FLOWS: readonly string[] = ["devnet", "conformance", "hyperliquid", "base", "arbitrum"];
 
 let memory: string | null = null;
 let cachedRaw: string | null = null;

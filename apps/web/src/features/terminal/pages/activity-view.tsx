@@ -14,6 +14,7 @@ const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
   conformance: "Local conformance",
   hyperliquid: "Hyperliquid testnet",
   base: "Base Sepolia",
+  arbitrum: "Arbitrum Sepolia",
 };
 
 function compact(value: string, leading = 10, trailing = 6) {
@@ -34,9 +35,9 @@ function statePill(state: string) {
   return styles.pill;
 }
 
-/** Lifecycle reads cover Solana Devnet and local conformance attempts; Hyperliquid and Base attempts report in the ticket. */
+/** Lifecycle reads cover Solana Devnet and local conformance attempts; Hyperliquid, Base, and Arbitrum attempts report in the ticket. */
 function readable(attempt: RecordedAttempt) {
-  return attempt.flow !== "hyperliquid" && attempt.flow !== "base";
+  return attempt.flow !== "hyperliquid" && attempt.flow !== "base" && attempt.flow !== "arbitrum";
 }
 
 export function ActivityView() {
@@ -139,7 +140,13 @@ export function ActivityView() {
                     <td style={{ color: attempt.mode === "entry" ? "var(--up)" : "var(--down)" }}>{attempt.mode === "entry" ? "Enter" : "Exit"}</td>
                     <td className={styles.num}>{attempt.size}</td>
                     <td className={styles.dim}>{FLOW_LABEL[attempt.flow]}</td>
-                    <td><span className={lifecycle ? statePill(lifecycle.attempt.state) : styles.pill}>{state}</span></td>
+                    <td>
+                      {readable(attempt) ? (
+                        <span className={lifecycle ? statePill(lifecycle.attempt.state) : styles.pill}>{state}</span>
+                      ) : (
+                        <Link href="/trade" className={styles.pill} onClick={(event) => event.stopPropagation()}>{state}</Link>
+                      )}
+                    </td>
                     <td className={styles.num}>{lifecycle?.attempt.revision ?? "-"}</td>
                     <td className={styles.mono} title={attempt.attemptId}>{compact(attempt.attemptId, 14, 6)}</td>
                   </tr>
@@ -173,7 +180,7 @@ export function ActivityView() {
             ) : (
               <p className={styles.dim} style={{ fontSize: 12.5 }}>
                 {openIndex >= 0 && !readable(attempts[openIndex])
-                  ? "Hyperliquid testnet attempts report their execution in the ticket; the lifecycle read covers Solana and local conformance attempts."
+                  ? `${FLOW_LABEL[attempts[openIndex].flow]} attempts report their execution in the Trade ticket; the lifecycle read covers Solana and local conformance attempts.`
                   : privateProvider === null
                     ? "Receipts need the private terminal service."
                     : "No receipts recorded yet."}
