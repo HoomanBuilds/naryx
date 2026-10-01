@@ -339,6 +339,17 @@ export type SolanaDevnetAccountStatus = Readonly<{
   positionBaseLots: string;
   traderQuoteAtoms: string;
   requiredCollateralAtoms: string;
+  /** The reviewed program ids every onboarding instruction must target; clients allowlist them. */
+  programs: Readonly<{
+    core: string;
+    perpAdapter: string;
+    perpVenue: string;
+    token: string;
+    associatedToken: string;
+    system: string;
+  }>;
+  market: Readonly<{ address: string; collateralVault: string }>;
+  mints: Readonly<{ base: string; quote: string }>;
   ready: boolean;
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
@@ -558,6 +569,16 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       positionBaseLots: (positionState?.baseLots ?? 0n).toString(),
       traderQuoteAtoms: traderQuoteAtoms.toString(),
       requiredCollateralAtoms: requiredCollateral.toString(),
+      programs: Object.freeze({
+        core,
+        perpAdapter,
+        perpVenue,
+        token: TOKEN_PROGRAM_ID,
+        associatedToken: ASSOCIATED_TOKEN_PROGRAM_ID,
+        system: SystemProgram.programId.toBase58(),
+      }),
+      market: Object.freeze({ address: new PublicKey(manifest.testPerp.market).toBase58(), collateralVault: market.collateralVault }),
+      mints: Object.freeze({ base: baseMint, quote: quoteMint }),
       ready: steps.length === 0,
       steps: Object.freeze(steps),
     });

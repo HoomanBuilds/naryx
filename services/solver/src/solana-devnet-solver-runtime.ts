@@ -8,6 +8,7 @@ import { HttpInternalOrderProvider } from './http-internal-order-provider.js';
 import type { InternalAtomicQuotePort } from './internal-atomic-quote-server.js';
 import { createSolanaDevnetBindingServer, createSolanaDevnetBindingService } from './solana-devnet-binding.js';
 import { SqliteSolanaDevnetFirmQuoteJournal, createSolanaDevnetFirmQuotePort } from './solana-devnet-firm-quote.js';
+import { createSolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
 import { HttpSolanaDevnetSolverRpc, requireSolanaDevnet, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
   loadSolanaDevnetSharedManifest,
@@ -65,11 +66,13 @@ export async function loadSolanaDevnetSolverRuntime(
   const journal = new SqliteSolanaDevnetFirmQuoteJournal(env.NARYX_SOLANA_DEVNET_SOLVER_JOURNAL_DB ?? '');
   const writer = writesEnabled ? exclusiveWriter(rpc) : undefined;
   const shared = { manifest, config, rpc, key, journal, ...(writer === undefined ? {} : { writer }) };
+  const releaser = createSolanaDevnetReservationReleaser(shared);
   const service = createSolanaDevnetBindingService({
     ...shared,
+    releaser,
     admissions: new HttpSelectedSolanaAdmissionProvider(options.apiOrigin).get,
   });
-  const server: Server = createSolanaDevnetBindingServer(service);
+  const server: Server = createSolanaDevnetBindingServer(service, releaser);
   const orders = new HttpInternalOrderProvider(options.apiOrigin).get;
   return Object.freeze({
     wrap: (fallback: InternalAtomicQuotePort) => createSolanaDevnetFirmQuotePort({ ...shared, orders, nonceSource: options.nonceSource }, fallback),

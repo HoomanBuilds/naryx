@@ -22,6 +22,7 @@ import {
   type SolanaDevnetFirmQuoteJournal,
   type SolanaDevnetLiveQuoteState,
 } from './solana-devnet-firm-quote.js';
+import { SolanaDevnetReleaseError, type SolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
 import { requireSolanaDevnet, type SolanaDevnetSolverReadPort, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
   SOLANA_DEVNET_RESOURCE_NAMES,
@@ -115,6 +116,8 @@ export type SolanaDevnetBindingDependencies = Readonly<{
   key: SolanaDevnetSolverKey;
   journal: SolanaDevnetFirmQuoteJournal;
   admissions: SelectedSolanaAdmissionProvider;
+  /** Releases an expired earlier reservation that still holds this strategy's live pair. */
+  releaser?: SolanaDevnetReservationReleaser;
 }>;
 
 /**
@@ -265,6 +268,15 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       if (dependencies.writer === undefined) notReady('reservation is not live and solver writes are disabled');
       if (quantity > config.maxQuantityAtoms || quantity > state.reservationClass.maxBaseAtoms) mismatch('reservation exceeds the reviewed base limit');
       const instructions: TransactionInstruction[] = [ComputeBudgetProgram.setComputeUnitLimit({ units: WRITE_COMPUTE_UNITS })];
+      if (reservation === undefined && dependencies.releaser !== undefined) {
+        // A funded reservation whose entry never ran keeps the strategy's live pair; free it once expired.
+        try {
+          await dependencies.releaser.releaseStaleLivePair(accounts.executorAuthority!, reservationId);
+        } catch (error) {
+          if (error instanceof SolanaDevnetReleaseError && error.code === 'NOT_READY') notReady(`an earlier reservation is still open: ${error.message}`);
+          mismatch(`an earlier reservation could not be released: ${error instanceof Error ? error.message : 'unknown error'}`);
+        }
+      }
       if (reservation === undefined) {
         const solverBase = associatedTokenAddress(config.solverId, config.resources.baseAsset.subjectAddress).toBase58();
         instructions.push(new TransactionInstruction({
@@ -518,13 +530,43 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 }
 
 /** POST /internal/solana-devnet/attempt-binding {attemptId} -> {binding}. Loopback only. */
-export function createSolanaDevnetBindingServer(service: ReturnType<typeof createSolanaDevnetBindingService>): Server {
+export function createSolanaDevnetBindingServer(
+  service: ReturnType<typeof createSolanaDevnetBindingService>,
+  releaser?: SolanaDevnetReservationReleaser,
+): Server {
   return createServer((request, response) => {
     if (!isLoopback(request.socket.remoteAddress)) {
       sendJson(response, 403, { error: { code: 'LOOPBACK_REQUIRED', message: 'binding access is loopback-only' } });
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
+    if (url.pathname === '/internal/solana-devnet/release-reservation' && url.search === '' && releaser !== undefined) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        sendJson(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'only POST is allowed' } });
+        return;
+      }
+      void (async () => {
+        try {
+          const body = await readBody(request);
+          if (typeof body !== 'object' || body === null || Array.isArray(body) || Object.keys(body).join(',') !== 'orderHash'
+            || typeof (body as { orderHash?: unknown }).orderHash !== 'string') {
+            throw new SolanaDevnetReleaseError('INVALID_REQUEST', 'request must contain only orderHash');
+          }
+          const result = await releaser.releaseForOrder((body as { orderHash: string }).orderHash);
+          sendJson(response, 200, { release: { ...result, baseAtoms: result.baseAtoms.toString() } });
+        } catch (error) {
+          if (error instanceof SolanaDevnetReleaseError) {
+            const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 409;
+            sendJson(response, status, { error: { code: error.code, message: error.message } });
+            return;
+          }
+          sendJson(response, error instanceof SolanaDevnetBindingError && error.code === 'INVALID_REQUEST' ? 400 : 502,
+            { error: { code: 'RELEASE_FAILED', message: 'Solana Devnet reservation release failed closed' } });
+        }
+      })();
+      return;
+    }
     if (url.pathname !== '/internal/solana-devnet/attempt-binding' || url.search !== '') {
       sendJson(response, 404, { error: { code: 'NOT_FOUND', message: 'internal route was not found' } });
       return;

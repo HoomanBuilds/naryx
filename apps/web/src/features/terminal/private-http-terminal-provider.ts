@@ -10,6 +10,7 @@ import type {
 import { getTransactionDecoder } from "@solana/transactions";
 import bs58 from "bs58";
 import { decodeFunctionData, hashTypedData, parseAbi } from "viem";
+import { parseSolanaDevnetAccountStatus, type SolanaDevnetAccountStatus } from "./solana-devnet-onboarding";
 
 const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const MAX_TRANSACTION_BYTES = 1232;
@@ -3595,6 +3596,24 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error("Local action response does not match the authoritative lifecycle head.");
     }
     return Object.freeze({ action, state, lifecycle });
+  }
+
+  async getSolanaDevnetAccountStatus(
+    owner: string,
+    sizeAtoms: string,
+    signal?: AbortSignal,
+  ): Promise<SolanaDevnetAccountStatus> {
+    if (!/^(?:0|[1-9][0-9]{0,30})$/.test(sizeAtoms)) throw new Error("Devnet package size must be decimal atoms.");
+    const query = new URLSearchParams({ owner, sizeAtoms });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/solana-devnet/account?${query.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Devnet account status");
+    return parseSolanaDevnetAccountStatus(await response.json() as unknown, owner);
   }
 
   async prepareSolanaExecution(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
@@ -55,6 +55,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
+import { solanaDevnetSizeAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -864,7 +865,7 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
 }
 
 export type PrimaryAction = Readonly<{
-  kind: "connect" | "switch" | "prepare" | "sign" | "hyperliquid" | "base" | "arbitrum" | "none";
+  kind: "connect" | "switch" | "prepare" | "sign" | "solana-onboard" | "hyperliquid" | "base" | "arbitrum" | "none";
   label: string;
   reason: string;
   disabled: boolean;
@@ -1713,6 +1714,20 @@ export function TradingTerminal({
     : !currentHyperliquidFlow.attempt ? "select"
     : "execute";
 
+  // Devnet entry needs the wallet's own strategy accounts; missing ones are created step by step first.
+  const readSolanaDevnetAccount = useCallback((owner: string, sizeAtoms: string, signal?: AbortSignal) => {
+    if (!privateProvider) return Promise.reject(new Error("Private service required."));
+    return privateProvider.getSolanaDevnetAccountStatus(owner, sizeAtoms, signal);
+  }, [privateProvider]);
+  const solanaOnboarding = useSolanaDevnetOnboarding({
+    enabled: selectedDomain === "solana" && mode === "entry" && privateProvider !== null &&
+      providerConnection === "connected" && runtimeHealth?.solanaDevnet.available === true,
+    owner: wallet.selectedAccount?.address ?? null,
+    sizeAtoms: solanaDevnetSizeAtoms(size),
+    readStatus: readSolanaDevnetAccount,
+    signAndSend: wallet.signAndSend,
+  });
+
   // One primary action, in the order every venue uses: connect, switch network, then trade.
   const primaryAction = useMemo<PrimaryAction>(() => {
     const none = (label: string, reason: string): PrimaryAction => ({ kind: "none", label, reason, disabled: true });
@@ -1899,6 +1914,25 @@ export function TradingTerminal({
       }
       return { kind: "none", disabled: true, label: "Transaction submitted", reason: "Observation is pending. Submission does not assert finality or package completion." };
     }
+    if (mode === "entry" && !solanaOnboarding.ready) {
+      const remaining = solanaOnboarding.status?.steps.length ?? 0;
+      if (solanaOnboarding.busy) {
+        return { kind: "solana-onboard", label: solanaOnboarding.busy, reason: "Account setup is in progress. Each step is finalized on Devnet before the next one.", disabled: true };
+      }
+      if (solanaOnboarding.nextStep) {
+        return {
+          kind: "solana-onboard",
+          label: solanaOnboarding.nextStep.label,
+          reason: solanaOnboarding.error ??
+            `Account setup, ${remaining} ${remaining === 1 ? "step" : "steps"} left. Your wallet signs one Devnet transaction for your own accounts before the package review.`,
+          disabled: false,
+        };
+      }
+      if (solanaOnboarding.error) {
+        return { kind: "solana-onboard", label: "Retry account check", reason: solanaOnboarding.error, disabled: false };
+      }
+      return none("Checking Devnet account", "Reading your strategy, position, and collateral accounts on Devnet.");
+    }
     if (!currentExecutionReview) {
       return { kind: "prepare", label: "Review transaction", reason: "Builds the exact unsigned Devnet transaction for you to review before signing.", disabled: false };
     }
@@ -1932,6 +1966,11 @@ export function TradingTerminal({
     reviewExpired,
     runtimeHealth,
     selectedDomain,
+    solanaOnboarding.busy,
+    solanaOnboarding.error,
+    solanaOnboarding.nextStep,
+    solanaOnboarding.ready,
+    solanaOnboarding.status,
     wallet.canSignAndSendV0,
     wallet.selectedAccount,
   ]);
@@ -2701,6 +2740,7 @@ export function TradingTerminal({
     else if (primaryAction.kind === "switch" && evmTarget) void evmWallet.switchNetwork(evmTarget);
     else if (primaryAction.kind === "prepare") void handlePrepareExecution();
     else if (primaryAction.kind === "sign") void handleExecutionAction();
+    else if (primaryAction.kind === "solana-onboard") void solanaOnboarding.advance();
     else if (primaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
     else if (primaryAction.kind === "base" && nextBaseStep) void handleBaseStep(nextBaseStep);
     else if (primaryAction.kind === "arbitrum" && nextArbitrumStep) void handleArbitrumStep(nextArbitrumStep);
@@ -2755,7 +2795,7 @@ export function TradingTerminal({
             submission={currentSubmission}
             confirming={confirmingInWallet}
             action={{ ...primaryAction, reason: actionReason }}
-            actionBusy={executionBusy || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null}
+            actionBusy={executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}
