@@ -361,3 +361,16 @@ export { createEvmBondReader, type EvmBondReaderOptions } from "./evm-bond-reade
 export { BuilderStoreError, SqliteBuilderStore, type BuilderAttributionView } from "./builder-store.js";
 export { CoordinationStoreError, createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 export { createKeeperExecutorHandler, KeeperExecutorError, keeperClock, SqliteKeeperExecutor, type KeeperActionPlan } from "./keeper-executor.js";
+export {
+  DurableAttemptScopeResolver,
+  TestnetCapExecutionGate,
+  TestnetExecutionPolicyError,
+  isMainnetScope,
+  loadTestnetExecutionPolicy,
+  parseTestnetExecutionPolicy,
+  scopeFromOrder,
+  type TestnetDomainCaps,
+  type TestnetExecutionGateOptions,
+  type TestnetExecutionPolicy,
+  type TestnetExecutionScope,
+} from "./testnet-execution-policy.js";

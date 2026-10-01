@@ -75,17 +75,24 @@ export interface ExecutionReadinessPolicyProvider {
   current(): ReadinessDecisionInput | undefined;
 }
 
-export interface ExecutionReadinessScopeResolver {
+/** The fields every gate's scope carries; the HTTP boundary checks them against the request. */
+export type ExecutionReadinessScopeIdentity = Readonly<{
+  handoff: ExecutionHandoff;
+  attemptId: string;
+  idempotencyKey: string;
+}>;
+
+export interface ExecutionReadinessScopeResolver<Scope extends ExecutionReadinessScopeIdentity = ExecutionReadinessScope> {
   resolve(handoff: ExecutionHandoff, request: Readonly<{ attemptId?: string; idempotencyKey: string }>):
-    Promise<ExecutionReadinessScope> | ExecutionReadinessScope;
+    Promise<Scope> | Scope;
 }
 
 export interface ExecutionReadinessEvidenceStore {
   persist(receipt: ExecutionReadinessReceipt): void;
 }
 
-export interface ExecutionReadinessGate {
-  authorize(scope: ExecutionReadinessScope): ExecutionReadinessReceipt;
+export interface ExecutionReadinessGate<Scope extends ExecutionReadinessScopeIdentity = ExecutionReadinessScope> {
+  authorize(scope: Scope): ExecutionReadinessReceipt;
 }
 
 export class ExecutionReadinessError extends Error {

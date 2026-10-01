@@ -67,6 +67,7 @@ import {
   ExecutionReadinessError,
   type ExecutionHandoff,
   type ExecutionReadinessGate,
+  type ExecutionReadinessScopeIdentity,
   type ExecutionReadinessScopeResolver,
 } from "./execution-readiness-gate.js";
 
@@ -231,8 +232,8 @@ export function createPrivateTerminalRequestHandler(
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
-  executionReadinessGate?: ExecutionReadinessGate,
-  executionReadinessScopes?: ExecutionReadinessScopeResolver,
+  executionReadinessGate?: ExecutionReadinessGate<ExecutionReadinessScopeIdentity>,
+  executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
 ) {
   async function requireExecutionReadiness(
     handoff: ExecutionHandoff,
@@ -514,7 +515,6 @@ export function createPrivateTerminalRequestHandler(
       try {
         const preparationRequest = parseExecutionPreparationRequest(await readJson(request));
         await requireExecutionReadiness("SOLANA_DEVNET_PREPARE", {
-          attemptId: preparationRequest.idempotencyKey,
           idempotencyKey: preparationRequest.idempotencyKey,
         });
         const prepared = validateUnsignedSolanaDevnetMaterialization(
@@ -1072,8 +1072,8 @@ export function createPrivateTerminalServer(
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
-  executionReadinessGate?: ExecutionReadinessGate,
-  executionReadinessScopes?: ExecutionReadinessScopeResolver,
+  executionReadinessGate?: ExecutionReadinessGate<ExecutionReadinessScopeIdentity>,
+  executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
 ) {
   const handler = createPrivateTerminalRequestHandler(

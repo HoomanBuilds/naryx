@@ -15,6 +15,11 @@ import {
   type PrivateTerminalRuntimeFactories,
 } from "./runtime-composition.js";
 import { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
+import {
+  DurableAttemptScopeResolver,
+  TestnetCapExecutionGate,
+  loadTestnetExecutionPolicy,
+} from "./testnet-execution-policy.js";
 import type { ActiveOrderContext } from "./canonical-entry-order.js";
 import {
   createBaseSepoliaRuntime,
@@ -325,6 +330,28 @@ const orderClock = Object.freeze({
     return orderRuntime.clock.currentClock(context);
   },
 });
+// Testnet execution approval: automatic within the operator's per-domain caps. Without both the
+// policy file and its decision database, every execution handoff stays refused (fail closed).
+const executionPolicyFile = process.env.NARYX_EXECUTION_POLICY_FILE;
+const executionPolicyDb = process.env.NARYX_EXECUTION_POLICY_DB;
+let executionGate: TestnetCapExecutionGate | undefined;
+let executionScopes: DurableAttemptScopeResolver | undefined;
+if (executionPolicyFile !== undefined || executionPolicyDb !== undefined) {
+  if (!executionPolicyFile || !executionPolicyDb) {
+    throw new Error("NARYX_EXECUTION_POLICY_FILE and NARYX_EXECUTION_POLICY_DB must be set together.");
+  }
+  if (startup.localAtomicRuntimeMode === "PHASE4_FIXTURE") {
+    throw new Error("The testnet execution policy cannot run alongside NARYX_LOCAL_FIXTURE_MODE.");
+  }
+  // Validate once at startup; every decision re-reads the file so cap changes apply without a restart.
+  loadTestnetExecutionPolicy(executionPolicyFile);
+  executionGate = new TestnetCapExecutionGate({
+    policy: () => loadTestnetExecutionPolicy(executionPolicyFile),
+    databasePath: executionPolicyDb,
+  });
+  executionScopes = new DurableAttemptScopeResolver(orderStore, executionIntentStore);
+}
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -340,8 +367,8 @@ const server = createPrivateTerminalServer(
   solanaLocalExecution,
   runtime.hyperliquidTestnetEvidence?.preparation,
   hyperliquidOrderRuntime?.terminalContext,
-  undefined,
-  undefined,
+  executionGate,
+  executionScopes,
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(publicMarket?.internalHandler, publicMarket?.listener === undefined ? publicMarket?.handler : undefined),
