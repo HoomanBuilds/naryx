@@ -1871,8 +1871,8 @@ export function TradingTerminal({
     if (!executionGateUp) {
       return { kind: "none", disabled: true, label: "Execution gate offline", reason: "The service's execution safety gate is not configured, so no Devnet transaction can be prepared." };
     }
-    if (!wallet.canSignAndSendV0) {
-      return { kind: "none", disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet does not advertise Devnet v0 sign-and-send capability." };
+    if (!wallet.canSignAndSendV0 || !wallet.canSignMessage) {
+      return { kind: "none", disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet must advertise Devnet v0 sign-and-send and message signing to authorize the package order." };
     }
     if (!preview || preview.source !== "PRIVATE_TERMINAL_BFF") {
       return { kind: "none", disabled: true, label: "Executable preview required", reason: "A current private-service package preview is required." };
@@ -1974,6 +1974,7 @@ export function TradingTerminal({
     solanaOnboarding.ready,
     solanaOnboarding.status,
     wallet.canSignAndSendV0,
+    wallet.canSignMessage,
     wallet.selectedAccount,
   ]);
 
@@ -2057,7 +2058,7 @@ export function TradingTerminal({
   async function handlePrepareExecution() {
     if (!privateProvider || providerConnection !== "connected" ||
         selectedDomain !== "solana" || !wallet.selectedAccount ||
-        !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
+        !wallet.canSignAndSendV0 || !wallet.canSignMessage || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
         quoteMode !== "coordinated_limits" ||
         currentSubmission || executionBusy) return;
     setExecutionBusy(true);
@@ -2070,7 +2071,24 @@ export function TradingTerminal({
           : crypto.randomUUID();
       setIdempotency({ ticketKey, key });
       let exitSize: string | undefined;
-      if (mode === "exit") {
+      if (mode === "entry") {
+        const account = solanaOnboarding.status;
+        if (!solanaOnboarding.ready || !account || account.owner !== wallet.selectedAccount.address) {
+          throw new Error("Finish Devnet account setup before reviewing the transaction.");
+        }
+        // Durable entry order, wallet authorization over its exact bytes, solver quote, and selection,
+        // all under this key so the prepare step finds the order by it.
+        await privateProvider.createSolanaDevnetEntryAttempt(
+          {
+            contextId: account.contextId,
+            owner: wallet.selectedAccount.address,
+            size,
+            slippageBps: slippage,
+            idempotencyKey: key,
+          },
+          wallet.signMessage,
+        );
+      } else {
         // Exit order, wallet authorization, solver firm bid, and selection, all under this key.
         const exitAttempt = await privateProvider.createSolanaDevnetExitAttempt(
           { owner: wallet.selectedAccount.address, slippageBps: slippage, idempotencyKey: key },

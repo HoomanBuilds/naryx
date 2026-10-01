@@ -45,6 +45,8 @@ export type SolanaDevnetOnboardingStep = Readonly<{
 }>;
 
 export type SolanaDevnetAccountStatus = Readonly<{
+  /** The active order context; the entry order is created under it with the wallet as settlement account. */
+  contextId: string;
   owner: string;
   ready: boolean;
   requiredCollateralAtoms: bigint;
@@ -127,6 +129,8 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
   if (!isRecord(value) || value.domainId !== "svm:devnet" || value.environment !== "DEVNET") fail("response is not a Devnet account status");
   const owner = address(value.owner, "owner");
   if (owner !== expectedOwner || value.settlementAccount !== owner) fail("response is for a different wallet");
+  if (typeof value.contextId !== "string" || !/^[A-Za-z0-9:_.-]{1,128}$/.test(value.contextId)) fail("order context id is invalid");
+  const contextId = value.contextId;
   if (!isRecord(value.accounts) || !isRecord(value.programs) || !isRecord(value.market) || !isRecord(value.mints) || !Array.isArray(value.steps)) {
     fail("response is malformed");
   }
@@ -264,7 +268,7 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
     return Object.freeze({ kind, label: candidate.label, instructions: Object.freeze(instructions) });
   });
   if (value.ready !== (steps.length === 0)) fail("readiness does not match the step list");
-  return Object.freeze({ owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, steps: Object.freeze(steps) });
+  return Object.freeze({ contextId, owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, steps: Object.freeze(steps) });
 }
 
 function compactU16(value: number): number[] {

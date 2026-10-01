@@ -3617,6 +3617,42 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
   }
 
   /**
+   * Devnet entry: the service builds the canonical ENTRY order under the active Devnet context with
+   * the wallet as owner and settlement account, the wallet signs the exact order bytes, the solver
+   * quotes, and the quote is selected. The prepare step must reuse the same idempotency key and size.
+   * Nothing is submitted here.
+   */
+  async createSolanaDevnetEntryAttempt(
+    input: Readonly<{ contextId: string; owner: string; size: string; slippageBps: number; idempotencyKey: string }>,
+    signMessage: (message: Uint8Array) => Promise<string>,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ orderHashHex: string }>> {
+    const idempotencyKey = requireObservationIdempotencyKey(input.idempotencyKey);
+    const request = {
+      contextId: requireString(input.contextId, "Devnet order context"),
+      owner: requireBase58Bytes32(input.owner, "Devnet order owner"),
+      settlementAccount: input.owner,
+      size: requireString(input.size, "Devnet order size"),
+      slippageBps: requireInteger(input.slippageBps, "Devnet order slippage"),
+      idempotencyKey,
+    };
+    if (request.slippageBps === 0 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(request.size)) {
+      throw new Error("Devnet entry order limits are invalid.");
+    }
+    const created = await this.#postJson("/internal/terminal/orders", request, signal);
+    if (!created.ok) throw await serviceFailure(created, "Devnet entry order");
+    const value = await created.json() as unknown;
+    if (!isRecord(value) || value.status !== "UNSIGNED_CREATED" || !isRecord(value.order) ||
+        value.traderAuthorization !== "REQUIRED" || value.order.contextId !== request.contextId) {
+      throw new Error("Devnet entry order response is invalid.");
+    }
+    const orderHashHex = await this.#authorizeAndSelectSolanaDevnetOrder(
+      value.order, input.owner, idempotencyKey, signMessage, "Entry", signal,
+    );
+    return Object.freeze({ orderHashHex });
+  }
+
+  /**
    * Firm Devnet exit: the service builds the canonical EXIT order for the wallet's open package from
    * the live oracle, the wallet signs the order bytes, the solver quotes its firm buy-back bid, and
    * the quote is selected. The returned size is the open package size the prepare step must use with
@@ -3628,7 +3664,25 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     signal?: AbortSignal,
   ): Promise<Readonly<{ orderHashHex: string; quantityAtoms: string }>> {
     const idempotencyKey = requireObservationIdempotencyKey(input.idempotencyKey);
-    const post = (path: string, body: unknown) => fetch(`${this.#baseUrl}${path}`, {
+    const created = await this.#postJson("/internal/terminal/solana-devnet/exit-order", {
+      owner: input.owner,
+      slippageBps: input.slippageBps,
+      idempotencyKey,
+    }, signal);
+    if (!created.ok) throw await serviceFailure(created, "Devnet exit order");
+    const value = await created.json() as unknown;
+    if (!isRecord(value) || value.status !== "UNSIGNED_CREATED" || !isRecord(value.order) ||
+        typeof value.quantityAtoms !== "string" || !/^[1-9][0-9]{0,30}$/.test(value.quantityAtoms)) {
+      throw new Error("Devnet exit order response is invalid.");
+    }
+    const orderHashHex = await this.#authorizeAndSelectSolanaDevnetOrder(
+      value.order, input.owner, idempotencyKey, signMessage, "Exit", signal,
+    );
+    return Object.freeze({ orderHashHex, quantityAtoms: value.quantityAtoms });
+  }
+
+  #postJson(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+    return fetch(`${this.#baseUrl}${path}`, {
       method: "POST",
       cache: "no-store",
       credentials: "omit",
@@ -3637,36 +3691,37 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       body: JSON.stringify(body),
       signal,
     });
-    const created = await post("/internal/terminal/solana-devnet/exit-order", {
-      owner: input.owner,
-      slippageBps: input.slippageBps,
-      idempotencyKey,
-    });
-    if (!created.ok) throw await serviceFailure(created, "Devnet exit order");
-    const value = await created.json() as unknown;
-    if (!isRecord(value) || value.status !== "UNSIGNED_CREATED" || !isRecord(value.order) ||
-        typeof value.quantityAtoms !== "string" || !/^[1-9][0-9]{0,30}$/.test(value.quantityAtoms)) {
-      throw new Error("Devnet exit order response is invalid.");
-    }
-    const order = value.order;
-    if (order.idempotencyKey !== idempotencyKey || order.owner !== input.owner || order.settlementAccount !== input.owner ||
+  }
+
+  /** Wallet signs the exact canonical order bytes, then authorize, solver quote, and selection. */
+  async #authorizeAndSelectSolanaDevnetOrder(
+    order: Record<string, unknown>,
+    owner: string,
+    idempotencyKey: string,
+    signMessage: (message: Uint8Array) => Promise<string>,
+    label: "Entry" | "Exit",
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (order.idempotencyKey !== idempotencyKey || order.owner !== owner || order.settlementAccount !== owner ||
         order.domainId !== "svm:devnet" || order.status !== "UNSIGNED_CREATED") {
-      throw new Error("Devnet exit order does not match the request.");
+      throw new Error(`Devnet ${label.toLowerCase()} order does not match the request.`);
     }
-    const orderHashHex = requireHex32(order.orderHashHex, "Exit order hash");
-    const orderBytes = decodeCanonicalBase64(order.orderBase64, "Exit order bytes");
-    if (orderBytes.length === 0) throw new Error("Exit order bytes are empty.");
-    const signature = requireCanonicalBase58Signature(await signMessage(orderBytes), "Exit authorization signature");
-    const authorized = await post(`/internal/terminal/orders/${orderHashHex}/authorize`, { signature });
-    if (!authorized.ok) throw await serviceFailure(authorized, "Exit order authorization");
-    const quoted = await post(`/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: crypto.randomUUID() });
-    if (!quoted.ok) throw await serviceFailure(quoted, "Exit solver quote");
+    const orderHashHex = requireHex32(order.orderHashHex, `${label} order hash`);
+    const orderBytes = decodeCanonicalBase64(order.orderBase64, `${label} order bytes`);
+    if (orderBytes.length === 0) throw new Error(`${label} order bytes are empty.`);
+    const signature = requireCanonicalBase58Signature(await signMessage(orderBytes), `${label} authorization signature`);
+    const authorized = await this.#postJson(`/internal/terminal/orders/${orderHashHex}/authorize`, { signature }, signal);
+    if (!authorized.ok) throw await serviceFailure(authorized, `${label} order authorization`);
+    const quoted = await this.#postJson(
+      `/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: crypto.randomUUID() }, signal,
+    );
+    if (!quoted.ok) throw await serviceFailure(quoted, `${label} solver quote`);
     const quote = await quoted.json() as unknown;
-    if (!isRecord(quote) || quote.orderHash !== orderHashHex) throw new Error("Exit solver quote does not match the order.");
-    const quoteHash = requireHex32(quote.quoteHash, "Exit quote hash");
-    const selected = await post(`/internal/terminal/orders/${orderHashHex}/select`, { quoteHash });
-    if (!selected.ok) throw await serviceFailure(selected, "Exit quote selection");
-    return Object.freeze({ orderHashHex, quantityAtoms: value.quantityAtoms });
+    if (!isRecord(quote) || quote.orderHash !== orderHashHex) throw new Error(`${label} solver quote does not match the order.`);
+    const quoteHash = requireHex32(quote.quoteHash, `${label} quote hash`);
+    const selected = await this.#postJson(`/internal/terminal/orders/${orderHashHex}/select`, { quoteHash }, signal);
+    if (!selected.ok) throw await serviceFailure(selected, `${label} quote selection`);
+    return orderHashHex;
   }
 
   async prepareSolanaExecution(
