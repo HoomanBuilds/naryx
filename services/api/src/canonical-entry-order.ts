@@ -62,6 +62,7 @@ export interface ActiveOrderContext {
   readonly requiredSettlementAccount?: string;
   readonly hyperliquidQuantityPolicy?: Exclude<QuantityPolicyClass, "EXACT_ATOMIC">;
   readonly hyperliquidMaxNetSpotShortfallAtoms?: bigint;
+  readonly hyperliquidMaxNetSpotShortfallBps?: number;
   readonly hyperliquidMaxNetSpotExcessAtoms?: bigint;
   readonly hyperliquidMaxTerminalResidualBaseQuantityAtoms?: bigint;
   readonly hyperliquidMaxTerminalResidualQuoteValueAtoms?: bigint;
@@ -368,7 +369,16 @@ export function createCanonicalEntryOrder(
   );
   const nonce = hashToNonce(requestCommitment);
   const hyperliquid = context.settlementClass === "BATCHED_IOC_WITH_RECOVERY";
-  const maxNetSpotShortfall = context.hyperliquidMaxNetSpotShortfallAtoms ?? 0n;
+  // HyperCore charges the spot taker fee in the received base asset, so the shortfall allowance scales
+  // with size (rounded up) plus an absolute allowance for lot rounding.
+  const shortfallBps = context.hyperliquidMaxNetSpotShortfallBps ?? 0;
+  const absoluteShortfall = context.hyperliquidMaxNetSpotShortfallAtoms ?? 0n;
+  if (!Number.isSafeInteger(shortfallBps) || shortfallBps < 0 || shortfallBps > 10_000
+      || typeof absoluteShortfall !== "bigint" || absoluteShortfall < 0n) {
+    throw new EntryOrderValidationError("INVALID_CONTEXT", "Hyperliquid net spot shortfall bound is invalid.");
+  }
+  const maxNetSpotShortfall = (parsed.sizeAtoms * BigInt(shortfallBps) + BPS_SCALE - 1n) / BPS_SCALE
+    + absoluteShortfall;
   if (maxNetSpotShortfall > parsed.sizeAtoms) {
     throw new EntryOrderValidationError(
       "INVALID_CONTEXT",

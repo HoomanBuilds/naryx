@@ -2,7 +2,6 @@ import {
   adapterRef,
   assetRef,
   domainRef,
-  exactPrice,
   exactSignedRate,
   feeCap,
   fromProtocolJson,
@@ -11,7 +10,6 @@ import {
   stringifyProtocolJson,
   toHex,
   type DomainRef,
-  type ExactPrice,
   type ExactSignedRate,
   type FeeCap,
   type AssetRef,
@@ -142,20 +140,14 @@ export type HyperliquidTestnetOrderContextConfig = Readonly<{
   recoveryActionExpiryTtlMs: bigint;
   recoveryDeadlineTtlMs: bigint;
   minRecoveryWindowMs: bigint;
-  spotReferencePrice: ExactPrice;
+  livePricing: HyperliquidTestnetLivePricingConfig;
   maxEntrySpread: ExactSignedRate;
-  minPerpSellPrice: ExactPrice;
-  maxRecoverySpotBuyPrice: ExactPrice;
-  minRecoverySpotSellPrice: ExactPrice;
-  minRecoveryPerpSellPrice: ExactPrice;
-  maxRecoveryPerpBuyPrice: ExactPrice;
   maximumQuantityAtoms: bigint;
   maxSlippageBps: number;
   maxNetSpotShortfallAtoms: bigint;
   maxNetSpotExcessAtoms: bigint;
   maxTerminalResidualBaseQuantityAtoms: bigint;
   maxTerminalResidualQuoteValueAtoms: bigint;
-  residualValuationReferencePrice: ExactPrice;
   maxVenueFeeAtomsByAsset: readonly FeeCap[];
   maxMarginAddedAtoms: bigint;
   maxProtocolFeeAtoms: bigint;
@@ -166,6 +158,15 @@ export type HyperliquidTestnetOrderContextConfig = Readonly<{
   maxResidualBaseQuantityAtoms: bigint;
   maxRecoveryCostAtomsByAsset: readonly FeeCap[];
   maxAggregateRecoveryLossQuoteAtoms: bigint;
+}>;
+
+// Order prices come from the live Testnet books; these bound how fresh and how wide they may be.
+export type HyperliquidTestnetLivePricingConfig = Readonly<{
+  refreshIntervalMs: number;
+  maxBookAgeMs: number;
+  maxBookSpreadBps: number;
+  recoveryBandBps: number;
+  feeShortfallSlackBps: number;
 }>;
 
 export class HyperliquidTestnetRuntimeClientError extends Error {
@@ -319,18 +320,16 @@ function exactObject(value: unknown, keys: readonly string[], name: string): Rec
 
 function orderContext(value: unknown): HyperliquidTestnetOrderContextConfig {
   const keys = [
-    "baseAsset", "contextId", "expiryTtlMs", "maxAggregateRecoveryLossQuoteAtoms",
+    "baseAsset", "contextId", "expiryTtlMs", "livePricing", "maxAggregateRecoveryLossQuoteAtoms",
     "maxEntrySpread", "maxMarginAddedAtoms", "maxNetSpotExcessAtoms",
     "maxPriorityFeeAtoms", "maxProtocolFeeAtoms", "maxRecoveryCostAtomsByAsset",
-    "maxRecoveryPerpBuyPrice", "maxRecoverySpotBuyPrice", "maxResidualBaseQuantityAtoms",
-    "maxSlippageBps", "maxSolverFeeAtoms", "maxStalenessMs",
+    "maxResidualBaseQuantityAtoms", "maxSlippageBps", "maxSolverFeeAtoms", "maxStalenessMs",
     "maxTerminalResidualBaseQuantityAtoms", "maxTerminalResidualQuoteValueAtoms",
     "maxVenueFeeAtomsByAsset", "maximumQuantityAtoms", "maxNetSpotShortfallAtoms",
-    "minPerpSellPrice", "minRecoveryPerpSellPrice", "minRecoverySpotSellPrice",
     "minRecoveryWindowMs", "minVenueReserveReturnedAtoms", "minWalletQuoteBalanceDeltaAtoms",
     "orderVersion", "packageTemplateManifestHash", "perpetualAdapter", "quoteAsset",
-    "recoveryActionExpiryTtlMs", "recoveryDeadlineTtlMs", "residualValuationReferencePrice",
-    "spotAdapter", "spotReferencePrice", "templateId", "templateVersion", "tradingAccount",
+    "recoveryActionExpiryTtlMs", "recoveryDeadlineTtlMs",
+    "spotAdapter", "templateId", "templateVersion", "tradingAccount",
   ];
   const raw = exactObject(value, keys, "orderContext");
   const bounded = (candidate: unknown, name: string): string => {
@@ -361,19 +360,23 @@ function orderContext(value: unknown): HyperliquidTestnetOrderContextConfig {
       fail("INVALID_CONFIGURATION", `${name} is invalid`);
     }
   };
-  const price = (candidate: unknown, name: string): ExactPrice => {
-    const entry = exactObject(
-      candidate,
-      ["baseAsset", "baseAtoms", "quoteAsset", "quoteAtoms", "roundingDirection"],
-      name,
-    );
-    try {
-      return exactPrice({
-        ...entry,
-        baseAsset: asset(entry.baseAsset, `${name}.baseAsset`),
-        quoteAsset: asset(entry.quoteAsset, `${name}.quoteAsset`),
-      } as never, name);
-    } catch { fail("INVALID_CONFIGURATION", `${name} is invalid`); }
+  const boundedInteger = (candidate: unknown, name: string, minimum: number, maximum: number): number => {
+    const checked = requireNonNegativeInteger(candidate, name);
+    if (checked < minimum || checked > maximum) fail("INVALID_CONFIGURATION", `${name} is out of range`);
+    return checked;
+  };
+  const livePricing = (candidate: unknown): HyperliquidTestnetLivePricingConfig => {
+    const entry = exactObject(candidate, [
+      "feeShortfallSlackBps", "maxBookAgeMs", "maxBookSpreadBps", "recoveryBandBps", "refreshIntervalMs",
+    ], "orderContext.livePricing");
+    return Object.freeze({
+      // Each refresh costs 24 info weight (two books and user fees) of the 1200 per minute budget.
+      refreshIntervalMs: boundedInteger(entry.refreshIntervalMs, "orderContext.livePricing.refreshIntervalMs", 2_000, 60_000),
+      maxBookAgeMs: boundedInteger(entry.maxBookAgeMs, "orderContext.livePricing.maxBookAgeMs", 1, 60_000),
+      maxBookSpreadBps: boundedInteger(entry.maxBookSpreadBps, "orderContext.livePricing.maxBookSpreadBps", 1, 1_000),
+      recoveryBandBps: boundedInteger(entry.recoveryBandBps, "orderContext.livePricing.recoveryBandBps", 1, 5_000),
+      feeShortfallSlackBps: boundedInteger(entry.feeShortfallSlackBps, "orderContext.livePricing.feeShortfallSlackBps", 0, 100),
+    });
   };
   const rate = (candidate: unknown, name: string): ExactSignedRate => {
     const entry = exactObject(
@@ -420,20 +423,14 @@ function orderContext(value: unknown): HyperliquidTestnetOrderContextConfig {
     recoveryActionExpiryTtlMs: atom(raw.recoveryActionExpiryTtlMs, "orderContext.recoveryActionExpiryTtlMs", true),
     recoveryDeadlineTtlMs: atom(raw.recoveryDeadlineTtlMs, "orderContext.recoveryDeadlineTtlMs", true),
     minRecoveryWindowMs: atom(raw.minRecoveryWindowMs, "orderContext.minRecoveryWindowMs", true),
-    spotReferencePrice: price(raw.spotReferencePrice, "orderContext.spotReferencePrice"),
+    livePricing: livePricing(raw.livePricing),
     maxEntrySpread: rate(raw.maxEntrySpread, "orderContext.maxEntrySpread"),
-    minPerpSellPrice: price(raw.minPerpSellPrice, "orderContext.minPerpSellPrice"),
-    maxRecoverySpotBuyPrice: price(raw.maxRecoverySpotBuyPrice, "orderContext.maxRecoverySpotBuyPrice"),
-    minRecoverySpotSellPrice: price(raw.minRecoverySpotSellPrice, "orderContext.minRecoverySpotSellPrice"),
-    minRecoveryPerpSellPrice: price(raw.minRecoveryPerpSellPrice, "orderContext.minRecoveryPerpSellPrice"),
-    maxRecoveryPerpBuyPrice: price(raw.maxRecoveryPerpBuyPrice, "orderContext.maxRecoveryPerpBuyPrice"),
     maximumQuantityAtoms: atom(raw.maximumQuantityAtoms, "orderContext.maximumQuantityAtoms", true),
     maxSlippageBps: requirePositiveInteger(raw.maxSlippageBps, "orderContext.maxSlippageBps"),
     maxNetSpotShortfallAtoms: atom(raw.maxNetSpotShortfallAtoms, "orderContext.maxNetSpotShortfallAtoms"),
     maxNetSpotExcessAtoms: atom(raw.maxNetSpotExcessAtoms, "orderContext.maxNetSpotExcessAtoms"),
     maxTerminalResidualBaseQuantityAtoms: atom(raw.maxTerminalResidualBaseQuantityAtoms, "orderContext.maxTerminalResidualBaseQuantityAtoms"),
     maxTerminalResidualQuoteValueAtoms: atom(raw.maxTerminalResidualQuoteValueAtoms, "orderContext.maxTerminalResidualQuoteValueAtoms"),
-    residualValuationReferencePrice: price(raw.residualValuationReferencePrice, "orderContext.residualValuationReferencePrice"),
     maxVenueFeeAtomsByAsset: fees(raw.maxVenueFeeAtomsByAsset, "orderContext.maxVenueFeeAtomsByAsset"),
     maxMarginAddedAtoms: atom(raw.maxMarginAddedAtoms, "orderContext.maxMarginAddedAtoms"),
     maxProtocolFeeAtoms: atom(raw.maxProtocolFeeAtoms, "orderContext.maxProtocolFeeAtoms"),
@@ -445,7 +442,11 @@ function orderContext(value: unknown): HyperliquidTestnetOrderContextConfig {
     maxRecoveryCostAtomsByAsset: fees(raw.maxRecoveryCostAtomsByAsset, "orderContext.maxRecoveryCostAtomsByAsset"),
     maxAggregateRecoveryLossQuoteAtoms: atom(raw.maxAggregateRecoveryLossQuoteAtoms, "orderContext.maxAggregateRecoveryLossQuoteAtoms"),
   });
-  if (context.maxSlippageBps > 10_000
+  // A full slippage budget would zero the perpetual sell floor, and a staleness bound at or below
+  // the refresh interval would reject orders between refreshes.
+  if (context.maxSlippageBps >= 10_000
+      || context.maxStalenessMs <= BigInt(context.livePricing.refreshIntervalMs)
+      || context.maxStalenessMs > 120_000n
       || !/^0x[0-9a-f]{40}$/.test(context.tradingAccount)
       || context.recoveryActionExpiryTtlMs >= context.recoveryDeadlineTtlMs
       || context.expiryTtlMs + context.minRecoveryWindowMs > context.recoveryDeadlineTtlMs

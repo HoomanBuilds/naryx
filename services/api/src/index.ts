@@ -102,9 +102,26 @@ export {
 } from "./local-atomic-order-context.js";
 export {
   createHyperliquidTestnetOrderRuntime,
+  deriveHyperliquidTestnetLivePrices,
+  type HyperliquidTestnetLivePrices,
   type HyperliquidTestnetOrderRuntime,
   type HyperliquidTestnetTerminalContext,
 } from "./hyperliquid-testnet-order-context.js";
+export {
+  HYPERLIQUID_TESTNET_INFO_URL,
+  HyperliquidTestnetPriceFeed,
+  HyperliquidTestnetPriceFeedError,
+  createFetchHyperliquidTestnetInfoPort,
+  parseHyperliquidDecimal,
+  type HyperliquidDecimal,
+  type HyperliquidTestnetBookTop,
+  type HyperliquidTestnetInfoHttpOptions,
+  type HyperliquidTestnetInfoPort,
+  type HyperliquidTestnetInfoRequest,
+  type HyperliquidTestnetPriceFeedOptions,
+  type HyperliquidTestnetPriceSnapshot,
+  type HyperliquidTestnetPriceSource,
+} from "./hyperliquid-testnet-price-feed.js";
 export {
   executionSelectionKind,
   ExecutionIntentStoreError,
@@ -182,6 +199,7 @@ export {
   type HyperliquidTestnetPreparationPort,
   type HyperliquidTestnetRuntimeConfig,
   type HyperliquidTestnetOrderContextConfig,
+  type HyperliquidTestnetLivePricingConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 export {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,

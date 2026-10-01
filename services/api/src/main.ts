@@ -51,6 +51,7 @@ import {
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import { createHyperliquidTestnetOrderRuntime } from "./hyperliquid-testnet-order-context.js";
+import { HyperliquidTestnetPriceFeed } from "./hyperliquid-testnet-price-feed.js";
 import {
   DurableHyperliquidTestnetTerminalExecutionPort,
   HttpHyperliquidTestnetAttemptExecutor,
@@ -224,9 +225,14 @@ if (hyperliquidRuntimeEnabled) {
   }
 }
 let hyperliquidOrderRuntime: ReturnType<typeof createHyperliquidTestnetOrderRuntime> | undefined;
+let hyperliquidPriceFeed: HyperliquidTestnetPriceFeed | undefined;
 if (hyperliquidConfig !== undefined) {
   try {
-    hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig);
+    const priceFeed = new HyperliquidTestnetPriceFeed(hyperliquidConfig);
+    hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed);
+    hyperliquidPriceFeed = priceFeed;
+    // Not awaited: until a valid snapshot arrives the order context reports itself unknown.
+    void priceFeed.start();
   } catch (error) {
     hyperliquidConfigError = error;
     reportRuntimeFailure("hyperliquidTestnetOrderContext", error);
@@ -396,6 +402,7 @@ if (publicServer !== undefined && publicMarket?.listener !== undefined) {
 }
 
 function shutdown(): void {
+  hyperliquidPriceFeed?.stop();
   publicServer?.close();
   server.close(() => {
     orderStore.close();
