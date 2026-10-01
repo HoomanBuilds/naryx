@@ -1,0 +1,444 @@
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import {
+  CHAINLINK_AGGREGATOR_ABI,
+  ERC20_ABI,
+  NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+  NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+  NARYX_TEST_PERP_MARKET_ABI,
+  UNISWAP_V3_POOL_ABI,
+  equalAddress,
+  requiredEvmAddress,
+} from "@naryx/adapter-evm";
+import {
+  bytesEqual,
+  domainRefFromManifest,
+  exactPrice,
+  parseProtocolJson,
+  type AdapterRef,
+  type AssetRef,
+  type ExactPrice,
+  type ExactSignedRate,
+  type FeeCap,
+} from "@naryx/protocol-types";
+import { encodeFunctionData, keccak256, stringToHex, type Address, type Hex } from "viem";
+import {
+  resolveBaseSepoliaStrategyAccount,
+  validateBaseSepoliaAtomicDeploymentConfiguration,
+  type BaseSepoliaAtomicDeploymentConfiguration,
+  type BaseSepoliaAtomicLiveReads,
+} from "./base-sepolia-atomic-context-provider.js";
+import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import type { InternalOrderStore } from "./internal-order-store.js";
+import {
+  BASE_SEPOLIA_CHAIN_REFERENCE,
+  BASE_SEPOLIA_DOMAIN_ID,
+  EvmTestnetTerminalValidationError,
+  type EvmTestnetAccountPort,
+} from "./evm-testnet-runtime-ports.js";
+import type { InternalOrderClockPort } from "./terminal-orders.js";
+
+const CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/;
+const Q192 = 1n << 192n;
+const FEE_SCALE = 1_000_000n;
+
+/** Reviewed order limits for Base Sepolia. Prices are never configured; they are read live. */
+export interface BaseSepoliaOrderContextConfig {
+  readonly schemaVersion: 1;
+  readonly contextId: string;
+  readonly orderVersion: number;
+  readonly templateId: string;
+  readonly templateVersion: number;
+  readonly packageTemplateManifestHash: Uint8Array;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly spotAdapter: AdapterRef;
+  readonly perpetualAdapter: AdapterRef;
+  readonly maxStalenessSeconds: bigint;
+  readonly pollIntervalMs: number;
+  readonly expiryTtlSeconds: bigint;
+  readonly maxEntrySpread: ExactSignedRate;
+  readonly maximumQuantityAtoms: bigint;
+  readonly maxSlippageBps: number;
+  readonly maxVenueFeeAtomsByAsset: readonly FeeCap[];
+  readonly maxMarginAddedAtoms: bigint;
+  readonly maxProtocolFeeAtoms: bigint;
+  readonly maxSolverFeeAtoms: bigint;
+  readonly maxPriorityFeeAtoms: bigint;
+  /** Upper bound, in quote atoms, on one wallet funding transaction the terminal may propose. */
+  readonly maxAccountFundingAtoms: bigint;
+}
+
+/** Signerless reads. Chain identity always comes from eth_chainId, never from the RPC URL. */
+export interface BaseSepoliaOrderReadPort extends BaseSepoliaAtomicLiveReads {
+  chainId(): Promise<bigint>;
+  latestBlockTimestamp(): Promise<bigint>;
+}
+
+/** One observation of the Uniswap pool, the market's Chainlink feed, and the market's fee terms. */
+export type BaseSepoliaMarketSnapshot = Readonly<{
+  observedAt: bigint;
+  observedAtMs: number;
+  oracleAnswer: bigint;
+  oracleDecimals: number;
+  oracleUpdatedAt: bigint;
+  sqrtPriceX96: bigint;
+  baseIsToken0: boolean;
+  poolFee: bigint;
+  takerFeeBps: bigint;
+  halfSpreadBps: bigint;
+}>;
+
+export type BaseSepoliaOrderRuntime = Readonly<{
+  contexts: ActiveOrderContextProvider;
+  clock: InternalOrderClockPort;
+  feed: BaseSepoliaMarketFeed;
+  account: EvmTestnetAccountPort;
+  config: BaseSepoliaOrderContextConfig;
+}>;
+
+function nonnegative(value: unknown, name: string): bigint {
+  if (typeof value !== "bigint" || value < 0n) throw new Error(`Base order context ${name} must be nonnegative.`);
+  return value;
+}
+
+function positive(value: unknown, name: string): bigint {
+  if (nonnegative(value, name) === 0n) throw new Error(`Base order context ${name} must be positive.`);
+  return value as bigint;
+}
+
+function sameAsset(left: AssetRef, right: Readonly<{ subjectId: string; decimals: number; manifestHash: Uint8Array }>): boolean {
+  return left.assetId === right.subjectId && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.manifestHash);
+}
+
+function sameAdapter(left: AdapterRef, right: Readonly<{ subjectId: string; manifestVersion: number; manifestHash: Uint8Array }>): boolean {
+  return left.adapterId === right.subjectId && left.adapterManifestVersion === right.manifestVersion
+    && bytesEqual(left.adapterManifestHash, right.manifestHash);
+}
+
+function validateConfig(config: BaseSepoliaOrderContextConfig, deployment?: BaseSepoliaAtomicDeploymentConfiguration): void {
+  if (config?.schemaVersion !== 1 || typeof config.contextId !== "string" || !CONTEXT_ID.test(config.contextId)
+    || !Number.isSafeInteger(config.pollIntervalMs) || config.pollIntervalMs < 1_000
+    || !Number.isSafeInteger(config.maxSlippageBps) || config.maxSlippageBps < 1 || config.maxSlippageBps > 10_000
+    || !Array.isArray(config.maxVenueFeeAtomsByAsset) || config.maxVenueFeeAtomsByAsset.length === 0) {
+    throw new Error("Base Sepolia order context configuration is invalid.");
+  }
+  positive(config.maxStalenessSeconds, "maxStalenessSeconds");
+  positive(config.expiryTtlSeconds, "expiryTtlSeconds");
+  positive(config.maximumQuantityAtoms, "maximumQuantityAtoms");
+  positive(config.maxMarginAddedAtoms, "maxMarginAddedAtoms");
+  positive(config.maxAccountFundingAtoms, "maxAccountFundingAtoms");
+  nonnegative(config.maxProtocolFeeAtoms, "maxProtocolFeeAtoms");
+  nonnegative(config.maxSolverFeeAtoms, "maxSolverFeeAtoms");
+  nonnegative(config.maxPriorityFeeAtoms, "maxPriorityFeeAtoms");
+  if (deployment === undefined) return;
+  const identity = deployment.deployment;
+  if (!sameAsset(config.baseAsset, identity.baseAsset) || !sameAsset(config.quoteAsset, identity.quoteAsset)
+    || !sameAdapter(config.spotAdapter, identity.spot.adapter)
+    || !sameAdapter(config.perpetualAdapter, identity.perpetual.adapter)) {
+    throw new Error("Base Sepolia order context assets or adapters do not match the deployment.");
+  }
+}
+
+export function loadBaseSepoliaOrderContextConfig(path: string): BaseSepoliaOrderContextConfig {
+  if (!isAbsolute(path)) throw new Error("NARYX_BASE_SEPOLIA_ORDER_CONTEXT must be an absolute path.");
+  const config = parseProtocolJson(readFileSync(resolve(path), "utf8"), "baseSepoliaOrderContext");
+  validateConfig(config as BaseSepoliaOrderContextConfig);
+  return config as BaseSepoliaOrderContextConfig;
+}
+
+function gcd(left: bigint, right: bigint): bigint {
+  let a = left;
+  let b = right;
+  while (b !== 0n) [a, b] = [b, a % b];
+  return a;
+}
+
+/**
+ * The Uniswap V3 pool's executable ask in quote atoms per base atom: the slot0 mid plus the pool fee,
+ * rounded up. Exact-output buys pay the fee on the quote input, so the fee scales the price.
+ */
+export function baseSepoliaSpotAsk(
+  baseAsset: AssetRef,
+  quoteAsset: AssetRef,
+  snapshot: Pick<BaseSepoliaMarketSnapshot, "sqrtPriceX96" | "baseIsToken0" | "poolFee">,
+): ExactPrice {
+  const squared = snapshot.sqrtPriceX96 * snapshot.sqrtPriceX96;
+  if (squared <= 0n) throw new Error("Uniswap pool price must be positive.");
+  const quoteAtoms = (snapshot.baseIsToken0 ? squared : Q192) * (FEE_SCALE + snapshot.poolFee);
+  const baseAtoms = (snapshot.baseIsToken0 ? Q192 : squared) * FEE_SCALE;
+  const divisor = gcd(quoteAtoms, baseAtoms);
+  return exactPrice({
+    baseAsset,
+    quoteAsset,
+    quoteAtoms: quoteAtoms / divisor,
+    baseAtoms: baseAtoms / divisor,
+    roundingDirection: "CEIL",
+  });
+}
+
+export class BaseSepoliaMarketFeed {
+  readonly #config: BaseSepoliaOrderContextConfig;
+  readonly #deployment: BaseSepoliaAtomicDeploymentConfiguration;
+  readonly #port: BaseSepoliaOrderReadPort;
+  readonly #currentTimeMs: () => number;
+  #latest: BaseSepoliaMarketSnapshot | undefined;
+  #timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(
+    config: BaseSepoliaOrderContextConfig,
+    deployment: BaseSepoliaAtomicDeploymentConfiguration,
+    port: BaseSepoliaOrderReadPort,
+    currentTimeMs: () => number = Date.now,
+  ) {
+    validateConfig(config, deployment);
+    this.#config = config;
+    this.#deployment = deployment;
+    this.#port = port;
+    this.#currentTimeMs = currentTimeMs;
+  }
+
+  latest(): BaseSepoliaMarketSnapshot | undefined {
+    return this.#latest;
+  }
+
+  /** Any failed, stale, or inconsistent read clears the snapshot, so the context reports unknown. */
+  async refresh(): Promise<BaseSepoliaMarketSnapshot> {
+    try {
+      if (await this.#port.chainId() !== BigInt(BASE_SEPOLIA_CHAIN_REFERENCE)) {
+        throw new Error("Base Sepolia RPC eth_chainId is not 84532.");
+      }
+      const deployment = this.#deployment.deployment;
+      const market = requiredEvmAddress(deployment.perpetual.market.address, "perpetual.market");
+      const pool = requiredEvmAddress(deployment.spot.market.address, "spot.market");
+      const baseToken = requiredEvmAddress(deployment.baseAsset.address, "baseAsset");
+      const read = (address: Address, abi: typeof NARYX_TEST_PERP_MARKET_ABI | typeof UNISWAP_V3_POOL_ABI
+        | typeof CHAINLINK_AGGREGATOR_ABI, functionName: string) =>
+        this.#port.readContract({ address, abi, functionName });
+      const [oracle, takerFeeBps, halfSpreadBps, maxOracleAgeSeconds, slot0, token0, poolFee, observedAt] =
+        await Promise.all([
+          read(market, NARYX_TEST_PERP_MARKET_ABI, "oracle"),
+          read(market, NARYX_TEST_PERP_MARKET_ABI, "takerFeeBps"),
+          read(market, NARYX_TEST_PERP_MARKET_ABI, "halfSpreadBps"),
+          read(market, NARYX_TEST_PERP_MARKET_ABI, "maxOracleAgeSeconds"),
+          read(pool, UNISWAP_V3_POOL_ABI, "slot0"),
+          read(pool, UNISWAP_V3_POOL_ABI, "token0"),
+          read(pool, UNISWAP_V3_POOL_ABI, "fee"),
+          this.#port.latestBlockTimestamp(),
+        ]);
+      const feed = requiredEvmAddress(String(oracle), "market.oracle");
+      const [decimals, round] = await Promise.all([
+        read(feed, CHAINLINK_AGGREGATOR_ABI, "decimals"),
+        read(feed, CHAINLINK_AGGREGATOR_ABI, "latestRoundData"),
+      ]);
+      const [roundId, answer, , updatedAt, answeredInRound] = round as readonly bigint[];
+      const maxAge = BigInt(Number(maxOracleAgeSeconds));
+      const oracleDecimals = Number(decimals);
+      if (typeof answer !== "bigint" || answer <= 0n || typeof updatedAt !== "bigint" || updatedAt <= 0n
+        || updatedAt > observedAt || typeof roundId !== "bigint" || typeof answeredInRound !== "bigint"
+        || answeredInRound < roundId || observedAt - updatedAt > maxAge
+        || !Number.isSafeInteger(oracleDecimals) || oracleDecimals < 0 || oracleDecimals > 18) {
+        throw new Error("Base Sepolia Chainlink price is invalid, incomplete, or older than the market allows.");
+      }
+      const sqrtPriceX96 = (slot0 as readonly unknown[])[0];
+      if (typeof sqrtPriceX96 !== "bigint" || sqrtPriceX96 <= 0n) throw new Error("Uniswap pool price is invalid.");
+      this.#latest = Object.freeze({
+        observedAt,
+        observedAtMs: this.#currentTimeMs(),
+        oracleAnswer: answer,
+        oracleDecimals,
+        oracleUpdatedAt: updatedAt,
+        sqrtPriceX96,
+        baseIsToken0: equalAddress(requiredEvmAddress(String(token0), "pool.token0"), baseToken),
+        poolFee: BigInt(Number(poolFee)),
+        takerFeeBps: BigInt(Number(takerFeeBps)),
+        halfSpreadBps: BigInt(Number(halfSpreadBps)),
+      });
+      return this.#latest;
+    } catch (error) {
+      this.#latest = undefined;
+      throw error;
+    }
+  }
+
+  start(): void {
+    if (this.#timer !== undefined) return;
+    this.#timer = setInterval(() => { void this.refresh().catch(() => undefined); }, this.#config.pollIntervalMs);
+    this.#timer.unref();
+  }
+
+  stop(): void {
+    if (this.#timer !== undefined) clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+}
+
+function setupStep(kind: string, label: string, to: Address, data: Hex) {
+  return Object.freeze({ kind, label, to, data, value: "0" as const });
+}
+
+function formatAtoms(atoms: bigint, decimals: number): string {
+  const scale = 10n ** BigInt(decimals);
+  const fraction = (atoms % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return fraction.length === 0 ? (atoms / scale).toString() : `${atoms / scale}.${fraction}`;
+}
+
+/**
+ * Builds the Base Sepolia entry context. Any wallet may trade through its own factory account; the
+ * settlement account is enforced against `accountOf(owner)` by the solver and the attempt context.
+ */
+export async function createBaseSepoliaOrderRuntime(input: Readonly<{
+  config: BaseSepoliaOrderContextConfig;
+  deployment: BaseSepoliaAtomicDeploymentConfiguration;
+  port: BaseSepoliaOrderReadPort;
+  orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
+}>): Promise<BaseSepoliaOrderRuntime> {
+  const { config, deployment, port, orders } = input;
+  validateBaseSepoliaAtomicDeploymentConfiguration(deployment);
+  validateConfig(config, deployment);
+  const identity = deployment.deployment;
+  const feed = new BaseSepoliaMarketFeed(config, deployment, port);
+  await feed.refresh();
+  const domain = domainRefFromManifest(identity.domainManifest);
+  let cached: Readonly<{ snapshot: BaseSepoliaMarketSnapshot; context: ActiveOrderContext }> | undefined;
+  const contexts: ActiveOrderContextProvider = (contextId) => {
+    if (contextId !== config.contextId) return undefined;
+    const snapshot = feed.latest();
+    if (snapshot === undefined) return undefined;
+    if (cached?.snapshot === snapshot) return cached.context;
+    const context: ActiveOrderContext = Object.freeze({
+      contextId: config.contextId,
+      state: "ACTIVE",
+      // Chain time of the observation, so order creation enforces staleness against chain time.
+      capturedAtClock: snapshot.observedAt,
+      maxStaleness: config.maxStalenessSeconds,
+      domain,
+      environment: "testnet",
+      orderVersion: config.orderVersion,
+      templateId: config.templateId,
+      templateVersion: config.templateVersion,
+      packageTemplateManifestHash: config.packageTemplateManifestHash,
+      baseAsset: config.baseAsset,
+      quoteAsset: config.quoteAsset,
+      spotAdapters: [config.spotAdapter],
+      perpAdapters: [config.perpetualAdapter],
+      settlementClass: "ATOMIC_POSTCONDITION",
+      expiryUnit: "EVM_UNIX_SECONDS",
+      expiryTtl: config.expiryTtlSeconds,
+      spotReferencePrice: baseSepoliaSpotAsk(config.baseAsset, config.quoteAsset, snapshot),
+      maxEntrySpread: config.maxEntrySpread,
+      maximumQuantityAtoms: config.maximumQuantityAtoms,
+      maxSlippageBps: config.maxSlippageBps,
+      maxVenueFeeAtomsByAsset: config.maxVenueFeeAtomsByAsset,
+      maxMarginAddedAtoms: config.maxMarginAddedAtoms,
+      maxProtocolFeeAtoms: config.maxProtocolFeeAtoms,
+      maxSolverFeeAtoms: config.maxSolverFeeAtoms,
+      maxPriorityFeeAtoms: config.maxPriorityFeeAtoms,
+      minVenueReserveReturnedAtoms: 0n,
+      minWalletQuoteBalanceDeltaAtoms: 0n,
+      maxResidualBaseQuantityAtoms: 0n,
+    });
+    cached = Object.freeze({ snapshot, context });
+    return context;
+  };
+  const requireChain = async () => {
+    if (await port.chainId() !== BigInt(BASE_SEPOLIA_CHAIN_REFERENCE)) {
+      throw new Error("Base Sepolia RPC eth_chainId is not 84532.");
+    }
+  };
+  const clock: InternalOrderClockPort = Object.freeze({
+    currentClock: async (context: ActiveOrderContext) => {
+      if (context.contextId !== config.contextId) throw new Error("Base Sepolia order context is unknown.");
+      await requireChain();
+      return port.latestBlockTimestamp();
+    },
+  });
+  const factory = requiredEvmAddress(identity.strategyAccountFactory.address, "strategyAccountFactory");
+  const market = requiredEvmAddress(identity.perpetual.market.address, "perpetual.market");
+  const quoteToken = requiredEvmAddress(identity.quoteAsset.address, "quoteAsset");
+  const venueSubjectId = keccak256(stringToHex(identity.perpetual.venue.subjectId));
+  const decimals = config.quoteAsset.decimals;
+  const account: EvmTestnetAccountPort = Object.freeze({
+    status: async (request: Parameters<EvmTestnetAccountPort["status"]>[0]) => {
+      const { marginAtoms } = request;
+      await requireChain();
+      const resolved = await resolveBaseSepoliaStrategyAccount(port, identity, request.owner);
+      let spotQuoteAtoms = 0n;
+      if (request.orderHash !== undefined) {
+        const order = orders.getCanonicalOrderByHash(request.orderHash);
+        if (order === undefined || order.domain.domainId !== BASE_SEPOLIA_DOMAIN_ID
+          || !equalAddress(requiredEvmAddress(order.owner, "order.owner"), resolved.owner)) {
+          throw new EvmTestnetTerminalValidationError("ORDER_NOT_FOUND", "Base Sepolia order was not found for this owner.");
+        }
+        spotQuoteAtoms = order.maxSpotQuoteIn?.atoms ?? 0n;
+      }
+      if (spotQuoteAtoms > config.maxAccountFundingAtoms
+        || typeof marginAtoms !== "bigint" || marginAtoms < 0n || marginAtoms > config.maxMarginAddedAtoms) {
+        throw new EvmTestnetTerminalValidationError(
+          "FUNDING_OUT_OF_BOUNDS",
+          "Requested account funding is outside the reviewed testnet limits.",
+        );
+      }
+      const balanceOf = (holder: Address) => port.readContract({
+        address: quoteToken, abi: ERC20_ABI, functionName: "balanceOf", args: [holder],
+      }) as Promise<bigint>;
+      const [walletQuoteAtoms, accountQuoteAtoms, reserveAtoms] = await Promise.all([
+        balanceOf(resolved.owner),
+        resolved.deployed ? balanceOf(resolved.account) : Promise.resolve(0n),
+        resolved.deployed
+          ? port.readContract({
+            address: market, abi: NARYX_TEST_PERP_MARKET_ABI, functionName: "reserveOf", args: [resolved.account],
+          }) as Promise<bigint>
+          : Promise.resolve(0n),
+      ]);
+      const marginShortfall = marginAtoms > reserveAtoms ? marginAtoms - reserveAtoms : 0n;
+      const accountNeeds = spotQuoteAtoms + marginShortfall;
+      const fundShortfall = accountNeeds > accountQuoteAtoms ? accountNeeds - accountQuoteAtoms : 0n;
+      const steps = [];
+      if (!resolved.deployed) {
+        steps.push(setupStep("CREATE_ACCOUNT", "Create strategy account", factory, encodeFunctionData({
+          abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI, functionName: "create", args: [resolved.owner],
+        })));
+      }
+      if (fundShortfall > 0n) {
+        steps.push(setupStep(
+          "FUND_ACCOUNT",
+          `Move ${formatAtoms(fundShortfall, decimals)} USDC to strategy account`,
+          quoteToken,
+          encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [resolved.account, fundShortfall] }),
+        ));
+      }
+      if (marginShortfall > 0n) {
+        steps.push(setupStep(
+          "DEPOSIT_MARGIN",
+          `Deposit ${formatAtoms(marginShortfall, decimals)} USDC perp margin`,
+          resolved.account,
+          encodeFunctionData({
+            abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+            functionName: "depositPerpMargin",
+            args: [venueSubjectId, marginShortfall],
+          }),
+        ));
+      }
+      return Object.freeze({
+        domainId: BASE_SEPOLIA_DOMAIN_ID,
+        chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
+        environment: "TESTNET",
+        contextId: config.contextId,
+        owner: resolved.owner,
+        account: resolved.account,
+        deployed: resolved.deployed,
+        quoteDecimals: decimals,
+        walletQuoteAtoms: walletQuoteAtoms.toString(),
+        accountQuoteAtoms: accountQuoteAtoms.toString(),
+        reserveAtoms: reserveAtoms.toString(),
+        requiredSpotQuoteAtoms: spotQuoteAtoms.toString(),
+        requiredMarginAtoms: marginAtoms.toString(),
+        fundingCovered: fundShortfall <= walletQuoteAtoms,
+        steps: Object.freeze(steps),
+      });
+    },
+  });
+  return Object.freeze({ contexts, clock, feed, account, config });
+}

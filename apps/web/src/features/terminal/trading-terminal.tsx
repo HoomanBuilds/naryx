@@ -11,6 +11,12 @@ import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { TerminalMarketUnavailableError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
+  BaseAccountStatus,
+  BaseAtomicObservation,
+  BaseAtomicPreparation,
+  BaseOrderRecord,
+  BaseSelectedAttempt,
+  BaseSolverQuote,
   HyperliquidOrderCreateResponse,
   HyperliquidSelectedAttempt,
   HyperliquidSolverQuote,
@@ -122,6 +128,47 @@ type HyperliquidFlowState = {
   busy: string | null;
   error: string | null;
 };
+
+type BaseFlowState = {
+  ticketKey: string;
+  /** The connected wallet the factory account belongs to; a different wallet starts over. */
+  owner: string;
+  account: BaseAccountStatus | null;
+  order: BaseOrderRecord | null;
+  quote: BaseSolverQuote | null;
+  attempt: BaseSelectedAttempt | null;
+  /** One key binds the authorization, the prepared call, and its observation. */
+  idempotencyKey: string;
+  preparation: BaseAtomicPreparation | null;
+  transactionHash: string | null;
+  observation: BaseAtomicObservation | null;
+  /** A wallet setup transaction sent and not yet reflected in the account status. */
+  pendingSetup: Readonly<{ kind: string; hash: string; sentAt: number }> | null;
+  busy: string | null;
+  error: string | null;
+};
+
+type BaseStep = "setup" | "create" | "quote" | "select" | "execute";
+
+const BASE_SETUP_TIMEOUT_MS = 180_000;
+
+function isBaseObservationTerminal(observation: BaseAtomicObservation | null): boolean {
+  return observation?.lifecycle === "FINALIZED" || observation?.lifecycle === "REVERTED" ||
+    observation?.lifecycle === "EVIDENCE_MISMATCH";
+}
+
+function quoteMarginAtoms(quote: BaseSolverQuote | null): string | undefined {
+  const margin = quote?.quote.expectedMarginDelta as Record<string, unknown> | undefined;
+  const atoms = protocolScalar(margin?.atoms);
+  return /^(0|[1-9][0-9]*)$/.test(atoms) ? atoms : undefined;
+}
+
+function quoteAtomsText(atoms: string, decimals: number): string {
+  if (!/^(0|[1-9][0-9]*)$/.test(atoms)) return "-";
+  const padded = atoms.padStart(decimals + 1, "0");
+  const fraction = padded.slice(-decimals).replace(/0+$/, "");
+  return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""} USDC`;
+}
 
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
@@ -605,8 +652,65 @@ function ExecutionReviewPanel({
   );
 }
 
+/** The owner's factory account, the signed quote, and the single atomic transaction it settles in. */
+function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
+  const account = flow?.account ?? null;
+  const quote = flow?.quote ?? null;
+  const observation = flow?.observation ?? null;
+  const decimals = account?.quoteDecimals ?? 6;
+  return (
+    <section className={styles.executionReview} aria-labelledby="base-execution-title">
+      <div className={styles.evidenceHeading}>
+        <h3 id="base-execution-title">Base Sepolia package</h3>
+        <span>{observation?.lifecycle ?? (flow?.transactionHash ? "SUBMITTED" : flow?.attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : flow?.order ? "ORDER CREATED" : account ? "ACCOUNT READY" : "LOADING")}</span>
+      </div>
+      <p className={styles.reviewNotice}>
+        Testnet only. Your wallet signs every step: account setup transactions, the package permit, and the one transaction that settles both legs or neither.
+      </p>
+      {account ? (
+        <div className={styles.reviewGrid}>
+          <span>Strategy account</span><strong title={account.account}>{compact(account.account, 10, 8)}{account.deployed ? "" : " (not created)"}</strong>
+          <span>Owner</span><strong title={account.owner}>{compact(account.owner, 10, 8)}</strong>
+          <span>Wallet USDC</span><strong>{quoteAtomsText(account.walletQuoteAtoms, decimals)}</strong>
+          <span>Account USDC</span><strong>{quoteAtomsText(account.accountQuoteAtoms, decimals)}</strong>
+          <span>Perp margin reserve</span><strong>{quoteAtomsText(account.reserveAtoms, decimals)}</strong>
+          {flow?.order ? <><span>Spot quote cap</span><strong>{quoteAtomsText(account.requiredSpotQuoteAtoms, decimals)}</strong></> : null}
+          {quote ? <><span>Quoted margin</span><strong>{quoteAtomsText(account.requiredMarginAtoms, decimals)}</strong></> : null}
+          {account.steps.length > 0 ? <><span>Setup needed</span><strong>{account.steps.map((step) => step.label).join("; ")}</strong></> : null}
+        </div>
+      ) : null}
+      {flow?.order ? (
+        <div className={styles.reviewGrid}>
+          <span>Order hash</span><strong title={flow.order.orderHashHex}>{compact(flow.order.orderHashHex, 12, 10)}</strong>
+          <span>Settlement account</span><strong title={flow.order.settlementAccount}>{compact(flow.order.settlementAccount, 10, 8)}</strong>
+        </div>
+      ) : null}
+      {quote ? <QuoteTerms quote={quote} /> : null}
+      {quote ? <QuoteFees quote={quote} /> : null}
+      {flow?.attempt ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Selected attempt</span>
+          <strong title={flow.attempt.attemptId}>{compact(flow.attempt.attemptId, 20, 12)}</strong>
+        </div>
+      ) : null}
+      {flow?.transactionHash ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>Package transaction</span>
+          <strong title={flow.transactionHash}>{compact(flow.transactionHash, 14, 12)}</strong>
+          <small>
+            {observation
+              ? `${observation.lifecycle.replace(/_/g, " ").toLowerCase()}${observation.blockNumber ? ` at block ${observation.blockNumber}` : ""}; evidence ${observation.evidenceGrade}.${observation.reason ? ` ${observation.reason}` : ""}`
+              : "Waiting for the first observation."}
+          </small>
+          {observation?.receiptHash ? <small title={observation.receiptHash}>Receipt: {compact(observation.receiptHash, 14, 12)}</small> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export type PrimaryAction = Readonly<{
-  kind: "connect" | "switch" | "prepare" | "sign" | "hyperliquid" | "none";
+  kind: "connect" | "switch" | "prepare" | "sign" | "hyperliquid" | "base" | "none";
   label: string;
   reason: string;
   disabled: boolean;
@@ -626,6 +730,7 @@ function Ticket({
   conformanceMode,
   localCanSignMessage,
   hyperliquidFlow,
+  baseFlow,
   executionReview,
   submission,
   confirming,
@@ -655,6 +760,7 @@ function Ticket({
   conformanceMode: boolean;
   localCanSignMessage: boolean;
   hyperliquidFlow: HyperliquidFlowState | null;
+  baseFlow: BaseFlowState | null;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
   confirming: boolean;
@@ -890,6 +996,14 @@ function Ticket({
             baseSymbol={snapshot.market.base}
             slippage={slippage}
           />
+        </details>
+      ) : selectedDomain === "base" && baseFlow ? (
+        <details className={styles.flowDetails} open={baseFlow.quote !== null}>
+          <summary>
+            <span>Testnet package review</span>
+            <span className={styles.chipNeutral}>{baseFlow.observation?.lifecycle ?? (baseFlow.attempt ? "SELECTED" : baseFlow.quote ? "QUOTE" : baseFlow.order ? "ORDER" : "ACCOUNT")}</span>
+          </summary>
+          <BaseSepoliaPanel flow={baseFlow} />
         </details>
       ) : selectedDomain === "solana" && conformanceMode ? (
         <details className={styles.flowDetails}>
@@ -1127,6 +1241,7 @@ export function TradingTerminal({
   const walletModal = useWalletModal();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
   const [hyperliquidFlow, setHyperliquidFlow] = useState<HyperliquidFlowState | null>(null);
+  const [baseFlow, setBaseFlow] = useState<BaseFlowState | null>(null);
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
   const [submission, setSubmission] = useState<SubmissionState | null>(null);
   const [lifecycleView, setLifecycleView] = useState<LifecycleViewState | null>(null);
@@ -1165,6 +1280,9 @@ export function TradingTerminal({
   const currentLocalFlow = localFlow?.ticketKey === ticketKey ? localFlow : null;
   const currentHyperliquidFlow = hyperliquidFlow?.ticketKey === ticketKey
     ? hyperliquidFlow
+    : null;
+  const currentBaseFlow = baseFlow?.ticketKey === ticketKey && baseFlow.owner === evmWallet.account
+    ? baseFlow
     : null;
   const currentLifecycle = lifecycleView?.ticketKey === ticketKey &&
     lifecycleView.attemptId === currentExecutionReview?.preparation.lifecycleAttemptId
@@ -1372,6 +1490,21 @@ export function TradingTerminal({
     preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
   const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
+  const baseFlowEnabled = selectedDomain === "base" && mode === "entry" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    runtimeHealth?.baseTestnetAtomic.available === true && executionGateUp &&
+    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
+  const baseOwner = baseFlowEnabled && evmTarget === "base" && evmOnTarget ? evmWallet.account : null;
+  const baseSetupSteps = currentBaseFlow?.account?.steps ?? [];
+  const nextBaseStep: BaseStep | null = !currentBaseFlow?.account || currentBaseFlow.pendingSetup ||
+      currentBaseFlow.transactionHash
+    ? null
+    : baseSetupSteps.some((step) => step.kind === "CREATE_ACCOUNT") ? "setup"
+    : !currentBaseFlow.order ? "create"
+    : !currentBaseFlow.quote ? "quote"
+    : baseSetupSteps.length > 0 ? "setup"
+    : !currentBaseFlow.attempt ? "select"
+    : "execute";
   const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
     ? null
     : !currentHyperliquidFlow.order ? "create"
@@ -1392,9 +1525,45 @@ export function TradingTerminal({
       if (!evmOnTarget) {
         return { kind: "switch", label: `Switch to ${EVM_CHAINS[evmTarget].name}`, reason: "Your wallet is on a different network.", disabled: evmWallet.switching };
       }
+      if (evmTarget === "base" && baseFlowEnabled) {
+        const flow = currentBaseFlow;
+        if (!flow?.account) {
+          return none("Loading strategy account", flow?.error ?? "Reading your Base Sepolia strategy account from chain.");
+        }
+        if (flow.pendingSetup) {
+          return none("Confirming setup", `Waiting for the ${flow.pendingSetup.kind.replace(/_/g, " ").toLowerCase()} transaction to land on Base Sepolia.`);
+        }
+        if (flow.transactionHash) {
+          const lifecycle = flow.observation?.lifecycle;
+          if (lifecycle === "FINALIZED") return none("Package finalized", "Both legs settled in one finalized Base Sepolia transaction. The receipt is in the package review.");
+          if (lifecycle === "REVERTED") return none("Transaction reverted", flow.observation?.reason ?? "The package transaction reverted, so neither leg settled.");
+          if (lifecycle === "EVIDENCE_MISMATCH") return none("Evidence mismatch", flow.observation?.reason ?? "The observed receipt does not match the signed package.");
+          return none(lifecycle === "CONFIRMED" ? "Confirmed, awaiting finality" : "Transaction submitted", flow.error ?? "Observing the package transaction on Base Sepolia.");
+        }
+        const reason = flow.error;
+        const setup = flow.account.steps[0];
+        if (nextBaseStep === "setup" && setup) {
+          if (setup.kind === "FUND_ACCOUNT" && !flow.account.fundingCovered) {
+            return none("Insufficient testnet USDC", "Your wallet does not hold enough Base Sepolia USDC to fund the strategy account for this package.");
+          }
+          return { kind: "base", label: setup.label, reason: reason ?? "A testnet wallet transaction that sets up your own strategy account. Nothing trades yet.", disabled: false };
+        }
+        if (nextBaseStep === "create") return { kind: "base", label: "Create order", reason: reason ?? "Creates the canonical package order for your strategy account.", disabled: false };
+        if (nextBaseStep === "quote") return { kind: "base", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote priced from the live pool and oracle.", disabled: false };
+        if (nextBaseStep === "select") return { kind: "base", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the package review before accepting.", disabled: false };
+        if (nextBaseStep === "execute") return { kind: "base", label: "Sign and submit", reason: reason ?? "Your wallet signs the package permit, then submits the one transaction that settles both legs or neither.", disabled: false };
+      }
       return none(
         `${EVM_CHAINS[evmTarget].name} not open`,
-        "Package contracts are not deployed on this testnet yet. The package, quotes, and fees shown are a preview.",
+        evmTarget === "base" && runtimeHealth?.baseTestnetAtomic.available === true
+          ? !executionGateUp
+            ? "The service's execution safety gate is not configured, so no testnet package can run."
+            : mode !== "entry"
+              ? "Exit runs from an open package."
+              : quoteMode !== "coordinated_limits"
+                ? "Testnet execution uses coordinated limits."
+                : "A current service preview is required."
+          : "Package contracts are not deployed on this testnet yet. The package, quotes, and fees shown are a preview.",
       );
     }
     if (selectedDomain === "hyperliquid") {
@@ -1488,6 +1657,8 @@ export function TradingTerminal({
     }
     return { kind: "sign", label: "Sign and submit", reason: "Your wallet shows the exact reviewed Devnet transaction before signing.", disabled: false };
   }, [
+    baseFlowEnabled,
+    currentBaseFlow,
     currentExecutionReview,
     currentHyperliquidFlow,
     currentSubmission,
@@ -1498,6 +1669,7 @@ export function TradingTerminal({
     executionGateUp,
     hyperliquidFlowEnabled,
     mode,
+    nextBaseStep,
     nextHyperliquidStep,
     preview,
     privateProvider,
@@ -1840,6 +2012,181 @@ export function TradingTerminal({
     }
   }
 
+  const baseFlowMissing = currentBaseFlow === null;
+  useEffect(() => {
+    if (!privateProvider || !baseOwner || !baseFlowMissing) return;
+    const controller = new AbortController();
+    const owner = baseOwner;
+    const ticket = ticketKey;
+    const fresh = (account: BaseAccountStatus | null, error: string | null): BaseFlowState => ({
+      ticketKey: ticket,
+      owner,
+      account,
+      order: null,
+      quote: null,
+      attempt: null,
+      idempotencyKey: crypto.randomUUID(),
+      preparation: null,
+      transactionHash: null,
+      observation: null,
+      pendingSetup: null,
+      busy: null,
+      error,
+    });
+    privateProvider.getBaseAccountStatus(owner, {}, controller.signal)
+      .then((account) => { if (!controller.signal.aborted) setBaseFlow(fresh(account, null)); })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        setBaseFlow(fresh(null, cause instanceof Error ? cause.message : "Strategy account read failed."));
+      });
+    return () => controller.abort();
+  }, [baseFlowMissing, baseOwner, privateProvider, ticketKey]);
+
+  const basePending = currentBaseFlow?.pendingSetup ?? null;
+  const basePollOwner = currentBaseFlow?.owner ?? null;
+  const basePollOrderHash = currentBaseFlow?.order?.orderHashHex;
+  const basePollMargin = quoteMarginAtoms(currentBaseFlow?.quote ?? null);
+  useEffect(() => {
+    if (!privateProvider || !basePending || !basePollOwner) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void privateProvider.getBaseAccountStatus(basePollOwner, {
+        orderHash: basePollOrderHash,
+        marginAtoms: basePollMargin,
+      }).then((account) => {
+        if (!active) return;
+        setBaseFlow((current) => {
+          if (!current || current.pendingSetup !== basePending) return current;
+          const landed = !account.steps.some((step) => step.kind === basePending.kind);
+          const timedOut = Date.now() - basePending.sentAt > BASE_SETUP_TIMEOUT_MS;
+          if (!landed && !timedOut) return { ...current, account };
+          return {
+            ...current,
+            account,
+            pendingSetup: null,
+            error: landed ? null : "The setup transaction has not landed yet. Check it in your wallet, then retry.",
+          };
+        });
+      }).catch(() => undefined);
+    }, OBSERVATION_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [basePending, basePollMargin, basePollOrderHash, basePollOwner, privateProvider]);
+
+  const baseObservedHash = currentBaseFlow?.transactionHash ?? null;
+  const baseObservationDone = isBaseObservationTerminal(currentBaseFlow?.observation ?? null);
+  const baseAttemptId = currentBaseFlow?.attempt?.attemptId ?? null;
+  const baseIdempotencyKey = currentBaseFlow?.idempotencyKey ?? null;
+  useEffect(() => {
+    if (!privateProvider || !baseObservedHash || baseObservationDone || !baseAttemptId || !baseIdempotencyKey) return;
+    const controller = new AbortController();
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const observation = await privateProvider.observeBaseAtomicExecution({
+          attemptId: baseAttemptId,
+          idempotencyKey: baseIdempotencyKey,
+          transactionHash: baseObservedHash,
+        }, controller.signal);
+        if (controller.signal.aborted) return;
+        setBaseFlow((previous) => previous?.transactionHash === baseObservedHash
+          ? { ...previous, observation, error: null }
+          : previous);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setBaseFlow((previous) => previous?.transactionHash === baseObservedHash
+          ? { ...previous, error: cause instanceof Error ? cause.message : "Observation is temporarily unavailable." }
+          : previous);
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), OBSERVATION_POLL_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [baseAttemptId, baseIdempotencyKey, baseObservationDone, baseObservedHash, privateProvider]);
+
+  async function handleBaseStep(step: BaseStep) {
+    if (!privateProvider || !currentBaseFlow?.account || evmTarget !== "base") return;
+    const base = currentBaseFlow;
+    const account = currentBaseFlow.account;
+    setBaseFlow({ ...base, busy: step, error: null });
+    const readAccount = (flow: BaseFlowState) => privateProvider.getBaseAccountStatus(flow.owner, {
+      orderHash: flow.order?.orderHashHex,
+      marginAtoms: quoteMarginAtoms(flow.quote),
+    });
+    try {
+      if (step === "setup") {
+        const setup = account.steps[0];
+        if (!setup) throw new Error("The strategy account needs no setup.");
+        const hash = await evmWallet.sendTransaction("base", { to: setup.to, data: setup.data, value: "0" });
+        setBaseFlow({ ...base, pendingSetup: { kind: setup.kind, hash, sentAt: Date.now() }, busy: null, error: null });
+        return;
+      }
+      if (step === "create") {
+        const order = await privateProvider.createBaseOrder(account, {
+          size,
+          slippageBps: slippage,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        setBaseFlow({ ...base, order, busy: null, error: null });
+        return;
+      }
+      if (!base.order) throw new Error("Create the package order first.");
+      if (step === "quote") {
+        const quote = await privateProvider.requestBaseQuote(base.order, crypto.randomUUID());
+        const next = { ...base, quote };
+        setBaseFlow({ ...next, account: await readAccount(next), busy: null, error: null });
+        return;
+      }
+      if (!base.quote) throw new Error("Request and review a signed quote first.");
+      if (step === "select") {
+        const attempt = await privateProvider.selectBaseQuote(base.quote);
+        setBaseFlow({ ...base, attempt, busy: null, error: null });
+        recordAttempt({ attemptId: attempt.attemptId, domain: "base", mode, size, flow: "base", createdAt: Date.now() });
+        return;
+      }
+      if (!base.attempt) throw new Error("Accept the reviewed quote first.");
+      const identity = { attemptId: base.attempt.attemptId, idempotencyKey: base.idempotencyKey };
+      let preparation = base.preparation;
+      if (!preparation) {
+        const authorization = await privateProvider.prepareBaseAtomicAuthorization(identity);
+        const typed = authorization.typedData;
+        // viem expects numeric EIP-712 values; the service sends them as decimal strings.
+        const traderSignature = await evmWallet.signTypedData("base", {
+          ...typed,
+          domain: { ...typed.domain, chainId: Number(typed.domain.chainId) },
+          message: { ...typed.message, nonce: BigInt(typed.message.nonce), deadline: BigInt(typed.message.deadline) },
+        });
+        preparation = await privateProvider.prepareBaseAtomicExecution({ ...identity, traderSignature });
+        setBaseFlow({ ...base, preparation, busy: step, error: null });
+      }
+      const transactionHash = await evmWallet.sendTransaction("base", {
+        to: preparation.to,
+        data: preparation.data,
+        value: "0",
+      });
+      setBaseFlow({ ...base, preparation, transactionHash, busy: null, error: null });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Base Sepolia action failed.";
+      // An expired quote cannot be re-selected for the same order: start a fresh order instead.
+      const restart = step === "execute" && /expired|admission/i.test(message);
+      setBaseFlow((previous) => ({
+        ...(previous ?? base),
+        ...(restart ? { order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID() } : {}),
+        busy: null,
+        error: restart ? `${message} Create a fresh order to re-quote.` : message,
+      }));
+    }
+  }
+
   const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
   const ticketAccount = selectedDomain === "solana"
@@ -1853,6 +2200,7 @@ export function TradingTerminal({
     else if (primaryAction.kind === "prepare") void handlePrepareExecution();
     else if (primaryAction.kind === "sign") void handleExecutionAction();
     else if (primaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
+    else if (primaryAction.kind === "base" && nextBaseStep) void handleBaseStep(nextBaseStep);
   }
 
   function jumpToTicket(nextMode: PackageMode) {
@@ -1897,11 +2245,12 @@ export function TradingTerminal({
             conformanceMode={conformanceMode}
             localCanSignMessage={wallet.canSignMessage}
             hyperliquidFlow={currentHyperliquidFlow}
+            baseFlow={currentBaseFlow}
             executionReview={currentExecutionReview}
             submission={currentSubmission}
             confirming={confirmingInWallet}
             action={{ ...primaryAction, reason: actionReason }}
-            actionBusy={executionBusy || currentHyperliquidFlow?.busy != null}
+            actionBusy={executionBusy || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}

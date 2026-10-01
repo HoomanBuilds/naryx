@@ -486,6 +486,177 @@ export type HyperliquidTerminalExecutionResult = Readonly<{
   rawEvidenceCommitments?: readonly string[];
 }>;
 
+export type BaseAccountSetupStep = Readonly<{
+  kind: "CREATE_ACCOUNT" | "FUND_ACCOUNT" | "DEPOSIT_MARGIN";
+  label: string;
+  to: string;
+  data: string;
+  value: "0";
+}>;
+
+/** The owner's Base Sepolia factory account and the wallet transactions it still needs. */
+export type BaseAccountStatus = Readonly<{
+  contextId: string;
+  owner: string;
+  account: string;
+  deployed: boolean;
+  quoteDecimals: number;
+  walletQuoteAtoms: string;
+  accountQuoteAtoms: string;
+  reserveAtoms: string;
+  requiredSpotQuoteAtoms: string;
+  requiredMarginAtoms: string;
+  fundingCovered: boolean;
+  steps: readonly BaseAccountSetupStep[];
+}>;
+
+export type BaseOrderRecord = Readonly<{
+  orderHashHex: string;
+  contextId: string;
+  owner: string;
+  settlementAccount: string;
+  domainManifestVersion: number;
+  domainManifestHashHex: string;
+}>;
+
+export type BaseSolverQuote = LocalSolverQuote;
+
+export type BaseSelectedAttempt = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  routeHash: string;
+  quoteHash: string;
+  status: "BASE_ATOMIC_QUOTE_SELECTED";
+  selectedAtMs: number;
+}>;
+
+const BASE_ATTEMPT_ID_PATTERN = /^base-atomic-[0-9a-f]{52}$/;
+const BASE_SETUP_KINDS = new Set(["CREATE_ACCOUNT", "FUND_ACCOUNT", "DEPOSIT_MARGIN"]);
+
+/** The service's own refusal reason when it sent one, so the ticket can say what to fix. */
+async function serviceFailure(response: Response, label: string): Promise<Error> {
+  try {
+    const body = await response.json() as unknown;
+    if (isRecord(body) && isRecord(body.error) && typeof body.error.message === "string" &&
+        body.error.message.length > 0 && body.error.message.length <= 300) {
+      return new Error(body.error.message);
+    }
+  } catch {
+    // Fall through to the status code.
+  }
+  return new Error(`${label} failed with ${response.status}.`);
+}
+
+function requireBaseAccountStatus(value: unknown, owner: string): BaseAccountStatus {
+  if (!isRecord(value)) throw new Error("Base account status is invalid.");
+  requireExactKeys(value, [
+    "account", "accountQuoteAtoms", "chainReference", "contextId", "deployed", "domainId",
+    "environment", "fundingCovered", "owner", "quoteDecimals", "requiredMarginAtoms",
+    "requiredSpotQuoteAtoms", "reserveAtoms", "steps", "walletQuoteAtoms",
+  ], "Base account status");
+  if (value.domainId !== BASE_SEPOLIA_DOMAIN_ID || value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE ||
+      value.environment !== "TESTNET" || typeof value.deployed !== "boolean" ||
+      typeof value.fundingCovered !== "boolean" || !Array.isArray(value.steps) ||
+      requireEvmAddress(value.owner, "Base account owner").toLowerCase() !== owner.toLowerCase()) {
+    throw new Error("Base account status binding is invalid.");
+  }
+  const steps = value.steps.map((step) => {
+    if (!isRecord(step)) throw new Error("Base account setup step is invalid.");
+    requireExactKeys(step, ["data", "kind", "label", "to", "value"], "Base account setup step");
+    if (!BASE_SETUP_KINDS.has(step.kind as string) || step.value !== "0" ||
+        typeof step.data !== "string" || !/^0x(?:[0-9a-f]{2})+$/.test(step.data)) {
+      throw new Error("Base account setup step is invalid.");
+    }
+    return Object.freeze({
+      kind: step.kind as BaseAccountSetupStep["kind"],
+      label: requireString(step.label, "Base setup step label"),
+      to: requireEvmAddress(step.to, "Base setup step target"),
+      data: step.data,
+      value: "0" as const,
+    });
+  });
+  return Object.freeze({
+    contextId: requireProtocolId(value.contextId, "Base context id"),
+    owner: value.owner as string,
+    account: requireEvmAddress(value.account, "Base strategy account"),
+    deployed: value.deployed,
+    quoteDecimals: requireInteger(value.quoteDecimals, "Base quote decimals", 36),
+    walletQuoteAtoms: requireEvmDecimal(value.walletQuoteAtoms, "Base wallet balance"),
+    accountQuoteAtoms: requireEvmDecimal(value.accountQuoteAtoms, "Base account balance"),
+    reserveAtoms: requireEvmDecimal(value.reserveAtoms, "Base margin reserve"),
+    requiredSpotQuoteAtoms: requireEvmDecimal(value.requiredSpotQuoteAtoms, "Base spot requirement"),
+    requiredMarginAtoms: requireEvmDecimal(value.requiredMarginAtoms, "Base margin requirement"),
+    fundingCovered: value.fundingCovered,
+    steps: Object.freeze(steps),
+  });
+}
+
+function requireBaseOrderCreateResponse(
+  value: unknown,
+  expected: Readonly<{ contextId: string; owner: string; settlementAccount: string; idempotencyKey: string }>,
+): BaseOrderRecord {
+  if (!isRecord(value) || !isRecord(value.order) || value.status !== "UNSIGNED_CREATED" ||
+      value.traderAuthorization !== "REQUIRED" || value.solverQuoting !== "REQUIRED") {
+    throw new Error("Base canonical order response is invalid.");
+  }
+  const order = value.order;
+  const domainManifestVersion = requireInteger(order.domainManifestVersion, "Base order domain manifest version");
+  if (order.idempotencyKey !== expected.idempotencyKey || order.contextId !== expected.contextId ||
+      order.domainId !== BASE_SEPOLIA_DOMAIN_ID || domainManifestVersion === 0 ||
+      order.owner !== expected.owner || order.settlementAccount !== expected.settlementAccount ||
+      order.status !== "UNSIGNED_CREATED") {
+    throw new Error("Base canonical order does not match the requested owner account.");
+  }
+  return Object.freeze({
+    orderHashHex: requireHex32(order.orderHashHex, "Base order hash"),
+    contextId: expected.contextId,
+    owner: expected.owner,
+    settlementAccount: expected.settlementAccount,
+    domainManifestVersion,
+    domainManifestHashHex: requireHex32(order.domainManifestHashHex, "Base order domain manifest hash"),
+  });
+}
+
+function requireBaseSolverQuote(
+  value: unknown,
+  order: BaseOrderRecord,
+  idempotencyKey: string,
+): BaseSolverQuote {
+  const quote = requireSolverQuote(value, order.orderHashHex, idempotencyKey, "testnet", "ATOMIC_POSTCONDITION");
+  if (quote.route.routeExpiryUnit !== "EVM_UNIX_SECONDS" || quote.quote.validUntilUnit !== "EVM_UNIX_SECONDS" ||
+      quote.route.executionPlanKind !== "EVM_ATOMIC_BATCH" ||
+      quote.route.settlementAccount !== order.settlementAccount || quote.route.owner !== order.owner) {
+    throw new Error("Base quote is not bound to the owner's strategy account.");
+  }
+  return quote;
+}
+
+function requireBaseSelectedAttempt(value: unknown, quote: BaseSolverQuote): BaseSelectedAttempt {
+  if (!isRecord(value) || value.status !== "BASE_ATOMIC_QUOTE_SELECTED" || !isRecord(value.attempt)) {
+    throw new Error("Base quote selection response is invalid.");
+  }
+  requireExactKeys(value.attempt, [
+    "attemptId", "domainId", "domainManifestHash", "domainManifestVersion", "orderHash",
+    "quoteHash", "routeHash", "selectedAtMs", "status",
+  ], "Base selected attempt");
+  const attempt = value.attempt;
+  const selectedAtMs = requireInteger(attempt.selectedAtMs, "Base selection time");
+  if (attempt.orderHash !== quote.orderHash || attempt.routeHash !== quote.routeHash ||
+      attempt.quoteHash !== quote.quoteHash || attempt.status !== "BASE_ATOMIC_QUOTE_SELECTED" ||
+      attempt.domainId !== BASE_SEPOLIA_DOMAIN_ID || selectedAtMs === 0 ||
+      typeof attempt.attemptId !== "string" || !BASE_ATTEMPT_ID_PATTERN.test(attempt.attemptId)) {
+    throw new Error("Base selected attempt binding is invalid.");
+  }
+  return Object.freeze({
+    attemptId: attempt.attemptId,
+    orderHash: quote.orderHash,
+    routeHash: quote.routeHash,
+    quoteHash: quote.quoteHash,
+    status: "BASE_ATOMIC_QUOTE_SELECTED",
+    selectedAtMs,
+  });
+}
+
 const PACKAGE_LIFECYCLE_STATES = new Set<PackageLifecycleState>([
   "PACKAGE_CREATED",
   "ENTRY_PREPARED",
@@ -704,7 +875,8 @@ function requireStringArray(value: unknown, name: string): readonly string[] {
 
 function requireLifecycleAttemptId(value: unknown): string {
   if (typeof value !== "string" ||
-      (!LIFECYCLE_ATTEMPT_ID_PATTERN.test(value) && !LOCAL_ATTEMPT_ID_PATTERN.test(value))) {
+      (!LIFECYCLE_ATTEMPT_ID_PATTERN.test(value) && !LOCAL_ATTEMPT_ID_PATTERN.test(value) &&
+        !BASE_ATTEMPT_ID_PATTERN.test(value))) {
     throw new Error("Lifecycle attempt id is invalid.");
   }
   return value;
@@ -2529,7 +2701,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         signal,
       },
     );
-    if (!response.ok) throw new Error(`Base authorization preparation failed with ${response.status}.`);
+    if (!response.ok) throw await serviceFailure(response, "Base authorization preparation");
     return requireBaseAuthorization(await response.json() as unknown, request);
   }
 
@@ -2551,7 +2723,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       body: JSON.stringify(request),
       signal,
     });
-    if (!response.ok) throw new Error(`Base atomic preparation failed with ${response.status}.`);
+    if (!response.ok) throw await serviceFailure(response, "Base atomic preparation");
     return requireBasePreparation(await response.json() as unknown, request);
   }
 
@@ -2736,6 +2908,87 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     );
     if (!response.ok) throw new Error(`Hyperliquid Testnet execution failed with ${response.status}.`);
     return requireHyperliquidExecutionResult(await response.json() as unknown, attempt, key);
+  }
+
+  async getBaseAccountStatus(
+    owner: string,
+    input: Readonly<{ orderHash?: string; marginAtoms?: string }> = {},
+    signal?: AbortSignal,
+  ): Promise<BaseAccountStatus> {
+    const query = new URLSearchParams({ owner: requireEvmAddress(owner, "Base owner") });
+    if (input.orderHash !== undefined) query.set("orderHash", requireHex32(input.orderHash, "Base order hash"));
+    if (input.marginAtoms !== undefined) query.set("marginAtoms", requireEvmDecimal(input.marginAtoms, "Base margin"));
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/base-sepolia/account?${query.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Base account status");
+    return requireBaseAccountStatus(await response.json() as unknown, owner);
+  }
+
+  async createBaseOrder(
+    account: BaseAccountStatus,
+    input: Readonly<{ size: string; slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<BaseOrderRecord> {
+    const request = {
+      contextId: account.contextId,
+      owner: account.owner,
+      settlementAccount: account.account,
+      size: requireString(input.size, "Base order size"),
+      slippageBps: requireInteger(input.slippageBps, "Base order slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    if (request.slippageBps === 0 || !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(request.size)) {
+      throw new Error("Base order limits are invalid.");
+    }
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Base order creation");
+    return requireBaseOrderCreateResponse(await response.json() as unknown, request);
+  }
+
+  async requestBaseQuote(
+    order: BaseOrderRecord,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<BaseSolverQuote> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders/${order.orderHashHex}/quote`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: key }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Base quote request");
+    return requireBaseSolverQuote(await response.json() as unknown, order, key);
+  }
+
+  async selectBaseQuote(quote: BaseSolverQuote, signal?: AbortSignal): Promise<BaseSelectedAttempt> {
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/orders/${quote.orderHash}/select`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quoteHash: quote.quoteHash }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Base quote selection");
+    return requireBaseSelectedAttempt(await response.json() as unknown, quote);
   }
 
   async createLocalOrder(

@@ -53,6 +53,7 @@ const strategyAccount = address(1);
 const spotPort = address(2);
 const perpInstrument = address(3);
 const perpObserver = address(4);
+const accountFactory = address(14);
 const baseToken = address(5);
 const quoteToken = address(6);
 const packageVerifier = address(7);
@@ -258,7 +259,8 @@ function deployment(domainManifest: DomainManifest, chainReference: bigint): Evm
   return {
     domainManifest,
     deploymentChainReference: chainReference,
-    strategyAccount: { address: strategyAccount, expectedCodeHash: hashHex(40) },
+    strategyAccountFactory: { address: accountFactory, expectedCodeHash: hashHex(39) },
+    strategyAccountCodeHash: hashHex(40),
     packageVerifier: { address: packageVerifier, expectedCodeHash: hashHex(70) },
     settlementClass: { classId: atomicSettlementClassId, classVersion: 1 },
     spot: {
@@ -270,11 +272,11 @@ function deployment(domainManifest: DomainManifest, chainReference: bigint): Evm
       baseLotAtoms: 1_000_000_000_000_000n,
     },
     perpetual: {
-      adapter: resource(perpAdapter.adapterId, perpAdapter.adapterManifestVersion, perpAdapter.adapterManifestHash, perpInstrument, 45),
-      adapterClassId: 'synfutures-instrument',
+      adapter: resource(perpAdapter.adapterId, perpAdapter.adapterManifestVersion, perpAdapter.adapterManifestHash, packageVerifier, 70),
+      adapterClassId: 'base-strategy-perp-port-v1',
       adapterClassVersion: 1,
-      market: resource(perpMarket.subjectId, perpMarket.manifestVersion, perpMarket.manifestHash, address(11), 46),
-      venue: resource(perpVenue.subjectId, perpVenue.manifestVersion, perpVenue.manifestHash, address(12), 47),
+      market: resource(perpMarket.subjectId, perpMarket.manifestVersion, perpMarket.manifestHash, perpInstrument, 46),
+      venue: resource(perpVenue.subjectId, perpVenue.manifestVersion, perpVenue.manifestHash, perpObserver, 46),
       baseLotAtoms: 1_000_000_000_000_000n,
     },
     perpetualObserver: { address: perpObserver, expectedCodeHash: hashHex(48) },
@@ -357,12 +359,12 @@ function admission(domainManifest: DomainManifest): PackageAdmission {
       domain,
       orderHash,
       routeHash,
-      solverSignatureScheme: 'SECP256K1_RECOVERABLE',
-      solverVerificationKey: Uint8Array.from(Buffer.from(solver.slice(2), 'hex')),
+      solverSignatureScheme: 'ED25519',
+      solverVerificationKey: new Uint8Array(32).fill(3),
       expectedSpotNotional: { asset: quoteAsset, atoms: 6_000_000_000n },
       validUntilUnit: 'EVM_UNIX_SECONDS',
       validUntilValue: 2_500n,
-      signature: new Uint8Array(65).fill(1),
+      signature: new Uint8Array(64).fill(1),
     },
     route: {
       environment: 'testnet',
@@ -430,7 +432,10 @@ function admission(domainManifest: DomainManifest): PackageAdmission {
 
 const bounds: EvmAtomicExecutionBounds = {
   currentUnixSeconds: 1_000n,
+  strategyAccount,
+  solver,
   traderSignature: signatureHex(9),
+  solverSignature: signatureHex(10),
   spotFillCommitment: hash(55),
   expectedPrePerpBalanceWad: 10n,
   minimumPostPerpBalanceWad: 0n,
@@ -526,8 +531,8 @@ test('rejects non-65-byte ECDSA signatures', () => {
     /trader signature must be exactly 65 bytes/,
   );
   assert.throws(
-    () => compileEvmAtomicPackage({ ...admitted, quote: { ...admitted.quote, signature: new Uint8Array(64).fill(1) } }, identity, seriesBinding(domainManifest), bounds),
-    /solver quote signature must be exactly 65 bytes/,
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest), { ...bounds, solverSignature: '0x1234' }),
+    /solver signature must be exactly 65 bytes/,
   );
 });
 
@@ -549,8 +554,19 @@ test('rejects missing and zero deployment addresses', () => {
   const admitted = admission(domainManifest);
   const identity = deployment(domainManifest, 84_532n);
   assert.throws(
-    () => compileEvmAtomicPackage(admitted, { ...identity, strategyAccount: { ...identity.strategyAccount, address: zeroAddress } }, seriesBinding(domainManifest), bounds),
-    /strategyAccount.address must be nonzero/,
+    () => compileEvmAtomicPackage(admitted, { ...identity, strategyAccountFactory: { ...identity.strategyAccountFactory, address: zeroAddress } }, seriesBinding(domainManifest), bounds),
+    /strategyAccountFactory.address must be nonzero/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest), { ...bounds, strategyAccount: address(15) }),
+    /settlement account is not the owner factory account/,
+  );
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, {
+      ...identity,
+      perpetual: { ...identity.perpetual, adapter: { ...identity.perpetual.adapter, address: perpInstrument } },
+    }, seriesBinding(domainManifest), bounds),
+    /perpetual adapter must be the package verifier/,
   );
   assert.throws(
     () => compileEvmAtomicPackage(admitted, { ...identity, perpetualObserver: { ...identity.perpetualObserver, address: undefined as unknown as Address } }, seriesBinding(domainManifest), bounds),

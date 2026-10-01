@@ -1,14 +1,20 @@
 import {
   EVM_RUNTIME_IDENTITY,
+  NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+  NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+  NARYX_TEST_PERP_MARKET_ABI,
+  deriveTestPerpEntryLimits,
+  encodeTestPerpTradeArgs,
   equalAddress,
   equalHash,
   prepareEvmTraderPermitAuthorization,
   requiredEvmAddress,
   validateFinalityPolicy,
-  type EvmAtomicExecutionBounds,
+  type EvmAtomicAuthorizationBounds,
   type EvmContractIdentity,
   type EvmDeploymentIdentity,
   type EvmFinalityPolicy,
+  type EvmReadPort,
 } from "@naryx/adapter-evm";
 import {
   bytesEqual,
@@ -22,17 +28,20 @@ import {
   type CashCarrySeriesBindingV1Input,
   type DomainRef,
   type Hash32,
+  type PackageAdmission,
   type PackageAdmissionInput,
   type RoutePayloadInput,
   type SolverQuoteInput,
 } from "@naryx/protocol-types";
-import type { Hex } from "viem";
+import { encodePacked, keccak256, stringToHex, type Address, type Hex } from "viem";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import {
   BASE_SEPOLIA_CHAIN_REFERENCE,
   BASE_SEPOLIA_DOMAIN_ID,
+  EvmTestnetTerminalValidationError,
   type EvmTestnetAtomicAttemptContext,
+  type EvmTestnetAtomicContextPurpose,
 } from "./evm-testnet-runtime-ports.js";
 
 export const BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS = "PACKAGE_VERIFIER_ATOMIC_V1" as const;
@@ -44,10 +53,8 @@ type AdmissionConfiguration = Omit<
   "order" | "quote" | "route" | "currentTime"
 >;
 
-type AuthorizationBounds = Omit<
-  EvmAtomicExecutionBounds,
-  "currentUnixSeconds" | "traderSignature"
->;
+const MAX_CACHED_ATTEMPTS = 256;
+const SPOT_FILL_DOMAIN = stringToHex("NARYX/base-uniswap-spot-fill/v1");
 
 export interface BaseSepoliaAtomicDeploymentConfiguration {
   readonly admission: AdmissionConfiguration;
@@ -63,7 +70,16 @@ export interface BaseSepoliaAtomicDeploymentConfiguration {
     evidenceLabel: typeof BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL;
   }>;
   readonly seriesBindingInput: CashCarrySeriesBindingV1Input;
-  readonly executionBounds: AuthorizationBounds;
+  /**
+   * Reviewed execution policy. Perpetual bounds are never configured: they are derived per attempt
+   * from the market's live position, reserve, and `previewOpen`.
+   */
+  readonly executionPolicy: Readonly<{
+    /** Active solver address that co-signs the on-chain SolverAuthorization. */
+    solver: Address;
+    /** How far the oracle may move between authorization and execution, in basis points. */
+    oracleMoveAllowanceBps: number;
+  }>;
   readonly atomicEvidenceClass: typeof BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS;
   readonly finality: Readonly<{
     policy: EvmFinalityPolicy;
@@ -71,22 +87,34 @@ export interface BaseSepoliaAtomicDeploymentConfiguration {
   }>;
 }
 
+/** Signerless reads the live context needs; chain identity is checked by the runtime. */
+export interface BaseSepoliaAtomicLiveReads {
+  codeHash(address: Address): Promise<Hex | undefined>;
+  readContract: EvmReadPort["readContract"];
+}
+
 export interface BaseSepoliaAtomicContextProviderOptions {
   readonly intents: ExecutionIntentStore;
   readonly orders: InternalOrderStore;
   readonly deployments: readonly BaseSepoliaAtomicDeploymentConfiguration[];
   readonly currentUnixSeconds: () => bigint;
+  readonly reads: BaseSepoliaAtomicLiveReads;
 }
 
-export class BaseSepoliaAtomicContextError extends Error {
-  readonly code: string;
-
+export class BaseSepoliaAtomicContextError extends EvmTestnetTerminalValidationError {
   constructor(code: string, message: string) {
-    super(message);
+    super(code, message);
     this.name = "BaseSepoliaAtomicContextError";
-    this.code = code;
   }
 }
+
+export type BaseSepoliaStrategyAccount = Readonly<{
+  owner: Address;
+  account: Address;
+  deployed: boolean;
+}>;
+
+type TestPerpPosition = Readonly<{ balance: bigint; size: bigint; entryNotional: bigint }>;
 
 function fail(code: string, message: string): never {
   throw new BaseSepoliaAtomicContextError(code, message);
@@ -139,6 +167,16 @@ export function validateBaseSepoliaAtomicDeploymentConfiguration(
     || manifest.addressCodecId !== EVM_RUNTIME_IDENTITY.addressCodecId) {
     fail("WRONG_DOMAIN", "Deployment is not the recognized Base Sepolia EVM runtime.");
   }
+  if (!/^0x[0-9a-f]{64}$/i.test(deployment.strategyAccountCodeHash ?? "")
+    || /^0x0{64}$/.test(deployment.strategyAccountCodeHash)) {
+    fail("ACCOUNT_IDENTITY_INVALID", "Strategy account code hash must be a nonzero 32-byte hash.");
+  }
+  requiredEvmAddress(deployment.strategyAccountFactory?.address, "strategyAccountFactory");
+  requiredEvmAddress(configuration.executionPolicy?.solver, "executionPolicy.solver");
+  const allowance = configuration.executionPolicy.oracleMoveAllowanceBps;
+  if (!Number.isSafeInteger(allowance) || allowance < 0 || allowance >= 1_000) {
+    fail("EXECUTION_POLICY_INVALID", "Oracle move allowance must be an integer below 1000 bps.");
+  }
   if (!contractMatches(configuration.uniswapV3.spotPort, deployment.spot.adapter)
     || !contractMatches(configuration.uniswapV3.pool, deployment.spot.market)
     || !contractMatches(configuration.uniswapV3.factory, deployment.spot.venue)) {
@@ -146,8 +184,10 @@ export function validateBaseSepoliaAtomicDeploymentConfiguration(
   }
   if (configuration.conformancePerpetual.evidenceLabel
       !== BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL
-    || !contractMatches(configuration.conformancePerpetual.instrument, deployment.perpetual.adapter)
-    || !contractMatches(configuration.conformancePerpetual.observer, deployment.perpetualObserver)) {
+    || !contractMatches(configuration.conformancePerpetual.instrument, deployment.perpetual.market)
+    || !contractMatches(configuration.conformancePerpetual.observer, deployment.perpetualObserver)
+    || !contractMatches(deployment.perpetual.venue, deployment.perpetualObserver)
+    || !contractMatches(deployment.perpetual.adapter, deployment.packageVerifier)) {
     fail(
       "PERPETUAL_IDENTITY_MISMATCH",
       "Conformance perpetual identity or evidence label does not match deployment.",
@@ -169,13 +209,181 @@ function requireClock(value: bigint): bigint {
   return value;
 }
 
+/**
+ * Resolves the owner's factory account from chain. The address is `accountOf(owner)`; once deployed
+ * its code must be the factory's shared account code, bound to this verifier, and still owned by
+ * `owner` (a novated account no longer settles for its previous owner).
+ */
+export async function resolveBaseSepoliaStrategyAccount(
+  reads: BaseSepoliaAtomicLiveReads,
+  deployment: EvmDeploymentIdentity,
+  ownerValue: string,
+): Promise<BaseSepoliaStrategyAccount> {
+  let owner: Address;
+  try {
+    owner = requiredEvmAddress(ownerValue, "owner");
+  } catch {
+    fail("INVALID_OWNER", "Base Sepolia order owner must be an EVM address.");
+  }
+  const factory = requiredEvmAddress(deployment.strategyAccountFactory.address, "strategyAccountFactory");
+  const account = requiredEvmAddress(
+    String(await reads.readContract({
+      address: factory,
+      abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+      functionName: "accountOf",
+      args: [owner],
+    })),
+    "accountOf(owner)",
+  );
+  const codeHash = await reads.codeHash(account);
+  if (codeHash === undefined) return Object.freeze({ owner, account, deployed: false });
+  if (!equalHash(codeHash, deployment.strategyAccountCodeHash)) {
+    fail("ACCOUNT_CODE_MISMATCH", "Strategy account code does not match the factory account code.");
+  }
+  const [boundVerifier, currentOwner] = await Promise.all([
+    reads.readContract({ address: account, abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI, functionName: "verifier" }),
+    reads.readContract({ address: account, abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI, functionName: "owner" }),
+  ]);
+  if (!equalAddress(requiredEvmAddress(String(boundVerifier), "account.verifier"),
+    requiredEvmAddress(deployment.packageVerifier.address, "packageVerifier"))) {
+    fail("ACCOUNT_VERIFIER_MISMATCH", "Strategy account is not bound to the reviewed package verifier.");
+  }
+  if (!equalAddress(requiredEvmAddress(String(currentOwner), "account.owner"), owner)) {
+    fail("ACCOUNT_OWNER_MISMATCH", "Strategy account is no longer owned by the order owner.");
+  }
+  return Object.freeze({ owner, account, deployed: true });
+}
+
+function readPosition(value: unknown): TestPerpPosition {
+  const record = value as Record<string, unknown> | undefined;
+  const balance = record?.balance;
+  const size = record?.size;
+  const entryNotional = record?.entryNotional;
+  if (typeof balance !== "bigint" || typeof size !== "bigint" || typeof entryNotional !== "bigint") {
+    fail("PERP_POSITION_INVALID", "Test perpetual position read is malformed.");
+  }
+  return Object.freeze({ balance, size, entryNotional });
+}
+
+function positiveBigint(value: unknown, name: string): bigint {
+  if (typeof value !== "bigint" || value <= 0n) fail("PERP_MARKET_INVALID", `${name} must be positive.`);
+  return value;
+}
+
+type CachedBounds = Readonly<{
+  bounds: Omit<EvmAtomicAuthorizationBounds, "currentUnixSeconds">;
+  deadline: bigint;
+}>;
+
+async function deriveAttemptBounds(
+  reads: BaseSepoliaAtomicLiveReads,
+  configuration: BaseSepoliaAtomicDeploymentConfiguration,
+  admission: PackageAdmission,
+  account: Address,
+): Promise<CachedBounds> {
+  const { order, quote, route } = admission;
+  const market = requiredEvmAddress(configuration.deployment.perpetual.market.address, "perpetual.market");
+  const read = (functionName: string, args?: readonly unknown[]) => reads.readContract({
+    address: market,
+    abi: NARYX_TEST_PERP_MARKET_ABI,
+    functionName,
+    ...(args === undefined ? {} : { args }),
+  });
+  const expiry = Number(await read("expiry"));
+  if (!Number.isSafeInteger(expiry) || expiry <= 0) fail("PERP_MARKET_INVALID", "Test perpetual expiry is invalid.");
+  const position = readPosition(await read("getPosition", [market, expiry, account]));
+  const quantity = order.quantity.atoms;
+  if (order.quantity.asset.decimals !== 18 || quantity <= 0n) {
+    fail("UNSUPPORTED_QUANTITY", "Base Sepolia perpetual quantity must be a positive 18-decimal amount.");
+  }
+  const deadline = [order.expiryValue, quote.validUntilValue, route.routeExpiryValue]
+    .reduce((left, right) => left < right ? left : right);
+  const spotFillCommitment = Uint8Array.from(Buffer.from(keccak256(encodePacked(
+    ["bytes", "bytes32", "bytes32", "bytes32"],
+    [SPOT_FILL_DOMAIN, `0x${toHex(admission.orderHash)}`, `0x${toHex(admission.quoteHash)}`, `0x${toHex(admission.routeHash)}`],
+  )).slice(2), "hex")) as Hash32;
+  const common = {
+    strategyAccount: account,
+    solver: requiredEvmAddress(configuration.executionPolicy.solver, "executionPolicy.solver"),
+    spotFillCommitment,
+    perpExpiry: expiry,
+  };
+  if (order.action === "EXIT") {
+    if (position.size !== -quantity) {
+      fail("PERP_POSITION_MISMATCH", "Open test perpetual position does not match the exit quantity.");
+    }
+    return Object.freeze({
+      deadline,
+      bounds: Object.freeze({
+        ...common,
+        expectedPrePerpBalanceWad: position.balance,
+        minimumPostPerpBalanceWad: 0n,
+        maximumPostPerpBalanceWad: 0n,
+        maximumPostPerpEntryNotionalWad: 0n,
+        // A full close returns the payout to the account's reserve at the market.
+        perpArgs: encodeTestPerpTradeArgs({ deadline, expiry, sizeDeltaWad: quantity, balanceDeltaWad: 0n }),
+      }),
+    });
+  }
+  if (position.size !== 0n || position.balance !== 0n || position.entryNotional !== 0n) {
+    fail("PERP_POSITION_EXISTS", "The strategy account already holds a test perpetual position.");
+  }
+  if (await read("opensPaused") === true) fail("PERP_OPENS_PAUSED", "Test perpetual opens are paused.");
+  const marginAtoms = quote.expectedMarginDelta?.atoms;
+  if (typeof marginAtoms !== "bigint" || marginAtoms <= 0n || marginAtoms > order.maxMarginAdded.atoms) {
+    fail("MARGIN_OUT_OF_BOUNDS", "Quoted perpetual margin must be positive and within the order margin cap.");
+  }
+  const [reserve, collateralScale, takerFeeBps, initialMarginBps] = await Promise.all([
+    read("reserveOf", [account]),
+    read("collateralScale"),
+    read("takerFeeBps"),
+    read("initialMarginBps"),
+  ]);
+  if (typeof reserve !== "bigint" || reserve < marginAtoms) {
+    fail("MARGIN_RESERVE_INSUFFICIENT", "Deposit perpetual margin to the strategy account reserve before authorizing.");
+  }
+  const scale = positiveBigint(collateralScale, "collateralScale");
+  const balanceWad = marginAtoms * scale;
+  const preview = await read("previewOpen", [-quantity, balanceWad]) as readonly unknown[];
+  let limits;
+  try {
+    limits = deriveTestPerpEntryLimits({
+      previewEntryNotionalWad: positiveBigint(preview?.[1], "previewOpen entry notional"),
+      balanceWad,
+      oracleMoveAllowanceBps: BigInt(configuration.executionPolicy.oracleMoveAllowanceBps),
+      market: {
+        takerFeeBps: BigInt(Number(takerFeeBps)),
+        initialMarginBps: BigInt(Number(initialMarginBps)),
+        collateralScale: scale,
+      },
+    });
+  } catch (error) {
+    fail("PERP_BOUNDS_UNSAFE", error instanceof Error ? error.message : "Perpetual entry bounds are unsafe.");
+  }
+  return Object.freeze({
+    deadline,
+    bounds: Object.freeze({
+      ...common,
+      expectedPrePerpBalanceWad: 0n,
+      ...limits,
+      perpArgs: encodeTestPerpTradeArgs({ deadline, expiry, sizeDeltaWad: -quantity, balanceDeltaWad: balanceWad }),
+    }),
+  });
+}
+
 export function createBaseSepoliaAtomicContextProvider(
   options: BaseSepoliaAtomicContextProviderOptions,
-): (attemptId: string) => EvmTestnetAtomicAttemptContext {
+): (attemptId: string, purpose?: EvmTestnetAtomicContextPurpose) => Promise<EvmTestnetAtomicAttemptContext> {
   if (typeof options.currentUnixSeconds !== "function") {
     throw new Error("Base Sepolia atomic context provider requires a trusted clock.");
   }
-  return (attemptId: string): EvmTestnetAtomicAttemptContext => {
+  if (typeof options.reads?.readContract !== "function" || typeof options.reads?.codeHash !== "function") {
+    throw new Error("Base Sepolia atomic context provider requires live chain reads.");
+  }
+  // Bounds are fixed when the trader is asked to sign and reused until the package deadline, so the
+  // signed limits hash and the submitted calldata always agree.
+  const cache = new Map<string, CachedBounds>();
+  return async (attemptId: string, purpose: EvmTestnetAtomicContextPurpose = "authorize") => {
     let attempt;
     try {
       attempt = options.intents.getAttempt(attemptId);
@@ -208,14 +416,20 @@ export function createBaseSepoliaAtomicContextProvider(
     const configuration = deploymentFor(orderDomain, options.deployments);
     validateBaseSepoliaAtomicDeploymentConfiguration(configuration);
     const currentUnixSeconds = requireClock(options.currentUnixSeconds());
+    const route = fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput;
+    const quote = fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput;
+    // Observation only binds identities and hashes, so it still admits the evidence after expiry.
+    const admissionTime = purpose === "observe" && currentUnixSeconds >= route.routeExpiryValue
+      ? route.routeExpiryValue - 1n
+      : currentUnixSeconds;
     let admission;
     try {
       admission = validatePackageAdmission({
         ...configuration.admission,
         order,
-        route: fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput,
-        quote: fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput,
-        currentTime: { unit: "EVM_UNIX_SECONDS", value: currentUnixSeconds },
+        route,
+        quote,
+        currentTime: { unit: "EVM_UNIX_SECONDS", value: admissionTime },
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown admission error";
@@ -231,35 +445,65 @@ export function createBaseSepoliaAtomicContextProvider(
       || toHex(solverSignatureDigest(admission.quote)) !== selected.solverSignatureDigest) {
       fail("SIGNED_EVIDENCE_MISMATCH", "Stored solver bytes or signature digest do not match admitted evidence.");
     }
-    const bounds = Object.freeze({
-      ...configuration.executionBounds,
-      currentUnixSeconds,
-    });
-    try {
-      prepareEvmTraderPermitAuthorization(
-        admission,
-        configuration.deployment,
-        configuration.seriesBindingInput,
-        bounds,
-      );
-    } catch {
-      fail("DEPLOYMENT_ADMISSION_FAILED", "Deployment identities, series binding, or execution bounds are invalid.");
-    }
     const deployment = configuration.deployment;
+    let settlementAccount: Address;
+    try {
+      settlementAccount = requiredEvmAddress(order.settlementAccount, "order.settlementAccount");
+    } catch {
+      fail("SETTLEMENT_ACCOUNT_MISMATCH", "Order settlement account must be an EVM address.");
+    }
+    const atomicBinding = Object.freeze({
+      chainReference: deployment.deploymentChainReference,
+      packageVerifier: requiredEvmAddress(deployment.packageVerifier.address, "packageVerifier"),
+      strategyAccount: settlementAccount,
+      orderHash: `0x${attempt.orderHash}` as Hex,
+      quoteHash: `0x${attempt.quoteHash}` as Hex,
+      routeHash: `0x${attempt.routeHash}` as Hex,
+      executionPlanKind: "EVM_ATOMIC_BATCH" as const,
+    });
+    if (purpose === "observe") {
+      const cached = cache.get(attemptId);
+      return Object.freeze({
+        admission,
+        deployment,
+        seriesBindingInput: configuration.seriesBindingInput,
+        bounds: cached === undefined ? undefined : Object.freeze({ ...cached.bounds, currentUnixSeconds }),
+        atomicBinding,
+        finality: configuration.finality.policy,
+      });
+    }
+
+    const resolved = await resolveBaseSepoliaStrategyAccount(options.reads, deployment, order.owner);
+    if (!equalAddress(resolved.account, settlementAccount)) {
+      fail("SETTLEMENT_ACCOUNT_MISMATCH", "Order settlement account is not the owner's factory account.");
+    }
+    if (!resolved.deployed) {
+      fail("ACCOUNT_NOT_DEPLOYED", "Create the strategy account before authorizing a package.");
+    }
+    for (const [key, entry] of cache) if (entry.deadline <= currentUnixSeconds) cache.delete(key);
+    let derived = cache.get(attemptId);
+    if (derived === undefined) {
+      if (purpose === "prepare") {
+        // The signed limits are gone; deriving new ones would not match the trader signature.
+        fail("AUTHORIZATION_EXPIRED", "Authorize the package again before preparing it.");
+      }
+      derived = await deriveAttemptBounds(options.reads, configuration, admission, settlementAccount);
+      cache.set(attemptId, derived);
+      while (cache.size > MAX_CACHED_ATTEMPTS) cache.delete(cache.keys().next().value!);
+    }
+    const bounds = Object.freeze({ ...derived.bounds, currentUnixSeconds });
+    try {
+      prepareEvmTraderPermitAuthorization(admission, deployment, configuration.seriesBindingInput, bounds);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown compiler error";
+      fail("DEPLOYMENT_ADMISSION_FAILED", `Deployment identities, series binding, or bounds are invalid: ${reason}`);
+    }
     return Object.freeze({
       admission,
       deployment,
       seriesBindingInput: configuration.seriesBindingInput,
       bounds,
-      atomicBinding: Object.freeze({
-        chainReference: deployment.deploymentChainReference,
-        packageVerifier: requiredEvmAddress(deployment.packageVerifier.address, "packageVerifier"),
-        strategyAccount: requiredEvmAddress(deployment.strategyAccount.address, "strategyAccount"),
-        orderHash: `0x${attempt.orderHash}` as Hex,
-        quoteHash: `0x${attempt.quoteHash}` as Hex,
-        routeHash: `0x${attempt.routeHash}` as Hex,
-        executionPlanKind: "EVM_ATOMIC_BATCH",
-      }),
+      atomicBinding,
       finality: configuration.finality.policy,
     });
   };

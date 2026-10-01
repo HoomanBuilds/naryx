@@ -27,6 +27,12 @@ import {
   loadBaseSepoliaRuntimeManifest,
 } from "./base-sepolia-runtime.js";
 import {
+  createBaseSepoliaOrderRuntime,
+  loadBaseSepoliaOrderContextConfig,
+  type BaseSepoliaOrderRuntime,
+} from "./base-sepolia-order-context.js";
+import { createHttpBaseSepoliaSolverAuthorizer } from "./base-sepolia-solver-authorization.js";
+import {
   createArbitrumSepoliaRuntime,
   createViemArbitrumSepoliaReadClient,
   loadArbitrumSepoliaRuntimeManifest,
@@ -63,6 +69,7 @@ import {
 } from "./arbitrum-sepolia-executor-client.js";
 import { HyperliquidTestnetPriceFeed } from "./hyperliquid-testnet-price-feed.js";
 import {
+  createBaseSepoliaMarketSource,
   createHyperliquidTestnetMarketSource,
   type TerminalMarketSources,
 } from "./private-terminal-manifest.js";
@@ -144,6 +151,7 @@ const solanaLocalExecution = manifestRuntime === undefined
 let baseRuntime: Awaited<ReturnType<typeof createBaseSepoliaRuntime>> | undefined;
 let baseRuntimeError: unknown;
 let basePreparationStore: SqlitePreparedEvmTestnetAtomicStore | undefined;
+let baseOrderRuntime: BaseSepoliaOrderRuntime | undefined;
 if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
   try {
     const baseManifestPath = absolutePath(
@@ -155,14 +163,32 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
       "NARYX_BASE_SEPOLIA_PREPARATION_DB",
     ));
     const baseRpcUrl = process.env.NARYX_BASE_SEPOLIA_RPC_URL ?? "";
+    const baseManifest = loadBaseSepoliaRuntimeManifest(baseManifestPath);
+    const baseClient = createViemBaseSepoliaReadClient(baseRpcUrl);
     baseRuntime = await createBaseSepoliaRuntime({
-      manifest: loadBaseSepoliaRuntimeManifest(baseManifestPath),
+      manifest: baseManifest,
       intents: executionIntentStore,
       orders: orderStore,
-      client: createViemBaseSepoliaReadClient(baseRpcUrl),
+      client: baseClient,
       store: basePreparationStore,
+      solverAuthorizer: createHttpBaseSepoliaSolverAuthorizer(
+        process.env.NARYX_BASE_SEPOLIA_SOLVER_ORIGIN ?? "http://127.0.0.1:8794",
+      ),
     });
+    // Base Sepolia entry path: live pool and oracle prices, any wallet through its own factory account.
+    baseOrderRuntime = await createBaseSepoliaOrderRuntime({
+      config: loadBaseSepoliaOrderContextConfig(absolutePath(
+        process.env.NARYX_BASE_SEPOLIA_ORDER_CONTEXT ?? "",
+        "NARYX_BASE_SEPOLIA_ORDER_CONTEXT",
+      )),
+      deployment: baseManifest.deployment,
+      port: baseClient,
+      orders: orderStore,
+    });
+    baseOrderRuntime.feed.start();
   } catch (error) {
+    baseRuntime = undefined;
+    baseOrderRuntime = undefined;
     baseRuntimeError = error;
     reportRuntimeFailure("baseTestnetAtomic", error);
   }
@@ -376,11 +402,14 @@ function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[])
 }
 const orderContexts = (contextId: string) =>
   orderRuntime?.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId)
-  ?? arbitrumOrderRuntime?.contexts(contextId);
+  ?? arbitrumOrderRuntime?.contexts(contextId) ?? baseOrderRuntime?.contexts(contextId);
 const orderClock = Object.freeze({
   currentClock: async (context: ActiveOrderContext) => {
     if (arbitrumOrderRuntime !== undefined && context.settlementClass === "ASYNC_BONDED_SOLVER") {
       return arbitrumOrderRuntime.clock.currentClock(context);
+    }
+    if (baseOrderRuntime !== undefined && context.contextId === baseOrderRuntime.config.contextId) {
+      return baseOrderRuntime.clock.currentClock(context);
     }
     if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
       return hyperliquidOrderRuntime.clock.currentClock(context);
@@ -416,7 +445,9 @@ const server = createPrivateTerminalServer(
   runtime.solanaDevnet,
   { contexts: orderContexts, store: orderStore, clock: orderClock },
   runtime.hyperliquidTestnet,
-  runtime.evmTestnet,
+  baseOrderRuntime === undefined || runtime.evmTestnet.preparation === undefined
+    ? runtime.evmTestnet
+    : { ...runtime.evmTestnet, account: baseOrderRuntime.account },
   lifecycleStore,
   solverClient,
   executionIntentStore,
@@ -431,7 +462,9 @@ const server = createPrivateTerminalServer(
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(publicMarket?.internalHandler, publicMarket?.listener === undefined ? publicMarket?.handler : undefined),
-  terminalMarkets,
+  baseOrderRuntime === undefined
+    ? terminalMarkets
+    : { ...terminalMarkets, base: createBaseSepoliaMarketSource(baseOrderRuntime) },
 );
 
 const publicServer = publicMarket?.listener === undefined
@@ -457,6 +490,7 @@ if (publicServer !== undefined && publicMarket?.listener !== undefined) {
 
 function shutdown(): void {
   hyperliquidPriceFeed?.stop();
+  baseOrderRuntime?.feed.stop();
   publicServer?.close();
   server.close(() => {
     orderStore.close();

@@ -9,6 +9,7 @@ import {
   hash32 as assertEvmHash32,
   observeAsyncBondedPackage,
   observeEvmAtomicPackage,
+  prepareEvmSolverAuthorization,
   prepareEvmTraderPermitAuthorization,
   requiredEvmAddress as assertEvmAddress,
   validateFinalityPolicy,
@@ -16,6 +17,7 @@ import {
 import type {
   EvmAsyncObservationBinding,
   EvmAsyncObservationKeys,
+  EvmAtomicAuthorizationBounds,
   EvmAtomicExecutionBounds,
   EvmAtomicObservationBinding,
   EvmDeploymentIdentity,
@@ -35,6 +37,7 @@ import {
   hashTypedData,
   isAddress,
   keccak256,
+  recoverAddress,
   stringToHex,
   type Address,
   type Hex,
@@ -284,7 +287,18 @@ export interface EvmTestnetAsyncObservationPort {
   observe(request: EvmTestnetObserveAsyncRequest): Promise<EvmTestnetAsyncObservationDto>;
 }
 
+/** Read-only owner account status and the unsigned wallet setup transactions it still needs. */
+export interface EvmTestnetAccountPort {
+  status(request: Readonly<{
+    owner: string;
+    /** A stored order of this owner; its spot quote cap is what the account must hold. */
+    orderHash?: string;
+    marginAtoms: bigint;
+  }>): Promise<Readonly<Record<string, unknown>>>;
+}
+
 export type EvmTestnetTerminalPorts = Readonly<{
+  account?: EvmTestnetAccountPort;
   authorization?: EvmTestnetAtomicAuthorizationPort;
   preparation?: EvmTestnetAtomicPreparationPort;
   atomicObservation?: EvmTestnetAtomicObservationPort;
@@ -295,7 +309,8 @@ export type EvmTestnetAtomicAttemptContext = Readonly<{
   admission: PackageAdmission;
   deployment: EvmDeploymentIdentity;
   seriesBindingInput: CashCarrySeriesBindingV1Input;
-  bounds: Omit<EvmAtomicExecutionBounds, "traderSignature">;
+  /** Absent only for observation, which never compiles. */
+  bounds: EvmAtomicAuthorizationBounds | undefined;
   atomicBinding: EvmAtomicObservationBinding;
   finality: EvmFinalityPolicy;
 }>;
@@ -321,9 +336,19 @@ export type EvmTestnetAsyncAttemptContext = Readonly<{
   }>;
 }>;
 
+export type EvmTestnetAtomicContextPurpose = "authorize" | "prepare" | "observe";
+
 export type EvmTestnetAtomicContextProvider = (
   attemptId: string,
+  purpose?: EvmTestnetAtomicContextPurpose,
 ) => Promise<EvmTestnetAtomicAttemptContext> | EvmTestnetAtomicAttemptContext;
+
+/** Obtains the solver's on-chain SolverAuthorization signature for the exact signed bounds. */
+export type EvmTestnetSolverAuthorizer = (request: Readonly<{
+  attemptId: string;
+  traderSignature: Hex;
+  bounds: EvmAtomicAuthorizationBounds;
+}>) => Promise<Hex>;
 
 export type EvmTestnetAsyncContextProvider = (
   attemptId: string,
@@ -350,6 +375,8 @@ export interface PreparedEvmTestnetAtomicStore {
 
 export type EvmTestnetRuntimePortsOptions = Readonly<{
   atomicContextProvider: EvmTestnetAtomicContextProvider;
+  solverAuthorizer?: EvmTestnetSolverAuthorizer;
+  account?: EvmTestnetAccountPort;
   asyncContextProvider: EvmTestnetAsyncContextProvider;
   atomicReadPort: EvmReadPort;
   asyncReadPort: EvmReadPort;
@@ -1422,12 +1449,9 @@ function requireAtomicBindingCoherence(args: Readonly<{
     throw new Error("Atomic binding verifier does not match deployment.");
   }
   const boundStrategy = assertEvmAddress(binding.strategyAccount, "binding.strategyAccount");
-  const deploymentStrategy = assertEvmAddress(
-    args.deployment.strategyAccount.address,
-    "deployment.strategyAccount",
-  );
-  if (!equalEvmAddress(boundStrategy, deploymentStrategy)) {
-    throw new Error("Atomic binding strategy account does not match deployment.");
+  const orderStrategy = assertEvmAddress(args.admission.order.settlementAccount, "order.settlementAccount");
+  if (!equalEvmAddress(boundStrategy, orderStrategy)) {
+    throw new Error("Atomic binding strategy account does not match the order settlement account.");
   }
   const boundOrder = assertEvmHash32(binding.orderHash, "binding.orderHash");
   const boundQuote = assertEvmHash32(binding.quoteHash, "binding.quoteHash");
@@ -1751,12 +1775,14 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
     { attemptId: string; traderSignature: string; promise: Promise<EvmTestnetAtomicPreparationDto> }
   >();
 
+  const solverAuthorizer = options.solverAuthorizer;
   return Object.freeze({
+    ...(options.account === undefined ? {} : { account: options.account }),
     authorization: Object.freeze({
       prepare: async (request: EvmTestnetPrepareAtomicAuthorizationRequest) => {
         const attemptId = requireBrowserId(request.attemptId, "attemptId");
         const idempotencyKey = requireIdempotencyKey(request.idempotencyKey);
-        const context = await atomicContextProvider(attemptId);
+        const context = await atomicContextProvider(attemptId, "authorize");
         if (!isRecord(context as unknown)) throw new Error("Atomic context provider returned an invalid context.");
         const atomicContext = context as EvmTestnetAtomicAttemptContext;
         const admission = atomicContext.admission;
@@ -1769,6 +1795,7 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
             deployment.domainManifest.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE) {
           throw new Error("Atomic authorization context must be bound to Base Sepolia.");
         }
+        if (atomicContext.bounds === undefined) throw new Error("Atomic authorization context has no bounds.");
         const authorization = prepareEvmTraderPermitAuthorization(
           admission,
           deployment,
@@ -1837,7 +1864,7 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           return copyPreparation(await ongoing.promise);
         }
         const task: Promise<EvmTestnetAtomicPreparationDto> = (async () => {
-          const context = await atomicContextProvider(attemptId);
+          const context = await atomicContextProvider(attemptId, "prepare");
           if (!isRecord(context as unknown)) throw new Error("Atomic context provider returned an invalid context.");
           const admission = (context as EvmTestnetAtomicAttemptContext).admission;
           const deployment = (context as EvmTestnetAtomicAttemptContext).deployment;
@@ -1851,10 +1878,35 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           const domains = admissionDomains(admission);
           requireTestnetDeployment(deployment);
           validateFinalityPolicy(finality as unknown as Parameters<typeof validateFinalityPolicy>[0]);
-          const fullBounds = {
-            ...(boundsBase as unknown as Record<string, unknown>),
+          if (boundsBase === undefined) throw new Error("Atomic preparation context has no bounds.");
+          if (solverAuthorizer === undefined) {
+            throw new Error("Solver authorization is not configured for atomic preparation.");
+          }
+          // The owner's EOA signature is checked here so a stale or foreign signature fails before
+          // the solver co-signs or the wallet pays gas; the verifier checks it again on chain.
+          const permit = prepareEvmTraderPermitAuthorization(admission, deployment, seriesBindingInput, boundsBase);
+          const trader = await recoverAddress({ hash: permit.digest, signature: traderSignature as Hex });
+          if (!equalEvmAddress(trader, assertEvmAddress(admission.order.owner, "order.owner"))) {
+            throw new EvmTestnetTerminalValidationError(
+              "TRADER_SIGNATURE_MISMATCH",
+              "Trader signature does not recover to the order owner for the authorized limits.",
+            );
+          }
+          const solverSignature = await solverAuthorizer({
+            attemptId,
             traderSignature: traderSignature as Hex,
-          } as unknown as EvmAtomicExecutionBounds;
+            bounds: boundsBase,
+          });
+          const solverDigest = prepareEvmSolverAuthorization(admission, deployment, seriesBindingInput, boundsBase).digest;
+          if (!/^0x[0-9a-f]{130}$/i.test(solverSignature)
+            || !equalEvmAddress(await recoverAddress({ hash: solverDigest, signature: solverSignature }), boundsBase.solver)) {
+            throw new Error("Solver authorization does not recover to the bound solver.");
+          }
+          const fullBounds: EvmAtomicExecutionBounds = {
+            ...boundsBase,
+            traderSignature: traderSignature as Hex,
+            solverSignature,
+          };
           const compiled = compileEvmAtomicPackage(admission, deployment, seriesBindingInput, fullBounds);
           if (!isRecord(compiled as unknown)) throw new Error("Compiler returned an invalid package.");
           const compiledDomain = asDomainRef(
@@ -1880,14 +1932,10 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           ) {
             throw new Error("Compiled package hashes do not match server context.");
           }
-          const deploymentRecord = deployment as unknown as {
-            deploymentChainReference: bigint;
-            strategyAccount: { address: string };
-          };
-          if (compiledRecord.payload.chainReference !== deploymentRecord.deploymentChainReference) {
+          if (compiledRecord.payload.chainReference !== deployment.deploymentChainReference) {
             throw new Error("Compiled chain reference does not match server context.");
           }
-          if (getAddress(compiledRecord.payload.to) !== getAddress(deploymentRecord.strategyAccount.address)) {
+          if (getAddress(compiledRecord.payload.to) !== getAddress(boundsBase.strategyAccount)) {
             throw new Error("Compiled target does not match server context.");
           }
           if (compiledRecord.payload.value !== 0n) throw new Error("Compiled value must be zero.");
@@ -1960,7 +2008,7 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
         if (prepared === undefined || prepared.attemptId !== attemptId) {
           throw new Error(`Unknown prepared attempt for idempotency key "${idempotencyKey}".`);
         }
-        const context = await atomicContextProvider(attemptId);
+        const context = await atomicContextProvider(attemptId, "observe");
         if (!isRecord(context as unknown)) throw new Error("Atomic context provider returned an invalid context.");
         const atomicContext = context as EvmTestnetAtomicAttemptContext;
         const domains = admissionDomains(atomicContext.admission);

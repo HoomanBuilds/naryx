@@ -758,6 +758,41 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    // Base Sepolia owner account: status plus the unsigned setup transactions the wallet still needs.
+    if (url.pathname === "/internal/terminal/base-sepolia/account") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (evmTestnetPorts.account === undefined) {
+        reject(response, 503, "ACCOUNT_STATUS_UNAVAILABLE", "Base Sepolia account status is unavailable.");
+        return;
+      }
+      const owner = url.searchParams.get("owner") ?? "";
+      const orderHash = url.searchParams.get("orderHash") ?? undefined;
+      const margin = url.searchParams.get("marginAtoms") ?? "0";
+      if (!/^0x[0-9a-fA-F]{40}$/.test(owner) || !/^(?:0|[1-9][0-9]{0,30})$/.test(margin)
+        || (orderHash !== undefined && !/^[0-9a-f]{64}$/.test(orderHash))) {
+        reject(response, 400, "INVALID_REQUEST", "owner must be an EVM address, orderHash a hash, and margin integer atoms.");
+        return;
+      }
+      try {
+        sendJson(response, 200, await evmTestnetPorts.account.status({
+          owner,
+          ...(orderHash === undefined ? {} : { orderHash }),
+          marginAtoms: BigInt(margin),
+        }));
+      } catch (error) {
+        if (error instanceof EvmTestnetTerminalValidationError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "ACCOUNT_STATUS_FAILED", "Base Sepolia account status failed closed.");
+      }
+      return;
+    }
+
     if (url.pathname === "/internal/terminal/orders") {
       if (request.method !== "POST") {
         response.setHeader("Allow", "POST, OPTIONS");

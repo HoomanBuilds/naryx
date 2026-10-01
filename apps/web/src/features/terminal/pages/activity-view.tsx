@@ -13,6 +13,7 @@ const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
   devnet: "Devnet execution",
   conformance: "Local conformance",
   hyperliquid: "Hyperliquid testnet",
+  base: "Base Sepolia",
 };
 
 function compact(value: string, leading = 10, trailing = 6) {
@@ -33,9 +34,9 @@ function statePill(state: string) {
   return styles.pill;
 }
 
-/** Lifecycle reads cover Solana Devnet and local conformance attempts; Hyperliquid attempts report in the ticket. */
+/** Lifecycle reads cover Solana Devnet and local conformance attempts; Hyperliquid and Base attempts report in the ticket. */
 function readable(attempt: RecordedAttempt) {
-  return attempt.flow !== "hyperliquid";
+  return attempt.flow !== "hyperliquid" && attempt.flow !== "base";
 }
 
 export function ActivityView() {

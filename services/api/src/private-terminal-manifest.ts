@@ -1,3 +1,4 @@
+import { baseSepoliaSpotAsk, type BaseSepoliaOrderRuntime } from "./base-sepolia-order-context.js";
 import type { HyperliquidTestnetPriceSource } from "./hyperliquid-testnet-price-feed.js";
 import type { HyperliquidTestnetRuntimeConfig } from "./hyperliquid-testnet-runtime-client.js";
 import type { DomainId, QuoteMode, SlippageBps } from "./terminal-types.js";
@@ -101,6 +102,62 @@ export function createHyperliquidTestnetMarketSource(
         spotTakerRate: snapshot.spotTakerRate,
         perpTakerRate: snapshot.perpTakerRate,
         capturedAtMs: snapshot.capturedAtMs,
+      });
+    },
+  });
+}
+
+const DISPLAY_DIGITS = 8;
+
+function decimalString(numerator: bigint, denominator: bigint): string {
+  const scale = 10n ** BigInt(DISPLAY_DIGITS);
+  const scaled = (numerator * scale) / denominator;
+  const fraction = (scaled % scale).toString().padStart(DISPLAY_DIGITS, "0").replace(/0+$/, "");
+  return fraction.length === 0 ? (scaled / scale).toString() : `${scaled / scale}.${fraction}`;
+}
+
+/**
+ * Base Sepolia: spot is the Uniswap V3 pool mid with the pool fee as the taker rate (the configured
+ * spot port swaps there); the perpetual is the test market's Chainlink price with its half spread
+ * and taker fee. Every value comes from the live feed, never from the manifest.
+ */
+export function createBaseSepoliaMarketSource(
+  runtime: Pick<BaseSepoliaOrderRuntime, "config" | "feed">,
+): TerminalMarketSource {
+  const { config, feed } = runtime;
+  const base = assetSymbol(config.baseAsset.assetId);
+  const quote = assetSymbol(config.quoteAsset.assetId);
+  const descriptor: TerminalMarketDescriptor = Object.freeze({
+    environment: "TESTNET",
+    packageId: config.contextId,
+    baseSymbol: base,
+    quoteSymbol: quote,
+    baseDecimals: config.baseAsset.decimals,
+    quoteDecimals: config.quoteAsset.decimals,
+    maximumSizeAtoms: config.maximumQuantityAtoms,
+    maxSlippageBps: config.maxSlippageBps,
+    maxStalenessMs: Number(config.maxStalenessSeconds) * 1_000,
+    settlement: Object.freeze({ label: "Atomic postcondition", detail: "One transaction, verifier-checked" }),
+    spot: Object.freeze({ instrument: `${base} / ${quote}`, venue: "Uniswap V3 on Base Sepolia" }),
+    perp: Object.freeze({ instrument: `${base}-PERP`, venue: "Naryx test perpetual (Chainlink-priced)" }),
+  });
+  const unitScale = 10n ** BigInt(config.baseAsset.decimals - config.quoteAsset.decimals);
+  return Object.freeze({
+    descriptor,
+    latest(): TerminalMarketObservation | undefined {
+      const snapshot = feed.latest();
+      if (snapshot === undefined) return undefined;
+      const mid = baseSepoliaSpotAsk(config.baseAsset, config.quoteAsset, { ...snapshot, poolFee: 0n });
+      const spot = decimalString(mid.quoteAtoms * unitScale, mid.baseAtoms);
+      const oracleScale = 10n ** BigInt(snapshot.oracleDecimals) * 10_000n;
+      return Object.freeze({
+        spotBid: spot,
+        spotAsk: spot,
+        perpBid: decimalString(snapshot.oracleAnswer * (10_000n - snapshot.halfSpreadBps), oracleScale),
+        perpAsk: decimalString(snapshot.oracleAnswer * (10_000n + snapshot.halfSpreadBps), oracleScale),
+        spotTakerRate: decimalString(snapshot.poolFee, 1_000_000n),
+        perpTakerRate: decimalString(snapshot.takerFeeBps, 10_000n),
+        capturedAtMs: snapshot.observedAtMs,
       });
     },
   });

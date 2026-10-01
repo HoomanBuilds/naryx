@@ -82,7 +82,10 @@ export interface EvmLegDeploymentIdentity {
 export interface EvmDeploymentIdentity {
   readonly domainManifest: DomainManifest;
   readonly deploymentChainReference: bigint;
-  readonly strategyAccount: EvmContractIdentity;
+  /** Per-owner accounts: `accountOf(owner)` is the only settlement account an order may name. */
+  readonly strategyAccountFactory: EvmContractIdentity;
+  /** Runtime code hash every factory account shares (`accountCodeHash()`). */
+  readonly strategyAccountCodeHash: Hex;
   readonly packageVerifier: EvmContractIdentity;
   readonly settlementClass: Readonly<{
     classId: Hash32;
@@ -97,7 +100,12 @@ export interface EvmDeploymentIdentity {
 
 export interface EvmAtomicExecutionBounds {
   readonly currentUnixSeconds: bigint;
+  /** The owner's factory account, resolved from chain (`accountOf(owner)`) by the caller. */
+  readonly strategyAccount: Address;
+  /** The active-solver EVM address that signs the on-chain SolverAuthorization. */
+  readonly solver: Address;
   readonly traderSignature: Hex;
+  readonly solverSignature: Hex;
   readonly spotFillCommitment: Hash32;
   readonly expectedPrePerpBalanceWad: bigint;
   readonly minimumPostPerpBalanceWad: bigint;
@@ -107,32 +115,33 @@ export interface EvmAtomicExecutionBounds {
   readonly perpArgs: readonly [Hash32, Hash32];
 }
 
-export type EvmAtomicAuthorizationBounds = Omit<EvmAtomicExecutionBounds, 'traderSignature'>;
+export type EvmAtomicAuthorizationBounds = Omit<EvmAtomicExecutionBounds, 'traderSignature' | 'solverSignature'>;
 
 export const EVM_TRADER_PERMIT_DOMAIN = Object.freeze({
   name: 'Naryx Package Verifier',
   version: '1',
 } as const);
 
-export const EVM_TRADER_PERMIT_TYPES = Object.freeze({
-  TraderPermit: Object.freeze([
-    { name: 'packageHash', type: 'bytes32' },
-    { name: 'accountsHash', type: 'bytes32' },
-    { name: 'limitsHash', type: 'bytes32' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' },
-  ]),
-} as const);
+const PACKAGE_DIGEST_FIELDS = Object.freeze([
+  { name: 'packageHash', type: 'bytes32' },
+  { name: 'accountsHash', type: 'bytes32' },
+  { name: 'limitsHash', type: 'bytes32' },
+  { name: 'nonce', type: 'uint256' },
+  { name: 'deadline', type: 'uint256' },
+] as const);
 
-export interface EvmTraderPermitAuthorization {
+export const EVM_TRADER_PERMIT_TYPES = Object.freeze({ TraderPermit: PACKAGE_DIGEST_FIELDS } as const);
+export const EVM_SOLVER_AUTHORIZATION_TYPES = Object.freeze({ SolverAuthorization: PACKAGE_DIGEST_FIELDS } as const);
+
+export interface EvmPackageAuthorization<Types, PrimaryType extends string> {
   readonly domain: Readonly<{
     name: typeof EVM_TRADER_PERMIT_DOMAIN.name;
     version: typeof EVM_TRADER_PERMIT_DOMAIN.version;
     chainId: bigint;
     verifyingContract: Address;
   }>;
-  readonly types: typeof EVM_TRADER_PERMIT_TYPES;
-  readonly primaryType: 'TraderPermit';
+  readonly types: Types;
+  readonly primaryType: PrimaryType;
   readonly message: Readonly<{
     packageHash: Hex;
     accountsHash: Hex;
@@ -142,6 +151,11 @@ export interface EvmTraderPermitAuthorization {
   }>;
   readonly digest: Hex;
 }
+
+export type EvmTraderPermitAuthorization =
+  EvmPackageAuthorization<typeof EVM_TRADER_PERMIT_TYPES, 'TraderPermit'>;
+export type EvmSolverAuthorization =
+  EvmPackageAuthorization<typeof EVM_SOLVER_AUTHORIZATION_TYPES, 'SolverAuthorization'>;
 
 export interface EvmCallPayload {
   readonly chainReference: bigint;
@@ -397,20 +411,21 @@ function buildEvmAtomicMaterial(
   requireCondition(sameHash(route.orderHash, admission.orderHash), 'route order hash mismatch');
   requireCondition(sameHash(quote.orderHash, admission.orderHash), 'quote order hash mismatch');
   requireCondition(sameHash(quote.routeHash, admission.routeHash), 'quote route hash mismatch');
-  requireCondition(quote.solverSignatureScheme === 'SECP256K1_RECOVERABLE', 'solver signature scheme is unsupported');
+  // The quote signature is verified at quote intake; the verifier checks a separate on-chain
+  // SolverAuthorization signed by `bounds.solver` over this exact execution.
+  requireCondition(quote.solverSignatureScheme === 'ED25519' || quote.solverSignatureScheme === 'SECP256K1_RECOVERABLE', 'solver signature scheme is unsupported');
   requireCondition(quote.quoteMode !== 'FIRM_ONCHAIN', 'onchain firm quotes require the quoted-package compiler');
-  requireCondition(quote.solverVerificationKey.length === 20, 'solver verification key must be an EVM address');
-  requireCondition(quote.signature instanceof Uint8Array && quote.signature.length === 65, 'solver quote signature must be exactly 65 bytes');
-  const solverSignature = bytesToHex(quote.signature);
   requireCondition(route.actions.length === 2 && route.serviceCharges.length === 0, 'route contains unsupported actions or service charges');
   requireCondition(route.actions.every((action) => action.nativeValue === undefined || action.nativeValue.atoms === 0n), 'native-value actions are unsupported');
   requireCondition(bounds.minimumPostPerpBalanceWad <= bounds.maximumPostPerpBalanceWad, 'post-perpetual balance bounds are inverted');
 
-  const strategyAccount = validateContractIdentity(deployment.strategyAccount, 'strategyAccount');
-  validateContractIdentity(deployment.packageVerifier, 'packageVerifier');
-  requireCondition(requiredAddress(order.settlementAccount, 'order.settlementAccount') === strategyAccount, 'settlement account does not match deployment');
-  requireCondition(requiredAddress(route.settlementAccount, 'route.settlementAccount') === strategyAccount, 'route settlement account does not match deployment');
-  const solver = requiredAddress(bytesToHex(quote.solverVerificationKey), 'quote.solverVerificationKey');
+  validateContractIdentity(deployment.strategyAccountFactory, 'strategyAccountFactory');
+  codeHash(deployment.strategyAccountCodeHash, 'strategyAccountCodeHash');
+  const packageVerifier = validateContractIdentity(deployment.packageVerifier, 'packageVerifier');
+  const strategyAccount = requiredAddress(bounds.strategyAccount, 'bounds.strategyAccount');
+  requireCondition(requiredAddress(order.settlementAccount, 'order.settlementAccount') === strategyAccount, 'settlement account is not the owner factory account');
+  requireCondition(requiredAddress(route.settlementAccount, 'route.settlementAccount') === strategyAccount, 'route settlement account is not the owner factory account');
+  const solver = requiredAddress(bounds.solver, 'bounds.solver');
 
   requireCondition(route.legs.length === 2, 'route must contain exactly two legs');
   const spotLeg = route.legs.find((leg) => leg.legRole === 'SPOT');
@@ -428,10 +443,14 @@ function buildEvmAtomicMaterial(
   const spotPort = validateManifestResource(deployment.spot.adapter, spotLeg.adapter, 'adapter', 'spot.adapter');
   validateManifestResource(deployment.spot.market, spotLeg.market, 'manifest', 'spot.market');
   validateManifestResource(deployment.spot.venue, spotLeg.venue, 'manifest', 'spot.venue');
-  const perpInstrument = validateManifestResource(deployment.perpetual.adapter, perpLeg.adapter, 'adapter', 'perpetual.adapter');
-  validateManifestResource(deployment.perpetual.market, perpLeg.market, 'manifest', 'perpetual.market');
-  validateManifestResource(deployment.perpetual.venue, perpLeg.venue, 'manifest', 'perpetual.venue');
+  // The verifier is the perpetual port: it admits only a perpetual adapter at its own address, trades
+  // the market record as the instrument, and observes positions through the venue record.
+  const perpPort = validateManifestResource(deployment.perpetual.adapter, perpLeg.adapter, 'adapter', 'perpetual.adapter');
+  requireCondition(perpPort === packageVerifier, 'perpetual adapter must be the package verifier');
+  const perpInstrument = validateManifestResource(deployment.perpetual.market, perpLeg.market, 'manifest', 'perpetual.market');
+  const perpVenue = validateManifestResource(deployment.perpetual.venue, perpLeg.venue, 'manifest', 'perpetual.venue');
   const perpObserver = validateContractIdentity(deployment.perpetualObserver, 'perpetualObserver');
+  requireCondition(perpObserver === perpVenue, 'perpetual observer must be the perpetual venue');
   const baseToken = validateContractIdentity(deployment.baseAsset, 'baseAsset');
   const quoteToken = validateContractIdentity(deployment.quoteAsset, 'quoteAsset');
   uint32(deployment.baseAsset.manifestVersion, 'baseAsset.manifestVersion');
@@ -558,7 +577,6 @@ function buildEvmAtomicMaterial(
     domain,
     execution,
     resourceAdmission,
-    solverSignature,
     strategyAccount,
     perpArgs: [
       nonzeroHash(bounds.perpArgs[0], 'perpArgs[0]'),
@@ -567,12 +585,12 @@ function buildEvmAtomicMaterial(
   };
 }
 
-export function prepareEvmTraderPermitAuthorization(
+function packageAuthorizationMessage(
   admission: PackageAdmission,
   deployment: EvmDeploymentIdentity,
   seriesBindingInput: CashCarrySeriesBindingV1Input,
   bounds: EvmAtomicAuthorizationBounds,
-): EvmTraderPermitAuthorization {
+) {
   const material = buildEvmAtomicMaterial(admission, deployment, seriesBindingInput, bounds);
   const execution = material.execution;
   const admissionHash = keccak256(encodeAbiParameters(
@@ -639,12 +657,44 @@ export function prepareEvmTraderPermitAuthorization(
     nonce: execution.nonce,
     deadline: execution.deadline,
   });
+  return { domain, message };
+}
+
+export function prepareEvmTraderPermitAuthorization(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  seriesBindingInput: CashCarrySeriesBindingV1Input,
+  bounds: EvmAtomicAuthorizationBounds,
+): EvmTraderPermitAuthorization {
+  const { domain, message } = packageAuthorizationMessage(admission, deployment, seriesBindingInput, bounds);
   return Object.freeze({
     domain,
     types: EVM_TRADER_PERMIT_TYPES,
     primaryType: 'TraderPermit' as const,
     message,
     digest: hashTypedData({ domain, types: EVM_TRADER_PERMIT_TYPES, primaryType: 'TraderPermit', message }),
+  });
+}
+
+/** The SolverAuthorization the verifier recovers to `bounds.solver` over the same execution. */
+export function prepareEvmSolverAuthorization(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  seriesBindingInput: CashCarrySeriesBindingV1Input,
+  bounds: EvmAtomicAuthorizationBounds,
+): EvmSolverAuthorization {
+  const { domain, message } = packageAuthorizationMessage(admission, deployment, seriesBindingInput, bounds);
+  return Object.freeze({
+    domain,
+    types: EVM_SOLVER_AUTHORIZATION_TYPES,
+    primaryType: 'SolverAuthorization' as const,
+    message,
+    digest: hashTypedData({
+      domain,
+      types: EVM_SOLVER_AUTHORIZATION_TYPES,
+      primaryType: 'SolverAuthorization',
+      message,
+    }),
   });
 }
 
@@ -656,6 +706,7 @@ export function compileEvmAtomicPackage(
 ): CompiledEvmAtomicPackage {
   const material = buildEvmAtomicMaterial(admission, deployment, seriesBindingInput, bounds);
   const traderSignature = ecdsaSignature(bounds.traderSignature, 'trader signature');
+  const solverSignature = ecdsaSignature(bounds.solverSignature, 'solver signature');
   const data = encodeFunctionData({
     abi: NARYX_STRATEGY_ACCOUNT_ABI,
     functionName: 'executePackage',
@@ -663,7 +714,7 @@ export function compileEvmAtomicPackage(
       material.execution,
       material.resourceAdmission,
       traderSignature,
-      material.solverSignature,
+      solverSignature,
       material.perpArgs,
     ],
   });
@@ -747,3 +798,15 @@ export type {
   QualifiedEvmDeploymentAuthority,
 } from './authorityQualification.js';
 export { EVM_DEPLOYMENT_AUTHORITY_ROLES, qualifyEvmDeploymentAuthority } from './authorityQualification.js';
+export type { TestPerpEntryLimits, TestPerpMarketParameters } from './testPerpMarket.js';
+export {
+  CHAINLINK_AGGREGATOR_ABI,
+  ERC20_ABI,
+  NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+  NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+  NARYX_TEST_PERP_MARKET_ABI,
+  UNISWAP_V3_POOL_ABI,
+  deriveTestPerpEntryLimits,
+  encodeTestPerpTradeArgs,
+  testPerpFeeWad,
+} from './testPerpMarket.js';

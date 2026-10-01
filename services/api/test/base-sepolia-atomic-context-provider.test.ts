@@ -61,16 +61,17 @@ const bytesHex = (value: Uint8Array): string => Buffer.from(value).toString("hex
 
 const strategyAccount = address(1);
 const spotPort = address(2);
+// The test perpetual market is the instrument, the venue, and the position observer.
 const perpInstrument = address(3);
-const perpObserver = address(4);
+const perpObserver = perpInstrument;
+const accountFactory = address(14);
+const owner = address(13);
 const baseToken = address(5);
 const quoteToken = address(6);
 const packageVerifier = address(7);
 const solver = address(8);
 const spotPool = address(9);
 const spotFactory = address(10);
-const perpMarketAddress = address(11);
-const perpVenueAddress = address(12);
 
 const baseAsset = assetRef("weth", hash(20), 18);
 const quoteAsset = assetRef("usdc", hash(21), 6);
@@ -229,7 +230,7 @@ function setupPackage() {
     (contextId) => contextId === context.contextId ? context : undefined,
     {
       contextId: context.contextId,
-      owner: address(13),
+      owner,
       settlementAccount: strategyAccount,
       sizeAtoms: 2_000_000_000_000_000_000n,
       slippageBps: 10,
@@ -306,7 +307,7 @@ function setupPackage() {
         adapter: perpAdapter,
         adapterBindingId: "conformance-perpetual",
         accountIdentity: perpInstrument,
-        codeIdentity: hashHex(45),
+        codeIdentity: hashHex(46),
       },
     ],
     serviceCharges: [],
@@ -439,8 +440,8 @@ function setupPackage() {
     orderHash: canonical.orderHash,
     solverId: route.solver,
     solverCapabilityManifestHash: hash(38),
-    solverSignatureScheme: "SECP256K1_RECOVERABLE",
-    solverVerificationKey: Uint8Array.from(Buffer.from(solver.slice(2), "hex")),
+    solverSignatureScheme: "ED25519",
+    solverVerificationKey: new Uint8Array(32).fill(8),
     quoteMode: "EXECUTION_COMMITMENT",
     routeHash: routeIdentity,
     quotedOutcome: {
@@ -458,7 +459,7 @@ function setupPackage() {
     expectedGrossSpotQuantity: order.quantity,
     expectedNetSpotQuantity: order.quantity,
     expectedBaseAssetFee: zeroBase,
-    expectedMarginDelta: zeroQuote,
+    expectedMarginDelta: { asset: quoteAsset, atoms: 400_000_000n },
     expectedRawFillFeesByAsset: [zeroBase],
     expectedBuilderFeesByAsset: [zeroBase],
     expectedNormalizedVenueFeesByAsset: [zeroBase],
@@ -471,13 +472,14 @@ function setupPackage() {
     validUntilUnit: "EVM_UNIX_SECONDS",
     validUntilValue: 2_500n,
     quoteNonce: 1n,
-    signature: new Uint8Array(65).fill(1),
+    signature: new Uint8Array(64).fill(1),
   };
   const quoteIdentity = quoteHash(quote);
   const deployment: EvmDeploymentIdentity = {
     domainManifest: domainManifestValue,
     deploymentChainReference: 84_532n,
-    strategyAccount: contractIdentity(strategyAccount, 40),
+    strategyAccountFactory: contractIdentity(accountFactory, 39),
+    strategyAccountCodeHash: hashHex(40),
     packageVerifier: contractIdentity(packageVerifier, 70),
     settlementClass: {
       classId: Uint8Array.from(
@@ -494,14 +496,14 @@ function setupPackage() {
       baseLotAtoms: 1_000_000_000_000_000n,
     },
     perpetual: {
-      adapter: resource(perpAdapter.adapterId, 1, perpAdapter.adapterManifestHash, perpInstrument, 45),
-      adapterClassId: "base-sepolia-conformance-perpetual",
+      adapter: resource(perpAdapter.adapterId, 1, perpAdapter.adapterManifestHash, packageVerifier, 70),
+      adapterClassId: "base-strategy-perp-port-v1",
       adapterClassVersion: 1,
-      market: resource(perpMarket.subjectId, 1, perpMarket.manifestHash, perpMarketAddress, 46),
-      venue: resource(perpVenue.subjectId, 1, perpVenue.manifestHash, perpVenueAddress, 47),
+      market: resource(perpMarket.subjectId, 1, perpMarket.manifestHash, perpInstrument, 46),
+      venue: resource(perpVenue.subjectId, 1, perpVenue.manifestHash, perpObserver, 46),
       baseLotAtoms: 1_000_000_000_000_000n,
     },
-    perpetualObserver: contractIdentity(perpObserver, 48),
+    perpetualObserver: contractIdentity(perpObserver, 46),
     baseAsset: { ...resource(baseAsset.assetId, 1, baseAsset.assetManifestHash, baseToken, 49), decimals: 18 },
     quoteAsset: { ...resource(quoteAsset.assetId, 1, quoteAsset.assetManifestHash, quoteToken, 50), decimals: 6 },
   };
@@ -529,8 +531,8 @@ function setupPackage() {
       factory: contractIdentity(spotFactory, 44),
     },
     conformancePerpetual: {
-      instrument: contractIdentity(perpInstrument, 45),
-      observer: contractIdentity(perpObserver, 48),
+      instrument: contractIdentity(perpInstrument, 46),
+      observer: contractIdentity(perpObserver, 46),
       evidenceLabel: BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
     },
     seriesBindingInput: {
@@ -559,15 +561,7 @@ function setupPackage() {
       spotBaseAtomsPerPackageUnit: 1_000_000_000_000_000_000n,
       perpQuantityAtomsPerPackageUnit: 1_000_000_000_000_000_000n,
     },
-    executionBounds: {
-      spotFillCommitment: hash(55),
-      expectedPrePerpBalanceWad: 10n,
-      minimumPostPerpBalanceWad: 0n,
-      maximumPostPerpBalanceWad: 100n,
-      maximumPostPerpEntryNotionalWad: 7_000_000_000_000_000_000_000n,
-      perpExpiry: 1_900_000_000,
-      perpArgs: [hash(56), hash(57)],
-    },
+    executionPolicy: { solver, oracleMoveAllowanceBps: 100 },
     atomicEvidenceClass: BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
     finality: {
       policy: { requiredConfirmations: 5, requireFinalized: true },
@@ -590,66 +584,174 @@ function setupPackage() {
   return { canonical, context, configuration, response };
 }
 
-test("materializes a reviewed Base Sepolia context from durable selected evidence", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-"));
+const WAD = 1_000_000_000_000_000_000n;
+
+type FakeChain = {
+  accountOf: Address;
+  accountCodeHash: Hex | undefined;
+  reserveAtoms: bigint;
+  previewNotionalWad: bigint;
+  position: { balance: bigint; size: bigint; entryNotional: bigint };
+};
+
+function fakeChain(): FakeChain {
+  return {
+    accountOf: strategyAccount,
+    accountCodeHash: hashHex(40),
+    reserveAtoms: 400_000_000n,
+    previewNotionalWad: 6_000n * WAD,
+    position: { balance: 0n, size: 0n, entryNotional: 0n },
+  };
+}
+
+function liveReads(chain: FakeChain, configuration: BaseSepoliaAtomicDeploymentConfiguration) {
+  const deployment = configuration.deployment;
+  const identities = [
+    deployment.strategyAccountFactory,
+    deployment.packageVerifier,
+    deployment.spot.adapter,
+    deployment.spot.market,
+    deployment.spot.venue,
+    deployment.perpetual.adapter,
+    deployment.perpetual.market,
+    deployment.perpetual.venue,
+    deployment.perpetualObserver,
+    deployment.baseAsset,
+    deployment.quoteAsset,
+  ];
+  const hashes = new Map(identities.map((identity) => [identity.address.toLowerCase(), identity.expectedCodeHash]));
+  return {
+    codeHash: async (localAddress: Address) => localAddress.toLowerCase() === chain.accountOf.toLowerCase()
+      ? chain.accountCodeHash
+      : hashes.get(localAddress.toLowerCase()),
+    readContract: async (read: { functionName: string; args?: readonly unknown[] }) => {
+      switch (read.functionName) {
+        case "accountOf": return chain.accountOf;
+        case "verifier": return packageVerifier;
+        case "owner": return owner;
+        case "accountCodeHash": return hashHex(40);
+        case "expiry": return 4_294_967_295;
+        case "getPosition": return { ...chain.position, entrySocialLossIndex: 0n, entryFundingIndex: 0n };
+        case "opensPaused": return false;
+        case "reserveOf": return chain.reserveAtoms;
+        case "collateralScale": return 1_000_000_000_000n;
+        case "takerFeeBps": return 5;
+        case "initialMarginBps": return 500;
+        case "previewOpen": return [3_000n * WAD, chain.previewNotionalWad, 3n * WAD, (read.args?.[1] as bigint) - 3n * WAD];
+        default: throw new Error(`unexpected contract read ${read.functionName}`);
+      }
+    },
+  };
+}
+
+function selectedAttempt(scratch: string, mutate?: (fixture: ReturnType<typeof setupPackage>) => void) {
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const fixture = setupPackage();
+  mutate?.(fixture);
+  const record = orders.createOrGet({
+    order: fixture.canonical,
+    request: {
+      contextId: fixture.context.contextId,
+      owner: fixture.canonical.order.owner,
+      settlementAccount: fixture.canonical.order.settlementAccount,
+      sizeAtoms: fixture.canonical.order.quantity.atoms,
+      slippageBps: 10,
+      idempotencyKey: "base-context-order-0001",
+      currentClock: 1_000n,
+    },
+  }).record;
+  intents.recordQuote(fixture.response);
+  const attempt = intents.selectQuoteForOrder(record, fixture.context.domain, fixture.response.quoteHash);
+  return { orders, intents, fixture, record, attempt };
+}
+
+const rejectsWith = (code: string) => (error: unknown) =>
+  error instanceof BaseSepoliaAtomicContextError && error.code === code;
+
+test("derives live entry bounds for the owner account and freezes them for preparation", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-"));
+  const { orders, intents, fixture, record, attempt } = selectedAttempt(scratch);
   try {
-    const fixture = setupPackage();
-    const record = orders.createOrGet({
-      order: fixture.canonical,
-      request: {
-        contextId: fixture.context.contextId,
-        owner: fixture.canonical.order.owner,
-        settlementAccount: fixture.canonical.order.settlementAccount,
-        sizeAtoms: fixture.canonical.order.quantity.atoms,
-        slippageBps: 10,
-        idempotencyKey: "base-context-order-0001",
-        currentClock: 1_000n,
-      },
-    }).record;
-    intents.recordQuote(fixture.response);
-    const attempt = intents.selectQuoteForOrder(record, fixture.context.domain, fixture.response.quoteHash);
-    const provider = createBaseSepoliaAtomicContextProvider({
+    const chain = fakeChain();
+    const options = {
       intents,
       orders,
       deployments: [fixture.configuration],
       currentUnixSeconds: () => 1_500n,
-    });
-    const context = provider(attempt.attemptId);
-    assert.equal(context.admission.orderHash[0], fixture.canonical.orderHash[0]);
-    assert.equal(context.deployment.strategyAccount.address, strategyAccount);
-    assert.equal(context.atomicBinding.orderHash, `0x${record.orderHashHex}`);
-    assert.equal(context.atomicBinding.quoteHash, `0x${fixture.response.quoteHash}`);
-    assert.equal(context.atomicBinding.routeHash, `0x${fixture.response.routeHash}`);
-    assert.equal(context.atomicBinding.packageVerifier, packageVerifier);
-    assert.equal(context.bounds.currentUnixSeconds, 1_500n);
-    assert.deepEqual(context.finality, { requiredConfirmations: 5, requireFinalized: true });
-
-    assert.throws(
-      () => createBaseSepoliaAtomicContextProvider({
-        intents,
-        orders,
-        deployments: [],
-        currentUnixSeconds: () => 1_500n,
-      })(attempt.attemptId),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "DEPLOYMENT_NOT_FOUND",
+      reads: liveReads(chain, fixture.configuration),
+    };
+    const provider = createBaseSepoliaAtomicContextProvider(options);
+    await assert.rejects(
+      createBaseSepoliaAtomicContextProvider(options)(attempt.attemptId, "prepare"),
+      rejectsWith("AUTHORIZATION_EXPIRED"),
     );
-    assert.throws(
-      () => createBaseSepoliaAtomicContextProvider({
+    const context = await provider(attempt.attemptId, "authorize");
+    const bounds = context.bounds!;
+    assert.equal(context.atomicBinding.strategyAccount, strategyAccount);
+    assert.equal(context.atomicBinding.orderHash, `0x${record.orderHashHex}`);
+    assert.equal(bounds.strategyAccount, strategyAccount);
+    assert.equal(bounds.solver, solver);
+    assert.equal(bounds.perpExpiry, 4_294_967_295);
+    assert.equal(bounds.expectedPrePerpBalanceWad, 0n);
+    // 400 USDC of margin less the 5 bps fee at a +/-1% oracle move around a 6000 notional.
+    assert.equal(bounds.maximumPostPerpEntryNotionalWad, 6_060n * WAD);
+    assert.equal(bounds.minimumPostPerpBalanceWad, 400n * WAD - 3_030_000_000_000_000_000n);
+    assert.equal(bounds.maximumPostPerpBalanceWad, 400n * WAD - 2_970_000_000_000_000_000n);
+    const packed = BigInt(`0x${Buffer.from(bounds.perpArgs[1]).toString("hex")}`);
+    assert.equal(BigInt.asIntN(128, packed >> 128n), -2n * WAD);
+    assert.equal(BigInt.asIntN(128, packed & ((1n << 128n) - 1n)), 400n * WAD);
+
+    chain.previewNotionalWad = 7_000n * WAD;
+    const prepared = await provider(attempt.attemptId, "prepare");
+    assert.deepEqual({ ...prepared.bounds, currentUnixSeconds: 0n }, { ...bounds, currentUnixSeconds: 0n });
+    const observed = await createBaseSepoliaAtomicContextProvider({
+      ...options,
+      currentUnixSeconds: () => 2_600n,
+    })(attempt.attemptId, "observe");
+    assert.equal(observed.bounds, undefined);
+    assert.equal(observed.atomicBinding.quoteHash, `0x${fixture.response.quoteHash}`);
+
+    await assert.rejects(
+      createBaseSepoliaAtomicContextProvider({ ...options, deployments: [] })(attempt.attemptId),
+      rejectsWith("DEPLOYMENT_NOT_FOUND"),
+    );
+    await assert.rejects(provider(`base-atomic-${"0".repeat(52)}`), rejectsWith("ATTEMPT_NOT_FOUND"));
+  } finally {
+    intents.close();
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("fails closed unless the settlement account is the owner's funded factory account", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-account-"));
+  const { orders, intents, fixture, attempt } = selectedAttempt(scratch);
+  try {
+    const invoke = (chain: FakeChain) => createBaseSepoliaAtomicContextProvider({
+      intents,
+      orders,
+      deployments: [fixture.configuration],
+      currentUnixSeconds: () => 1_500n,
+      reads: liveReads(chain, fixture.configuration),
+    })(attempt.attemptId, "authorize");
+    await assert.rejects(invoke({ ...fakeChain(), accountOf: address(15) }), rejectsWith("SETTLEMENT_ACCOUNT_MISMATCH"));
+    await assert.rejects(invoke({ ...fakeChain(), accountCodeHash: hashHex(99) }), rejectsWith("ACCOUNT_CODE_MISMATCH"));
+    await assert.rejects(invoke({ ...fakeChain(), accountCodeHash: undefined }), rejectsWith("ACCOUNT_NOT_DEPLOYED"));
+    await assert.rejects(invoke({ ...fakeChain(), reserveAtoms: 399_999_999n }), rejectsWith("MARGIN_RESERVE_INSUFFICIENT"));
+    await assert.rejects(
+      invoke({ ...fakeChain(), position: { balance: 1n, size: -1n, entryNotional: 1n } }),
+      rejectsWith("PERP_POSITION_EXISTS"),
+    );
+    await assert.rejects(
+      createBaseSepoliaAtomicContextProvider({
         intents,
         orders,
         deployments: [fixture.configuration],
         currentUnixSeconds: () => 2_500n,
+        reads: liveReads(fakeChain(), fixture.configuration),
       })(attempt.attemptId),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "PACKAGE_ADMISSION_FAILED",
-    );
-    assert.throws(
-      () => provider(`base-atomic-${"0".repeat(52)}`),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "ATTEMPT_NOT_FOUND",
+      rejectsWith("PACKAGE_ADMISSION_FAILED"),
     );
   } finally {
     intents.close();
@@ -658,103 +760,43 @@ test("materializes a reviewed Base Sepolia context from durable selected evidenc
   }
 });
 
-test("fails closed on deployment code and evidence mismatches", () => {
+test("fails closed on deployment code and evidence mismatches", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-mismatch-"));
-  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
-  const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const { orders, intents, fixture, attempt } = selectedAttempt(scratch);
   try {
-    const fixture = setupPackage();
-    const record = orders.createOrGet({
-      order: fixture.canonical,
-      request: {
-        contextId: fixture.context.contextId,
-        owner: fixture.canonical.order.owner,
-        settlementAccount: fixture.canonical.order.settlementAccount,
-        sizeAtoms: fixture.canonical.order.quantity.atoms,
-        slippageBps: 10,
-        idempotencyKey: "base-context-order-0001",
-        currentClock: 1_000n,
-      },
-    }).record;
-    intents.recordQuote(fixture.response);
-    const attempt = intents.selectQuoteForOrder(record, fixture.context.domain, fixture.response.quoteHash);
     const invoke = (configuration: BaseSepoliaAtomicDeploymentConfiguration) =>
       createBaseSepoliaAtomicContextProvider({
         intents,
         orders,
         deployments: [configuration],
         currentUnixSeconds: () => 1_500n,
+        reads: liveReads(fakeChain(), configuration),
       })(attempt.attemptId);
-
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        uniswapV3: {
-          ...fixture.configuration.uniswapV3,
-          pool: contractIdentity(spotPool, 99),
+    await assert.rejects(invoke({
+      ...fixture.configuration,
+      uniswapV3: { ...fixture.configuration.uniswapV3, pool: contractIdentity(spotPool, 99) },
+    }), rejectsWith("SPOT_IDENTITY_MISMATCH"));
+    await assert.rejects(invoke({
+      ...fixture.configuration,
+      conformancePerpetual: {
+        ...fixture.configuration.conformancePerpetual,
+        instrument: contractIdentity(packageVerifier, 70),
+      },
+    }), rejectsWith("PERPETUAL_IDENTITY_MISMATCH"));
+    await assert.rejects(invoke({
+      ...fixture.configuration,
+      finality: { ...fixture.configuration.finality, manifestHash: hash(72) },
+    }), rejectsWith("FINALITY_POLICY_MISMATCH"));
+    await assert.rejects(invoke({
+      ...fixture.configuration,
+      deployment: {
+        ...fixture.configuration.deployment,
+        spot: {
+          ...fixture.configuration.deployment.spot,
+          market: { ...fixture.configuration.deployment.spot.market, manifestHash: hash(99) },
         },
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "SPOT_IDENTITY_MISMATCH",
-    );
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        atomicEvidenceClass: "UNSUPPORTED" as typeof BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "UNSUPPORTED_EVIDENCE_CLASS",
-    );
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        conformancePerpetual: {
-          ...fixture.configuration.conformancePerpetual,
-          evidenceLabel: "PRODUCTION" as typeof BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
-        },
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "PERPETUAL_IDENTITY_MISMATCH",
-    );
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        finality: {
-          ...fixture.configuration.finality,
-          manifestHash: hash(72),
-        },
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "FINALITY_POLICY_MISMATCH",
-    );
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        deployment: {
-          ...fixture.configuration.deployment,
-          packageVerifier: contractIdentity(packageVerifier, 99),
-        },
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "DEPLOYMENT_ADMISSION_FAILED",
-    );
-    assert.throws(
-      () => invoke({
-        ...fixture.configuration,
-        deployment: {
-          ...fixture.configuration.deployment,
-          spot: {
-            ...fixture.configuration.deployment.spot,
-            market: {
-              ...fixture.configuration.deployment.spot.market,
-              manifestHash: hash(99),
-            },
-          },
-        },
-      }),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "DEPLOYMENT_ADMISSION_FAILED",
-    );
+      },
+    }), rejectsWith("DEPLOYMENT_ADMISSION_FAILED"));
   } finally {
     intents.close();
     orders.close();
@@ -762,7 +804,7 @@ test("fails closed on deployment code and evidence mismatches", () => {
   }
 });
 
-test("rejects selected solver evidence with a mismatched signature digest", () => {
+test("rejects selected solver evidence with a mismatched signature digest", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-signature-"));
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
@@ -782,16 +824,15 @@ test("rejects selected solver evidence with a mismatched signature digest", () =
     }).record;
     intents.recordQuote({ ...fixture.response, solverSignatureDigest: "99".repeat(32) });
     const attempt = intents.selectQuoteForOrder(record, fixture.context.domain, fixture.response.quoteHash);
-    const provider = createBaseSepoliaAtomicContextProvider({
-      intents,
-      orders,
-      deployments: [fixture.configuration],
-      currentUnixSeconds: () => 1_500n,
-    });
-    assert.throws(
-      () => provider(attempt.attemptId),
-      (error: unknown) => error instanceof BaseSepoliaAtomicContextError
-        && error.code === "SIGNED_EVIDENCE_MISMATCH",
+    await assert.rejects(
+      createBaseSepoliaAtomicContextProvider({
+        intents,
+        orders,
+        deployments: [fixture.configuration],
+        currentUnixSeconds: () => 1_500n,
+        reads: liveReads(fakeChain(), fixture.configuration),
+      })(attempt.attemptId),
+      rejectsWith("SIGNED_EVIDENCE_MISMATCH"),
     );
   } finally {
     intents.close();
@@ -805,31 +846,20 @@ function liveClient(
   chainId = 84_532n,
   wrongAddress?: Address,
 ): BaseSepoliaLiveReadClient {
-  const deployment = configuration.deployment;
-  const identities = [
-    deployment.strategyAccount,
-    deployment.packageVerifier,
-    deployment.spot.adapter,
-    deployment.spot.market,
-    deployment.spot.venue,
-    deployment.perpetual.adapter,
-    deployment.perpetual.market,
-    deployment.perpetual.venue,
-    deployment.perpetualObserver,
-    deployment.baseAsset,
-    deployment.quoteAsset,
-  ];
-  const hashes = new Map(identities.map((identity) => [identity.address.toLowerCase(), identity.expectedCodeHash]));
+  const reads = liveReads(fakeChain(), configuration);
   return {
     chainId: async () => chainId,
     codeHash: async (localAddress) => localAddress.toLowerCase() === wrongAddress?.toLowerCase()
       ? hashHex(99)
-      : hashes.get(localAddress.toLowerCase()),
+      : reads.codeHash(localAddress),
     transactionReceipt: async () => null,
-    readContract: async () => { throw new Error("unexpected contract read"); },
+    readContract: reads.readContract,
     chainHead: async () => ({ latestBlock: 1n, finalizedBlock: 1n }),
-  };
+    latestBlockTimestamp: async () => 1_500n,
+  } as BaseSepoliaLiveReadClient;
 }
+
+const solverAuthorizer = async () => { throw new Error("unexpected solver authorization"); };
 
 test("composes the active Base Sepolia runtime after live chain and code verification", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-"));
@@ -849,6 +879,7 @@ test("composes the active Base Sepolia runtime after live chain and code verific
       orders,
       client: liveClient(fixture.configuration),
       store,
+      solverAuthorizer,
       currentUnixSeconds: () => 1_500n,
     });
     const runtime = composePrivateTerminalRuntime({
@@ -878,26 +909,23 @@ test("rejects wrong Base chain, deployed code, and activation state", async () =
       activationState: "ACTIVE",
       deployment: fixture.configuration,
     };
+    const common = { intents, orders, store, solverAuthorizer };
     await assert.rejects(
-      createBaseSepoliaRuntime({ manifest, intents, orders, store, client: liveClient(fixture.configuration, 1n) }),
+      createBaseSepoliaRuntime({ ...common, manifest, client: liveClient(fixture.configuration, 1n) }),
       /chain ID does not match/,
     );
     await assert.rejects(
       createBaseSepoliaRuntime({
+        ...common,
         manifest,
-        intents,
-        orders,
-        store,
         client: liveClient(fixture.configuration, 84_532n, packageVerifier),
       }),
       /deployed code does not match/,
     );
     await assert.rejects(
       createBaseSepoliaRuntime({
+        ...common,
         manifest: { ...manifest, activationState: "ALL_PAUSED" } as unknown as BaseSepoliaRuntimeManifest,
-        intents,
-        orders,
-        store,
         client: liveClient(fixture.configuration),
       }),
       /must be schema version 1 and ACTIVE/,

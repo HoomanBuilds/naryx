@@ -18,6 +18,9 @@ import {
 } from "@naryx/protocol-types";
 import {
   EVM_RUNTIME_IDENTITY,
+  prepareEvmSolverAuthorization,
+  prepareEvmTraderPermitAuthorization,
+  type EvmAtomicAuthorizationBounds,
   type EvmDeploymentIdentity,
   type EvmManifestResourceIdentity,
   type EvmReadPort,
@@ -30,6 +33,7 @@ import {
   type Address,
   type Hex,
 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import {
   createEvmTestnetTerminalPorts,
   createPrivateTerminalServer,
@@ -54,7 +58,27 @@ const perpObserver = addressOf(4);
 const baseToken = addressOf(5);
 const quoteToken = addressOf(6);
 const packageVerifier = addressOf(7);
-const solver = addressOf(8);
+const ownerKey = privateKeyToAccount(`0x${"11".repeat(32)}`);
+const solverKey = privateKeyToAccount(`0x${"22".repeat(32)}`);
+const solver = solverKey.address;
+
+async function traderSignatureFor(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  series: CashCarrySeriesBindingV1Input,
+  bounds: EvmAtomicAuthorizationBounds,
+): Promise<string> {
+  return ownerKey.sign({ hash: prepareEvmTraderPermitAuthorization(admission, deployment, series, bounds).digest });
+}
+
+function solverAuthorizerFor(
+  admission: PackageAdmission,
+  deployment: EvmDeploymentIdentity,
+  series: CashCarrySeriesBindingV1Input,
+) {
+  return async ({ bounds }: { bounds: EvmAtomicAuthorizationBounds }) =>
+    solverKey.sign({ hash: prepareEvmSolverAuthorization(admission, deployment, series, bounds).digest });
+}
 
 const baseAsset = assetRef("eth", hashBytes(20), 18);
 const quoteAsset = assetRef("usdc", hashBytes(21), 6);
@@ -118,7 +142,8 @@ function baseDeployment(manifest: DomainManifest, chainReference: bigint): EvmDe
   return {
     domainManifest: manifest,
     deploymentChainReference: chainReference,
-    strategyAccount: { address: strategyAccount, expectedCodeHash: hashHex(40) },
+    strategyAccountFactory: { address: addressOf(14), expectedCodeHash: hashHex(39) },
+    strategyAccountCodeHash: hashHex(40),
     packageVerifier: { address: packageVerifier, expectedCodeHash: hashHex(70) },
     settlementClass: { classId: atomicSettlementClassId, classVersion: 1 },
     spot: {
@@ -130,11 +155,11 @@ function baseDeployment(manifest: DomainManifest, chainReference: bigint): EvmDe
       baseLotAtoms: 1_000_000_000_000_000n,
     },
     perpetual: {
-      adapter: resource(perpAdapter.adapterId, perpAdapter.adapterManifestVersion, perpAdapter.adapterManifestHash, perpInstrument, 45),
-      adapterClassId: "synfutures-instrument",
+      adapter: resource(perpAdapter.adapterId, perpAdapter.adapterManifestVersion, perpAdapter.adapterManifestHash, packageVerifier, 70),
+      adapterClassId: "base-strategy-perp-port-v1",
       adapterClassVersion: 1,
-      market: resource(perpMarket.subjectId, perpMarket.manifestVersion, perpMarket.manifestHash, addressOf(11), 46),
-      venue: resource(perpVenue.subjectId, perpVenue.manifestVersion, perpVenue.manifestHash, addressOf(12), 47),
+      market: resource(perpMarket.subjectId, perpMarket.manifestVersion, perpMarket.manifestHash, perpInstrument, 46),
+      venue: resource(perpVenue.subjectId, perpVenue.manifestVersion, perpVenue.manifestHash, perpObserver, 48),
       baseLotAtoms: 1_000_000_000_000_000n,
     },
     perpetualObserver: { address: perpObserver, expectedCodeHash: hashHex(48) },
@@ -194,7 +219,7 @@ function baseAdmission(manifest: DomainManifest): PackageAdmission {
       templateId: "cash-and-carry-v1",
       templateVersion: 1,
       packageTemplateManifestHash: hashBytes(54),
-      owner: addressOf(13),
+      owner: ownerKey.address,
       settlementAccount: strategyAccount,
       nonce: 9n,
       expiryUnit: "EVM_UNIX_SECONDS",
@@ -213,12 +238,12 @@ function baseAdmission(manifest: DomainManifest): PackageAdmission {
       domain,
       orderHash,
       routeHash,
-      solverSignatureScheme: "SECP256K1_RECOVERABLE",
-      solverVerificationKey: Uint8Array.from(Buffer.from(solver.slice(2), "hex")),
+      solverSignatureScheme: "ED25519",
+      solverVerificationKey: new Uint8Array(32).fill(8),
       expectedSpotNotional: { asset: quoteAsset, atoms: 6_000_000_000n },
       validUntilUnit: "EVM_UNIX_SECONDS",
       validUntilValue: 2_500n,
-      signature: new Uint8Array(65).fill(1),
+      signature: new Uint8Array(64).fill(1),
     },
     route: {
       environment: "testnet",
@@ -345,6 +370,8 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
   const seriesInput = baseSeriesBinding(manifest);
   const boundsBase = {
     currentUnixSeconds: 1_000n,
+    strategyAccount,
+    solver,
     spotFillCommitment: hashBytes(55),
     expectedPrePerpBalanceWad: 10n,
     minimumPostPerpBalanceWad: 0n,
@@ -563,7 +590,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
 
   const attemptId = "attempt-base-0123456789";
   const idempotencyKey = "idem-base-0123456789AB";
-  const traderSignature = signatureHex(9);
+  const traderSignature = await traderSignatureFor(admission, deployment, seriesInput, boundsBase);
   const transactionHash = hashHex(61);
   const replacementHash = hashHex(62);
 
@@ -573,6 +600,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
       if (id !== attemptId) throw new Error("unknown attempt");
       return { admission, deployment, seriesBindingInput: seriesInput, bounds: boundsBase, atomicBinding, finality };
     },
+    solverAuthorizer: solverAuthorizerFor(admission, deployment, seriesInput),
     asyncContextProvider: (id) => {
       if (id === "attempt-arb-pending-01" || id === "attempt-arb-recovery-02") {
         return { domainManifest: arbManifest, binding: asyncBinding, keys: { packageId: asyncPackageId, entryRequestKey: asyncEntryKey } };
@@ -683,6 +711,18 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
     });
     assert.equal(conflictSig.status, 502);
 
+    const foreign = await fetch(`${url}/internal/terminal/evm-testnet/prepare-atomic`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({
+        attemptId,
+        idempotencyKey: "idem-base-foreign-00001",
+        traderSignature: await solverKey.sign({ hash: authorization.digest as Hex }),
+      }),
+    });
+    assert.equal(foreign.status, 400);
+    assert.equal(((await foreign.json()) as { error: { code: string } }).error.code, "TRADER_SIGNATURE_MISMATCH");
+
     for (const extra of [
       { ...prepareBody, plan: {} },
       { ...prepareBody, to: strategyAccount },
@@ -782,6 +822,8 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
   const seriesInput = baseSeriesBinding(manifest);
   const boundsBase = {
     currentUnixSeconds: 1_000n,
+    strategyAccount,
+    solver,
     spotFillCommitment: hashBytes(55),
     expectedPrePerpBalanceWad: 10n,
     minimumPostPerpBalanceWad: 0n,
@@ -815,13 +857,14 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
   };
   const attemptId = "attempt-base-mismatch-01";
   const idempotencyKey = "idem-base-mismatch-0001";
-  const traderSignature = signatureHex(9);
+  const traderSignature = await traderSignatureFor(admission, deployment, seriesInput, boundsBase);
   const transactionHash = hashHex(61);
   const otherHash = hashHex(62);
 
   const badStore = new InMemoryPreparedEvmTestnetAtomicStore();
   const badPorts = createEvmTestnetTerminalPorts({
     atomicContextProvider: () => ({ admission, deployment, seriesBindingInput: seriesInput, bounds: boundsBase, atomicBinding: badBinding, finality }),
+    solverAuthorizer: solverAuthorizerFor(admission, deployment, seriesInput),
     asyncContextProvider: () => {
       throw new Error("unused");
     },
@@ -846,6 +889,7 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
   const sharedStore = new InMemoryPreparedEvmTestnetAtomicStore();
   const goodPorts = createEvmTestnetTerminalPorts({
     atomicContextProvider: () => ({ admission, deployment, seriesBindingInput: seriesInput, bounds: boundsBase, atomicBinding: goodBinding, finality }),
+    solverAuthorizer: solverAuthorizerFor(admission, deployment, seriesInput),
     asyncContextProvider: () => {
       throw new Error("unused");
     },
@@ -855,6 +899,7 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
   });
   const badObservePorts = createEvmTestnetTerminalPorts({
     atomicContextProvider: () => ({ admission, deployment, seriesBindingInput: seriesInput, bounds: boundsBase, atomicBinding: badBinding, finality }),
+    solverAuthorizer: solverAuthorizerFor(admission, deployment, seriesInput),
     asyncContextProvider: () => {
       throw new Error("unused");
     },
@@ -1235,6 +1280,8 @@ test("durable Base prepared store keeps replay and observation binding across a 
     seriesBindingInput: baseSeriesBinding(manifest),
     bounds: {
       currentUnixSeconds: 1_000n,
+      strategyAccount,
+      solver,
       spotFillCommitment: hashBytes(55),
       expectedPrePerpBalanceWad: 10n,
       minimumPostPerpBalanceWad: 0n,
@@ -1264,6 +1311,7 @@ test("durable Base prepared store keeps replay and observation binding across a 
   };
   const portsFor = (store: PreparedEvmTestnetAtomicStore) => createEvmTestnetTerminalPorts({
     atomicContextProvider: () => context,
+    solverAuthorizer: solverAuthorizerFor(context.admission, context.deployment, context.seriesBindingInput),
     asyncContextProvider: () => {
       throw new Error("unused");
     },
@@ -1273,7 +1321,9 @@ test("durable Base prepared store keeps replay and observation binding across a 
   });
   const attemptId = "attempt-base-durable-01";
   const idempotencyKey = "idem-base-durable-0001";
-  const traderSignature = signatureHex(9);
+  const traderSignature = await traderSignatureFor(
+    context.admission, context.deployment, context.seriesBindingInput, context.bounds,
+  );
   const transactionHash = hashHex(61);
   let store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
   try {

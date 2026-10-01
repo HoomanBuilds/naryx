@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import {
+  NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+  equalAddress,
   equalHash,
   requiredEvmAddress,
   type EvmContractIdentity,
@@ -25,6 +27,7 @@ import {
 import {
   BASE_SEPOLIA_CHAIN_REFERENCE,
   createEvmTestnetTerminalPorts,
+  type EvmTestnetSolverAuthorizer,
   type EvmTestnetTerminalPorts,
   type PreparedEvmTestnetAtomicStore,
 } from "./evm-testnet-runtime-ports.js";
@@ -43,6 +46,7 @@ export interface BaseSepoliaLiveReadClient {
   transactionReceipt: EvmReadPort["transactionReceipt"];
   readContract: EvmReadPort["readContract"];
   chainHead: EvmReadPort["chainHead"];
+  latestBlockTimestamp(): Promise<bigint>;
 }
 
 export interface BaseSepoliaRuntimeOptions {
@@ -51,6 +55,7 @@ export interface BaseSepoliaRuntimeOptions {
   readonly orders: InternalOrderStore;
   readonly client: BaseSepoliaLiveReadClient;
   readonly store: PreparedEvmTestnetAtomicStore;
+  readonly solverAuthorizer: EvmTestnetSolverAuthorizer;
   readonly currentUnixSeconds?: () => bigint;
 }
 
@@ -84,7 +89,7 @@ function contractIdentities(
 ): readonly EvmContractIdentity[] {
   const deployment = configuration.deployment;
   return [
-    deployment.strategyAccount,
+    deployment.strategyAccountFactory,
     deployment.packageVerifier,
     deployment.spot.adapter,
     deployment.spot.market,
@@ -121,6 +126,18 @@ async function validateLiveDeployment(
       throw new Error(`Base Sepolia deployed code does not match the runtime manifest at ${address}.`);
     }
   }));
+  const factory = requiredEvmAddress(configuration.deployment.strategyAccountFactory.address, "strategyAccountFactory");
+  const [factoryVerifier, accountCodeHash] = await Promise.all([
+    client.readContract({ address: factory, abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI, functionName: "verifier" }),
+    client.readContract({ address: factory, abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI, functionName: "accountCodeHash" }),
+  ]);
+  if (!equalAddress(
+    requiredEvmAddress(String(factoryVerifier), "factory.verifier"),
+    requiredEvmAddress(configuration.deployment.packageVerifier.address, "packageVerifier"),
+  ) || typeof accountCodeHash !== "string"
+    || !equalHash(accountCodeHash as Hex, configuration.deployment.strategyAccountCodeHash)) {
+    throw new Error("Base Sepolia account factory does not bind the reviewed verifier and account code.");
+  }
 }
 
 export async function createBaseSepoliaRuntime(
@@ -134,13 +151,16 @@ export async function createBaseSepoliaRuntime(
     deployments: [manifest.deployment],
     currentUnixSeconds: options.currentUnixSeconds
       ?? (() => BigInt(Math.floor(Date.now() / 1_000))),
+    reads: options.client,
   });
-  const atomicContextProvider = async (attemptId: string) => {
-    await validateLiveDeployment(options.client, manifest.deployment);
-    return context(attemptId);
-  };
+  const atomicContextProvider: Parameters<typeof createEvmTestnetTerminalPorts>[0]["atomicContextProvider"] =
+    async (attemptId, purpose) => {
+      await validateLiveDeployment(options.client, manifest.deployment);
+      return context(attemptId, purpose);
+    };
   return createEvmTestnetTerminalPorts({
     atomicContextProvider,
+    solverAuthorizer: options.solverAuthorizer,
     asyncContextProvider: () => { throw new Error("Arbitrum Sepolia runtime is not configured."); },
     atomicReadPort: options.client,
     asyncReadPort: options.client,
@@ -184,6 +204,7 @@ export function createViemBaseSepoliaReadClient(rpcUrl: string): BaseSepoliaLive
       functionName: read.functionName,
       ...(read.args === undefined ? {} : { args: read.args }),
     } as never),
+    latestBlockTimestamp: async () => (await client.getBlock({ blockTag: "latest" })).timestamp,
     chainHead: async () => {
       const latestBlock = await client.getBlockNumber();
       try {
