@@ -3,13 +3,17 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 import {DeployBaseSepoliaAtomicPackage} from "../script/DeployBaseSepoliaAtomicPackage.s.sol";
-import {NaryxBaseSepoliaPerpTestSupport} from "../src/conformance/NaryxBaseSepoliaPerpTestSupport.sol";
+import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
+import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
 contract DeployBaseSepoliaAtomicPackageTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-manifest-v1");
     bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("cash-carry-template-manifest-v1");
+    address private constant ETH_USD_FEED = 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1;
 
     function testDeploysWiredPausedCompositionAndFailsClosedAcrossChains() public {
         vm.createSelectFork("https://sepolia.base.org", FORK_BLOCK);
@@ -20,27 +24,20 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         address pauser = makeAddr("pauser");
         address solver = makeAddr("solver");
         address strategyOwner = makeAddr("strategyOwner");
-        address conformanceOwner = makeAddr("conformanceOwner");
+        DeployBaseSepoliaAtomicPackage.Parameters memory parameters = DeployBaseSepoliaAtomicPackage.Parameters({
+            domainManifestVersion: 1,
+            domainManifestHash: DOMAIN_MANIFEST_HASH,
+            cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
+            configDelaySeconds: 1 days,
+            proposer: proposer,
+            canceller: canceller,
+            executor: executor,
+            pauser: pauser,
+            solver: solver,
+            perpetualMarket: _perpetualMarket(script.USDC())
+        });
 
-        DeployBaseSepoliaAtomicPackage.Deployment memory deployment = script.deploy(
-            DeployBaseSepoliaAtomicPackage.Parameters({
-                domainManifestVersion: 1,
-                domainManifestHash: DOMAIN_MANIFEST_HASH,
-                cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
-                configDelaySeconds: 1 days,
-                proposer: proposer,
-                canceller: canceller,
-                executor: executor,
-                pauser: pauser,
-                solver: solver,
-                strategyOwner: strategyOwner,
-                conformanceOwner: conformanceOwner,
-                perpetualExpiry: 4_102_444_800,
-                perpetualEntryPriceWad: 2_000e18,
-                maximumPerpetualSizeWad: 10e18,
-                maximumPerpetualBalanceWad: 100_000e18
-            })
-        );
+        DeployBaseSepoliaAtomicPackage.Deployment memory deployment = script.deploy(parameters);
 
         assertTrue(deployment.config.entryPaused());
         (string memory domainId, uint32 domainManifestVersion, bytes32 domainManifestHash) = deployment.config.domain();
@@ -60,43 +57,57 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         assertEq(
             address(deployment.verifier.packageQuoteShardRegistry()), address(deployment.packageQuoteShardRegistry)
         );
-        assertEq(address(deployment.strategyAccount.verifier()), address(deployment.verifier));
-        assertEq(deployment.strategyAccount.owner(), strategyOwner);
+        assertEq(address(deployment.strategyAccountFactory.verifier()), address(deployment.verifier));
+        NaryxStrategyAccount strategyAccount = deployment.strategyAccountFactory.create(strategyOwner);
+        assertEq(address(strategyAccount), deployment.strategyAccountFactory.accountOf(strategyOwner));
+        assertEq(strategyAccount.owner(), strategyOwner);
+        assertEq(address(strategyAccount).codehash, deployment.strategyAccountFactory.accountCodeHash());
         assertEq(deployment.spotPort.verifier(), address(deployment.verifier));
         assertEq(deployment.spotPort.factory(), script.UNISWAP_FACTORY());
         assertEq(deployment.spotPort.pool(), script.UNISWAP_POOL());
         assertEq(address(deployment.spotPort.baseToken()), script.WETH());
         assertEq(address(deployment.spotPort.quoteToken()), script.USDC());
         assertEq(deployment.spotPort.deploymentChainId(), script.BASE_SEPOLIA_CHAIN_ID());
-        assertEq(deployment.perpetualTestSupport.strategyAccount(), address(deployment.strategyAccount));
-        assertEq(deployment.perpetualTestSupport.owner(), conformanceOwner);
-        assertEq(deployment.perpetualTestSupport.deploymentChainId(), script.BASE_SEPOLIA_CHAIN_ID());
+        assertEq(address(deployment.perpetualMarket.collateral()), script.USDC());
+        assertEq(deployment.perpetualMarket.collateralScale(), 1e12);
+        assertEq(deployment.perpetualMarket.deploymentChainId(), script.BASE_SEPOLIA_CHAIN_ID());
+        // Read-only: the pinned fork block's live feed passes every oracle check.
+        assertGt(deployment.perpetualMarket.oraclePriceWad(), 0);
 
         vm.chainId(8453);
         vm.expectRevert(UniswapV3SpotPort.DeploymentChanged.selector);
         deployment.spotPort.assertDeployment();
-        vm.expectRevert(NaryxBaseSepoliaPerpTestSupport.InvalidChain.selector);
-        deployment.perpetualTestSupport
-            .getPosition(address(deployment.perpetualTestSupport), 4_102_444_800, address(deployment.strategyAccount));
+        vm.expectRevert(NaryxTestPerpMarket.InvalidChain.selector);
+        deployment.perpetualMarket
+            .getPosition(address(deployment.perpetualMarket), type(uint32).max, address(strategyAccount));
         vm.expectRevert(DeployBaseSepoliaAtomicPackage.InvalidChain.selector);
-        script.deploy(
-            DeployBaseSepoliaAtomicPackage.Parameters({
-                domainManifestVersion: 1,
-                domainManifestHash: DOMAIN_MANIFEST_HASH,
-                cashCarryTemplateManifestHash: TEMPLATE_MANIFEST_HASH,
-                configDelaySeconds: 1 days,
-                proposer: proposer,
-                canceller: canceller,
-                executor: executor,
-                pauser: pauser,
-                solver: solver,
-                strategyOwner: strategyOwner,
-                conformanceOwner: conformanceOwner,
-                perpetualExpiry: 4_102_444_800,
-                perpetualEntryPriceWad: 2_000e18,
-                maximumPerpetualSizeWad: 10e18,
-                maximumPerpetualBalanceWad: 100_000e18
-            })
-        );
+        script.deploy(parameters);
+
+        vm.chainId(84532);
+        parameters.perpetualMarket.collateral = IERC20(script.WETH());
+        vm.expectRevert(DeployBaseSepoliaAtomicPackage.InvalidPerpetualCollateral.selector);
+        script.deploy(parameters);
+    }
+
+    function _perpetualMarket(address usdc) private returns (NaryxTestPerpMarket.Parameters memory) {
+        return NaryxTestPerpMarket.Parameters({
+            owner: makeAddr("marketOwner"),
+            fundingKeeper: makeAddr("fundingKeeper"),
+            feeRecipient: makeAddr("feeRecipient"),
+            collateral: IERC20(usdc),
+            oracle: AggregatorV3Interface(ETH_USD_FEED),
+            expiry: type(uint32).max,
+            maxOracleAgeSeconds: 1 days,
+            takerFeeBps: 5,
+            halfSpreadBps: 2,
+            impactBps: 1,
+            impactSizeWad: 10e18,
+            initialMarginBps: 1_000,
+            maintenanceMarginBps: 500,
+            liquidationPenaltyBps: 50,
+            maxPositionSizeWad: 10e18,
+            maxMarginWad: 100_000e18,
+            maxAbsFundingRatePerSecond: 1e15
+        });
     }
 }

@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {Script} from "forge-std/Script.sol";
 import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
-import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
+import {NaryxStrategyAccountFactory} from "../src/NaryxStrategyAccountFactory.sol";
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
@@ -11,7 +11,7 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
-import {NaryxBaseSepoliaPerpTestSupport} from "../src/conformance/NaryxBaseSepoliaPerpTestSupport.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 
 contract ConfigureBaseSepoliaAtomicPackage is Script {
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
@@ -26,9 +26,9 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         CashCarrySeriesRegistry seriesRegistry;
         PackageQuoteShardRegistry quoteRegistry;
         PackageVerifier verifier;
-        NaryxStrategyAccount strategyAccount;
+        NaryxStrategyAccountFactory strategyAccountFactory;
         UniswapV3SpotPort spotPort;
-        NaryxBaseSepoliaPerpTestSupport perpetualPort;
+        NaryxTestPerpMarket testPerpMarket;
         PackageQuoteShard quoteShard;
         address solver;
         ResourceRegistry.ManifestRef baseAsset;
@@ -121,7 +121,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
             .proposeRegistration(_venueBinding(route, route.spotVenue, route.spotPort.factory()), _control(route));
         route.resources
             .proposeRegistration(
-                _venueBinding(route, route.perpetualVenue, address(route.perpetualPort)), _control(route)
+                _venueBinding(route, route.perpetualVenue, address(route.testPerpMarket)), _control(route)
             );
         PackageQuoteShardRegistry.ShardIdentity memory identity = _shardIdentity(route);
         route.quoteRegistry
@@ -170,7 +170,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
                 _marketBinding(
                     route,
                     route.perpetualMarket,
-                    address(route.perpetualPort),
+                    address(route.testPerpMarket),
                     ResourceRegistry.LegRole.PERPETUAL,
                     route.perpetualVenue,
                     route.perpetualMarketParameters
@@ -210,12 +210,14 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
                 ),
                 _control(route)
             );
+        // The verifier is the perpetual port: it observes the venue position before and after the trade and
+        // admits only a perpetual adapter whose local address is itself.
         route.resources
             .proposeRegistration(
                 _adapterBinding(
                     route,
                     route.perpetualAdapter,
-                    address(route.perpetualPort),
+                    address(route.verifier),
                     ResourceRegistry.LegRole.PERPETUAL,
                     route.resources.BASE_PERP_PORT_CLASS(),
                     route.perpetualVenue,
@@ -323,9 +325,9 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
                 || address(route.verifier.resourceRegistry()) != address(route.resources)
                 || address(route.verifier.cashCarrySeriesRegistry()) != address(route.seriesRegistry)
                 || address(route.verifier.packageQuoteShardRegistry()) != address(route.quoteRegistry)
-                || address(route.strategyAccount.verifier()) != address(route.verifier)
+                || address(route.strategyAccountFactory.verifier()) != address(route.verifier)
                 || route.spotPort.verifier() != address(route.verifier)
-                || route.perpetualPort.strategyAccount() != address(route.strategyAccount)
+                || address(route.testPerpMarket.collateral()) != address(route.spotPort.quoteToken())
                 || route.quoteShard.config() != address(route.config) || route.quoteShard.solver() != route.solver
                 || route.quoteShard.consumer() != address(route.verifier)
                 || route.quoteShard.seriesManifestHash() != route.seriesManifestHash
@@ -336,8 +338,7 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         ) revert InvalidRoute();
         route.spotPort.assertDeployment();
         route.quoteShard.assertDeployment();
-        route.perpetualPort
-            .getPosition(address(route.perpetualPort), route.perpetualPort.expiry(), address(route.strategyAccount));
+        route.testPerpMarket.getPosition(address(route.testPerpMarket), route.testPerpMarket.expiry(), address(0));
     }
 
     function _verifyActiveRoute(Route calldata route) private view {
@@ -535,11 +536,11 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
             limitQuoteAtomsPerBaseLot: quoteAtoms
         });
         configured.perpetual = ResourceRegistry.LegAdmission({
-            adapter: _resourceRef(route.perpetualAdapter, address(route.perpetualPort)),
+            adapter: _resourceRef(route.perpetualAdapter, address(route.verifier)),
             adapterClassId: route.resources.BASE_PERP_PORT_CLASS(),
             adapterClassVersion: route.resources.ADAPTER_CLASS_VERSION(),
-            market: _resourceRef(route.perpetualMarket, address(route.perpetualPort)),
-            venue: _resourceRef(route.perpetualVenue, address(route.perpetualPort)),
+            market: _resourceRef(route.perpetualMarket, address(route.testPerpMarket)),
+            venue: _resourceRef(route.perpetualVenue, address(route.testPerpMarket)),
             quantityAtoms: route.perpetualQuantityWadPerPackageUnit,
             limitQuoteAtomsPerBaseLot: quoteAtoms
         });

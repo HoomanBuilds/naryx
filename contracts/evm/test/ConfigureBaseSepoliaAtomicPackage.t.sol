@@ -9,6 +9,9 @@ import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
+import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
+import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
 contract ConfigureBaseSepoliaAtomicPackageTest is Test {
     uint256 private constant FORK_BLOCK = 47_200_000;
@@ -49,12 +52,25 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
                 executor: executor,
                 pauser: pauser,
                 solver: solver,
-                strategyOwner: makeAddr("strategyOwner"),
-                conformanceOwner: makeAddr("conformanceOwner"),
-                perpetualExpiry: 4_102_444_800,
-                perpetualEntryPriceWad: 2_000e18,
-                maximumPerpetualSizeWad: 10e18,
-                maximumPerpetualBalanceWad: 100_000e18
+                perpetualMarket: NaryxTestPerpMarket.Parameters({
+                    owner: makeAddr("marketOwner"),
+                    fundingKeeper: makeAddr("fundingKeeper"),
+                    feeRecipient: makeAddr("feeRecipient"),
+                    collateral: IERC20(0x036CbD53842c5426634e7929541eC2318f3dCF7e),
+                    oracle: AggregatorV3Interface(0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1),
+                    expiry: type(uint32).max,
+                    maxOracleAgeSeconds: 1 hours,
+                    takerFeeBps: 5,
+                    halfSpreadBps: 2,
+                    impactBps: 1,
+                    impactSizeWad: 10e18,
+                    initialMarginBps: 1_000,
+                    maintenanceMarginBps: 500,
+                    liquidationPenaltyBps: 50,
+                    maxPositionSizeWad: 10e18,
+                    maxMarginWad: 100_000e18,
+                    maxAbsFundingRatePerSecond: 1e15
+                })
             })
         );
 
@@ -81,19 +97,20 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         route.seriesRegistry = deployed.cashCarrySeriesRegistry;
         route.quoteRegistry = deployed.packageQuoteShardRegistry;
         route.verifier = deployed.verifier;
-        route.strategyAccount = deployed.strategyAccount;
+        route.strategyAccountFactory = deployed.strategyAccountFactory;
         route.spotPort = deployed.spotPort;
-        route.perpetualPort = deployed.perpetualTestSupport;
+        route.testPerpMarket = deployed.perpetualMarket;
         route.quoteShard = shard;
         route.solver = solver;
         route.baseAsset = _manifest("asset:weth", "asset:weth:v1");
         route.quoteAsset = _manifest("asset:usdc", "asset:usdc:v1");
         route.spotVenue = _manifest("venue:uniswap-v3", "venue:uniswap-v3:v1");
-        route.perpetualVenue = _manifest("venue:naryx-perp-test-support", "venue:naryx-perp-test-support:v1");
+        route.perpetualVenue = _manifest("venue:naryx-test-perp", "venue:naryx-test-perp:v1");
         route.spotMarket = _manifest("market:weth-usdc-v3", "market:weth-usdc-v3:v1");
         route.perpetualMarket = _manifest("market:weth-usdc-perp-test", "market:weth-usdc-perp-test:v1");
         route.spotAdapter = _manifest("adapter:base-uniswap-v3", "adapter:base-uniswap-v3:v1");
-        route.perpetualAdapter = _manifest("adapter:base-perp-test-support", "adapter:base-perp-test-support:v1");
+        route.perpetualAdapter =
+            _manifest("adapter:base-package-verifier-perp", "adapter:base-package-verifier-perp:v1");
         route.seriesManifestHash = SERIES_MANIFEST_HASH;
         route.executionClassManifestHash = EXECUTION_CLASS_MANIFEST_HASH;
         route.seriesBindingVersion = 1;
@@ -152,6 +169,9 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         ResourceRegistry.CashCarryAdmission memory exactAdmission =
             operator.admission(route, route.maximumPackageNotionalQuoteAtoms);
         assertEq(route.resources.validateCashCarry(exactAdmission), route.maximumPackageNotionalQuoteAtoms);
+        assertEq(exactAdmission.perpetual.adapter.localAddress, address(route.verifier));
+        assertEq(exactAdmission.perpetual.market.localAddress, address(route.testPerpMarket));
+        assertEq(exactAdmission.perpetual.venue.localAddress, address(route.testPerpMarket));
         CashCarrySeriesRegistry.BindingReference memory seriesRef = operator.seriesReference(route);
         assertEq(route.seriesRegistry.validateEntry(seriesRef).seriesManifestHash, SERIES_MANIFEST_HASH);
         PackageQuoteShardRegistry.ShardReference memory shardRef = operator.shardReference(route);

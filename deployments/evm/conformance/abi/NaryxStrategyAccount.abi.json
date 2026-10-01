@@ -132,6 +132,24 @@
   },
   {
     "type": "function",
+    "name": "depositPerpMargin",
+    "inputs": [
+      {
+        "name": "venueSubjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "executePackage",
     "inputs": [
       {
@@ -2442,6 +2460,24 @@
     "stateMutability": "nonpayable"
   },
   {
+    "type": "function",
+    "name": "withdrawPerpMargin",
+    "inputs": [
+      {
+        "name": "venueSubjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
     "type": "event",
     "name": "DelegationRevoked",
     "inputs": [
@@ -2574,6 +2610,56 @@
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "PerpMarginDeposited",
+    "inputs": [
+      {
+        "name": "venue",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "venueSubjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PerpMarginWithdrawn",
+    "inputs": [
+      {
+        "name": "venue",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "venueSubjectId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "InvalidConfiguration",
     "inputs": []
@@ -2590,6 +2676,11 @@
   },
   {
     "type": "error",
+    "name": "InvalidMarginTransfer",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidRecoveryExit",
     "inputs": []
   },
@@ -2601,6 +2692,11 @@
   {
     "type": "error",
     "name": "InvalidWithdrawal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MarginTransferPostconditionFailed",
     "inputs": []
   },
   {
@@ -2643,6 +2739,11 @@
   {
     "type": "error",
     "name": "UnauthorizedWithdrawal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnregisteredPerpVenue",
     "inputs": []
   },
   {

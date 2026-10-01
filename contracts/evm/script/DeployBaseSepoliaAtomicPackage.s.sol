@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
-import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
+import {NaryxStrategyAccountFactory} from "../src/NaryxStrategyAccountFactory.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
@@ -12,7 +12,7 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
-import {NaryxBaseSepoliaPerpTestSupport} from "../src/conformance/NaryxBaseSepoliaPerpTestSupport.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 
 contract DeployBaseSepoliaAtomicPackage is Script {
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
@@ -40,12 +40,8 @@ contract DeployBaseSepoliaAtomicPackage is Script {
         address executor;
         address pauser;
         address solver;
-        address strategyOwner;
-        address conformanceOwner;
-        uint32 perpetualExpiry;
-        uint128 perpetualEntryPriceWad;
-        uint128 maximumPerpetualSizeWad;
-        uint128 maximumPerpetualBalanceWad;
+        /// The test perpetual market. Its collateral must be the pinned USDC.
+        NaryxTestPerpMarket.Parameters perpetualMarket;
     }
 
     struct Deployment {
@@ -55,12 +51,13 @@ contract DeployBaseSepoliaAtomicPackage is Script {
         CashCarrySeriesRegistry cashCarrySeriesRegistry;
         PackageQuoteShardRegistry packageQuoteShardRegistry;
         PackageVerifier verifier;
-        NaryxStrategyAccount strategyAccount;
+        NaryxStrategyAccountFactory strategyAccountFactory;
         UniswapV3SpotPort spotPort;
-        NaryxBaseSepoliaPerpTestSupport perpetualTestSupport;
+        NaryxTestPerpMarket perpetualMarket;
     }
 
     error InvalidChain();
+    error InvalidPerpetualCollateral();
 
     function run(Parameters calldata parameters) external returns (Deployment memory deployment) {
         vm.startBroadcast();
@@ -70,6 +67,7 @@ contract DeployBaseSepoliaAtomicPackage is Script {
 
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
         if (block.chainid != BASE_SEPOLIA_CHAIN_ID) revert InvalidChain();
+        if (address(parameters.perpetualMarket.collateral) != USDC) revert InvalidPerpetualCollateral();
 
         deployment.config = new ProtocolConfig(
             DOMAIN_ID,
@@ -95,16 +93,10 @@ contract DeployBaseSepoliaAtomicPackage is Script {
             PolicyRegistry(address(0)),
             bytes32(0)
         );
-        deployment.strategyAccount = new NaryxStrategyAccount(parameters.strategyOwner, deployment.verifier);
+        // Strategy accounts are created per owner through the factory, never by this script.
+        deployment.strategyAccountFactory = new NaryxStrategyAccountFactory(deployment.verifier);
         deployment.spotPort = new UniswapV3SpotPort(address(deployment.verifier), _uniswapDeployment());
-        deployment.perpetualTestSupport = new NaryxBaseSepoliaPerpTestSupport(
-            parameters.conformanceOwner,
-            address(deployment.strategyAccount),
-            parameters.perpetualExpiry,
-            parameters.perpetualEntryPriceWad,
-            parameters.maximumPerpetualSizeWad,
-            parameters.maximumPerpetualBalanceWad
-        );
+        deployment.perpetualMarket = new NaryxTestPerpMarket(parameters.perpetualMarket);
     }
 
     function _uniswapDeployment() private pure returns (UniswapV3SpotPort.Deployment memory deployment) {

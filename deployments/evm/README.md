@@ -10,7 +10,7 @@ This directory records reviewed public EVM testnet deployments: Base Sepolia (ch
 - Use testnet-only wallets held outside the repository: a Foundry keystore (`cast wallet import <name> --interactive`, then `--account <name>`) or `--ledger`. Never pass `--private-key`, never export a key into the environment, and never attach a production signer, even for a simulation.
 - Confirm the RPC before every session: `cast chain-id --rpc-url "$BASE_SEPOLIA_RPC_URL"` prints `84532`, and `cast chain-id --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL"` prints `421614`. Every script step also reverts on any other `block.chainid`.
 - Run every step once without `--broadcast`. Forge then simulates against the live chain and sends nothing. Review the simulated transactions, then rerun the identical command with `--broadcast` added (and `--slow` for deployments, so each transaction is confirmed before the next is sent).
-- The proposer, canceller, executor, and pauser must be four distinct addresses (`ProtocolConfig` rejects duplicates). The deployer, the strategy or account owner, and the solver are separate wallets.
+- The proposer, canceller, executor, and pauser must be four distinct addresses (`ProtocolConfig` rejects duplicates). The deployer, the strategy or account owner, the solver, the test perpetual market owner, and its funding keeper are separate wallets.
 - Entry stays paused from deployment until the final delayed unpause. Every configure step refuses to run once entry is open.
 
 ## Command shape
@@ -114,16 +114,66 @@ export RPC_URL="$BASE_SEPOLIA_RPC_URL"
 
 ### 1. Deploy the atomic package
 
-`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `cashCarryTemplateManifestHash` (the reviewed cash-and-carry template manifest hash that orders sign), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), `strategyOwner` (owner of the single `NaryxStrategyAccount`), `conformanceOwner`, `perpetualExpiry`, `perpetualEntryPriceWad`, `maximumPerpetualSizeWad`, `maximumPerpetualBalanceWad` (the last five configure the Naryx conformance perpetual). The Uniswap V3 factory, pool, WETH, and USDC identities and code hashes are pinned constants in the script.
+`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `cashCarryTemplateManifestHash` (the reviewed cash-and-carry template manifest hash that orders sign), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), and `perpetualMarket` (the `NaryxTestPerpMarket.Parameters` tuple below). The Uniswap V3 factory, pool, WETH, and USDC identities and code hashes are pinned constants in the script. The script deploys no strategy account: accounts are created per owner through `NaryxStrategyAccountFactory`.
 
 ```bash
 forge script script/DeployBaseSepoliaAtomicPackage.s.sol:DeployBaseSepoliaAtomicPackage \
-  --sig "run((uint32,bytes32,bytes32,uint64,address,address,address,address,address,address,address,uint32,uint128,uint128,uint128))" \
+  --sig "run((uint32,bytes32,bytes32,uint64,address,address,address,address,address,(address,address,address,address,address,uint32,uint32,uint16,uint16,uint16,uint128,uint16,uint16,uint16,uint128,uint128,uint128)))" \
   "$BASE_DEPLOY_PARAMETERS" \
   --rpc-url "$RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
 
-`.returns` lists, in order: `ProtocolConfig`, `SolverRegistry`, `ResourceRegistry`, `CashCarrySeriesRegistry`, `PackageQuoteShardRegistry`, `PackageVerifier`, `NaryxStrategyAccount`, `UniswapV3SpotPort`, `NaryxBaseSepoliaPerpTestSupport`.
+`.returns` lists, in order: `ProtocolConfig`, `SolverRegistry`, `ResourceRegistry`, `CashCarrySeriesRegistry`, `PackageQuoteShardRegistry`, `PackageVerifier`, `NaryxStrategyAccountFactory`, `UniswapV3SpotPort`, `NaryxTestPerpMarket`. The factory's constructor also creates an inert reference account it owns; `cast call "$FACTORY" "accountCodeHash()(bytes32)"` is the runtime code hash every account shares.
+
+#### Test perpetual market
+
+`NaryxTestPerpMarket` is the Base Sepolia perpetual leg. It is not a venue: it is a SynFutures-compatible instrument and position observer that prices from a Chainlink feed with a spread and size impact, charges taker fees, accrues funding, enforces initial and maintenance margin, and liquidates, so a testnet package moves money the way a mainnet one does. The market is every trader's counterparty: trader losses accrue to its insurance balance and trader profits are paid from it. A close whose profit the insurance balance cannot pay reverts with `InsuranceInsufficient`. A loss beyond the margin floors the payout at zero and is recorded in `badDebtWad`.
+
+Margin never comes from the strategy account's wallet during a package (the verifier's quote postcondition covers only the spot leg). It comes from the trader's free reserve in the market's gate: `deposit(amount)` and `withdraw(amount)` in USDC atoms, `reserveOf(trader)`. Position balances, notionals, and prices are WAD.
+
+`NaryxTestPerpMarket.Parameters`, in order, with recommended Base Sepolia values close to a real venue:
+
+| Field | Recommended | Meaning |
+|---|---|---|
+| `owner` | separate testnet wallet | pauses new opens, rotates the funding keeper, funds insurance |
+| `fundingKeeper` | separate testnet wallet | sets the funding rate |
+| `feeRecipient` | separate address | receives taker fees and liquidation penalties in its reserve |
+| `collateral` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | USDC; the script rejects any other |
+| `oracle` | `0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1` | Chainlink ETH/USD, 8 decimals |
+| `expiry` | `4294967295` | perpetual expiry; every `perpArgs` header and `perpExpiry` must equal it |
+| `maxOracleAgeSeconds` | `3600` | a round older than this rejects every trade and liquidation (cap 1 day) |
+| `takerFeeBps` | `5` | taker fee on open and close notional, rounded up to a USDC atom (cap 100) |
+| `halfSpreadBps` | `2` | fill offset from the oracle, against the taker |
+| `impactBps` | `1` | extra offset per `impactSizeWad` of size, against the taker |
+| `impactSizeWad` | `10000000000000000000` | 10 ETH |
+| `initialMarginBps` | `1000` | margin after the open fee must cover 10% of entry notional |
+| `maintenanceMarginBps` | `500` | liquidation below 5% of oracle notional; must be below initial |
+| `liquidationPenaltyBps` | `50` | of oracle notional, to the fee recipient, only from positive equity (cap 500) |
+| `maxPositionSizeWad` | `10000000000000000000` | 10 ETH per position |
+| `maxMarginWad` | `100000000000000000000000` | 100,000 USDC per position |
+| `maxAbsFundingRatePerSecond` | `30000000000000000` | about 4% per hour at 2,700 USD, a venue-style funding cap (cap `1e17`) |
+
+Spread plus impact at the maximum size must stay at or below 500 bps; the constructor rejects anything else, and requires chain `84532` (or the local test chain `31338`). Before deploying, confirm the feed without a signer:
+
+```bash
+cast codehash 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1 --rpc-url "$RPC_URL"
+cast call 0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1 "latestRoundData()(uint80,int256,uint256,uint256,uint80)" --rpc-url "$RPC_URL"
+```
+
+The market pins the feed's code hash at deployment and refuses a price if it changes.
+
+Trade shapes (`trade(bytes32[2])`, `args[0] = deadline << 56 | expiry`, `args[1] = sizeDelta << 128 | uint128(balanceDelta)`):
+
+- Open from flat: `sizeDelta != 0`, `balanceDelta > 0` and a whole number of USDC atoms in WAD (a multiple of `1e12`), drawn from the caller's reserve. The fee is taken from it, so the position balance is `balanceDelta - fee`. `previewOpen(sizeDelta, balanceWad)` returns the fill price, entry notional, fee, and resulting margin at the current oracle; the executed values use the oracle at execution, so an execution bounds the post balance and entry notional with a range.
+- Close: `sizeDelta == -size` and `balanceDelta == 0`. The payout (margin, realized PnL, funding, less the close fee, floored at zero) lands in the caller's reserve, not its wallet, and the position is deleted, so the verifier observes balance, size, and entry notional zero.
+
+Funding keeper duty: the keeper mirrors a real venue's funding. Each venue funding interval (hourly for the reference venue), it reads that venue's ETH funding rate as a fraction per interval (positive when longs pay shorts) and calls `setFundingRatePerSecond(fraction * oraclePriceWad / intervalSeconds)` as a signed WAD (quote per base per second). The rate accrues into `fundingIndex` until the next update, so a lapsed keeper leaves the last rate in force; the owner replaces a lapsed keeper with `setFundingKeeper`. The owner also funds counterparty capital with `fundInsurance(amount)` (approve USDC first) sized to the largest profit open positions can realize; insurance has no withdrawal path. Anyone may `liquidate(trader)` once `health(trader)` shows equity below the maintenance requirement.
+
+#### Strategy accounts
+
+`NaryxStrategyAccountFactory.create(owner)` is permissionless and idempotent; it deploys `NaryxStrategyAccount(owner, verifier)` with CREATE2 salt `keccak256(abi.encode(owner))`, and `accountOf(owner)` returns the address before or after creation. A novated account keeps that address under its new owner. Every account's runtime code hash equals the factory's `accountCodeHash`.
+
+Before an entry the owner funds the account with USDC and moves the perpetual margin into the market's gate with `depositPerpMargin(perpetualVenueSubjectId, amountAtoms)`, where the subject ID is the route's `perpetualVenue.subjectId`. The account resolves that subject in the verifier's `ResourceRegistry` and moves funds only to the active venue record at its registered code hash, with an exact allowance reset in the same call. Deposits need an `ACTIVE` venue; `withdrawPerpMargin(perpetualVenueSubjectId, amountAtoms)` also works while the venue is `ENTRY_PAUSED` or `EXIT_ONLY`. After an exit, the owner withdraws the settled reserve the same way and then uses `withdrawIdleToken`. Delegates can do neither.
 
 ### 2. Rotate to the reviewed domain manifest
 
@@ -154,9 +204,11 @@ forge script script/DeployBaseSepoliaFirmLiquidity.s.sol:DeployBaseSepoliaFirmLi
 
 ### 4. Configure
 
-`ConfigureBaseSepoliaAtomicPackage.Route`, in order: `config`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `solverRegistry`, `resources`, `seriesRegistry`, `quoteRegistry`, `verifier`, `strategyAccount`, `spotPort`, `perpetualPort`, `quoteShard`, `solver`, then eight `(subjectId,manifestVersion,manifestHash)` references for `baseAsset`, `quoteAsset`, `spotVenue`, `perpetualVenue`, `spotMarket`, `perpetualMarket`, `spotAdapter`, `perpetualAdapter`, then `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, `spotBaseAtomsPerPackageUnit`, `perpetualQuantityWadPerPackageUnit`, `quoteShardManifestVersion`, `quoteShardManifestHash`, `maximumPackageNotionalQuoteAtoms`, and `spotMarketParameters` and `perpetualMarketParameters` as `(baseLotAtoms,quoteTickAtomsPerBaseLot,minimumQuoteNotionalAtoms,contractMultiplierNumerator,contractMultiplierDenominator,baseDecimals,quoteDecimals)`.
+`ConfigureBaseSepoliaAtomicPackage.Route`, in order: `config`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `solverRegistry`, `resources`, `seriesRegistry`, `quoteRegistry`, `verifier`, `strategyAccountFactory`, `spotPort`, `testPerpMarket`, `quoteShard`, `solver`, then eight `(subjectId,manifestVersion,manifestHash)` references for `baseAsset`, `quoteAsset`, `spotVenue`, `perpetualVenue`, `spotMarket`, `perpetualMarket`, `spotAdapter`, `perpetualAdapter`, then `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, `spotBaseAtomsPerPackageUnit`, `perpetualQuantityWadPerPackageUnit`, `quoteShardManifestVersion`, `quoteShardManifestHash`, `maximumPackageNotionalQuoteAtoms`, and `spotMarketParameters` and `perpetualMarketParameters` as `(baseLotAtoms,quoteTickAtomsPerBaseLot,minimumQuoteNotionalAtoms,contractMultiplierNumerator,contractMultiplierDenominator,baseDecimals,quoteDecimals)`.
 
-Each `subjectId` is `cast keccak "<subjectId>"` of the same string the runtime manifest uses, and each version and manifest hash is the runtime manifest's. Every step re-verifies the deployment relationships, the shard, the Uniswap pool, and the active domain before it sends anything.
+Each `subjectId` is `cast keccak "<subjectId>"` of the same string the runtime manifest uses, and each version and manifest hash is the runtime manifest's. Every step re-verifies the deployment relationships (including that the market's collateral is the spot quote token and that the factory binds this verifier), the shard, the Uniswap pool, and the active domain before it sends anything.
+
+The perpetual venue and market records are `NaryxTestPerpMarket`. The perpetual adapter record is `PackageVerifier`: the verifier is the Base perpetual port, observing the venue position before and after the trade, and it admits only a perpetual adapter whose local address is itself.
 
 ```bash
 BASE_ROUTE_TYPE='(address,uint32,bytes32,address,address,address,address,address,address,address,address,address,address,(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),(bytes32,uint32,bytes32),bytes32,bytes32,uint32,uint128,uint128,uint32,bytes32,uint256,(uint256,uint256,uint256,uint256,uint256,uint8,uint8),(uint256,uint256,uint256,uint256,uint256,uint8,uint8))'
@@ -263,15 +315,16 @@ Base (`schemaVersion` `1`, `activationState` `"ACTIVE"`, `deployment`):
 
 - `deployment.domainManifest`: the reviewed version `2` manifest from the rotation step, with `executionVerifierCodeHash` equal to `deployment.packageVerifier.expectedCodeHash`.
 - `deployment.deploymentChainReference`: bigint `84532`.
-- `deployment.strategyAccount`: `NaryxStrategyAccount`. Every order's settlement account must be this address.
+- `deployment.strategyAccountFactory`: `NaryxStrategyAccountFactory`. An order's settlement account must equal `accountOf(owner)` for the order's owner, have code hash `deployment.strategyAccountCodeHash`, and bind `deployment.packageVerifier`.
+- `deployment.strategyAccountCodeHash`: bytes of the factory's `accountCodeHash()`, the runtime code hash every account shares.
 - `deployment.packageVerifier`: `PackageVerifier`.
 - `deployment.settlementClass`: `classId` is bytes of `cast keccak "ATOMIC_POSTCONDITION"`, `classVersion` `1`.
 - `deployment.spot`: `adapter` is `UniswapV3SpotPort`, `market` the Uniswap pool, `venue` the Uniswap factory, `adapterClassId` `"base-strategy-spot-adapter-v1"`, `adapterClassVersion` `1`, `baseLotAtoms` equal to the route's spot `baseLotAtoms`.
-- `deployment.perpetual`: `adapter`, `market`, and `venue` are all `NaryxBaseSepoliaPerpTestSupport`, `adapterClassId` `"base-strategy-perp-port-v1"`, `adapterClassVersion` `1`. `deployment.perpetualObserver` is the same contract.
+- `deployment.perpetual`: `adapter` is `PackageVerifier`, `market` and `venue` are `NaryxTestPerpMarket`, `adapterClassId` `"base-strategy-perp-port-v1"`, `adapterClassVersion` `1`. `deployment.perpetualObserver` is `NaryxTestPerpMarket`.
 - `deployment.baseAsset` and `deployment.quoteAsset`: WETH (`decimals` `18`) and USDC (`decimals` `6`).
 - Each resource identity also carries `subjectId`, `manifestVersion`, and `manifestHash`, equal to the route references registered in step 4.
 - `uniswapV3.spotPort`, `uniswapV3.pool`, `uniswapV3.factory`: the same identities as the spot adapter, market, and venue.
-- `conformancePerpetual`: `instrument` and `observer` are `NaryxBaseSepoliaPerpTestSupport`, `evidenceLabel` `"BASE_SEPOLIA_CONFORMANCE_ONLY"`.
+- `conformancePerpetual`: `instrument` and `observer` are `NaryxTestPerpMarket`, `evidenceLabel` `"BASE_SEPOLIA_CONFORMANCE_ONLY"`. The subject ID an owner passes to `depositPerpMargin` is `deployment.perpetual.venue.subjectId`.
 - `seriesBindingInput`: the binding registered in step 4 (route `seriesManifestHash`, `executionClassManifestHash`, `seriesBindingVersion`, and units per package).
 - `atomicEvidenceClass`: `"PACKAGE_VERIFIER_ATOMIC_V1"`. `finality.manifestHash` equals the domain manifest's `finalityPolicyHash`. `admission` and `executionBounds` are reviewed configuration, not deployment output.
 
@@ -297,7 +350,7 @@ After a reviewed lane completes, commit a non-secret record under `deployments/e
 - the provisional and the reviewed domain manifest (version, hash, and the full reviewed manifest);
 - the four governance roles, `configDelaySeconds`, and every governance transaction with its activation time;
 - every external dependency identity and code hash that was pinned (Uniswap V3, GMX, tokens);
-- known limitations: the Base perpetual leg is the Naryx conformance perpetual, not a venue; Base deploys one strategy account for one owner;
+- known limitations: the Base perpetual leg is the Naryx test perpetual market (oracle-priced, house counterparty, keeper-set funding), not a venue; strategy accounts are created per owner through the factory;
 - a statement that deployment implies no funding, solver activity, or package execution.
 
 Broadcast files, keystores, RPC URLs, and environment files stay untracked.

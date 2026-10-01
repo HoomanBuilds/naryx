@@ -81,6 +81,10 @@ Record a completed qualification under `deployments/evm/fork-evidence/` only aft
 
 `NaryxStrategyAccount` supports novation and bounded delegation. The owner proposes a transfer to a named new owner with an acceptance window of at most seven days; only that address accepts, the whole account (balances and venue positions) moves with it, the previous owner's signatures stop validating, and every earlier delegation ends. A delegation can only submit a recovery exit the owner already signed and expires within thirty days; it can never sign, withdraw, or move ownership.
 
+`NaryxStrategyAccountFactory` creates one account per owner with CREATE2 (salt `keccak256(abi.encode(owner))`), permissionlessly and idempotently; `accountOf(owner)` predicts the address and every account shares the factory's `accountCodeHash`. The owner moves idle collateral into and out of a perpetual venue's margin gate with `depositPerpMargin` and `withdrawPerpMargin`, only to the active `ResourceRegistry` venue record at its registered code hash, with an exact allowance reset in the same call and balance-delta checks on both sides.
+
+`NaryxTestPerpMarket` (`src/conformance/`) is the Base Sepolia perpetual leg: a SynFutures-compatible instrument and observer priced from a Chainlink feed with spread and size impact, taker fees, keeper-set bounded funding, initial and maintenance margin, liquidation, and a house insurance balance as every trader's counterparty. Margin is drawn from a per-trader reserve in the market, never from the strategy account's wallet during a package. It is a test market, not a venue, and accepts only Base Sepolia or the local test chain `31338`.
+
 ## Deployment preparation
 
 The scripts under `script/` prepare Base Sepolia and Arbitrum Sepolia deployments. None has been run against a public network, and none may be without explicit authorization for that exact action. The operator runbook, with exact commands, waits, and the runtime manifest fields each deployment feeds, is `deployments/evm/README.md`.

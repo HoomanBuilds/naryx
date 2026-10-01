@@ -9,6 +9,7 @@ import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol"
 import {PackageVerifier} from "./PackageVerifier.sol";
 import {ResourceRegistry} from "./ResourceRegistry.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
+import {IPerpMarginGate} from "./interfaces/IPerpMarginGate.sol";
 import {ISynFuturesInstrument} from "./interfaces/ISynFuturesInstrument.sol";
 
 interface IFirmInventorySpotPort {
@@ -32,6 +33,9 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     error InvalidTransfer();
     error TransferExpired();
     error InvalidDelegation();
+    error InvalidMarginTransfer();
+    error MarginTransferPostconditionFailed();
+    error UnregisteredPerpVenue();
 
     event IdleTokenWithdrawn(address indexed token, address indexed recipient, uint256 amount);
     event OwnerTransferProposed(address indexed owner, address indexed pendingOwner, uint64 expiresAt);
@@ -39,6 +43,8 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
     event DelegationSet(address indexed delegate, uint8 authorities, uint64 expiresAt, uint256 epoch);
     event DelegationRevoked(address indexed delegate);
+    event PerpMarginDeposited(address indexed venue, bytes32 indexed venueSubjectId, uint256 amount);
+    event PerpMarginWithdrawn(address indexed venue, bytes32 indexed venueSubjectId, uint256 amount);
 
     /// A delegate holding this authority may submit an owner-signed recovery exit, nothing else.
     uint8 public constant AUTHORITY_RECOVERY_EXIT = 1;
@@ -211,6 +217,70 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
                 || token.balanceOf(recipient) != recipientBalanceBefore + amount
         ) revert WithdrawalPostconditionFailed();
         emit IdleTokenWithdrawn(address(token), recipient, amount);
+    }
+
+    /// @notice Moves idle collateral into this account's free reserve at a perpetual venue's gate, where
+    /// package entries draw perp margin from. The venue is the active registry record for
+    /// `venueSubjectId`, at its registered code hash, in a lifecycle that permits entry; the allowance is
+    /// exact and reset in the same call.
+    function depositPerpMargin(bytes32 venueSubjectId, uint256 amount) external nonReentrant {
+        IPerpMarginGate gate = _perpMarginGate(venueSubjectId, ENTRY);
+        IERC20 collateral = gate.collateral();
+        uint256 accountBefore = collateral.balanceOf(address(this));
+        uint256 reserveBefore = gate.reserveOf(address(this));
+        if (amount == 0 || accountBefore < amount || reserveBefore > type(uint256).max - amount) {
+            revert InvalidMarginTransfer();
+        }
+
+        collateral.forceApprove(address(gate), amount);
+        gate.deposit(amount);
+        collateral.forceApprove(address(gate), 0);
+
+        if (
+            collateral.balanceOf(address(this)) != accountBefore - amount
+                || gate.reserveOf(address(this)) != reserveBefore + amount
+        ) revert MarginTransferPostconditionFailed();
+        emit PerpMarginDeposited(address(gate), venueSubjectId, amount);
+    }
+
+    /// @notice Returns free reserve from a perpetual venue's gate to this account. Allowed in every
+    /// lifecycle that still permits exits.
+    function withdrawPerpMargin(bytes32 venueSubjectId, uint256 amount) external nonReentrant {
+        IPerpMarginGate gate = _perpMarginGate(venueSubjectId, EXIT);
+        IERC20 collateral = gate.collateral();
+        uint256 accountBefore = collateral.balanceOf(address(this));
+        uint256 reserveBefore = gate.reserveOf(address(this));
+        if (amount == 0 || reserveBefore < amount || accountBefore > type(uint256).max - amount) {
+            revert InvalidMarginTransfer();
+        }
+
+        gate.withdraw(amount);
+
+        if (
+            collateral.balanceOf(address(this)) != accountBefore + amount
+                || gate.reserveOf(address(this)) != reserveBefore - amount
+        ) revert MarginTransferPostconditionFailed();
+        emit PerpMarginWithdrawn(address(gate), venueSubjectId, amount);
+    }
+
+    function _perpMarginGate(bytes32 venueSubjectId, uint8 action) private view returns (IPerpMarginGate) {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        if (block.chainid != deploymentChainId || address(verifier).codehash != verifierCodeHash) {
+            revert InvalidConfiguration();
+        }
+        ResourceRegistry registry = verifier.resourceRegistry();
+        if (address(registry).codehash != verifier.resourceRegistryCodeHash()) revert InvalidConfiguration();
+        (ResourceRegistry.ResourceBinding memory venue, ResourceRegistry.ResourceControl memory control) =
+            registry.activeResource(ResourceRegistry.ResourceKind.VENUE, venueSubjectId);
+        ResourceRegistry.Lifecycle state = control.state;
+        bool permitted = state == ResourceRegistry.Lifecycle.ACTIVE
+            || (action == EXIT
+                && (state == ResourceRegistry.Lifecycle.ENTRY_PAUSED || state == ResourceRegistry.Lifecycle.EXIT_ONLY));
+        if (
+            !permitted || venue.kind != ResourceRegistry.ResourceKind.VENUE || venue.localAddress.code.length == 0
+                || venue.localAddress.codehash != venue.expectedCodeHash
+        ) revert UnregisteredPerpVenue();
+        return IPerpMarginGate(venue.localAddress);
     }
 
     function _validateExecution(PackageVerifier.Execution calldata execution) private view {

@@ -18,6 +18,8 @@ readonly -a ARTIFACTS=(
     "src/PackageVerifier.sol:PackageVerifier|PackageVerifier.abi.json"
     "src/PackageVerifier.sol:PackageVerifierValidation|PackageVerifierValidation.abi.json"
     "src/NaryxStrategyAccount.sol:NaryxStrategyAccount|NaryxStrategyAccount.abi.json"
+    "src/NaryxStrategyAccountFactory.sol:NaryxStrategyAccountFactory|NaryxStrategyAccountFactory.abi.json"
+    "src/conformance/NaryxTestPerpMarket.sol:NaryxTestPerpMarket|NaryxTestPerpMarket.abi.json"
     "src/PackageQuoteShard.sol:PackageQuoteShard|PackageQuoteShard.abi.json"
     "src/PackageQuoteShardRegistry.sol:PackageQuoteShardRegistry|PackageQuoteShardRegistry.abi.json"
     "src/AsyncBondedPackageCoordinator.sol:AsyncBondedPackageCoordinator|AsyncBondedPackageCoordinator.abi.json"
@@ -34,6 +36,7 @@ readonly -a ARTIFACTS=(
     "src/interfaces/ISpotFillRecorder.sol:ISpotFillRecorder|ISpotFillRecorder.abi.json"
     "src/interfaces/ISynFuturesInstrument.sol:ISynFuturesInstrument|ISynFuturesInstrument.abi.json"
     "src/interfaces/ISynFuturesPositionObserver.sol:ISynFuturesPositionObserver|ISynFuturesPositionObserver.abi.json"
+    "src/interfaces/IPerpMarginGate.sol:IPerpMarginGate|IPerpMarginGate.abi.json"
 )
 
 trap 'rm -rf -- "$TEMP_DIR"' EXIT
