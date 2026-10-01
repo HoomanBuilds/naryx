@@ -132,7 +132,7 @@ function checkedBindingSource(
         if (deployment === undefined
           || new PublicKey(deployment.programId).toBase58() !== program.programId.toBase58()
           || new PublicKey(deployment.programDataAddress).toBase58() !== program.programDataAddress.toBase58()
-          || !bytesEqual(deployment.codeIdentity, program.deployedCodeCommitment)) {
+          || !bytesEqual(deployment.codeIdentity, program.programDataHeaderIdentity)) {
           throw new Error(`Solana Devnet live binding does not match reviewed ${program.name} deployment identity.`);
         }
       }

@@ -9,6 +9,7 @@ import {
   MAINNET_GENESIS_HASH,
   UPGRADEABLE_LOADER_ID,
   parseCandidateReleaseManifest,
+  programDataHeaderIdentity,
   verifyCandidateRelease,
 } from "./verify-devnet-release.mjs";
 
@@ -24,8 +25,8 @@ function programAccount() {
   return { data, executable: true, owner: UPGRADEABLE_LOADER_ID };
 }
 
-function programDataAccount() {
-  const data = Buffer.alloc(45 + deployedBytes.length);
+function programDataAccount(padding = 16) {
+  const data = Buffer.alloc(45 + deployedBytes.length + padding);
   data.writeUInt32LE(3, 0);
   data.writeBigUInt64LE(42n, 4);
   data[12] = 1;
@@ -63,7 +64,25 @@ test("verifies a candidate using read-only account evidence", async () => {
     });
     assert.equal(evidence.programs[0].deploymentSlot, "42");
     assert.equal(evidence.programs[0].upgradeAuthority, authority.toBase58());
-    assert.equal(evidence.programs[0].artifactSha256, evidence.programs[0].deployedByteSha256);
+    assert.equal(evidence.programs[0].artifactSha256, evidence.programs[0].programElfSha256);
+    assert.equal(
+      evidence.programs[0].programDataHeaderIdentity,
+      programDataHeaderIdentity(programDataAccount().data),
+    );
+    const pinned = parseCandidateReleaseManifest({
+      ...candidate(artifactPath),
+      programs: [{
+        ...candidate(artifactPath).programs[0],
+        programDataHeaderIdentity: evidence.programs[0].programDataHeaderIdentity,
+      }],
+    }, manifestPath);
+    await assert.rejects(
+      verifyCandidateRelease(pinned, {
+        getGenesisHash: async () => DEVNET_GENESIS_HASH,
+        getMultipleAccountsInfo: async () => [programAccount(), programDataAccount(17)],
+      }),
+      /header identity does not match/,
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

@@ -14,6 +14,8 @@ const PROGRAM_STATE = 2;
 const PROGRAM_DATA_STATE = 3;
 const PROGRAM_DATA_METADATA_SIZE = 45;
 
+export const SOLANA_PROGRAM_DATA_HEADER_IDENTITY_DOMAIN = 'naryx.program-data-header.v1';
+
 export const SOLANA_UPGRADEABLE_LOADER_ID = new PublicKey(
   'BPFLoaderUpgradeab1e11111111111111111111111',
 );
@@ -28,8 +30,8 @@ export interface SolanaDevnetProgramExpectation {
   readonly programDataAddress: PublicKey | string;
   readonly deploymentSlot: bigint;
   readonly upgradeAuthority: SolanaUpgradeAuthorityPolicy;
-  readonly programDataCommitment?: Uint8Array;
-  readonly deployedCodeCommitment?: Uint8Array;
+  readonly programDataHeaderIdentity: Uint8Array;
+  readonly programElfSha256: Uint8Array;
 }
 
 export interface SolanaDeploymentAccountSnapshot {
@@ -58,8 +60,9 @@ export interface VerifiedSolanaDevnetProgramIdentity {
   readonly programDataAddress: PublicKey;
   readonly deploymentSlot: bigint;
   readonly upgradeAuthority: PublicKey | null;
-  readonly programDataCommitment: Uint8Array;
-  readonly deployedCodeCommitment: Uint8Array;
+  readonly programDataLength: number;
+  readonly programDataHeaderIdentity: Uint8Array;
+  readonly programElfSha256: Uint8Array;
 }
 
 export interface VerifiedSolanaDevnetDeploymentIdentity {
@@ -127,8 +130,7 @@ function publicKey(value: PublicKey | string, name: string): PublicKey {
   }
 }
 
-function commitment(value: Uint8Array | undefined, name: string): Uint8Array | undefined {
-  if (value === undefined) return undefined;
+function commitment(value: Uint8Array, name: string): Uint8Array {
   requireCondition(
     value instanceof Uint8Array && value.length === 32 && value.some((byte) => byte !== 0),
     `${name} must be 32 nonzero bytes`,
@@ -138,6 +140,27 @@ function commitment(value: Uint8Array | undefined, name: string): Uint8Array | u
 
 function sha256(value: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(value).digest());
+}
+
+// The identity naryx_core, the package book, and the reservation program compute on-chain.
+export function solanaProgramDataHeaderIdentity(programData: Uint8Array): Uint8Array {
+  decodeProgramData(programData, 'ProgramData');
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64LE(BigInt(programData.length));
+  return new Uint8Array(createHash('sha256')
+    .update(SOLANA_PROGRAM_DATA_HEADER_IDENTITY_DOMAIN)
+    .update(programData.subarray(0, PROGRAM_DATA_METADATA_SIZE))
+    .update(length)
+    .digest());
+}
+
+// Trailing zero padding is stripped, matching `solana-verify get-program-hash`, so a reviewed
+// artifact and a ProgramData account deployed with extra length hash the same.
+export function solanaProgramElfSha256(elf: Uint8Array): Uint8Array {
+  let end = elf.length;
+  while (end > 0 && elf[end - 1] === 0) end -= 1;
+  requireCondition(end > 0, 'program ELF must not be empty');
+  return sha256(elf.subarray(0, end));
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -188,8 +211,8 @@ function normalizedExpectations(
   programDataAddress: PublicKey;
   deploymentSlot: bigint;
   upgradeAuthority: SolanaUpgradeAuthorityPolicy;
-  programDataCommitment: Uint8Array | undefined;
-  deployedCodeCommitment: Uint8Array | undefined;
+  programDataHeaderIdentity: Uint8Array;
+  programElfSha256: Uint8Array;
 }>[] {
   requireCondition(Array.isArray(expectations) && expectations.length > 0, 'program expectations must not be empty');
   const names = new Set<string>();
@@ -237,13 +260,13 @@ function normalizedExpectations(
       programDataAddress,
       deploymentSlot: expectation.deploymentSlot,
       upgradeAuthority: expectation.upgradeAuthority,
-      programDataCommitment: commitment(
-        expectation.programDataCommitment,
-        `${expectation.name} ProgramData commitment`,
+      programDataHeaderIdentity: commitment(
+        expectation.programDataHeaderIdentity,
+        `${expectation.name} ProgramData header identity`,
       ),
-      deployedCodeCommitment: commitment(
-        expectation.deployedCodeCommitment,
-        `${expectation.name} deployed code commitment`,
+      programElfSha256: commitment(
+        expectation.programElfSha256,
+        `${expectation.name} program ELF SHA-256`,
       ),
     });
   });
@@ -305,17 +328,15 @@ export async function verifySolanaDevnetDeploymentIdentity(
           && decoded.upgradeAuthority.equals(expectedAuthority)),
       `${program.name} upgrade authority policy mismatch`,
     );
-    const programDataCommitment = sha256(programDataAccount.data);
-    const deployedCodeCommitment = sha256(decoded.deployedCode);
+    const programDataHeaderIdentity = solanaProgramDataHeaderIdentity(programDataAccount.data);
+    const programElfSha256 = solanaProgramElfSha256(decoded.deployedCode);
     requireCondition(
-      program.programDataCommitment === undefined
-        || equalBytes(programDataCommitment, program.programDataCommitment),
-      `${program.name} ProgramData commitment mismatch`,
+      equalBytes(programDataHeaderIdentity, program.programDataHeaderIdentity),
+      `${program.name} ProgramData header identity mismatch`,
     );
     requireCondition(
-      program.deployedCodeCommitment === undefined
-        || equalBytes(deployedCodeCommitment, program.deployedCodeCommitment),
-      `${program.name} deployed code commitment mismatch`,
+      equalBytes(programElfSha256, program.programElfSha256),
+      `${program.name} program ELF SHA-256 mismatch`,
     );
     return Object.freeze({
       name: program.name,
@@ -323,8 +344,9 @@ export async function verifySolanaDevnetDeploymentIdentity(
       programDataAddress: program.programDataAddress,
       deploymentSlot: decoded.deploymentSlot,
       upgradeAuthority: decoded.upgradeAuthority,
-      programDataCommitment,
-      deployedCodeCommitment,
+      programDataLength: programDataAccount.data.length,
+      programDataHeaderIdentity,
+      programElfSha256,
     });
   });
   return Object.freeze({

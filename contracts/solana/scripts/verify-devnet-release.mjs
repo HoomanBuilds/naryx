@@ -15,6 +15,7 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const PROGRAM_STATE = 2;
 const PROGRAM_DATA_STATE = 3;
 const PROGRAM_DATA_METADATA_SIZE = 45;
+export const PROGRAM_DATA_HEADER_IDENTITY_DOMAIN = "naryx.program-data-header.v1";
 
 function record(value, name) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -105,9 +106,10 @@ export function parseCandidateReleaseManifest(value, manifestPath) {
         ? undefined
         : resolve(baseDirectory, artifactPathValue),
       artifactSha256: hash(item.artifactSha256, `programs[${index}].artifactSha256`),
-      deployedByteSha256: hash(
-        item.deployedByteSha256,
-        `programs[${index}].deployedByteSha256`,
+      programElfSha256: hash(item.programElfSha256, `programs[${index}].programElfSha256`),
+      programDataHeaderIdentity: hash(
+        item.programDataHeaderIdentity,
+        `programs[${index}].programDataHeaderIdentity`,
       ),
     });
   });
@@ -142,6 +144,26 @@ export function decodeProgramDataAccount(data, name) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+// Matches the on-chain identity in naryx_core program_identity.rs.
+export function programDataHeaderIdentity(data) {
+  decodeProgramDataAccount(data, "ProgramData");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64LE(BigInt(data.length));
+  return createHash("sha256")
+    .update(PROGRAM_DATA_HEADER_IDENTITY_DOMAIN)
+    .update(data.subarray(0, PROGRAM_DATA_METADATA_SIZE))
+    .update(length)
+    .digest("hex");
+}
+
+// Trailing zero padding is stripped, matching `solana-verify get-program-hash`.
+export function programElfSha256(bytes) {
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end -= 1;
+  if (end === 0) throw new Error("program ELF must not be empty");
+  return sha256(bytes.subarray(0, end));
 }
 
 export async function verifyCandidateRelease(manifest, rpc) {
@@ -186,20 +208,24 @@ export async function verifyCandidateRelease(manifest, rpc) {
     if (observedAuthority !== expectedAuthority) {
       throw new Error(`${program.name} upgrade authority does not match the candidate manifest`);
     }
-    const deployedByteSha256 = sha256(programData.deployedBytes);
-    if (program.deployedByteSha256 !== undefined
-      && deployedByteSha256 !== program.deployedByteSha256) {
-      throw new Error(`${program.name} deployed byte hash does not match the candidate manifest`);
+    const headerIdentity = programDataHeaderIdentity(programDataAccount.data);
+    if (program.programDataHeaderIdentity !== undefined
+      && headerIdentity !== program.programDataHeaderIdentity) {
+      throw new Error(`${program.name} ProgramData header identity does not match the candidate manifest`);
+    }
+    const deployedElfSha256 = programElfSha256(programData.deployedBytes);
+    if (program.programElfSha256 !== undefined && deployedElfSha256 !== program.programElfSha256) {
+      throw new Error(`${program.name} program ELF hash does not match the candidate manifest`);
     }
     let artifactSha256 = program.artifactSha256;
     if (program.artifactPath !== undefined) {
-      artifactSha256 = sha256(readFileSync(program.artifactPath));
+      artifactSha256 = programElfSha256(readFileSync(program.artifactPath));
       if (program.artifactSha256 !== undefined && artifactSha256 !== program.artifactSha256) {
         throw new Error(`${program.name} artifact hash does not match the candidate manifest`);
       }
     }
-    if (artifactSha256 !== undefined && artifactSha256 !== deployedByteSha256) {
-      throw new Error(`${program.name} artifact and deployed bytes differ`);
+    if (artifactSha256 !== undefined && artifactSha256 !== deployedElfSha256) {
+      throw new Error(`${program.name} artifact and deployed ELF differ`);
     }
     evidence.push(Object.freeze({
       name: program.name,
@@ -207,8 +233,10 @@ export async function verifyCandidateRelease(manifest, rpc) {
       programDataAddress: program.programDataAddress.toBase58(),
       deploymentSlot: programData.deploymentSlot.toString(),
       upgradeAuthority: observedAuthority,
+      programDataLength: programDataAccount.data.length,
+      programDataHeaderIdentity: headerIdentity,
+      programElfSha256: deployedElfSha256,
       artifactSha256: artifactSha256 ?? null,
-      deployedByteSha256,
     }));
   }
   return Object.freeze({

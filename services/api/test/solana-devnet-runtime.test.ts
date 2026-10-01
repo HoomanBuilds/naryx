@@ -7,6 +7,8 @@ import {
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_UPGRADEABLE_LOADER_ID,
   solanaIdlContentHash,
+  solanaProgramDataHeaderIdentity,
+  solanaProgramElfSha256,
   type SolanaDeploymentIdentityReadPort,
   type SolanaDevnetProgramExpectation,
   type SolanaReadOnlyRpc,
@@ -40,6 +42,8 @@ function programs(): readonly SolanaDevnetProgramExpectation[] {
     )[0].toBase58(),
     deploymentSlot: BigInt(10 + index),
     upgradeAuthority: { kind: "IMMUTABLE" as const },
+    programDataHeaderIdentity: solanaProgramDataHeaderIdentity(programDataAccount(BigInt(10 + index), index + 1).data),
+    programElfSha256: solanaProgramElfSha256(programDataAccount(BigInt(10 + index), index + 1).data.subarray(45)),
   }));
 }
 

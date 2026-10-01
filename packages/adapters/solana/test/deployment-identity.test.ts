@@ -6,6 +6,8 @@ import {
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_MAINNET_BETA_GENESIS_HASH,
   SOLANA_UPGRADEABLE_LOADER_ID,
+  solanaProgramDataHeaderIdentity,
+  solanaProgramElfSha256,
   verifySolanaDevnetDeploymentIdentity,
   type SolanaDeploymentIdentityReadPort,
   type SolanaDevnetProgramExpectation,
@@ -27,8 +29,8 @@ function programState(link = programDataAddress): Uint8Array {
   return data;
 }
 
-function programDataState(localAuthority = authority): Uint8Array {
-  const data = Buffer.alloc(45 + deployedCode.length);
+function programDataState(localAuthority = authority, padding = 0): Uint8Array {
+  const data = Buffer.alloc(45 + deployedCode.length + padding);
   data.writeUInt32LE(3, 0);
   data.writeBigUInt64LE(42n, 4);
   data[12] = 1;
@@ -45,8 +47,8 @@ function expectation(): SolanaDevnetProgramExpectation {
     programDataAddress,
     deploymentSlot: 42n,
     upgradeAuthority: { kind: 'EXACT', authority },
-    programDataCommitment: new Uint8Array(createHash('sha256').update(data).digest()),
-    deployedCodeCommitment: new Uint8Array(createHash('sha256').update(deployedCode).digest()),
+    programDataHeaderIdentity: solanaProgramDataHeaderIdentity(data),
+    programElfSha256: new Uint8Array(createHash('sha256').update(deployedCode).digest()),
   };
 }
 
@@ -54,6 +56,7 @@ function rpc(options: Readonly<{
   genesisHash?: string;
   linkage?: PublicKey;
   authority?: PublicKey;
+  padding?: number;
 }> = {}): SolanaDeploymentIdentityReadPort & { minimumSlot: number | undefined } {
   return {
     minimumSlot: undefined,
@@ -72,7 +75,7 @@ function rpc(options: Readonly<{
           {
             owner: SOLANA_UPGRADEABLE_LOADER_ID,
             executable: false,
-            data: programDataState(options.authority),
+            data: programDataState(options.authority, options.padding),
           },
         ],
       };
@@ -111,5 +114,32 @@ test('rejects an unexpected upgrade authority', async () => {
   await assert.rejects(
     verifySolanaDevnetDeploymentIdentity([expectation()], rpc({ authority: otherAuthority })),
     /upgrade authority policy mismatch/,
+  );
+});
+
+test('header identity binds slot, authority, and length; ELF hash ignores zero padding', async () => {
+  const base = programDataState();
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64LE(BigInt(base.length));
+  assert.deepEqual(
+    solanaProgramDataHeaderIdentity(base),
+    new Uint8Array(createHash('sha256')
+      .update('naryx.program-data-header.v1')
+      .update(base.subarray(0, 45))
+      .update(length)
+      .digest()),
+  );
+  const upgraded = Buffer.from(base);
+  upgraded.writeBigUInt64LE(43n, 4);
+  for (const changed of [upgraded, programDataState(otherAuthority), programDataState(authority, 8)]) {
+    assert.notDeepEqual(solanaProgramDataHeaderIdentity(changed), solanaProgramDataHeaderIdentity(base));
+  }
+  assert.deepEqual(
+    solanaProgramElfSha256(programDataState(authority, 8).subarray(45)),
+    expectation().programElfSha256,
+  );
+  await assert.rejects(
+    verifySolanaDevnetDeploymentIdentity([expectation()], rpc({ padding: 8 })),
+    /ProgramData header identity mismatch/,
   );
 });

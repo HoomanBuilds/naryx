@@ -33,7 +33,7 @@ use crate::{
         ed25519_signature::{
             signed_ed25519_public_key, verify_ed25519_signature, Ed25519SignatureError,
         },
-        program_identity::validate_program_data,
+        program_identity::program_data_header_identity,
     },
     state::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
@@ -1123,12 +1123,8 @@ pub(crate) fn live_program_code_identity(
         bpf_loader_upgradeable::id(),
         ErrorCode::CashCarryQuoteCodeIdentityMismatch
     );
-    let data = program_data.try_borrow_data()?;
-    require!(
-        validate_program_data(data.as_ref()),
-        ErrorCode::CashCarryQuoteCodeIdentityMismatch
-    );
-    Ok(hashv(&[data.as_ref()]).to_bytes())
+    program_data_header_identity(program_data.try_borrow_data()?.as_ref())
+        .ok_or_else(|| error!(ErrorCode::CashCarryQuoteCodeIdentityMismatch))
 }
 
 fn consume_package_quote<'info>(

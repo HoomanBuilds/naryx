@@ -11,7 +11,7 @@ pub use initialize_class::*;
 pub use release_reservation::*;
 
 use anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable::get_program_data_address};
-use naryx_core::DomainRef;
+use naryx_core::{instructions::program_identity::program_data_header_identity, DomainRef};
 use solana_sha256_hasher::hashv;
 
 use crate::{constants::DOMAIN_REF_IDENTITY_DOMAIN, error::ErrorCode, state::ReservationClass};
@@ -41,9 +41,8 @@ pub(crate) fn live_code_identity(
         bpf_loader_upgradeable::id(),
         ErrorCode::CodeIdentityMismatch
     );
-    let data = program_data.try_borrow_data()?;
-    require!(!data.is_empty(), ErrorCode::CodeIdentityMismatch);
-    Ok(hashv(&[data.as_ref()]).to_bytes())
+    program_data_header_identity(program_data.try_borrow_data()?.as_ref())
+        .ok_or_else(|| error!(ErrorCode::CodeIdentityMismatch))
 }
 
 pub(crate) fn verify_core_identity(

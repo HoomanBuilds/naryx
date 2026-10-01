@@ -10,7 +10,7 @@ pub mod execute_conformance_atomic;
 pub mod execute_firm_cash_and_carry;
 pub mod initialize;
 pub mod pause_entry;
-pub(crate) mod program_identity;
+pub mod program_identity;
 pub mod propose_domain;
 pub mod resource_registry;
 pub mod schedule_unpause;

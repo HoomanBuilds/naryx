@@ -7,7 +7,7 @@ use {
             program_pack::Pack,
             system_instruction,
         },
-        AccountDeserialize, InstructionData, ToAccountMetas,
+        AccountDeserialize, AccountSerialize, InstructionData, Space, ToAccountMetas,
     },
     anchor_spl::token::{
         spl_token::{self, state::Mint},
@@ -19,12 +19,14 @@ use {
     },
     naryx_core::{
         constants::{
-            ASSET_RESOURCE_SEED, PROTOCOL_CONFIG_SEED, RESOURCE_INDEX_SEED, RESOURCE_RECORD_SEED,
+            ASSET_RESOURCE_SEED, MARKET_RESOURCE_SEED, PROTOCOL_CONFIG_SEED, RESOURCE_INDEX_SEED,
+            RESOURCE_RECORD_SEED, VENUE_RESOURCE_SEED,
         },
         error::ErrorCode,
         instructions::{
+            program_identity::{program_data_header_identity, PROGRAM_DATA_METADATA_LENGTH},
             validate_cash_carry_admission, CashCarryAdmission, CashCarryResources, GovernanceRoles,
-            ProposeAssetArgs, ResourceAction,
+            ProposeAssetArgs, ProposeMarketArgs, ProposeVenueArgs, ResourceAction,
         },
         state::{
             DescriptorRef, ExecutionRole, Lifecycle, ManifestRef, MarketUnits, ProtocolConfig,
@@ -915,4 +917,204 @@ fn control_and_market_unit_validation_rejects_unsafe_or_malformed_values() {
     assert!(zero_limit
         .validate_for(&fixture.spot_market.manifest)
         .is_err());
+}
+
+fn resource_addresses(seed: &[u8], identity: &ManifestRef) -> (Pubkey, Pubkey) {
+    let index = Pubkey::find_program_address(
+        &[RESOURCE_INDEX_SEED, seed, identity.subject_id.as_ref()],
+        &naryx_core::id(),
+    )
+    .0;
+    let record = Pubkey::find_program_address(
+        &[
+            RESOURCE_RECORD_SEED,
+            seed,
+            identity.subject_id.as_ref(),
+            identity.manifest_version.to_be_bytes().as_ref(),
+        ],
+        &naryx_core::id(),
+    )
+    .0;
+    (index, record)
+}
+
+fn write_record(env: &mut Env, address: Pubkey, record: &ResourceRecord) {
+    let mut account = env.svm.get_account(&env.config).unwrap();
+    account.data.clear();
+    record.try_serialize(&mut account.data).unwrap();
+    account.data.resize(8 + ResourceRecord::INIT_SPACE, 0);
+    env.svm.set_account(address, account).unwrap();
+}
+
+fn write_program_data_header(env: &mut Env, address: Pubkey, slot: u64, authority: Pubkey) {
+    let mut account = env.svm.get_account(&address).unwrap();
+    account.data[4..12].copy_from_slice(&slot.to_le_bytes());
+    account.data[12] = 1;
+    account.data[13..PROGRAM_DATA_METADATA_LENGTH].copy_from_slice(authority.as_ref());
+    env.svm.set_account(address, account).unwrap();
+}
+
+fn compute_limit_ix(units: u32) -> Instruction {
+    let mut data = vec![2];
+    data.extend_from_slice(&units.to_le_bytes());
+    Instruction::new_with_bytes(
+        Pubkey::from_str_const("ComputeBudget111111111111111111111111111111"),
+        &data,
+        vec![],
+    )
+}
+
+#[test]
+fn venue_code_identity_is_constant_cost_and_binds_program_data_header() {
+    const PROGRAM_DATA_LENGTH: usize = 2 * 1024 * 1024 + 4096;
+    let mut env = setup();
+    let venue_program = Pubkey::new_unique();
+    env.svm
+        .add_program(
+            venue_program,
+            include_bytes!("../../../target/deploy/naryx_conformance_venue.so"),
+        )
+        .unwrap();
+    let venue_program_data = get_program_data_address(&venue_program);
+    let upgrade_authority = Pubkey::new_unique();
+    let mut program_data = env.svm.get_account(&venue_program_data).unwrap();
+    program_data.data.resize(PROGRAM_DATA_LENGTH, 0);
+    env.svm
+        .set_account(venue_program_data, program_data)
+        .unwrap();
+    write_program_data_header(&mut env, venue_program_data, 4_242, upgrade_authority);
+
+    let mut owned = env.svm.get_account(&env.config).unwrap();
+    owned.owner = venue_program;
+    let venue_account = Pubkey::new_unique();
+    let market_account = Pubkey::new_unique();
+    env.svm.set_account(venue_account, owned.clone()).unwrap();
+    env.svm.set_account(market_account, owned).unwrap();
+
+    let base = manifest_ref(61, 1);
+    let quote = manifest_ref(62, 1);
+    let (base_record, quote_record) = (Pubkey::new_unique(), Pubkey::new_unique());
+    for (address, identity, decimals) in [(base_record, &base, 9), (quote_record, &quote, 6)] {
+        let record = resource_record(
+            ResourceKind::Asset,
+            ExecutionRole::None,
+            identity.clone(),
+            domain(1, DOMAIN_HASH),
+            None,
+            None,
+            None,
+            None,
+            decimals,
+            ResourceControl {
+                lifecycle: Lifecycle::Active,
+                quote_limit: None,
+            },
+        );
+        write_record(&mut env, address, &record);
+    }
+
+    let venue = manifest_ref(63, 1);
+    let (venue_index, venue_record) = resource_addresses(VENUE_RESOURCE_SEED, &venue);
+    let propose_venue = core_ix(
+        naryx_core::accounts::ProposeVenue {
+            payer: env.payer.pubkey(),
+            proposer: env.proposer.pubkey(),
+            config: env.config,
+            index: venue_index,
+            record: venue_record,
+            base_asset: base_record,
+            quote_asset: quote_record,
+            venue_program,
+            venue_program_data,
+            venue_account,
+            system_program: anchor_lang::system_program::ID,
+        },
+        naryx_core::instruction::ProposeVenue {
+            args: ProposeVenueArgs {
+                identity: venue.clone(),
+                role: ExecutionRole::Spot,
+                base_asset: base.clone(),
+                quote_asset: quote.clone(),
+                control: quote_control(&quote, 6, 1_000_000_000, Lifecycle::Active),
+            },
+        },
+    );
+    let payer = env.payer.insecure_clone();
+    let proposer = env.proposer.insecure_clone();
+    let meta = send(
+        &mut env.svm,
+        &payer,
+        &[&proposer],
+        &[compute_limit_ix(1_400_000), propose_venue],
+    )
+    .unwrap();
+    println!(
+        "ProposeVenue with {PROGRAM_DATA_LENGTH}-byte ProgramData consumed {} CU",
+        meta.compute_units_consumed
+    );
+    let live = env.svm.get_account(&venue_program_data).unwrap();
+    let identity = program_data_header_identity(&live.data).unwrap();
+    let mut recorded = read_record(&env.svm, venue_record);
+    assert_eq!(recorded.manifest.code_identity, identity);
+    assert!(meta.compute_units_consumed < 100_000);
+
+    recorded.active = true;
+    recorded.control = quote_control(&quote, 6, 1_000_000_000, Lifecycle::Active);
+    recorded.pending_control = None;
+    write_record(&mut env, venue_record, &recorded);
+
+    let market = manifest_ref(64, 1);
+    let (market_index, market_record) = resource_addresses(MARKET_RESOURCE_SEED, &market);
+    let propose_market = core_ix(
+        naryx_core::accounts::ProposeMarket {
+            payer: env.payer.pubkey(),
+            proposer: env.proposer.pubkey(),
+            config: env.config,
+            index: market_index,
+            record: market_record,
+            venue: venue_record,
+            base_asset: base_record,
+            quote_asset: quote_record,
+            venue_program,
+            venue_program_data,
+            market_account,
+            system_program: anchor_lang::system_program::ID,
+        },
+        naryx_core::instruction::ProposeMarket {
+            args: ProposeMarketArgs {
+                identity: market,
+                role: ExecutionRole::Spot,
+                venue,
+                base_asset: base,
+                quote_asset: quote.clone(),
+                units: MarketUnits {
+                    base_decimals: 9,
+                    quote_decimals: 6,
+                    base_lot_atoms: 1_000,
+                    quote_tick_atoms_per_base_lot: 10,
+                    minimum_quote_notional_atoms: 1_000_000,
+                    multiplier_numerator: 1,
+                    multiplier_denominator: 1,
+                },
+                control: quote_control(&quote, 6, 1_000_000_000, Lifecycle::Active),
+            },
+        },
+    );
+
+    write_program_data_header(&mut env, venue_program_data, 4_243, upgrade_authority);
+    assert_custom_error(
+        send(&mut env.svm, &payer, &[&proposer], &[propose_market.clone()]),
+        ErrorCode::ResourceCodeIdentityMismatch,
+    );
+    write_program_data_header(&mut env, venue_program_data, 4_242, Pubkey::new_unique());
+    assert_custom_error(
+        send(&mut env.svm, &payer, &[&proposer], &[propose_market.clone()]),
+        ErrorCode::ResourceCodeIdentityMismatch,
+    );
+    write_program_data_header(&mut env, venue_program_data, 4_242, upgrade_authority);
+    send(&mut env.svm, &payer, &[&proposer], &[propose_market]).unwrap();
+    assert_eq!(
+        read_record(&env.svm, market_record).manifest.code_identity,
+        identity
+    );
 }

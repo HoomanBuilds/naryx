@@ -1,9 +1,8 @@
 use anchor_lang::{prelude::*, solana_program::bpf_loader_upgradeable::get_program_data_address};
 use anchor_spl::token::ID as TOKEN_PROGRAM_ID;
 use solana_sdk_ids::bpf_loader_upgradeable;
-use solana_sha256_hasher::hashv;
 
-use crate::instructions::program_identity::validate_program_data;
+use crate::instructions::program_identity::program_data_header_identity;
 use crate::{
     constants::{
         ADAPTER_RESOURCE_SEED, ASSET_RESOURCE_SEED, MARKET_RESOURCE_SEED, PROTOCOL_CONFIG_SEED,
@@ -1176,12 +1175,8 @@ fn live_code_identity(program: &AccountInfo, program_data: &AccountInfo) -> Resu
         bpf_loader_upgradeable::id(),
         ErrorCode::ResourceCodeIdentityMismatch
     );
-    let data = program_data.try_borrow_data()?;
-    require!(
-        validate_program_data(data.as_ref()),
-        ErrorCode::ResourceCodeIdentityMismatch
-    );
-    Ok(hashv(&[data.as_ref()]).to_bytes())
+    program_data_header_identity(program_data.try_borrow_data()?.as_ref())
+        .ok_or_else(|| error!(ErrorCode::ResourceCodeIdentityMismatch))
 }
 
 pub(crate) fn verify_code_identity(
