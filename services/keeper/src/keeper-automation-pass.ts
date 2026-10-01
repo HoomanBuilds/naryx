@@ -37,7 +37,21 @@ export interface KeeperAutomationPorts {
   plan(entry: KeeperAutomationEntry, before: StrategyHealthSnapshotInput): Promise<KeeperActionPlan | undefined>;
   /** QUEUED means the executor re-authorized the action and queued it once for its domain runtime. */
   dispatch(action: { readonly keeperId: string; readonly authorizationHash: string; readonly entry: KeeperAutomationEntry; readonly plan: KeeperActionPlan }): Promise<'EXECUTED' | 'QUEUED' | 'REJECTED'>;
-  now(unit: string): bigint | undefined;
+  /** The current time in an expiry unit, or undefined when the keeper has no clock for that unit. */
+  now(unit: string): bigint | undefined | Promise<bigint | undefined>;
+}
+
+/**
+ * The keeper's clock: wall-clock seconds and milliseconds for the EVM and Hyperliquid units, and the
+ * Solana slot only when a slot reader is injected. Any other unit has no clock.
+ */
+export function keeperClock(input: { readonly nowMs: () => number; readonly solanaSlot?: () => Promise<bigint> }): KeeperAutomationPorts['now'] {
+  return (unit) => {
+    if (unit === 'EVM_UNIX_SECONDS') return BigInt(Math.floor(input.nowMs() / 1_000));
+    if (unit === 'HYPERLIQUID_UNIX_MILLISECONDS') return BigInt(input.nowMs());
+    if (unit === 'SOLANA_SLOT' && input.solanaSlot !== undefined) return input.solanaSlot();
+    return undefined;
+  };
 }
 
 export type KeeperPassStatus = 'SKIPPED_CONSUMED' | 'NOT_READY' | 'REJECTED' | 'EXECUTED' | 'QUEUED' | 'EXECUTOR_REJECTED' | 'FAILED';
@@ -132,7 +146,7 @@ export async function runKeeperAutomationPass(input: {
       continue;
     }
     try {
-      const at = input.ports.now(entry.authorization.expiryUnit);
+      const at = await input.ports.now(entry.authorization.expiryUnit);
       const health = await input.ports.readHealth(strategyId);
       if (at === undefined || health === undefined) {
         results.push({ strategyId, authorizationHash, status: 'NOT_READY' as const, detail: at === undefined ? 'TIME_UNIT_UNSUPPORTED' : 'HEALTH_UNAVAILABLE' });

@@ -3,22 +3,21 @@ import { HyperliquidAuthoritativeEvidenceCollector, HyperliquidSdkTestnetReadCli
 import { HyperliquidTestnetEvidenceRuntime } from './hyperliquid-testnet-evidence-runtime.js';
 import { readFileSync } from 'node:fs';
 import { parseProtocolJson } from '@naryx/protocol-types';
-import {
-  EvmJsonRpcCodeReader,
-  SolanaRpcProgramDataReader,
-  loadCodeHashMonitorConfig,
-  runCodeHashPass,
-} from './code-hash-monitor.js';
+import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './code-hash-monitor.js';
+import { loadKeeperRpcUrls, solanaSlotReader } from './chain-identity.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
 import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
-import { httpKeeperPorts, KeeperActionJournal, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
+import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
 // executor, consuming each authorization once in its journal. It is off without its config.
+// SOLANA_SLOT time comes only from a Solana Devnet endpoint in NARYX_KEEPER_RPC_URLS.
 const automation = loadKeeperAutomationConfig(process.env, (path) => readFileSync(path, 'utf8'));
 if (automation !== undefined) {
   const journal = new KeeperActionJournal(automation.journalPath);
-  const ports = { ...httpKeeperPorts(automation.executorOrigin), now: (unit: string) => (unit === 'EVM_UNIX_SECONDS' ? BigInt(Math.floor(Date.now() / 1_000)) : unit === 'HYPERLIQUID_UNIX_MILLISECONDS' ? BigInt(Date.now()) : undefined) };
+  const solanaDevnetRpcUrl = loadKeeperRpcUrls(process.env).get('solana:devnet');
+  const now = keeperClock({ nowMs: Date.now, ...(solanaDevnetRpcUrl === undefined ? {} : { solanaSlot: solanaSlotReader('solana:devnet', solanaDevnetRpcUrl) }) });
+  const ports = { ...httpKeeperPorts(automation.executorOrigin), now };
   let running = false;
   const pass = async () => {
     if (running) return;
@@ -48,16 +47,13 @@ const server = createHyperliquidTestnetEvidenceServer({ runtime });
 const monitor = loadCodeHashMonitorConfig(process.env, (path) => readFileSync(path, 'utf8'), parseProtocolJson);
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
 if (monitor !== undefined) {
-  const readers = {
-    ...(monitor.evmRpcUrl === undefined ? {} : { EVM: new EvmJsonRpcCodeReader(monitor.evmRpcUrl) }),
-    ...(monitor.solanaRpcUrl === undefined ? {} : { SVM: new SolanaRpcProgramDataReader(monitor.solanaRpcUrl) }),
-  };
+  const readers = Object.fromEntries([...monitor.rpcUrls].map(([chainRef, url]) => [chainRef, createCodeReader(chainRef, url)]));
   const journals = monitor.journals.map((entry) => ({ store: new DependencyIncidentFileStore(entry.journalPath), readinessDecision: entry.readinessDecision }));
   const pass = async () => {
     try {
       const observations = await runCodeHashPass({ targets: monitor.targets, readers, journals, nowMs: BigInt(Date.now()), evidenceTtlMs: monitor.evidenceTtlMs });
       const flagged = observations.filter((entry) => entry.status !== 'MATCH');
-      if (flagged.length > 0) process.stdout.write(`Code-hash monitor: ${flagged.map((entry) => `${entry.targetId} ${entry.status}`).join(', ')}\n`);
+      if (flagged.length > 0) process.stdout.write(`Code-hash monitor: ${flagged.map((entry) => `${entry.targetId} ${entry.chainRef} ${entry.status}${entry.detail === undefined ? '' : ` (${entry.detail})`}`).join(', ')}\n`);
     } catch (error) {
       process.stderr.write(`Code-hash monitor pass failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
     }

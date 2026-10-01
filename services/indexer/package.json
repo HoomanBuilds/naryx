@@ -5,6 +5,7 @@
   "scripts": {
     "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.test.json --noEmit"
   },
   "license": "UNLICENSED",

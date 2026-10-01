@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { EvidenceGrade, IndexedEventKind } from "./package-record.js";
 import { BOND_VAULT_TOPICS, decodeBondVaultLog, type ObservedBondEvent } from "./bond-vault.js";
+import { COORDINATOR_TOPICS, decodeCoordinatorLog, type ObservedCoordinatorEvent } from "./async-coordinator.js";
 import type { FinalityCheckpoint, ObservedBlock, ObservedChainEvent, SqliteReceiptIndex } from "./receipt-index.js";
 
 /** keccak256("PackageVerified(bytes32,address,uint8,address,bool,uint256,uint256,bytes32,bytes32)") */
@@ -11,6 +12,7 @@ export const PACKAGE_EXECUTED_TOPIC = "0x35bce0f4060b2fcf5d50ac374aec87723512a4a
 const HEX32 = /^0x[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/;
+const EIP155_DOMAIN = /^eip155:([1-9][0-9]{0,18})$/;
 /** A block range read in one `eth_getLogs` call; kept small so a public endpoint answers it. */
 const MAX_BLOCKS_PER_PASS = 50;
 
@@ -41,12 +43,12 @@ export class EvmJsonRpc {
   #id = 0;
 
   constructor(url: string, fetcher: Fetch = fetch as unknown as Fetch) {
-    if (!/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?)/.test(url)) throw new Error("RPC URLs must be https or loopback http");
+    if (!/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/|$))/.test(url)) throw new Error("RPC URLs must be https or loopback http");
     this.url = url;
     this.#fetch = fetcher;
   }
 
-  async #call(method: "eth_blockNumber" | "eth_getBlockByNumber" | "eth_getLogs", params: readonly unknown[]): Promise<unknown> {
+  async #call(method: "eth_chainId" | "eth_blockNumber" | "eth_getBlockByNumber" | "eth_getLogs", params: readonly unknown[]): Promise<unknown> {
     this.#id += 1;
     const response = await this.#fetch(this.url, {
       method: "POST",
@@ -57,6 +59,13 @@ export class EvmJsonRpc {
     const body = (await response.json()) as { result?: unknown; error?: { message?: string } };
     if (body.error !== undefined) throw new Error(`${method} failed: ${String(body.error.message ?? "unknown error")}`);
     return body.result;
+  }
+
+  /** The chain id the endpoint reports; the chain data that proves which chain it serves. */
+  async chainId(): Promise<bigint> {
+    const value = await this.#call("eth_chainId", []);
+    if (typeof value !== "string" || !QUANTITY.test(value)) throw new Error("chainId is not a hex quantity");
+    return BigInt(value);
   }
 
   async blockNumber(): Promise<number> {
@@ -126,14 +135,37 @@ export function decodeSettlementLog(log: RpcLog, evidenceGrade: EvidenceGrade): 
   });
 }
 
+/** The chain id of a CAIP-2 eip155 domain such as `eip155:84532`; any other domain is refused. */
+export function evmChainIdOfDomain(domainId: string): bigint {
+  const match = typeof domainId === "string" ? EIP155_DOMAIN.exec(domainId) : null;
+  if (match === null) throw new Error("an EVM domain must be a CAIP-2 eip155 chain reference such as eip155:84532");
+  return BigInt(match[1] as string);
+}
+
+/**
+ * Every endpoint must report the domain's chain id, so a mislabeled URL can never feed another
+ * chain's blocks into this domain. Endpoints are named by position: a URL may carry a provider key.
+ */
+export async function verifyChainIds(source: EvmIndexerSource): Promise<void> {
+  const expected = evmChainIdOfDomain(source.domainId);
+  const reported = await Promise.all(source.rpcs.map((rpc) => rpc.chainId()));
+  for (const [position, chainId] of reported.entries()) {
+    if (chainId !== expected) throw new Error(`RPC endpoint ${position + 1} serves eip155:${chainId}, not ${source.domainId}`);
+  }
+}
+
 export interface EvmIndexerSource {
+  /** A CAIP-2 eip155 chain reference, for example `eip155:84532` or `eip155:421614`. */
   readonly domainId: string;
+  /** Settlement contracts emitting PackageVerified or PackageExecuted; may be empty when only coordinators are followed. */
   readonly contracts: readonly string[];
   /** One endpoint, or several independent ones that must agree. */
   readonly rpcs: readonly EvmJsonRpc[];
   readonly startHeight: number;
   /** Performance bond vaults whose logs are indexed alongside settlement logs. */
   readonly bondVaults?: readonly string[];
+  /** AsyncBondedPackageCoordinator contracts whose package lifecycle logs are indexed. */
+  readonly coordinators?: readonly string[];
 }
 
 /**
@@ -155,7 +187,8 @@ export async function readBlock(source: EvmIndexerSource, height: number): Promi
         if (log.blockHash.toLowerCase() !== block.hash.toLowerCase()) throw new Error(`logs for height ${height} came from another block`);
         return true;
       };
-      const logs = (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC], block.hash)).filter(inBlock);
+      // An empty address list would match every contract's logs, so no list means no query.
+      const logs = source.contracts.length === 0 ? [] : (await rpc.logs(height, height, source.contracts, [PACKAGE_VERIFIED_TOPIC, PACKAGE_EXECUTED_TOPIC], block.hash)).filter(inBlock);
       let bondEvents: ObservedBondEvent[] = [];
       if (source.bondVaults !== undefined && source.bondVaults.length > 0) {
         const bondLogs = (await rpc.logs(height, height, source.bondVaults, BOND_VAULT_TOPICS, block.hash)).filter(inBlock);
@@ -165,18 +198,26 @@ export async function readBlock(source: EvmIndexerSource, height: number): Promi
           bondEvents = bondLogs.map((log) => decodeBondVaultLog(log, timestamp, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1));
         }
       }
-      return { block, events: logs.map((log) => decodeSettlementLog(log, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1)), bondEvents };
+      let coordinatorEvents: ObservedCoordinatorEvent[] = [];
+      if (source.coordinators !== undefined && source.coordinators.length > 0) {
+        coordinatorEvents = (await rpc.logs(height, height, source.coordinators, COORDINATOR_TOPICS, block.hash))
+          .filter(inBlock)
+          .map((log) => decodeCoordinatorLog(log, grade))
+          .sort((a, b) => (a.locator < b.locator ? -1 : 1));
+      }
+      return { block, events: logs.map((log) => decodeSettlementLog(log, grade)).sort((a, b) => (a.locator < b.locator ? -1 : 1)), bondEvents, coordinatorEvents };
     }),
   );
   if (views.some((view) => view === null)) return null;
-  const [first, ...rest] = views as { block: RpcBlock; events: ObservedChainEvent[]; bondEvents: ObservedBondEvent[] }[];
+  const [first, ...rest] = views as { block: RpcBlock; events: ObservedChainEvent[]; bondEvents: ObservedBondEvent[]; coordinatorEvents: ObservedCoordinatorEvent[] }[];
   if (first === undefined) return null;
   for (const view of rest) {
     if (
       view.block.hash !== first.block.hash ||
       view.block.parentHash !== first.block.parentHash ||
       JSON.stringify(view.events) !== JSON.stringify(first.events) ||
-      JSON.stringify(view.bondEvents) !== JSON.stringify(first.bondEvents)
+      JSON.stringify(view.bondEvents) !== JSON.stringify(first.bondEvents) ||
+      JSON.stringify(view.coordinatorEvents) !== JSON.stringify(first.coordinatorEvents)
     ) {
       throw new Error(`endpoints disagree about block ${height}`);
     }
@@ -187,18 +228,20 @@ export async function readBlock(source: EvmIndexerSource, height: number): Promi
     parentHashHex: first.block.parentHash.slice(2).toLowerCase(),
     events: first.events,
     ...(first.bondEvents.length === 0 ? {} : { bondEvents: first.bondEvents }),
+    ...(first.coordinatorEvents.length === 0 ? {} : { coordinatorEvents: first.coordinatorEvents }),
   };
 }
 
 /**
- * One indexing pass: follow the chain from the index tip toward the endpoint's head, replaying
- * from the fork point whenever a block does not extend the canonical chain, then advance
- * confirmation to the endpoint's safe block and finality to its finalized block when the index
- * holds them.
+ * One indexing pass: prove every endpoint serves the domain's chain, follow the chain from the
+ * index tip toward the endpoint's head, replaying from the fork point whenever a block does not
+ * extend the canonical chain, then advance confirmation to the endpoint's safe block and finality
+ * to its finalized block when the index holds them.
  */
 export async function runEvmIndexerPass(index: SqliteReceiptIndex, source: EvmIndexerSource): Promise<{ readonly ingested: number; readonly reorgs: number; readonly tip: number | null }> {
   const primary = source.rpcs[0];
   if (primary === undefined) throw new Error("an EVM source needs at least one RPC endpoint");
+  await verifyChainIds(source);
   const head = await primary.blockNumber();
   const state = index.domainState(source.domainId);
   const tipHeight = state?.tipHeight ?? null;

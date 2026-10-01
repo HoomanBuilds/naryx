@@ -60,13 +60,13 @@ const SPECS: Readonly<Record<string, { type: BondEventType; topics: number; word
   [BOND_RELEASED_TOPIC]: { type: "BOND_RELEASED", topics: 3, words: 1 },
 };
 
-function uint(word: string, bits: number, context: string): bigint {
+export function uint(word: string, bits: number, context: string): bigint {
   const value = BigInt(`0x${word}`);
   if (value >= 1n << BigInt(bits)) throw new Error(`${context} is not a uint${bits}`);
   return value;
 }
 
-function address(word: string, context: string): string {
+export function address(word: string, context: string): string {
   if (!/^0{24}[0-9a-f]{40}$/.test(word)) throw new Error(`${context} is not an address`);
   return `0x${word.slice(24)}`;
 }

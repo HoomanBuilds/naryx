@@ -40,8 +40,10 @@ export {
   PACKAGE_EXECUTED_TOPIC,
   PACKAGE_VERIFIED_TOPIC,
   decodeSettlementLog,
+  evmChainIdOfDomain,
   readBlock,
   runEvmIndexerPass,
+  verifyChainIds,
   type EvmIndexerSource,
   type RpcBlock,
   type RpcLog,
@@ -61,4 +63,18 @@ export {
   type ObservedBondClaim,
   type ObservedBondEvent,
 } from "./bond-vault.js";
+export {
+  BOND_SLASHED_TOPIC,
+  COORDINATOR_STATES,
+  COORDINATOR_TOPICS,
+  PACKAGE_RELEASED_TOPIC,
+  PACKAGE_TRANSITION_TOPIC,
+  decodeCoordinatorLog,
+  replayCoordinatorEvents,
+  type CoordinatorEventType,
+  type CoordinatorState,
+  type ObservedAsyncPackage,
+  type ObservedAsyncRelease,
+  type ObservedCoordinatorEvent,
+} from "./async-coordinator.js";
 export { exportReconciliationReport, type ReportExportOptions } from "./report-export.js";

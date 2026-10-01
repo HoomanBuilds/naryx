@@ -13,6 +13,7 @@ import {
   type IndexedPackageRecord,
 } from "./package-record.js";
 import { replayBondEvents, type BondEventType, type ObservedBond, type ObservedBondEvent } from "./bond-vault.js";
+import { replayCoordinatorEvents, type CoordinatorEventType, type ObservedAsyncPackage, type ObservedCoordinatorEvent } from "./async-coordinator.js";
 
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const LOCATOR = /^[A-Za-z0-9:_.-]{1,160}$/;
@@ -45,6 +46,8 @@ export interface ObservedBlock {
   readonly events: readonly ObservedChainEvent[];
   /** Decoded performance bond vault logs in this block, when the source follows a vault. */
   readonly bondEvents?: readonly ObservedBondEvent[];
+  /** Decoded async bonded coordinator logs in this block, when the source follows a coordinator. */
+  readonly coordinatorEvents?: readonly ObservedCoordinatorEvent[];
 }
 
 export interface ObservedVenueFill {
@@ -123,6 +126,22 @@ CREATE TABLE IF NOT EXISTS bond_events (
   FOREIGN KEY (domain_id, block_hash) REFERENCES blocks(domain_id, block_hash)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS bond_events_bond ON bond_events(domain_id, vault, bond_id);
+CREATE TABLE IF NOT EXISTS coordinator_events (
+  domain_id TEXT NOT NULL,
+  block_hash TEXT NOT NULL,
+  locator TEXT NOT NULL,
+  log_index INTEGER NOT NULL CHECK (log_index >= 0),
+  coordinator TEXT NOT NULL,
+  package_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  evidence_grade TEXT NOT NULL,
+  fields TEXT NOT NULL,
+  PRIMARY KEY (domain_id, block_hash, locator),
+  FOREIGN KEY (domain_id, block_hash) REFERENCES blocks(domain_id, block_hash)
+) STRICT;
+CREATE INDEX IF NOT EXISTS coordinator_events_package ON coordinator_events(domain_id, coordinator, package_id);
+CREATE TRIGGER IF NOT EXISTS reject_coordinator_event_change BEFORE UPDATE ON coordinator_events BEGIN SELECT RAISE(ABORT, 'coordinator events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_coordinator_event_delete BEFORE DELETE ON coordinator_events BEGIN SELECT RAISE(ABORT, 'coordinator events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_bond_event_change BEFORE UPDATE ON bond_events BEGIN SELECT RAISE(ABORT, 'bond events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_bond_event_delete BEFORE DELETE ON bond_events BEGIN SELECT RAISE(ABORT, 'bond events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_event_change BEFORE UPDATE ON chain_events BEGIN SELECT RAISE(ABORT, 'chain events are append-only'); END;
@@ -167,6 +186,29 @@ function checkedBondEvent(event: ObservedBondEvent, index: number): ObservedBond
     bondIdHex: hashHex(event.bondIdHex, `bondEvents[${index}].bondIdHex`),
     type: event.type,
     atValue: event.atValue,
+    evidenceGrade: event.evidenceGrade,
+    fields: event.fields,
+  };
+}
+
+const COORDINATOR_EVENT_TYPES: ReadonlySet<CoordinatorEventType> = new Set(["PACKAGE_TRANSITION", "PACKAGE_RELEASED", "BOND_SLASHED"]);
+
+function checkedCoordinatorEvent(event: ObservedCoordinatorEvent, index: number): ObservedCoordinatorEvent & { readonly logIndex: number } {
+  if (typeof event !== "object" || event === null) throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} is not an object.`);
+  const match = typeof event.locator === "string" ? /^0x[0-9a-f]{64}:(\d{1,9})$/.exec(event.locator) : null;
+  if (match === null) throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} locator is invalid.`);
+  if (!COORDINATOR_EVENT_TYPES.has(event.type)) throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} type is unknown.`);
+  if (!Object.hasOwn(EVIDENCE_GRADE, event.evidenceGrade)) throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} evidence grade is unknown.`);
+  if (typeof event.coordinator !== "string" || !/^0x[0-9a-f]{40}$/.test(event.coordinator)) throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} coordinator is invalid.`);
+  if (typeof event.fields !== "object" || event.fields === null || !Object.values(event.fields).every((value) => typeof value === "string")) {
+    throw new ReceiptIndexError("INVALID_INPUT", `Coordinator event ${index} fields are invalid.`);
+  }
+  return {
+    locator: event.locator,
+    logIndex: Number(match[1]),
+    coordinator: event.coordinator,
+    packageIdHex: hashHex(event.packageIdHex, `coordinatorEvents[${index}].packageIdHex`),
+    type: event.type,
     evidenceGrade: event.evidenceGrade,
     fields: event.fields,
   };
@@ -268,10 +310,23 @@ export class SqliteReceiptIndex {
     if (new Set(bondEvents.map((event) => event.locator)).size !== bondEvents.length) {
       throw new ReceiptIndexError("INVALID_INPUT", "Bond event locators repeat inside the block.");
     }
-    // Bond events join the content key only when present, so blocks indexed before them keep their keys.
-    const sortedEvents = [...events].sort((a, b) => (a.locator < b.locator ? -1 : 1));
+    if (block.coordinatorEvents !== undefined && (!Array.isArray(block.coordinatorEvents) || block.coordinatorEvents.length > MAX_EVENTS_PER_BLOCK)) {
+      throw new ReceiptIndexError("INVALID_INPUT", `A block carries at most ${MAX_EVENTS_PER_BLOCK} coordinator events.`);
+    }
+    const coordinatorEvents = (block.coordinatorEvents ?? []).map(checkedCoordinatorEvent);
+    if (new Set(coordinatorEvents.map((event) => event.locator)).size !== coordinatorEvents.length) {
+      throw new ReceiptIndexError("INVALID_INPUT", "Coordinator event locators repeat inside the block.");
+    }
+    // Bond and coordinator events join the content key only when present, so blocks indexed before
+    // them keep their keys; the key's length tells the shapes apart.
+    const byLocator = (a: { locator: string }, b: { locator: string }) => (a.locator < b.locator ? -1 : 1);
+    const sortedEvents = [...events].sort(byLocator);
     const contentKey = JSON.stringify(
-      bondEvents.length === 0 ? [at, parentHash, sortedEvents] : [at, parentHash, sortedEvents, [...bondEvents].sort((a, b) => (a.locator < b.locator ? -1 : 1))],
+      coordinatorEvents.length > 0
+        ? [at, parentHash, sortedEvents, [...bondEvents].sort(byLocator), [...coordinatorEvents].sort(byLocator)]
+        : bondEvents.length === 0
+          ? [at, parentHash, sortedEvents]
+          : [at, parentHash, sortedEvents, [...bondEvents].sort(byLocator)],
     );
 
     return this.transaction(() => {
@@ -324,6 +379,12 @@ export class SqliteReceiptIndex {
         );
         for (const event of bondEvents) {
           insertBond.run(domainId, blockHash, event.locator, event.logIndex, event.vault, event.bondIdHex, event.type, event.atValue, event.evidenceGrade, JSON.stringify(event.fields));
+        }
+        const insertCoordinator = this.db.prepare(
+          "INSERT INTO coordinator_events (domain_id, block_hash, locator, log_index, coordinator, package_id, event_type, evidence_grade, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        );
+        for (const event of coordinatorEvents) {
+          insertCoordinator.run(domainId, blockHash, event.locator, event.logIndex, event.coordinator, event.packageIdHex, event.type, event.evidenceGrade, JSON.stringify(event.fields));
         }
       }
       return displaced.count > 0 ? { status: "REORGED" as const, orphanedBlocks: displaced.count } : { status: "APPENDED" as const };
@@ -455,6 +516,52 @@ export class SqliteReceiptIndex {
     const last = rows[rows.length - 1] as (typeof rows)[number];
     const finality: Finality = last.height <= last.finalized_height ? "FINALIZED" : last.height <= last.confirmed_height ? "CONFIRMED" : "OBSERVED";
     return replayBondEvents(events, finality);
+  }
+
+  /**
+   * One async bonded coordinator package as its canonical logs show it, replayed in chain order.
+   * Finality is the weakest of its events; undefined when the index holds no event for it.
+   */
+  asyncPackage(domainIdInput: string, coordinatorInput: string, packageIdHexInput: string): ObservedAsyncPackage | undefined {
+    const domainId = id(domainIdInput, "domainId");
+    const coordinator = String(coordinatorInput).toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(coordinator)) throw new ReceiptIndexError("INVALID_INPUT", "coordinator must be a 20-byte hex address.");
+    const packageId = hashHex(String(packageIdHexInput).toLowerCase().replace(/^0x/, ""), "packageIdHex");
+    const rows = this.db
+      .prepare(
+        `SELECT e.locator, e.coordinator, e.package_id, e.event_type, e.evidence_grade, e.fields, b.height, d.confirmed_height, d.finalized_height
+         FROM coordinator_events e
+         JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
+         JOIN domains d ON d.domain_id = e.domain_id
+         WHERE e.domain_id = ? AND e.coordinator = ? AND e.package_id = ?
+         ORDER BY b.height ASC, e.log_index ASC`,
+      )
+      .all(domainId, coordinator, packageId) as {
+      locator: string;
+      coordinator: string;
+      package_id: string;
+      event_type: CoordinatorEventType;
+      evidence_grade: EvidenceGrade;
+      fields: string;
+      height: number;
+      confirmed_height: number;
+      finalized_height: number;
+    }[];
+    if (rows.length === 0) return undefined;
+    const last = rows[rows.length - 1] as (typeof rows)[number];
+    const finality: Finality = last.height <= last.finalized_height ? "FINALIZED" : last.height <= last.confirmed_height ? "CONFIRMED" : "OBSERVED";
+    return replayCoordinatorEvents(
+      rows.map((row) => ({
+        locator: row.locator,
+        coordinator: row.coordinator,
+        packageIdHex: row.package_id,
+        type: row.event_type,
+        evidenceGrade: row.evidence_grade,
+        fields: JSON.parse(row.fields) as Record<string, string>,
+        height: row.height,
+      })),
+      finality,
+    );
   }
 
   /** The bonds a vault holds for one solver address, each replayed as `bond` does. */

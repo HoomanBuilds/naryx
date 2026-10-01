@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { EvmJsonRpc, PACKAGE_EXECUTED_TOPIC, PACKAGE_VERIFIED_TOPIC, SqliteReceiptIndex, decodeSettlementLog, runEvmIndexerPass, type RpcLog } from "../src/index.js";
+import { EvmJsonRpc, PACKAGE_EXECUTED_TOPIC, PACKAGE_VERIFIED_TOPIC, SqliteReceiptIndex, decodeSettlementLog, evmChainIdOfDomain, runEvmIndexerPass, type RpcLog } from "../src/index.js";
 
 const CONTRACT = `0x${"ab".repeat(20)}`;
 const hash = (label: string, height: number) => `0x${Buffer.from(`${label}:${height}`).toString("hex").padEnd(64, "0").slice(0, 64)}`;
@@ -23,7 +23,7 @@ function verifiedLog(blockHash: string, height: number, receipt: string, recover
 }
 
 /** An in-memory chain behind a JSON-RPC stub, with a branch that can be swapped for a reorg. */
-function chain() {
+function chain(chainId = 84532) {
   let branch = "main";
   let head = 5;
   const blockHash = (height: number) => (height <= 3 ? hash("main", height) : hash(branch, height));
@@ -31,7 +31,8 @@ function chain() {
   const fetcher = async (_url: string, init: { body: string }) => {
     const { method, params, id } = JSON.parse(init.body);
     let result: unknown;
-    if (method === "eth_blockNumber") result = quantity(head);
+    if (method === "eth_chainId") result = quantity(chainId);
+    else if (method === "eth_blockNumber") result = quantity(head);
     else if (method === "eth_getBlockByNumber") {
       const tag = params[0] as string;
       const height = tag === "finalized" ? 2 : tag === "safe" ? 3 : Number.parseInt(tag.slice(2), 16);
@@ -106,6 +107,28 @@ test("independent endpoints must agree before their view is graded as corroborat
     const source = { domainId: "eip155:84532", contracts: [CONTRACT], rpcs: [new EvmJsonRpc("http://127.0.0.1:8545", honest.fetcher as never), new EvmJsonRpc("http://127.0.0.1:8546", lying.fetcher as never)], startHeight: 0 };
     await assert.rejects(runEvmIndexerPass(index, source), /disagree about block 4/);
     assert.throws(() => new EvmJsonRpc("http://example.com"), /https or loopback/);
+  } finally {
+    index.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("every endpoint must report the domain's chain id before anything is indexed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-evm-index-"));
+  const index = new SqliteReceiptIndex(join(dir, "index.sqlite"));
+  const base = chain(84532);
+  base.addLog(4, "5a");
+  // A second "Base Sepolia" URL that actually serves Arbitrum Sepolia.
+  const arbitrum = chain(421614);
+  try {
+    const rpcs = [new EvmJsonRpc("http://127.0.0.1:8545", base.fetcher as never), new EvmJsonRpc("http://127.0.0.1:8546", arbitrum.fetcher as never)];
+    await assert.rejects(runEvmIndexerPass(index, { domainId: "eip155:84532", contracts: [CONTRACT], rpcs, startHeight: 0 }), /RPC endpoint 2 serves eip155:421614, not eip155:84532/);
+    assert.equal(index.domainState("eip155:84532"), undefined);
+    await assert.rejects(runEvmIndexerPass(index, { domainId: "base-sepolia", contracts: [CONTRACT], rpcs: [rpcs[0] as EvmJsonRpc], startHeight: 0 }), /CAIP-2 eip155/);
+    assert.equal(evmChainIdOfDomain("eip155:421614"), 421614n);
+    assert.throws(() => evmChainIdOfDomain("eip155:0"), /CAIP-2/);
+    assert.throws(() => new EvmJsonRpc("http://localhost.example.com"), /https or loopback/);
+    assert.equal((await runEvmIndexerPass(index, { domainId: "eip155:84532", contracts: [CONTRACT], rpcs: [rpcs[0] as EvmJsonRpc], startHeight: 0 })).tip, 5);
   } finally {
     index.close();
     rmSync(dir, { recursive: true, force: true });

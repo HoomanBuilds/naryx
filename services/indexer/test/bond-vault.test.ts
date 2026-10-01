@@ -59,7 +59,8 @@ function chain(blocks: ReadonlyMap<number, { readonly timestamp: number; readonl
   return async (_url: string, init: { body: string }) => {
     const { method, params, id } = JSON.parse(init.body);
     let result: unknown;
-    if (method === "eth_blockNumber") result = quantity(head);
+    if (method === "eth_chainId") result = quantity(84532);
+    else if (method === "eth_blockNumber") result = quantity(head);
     else if (method === "eth_getBlockByNumber") {
       const tag = params[0] as string;
       const height = tag === "finalized" ? 1 : tag === "safe" ? 2 : Number.parseInt(tag.slice(2), 16);

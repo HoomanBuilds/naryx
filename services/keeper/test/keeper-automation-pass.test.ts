@@ -11,7 +11,8 @@ import {
   type KeeperActionAuthorizationInput,
   type StrategyHealthSnapshotInput,
 } from '@naryx/protocol-types';
-import { KeeperActionJournal, runKeeperAutomationPass, type KeeperAutomationEntry, type KeeperAutomationPorts } from '../src/keeper-automation-pass.js';
+import { KeeperActionJournal, keeperClock, runKeeperAutomationPass, type KeeperAutomationEntry, type KeeperAutomationPorts } from '../src/keeper-automation-pass.js';
+import { SOLANA_DEVNET_GENESIS_HASH, SOLANA_MAINNET_BETA_GENESIS_HASH, solanaSlotReader } from '../src/chain-identity.js';
 
 const condition: ActivationConditionInput = { conditionVersion: 1, metric: 'BASIS', comparator: 'AT_OR_ABOVE', threshold: 50n, observationUnit: 'EVM_UNIX_SECONDS', maximumObservationAge: 30n };
 const health = (overrides: Partial<StrategyHealthSnapshotInput> = {}): StrategyHealthSnapshotInput => ({
@@ -111,6 +112,58 @@ test('a final journal line torn by a crash is cut, and earlier corruption still 
     assert.equal(read(path, 'utf8').split('\n').filter((line) => line !== '').length, 2);
     writeFileSync(path, `{"torn\n${JSON.stringify({ authorizationHash: 'aa', state: 'EXECUTED', detail: '', atMs: 1 })}\n`);
     assert.throws(() => new KeeperActionJournal(path));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SOLANA_SLOT authorizations run on a genesis-verified Devnet confirmed slot, and fail closed without one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'naryx-keeper-slot-'));
+  try {
+    const slotCondition: ActivationConditionInput = { ...condition, observationUnit: 'SOLANA_SLOT' };
+    const slotAuthorization: KeeperActionAuthorizationInput = { ...authorization, conditionHash: activationConditionHash(slotCondition), expiryUnit: 'SOLANA_SLOT', expiryValue: 2_000n, authorizationNonce: 11n };
+    const signer = owner();
+    const entry: KeeperAutomationEntry = { authorization: slotAuthorization, ownerKey: signer.key, ownerSignature: signer.sign(keeperActionAuthorizationBytes(slotAuthorization)), condition: slotCondition, lifecycleGraphHash: '61'.repeat(32) };
+    const slotHealth = (overrides: Partial<StrategyHealthSnapshotInput> = {}) => health({ observedAtUnit: 'SOLANA_SLOT', observedAtValue: 1_990n, ...overrides });
+    let genesis = SOLANA_MAINNET_BETA_GENESIS_HASH;
+    let slot = 1_010;
+    const calls: { method: string; params: unknown }[] = [];
+    const rpc = async (_url: string, init: { body: string }) => {
+      const { method, params } = JSON.parse(init.body) as { method: string; params: unknown };
+      calls.push({ method, params });
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: 1, result: method === 'getGenesisHash' ? genesis : slot }) };
+    };
+    const dispatched: string[] = [];
+    const ports = (now: KeeperAutomationPorts['now']): KeeperAutomationPorts => ({
+      readHealth: async () => ({ before: slotHealth({ basisTicks: 60n }), stateHash: '51'.repeat(32), manualTakeover: false }),
+      plan: async () => ({ after: slotHealth({ deltaBaseAtoms: -10n, grossNotionalQuoteAtoms: 8_000n, leverageBps: 24_000n, maximumLossBoundQuoteAtoms: 700n }), costQuoteAtoms: 80n, rewardQuoteAtoms: 10n, grantsAuthority: false }),
+      dispatch: async (action) => {
+        dispatched.push(action.authorizationHash);
+        return 'QUEUED';
+      },
+      now,
+    });
+    const journal = new KeeperActionJournal(join(dir, 'journal.jsonl'));
+    const run = (now: KeeperAutomationPorts['now']) => runKeeperAutomationPass({ keeperId: 'keeper-1', entries: [entry], ports: ports(now), journal });
+    const devnetClock = keeperClock({ nowMs: () => 0, solanaSlot: solanaSlotReader('solana:devnet', 'https://devnet.example', rpc as never) });
+
+    // Without an injected slot reader the unit has no clock.
+    assert.deepEqual((await run(keeperClock({ nowMs: () => 0 }))).map((result) => [result.status, result.detail]), [['NOT_READY', 'TIME_UNIT_UNSUPPORTED']]);
+    // A mainnet-beta endpoint behind the Devnet label is refused before any slot is read, and the nonce stays unconsumed.
+    const refused = await run(devnetClock);
+    assert.equal(refused[0]?.status, 'FAILED');
+    assert.match(refused[0]?.detail ?? '', /configured for solana:devnet serves genesis/);
+    assert.deepEqual(calls.map((call) => call.method), ['getGenesisHash']);
+    assert.equal(dispatched.length, 0);
+    // At the expiry slot the action is expired; one slot earlier it runs once.
+    genesis = SOLANA_DEVNET_GENESIS_HASH;
+    slot = 2_000;
+    assert.deepEqual((await run(devnetClock)).map((result) => [result.status, result.detail]), [['REJECTED', 'EXPIRED']]);
+    slot = 1_999;
+    assert.deepEqual((await run(devnetClock)).map((result) => result.status), ['QUEUED']);
+    assert.deepEqual(calls.slice(-2), [{ method: 'getGenesisHash', params: [] }, { method: 'getSlot', params: [{ commitment: 'confirmed' }] }]);
+    assert.equal(dispatched.length, 1);
+    assert.throws(() => solanaSlotReader('eip155:84532', 'https://devnet.example'), /Solana chain reference/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
