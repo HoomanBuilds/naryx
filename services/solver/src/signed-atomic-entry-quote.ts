@@ -137,7 +137,8 @@ export async function signAtomicEntryQuote(
   if (validatedOrder.direction !== 'LONG_SPOT_SHORT_PERP'
     || validatedOrder.action !== 'ENTRY'
     || (validatedOrder.settlementClass !== 'ATOMIC_POSTCONDITION'
-      && validatedOrder.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY')) {
+      && validatedOrder.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
+      && validatedOrder.settlementClass !== 'ASYNC_BONDED_SOLVER')) {
     fail('BINDING_MISMATCH', 'quote requires a supported long-spot short-perp ENTRY order');
   }
   const recomputedOrderHash = packageOrderHash(validatedOrder);
@@ -321,6 +322,10 @@ export async function signAtomicEntryQuote(
   // An entry spot buy receives the gross quantity less any fee charged in the base asset.
   if (netQuantity.atoms !== grossQuantity.atoms - baseFee.atoms) {
     fail('BINDING_MISMATCH', 'expected net spot quantity must equal gross minus base fee');
+  }
+  // The async EVM spot leg buys an exact base output, so the package is exact-net.
+  if (validatedOrder.settlementClass === 'ASYNC_BONDED_SOLVER' && baseFee.atoms !== 0n) {
+    fail('BINDING_MISMATCH', 'async EVM entry cannot charge a base-asset fee');
   }
   if (isHyperliquid) {
     const minimum = validatedOrder.hyperliquidMinNetSpotDelta;

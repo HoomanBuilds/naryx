@@ -18,6 +18,16 @@ import {
   createInternalAtomicQuoteServer,
   createHyperliquidTestnetExecutorServer,
   createLocalAtomicMarketRuntime,
+  ArbitrumSepoliaExecutor,
+  HttpArbitrumSepoliaAttemptProvider,
+  SqliteArbitrumSepoliaExecutionJournal,
+  arbitrumSepoliaOwnerSigner,
+  createArbitrumSepoliaExecutorServer,
+  createViemArbitrumSepoliaWritePort,
+  loadArbitrumSepoliaExecutorConfig,
+  loadArbitrumSepoliaKey,
+  loadArbitrumSepoliaQuoteRuntime,
+  requireArbitrumSepoliaChain,
   loadHyperliquidTestnetAgentSigner,
   loadHyperliquidTestnetExecutorRuntime,
   loadHyperliquidTestnetQuoteRuntime,
@@ -92,7 +102,14 @@ const localRuntime = manifestRuntime !== undefined
 const hyperliquidQuoteRuntime = loadHyperliquidTestnetQuoteRuntime(process.env, {
   nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet'),
 });
-const quoteProviders = composeQuoteProviders(localRuntime?.providers, hyperliquidQuoteRuntime?.providers);
+const arbitrumQuoteProviders = loadArbitrumSepoliaQuoteRuntime(process.env, {
+  nonceSource: new SqliteAtomicQuoteNonceSource(store, 'eip155:421614'),
+});
+const quoteProviders = composeQuoteProviders(
+  localRuntime?.providers,
+  hyperliquidQuoteRuntime?.providers,
+  arbitrumQuoteProviders,
+);
 const clockRefresh = manifestRuntime === undefined
   ? undefined
   : setInterval(() => {
@@ -165,13 +182,61 @@ if (executorEnabled) {
   executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory);
 }
 
+// Arbitrum Sepolia async executor: disabled unless explicitly enabled. Both keys come from external
+// files, the solver and owner are separate wallets, and eth_chainId must be 421614 before any write.
+const arbitrumExecutorEnabled = explicitBoolean(
+  process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ENABLED,
+  'NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ENABLED',
+);
+let arbitrumJournal: SqliteArbitrumSepoliaExecutionJournal | undefined;
+let arbitrumExecutorServer: Server | undefined;
+let arbitrumExecutorPort: number | undefined;
+if (arbitrumExecutorEnabled) {
+  arbitrumExecutorPort = tcpPort(
+    process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_PORT,
+    'NARYX_ARBITRUM_SEPOLIA_EXECUTOR_PORT',
+    8_793,
+  );
+  if (arbitrumExecutorPort === listenPort || arbitrumExecutorPort === executorPort) {
+    throw new Error('Arbitrum Sepolia executor port must differ from the other solver ports');
+  }
+  const solverAccount = loadArbitrumSepoliaKey(
+    process.env.NARYX_ARBITRUM_SEPOLIA_SOLVER_KEY_PATH ?? '',
+    process.env.NARYX_ARBITRUM_SEPOLIA_SOLVER_ADDRESS ?? '',
+    'Arbitrum Sepolia solver key',
+  );
+  const ownerAccount = loadArbitrumSepoliaKey(
+    process.env.NARYX_ARBITRUM_SEPOLIA_OWNER_KEY_PATH ?? '',
+    process.env.NARYX_ARBITRUM_SEPOLIA_OWNER_ADDRESS ?? '',
+    'Arbitrum Sepolia owner key',
+  );
+  const arbitrumChain = createViemArbitrumSepoliaWritePort(
+    process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? '',
+    solverAccount,
+  );
+  await requireArbitrumSepoliaChain(arbitrumChain);
+  arbitrumJournal = new SqliteArbitrumSepoliaExecutionJournal(
+    process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_DB ?? '',
+  );
+  arbitrumExecutorServer = createArbitrumSepoliaExecutorServer(new ArbitrumSepoliaExecutor({
+    config: loadArbitrumSepoliaExecutorConfig(process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CONFIG ?? ''),
+    attempts: new HttpArbitrumSepoliaAttemptProvider(apiOrigin, executionSigner.verificationKey),
+    chain: arbitrumChain,
+    owner: arbitrumSepoliaOwnerSigner(ownerAccount),
+    journal: arbitrumJournal,
+  }));
+}
+
 let shuttingDown = false;
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
-  void Promise.allSettled([close(quoteServer), close(executorServer)]).then((results) => {
+  void Promise.allSettled([
+    close(quoteServer), close(executorServer), close(arbitrumExecutorServer),
+  ]).then((results) => {
     executorRuntime?.close();
+    arbitrumJournal?.close();
     store.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
@@ -192,20 +257,29 @@ try {
   if (executorServer !== undefined && executorPort !== undefined) {
     await listen(executorServer, executorPort, host);
   }
+  if (arbitrumExecutorServer !== undefined && arbitrumExecutorPort !== undefined) {
+    await listen(arbitrumExecutorServer, arbitrumExecutorPort, host);
+  }
 } catch (error) {
-  await Promise.allSettled([close(quoteServer), close(executorServer)]);
+  await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
+  arbitrumJournal?.close();
   store.close();
   authorizationStore?.close();
   throw error;
 }
 const hyperliquidQuotes = hyperliquidQuoteRuntime === undefined ? 'DISABLED' : 'TESTNET_LIVE_BOOK';
+const arbitrumQuotes = arbitrumQuoteProviders === undefined ? 'DISABLED' : 'SEPOLIA_LIVE_REFERENCE';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
-  + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes}\n`);
+  + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
+  + `arbitrumSepoliaQuotes=${arbitrumQuotes}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
     + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);
 }
 if (executorServer !== undefined && executorPort !== undefined) {
   process.stdout.write(`Hyperliquid Testnet executor listening on http://${host}:${executorPort}\n`);
+}
+if (arbitrumExecutorServer !== undefined && arbitrumExecutorPort !== undefined) {
+  process.stdout.write(`Arbitrum Sepolia executor listening on http://${host}:${arbitrumExecutorPort}\n`);
 }

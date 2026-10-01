@@ -657,12 +657,15 @@ export function createHyperliquidTestnetQuoteRuntime(
 export function composeQuoteProviders(
   local: QuoteProviders | undefined,
   hyperliquid?: QuoteProviders,
+  arbitrum?: QuoteProviders,
 ): QuoteProviders {
   const select = (order: PackageOrder) => {
     if (order.environment === 'local' && order.domain.domainId === 'svm:local'
       && local !== undefined) return local;
     if (order.environment === 'testnet' && order.domain.domainId === 'hypercore:testnet'
       && hyperliquid !== undefined) return hyperliquid;
+    if (order.environment === 'testnet' && order.domain.domainId === 'eip155:421614'
+      && arbitrum !== undefined) return arbitrum;
     throw new Error('no quote runtime is configured for the order domain');
   };
   const providers: QuoteProviders = {

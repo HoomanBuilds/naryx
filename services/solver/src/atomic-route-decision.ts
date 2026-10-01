@@ -246,6 +246,16 @@ function evaluateCandidate(
         slot.action !== order.allowedRecoveryActions[index]))) {
     return rejected(recordId, 'SETTLEMENT_CLASS_MISMATCH', hash);
   }
+  const isAsyncEvm = order.settlementClass === 'ASYNC_BONDED_SOLVER';
+  if (isAsyncEvm
+    && (route.executionPlanKind !== 'EVM_ASYNC_REQUEST'
+      || route.quantityPolicyClass !== 'EXACT_NET'
+      || recovery === undefined
+      || recovery.recoveryExpiryUnit !== 'EVM_UNIX_SECONDS'
+      || recovery.maxRecoveryCostCaps.some((cap) => cap.maxAtoms !== 0n)
+      || recovery.maxAggregateRecoveryLoss.atoms !== order.maxAggregateRecoveryLossQuote.atoms)) {
+    return rejected(recordId, 'SETTLEMENT_CLASS_MISMATCH', hash);
+  }
   if (route.routeExpiryUnit !== order.expiryUnit) {
     return rejected(recordId, 'EXPIRY_UNIT_MISMATCH', hash);
   }
@@ -326,7 +336,8 @@ export function planAtomicEntryRoute(
   if (validated.direction !== 'LONG_SPOT_SHORT_PERP'
     || validated.action !== 'ENTRY'
     || (validated.settlementClass !== 'ATOMIC_POSTCONDITION'
-      && validated.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY')) {
+      && validated.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
+      && validated.settlementClass !== 'ASYNC_BONDED_SOLVER')) {
     throw new Error('route decision requires a supported long-spot short-perp ENTRY order');
   }
   const recomputed = packageOrderHash(validated);

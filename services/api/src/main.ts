@@ -51,6 +51,16 @@ import {
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import { createHyperliquidTestnetOrderRuntime } from "./hyperliquid-testnet-order-context.js";
+import {
+  createArbitrumSepoliaOrderRuntime,
+  createViemArbitrumSepoliaPriceReadPort,
+  loadArbitrumSepoliaOrderContextConfig,
+  type ArbitrumSepoliaOrderRuntime,
+} from "./arbitrum-sepolia-order-context.js";
+import {
+  HttpArbitrumSepoliaAttemptExecutor,
+  withArbitrumSepoliaExecutionHandoff,
+} from "./arbitrum-sepolia-executor-client.js";
 import { HyperliquidTestnetPriceFeed } from "./hyperliquid-testnet-price-feed.js";
 import {
   createHyperliquidTestnetMarketSource,
@@ -205,6 +215,39 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
     reportRuntimeFailure("arbitrumTestnetAsync", error);
   }
 }
+// Arbitrum Sepolia entry path. The order context prices from a live on-chain reference feed and only
+// admits the deployed isolated account's owner. The executor handoff makes the gated observe-async
+// route advance the solver-held coordinator steps first. Both are disabled unless explicitly enabled.
+let arbitrumOrderRuntime: ArbitrumSepoliaOrderRuntime | undefined;
+if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
+  try {
+    arbitrumOrderRuntime = await createArbitrumSepoliaOrderRuntime({
+      config: loadArbitrumSepoliaOrderContextConfig(absolutePath(
+        process.env.NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT ?? "",
+        "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT",
+      )),
+      deployment: loadArbitrumSepoliaRuntimeManifest(absolutePath(
+        process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
+        "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
+      )).deployment,
+      port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
+    });
+    arbitrumOrderRuntime.feed.start();
+  } catch (error) {
+    reportRuntimeFailure("arbitrumSepoliaOrderContext", error);
+  }
+}
+if (arbitrumRuntime !== undefined && explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED")) {
+  try {
+    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, new HttpArbitrumSepoliaAttemptExecutor({
+      executorOrigin: process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN ?? "",
+    }));
+  } catch (error) {
+    arbitrumRuntime = undefined;
+    arbitrumRuntimeError = error;
+    reportRuntimeFailure("arbitrumSepoliaExecutor", error);
+  }
+}
 const hyperliquidRuntimeEnabled = process.env.NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED === "true";
 const hyperliquidEvidenceEnabled = explicitlyEnabled(
   "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED",
@@ -332,9 +375,13 @@ function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[])
   return present.length === 0 ? undefined : (request, response) => present.some((handler) => handler(request, response));
 }
 const orderContexts = (contextId: string) =>
-  orderRuntime?.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId);
+  orderRuntime?.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId)
+  ?? arbitrumOrderRuntime?.contexts(contextId);
 const orderClock = Object.freeze({
   currentClock: async (context: ActiveOrderContext) => {
+    if (arbitrumOrderRuntime !== undefined && context.settlementClass === "ASYNC_BONDED_SOLVER") {
+      return arbitrumOrderRuntime.clock.currentClock(context);
+    }
     if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
       return hyperliquidOrderRuntime.clock.currentClock(context);
     }
