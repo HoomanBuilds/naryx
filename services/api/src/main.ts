@@ -10,8 +10,12 @@ import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 import {
   composePrivateTerminalRuntime,
+  loadPrivateTerminalStartupConfig,
+  stderrRuntimeFailureReporter,
   type PrivateTerminalRuntimeFactories,
 } from "./runtime-composition.js";
+import { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
+import type { ActiveOrderContext } from "./canonical-entry-order.js";
 import {
   createBaseSepoliaRuntime,
   createViemBaseSepoliaReadClient,
@@ -59,61 +63,52 @@ function explicitlyEnabled(name: string): boolean {
 }
 
 const config = loadPrivateTerminalServerConfig();
+const startup = loadPrivateTerminalStartupConfig(process.env, config);
+const reportRuntimeFailure = stderrRuntimeFailureReporter();
 const publicMarket = loadPublicMarketRuntime();
-const orderStore = new SqliteInternalOrderStore(absolutePath(
-  process.env.NARYX_API_ORDER_DB ?? "/tmp/naryx-local/api-orders.db",
-  "NARYX_API_ORDER_DB",
-));
-const lifecycleStore = new SqlitePackageLifecycleStore(absolutePath(
-  process.env.NARYX_API_LIFECYCLE_DB ?? "/tmp/naryx-local/package-lifecycle.db",
-  "NARYX_API_LIFECYCLE_DB",
-));
-const executionIntentStore = new SqliteExecutionIntentStore(absolutePath(
-  process.env.NARYX_API_EXECUTION_INTENT_DB ?? "/tmp/naryx-local/execution-intents.db",
-  "NARYX_API_EXECUTION_INTENT_DB",
-));
-const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
-const manifestRuntime = environmentManifestPath === undefined
+const orderStore = new SqliteInternalOrderStore(startup.orderDbPath);
+const lifecycleStore = new SqlitePackageLifecycleStore(startup.lifecycleDbPath);
+const executionIntentStore = new SqliteExecutionIntentStore(startup.executionIntentDbPath);
+const manifestRuntime = startup.solanaLocalEnvironmentManifestPath === undefined
   ? undefined
   : await loadSolanaLocalEnvironmentRuntime(
-    absolutePath(environmentManifestPath, "NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST"),
+    startup.solanaLocalEnvironmentManifestPath,
     process.env.NARYX_SOLANA_LOCAL_SOLVER_ID ?? "",
   );
-const orderRuntime = manifestRuntime === undefined
+const orderRuntime = startup.localAtomicRuntimeMode === "PHASE4_FIXTURE"
   ? createLocalAtomicOrderRuntime()
-  : createLocalAtomicOrderRuntime(
-    manifestRuntime.manifest.runtime.catalog,
-    () => manifestRuntime.initialSlot,
-    manifestRuntime.readSlot,
-  );
-const solverClient = new HttpInternalSolverQuoteClient(
-  process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
-);
-const localExecutionCoordinator = new LocalExecutionCoordinator({
-  intents: executionIntentStore,
-  orders: orderStore,
-  lifecycle: lifecycleStore,
-});
-const solanaLocalPreparationStore = manifestRuntime === undefined
+  : manifestRuntime === undefined
+    ? undefined
+    : createLocalAtomicOrderRuntime(
+      manifestRuntime.manifest.runtime.catalog,
+      () => manifestRuntime.initialSlot,
+      manifestRuntime.readSlot,
+    );
+const solverOrigin = process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788";
+const solverClient = new HttpInternalSolverQuoteClient(solverOrigin);
+const localExecutionCoordinator = orderRuntime === undefined
   ? undefined
-  : new SqliteSolanaLocalPreparedExecutionStore(absolutePath(
-    process.env.NARYX_API_SOLANA_LOCAL_PREPARATION_DB ?? "/tmp/naryx-local/api-solana-preparations.db",
-    "NARYX_API_SOLANA_LOCAL_PREPARATION_DB",
-  ));
+  : new LocalExecutionCoordinator({
+    intents: executionIntentStore,
+    orders: orderStore,
+    lifecycle: lifecycleStore,
+  });
+const solanaLocalPreparationStore = startup.solanaLocalPreparationDbPath === undefined
+  ? undefined
+  : new SqliteSolanaLocalPreparedExecutionStore(startup.solanaLocalPreparationDbPath);
 const solanaConnection = manifestRuntime === undefined
   ? undefined
   : new Connection(manifestRuntime.manifest.rpc.url, "confirmed");
 const solanaLocalExecution = manifestRuntime === undefined
     || solanaLocalPreparationStore === undefined
     || solanaConnection === undefined
+    || localExecutionCoordinator === undefined
   ? undefined
   : new SolanaLocalExecutionService({
     manifest: manifestRuntime.manifest,
     intents: executionIntentStore,
     orders: orderStore,
-    authorization: new HttpSolanaLocalExecutionAuthorizationClient(
-      process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
-    ),
+    authorization: new HttpSolanaLocalExecutionAuthorizationClient(solverOrigin),
     adapter: new SolanaConformanceAdapter({
       connection: solanaConnection,
       domain: manifestRuntime.manifest.runtime.catalog.domain,
@@ -128,21 +123,28 @@ const solanaLocalExecution = manifestRuntime === undefined
   });
 let baseRuntime: Awaited<ReturnType<typeof createBaseSepoliaRuntime>> | undefined;
 let baseRuntimeError: unknown;
+let basePreparationStore: SqlitePreparedEvmTestnetAtomicStore | undefined;
 if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
   try {
     const baseManifestPath = absolutePath(
       process.env.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST ?? "",
       "NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST",
     );
+    basePreparationStore = new SqlitePreparedEvmTestnetAtomicStore(absolutePath(
+      process.env.NARYX_BASE_SEPOLIA_PREPARATION_DB ?? "",
+      "NARYX_BASE_SEPOLIA_PREPARATION_DB",
+    ));
     const baseRpcUrl = process.env.NARYX_BASE_SEPOLIA_RPC_URL ?? "";
     baseRuntime = await createBaseSepoliaRuntime({
       manifest: loadBaseSepoliaRuntimeManifest(baseManifestPath),
       intents: executionIntentStore,
       orders: orderStore,
       client: createViemBaseSepoliaReadClient(baseRpcUrl),
+      store: basePreparationStore,
     });
   } catch (error) {
     baseRuntimeError = error;
+    reportRuntimeFailure("baseTestnetAtomic", error);
   }
 }
 let solanaDevnetRuntime: Awaited<ReturnType<typeof createSolanaDevnetRuntime>> | undefined;
@@ -170,6 +172,7 @@ if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
     });
   } catch (error) {
     solanaDevnetRuntimeError = error;
+    reportRuntimeFailure("solanaDevnet", error);
   }
 }
 let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
@@ -189,6 +192,7 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
     });
   } catch (error) {
     arbitrumRuntimeError = error;
+    reportRuntimeFailure("arbitrumTestnetAsync", error);
   }
 }
 const hyperliquidRuntimeEnabled = process.env.NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED === "true";
@@ -211,6 +215,7 @@ if (hyperliquidRuntimeEnabled) {
     ));
   } catch (error) {
     hyperliquidConfigError = error;
+    reportRuntimeFailure("hyperliquidTestnet", error);
   }
 }
 let hyperliquidOrderRuntime: ReturnType<typeof createHyperliquidTestnetOrderRuntime> | undefined;
@@ -219,6 +224,7 @@ if (hyperliquidConfig !== undefined) {
     hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig);
   } catch (error) {
     hyperliquidConfigError = error;
+    reportRuntimeFailure("hyperliquidTestnetOrderContext", error);
   }
 }
 let hyperliquidEvidenceRuntime: ReturnType<typeof createHyperliquidTestnetEvidenceRuntime> | undefined;
@@ -237,6 +243,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
     });
   } catch (error) {
     hyperliquidEvidenceRuntimeError = error;
+    reportRuntimeFailure("hyperliquidTestnetEvidence", error);
   }
 }
 let hyperliquidExecutionRuntime: DurableHyperliquidTestnetTerminalExecutionPort | undefined;
@@ -257,6 +264,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
     );
   } catch (error) {
     hyperliquidExecutionRuntimeError = error;
+    reportRuntimeFailure("hyperliquidTestnetExecutor", error);
   }
 }
 const factories: PrivateTerminalRuntimeFactories = {
@@ -300,20 +308,21 @@ const factories: PrivateTerminalRuntimeFactories = {
         },
       } : {}),
     };
-const runtime = composePrivateTerminalRuntime(process.env, factories);
+const runtime = composePrivateTerminalRuntime(process.env, factories, reportRuntimeFailure);
 type RouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
 function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[]): RouteHandler | undefined {
   const present = handlers.filter((handler): handler is RouteHandler => handler !== undefined);
   return present.length === 0 ? undefined : (request, response) => present.some((handler) => handler(request, response));
 }
 const orderContexts = (contextId: string) =>
-  orderRuntime.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId);
+  orderRuntime?.contexts(contextId) ?? hyperliquidOrderRuntime?.contexts(contextId);
 const orderClock = Object.freeze({
-  currentClock: async (context: Parameters<typeof orderRuntime.clock.currentClock>[0]) => {
-    const hyperliquidContext = hyperliquidOrderRuntime?.contexts(context.contextId);
-    return hyperliquidContext === undefined
-      ? orderRuntime.clock.currentClock(context)
-      : hyperliquidOrderRuntime!.clock.currentClock(context);
+  currentClock: async (context: ActiveOrderContext) => {
+    if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
+      return hyperliquidOrderRuntime.clock.currentClock(context);
+    }
+    if (orderRuntime === undefined) throw new Error("No local order context is composed.");
+    return orderRuntime.clock.currentClock(context);
   },
 });
 const server = createPrivateTerminalServer(
@@ -327,7 +336,7 @@ const server = createPrivateTerminalServer(
   executionIntentStore,
   localExecutionCoordinator,
   runtime.health,
-  manifestRuntime === undefined ? "PHASE4_FIXTURE" : "MANIFEST_VALIDATED",
+  startup.localAtomicRuntimeMode,
   solanaLocalExecution,
   runtime.hyperliquidTestnetEvidence?.preparation,
   hyperliquidOrderRuntime?.terminalContext,
@@ -366,6 +375,7 @@ function shutdown(): void {
     lifecycleStore.close();
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
+    basePreparationStore?.close();
     hyperliquidExecutionRuntime?.close();
     publicMarket?.close();
     process.exitCode = 0;

@@ -25,8 +25,8 @@ import {
 import {
   BASE_SEPOLIA_CHAIN_REFERENCE,
   createEvmTestnetTerminalPorts,
-  InMemoryPreparedEvmTestnetAtomicStore,
   type EvmTestnetTerminalPorts,
+  type PreparedEvmTestnetAtomicStore,
 } from "./evm-testnet-runtime-ports.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
@@ -50,6 +50,7 @@ export interface BaseSepoliaRuntimeOptions {
   readonly intents: ExecutionIntentStore;
   readonly orders: InternalOrderStore;
   readonly client: BaseSepoliaLiveReadClient;
+  readonly store: PreparedEvmTestnetAtomicStore;
   readonly currentUnixSeconds?: () => bigint;
 }
 
@@ -143,7 +144,7 @@ export async function createBaseSepoliaRuntime(
     asyncContextProvider: () => { throw new Error("Arbitrum Sepolia runtime is not configured."); },
     atomicReadPort: options.client,
     asyncReadPort: options.client,
-    store: new InMemoryPreparedEvmTestnetAtomicStore(),
+    store: options.store,
   });
 }
 

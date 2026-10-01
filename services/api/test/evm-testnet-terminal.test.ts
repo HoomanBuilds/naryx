@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import {
   adapterRef,
   assetRef,
@@ -30,7 +34,10 @@ import {
   createEvmTestnetTerminalPorts,
   createPrivateTerminalServer,
   InMemoryPreparedEvmTestnetAtomicStore,
+  PreparedEvmTestnetAtomicStoreError,
+  SqlitePreparedEvmTestnetAtomicStore,
   type EvmTestnetTerminalPorts,
+  type PreparedEvmTestnetAtomicStore,
 } from "../src/index.js";
 import { executionReadinessFixtureGate, executionReadinessFixtureScopes } from "./execution-readiness-fixture.js";
 
@@ -419,7 +426,7 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
     chainHead: async () => ({ latestBlock: 110n, finalizedBlock: 105n }),
   };
 
-  const arbDomainId = "evm:arbitrum-sepolia";
+  const arbDomainId = "eip155:421614";
   const arbChain = 421_614n;
   const arbManifest = baseManifest(arbDomainId, arbChain, ["ASYNC_BONDED_SOLVER"]);
   const arbDomain = domainRefFromManifest(arbManifest);
@@ -895,7 +902,7 @@ test("evm testnet rejects mismatched atomic binding before hash binding", async 
 test("evm testnet rejects mismatched async domain-manifest chain reference", async () => {
   const origin = "http://127.0.0.1:3000";
   const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
-  const arbDomainId = "evm:arbitrum-sepolia";
+  const arbDomainId = "eip155:421614";
   const arbChain = 421_614n;
   const arbManifest = baseManifest(arbDomainId, arbChain, ["ASYNC_BONDED_SOLVER"]);
   const arbDomain = domainRefFromManifest(arbManifest);
@@ -956,7 +963,7 @@ test("evm testnet rejects mismatched async domain-manifest chain reference", asy
 test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", async () => {
   const origin = "http://127.0.0.1:3000";
   const config = { host: "127.0.0.1", port: 0, terminalOrigin: origin };
-  const arbDomainId = "evm:arbitrum-sepolia";
+  const arbDomainId = "eip155:421614";
   const arbChain = 421_614n;
   const arbManifest = baseManifest(arbDomainId, arbChain, ["ASYNC_BONDED_SOLVER"]);
   const arbDomain = domainRefFromManifest(arbManifest);
@@ -1211,5 +1218,111 @@ test("evm testnet rejects impossible injected FINALIZED and CLOSED evidence", as
     assert.equal(response.status, 502);
   } finally {
     await close(receiptMismatchServer);
+  }
+});
+
+test("durable Base prepared store keeps replay and observation binding across a restart", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-prepared-"));
+  const dbPath = join(scratch, "base-preparations.db");
+  const baseChain = 84_532n;
+  const manifest = baseManifest("evm:base-sepolia", baseChain);
+  const admission = baseAdmission(manifest);
+  const hashes = admission as unknown as { orderHash: Uint8Array; quoteHash: Uint8Array; routeHash: Uint8Array };
+  const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString("hex")}` as Hex;
+  const context = {
+    admission,
+    deployment: baseDeployment(manifest, baseChain),
+    seriesBindingInput: baseSeriesBinding(manifest),
+    bounds: {
+      currentUnixSeconds: 1_000n,
+      spotFillCommitment: hashBytes(55),
+      expectedPrePerpBalanceWad: 10n,
+      minimumPostPerpBalanceWad: 0n,
+      maximumPostPerpBalanceWad: 100n,
+      maximumPostPerpEntryNotionalWad: 7_000_000_000_000_000_000_000n,
+      perpExpiry: 1_900_000_000,
+      perpArgs: [hashBytes(56), hashBytes(57)] as unknown as readonly [Hash32, Hash32],
+    },
+    atomicBinding: {
+      chainReference: baseChain,
+      packageVerifier,
+      strategyAccount,
+      orderHash: hex(hashes.orderHash),
+      quoteHash: hex(hashes.quoteHash),
+      routeHash: hex(hashes.routeHash),
+      executionPlanKind: "EVM_ATOMIC_BATCH" as const,
+    },
+    finality: { requiredConfirmations: 5, requireFinalized: true },
+  };
+  const readPort: EvmReadPort = {
+    chainId: async () => baseChain,
+    transactionReceipt: async () => null,
+    readContract: async () => {
+      throw new Error("unexpected contract read");
+    },
+    chainHead: async () => ({ latestBlock: 110n, finalizedBlock: 105n }),
+  };
+  const portsFor = (store: PreparedEvmTestnetAtomicStore) => createEvmTestnetTerminalPorts({
+    atomicContextProvider: () => context,
+    asyncContextProvider: () => {
+      throw new Error("unused");
+    },
+    atomicReadPort: readPort,
+    asyncReadPort: readPort,
+    store,
+  });
+  const attemptId = "attempt-base-durable-01";
+  const idempotencyKey = "idem-base-durable-0001";
+  const traderSignature = signatureHex(9);
+  const transactionHash = hashHex(61);
+  let store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+  try {
+    const prepared = await portsFor(store).preparation!.prepare({ attemptId, idempotencyKey, traderSignature });
+    store.close();
+    store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+    const restarted = portsFor(store);
+    assert.deepEqual(await restarted.preparation!.prepare({ attemptId, idempotencyKey, traderSignature }), prepared);
+    await assert.rejects(
+      restarted.preparation!.prepare({ attemptId, idempotencyKey, traderSignature: signatureHex(7) }),
+      /already used with different attempt fields/,
+    );
+    const otherStore = new SqlitePreparedEvmTestnetAtomicStore(join(scratch, "other.db"));
+    const otherAttempt = await portsFor(otherStore).preparation!.prepare({
+      attemptId: "attempt-base-durable-02",
+      idempotencyKey,
+      traderSignature,
+    });
+    otherStore.close();
+    assert.throws(
+      () => store.save("attempt-base-durable-02", idempotencyKey, traderSignature, otherAttempt),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "IDEMPOTENCY_CONFLICT",
+    );
+
+    const observed = await restarted.atomicObservation!.observe({ attemptId, idempotencyKey, transactionHash });
+    assert.equal(observed.transactionHash, transactionHash);
+    store.close();
+    store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+    assert.equal(store.get(idempotencyKey)?.boundTransactionHash, transactionHash);
+    assert.deepEqual(store.get(idempotencyKey)?.preparation, prepared);
+    await assert.rejects(
+      portsFor(store).atomicObservation!.observe({ attemptId, idempotencyKey, transactionHash: hashHex(62) }),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "TRANSACTION_CONFLICT",
+    );
+
+    const raw = new Database(dbPath);
+    raw.prepare("INSERT INTO evm_prepared_atomic_attempts VALUES (?, ?, ?, ?, NULL)").run(
+      "idem-base-durable-0009",
+      attemptId,
+      traderSignature,
+      JSON.stringify({ ...prepared, idempotencyKey: "idem-base-durable-0009" }),
+    );
+    raw.close();
+    assert.throws(
+      () => store.get("idem-base-durable-0009"),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "CORRUPT_ROW",
+    );
+  } finally {
+    store.close();
+    rmSync(scratch, { recursive: true, force: true });
   }
 });

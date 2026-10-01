@@ -176,7 +176,7 @@ test("fails closed without an authorized selected attempt and serves narrow acti
   const scratch = mkdtempSync(join(tmpdir(), "naryx-local-execution-http-"));
   const setup = fixture(scratch);
   const config = { host: "127.0.0.1", port: 0, terminalOrigin: null };
-  const server = createPrivateTerminalServer(
+  const fixtureRoutes = (mode?: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED") => createPrivateTerminalServer(
     config,
     {},
     undefined,
@@ -186,9 +186,33 @@ test("fails closed without an authorized selected attempt and serves narrow acti
     undefined,
     setup.intents,
     setup.coordinator,
+    undefined,
+    mode,
   );
+  for (const mode of [undefined, "MANIFEST_VALIDATED"] as const) {
+    const disabled = fixtureRoutes(mode);
+    const disabledOrigin = await listen(disabled);
+    try {
+      const refused = await fetch(
+        `${disabledOrigin}/internal/terminal/attempts/${setup.attempt.attemptId}/open`,
+        { method: "POST" },
+      );
+      assert.equal(refused.status, 409);
+      assert.equal((await refused.json() as { error: { code: string } }).error.code, "FIXTURE_MODE_DISABLED");
+      const health = await (await fetch(`${disabledOrigin}/internal/healthz`)).json() as Record<string, unknown>;
+      assert.equal(health.localAtomicRuntimeMode, mode ?? "DISABLED");
+      assert.equal(health.environment, mode === undefined ? "UNCONFIGURED" : "LOCAL_VALIDATOR");
+    } finally {
+      await close(disabled);
+    }
+  }
+  assert.equal(setup.lifecycle.getAttempt(setup.attempt.attemptId), undefined);
+  const server = fixtureRoutes("PHASE4_FIXTURE");
   const origin = await listen(server);
   try {
+    const health = await (await fetch(`${origin}/internal/healthz`)).json() as Record<string, unknown>;
+    assert.equal(health.environment, "LOCAL_CONFORMANCE");
+    assert.equal(health.status, "ready");
     assert.throws(
       () => setup.coordinator.prepare(`local-atomic-${"00".repeat(32)}`),
       (error: unknown) => error instanceof LocalExecutionCoordinatorError

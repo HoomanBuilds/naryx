@@ -12,6 +12,7 @@ import {
   exactSignedRate,
 } from "@naryx/protocol-types";
 import {
+  createCanonicalEntryOrder,
   createPrivateTerminalServer,
   SqliteExecutionIntentStore,
   SqliteInternalOrderStore,
@@ -373,6 +374,78 @@ test("Base Sepolia quote selection is durable and readable before trader permit"
     assert.equal(read.attempt.attemptId, selected.attempt.attemptId);
     assert.equal(read.attempt.status, "BASE_ATOMIC_QUOTE_SELECTED");
     assert.equal(read.quote.quoteHash, "72".repeat(32));
+  } finally {
+    await close(server);
+    intents.close();
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("Arbitrum Sepolia selected attempts are readable by the terminal and the loopback solver", async () => {
+  const config = { host: "127.0.0.1", port: 0, terminalOrigin: null };
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-api-arbitrum-attempt-"));
+  const context = Object.freeze({
+    ...activeContext(),
+    contextId: "arbitrum-sepolia-async-v1",
+    domain: domainRef("eip155:421614", 1, "91".repeat(32)),
+    expiryUnit: "EVM_UNIX_SECONDS" as const,
+  });
+  const contexts = (contextId: string) => contextId === context.contextId ? context : undefined;
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const request = {
+    contextId: context.contextId,
+    owner: "0x1111111111111111111111111111111111111111",
+    settlementAccount: "0x2222222222222222222222222222222222222222",
+    sizeAtoms: 1_000_000n,
+    slippageBps: 10,
+    idempotencyKey: "arb-order-key-00001",
+    currentClock: 1_000_500n,
+  };
+  const order = orders.createOrGet({ order: createCanonicalEntryOrder(contexts, request), request }).record;
+  intents.recordQuote({
+    version: 1,
+    status: "SIGNED",
+    idempotencyKey: "arb-quote-key-00001",
+    orderHash: order.orderHashHex,
+    routeHash: "71".repeat(32),
+    quoteHash: "72".repeat(32),
+    solverSignatureDigest: "73".repeat(32),
+    routeBytes: "01",
+    solverQuoteBytes: "02",
+    route: {},
+    quote: {},
+  });
+  const attempt = intents.selectQuoteForOrder(order, context.domain, "72".repeat(32));
+  const server = createPrivateTerminalServer(
+    config,
+    {},
+    { contexts, store: orders, clock: { currentClock: async () => 1_000_500n } },
+    undefined,
+    {},
+    undefined,
+    undefined,
+    intents,
+  );
+  const serverUrl = await listen(server);
+  try {
+    assert.match(attempt.attemptId, /^arbitrum-async-[0-9a-f]{48}$/);
+    const terminal = await fetch(`${serverUrl}/internal/terminal/attempts/${attempt.attemptId}`);
+    assert.equal(terminal.status, 200);
+    const read = await terminal.json() as { attempt: { attemptId: string; status: string }; quote: { quoteHash: string } };
+    assert.equal(read.attempt.attemptId, attempt.attemptId);
+    assert.equal(read.attempt.status, "ARBITRUM_ASYNC_QUOTE_SELECTED");
+    assert.equal(read.quote.quoteHash, "72".repeat(32));
+
+    const solver = await fetch(`${serverUrl}/internal/solver/attempts/${attempt.attemptId}`);
+    assert.equal(solver.status, 200);
+    const handoff = await solver.json() as { attemptId: string; orderHash: string; quoteHash: string };
+    assert.equal(handoff.attemptId, attempt.attemptId);
+    assert.equal(handoff.orderHash, order.orderHashHex);
+    assert.equal(handoff.quoteHash, "72".repeat(32));
+
+    assert.equal((await fetch(`${serverUrl}/internal/terminal/attempts/arbitrum-async-${"0".repeat(48)}`)).status, 404);
   } finally {
     await close(server);
     intents.close();

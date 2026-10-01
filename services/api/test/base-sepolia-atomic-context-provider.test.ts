@@ -44,6 +44,7 @@ import {
   SqliteInternalOrderStore,
   composePrivateTerminalRuntime,
   createBaseSepoliaRuntime,
+  SqlitePreparedEvmTestnetAtomicStore,
   createBaseSepoliaAtomicContextProvider,
   createCanonicalEntryOrder,
   type ActiveOrderContext,
@@ -834,6 +835,7 @@ test("composes the active Base Sepolia runtime after live chain and code verific
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-"));
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const store = new SqlitePreparedEvmTestnetAtomicStore(join(scratch, "base-preparations.db"));
   try {
     const fixture = setupPackage();
     const manifest: BaseSepoliaRuntimeManifest = {
@@ -846,6 +848,7 @@ test("composes the active Base Sepolia runtime after live chain and code verific
       intents,
       orders,
       client: liveClient(fixture.configuration),
+      store,
       currentUnixSeconds: () => 1_500n,
     });
     const runtime = composePrivateTerminalRuntime({
@@ -856,6 +859,7 @@ test("composes the active Base Sepolia runtime after live chain and code verific
     assert.equal(typeof runtime.evmTestnet.atomicObservation?.observe, "function");
     assert.deepEqual(runtime.health.baseTestnetAtomic, { available: true, reason: null });
   } finally {
+    store.close();
     intents.close();
     orders.close();
     rmSync(scratch, { recursive: true, force: true });
@@ -866,6 +870,7 @@ test("rejects wrong Base chain, deployed code, and activation state", async () =
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-reject-"));
   const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
   const intents = new SqliteExecutionIntentStore(join(scratch, "intents.db"));
+  const store = new SqlitePreparedEvmTestnetAtomicStore(join(scratch, "base-preparations.db"));
   try {
     const fixture = setupPackage();
     const manifest: BaseSepoliaRuntimeManifest = {
@@ -874,7 +879,7 @@ test("rejects wrong Base chain, deployed code, and activation state", async () =
       deployment: fixture.configuration,
     };
     await assert.rejects(
-      createBaseSepoliaRuntime({ manifest, intents, orders, client: liveClient(fixture.configuration, 1n) }),
+      createBaseSepoliaRuntime({ manifest, intents, orders, store, client: liveClient(fixture.configuration, 1n) }),
       /chain ID does not match/,
     );
     await assert.rejects(
@@ -882,6 +887,7 @@ test("rejects wrong Base chain, deployed code, and activation state", async () =
         manifest,
         intents,
         orders,
+        store,
         client: liveClient(fixture.configuration, 84_532n, packageVerifier),
       }),
       /deployed code does not match/,
@@ -891,11 +897,13 @@ test("rejects wrong Base chain, deployed code, and activation state", async () =
         manifest: { ...manifest, activationState: "ALL_PAUSED" } as unknown as BaseSepoliaRuntimeManifest,
         intents,
         orders,
+        store,
         client: liveClient(fixture.configuration),
       }),
       /must be schema version 1 and ACTIVE/,
     );
   } finally {
+    store.close();
     intents.close();
     orders.close();
     rmSync(scratch, { recursive: true, force: true });

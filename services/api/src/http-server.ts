@@ -56,7 +56,7 @@ import {
   SolverQuoteClientError,
   type SolverAtomicQuotePort,
 } from "./solver-quote-client.js";
-import type { PrivateTerminalRuntimeHealth } from "./runtime-composition.js";
+import type { LocalAtomicRuntimeMode, PrivateTerminalRuntimeHealth } from "./runtime-composition.js";
 import type { SolanaLocalExecutionService } from "./solana-local-execution.js";
 import {
   HyperliquidTestnetRuntimeClientError,
@@ -78,7 +78,7 @@ export type PrivateTerminalServerConfig = {
   terminalOrigin: string | null;
 };
 
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
   const octets = host.split(".");
   return octets.length === 4 && octets[0] === "127" && octets.every((octet) => {
@@ -180,6 +180,35 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+export type PrivateTerminalHealthEnvironment = "TESTNET" | "LOCAL_CONFORMANCE" | "LOCAL_VALIDATOR" | "UNCONFIGURED";
+export type PrivateTerminalHealthStatus = "ready" | "degraded" | "unconfigured";
+
+/**
+ * Derives the reported environment from what the process actually composed: any enabled public
+ * testnet boundary makes it TESTNET, and LOCAL_CONFORMANCE is reported only for the fixture opt-in.
+ * Any enabled boundary that failed to compose makes the service degraded.
+ */
+export function privateTerminalHealthSummary(
+  runtimeHealth: PrivateTerminalRuntimeHealth | undefined,
+  localAtomicRuntimeMode: LocalAtomicRuntimeMode,
+): Readonly<{ status: PrivateTerminalHealthStatus; environment: PrivateTerminalHealthEnvironment }> {
+  const boundaries = runtimeHealth === undefined ? [] : [
+    runtimeHealth.solanaDevnet,
+    runtimeHealth.baseTestnetAtomic,
+    runtimeHealth.arbitrumTestnetAsync,
+    runtimeHealth.hyperliquidTestnet,
+  ];
+  const enabled = boundaries.filter((boundary) => boundary.reason !== "DISABLED_BY_CONFIGURATION");
+  const environment: PrivateTerminalHealthEnvironment = enabled.length > 0 ? "TESTNET"
+    : localAtomicRuntimeMode === "PHASE4_FIXTURE" ? "LOCAL_CONFORMANCE"
+      : localAtomicRuntimeMode === "MANIFEST_VALIDATED" ? "LOCAL_VALIDATOR"
+        : "UNCONFIGURED";
+  const status: PrivateTerminalHealthStatus = enabled.some((boundary) => !boundary.available) ? "degraded"
+    : environment === "UNCONFIGURED" ? "unconfigured"
+      : "ready";
+  return Object.freeze({ status, environment });
+}
+
 function hasOrderPorts(ports: InternalOrderPorts | undefined): ports is InternalOrderPorts {
   return ports !== undefined &&
     typeof ports.contexts === "function" &&
@@ -198,7 +227,7 @@ export function createPrivateTerminalRequestHandler(
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
-  localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
+  localAtomicRuntimeMode: LocalAtomicRuntimeMode = "DISABLED",
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
@@ -278,7 +307,7 @@ export function createPrivateTerminalRequestHandler(
     }
 
     const solverAttemptMatch = url.search === ""
-      ? /^\/internal\/solver\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52}))$/.exec(url.pathname)
+      ? /^\/internal\/solver\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52})|(?:arbitrum-async-[0-9a-f]{48}))$/.exec(url.pathname)
       : null;
     if (solverAttemptMatch !== null) {
       if (!isLoopbackPeer(request.socket.remoteAddress)) {
@@ -357,10 +386,11 @@ export function createPrivateTerminalRequestHandler(
     }
 
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
+      const summary = privateTerminalHealthSummary(runtimeHealth, localAtomicRuntimeMode);
       sendJson(response, 200, {
-        status: "ready",
+        status: summary.status,
         scope: "private_terminal",
-        environment: "LOCAL_CONFORMANCE",
+        environment: summary.environment,
         localAtomicRuntimeMode,
         executionPreparationAvailable: executionPorts.preparation !== undefined && executionReadinessAvailable,
         executionObservationAvailable: executionPorts.observation !== undefined,
@@ -890,7 +920,7 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
-    const attemptMatch = /^\/internal\/terminal\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52})|(?:hyperliquid-testnet-[0-9a-f]{48}))$/.exec(url.pathname);
+    const attemptMatch = /^\/internal\/terminal\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52})|(?:arbitrum-async-[0-9a-f]{48})|(?:hyperliquid-testnet-[0-9a-f]{48}))$/.exec(url.pathname);
     if (attemptMatch !== null) {
       if (request.method !== "GET") {
         response.setHeader("Allow", "GET, OPTIONS");
@@ -923,12 +953,12 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
         return;
       }
-      if (localExecutionCoordinator === undefined) {
-        reject(response, 503, "LOCAL_EXECUTION_UNAVAILABLE", "Local execution coordination is unavailable.");
+      if (localAtomicRuntimeMode !== "PHASE4_FIXTURE") {
+        reject(response, 409, "FIXTURE_MODE_DISABLED", "Fixture lifecycle actions are disabled unless local fixture mode is explicitly enabled.");
         return;
       }
-      if (localAtomicRuntimeMode !== "PHASE4_FIXTURE") {
-        reject(response, 409, "FIXTURE_MODE_DISABLED", "Fixture lifecycle actions are disabled for manifest-validated execution.");
+      if (localExecutionCoordinator === undefined) {
+        reject(response, 503, "LOCAL_EXECUTION_UNAVAILABLE", "Local execution coordination is unavailable.");
         return;
       }
       const attemptId = attemptActionMatch[1] as string;
@@ -1038,7 +1068,7 @@ export function createPrivateTerminalServer(
   executionIntentStore?: ExecutionIntentStore,
   localExecutionCoordinator?: LocalExecutionCoordinator,
   runtimeHealth?: PrivateTerminalRuntimeHealth,
-  localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" = "PHASE4_FIXTURE",
+  localAtomicRuntimeMode: LocalAtomicRuntimeMode = "DISABLED",
   solanaLocalExecution?: SolanaLocalExecutionService,
   hyperliquidTestnetPreparationPort?: HyperliquidTestnetPreparationPort,
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,

@@ -53,7 +53,8 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   arbitrumTestnetAsync: RuntimeBoundaryHealth;
   hyperliquidTestnet: RuntimeBoundaryHealth;
   controls: Readonly<{
-    localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED";
+    /** DISABLED: no local runtime is composed, the default for a real testnet deployment. */
+    localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" | "DISABLED";
     executionReadinessAvailable: boolean;
     lifecycleReadAvailable: boolean;
     solverQuotingAvailable: boolean;
@@ -564,7 +565,8 @@ function requireHealthFlag(value: Record<string, unknown>, key: string): boolean
 
 function requireRuntimeControls(value: Record<string, unknown>): PrivateTerminalRuntimeHealth["controls"] {
   if (value.localAtomicRuntimeMode !== "PHASE4_FIXTURE" &&
-      value.localAtomicRuntimeMode !== "MANIFEST_VALIDATED") {
+      value.localAtomicRuntimeMode !== "MANIFEST_VALIDATED" &&
+      value.localAtomicRuntimeMode !== "DISABLED") {
     throw new Error("Private terminal local runtime mode is invalid.");
   }
   return Object.freeze({

@@ -261,9 +261,16 @@ export {
   type EvmTestnetRuntimePortsOptions,
 } from "./evm-testnet-runtime-ports.js";
 export {
+  PreparedEvmTestnetAtomicStoreError,
+  SqlitePreparedEvmTestnetAtomicStore,
+} from "./evm-testnet-prepared-store.js";
+export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,
   loadPrivateTerminalServerConfig,
+  privateTerminalHealthSummary,
+  type PrivateTerminalHealthEnvironment,
+  type PrivateTerminalHealthStatus,
   type PrivateTerminalServerConfig,
 } from "./http-server.js";
 export {
@@ -281,6 +288,12 @@ export {
 } from "./execution-readiness-gate.js";
 export {
   composePrivateTerminalRuntime,
+  loadPrivateTerminalStartupConfig,
+  runtimeFailureMessage,
+  stderrRuntimeFailureReporter,
+  type LocalAtomicRuntimeMode,
+  type PrivateTerminalStartupConfig,
+  type RuntimeFailureReporter,
   type PrivateTerminalRuntimeComposition,
   type PrivateTerminalRuntimeFactories,
   type PrivateTerminalRuntimeHealth,
