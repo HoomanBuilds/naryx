@@ -1,11 +1,10 @@
-/* Terminal shell, navigation, ticket, workspace, and execution flow panels. */
+/* Trade page: market panels, ticket, orders workspace, and execution flow panels. */
 
 .terminalShell {
   display: flex;
-  min-height: 100dvh;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-  background: var(--canvas);
-  color: var(--text-primary);
 }
 
 .visuallyHidden {
@@ -29,10 +28,6 @@
   color: var(--fixture);
 }
 
-.dimCell {
-  color: var(--text-dim);
-}
-
 .monoCell {
   font-family: var(--font-geist-mono), monospace;
   font-size: 11.5px;
@@ -46,9 +41,7 @@
 /* ---------------------------------------------------------------- status dots and chips */
 
 .dotLive,
-.dotWarn,
-.dotIdle,
-.dotFixture {
+.dotIdle {
   display: inline-block;
   flex: 0 0 auto;
   width: 6px;
@@ -73,21 +66,11 @@
   }
 }
 
-.dotWarn {
-  background: var(--fixture);
-}
-
 .dotIdle {
   background: var(--text-faint);
 }
 
-.dotFixture {
-  background: var(--fixture);
-  box-shadow: 0 0 6px rgba(255, 157, 61, 0.5);
-}
-
-.chipNeutral,
-.chipDanger {
+.chipNeutral {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -102,271 +85,6 @@
   line-height: 1.5;
   text-transform: uppercase;
   white-space: nowrap;
-}
-
-.chipDanger {
-  border-color: rgba(240, 81, 95, 0.4);
-  color: var(--down);
-}
-
-/* ---------------------------------------------------------------- top navigation */
-
-.topNavigation {
-  position: sticky;
-  z-index: 20;
-  top: 0;
-  display: flex;
-  height: 52px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 28px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  padding: 0 14px 0 16px;
-}
-
-.brand {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-primary);
-  text-decoration: none;
-}
-
-.brandMark {
-  display: block;
-  width: 26px;
-  height: 26px;
-}
-
-.brandMark svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.brandMark rect {
-  fill: var(--yellow);
-}
-
-.brandMark path {
-  fill: var(--yellow-ink);
-}
-
-.wordmark {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.34em;
-}
-
-.brand:focus-visible,
-.primaryNav button:focus-visible,
-.domainSelector button:focus-visible,
-.navButton:focus-visible,
-.connectButton:focus-visible,
-.walletControl select:focus-visible {
-  outline: 1px solid var(--yellow);
-  outline-offset: 2px;
-}
-
-.primaryNav {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.primaryNav > * {
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--text-secondary);
-  padding: 6px 10px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color 0.12s,
-    color 0.12s;
-}
-
-.primaryNav button:hover {
-  background: var(--hover);
-  color: var(--text-primary);
-}
-
-/* The workspace view currently open below the chart */
-.primaryNav .primaryNavOpen {
-  color: var(--text-primary);
-  box-shadow: inset 0 -2px 0 var(--yellow);
-}
-
-.primaryNav .primaryNavActive {
-  color: var(--text-primary);
-  cursor: default;
-}
-
-.navEnd {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-
-.environmentChip {
-  display: flex;
-  height: 30px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--canvas);
-  padding: 0 10px;
-}
-
-.environmentChip span {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-}
-
-.environmentChip small {
-  border-left: 1px solid var(--line);
-  color: var(--text-dim);
-  padding-left: 8px;
-  font-size: 11px;
-}
-
-.domainSelector {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 2px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--canvas);
-  padding: 2px;
-}
-
-.domainSelector button {
-  display: inline-flex;
-  height: 24px;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--text-dim);
-  padding: 0 9px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color 0.12s,
-    color 0.12s;
-}
-
-.domainSelector button:hover {
-  color: var(--text-primary);
-}
-
-.domainSelector .domainActive,
-.domainSelector .domainActive:hover {
-  background: var(--hover);
-  color: var(--text-primary);
-}
-
-
-
-
-
-
-.walletControl {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.walletControl select {
-  height: 32px;
-  max-width: 160px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--canvas);
-  color: var(--text-secondary);
-  padding: 0 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.walletAccount {
-  display: inline-flex;
-  height: 32px;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--canvas);
-  padding: 0 10px;
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 11.5px;
-}
-
-.walletAccount small {
-  color: var(--text-dim);
-  font-family: var(--font-geist-sans), sans-serif;
-  font-size: 11px;
-}
-
-.walletWarn {
-  border-color: rgba(255, 157, 61, 0.4);
-}
-
-.navButton,
-.connectButton {
-  height: 32px;
-  border-radius: var(--radius);
-  padding: 0 14px;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background-color 0.12s,
-    border-color 0.12s,
-    color 0.12s,
-    opacity 0.12s;
-}
-
-.navButton {
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.navButton:hover {
-  border-color: var(--text-dim);
-  color: var(--text-primary);
-}
-
-.connectButton {
-  border: 0;
-  background: var(--text-primary);
-  color: #0a0a0a;
-}
-
-.connectButton:hover:not(:disabled) {
-  background: #ffffff;
-}
-
-.connectButton:disabled {
-  background: var(--field);
-  color: var(--text-dim);
-  cursor: not-allowed;
 }
 
 /* ---------------------------------------------------------------- terminal grid */
@@ -487,9 +205,10 @@
 }
 
 @media (min-width: 1280px) {
+  /* The shared header is 52px; the trade page fills the rest of the viewport. */
   .terminalShell {
-    height: 100dvh;
-    min-height: 720px;
+    height: calc(100dvh - 52px);
+    min-height: 668px;
   }
 
   /* A zero basis keeps the grid height definite, so long panel content scrolls instead of growing it. */
@@ -517,41 +236,7 @@
   }
 }
 
-@media (max-width: 1439px) {
-  .environmentChip small {
-    display: none;
-  }
-}
-
-@media (max-width: 1319px) {
-  .primaryNav button {
-    display: none;
-  }
-
-  .topNavigation {
-    gap: 18px;
-  }
-}
-
 @media (max-width: 1023px) {
-  .primaryNav button {
-    display: inline-block;
-  }
-
-  /* The header wraps to several rows here, so it scrolls away instead of covering the ticket. */
-  .topNavigation {
-    position: static;
-    flex-wrap: wrap;
-    height: auto;
-    gap: 10px 16px;
-    padding: 10px 12px;
-  }
-
-  .navEnd {
-    width: 100%;
-    flex-wrap: wrap;
-    margin-left: 0;
-  }
 
   .terminalGrid {
     grid-template-areas:
@@ -570,33 +255,6 @@
 }
 
 @media (max-width: 640px) {
-  .primaryNav {
-    display: none;
-  }
-
-  .environmentChip small {
-    display: none;
-  }
-
-  .domainSelector {
-    width: 100%;
-  }
-
-  .domainSelector button {
-    flex: 1 1 0;
-    justify-content: center;
-    padding: 0 4px;
-  }
-
-  .walletControl {
-    width: 100%;
-  }
-
-  .walletControl select {
-    max-width: none;
-    flex: 1 1 auto;
-  }
-
   .terminalGrid {
     gap: 3px;
     padding: 3px;
@@ -964,26 +622,10 @@
   font-weight: 400;
 }
 
-.domainIcon {
-  opacity: 0.9;
-}
-
 .chainCell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-
-.legIndex {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  color: var(--text-secondary);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
 }
 
 .legList strong {
@@ -1021,8 +663,7 @@
   gap: 6px;
 }
 
-.primaryCta,
-.secondaryCta {
+.primaryCta {
   width: 100%;
   border-radius: var(--radius);
   font-size: 13px;
@@ -1053,35 +694,15 @@
   cursor: not-allowed;
 }
 
-.secondaryCta {
-  height: 34px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.secondaryCta:hover:not(:disabled) {
-  border-color: var(--text-dim);
-  color: var(--text-primary);
-}
-
-.secondaryCta:disabled {
-  color: var(--text-faint);
-  cursor: not-allowed;
-}
-
 .primaryCta:active:not(:disabled),
-.secondaryCta:active:not(:disabled),
 .presets button:active,
 .sideSwitch button:active,
-.connectButton:active:not(:disabled),
 .primaryAction:active:not(:disabled),
 .secondaryAction:active:not(:disabled) {
   transform: scale(0.985);
 }
 
 .primaryCta:focus-visible,
-.secondaryCta:focus-visible,
 .sideSwitch button:focus-visible,
 .orderTypes button:focus-visible,
 .presets button:focus-visible,
@@ -1095,6 +716,116 @@
   color: var(--text-dim);
   font-size: 11.5px;
   line-height: 1.45;
+}
+
+.actionArea p .inlineRetry {
+  margin-left: 8px;
+  vertical-align: baseline;
+}
+
+/* Connect and network switch lead the ticket before any trade action, like every venue. */
+.connectCta {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--text-primary);
+  color: #0a0a0a;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.16s,
+    transform 0.12s var(--ease-out);
+}
+
+.connectCta:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.connectCta:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.connectCta:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.connectCta:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+.ticketAccount {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feeDetails > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.feeDetails > summary::-webkit-details-marker {
+  display: none;
+}
+
+.feeDetails > summary span::after {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--text-faint);
+  content: "+";
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.feeDetails[open] > summary span::after {
+  content: "-";
+}
+
+.feeDetails > summary:hover span {
+  color: var(--text-secondary);
+}
+
+.feeDetails > summary:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+.feeDetails[open] {
+  display: grid;
+  gap: 6px;
+}
+
+.summaryNested {
+  padding-left: 10px;
+}
+
+.summaryNested span,
+.summaryNested strong {
+  color: var(--text-dim);
+}
+
+.flowDetails > .ticketFacts {
+  padding: 10px 12px 4px;
+}
+
+.flowDetails > .summaryNote {
+  padding: 0 12px 10px;
+}
+
+.ticketFacts dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .summaryCard {
@@ -1124,16 +855,6 @@
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-
-.summaryTotal strong {
-  font-weight: 600;
-}
-
-.summaryDivider {
-  height: 1px;
-  margin: 2px 0;
-  background: var(--line);
 }
 
 .summaryNote {
@@ -1485,16 +1206,6 @@
   outline-offset: -2px;
 }
 
-.attentionRing {
-  position: absolute;
-  z-index: 5;
-  inset: 0;
-  border: 1px solid var(--yellow);
-  border-radius: var(--radius);
-  pointer-events: none;
-  animation: attention 1s var(--ease-out) forwards;
-}
-
 @keyframes attention {
   from {
     opacity: 0.9;
@@ -1628,178 +1339,7 @@
   min-height: 24px;
 }
 
-/* ---------------------------------------------------------------- route plan and readiness tabs */
-
-.routePanel,
-/* Portfolio: one card per chain above the positions table */
-.portfolioGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 12px 4px;
-}
-
-.portfolioCard {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--canvas);
-  color: var(--text-primary);
-  text-align: left;
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    background-color 0.15s;
-}
-
-.portfolioCard:hover {
-  border-color: var(--line-strong);
-  background: var(--hover);
-}
-
-.portfolioCardActive,
-.portfolioCardActive:hover {
-  border-color: var(--text-secondary);
-}
-
-.portfolioHead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.portfolioHead strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.portfolioHead small {
-  margin-left: auto;
-  color: var(--text-faint);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-}
-
-.portfolioCard dl {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-}
-
-.portfolioCard dl > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.portfolioCard dt {
-  color: var(--text-secondary);
-}
-
-.portfolioCard dd {
-  overflow: hidden;
-  margin: 0;
-  font-family: var(--font-geist-mono), monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 1100px) {
-  .portfolioGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.readinessPanel {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.sectionBar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 14px;
-  border-bottom: 1px solid var(--line-soft);
-  padding: 10px 14px;
-}
-
-.sectionBar h2 {
-  margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.sectionBar p {
-  flex: 1 1 260px;
-  margin: 0;
-  color: var(--text-dim);
-  font-size: 11.5px;
-}
-
-.sectionBar > span {
-  align-self: center;
-}
-
-.noteCell {
-  max-width: 360px;
-  overflow: hidden;
-  color: var(--text-dim);
-  text-overflow: ellipsis;
-}
-
-.rowSelected td {
-  background: rgba(255, 255, 0, 0.035);
-}
-
-.rowSelected td:first-child {
-  box-shadow: inset 2px 0 0 var(--yellow);
-}
-
-.rowSelect {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  background: transparent;
-  color: var(--text-primary);
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.rowSelect:hover {
-  color: var(--yellow);
-}
-
-.rowSelect:focus-visible {
-  outline: 1px solid var(--yellow);
-  outline-offset: 2px;
-}
-
-.statusOk,
-.statusOff {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-}
-
-.statusOk {
-  color: var(--up);
-}
-
-.statusOff {
-  color: var(--text-dim);
-}
+/* ---------------------------------------------------------------- promotion rail (Network page) */
 
 .stageRail {
   display: grid;
@@ -1863,65 +1403,5 @@
 
 .stageProhibited {
   box-shadow: inset 0 -2px 0 rgba(240, 81, 95, 0.5);
-}
-
-.readinessBody {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.tableWrap {
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.ledger {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  margin: 0;
-  border-top: 1px solid var(--line-soft);
-  background: var(--line-soft);
-}
-
-.ledger div {
-  display: grid;
-  gap: 3px;
-  background: var(--panel);
-  padding: 8px 14px;
-  font-size: 11.5px;
-}
-
-.ledger dt {
-  color: var(--text-dim);
-  font-size: 10.5px;
-}
-
-.ledger dd {
-  overflow: hidden;
-  margin: 0;
-  color: var(--text-secondary);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ledger .ledgerTitle {
-  background: var(--panel-raised);
-}
-
-@media (max-width: 760px) {
-  .ledger {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-.ledger .ledgerTitle dd {
-  color: var(--text-primary);
-  font-family: var(--font-geist-sans), sans-serif;
-  font-size: 12px;
-  font-weight: 600;
 }
 

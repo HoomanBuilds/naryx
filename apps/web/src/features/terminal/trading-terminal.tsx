@@ -1,17 +1,14 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
-import { SolverMetrics } from "./pro/solver-metrics";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
-import { PrivateHttpTerminalProvider } from "./private-http-terminal-provider";
 import type {
   HyperliquidOrderCreateResponse,
   HyperliquidSelectedAttempt,
@@ -24,20 +21,8 @@ import type {
   LocalSelectedAttempt,
   LocalSolverQuote,
   PackageLifecycleResponse,
-  PrivateTerminalRuntimeHealth,
-  RuntimeBoundaryHealth,
   SolanaExecutionObservation,
 } from "./private-http-terminal-provider";
-import {
-  EVM_TESTNETS,
-  isEvmDomain,
-  useInjectedEvmWallet,
-  type InjectedEvmWalletSession,
-} from "./injected-evm-wallet";
-import {
-  useSolanaDevnetWallet,
-  type SolanaWalletSession,
-} from "./solana-wallet-standard";
 import type {
   DomainId,
   PackageMode,
@@ -50,6 +35,11 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
+import { DOMAIN_META, domainHealth, useTerminal } from "./shell/terminal-context";
+import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
+import { useEvmWallet } from "@/features/wallet/evm-wallet";
+import { useSolanaWallet } from "@/features/wallet/solana-wallet";
+import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import styles from "./trading-terminal.module.css";
 
@@ -58,8 +48,6 @@ const REVIEW_TTL_MS = 45_000;
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
 const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
-
-type BottomTab = WorkspaceTab | "route" | "readiness" | "solvers";
 
 /**
  * Formats an exact decimal string as dollars with grouping. Digits are never rounded; trailing
@@ -86,582 +74,6 @@ function sanitizeSize(value: string) {
   const cleaned = value.replace(/[^0-9.]/g, "");
   const [whole, ...decimals] = cleaned.split(".");
   return decimals.length > 0 ? `${whole}.${decimals.join("")}` : whole;
-}
-
-function BrandMark() {
-  return (
-    <span className={styles.brandMark} aria-hidden="true">
-      <svg viewBox="0 0 24 24">
-        <rect width="24" height="24" rx="5" />
-        <path d="M7.4 6h3.1l1.5 2.6L13.5 6h3.1l-3.1 5.9L16.8 18h-3.1L12 15l-1.7 3H7.2l3.3-6.1Z" />
-      </svg>
-    </span>
-  );
-}
-
-function shortAddress(value: string, leading = 4, trailing = 4) {
-  return `${value.slice(0, leading)}...${value.slice(-trailing)}`;
-}
-
-function WalletControl({
-  selectedDomain,
-  wallet,
-  evmWallet,
-}: {
-  selectedDomain: DomainId;
-  wallet: SolanaWalletSession;
-  evmWallet: InjectedEvmWalletSession;
-}) {
-  const evmDomain = isEvmDomain(selectedDomain) ? selectedDomain : null;
-  const expectedNetwork = evmDomain ? EVM_TESTNETS[evmDomain] : null;
-  const evmNetworkMatches = Boolean(
-    expectedNetwork && evmWallet.chainId === expectedNetwork.chainId,
-  );
-
-  if (selectedDomain === "solana") {
-    if (wallet.selectedAccount) {
-      return (
-        <div className={styles.walletControl}>
-          {wallet.accounts.length > 1 ? (
-            <select
-              aria-label="Solana Devnet wallet account"
-              value={wallet.selectedAccount.address}
-              onChange={(event) => wallet.selectAccount(event.target.value)}
-            >
-              {wallet.accounts.map((account) => (
-                <option key={account.address} value={account.address}>
-                  {account.label ?? shortAddress(account.address)}
-                </option>
-              ))}
-            </select>
-          ) : null}
-          <span className={styles.walletAccount} title={wallet.selectedAccount.address}>
-            <i className={styles.dotLive} aria-hidden="true" />
-            {shortAddress(wallet.selectedAccount.address)}
-            <small>Devnet</small>
-          </span>
-          <button type="button" className={styles.navButton} onClick={() => void wallet.disconnect()}>
-            Disconnect
-          </button>
-        </div>
-      );
-    }
-    return (
-      <div className={styles.walletControl}>
-        <select
-          aria-label="Solana Devnet wallet"
-          value={wallet.selectedWallet?.name ?? ""}
-          onChange={(event) => wallet.selectWallet(event.target.value)}
-          title={wallet.error ?? "Wallet Standard wallets only"}
-        >
-          <option value="">{wallet.wallets.length === 0 ? "No wallet detected" : "Select wallet"}</option>
-          {wallet.wallets.map((item) => (
-            <option key={item.name} value={item.name}>{item.name}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className={styles.connectButton}
-          disabled={!wallet.selectedWallet || wallet.connecting}
-          onClick={() => void wallet.connect()}
-        >
-          {wallet.connecting ? "Connecting" : "Connect Devnet"}
-        </button>
-      </div>
-    );
-  }
-
-  if (evmDomain && expectedNetwork) {
-    return (
-      <div className={styles.walletControl}>
-        {evmWallet.account ? (
-          <span
-            className={evmNetworkMatches ? styles.walletAccount : `${styles.walletAccount} ${styles.walletWarn}`}
-            title={evmWallet.error ?? evmWallet.account}
-          >
-            <i className={evmNetworkMatches ? styles.dotLive : styles.dotWarn} aria-hidden="true" />
-            {shortAddress(evmWallet.account, 6, 4)}
-            <small>{evmNetworkMatches ? expectedNetwork.label : "Wrong network"}</small>
-          </span>
-        ) : null}
-        {!evmWallet.account ? (
-          <button
-            type="button"
-            className={styles.connectButton}
-            disabled={!evmWallet.available || evmWallet.connecting}
-            title={evmWallet.error ?? (evmWallet.available ? "Manual connection only" : "Injected wallet unavailable")}
-            onClick={() => void evmWallet.connect()}
-          >
-            {evmWallet.connecting ? "Connecting" : evmWallet.available ? "Connect wallet" : "No EVM wallet"}
-          </button>
-        ) : !evmNetworkMatches ? (
-          <button
-            type="button"
-            className={styles.connectButton}
-            disabled={evmWallet.switching}
-            onClick={() => void evmWallet.switchNetwork(evmDomain)}
-          >
-            {evmWallet.switching ? "Switching" : `Switch to ${expectedNetwork.label}`}
-          </button>
-        ) : (
-          <button type="button" className={styles.navButton} onClick={evmWallet.disconnect}>
-            Disconnect
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className={styles.walletControl}>
-      <span className={styles.walletAccount} title="Hyperliquid Testnet runs through the configured service account gate. No browser wallet is used.">
-        <i className={styles.dotIdle} aria-hidden="true" />
-        Service account gate
-        <small>No browser wallet</small>
-      </span>
-    </div>
-  );
-}
-
-const NAV_VIEWS: readonly { tab: BottomTab; label: string }[] = [
-  { tab: "positions", label: "Portfolio" },
-  { tab: "receipts", label: "Receipts" },
-  { tab: "readiness", label: "Readiness" },
-];
-
-function TopNavigation({
-  snapshot,
-  selectedDomain,
-  providerConnection,
-  wallet,
-  evmWallet,
-  onDomainChange,
-  onOpenView,
-  activeView,
-}: {
-  snapshot: TerminalViewModel;
-  selectedDomain: DomainId;
-  providerConnection: ProviderConnection;
-  wallet: SolanaWalletSession;
-  evmWallet: InjectedEvmWalletSession;
-  onDomainChange: (domain: DomainId) => void;
-  onOpenView: (tab: BottomTab) => void;
-  activeView: BottomTab;
-}) {
-  const providerLabel = providerConnection === "connected"
-    ? "Service connected"
-    : providerConnection === "connecting"
-      ? "Checking service"
-      : "Local fallback";
-
-  return (
-    <header className={styles.topNavigation}>
-      <Link className={styles.brand} href="/" prefetch={false} aria-label="Naryx home">
-        <BrandMark />
-        <span className={styles.wordmark}>NARYX</span>
-      </Link>
-
-      <nav className={styles.primaryNav} aria-label="Terminal">
-        <span className={styles.primaryNavActive} aria-current="page">Trade</span>
-        {NAV_VIEWS.map((view) => (
-          <button
-            key={view.tab}
-            type="button"
-            className={activeView === view.tab ? styles.primaryNavOpen : undefined}
-            aria-pressed={activeView === view.tab}
-            onClick={() => onOpenView(view.tab)}
-          >
-            {view.label}
-          </button>
-        ))}
-      </nav>
-
-      <div className={styles.navEnd}>
-        <div
-          className={styles.environmentChip}
-          title={`${snapshot.environment.title}. ${snapshot.environment.detail} Captured ${snapshot.environment.capturedAt}.`}
-        >
-          <i className={providerConnection === "connected" ? styles.dotLive : providerConnection === "connecting" ? styles.dotWarn : styles.dotFixture} aria-hidden="true" />
-          <span>{snapshot.environment.label.replace(/_/g, " ")}</span>
-          <small>{providerLabel}</small>
-        </div>
-
-        <div className={styles.domainSelector} role="group" aria-label="Execution domain">
-          {snapshot.domains.map((domain) => (
-            <button
-              key={domain.id}
-              type="button"
-              className={selectedDomain === domain.id ? styles.domainActive : undefined}
-              aria-pressed={selectedDomain === domain.id}
-              title={`${domain.label}: ${domain.runtime}. ${domain.state} data.`}
-              onClick={() => onDomainChange(domain.id)}
-            >
-              <ChainIcon chain={domain.id} size={14} className={styles.domainIcon} />
-              {domain.label}
-            </button>
-          ))}
-        </div>
-
-        <WalletControl selectedDomain={selectedDomain} wallet={wallet} evmWallet={evmWallet} />
-      </div>
-    </header>
-  );
-}
-
-const READINESS_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
-
-const READINESS_META: Record<DomainId, {
-  testNetwork: string;
-  executionMode: string;
-  settlementClass: string;
-}> = {
-  solana: {
-    testNetwork: "Solana Devnet",
-    executionMode: "Solana atomic",
-    settlementClass: "ATOMIC_POSTCONDITION",
-  },
-  base: {
-    testNetwork: "Base Sepolia",
-    executionMode: "Base atomic",
-    settlementClass: "ATOMIC_POSTCONDITION",
-  },
-  arbitrum: {
-    testNetwork: "Arbitrum Sepolia",
-    executionMode: "Arbitrum bonded async",
-    settlementClass: "ASYNC_BONDED_SOLVER",
-  },
-  hyperliquid: {
-    testNetwork: "Hyperliquid testnet",
-    executionMode: "Hyperliquid coordinated testnet",
-    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
-  },
-};
-
-const READINESS_FALLBACK: Record<DomainId, { label: string; runtime: string }> = {
-  solana: { label: "Solana", runtime: "SVM" },
-  base: { label: "Base", runtime: "EVM" },
-  arbitrum: { label: "Arbitrum", runtime: "EVM" },
-  hyperliquid: { label: "Hyperliquid", runtime: "HyperCore" },
-};
-
-function readinessHealthFor(
-  domain: DomainId,
-  health: PrivateTerminalRuntimeHealth | null,
-): RuntimeBoundaryHealth | null {
-  if (!health) return null;
-  if (domain === "solana") return health.solanaDevnet;
-  if (domain === "base") return health.baseTestnetAtomic;
-  if (domain === "arbitrum") return health.arbitrumTestnetAsync;
-  return health.hyperliquidTestnet;
-}
-
-function readinessBlocker(
-  hasService: boolean,
-  providerConnection: ProviderConnection,
-  health: RuntimeBoundaryHealth | null,
-  domain: DomainId,
-): string {
-  if (!hasService) return "Private service not configured. Local fixture data only.";
-  if (!health) {
-    return providerConnection === "connecting"
-      ? "Checking private service health."
-      : "Health unavailable. Local fixture data only.";
-  }
-  if (health.available) {
-    if (domain === "solana") return "Ready. Review required before any Devnet signature.";
-    if (domain === "hyperliquid") {
-      return "Ready. The configured dedicated Testnet account gate is available for explicit review and execution.";
-    }
-    return "Runtime ready. This ticket executes Solana Devnet only.";
-  }
-  if (health.reason === "DISABLED_BY_CONFIGURATION") return "Disabled in service config. No testnet execution.";
-  if (health.reason === "RUNTIME_FACTORY_NOT_INJECTED") return "Runtime not wired in service. No testnet execution.";
-  if (health.reason === "RUNTIME_INITIALIZATION_FAILED") return "Runtime failed to start. No testnet execution.";
-  if (health.reason === "REQUIRED_PORTS_MISSING") return "Service ports missing. No testnet execution.";
-  return "Runtime unavailable. No testnet execution.";
-}
-
-function readinessStatus(
-  hasService: boolean,
-  providerConnection: ProviderConnection,
-  health: RuntimeBoundaryHealth | null,
-): "Available" | "Checking" | "Unavailable" | "Disabled" {
-  if (!hasService) return "Disabled";
-  if (!health) return providerConnection === "connecting" ? "Checking" : "Unavailable";
-  return health.available ? "Available" : "Unavailable";
-}
-
-const SETTLEMENT_SHORT: Record<string, string> = {
-  ATOMIC_POSTCONDITION: "Atomic",
-  ASYNC_BONDED_SOLVER: "Bonded async",
-  BATCHED_IOC_WITH_RECOVERY: "Batched IOC with recovery",
-};
-
-/**
- * The portfolio overview: one card per chain with the account that executes there, its readiness,
- * its settlement class, and the latest package the durable lifecycle reports on it. Nothing here
- * invents a balance or a position; empty means none were reported.
- */
-function PortfolioOverview({
-  snapshot,
-  selectedDomain,
-  providerConnection,
-  runtimeHealth,
-  lifecycle,
-  hasService,
-  wallet,
-  evmWallet,
-  onSelect,
-}: {
-  snapshot: TerminalViewModel;
-  selectedDomain: DomainId;
-  providerConnection: ProviderConnection;
-  runtimeHealth: PrivateTerminalRuntimeHealth | null;
-  lifecycle: PackageLifecycleResponse | null;
-  hasService: boolean;
-  wallet: SolanaWalletSession;
-  evmWallet: InjectedEvmWalletSession;
-  onSelect: (domain: DomainId) => void;
-}) {
-  const latestDomain = chainOf(lifecycle?.receipts.at(-1)?.domain.domainId)?.id;
-  return (
-    <div className={styles.portfolioGrid} aria-label="Accounts by chain">
-      {READINESS_ORDER.map((domain) => {
-        const model = snapshot.domains.find((item) => item.id === domain);
-        const label = model?.label ?? READINESS_FALLBACK[domain].label;
-        const status = readinessStatus(hasService, providerConnection, readinessHealthFor(domain, runtimeHealth));
-        const account = domain === "solana"
-          ? wallet.selectedAccount?.address
-          : domain === "hyperliquid"
-            ? undefined
-            : evmWallet.account ?? undefined;
-        const selected = selectedDomain === domain;
-        return (
-          <button
-            key={domain}
-            type="button"
-            className={selected ? `${styles.portfolioCard} ${styles.portfolioCardActive}` : styles.portfolioCard}
-            aria-pressed={selected}
-            onClick={() => onSelect(domain)}
-          >
-            <span className={styles.portfolioHead}>
-              <ChainIcon chain={domain} size={22} />
-              <strong>{label}</strong>
-              <small>{model?.runtime ?? READINESS_FALLBACK[domain].runtime}</small>
-            </span>
-            <dl>
-              <div>
-                <dt>Account</dt>
-                <dd title={account}>
-                  {domain === "hyperliquid" ? "Dedicated testnet gate" : account ? shortAddress(account, 6, 4) : "Not connected"}
-                </dd>
-              </div>
-              <div>
-                <dt>Execution</dt>
-                <dd className={status === "Available" ? styles.statusOk : styles.statusOff}>{status}</dd>
-              </div>
-              <div>
-                <dt>Settlement</dt>
-                <dd>{SETTLEMENT_SHORT[READINESS_META[domain].settlementClass] ?? READINESS_META[domain].settlementClass}</dd>
-              </div>
-              <div>
-                <dt>Latest package</dt>
-                <dd>{lifecycle && latestDomain === domain ? lifecycle.attempt.state.replace(/_/g, " ") : "None reported"}</dd>
-              </div>
-            </dl>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ExecutionReadiness({
-  snapshot,
-  selectedDomain,
-  providerConnection,
-  runtimeHealth,
-  lifecycle,
-  hasService,
-  onSelect,
-}: {
-  snapshot: TerminalViewModel;
-  selectedDomain: DomainId;
-  providerConnection: ProviderConnection;
-  runtimeHealth: PrivateTerminalRuntimeHealth | null;
-  lifecycle: PackageLifecycleResponse | null;
-  hasService: boolean;
-  onSelect: (domain: DomainId) => void;
-}) {
-  const selectedMeta = READINESS_META[selectedDomain];
-  const selectedHealth = readinessHealthFor(selectedDomain, runtimeHealth);
-  const latestReceipt = lifecycle?.receipts.at(-1) ?? null;
-  const routeEvidence = latestReceipt?.evidenceGrade ?? "NOT AVAILABLE";
-  const dependencyStatus = selectedHealth
-    ? selectedHealth.available ? "AVAILABLE" : selectedHealth.reason ?? "UNAVAILABLE"
-    : "UNKNOWN";
-  const authorityFence = runtimeHealth
-    ? runtimeHealth.controls.executionReadinessAvailable ? "ENFORCED AT HANDOFF" : "NOT CONFIGURED"
-    : "UNKNOWN";
-  const localVerified = runtimeHealth !== null &&
-    runtimeHealth.controls.localAtomicRuntimeMode === "MANIFEST_VALIDATED" &&
-    runtimeHealth.controls.localExecutionAvailable &&
-    runtimeHealth.controls.lifecycleReadAvailable &&
-    runtimeHealth.controls.solverQuotingAvailable;
-  const serviceNote = !hasService
-    ? "Local fixture only"
-    : !runtimeHealth
-      ? providerConnection === "connecting" ? "Checking service" : "Health unavailable"
-      : providerConnection === "connected" ? "Service health current" : "Service health stale";
-  const stages = [
-    { label: "Local verification", state: localVerified ? "VERIFIED" : "UNKNOWN", tone: localVerified ? styles.stageDone : styles.stageUnknown },
-    { label: "Public testnet", state: "DEPLOYMENT DEFERRED", tone: styles.stageDeferred },
-    { label: "Pinned fork", state: "HARNESS READY, RPC DEPENDENT", tone: styles.stageConditional },
-    { label: "Mainnet shadow", state: "SIGNERLESS READ ONLY", tone: styles.stageConditional },
-    { label: "Mainnet writes", state: "PROHIBITED", tone: styles.stageProhibited },
-  ];
-  return (
-    <section className={styles.readinessPanel} aria-labelledby="readiness-title">
-      <div className={styles.sectionBar}>
-        <h2 id="readiness-title">Evidence and promotion boundary</h2>
-        <p>Observed controls and evidence only. Missing proof remains unavailable.</p>
-        <span className={styles.chipNeutral} role="status">{serviceNote}</span>
-      </div>
-
-      <ol className={styles.stageRail} aria-label="Environment promotion boundary">
-        {stages.map((stage, index) => (
-          <li key={stage.label} className={stage.tone}>
-            <span className={styles.stageIndex}>{String(index + 1).padStart(2, "0")}</span>
-            <strong>{stage.label}</strong>
-            <small>{stage.state}</small>
-          </li>
-        ))}
-      </ol>
-
-      <div className={styles.readinessBody}>
-        <div className={styles.tableWrap}>
-        <table className={styles.dataTable} aria-label="Domain execution readiness">
-          <thead>
-            <tr>
-              <th scope="col">Domain</th>
-              <th scope="col">Runtime</th>
-              <th scope="col">Network</th>
-              <th scope="col">Mode</th>
-              <th scope="col">Settlement class</th>
-              <th scope="col">Status</th>
-              <th scope="col">Execution</th>
-            </tr>
-          </thead>
-          <tbody>
-            {READINESS_ORDER.map((domain) => {
-              const model = snapshot.domains.find((item) => item.id === domain);
-              const fallback = READINESS_FALLBACK[domain];
-              const meta = READINESS_META[domain];
-              const health = readinessHealthFor(domain, runtimeHealth);
-              const status = readinessStatus(hasService, providerConnection, health);
-              const blocker = readinessBlocker(hasService, providerConnection, health, domain);
-              const selected = selectedDomain === domain;
-              return (
-                <tr key={domain} className={selected ? styles.rowSelected : undefined}>
-                  <td>
-                    <button
-                      type="button"
-                      className={styles.rowSelect}
-                      aria-pressed={selected}
-                      aria-label={`${model?.label ?? fallback.label} domain, ${status}. ${blocker} ${selected ? "Selected." : "Select."}`}
-                      onClick={() => onSelect(domain)}
-                    >
-                      <ChainIcon chain={domain} size={16} />
-                      {model?.label ?? fallback.label}
-                    </button>
-                  </td>
-                  <td>{model?.runtime ?? fallback.runtime}</td>
-                  <td>{meta.testNetwork}</td>
-                  <td>{meta.executionMode}</td>
-                  <td className={styles.monoCell}>{meta.settlementClass}</td>
-                  <td>
-                    <span className={status === "Available" ? styles.statusOk : styles.statusOff}>
-                      <i className={status === "Available" ? styles.dotLive : styles.dotIdle} aria-hidden="true" />
-                      {status}
-                    </span>
-                  </td>
-                  <td className={styles.noteCell} title={blocker}>{blocker}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        </div>
-
-        <dl className={styles.ledger} aria-label={`${READINESS_FALLBACK[selectedDomain].label} evidence ledger`}>
-          <div className={styles.ledgerTitle}>
-            <dt>Selected domain</dt>
-            <dd>{READINESS_FALLBACK[selectedDomain].label}</dd>
-          </div>
-          <div><dt>Settlement class</dt><dd title={selectedMeta.settlementClass}>{selectedMeta.settlementClass}</dd></div>
-          <div><dt>Route evidence</dt><dd>{routeEvidence}</dd></div>
-          <div><dt>Funded operation hash</dt><dd>NOT AVAILABLE</dd></div>
-          <div><dt>Readiness decision hash</dt><dd>NOT AVAILABLE</dd></div>
-          <div><dt>Authority fence</dt><dd>{authorityFence}</dd></div>
-          <div><dt>Dependencies</dt><dd title={dependencyStatus}>{dependencyStatus}</dd></div>
-          <div><dt>Incident state</dt><dd>UNKNOWN</dd></div>
-        </dl>
-      </div>
-    </section>
-  );
-}
-
-function PackageSequence({
-  snapshot,
-  mode,
-  preview,
-}: {
-  snapshot: TerminalViewModel;
-  mode: PackageMode;
-  preview: TerminalPreview | null;
-}) {
-  const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
-  const legs = preview?.mode === mode ? preview.legs : plan.legs;
-
-  return (
-    <section className={styles.routePanel} aria-labelledby="sequence-title">
-      <div className={styles.sectionBar}>
-        <h2 id="sequence-title">{plan.label}</h2>
-        <p>{plan.description}</p>
-        <span className={styles.chipDanger}>Fail closed</span>
-      </div>
-      <table className={styles.dataTable}>
-        <thead>
-          <tr>
-            <th scope="col">Leg</th>
-            <th scope="col">Action</th>
-            <th scope="col">Instrument</th>
-            <th scope="col">Venue</th>
-            <th scope="col" className={styles.numericColumn}>Quantity</th>
-            <th scope="col">Limit</th>
-            <th scope="col" className={styles.numericColumn}>Price</th>
-            <th scope="col">State</th>
-            <th scope="col">Dependency</th>
-          </tr>
-        </thead>
-        <tbody>
-          {legs.map((leg) => (
-            <tr key={leg.sequence}>
-              <td className={styles.monoCell}>{String(leg.sequence).padStart(2, "0")}</td>
-              <td className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>{leg.action}</td>
-              <td>{leg.instrument}</td>
-              <td className={styles.dimCell}>{leg.venue}</td>
-              <td className={`${styles.monoCell} ${styles.numericColumn}`}>{tidy(leg.quantity)}</td>
-              <td className={styles.dimCell}>{leg.limitLabel}</td>
-              <td className={`${styles.monoCell} ${styles.numericColumn}`}>{tidy(leg.limit)}</td>
-              <td><span className={styles.chipNeutral}>{leg.state}</span></td>
-              <td className={styles.dimCell}>{leg.dependency}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
-  );
 }
 
 type ExecutionReview = {
@@ -807,36 +219,6 @@ function QuoteFees({ quote }: { quote: LocalSolverQuote }) {
 }
 
 /**
- * The account each domain executes from and the limits enforced on it. These describe what the
- * code enforces; nothing here claims a deployment or a funded account.
- */
-function AccountStatus({ domain }: { domain: string }) {
-  if (domain === "hyperliquid") {
-    return (
-      <div className={styles.reviewGrid} aria-label="Hyperliquid account limits">
-        <span>Account mode</span><strong>Standard only (abstraction disabled)</strong>
-        <span>Mode check</span><strong>Solver preflight refuses unified, default, and portfolio-margin accounts before every package</strong>
-        <span>Ledgers</span><strong>Spot and perpetual USDC funded separately</strong>
-        <span>Executor authority</span><strong>Trade-only API wallet on a dedicated Testnet account; not trustless</strong>
-        <span>Recovery</span><strong>Bounded by the signed price, deadline, loss, fee, and residual policy</strong>
-      </div>
-    );
-  }
-  if (domain === "base" || domain === "arbitrum") {
-    return (
-      <div className={styles.reviewGrid} aria-label="EVM strategy account status">
-        <span>Strategy account</span><strong>NaryxStrategyAccount, one per owner</strong>
-        <span>Authority</span><strong>Owner signs every package; a delegate may only submit an owner-signed recovery exit</strong>
-        <span>Smart-account capability</span><strong>None required; manual creation and funding, no spend-permission fallback</strong>
-        <span>Ownership transfer</span><strong>Two-step: the new owner must accept</strong>
-        <span>Deployment</span><strong>Not deployed here; {domain === "base" ? "Base Sepolia" : "Arbitrum Sepolia"} deployment is deferred</strong>
-      </div>
-    );
-  }
-  return null;
-}
-
-/**
  * The signed terms a quote and its route bind, read from the exact records the solver signed:
  * template and registry record, settlement class with its guarantee, quantity and partial-fill
  * policy, delivery path, margin, residual, and quote mode. A reservation outside production is
@@ -943,28 +325,24 @@ function LocalExecutionPanel({
   );
 }
 
+/** What the Hyperliquid testnet order binds at each step; the ticket's primary action advances it. */
 function HyperliquidTestnetPanel({
   flow,
-  enabled,
   size,
   baseSymbol,
   slippage,
-  onStep,
 }: {
   flow: HyperliquidFlowState | null;
-  enabled: boolean;
   size: string;
   /** The ticket's base asset, the unit the size was entered in. */
   baseSymbol: string;
   slippage: SlippageBps;
-  onStep: (step: "create" | "quote" | "select" | "execute") => void;
 }) {
   const context = flow?.context ?? null;
   const order = flow?.order?.order ?? null;
   const quote = flow?.quote ?? null;
   const attempt = flow?.attempt ?? null;
   const execution = flow?.execution ?? null;
-  const busy = flow?.busy !== null && flow?.busy !== undefined;
   const commitments = execution
     ? [
       execution.actionCommitment,
@@ -1035,19 +413,6 @@ function HyperliquidTestnetPanel({
           ))}
         </div>
       ) : null}
-      <div className={styles.localActions}>
-        <button type="button" className={styles.secondaryAction} disabled={!enabled || !context || busy || Boolean(order)} onClick={() => onStep("create")}>Create canonical order</button>
-        <button type="button" className={styles.secondaryAction} disabled={!order || busy || Boolean(quote)} onClick={() => onStep("quote")}>Request signed quote</button>
-        <button type="button" className={styles.primaryAction} disabled={!quote || busy || Boolean(attempt)} onClick={() => onStep("select")}>Select reviewed quote</button>
-        <button type="button" className={styles.primaryAction} disabled={!attempt || busy || Boolean(execution)} onClick={() => onStep("execute")}>Execute on Testnet</button>
-      </div>
-      <p className={styles.fieldContext} role="status">
-        {flow?.error ?? (flow?.busy ? `${flow.busy}.` : !enabled
-          ? "Hyperliquid Testnet runtime readiness is required. Execution remains disabled in API configuration by default."
-          : context
-            ? "Review the configured account and package limits before each explicit action."
-            : "Discovering the active Hyperliquid Testnet order context.")}
-      </p>
     </section>
   );
 }
@@ -1239,6 +604,13 @@ function ExecutionReviewPanel({
   );
 }
 
+export type PrimaryAction = Readonly<{
+  kind: "connect" | "switch" | "prepare" | "sign" | "hyperliquid" | "none";
+  label: string;
+  reason: string;
+  disabled: boolean;
+}>;
+
 function Ticket({
   snapshot,
   selectedDomain,
@@ -1247,28 +619,24 @@ function Ticket({
   size,
   slippage,
   quoteMode,
-  accountLabel,
+  account,
   localFlow,
   localFlowEnabled,
   localCanSignMessage,
   hyperliquidFlow,
-  hyperliquidFlowEnabled,
   executionReview,
   submission,
   confirming,
-  actionLabel,
-  actionReason,
-  actionDisabled,
+  action,
   actionBusy,
-  prepareDisabled,
+  canRefreshReview,
   onModeChange,
   onSizeChange,
   onSlippageChange,
   onQuoteModeChange,
   onLocalStep,
-  onHyperliquidStep,
-  onExecutionAction,
-  onPrepareExecution,
+  onPrimaryAction,
+  onRefreshReview,
   onRetryObservation,
 }: {
   snapshot: TerminalViewModel;
@@ -1278,35 +646,34 @@ function Ticket({
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
-  accountLabel: string;
+  account: string | null;
   localFlow: LocalFlowState | null;
   localFlowEnabled: boolean;
   localCanSignMessage: boolean;
   hyperliquidFlow: HyperliquidFlowState | null;
-  hyperliquidFlowEnabled: boolean;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
   confirming: boolean;
-  actionLabel: string;
-  actionReason: string;
-  actionDisabled: boolean;
+  action: PrimaryAction;
   actionBusy: boolean;
-  prepareDisabled: boolean;
+  canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
   onSlippageChange: (slippage: SlippageBps) => void;
   onQuoteModeChange: (quoteMode: QuoteMode) => void;
   onLocalStep: (step: "create" | "authorize" | "quote" | "select" | LocalExecutionAction) => void;
-  onHyperliquidStep: (step: "create" | "quote" | "select" | "execute") => void;
-  onExecutionAction: () => void;
-  onPrepareExecution: () => void;
+  onPrimaryAction: () => void;
+  onRefreshReview: () => void;
   onRetryObservation: () => void;
 }) {
   const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
   const legs = preview?.mode === mode ? preview.legs : plan.legs;
-  const flowState = selectedDomain === "hyperliquid"
-    ? hyperliquidFlow?.execution?.status ?? (hyperliquidFlow?.attempt ? "SELECTED" : hyperliquidFlow?.quote ? "QUOTE REVIEW" : hyperliquidFlow?.order ? "ORDER CREATED" : hyperliquidFlow?.context ? "GATE READY" : "DISCOVERING")
-    : localFlow?.lifecycle?.attempt.state ?? (localFlow?.attempt ? "SELECTED" : localFlow?.quote ? "QUOTE REVIEW" : localFlow?.order ? "UNSIGNED" : "READY");
+  const meta = DOMAIN_META[selectedDomain];
+  const hyperliquidStage = hyperliquidFlow?.execution
+    ? "executed"
+    : hyperliquidFlow?.attempt ? "selected" : hyperliquidFlow?.quote ? "quote" : hyperliquidFlow?.order ? "order" : "idle";
+  const conformanceState = localFlow?.lifecycle?.attempt.state ??
+    (localFlow?.attempt ? "SELECTED" : localFlow?.quote ? "QUOTE REVIEW" : localFlow?.order ? "UNSIGNED" : null);
 
   return (
     <aside className={styles.ticket} aria-labelledby="ticket-title">
@@ -1341,19 +708,13 @@ function Ticket({
         ))}
       </div>
 
-      <dl className={styles.ticketFacts}>
-        <div><dt>Account</dt><dd>{accountLabel}</dd></div>
-        <div><dt>Package</dt><dd>{snapshot.market.packageId}</dd></div>
-        <div><dt>Evidence</dt><dd className={styles.fixtureText}>{preview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</dd></div>
-        <div title="Marketable limit, exact all legs: the only package order policy the initial activation accepts. Every other type, time in force, or partial-fill policy is rejected before authorization.">
-          <dt>Order</dt>
-          <dd>Marketable limit, {READINESS_META[snapshot.selectedDomain].settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, exact</dd>
-        </div>
-        <div title={SETTLEMENT_GUARANTEE[READINESS_META[snapshot.selectedDomain].settlementClass]}>
-          <dt>Settlement</dt>
-          <dd>{READINESS_META[snapshot.selectedDomain].settlementClass}</dd>
-        </div>
-      </dl>
+      <div className={styles.ticketRow}>
+        <span>Account</span>
+        <span className={styles.ticketAccount} title={account ?? undefined}>
+          <ChainIcon chain={selectedDomain} size={13} />
+          {selectedDomain === "hyperliquid" ? "Dedicated testnet account" : account ?? "Not connected"}
+        </span>
+      </div>
 
       <div className={styles.sizeBox}>
         <label htmlFor="package-size">Package size</label>
@@ -1432,85 +793,25 @@ function Ticket({
         ))}
       </ol>
 
-      {selectedDomain !== "hyperliquid" ? (
-        <div className={styles.actionArea}>
-          <button
-            className={styles.primaryCta}
-            type="button"
-            disabled={actionDisabled || actionBusy}
-            aria-describedby="execution-note"
-            onClick={onExecutionAction}
-          >
-            {confirming ? "Confirm in wallet" : actionBusy ? "Preparing Devnet review" : actionLabel}
-          </button>
-          <button
-            className={styles.secondaryCta}
-            type="button"
-            disabled={prepareDisabled || actionBusy}
-            onClick={onPrepareExecution}
-          >
-            {executionReview ? "Refresh Devnet review" : "Prepare Devnet review"}
-          </button>
-          <p id="execution-note" role="status">
-            {actionReason}
-          </p>
-        </div>
-      ) : null}
-
-      <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
-        <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
-        <div className={styles.summaryRow}>
-          <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
-          <strong key={preview?.bound.value ?? "none"} className={styles.flash}>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
-        </div>
-        {(preview?.fees ?? []).map((row) => (
-          <div className={styles.summaryRow} key={row.label}>
-            <span>{row.label}</span>
-            <strong key={row.value} className={styles.flash}>{usd(row.value)}</strong>
-          </div>
-        ))}
-        <div className={`${styles.summaryRow} ${styles.summaryTotal}`}>
-          <span>Estimated fees</span>
-          <strong key={preview?.totalFee.value ?? "none"} className={styles.flash}>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
-        </div>
-        <div className={styles.summaryDivider} />
-        {snapshot.ticket.evidence.map((row) => (
-          <div className={styles.summaryRow} key={row.label}>
-            <span>{row.label}</span>
-            <strong>{row.value}</strong>
-          </div>
-        ))}
-        <p className={styles.summaryNote}>USDC conformance estimate. No balance has been loaded.</p>
-      </section>
-
-      <details
-        key={selectedDomain}
-        className={styles.flowDetails}
-        open={selectedDomain === "hyperliquid"}
-      >
-        <summary>
-          <span>{selectedDomain === "hyperliquid" ? "Hyperliquid Testnet flow" : "Local conformance lifecycle"}</span>
-          <span className={styles.chipNeutral}>{flowState}</span>
-        </summary>
-        <AccountStatus domain={selectedDomain} />
-        {selectedDomain === "hyperliquid" ? (
-          <HyperliquidTestnetPanel
-            flow={hyperliquidFlow}
-            enabled={hyperliquidFlowEnabled}
-            size={size}
-            baseSymbol={snapshot.market.base}
-            slippage={slippage}
-            onStep={onHyperliquidStep}
-          />
-        ) : (
-          <LocalExecutionPanel
-            flow={localFlow}
-            enabled={localFlowEnabled}
-            canSignMessage={localCanSignMessage}
-            onStep={onLocalStep}
-          />
-        )}
-      </details>
+      <div className={styles.actionArea}>
+        <button
+          className={action.kind === "connect" || action.kind === "switch" ? styles.connectCta : styles.primaryCta}
+          type="button"
+          disabled={action.disabled || actionBusy}
+          aria-describedby="execution-note"
+          onClick={onPrimaryAction}
+        >
+          {confirming ? "Confirm in wallet" : actionBusy ? "Working" : action.label}
+        </button>
+        <p id="execution-note" role="status">
+          {action.reason}
+          {canRefreshReview ? (
+            <button type="button" className={styles.inlineRetry} disabled={actionBusy} onClick={onRefreshReview}>
+              Refresh review
+            </button>
+          ) : null}
+        </p>
+      </div>
 
       {executionReview ? (
         <ExecutionReviewPanel
@@ -1520,6 +821,81 @@ function Ticket({
           confirming={confirming}
           onRetryObservation={onRetryObservation}
         />
+      ) : null}
+
+      <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
+        <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
+        <div className={styles.summaryRow}>
+          <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
+          <strong key={preview?.bound.value ?? "none"} className={styles.flash}>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
+        </div>
+        <details className={styles.feeDetails}>
+          <summary className={styles.summaryRow}>
+            <span>Estimated fees</span>
+            <strong key={preview?.totalFee.value ?? "none"} className={styles.flash}>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
+          </summary>
+          {(preview?.fees ?? []).map((row) => (
+            <div className={`${styles.summaryRow} ${styles.summaryNested}`} key={row.label}>
+              <span>{row.label}</span>
+              <strong>{usd(row.value)}</strong>
+            </div>
+          ))}
+        </details>
+        <div className={styles.summaryRow} title={SETTLEMENT_GUARANTEE[meta.settlementClass]}>
+          <span>Settlement</span>
+          <strong>{meta.settlement}</strong>
+        </div>
+        <div className={styles.summaryRow} title="Marketable limit, exact all legs: the only package order policy the initial activation accepts. Every other type, time in force, or partial-fill policy is rejected before authorization.">
+          <span>Order</span>
+          <strong>Limit, {meta.settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, all legs</strong>
+        </div>
+      </section>
+
+      <details className={styles.flowDetails}>
+        <summary>
+          <span>Package details</span>
+          <span className={styles.fixtureText}>{preview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</span>
+        </summary>
+        <dl className={styles.ticketFacts}>
+          <div><dt>Package</dt><dd title={snapshot.market.packageId}>{snapshot.market.packageId}</dd></div>
+          <div><dt>Settlement class</dt><dd title={SETTLEMENT_GUARANTEE[meta.settlementClass]}>{meta.settlementClass}</dd></div>
+          {snapshot.ticket.evidence.map((row) => (
+            <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
+          ))}
+        </dl>
+        <p className={styles.summaryNote}>USDC conformance estimate. Balances are on the Portfolio page.</p>
+      </details>
+
+      {selectedDomain === "hyperliquid" ? (
+        <details
+          key={`hyperliquid-${hyperliquidStage}`}
+          className={styles.flowDetails}
+          open={hyperliquidStage === "quote" || hyperliquidStage === "executed"}
+        >
+          <summary>
+            <span>Testnet order review</span>
+            <span className={styles.chipNeutral}>{hyperliquidFlow?.execution?.status ?? hyperliquidStage.toUpperCase()}</span>
+          </summary>
+          <HyperliquidTestnetPanel
+            flow={hyperliquidFlow}
+            size={size}
+            baseSymbol={snapshot.market.base}
+            slippage={slippage}
+          />
+        </details>
+      ) : selectedDomain === "solana" ? (
+        <details className={styles.flowDetails}>
+          <summary>
+            <span>Local conformance lifecycle</span>
+            <span className={styles.chipNeutral}>{conformanceState ?? "READY"}</span>
+          </summary>
+          <LocalExecutionPanel
+            flow={localFlow}
+            enabled={localFlowEnabled}
+            canSignMessage={localCanSignMessage}
+            onStep={onLocalStep}
+          />
+        </details>
       ) : null}
     </aside>
   );
@@ -1548,11 +924,6 @@ function BottomWorkspace({
   onRetryLifecycle,
   activeTab,
   onTabChange,
-  attentionKey,
-  routePlan,
-  readiness,
-  solvers,
-  portfolio,
 }: {
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
@@ -1563,68 +934,44 @@ function BottomWorkspace({
   lifecycleUnavailable: boolean;
   onRetryObservation: () => void;
   onRetryLifecycle: () => void;
-  activeTab: BottomTab;
-  onTabChange: (tab: BottomTab) => void;
-  attentionKey: number;
-  routePlan: ReactNode;
-  readiness: ReactNode;
-  solvers: ReactNode;
-  portfolio: ReactNode;
+  activeTab: WorkspaceTab;
+  onTabChange: (tab: WorkspaceTab) => void;
 }) {
-  const extraPanel = activeTab === "route" ? routePlan : activeTab === "readiness" ? readiness : activeTab === "solvers" ? solvers : null;
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
-  const providerLabel = providerConnection === "connected"
-    ? "Provider connected"
-    : providerConnection === "connecting"
-      ? "Provider connecting"
-      : "Provider disconnected";
   const showReceipts = activeWorkspace.tab === "receipts";
   const showNetworkEvidence = showReceipts && submission !== null;
   const needsRetry = showNetworkEvidence && submission !== null &&
     submission.observationUnavailable && !isObservationTerminal(submission.observation);
-  const tabs: readonly { tab: BottomTab; label: string; count?: number }[] = [
-    ...snapshot.workspaces.map((workspace) => ({
-      tab: workspace.tab,
-      label: workspace.label,
-      count: workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count,
-    })),
-    { tab: "route", label: "Route plan" },
-    { tab: "solvers", label: "Solvers" },
-    { tab: "readiness", label: "Readiness" },
-  ];
 
   return (
-    <section id="terminal-workspace" className={styles.bottomWorkspace} aria-label="Trading workspace">
-      {attentionKey > 0 ? <span key={attentionKey} className={styles.attentionRing} aria-hidden="true" /> : null}
-      <div className={styles.workspaceTabs} role="tablist" aria-label="Account data" onKeyDown={handleTablistKeys}>
-        {tabs.map((entry) => (
-          <button
-            id={`tab-${entry.tab}`}
-            key={entry.tab}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === entry.tab}
-            aria-controls={`panel-${entry.tab}`}
-            className={activeTab === entry.tab ? styles.workspaceTabActive : undefined}
-            onClick={() => onTabChange(entry.tab)}
-          >
-            {entry.label}
-            {entry.count !== undefined ? <span>({entry.count})</span> : null}
-          </button>
-        ))}
+    <section id="terminal-workspace" className={styles.bottomWorkspace} aria-label="Orders and positions">
+      <div className={styles.workspaceTabs} role="tablist" aria-label="Orders and positions" onKeyDown={handleTablistKeys}>
+        {snapshot.workspaces.map((workspace) => {
+          const count = workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count;
+          return (
+            <button
+              id={`tab-${workspace.tab}`}
+              key={workspace.tab}
+              type="button"
+              role="tab"
+              aria-selected={activeWorkspace.tab === workspace.tab}
+              aria-controls={`panel-${workspace.tab}`}
+              className={activeWorkspace.tab === workspace.tab ? styles.workspaceTabActive : undefined}
+              onClick={() => onTabChange(workspace.tab)}
+            >
+              {workspace.label}
+              {count !== undefined ? <span>({count})</span> : null}
+            </button>
+          );
+        })}
         <div className={styles.workspaceStatus}>
           <i className={providerConnection === "connected" ? styles.dotLive : styles.dotIdle} aria-hidden="true" />
-          {providerLabel}
+          {providerConnection === "connected" ? "Service connected" : providerConnection === "connecting" ? "Connecting" : "Local fixture"}
         </div>
       </div>
 
-      {extraPanel !== null ? (
-        <div key={activeTab} id={`panel-${activeTab}`} role="tabpanel" aria-labelledby={`tab-${activeTab}`} className={`${styles.tableScroller} ${styles.viewFade}`}>
-          {extraPanel}
-        </div>
-      ) : (
       <div
         key={activeWorkspace.tab}
         id={`panel-${activeWorkspace.tab}`}
@@ -1632,7 +979,6 @@ function BottomWorkspace({
         aria-labelledby={`tab-${activeWorkspace.tab}`}
         className={`${styles.tableScroller} ${styles.viewFade}`}
       >
-        {activeWorkspace.tab === "positions" ? portfolio : null}
         {showReceipts && lifecycle ? (
           <div className={styles.lifecycleSummary} role="status">
             <div>
@@ -1732,7 +1078,6 @@ function BottomWorkspace({
           </tbody>
         </table>
       </div>
-      )}
     </section>
   );
 }
@@ -1740,36 +1085,37 @@ function BottomWorkspace({
 export function TradingTerminal({
   initialSnapshot,
   initialPreview,
-  privateApiBaseUrl,
-  publicApiBaseUrl = null,
-  packageMarketId = null,
 }: {
   initialSnapshot: TerminalViewModel;
   initialPreview: TerminalPreview;
-  privateApiBaseUrl: string | null;
-  /** The public v1 market API; without it, or until it answers, market data stays labeled FIXTURE. */
-  publicApiBaseUrl?: string | null;
-  packageMarketId?: string | null;
 }) {
+  const {
+    selectedDomain,
+    privateProvider,
+    runtimeHealth,
+    publicApiBaseUrl,
+    packageMarketId,
+    recordAttempt,
+  } = useTerminal();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
+  const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
   const [preview, setPreview] = useState<TerminalPreview | null>(initialPreview);
-  const [selectedDomain, setSelectedDomain] = useState(initialSnapshot.selectedDomain);
   const [mode, setMode] = useState<PackageMode>("entry");
   const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
   const [slippage, setSlippage] = useState<SlippageBps>(
     initialSnapshot.ticket.defaultSlippageBps,
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
-  const [workspaceTab, setWorkspaceTab] = usePersistedSetting<BottomTab>(
+  const [workspaceTab, setWorkspaceTab] = usePersistedSetting<WorkspaceTab>(
     "workspace.tab",
     "positions",
-    ["positions", "orders", "history", "receipts", "route", "solvers", "readiness"],
+    ["positions", "orders", "history", "receipts"],
   );
-  const [workspaceAttention, setWorkspaceAttention] = useState(0);
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
   const { feed, status: feedStatus } = usePublicMarketFeed(publicApiBaseUrl, packageMarketId, fixtureFeed);
-  const wallet = useSolanaDevnetWallet();
-  const evmWallet = useInjectedEvmWallet();
+  const wallet = useSolanaWallet();
+  const evmWallet = useEvmWallet();
+  const walletModal = useWalletModal();
   const [localFlow, setLocalFlow] = useState<LocalFlowState | null>(null);
   const [hyperliquidFlow, setHyperliquidFlow] = useState<HyperliquidFlowState | null>(null);
   const [executionReview, setExecutionReview] = useState<ExecutionReview | null>(null);
@@ -1786,20 +1132,13 @@ export function TradingTerminal({
     ticketKey: string;
     key: string;
   } | null>(null);
-  const privateProvider = useMemo(() => {
-    if (!privateApiBaseUrl) {
-      return null;
-    }
-    try {
-      return new PrivateHttpTerminalProvider(privateApiBaseUrl);
-    } catch {
-      return null;
-    }
-  }, [privateApiBaseUrl]);
-  const [providerConnection, setProviderConnection] = useState<ProviderConnection>(
+  const [loadedConnection, setProviderConnection] = useState<ProviderConnection>(
     privateProvider ? "connecting" : "disconnected",
   );
-  const [runtimeHealth, setRuntimeHealth] = useState<PrivateTerminalRuntimeHealth | null>(null);
+  // A chain switch is "connecting" until the service answers for the new chain.
+  const providerConnection: ProviderConnection = privateProvider && snapshotDomain !== selectedDomain
+    ? "connecting"
+    : loadedConnection;
 
   const ticketKey = JSON.stringify({
     selectedDomain,
@@ -1837,6 +1176,7 @@ export function TradingTerminal({
         );
         if (active) {
           setSnapshot(localSnapshot);
+          setSnapshotDomain(selectedDomain);
           setProviderConnection("disconnected");
         }
         return;
@@ -1849,6 +1189,7 @@ export function TradingTerminal({
         );
         if (active) {
           setSnapshot(serviceSnapshot);
+          setSnapshotDomain(selectedDomain);
           setProviderConnection("connected");
         }
       } catch {
@@ -1860,6 +1201,7 @@ export function TradingTerminal({
         );
         if (active) {
           setSnapshot(localSnapshot);
+          setSnapshotDomain(selectedDomain);
           setProviderConnection("disconnected");
         }
       }
@@ -1871,23 +1213,6 @@ export function TradingTerminal({
       controller.abort();
     };
   }, [privateProvider, selectedDomain]);
-
-  useEffect(() => {
-    if (!privateProvider) return;
-    const controller = new AbortController();
-    let active = true;
-    privateProvider.getRuntimeHealth(controller.signal)
-      .then((health) => {
-        if (active) setRuntimeHealth(health);
-      })
-      .catch(() => {
-        if (active) setRuntimeHealth(null);
-      });
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [privateProvider]);
 
   useEffect(() => {
     if (!privateProvider || selectedDomain !== "hyperliquid" ||
@@ -2019,13 +1344,7 @@ export function TradingTerminal({
     () => snapshot.domains.find((domain) => domain.id === selectedDomain),
     [selectedDomain, snapshot.domains],
   );
-  const selectedRuntimeHealth = selectedDomain === "solana"
-    ? runtimeHealth?.solanaDevnet
-    : selectedDomain === "base"
-      ? runtimeHealth?.baseTestnetAtomic
-      : selectedDomain === "arbitrum"
-        ? runtimeHealth?.arbitrumTestnetAsync
-        : runtimeHealth?.hyperliquidTestnet;
+  const selectedRuntimeHealth = domainHealth(selectedDomain, runtimeHealth);
 
   // A reviewed transaction is signable only while its review is fresh; the button says so the
   // moment it lapses instead of failing on click.
@@ -2038,32 +1357,88 @@ export function TradingTerminal({
   }, [currentExecutionReview]);
   const reviewExpired = currentExecutionReview !== null && currentExecutionReview !== undefined && expiredReviewAt === currentExecutionReview.preparedAt;
 
-  const actionState = useMemo(() => {
-    if (selectedDomain !== "solana") {
-      return { disabled: true, label: "Solana Devnet only", reason: "Select Solana to prepare the Devnet execution path." };
+  const localFlowEnabled = selectedDomain === "solana" && mode === "entry" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
+    quoteMode === "coordinated_limits";
+  const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" && mode === "entry" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    runtimeHealth?.hyperliquidTestnet.available === true &&
+    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
+  const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
+  const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
+  const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
+    ? null
+    : !currentHyperliquidFlow.order ? "create"
+    : !currentHyperliquidFlow.quote ? "quote"
+    : !currentHyperliquidFlow.attempt ? "select"
+    : "execute";
+
+  // One primary action, in the order every venue uses: connect, switch network, then trade.
+  const primaryAction = useMemo<PrimaryAction>(() => {
+    const none = (label: string, reason: string): PrimaryAction => ({ kind: "none", label, reason, disabled: true });
+    if (selectedDomain === "solana" && !wallet.selectedAccount) {
+      return { kind: "connect", label: "Connect wallet", reason: "Connect a Solana wallet to review and sign on Devnet.", disabled: false };
+    }
+    if (evmTarget) {
+      if (!evmWallet.account) {
+        return { kind: "connect", label: "Connect wallet", reason: `Connect an EVM wallet to trade on ${EVM_CHAINS[evmTarget].name}.`, disabled: false };
+      }
+      if (!evmOnTarget) {
+        return { kind: "switch", label: `Switch to ${EVM_CHAINS[evmTarget].name}`, reason: "Your wallet is on a different network.", disabled: evmWallet.switching };
+      }
+      return none(
+        `${EVM_CHAINS[evmTarget].name} not open`,
+        "Package contracts are not deployed on this testnet yet. The package, quotes, and fees shown are a preview.",
+      );
+    }
+    if (selectedDomain === "hyperliquid") {
+      if (!hyperliquidFlowEnabled) {
+        return none(
+          "Hyperliquid testnet not open",
+          !privateProvider || providerConnection !== "connected"
+            ? "Hyperliquid testnet orders need the private terminal service."
+            : !runtimeHealth?.hyperliquidTestnet.available
+              ? "Hyperliquid testnet execution is disabled in the service configuration."
+              : mode !== "entry"
+                ? "Exit runs from an open package."
+                : quoteMode !== "coordinated_limits"
+                  ? "Testnet execution uses coordinated limits."
+                  : "A current service preview is required.",
+        );
+      }
+      if (currentHyperliquidFlow?.execution) {
+        return none(`Executed: ${currentHyperliquidFlow.execution.status.replace(/_/g, " ").toLowerCase()}`, "The result and its evidence are in the testnet order review below and on the Activity page.");
+      }
+      if (!currentHyperliquidFlow?.context) {
+        return none("Preparing testnet account", currentHyperliquidFlow?.error ?? "Discovering the active Hyperliquid testnet order context.");
+      }
+      const reason = currentHyperliquidFlow.error;
+      if (nextHyperliquidStep === "create") return { kind: "hyperliquid", label: "Create order", reason: reason ?? "Creates the canonical package order for the dedicated testnet account.", disabled: false };
+      if (nextHyperliquidStep === "quote") return { kind: "hyperliquid", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote on the whole package.", disabled: false };
+      if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the testnet order review before accepting.", disabled: false };
+      return { kind: "hyperliquid", label: "Execute on testnet", reason: reason ?? "Runs the accepted package on Hyperliquid testnet through the dedicated account gate.", disabled: false };
     }
     if (!privateProvider || providerConnection !== "connected") {
-      return { disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
+      return { kind: "none", disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
     }
     if (!runtimeHealth?.solanaDevnet.available) {
-      return { disabled: true, label: "Devnet runtime unavailable", reason: "The private service is connected, but its Solana Devnet execution runtime is not active." };
-    }
-    if (!wallet.selectedAccount) {
-      return { disabled: true, label: "Connect Devnet wallet", reason: "Choose a Wallet Standard wallet and authorize a Solana Devnet account." };
+      return { kind: "none", disabled: true, label: "Devnet runtime unavailable", reason: "The private service is connected, but its Solana Devnet execution runtime is not active." };
     }
     if (!wallet.canSignAndSendV0) {
-      return { disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet does not advertise Devnet v0 sign-and-send capability." };
+      return { kind: "none", disabled: true, label: "Wallet capability unavailable", reason: "The selected wallet does not advertise Devnet v0 sign-and-send capability." };
     }
     if (!preview || preview.source !== "PRIVATE_TERMINAL_BFF") {
-      return { disabled: true, label: "Executable preview required", reason: "A current private-service package preview is required." };
+      return { kind: "none", disabled: true, label: "Executable preview required", reason: "A current private-service package preview is required." };
     }
     if (quoteMode !== "coordinated_limits") {
-      return { disabled: true, label: "Coordinated limits required", reason: "Devnet execution requires the coordinated-limits quote mode." };
+      return { kind: "none", disabled: true, label: "Coordinated limits required", reason: "Devnet execution requires the coordinated-limits quote mode." };
     }
     if (currentSubmission) {
       const observation = currentSubmission.observation;
       if (observation?.lifecycle === "FINALIZED") {
         return {
+          kind: "none",
           disabled: true,
           label: "Transaction finalized",
           reason: `Finalized on Solana Devnet at slot ${observation.finalizedSlot.toLocaleString()}. Network finality only. This does not mean the package completed.`,
@@ -2071,6 +1446,7 @@ export function TradingTerminal({
       }
       if (observation?.lifecycle === "FAILED") {
         return {
+          kind: "none",
           disabled: true,
           label: "Transaction failed",
           reason: observation.failedSlot === null
@@ -2080,36 +1456,45 @@ export function TradingTerminal({
       }
       if (observation?.lifecycle === "EXPIRED") {
         return {
+          kind: "none",
           disabled: true,
           label: "Transaction expired",
           reason: `Expired before finality on Solana Devnet. Last valid block height ${observation.lastValidBlockHeight.toLocaleString()}, observed ${observation.observedBlockHeight.toLocaleString()}. The transaction did not finalize.`,
         };
       }
       if (currentSubmission.observationUnavailable) {
-        return { disabled: true, label: "Transaction submitted", reason: "Observation temporarily unavailable. The transaction was submitted and network state is unknown. Use Retry observation." };
+        return { kind: "none", disabled: true, label: "Transaction submitted", reason: "Observation temporarily unavailable. The transaction was submitted and network state is unknown. Use Retry observation." };
       }
       if (observation?.lifecycle === "SUBMITTED" && observation.observedSlot !== null) {
-        return { disabled: true, label: "Transaction submitted", reason: `Submitted to Solana Devnet and observed at slot ${observation.observedSlot.toLocaleString()}. Waiting for finality. Submission does not assert package completion.` };
+        return { kind: "none", disabled: true, label: "Transaction submitted", reason: `Submitted to Solana Devnet and observed at slot ${observation.observedSlot.toLocaleString()}. Waiting for finality. Submission does not assert package completion.` };
       }
-      return { disabled: true, label: "Transaction submitted", reason: "Observation is pending. Submission does not assert finality or package completion." };
+      return { kind: "none", disabled: true, label: "Transaction submitted", reason: "Observation is pending. Submission does not assert finality or package completion." };
     }
     if (!currentExecutionReview) {
-      return { disabled: true, label: "Sign and submit on Devnet", reason: "Prepare and review the unsigned Devnet transaction before signing." };
+      return { kind: "prepare", label: "Review transaction", reason: "Builds the exact unsigned Devnet transaction for you to review before signing.", disabled: false };
     }
     if (reviewExpired) {
-      return { disabled: true, label: "Review expired", reason: "The reviewed Devnet transaction is older than 45 seconds. Prepare a fresh review before signing." };
+      return { kind: "prepare", label: "Refresh review", reason: "The review is older than 45 seconds. Refresh it before signing.", disabled: false };
     }
-    return { disabled: false, label: "Sign and submit on Devnet", reason: "The wallet will show the exact reviewed Devnet transaction before signing." };
+    return { kind: "sign", label: "Sign and submit", reason: "Your wallet shows the exact reviewed Devnet transaction before signing.", disabled: false };
   }, [
-    reviewExpired,
     currentExecutionReview,
+    currentHyperliquidFlow,
     currentSubmission,
+    evmOnTarget,
+    evmTarget,
+    evmWallet.account,
+    evmWallet.switching,
+    hyperliquidFlowEnabled,
+    mode,
+    nextHyperliquidStep,
     preview,
     privateProvider,
     providerConnection,
     quoteMode,
-    selectedDomain,
+    reviewExpired,
     runtimeHealth,
+    selectedDomain,
     wallet.canSignAndSendV0,
     wallet.selectedAccount,
   ]);
@@ -2133,7 +1518,7 @@ export function TradingTerminal({
   }
 
   async function handleExecutionAction() {
-    if (actionState.disabled || executionBusy) return;
+    if (primaryAction.kind !== "sign" || executionBusy) return;
     setExecutionBusy(true);
     setExecutionError(null);
     try {
@@ -2203,6 +1588,7 @@ export function TradingTerminal({
       setIdempotency({ ticketKey, key });
       const preparation = await prepareExecution(key);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
+      recordAttempt({ attemptId: preparation.lifecycleAttemptId, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
       setLifecycleView({
         ticketKey,
         attemptId: preparation.lifecycleAttemptId,
@@ -2379,6 +1765,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectLocalQuote(base.quote);
         setLocalFlow({ ...base, attempt, busy: null, error: null });
+        recordAttempt({ attemptId: attempt.attemptId, domain: "solana", mode, size, flow: "conformance", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed quote first.");
@@ -2424,6 +1811,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectHyperliquidQuote(context, base.quote);
         setHyperliquidFlow({ ...base, attempt, busy: null, error: null });
+        recordAttempt({ attemptId: attempt.attemptId, domain: "hyperliquid", mode, size, flow: "hyperliquid", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");
@@ -2441,33 +1829,19 @@ export function TradingTerminal({
     }
   }
 
-  const prepareDisabled = selectedDomain !== "solana" || !privateProvider ||
-    providerConnection !== "connected" || !wallet.selectedAccount ||
-    !runtimeHealth?.solanaDevnet.available ||
-    !wallet.canSignAndSendV0 || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
-    quoteMode !== "coordinated_limits" ||
-    currentSubmission !== null;
-  const localFlowEnabled = selectedDomain === "solana" && mode === "entry" &&
-    privateProvider !== null && providerConnection === "connected" &&
-    wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
-    quoteMode === "coordinated_limits";
-  const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" && mode === "entry" &&
-    privateProvider !== null && providerConnection === "connected" &&
-    runtimeHealth?.hyperliquidTestnet.available === true &&
-    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
-  const accountLabel = selectedDomain === "solana"
-    ? wallet.selectedAccount ? `${wallet.selectedAccount.address.slice(0, 4)}...${wallet.selectedAccount.address.slice(-4)}` : "Wallet not connected"
-    : selectedDomain === "hyperliquid"
-      ? "Service account gate"
-      : evmWallet.account ? `${evmWallet.account.slice(0, 6)}...${evmWallet.account.slice(-4)}` : "Wallet not connected";
+  const ticketAccount = selectedDomain === "solana"
+    ? wallet.selectedAccount ? shortAddress(wallet.selectedAccount.address, 4, 4) : null
+    : evmWallet.account ? shortAddress(evmWallet.account, 6, 4) : null;
 
-  function openView(tab: BottomTab) {
-    setWorkspaceTab(tab);
-    setWorkspaceAttention((value) => value + 1);
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    document.getElementById("terminal-workspace")?.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  function handlePrimaryAction() {
+    if (primaryAction.disabled) return;
+    if (primaryAction.kind === "connect") walletModal.open(DOMAIN_META[selectedDomain].wallet);
+    else if (primaryAction.kind === "switch" && evmTarget) void evmWallet.switchNetwork(evmTarget);
+    else if (primaryAction.kind === "prepare") void handlePrepareExecution();
+    else if (primaryAction.kind === "sign") void handleExecutionAction();
+    else if (primaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
   }
 
   function jumpToTicket(nextMode: PackageMode) {
@@ -2476,25 +1850,12 @@ export function TradingTerminal({
     document.getElementById("package-ticket")?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
   }
 
-  function changeDomain(domain: DomainId) {
-    setSelectedDomain(domain);
-    if (privateProvider) {
-      setProviderConnection("connecting");
-    }
-  }
+  const actionReason = confirmingInWallet && !currentSubmission
+    ? "Approve the exact reviewed Devnet transaction in your wallet."
+    : currentExecutionError ?? primaryAction.reason;
 
   return (
     <div className={styles.terminalShell}>
-      <TopNavigation
-        snapshot={snapshot}
-        selectedDomain={selectedDomain}
-        providerConnection={providerConnection}
-        wallet={wallet}
-        evmWallet={evmWallet}
-        onDomainChange={changeDomain}
-        onOpenView={openView}
-        activeView={workspaceTab}
-      />
       <main className={styles.terminalGrid}>
         <div className={styles.areaInstrument}>
           <InstrumentBar snapshot={snapshot} feed={feed} />
@@ -2519,28 +1880,24 @@ export function TradingTerminal({
             size={size}
             slippage={slippage}
             quoteMode={quoteMode}
-            accountLabel={accountLabel}
+            account={ticketAccount}
             localFlow={currentLocalFlow}
             localFlowEnabled={localFlowEnabled}
             localCanSignMessage={wallet.canSignMessage}
             hyperliquidFlow={currentHyperliquidFlow}
-            hyperliquidFlowEnabled={hyperliquidFlowEnabled}
             executionReview={currentExecutionReview}
             submission={currentSubmission}
             confirming={confirmingInWallet}
-            actionLabel={actionState.label}
-            actionReason={confirmingInWallet && !currentSubmission ? "Confirm in wallet. Approve the exact reviewed Devnet transaction." : (currentExecutionError ?? actionState.reason)}
-            actionDisabled={actionState.disabled}
-            actionBusy={executionBusy}
-            prepareDisabled={prepareDisabled}
+            action={{ ...primaryAction, reason: actionReason }}
+            actionBusy={executionBusy || currentHyperliquidFlow?.busy != null}
+            canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}
             onSlippageChange={setSlippage}
             onQuoteModeChange={setQuoteMode}
             onLocalStep={(step) => void handleLocalStep(step)}
-            onHyperliquidStep={(step) => void handleHyperliquidStep(step)}
-            onExecutionAction={() => void handleExecutionAction()}
-            onPrepareExecution={() => void handlePrepareExecution()}
+            onPrimaryAction={handlePrimaryAction}
+            onRefreshReview={() => void handlePrepareExecution()}
             onRetryObservation={handleRetryObservation}
           />
         </div>
@@ -2557,33 +1914,6 @@ export function TradingTerminal({
             onRetryLifecycle={handleRetryLifecycle}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
-            attentionKey={workspaceAttention}
-            routePlan={<PackageSequence snapshot={snapshot} mode={mode} preview={preview} />}
-            readiness={
-              <ExecutionReadiness
-                snapshot={snapshot}
-                selectedDomain={selectedDomain}
-                providerConnection={providerConnection}
-                runtimeHealth={runtimeHealth}
-                lifecycle={displayedLifecycle}
-                hasService={privateProvider !== null}
-                onSelect={changeDomain}
-              />
-            }
-            solvers={<SolverMetrics publicApiBaseUrl={publicApiBaseUrl} />}
-            portfolio={
-              <PortfolioOverview
-                snapshot={snapshot}
-                selectedDomain={selectedDomain}
-                providerConnection={providerConnection}
-                runtimeHealth={runtimeHealth}
-                lifecycle={displayedLifecycle}
-                hasService={privateProvider !== null}
-                wallet={wallet}
-                evmWallet={evmWallet}
-                onSelect={changeDomain}
-              />
-            }
           />
         </div>
       </main>

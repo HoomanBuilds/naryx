@@ -1,0 +1,411 @@
+/* The shared terminal frame: page shell, header, navigation, chain picker, and wallet button. */
+
+.shell {
+  display: flex;
+  min-height: 100dvh;
+  flex-direction: column;
+  background: var(--canvas);
+  color: var(--text-primary);
+}
+
+.header {
+  position: sticky;
+  z-index: 30;
+  top: 0;
+  display: flex;
+  height: 52px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 14px 0 16px;
+}
+
+.brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.brandMark {
+  display: block;
+  width: 26px;
+  height: 26px;
+}
+
+.brandMark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.brandMark rect {
+  fill: var(--yellow);
+}
+
+.brandMark path {
+  fill: var(--yellow-ink);
+}
+
+.wordmark {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.34em;
+}
+
+.nav {
+  display: flex;
+  height: 100%;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+  padding: 0 11px;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 0.12s;
+}
+
+.nav a:hover {
+  color: var(--text-primary);
+}
+
+.nav a::after {
+  position: absolute;
+  right: 11px;
+  bottom: -1px;
+  left: 11px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--yellow);
+  content: "";
+  transform: scaleX(0);
+  transition: transform 0.2s var(--ease-out);
+}
+
+.nav .navActive {
+  color: var(--text-primary);
+}
+
+.nav .navActive::after {
+  transform: scaleX(1);
+}
+
+.headerEnd {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.brand:focus-visible,
+.nav a:focus-visible,
+.networkButton:focus-visible,
+.networkList button:focus-visible,
+.connectButton:focus-visible,
+.accountButton:focus-visible,
+.wrongNetwork:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- chain picker */
+
+.networkMenu {
+  position: relative;
+}
+
+.networkButton {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--text-primary);
+  padding: 0 10px 0 8px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.networkButton:hover,
+.networkButton[aria-expanded="true"] {
+  border-color: var(--line-strong);
+}
+
+.networkText {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.networkText strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.networkText small {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.chevron {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+  transition: transform 0.18s var(--ease-out);
+}
+
+.networkButton[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+
+.networkList {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  width: 280px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel-raised);
+  padding: 4px;
+  list-style: none;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  animation: menuIn 0.16s var(--ease-out) both;
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.networkList button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.networkList button:hover {
+  background: var(--hover);
+}
+
+.networkList .networkOptionOn {
+  background: var(--field);
+}
+
+.statusLive,
+.statusMuted {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.statusLive {
+  background: rgba(31, 194, 126, 0.14);
+  color: var(--up);
+}
+
+.statusMuted {
+  background: var(--field);
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- wallet button */
+
+.walletGroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connectButton {
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--yellow);
+  color: var(--yellow-ink);
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: filter 0.12s, transform 0.12s var(--ease-out);
+}
+
+.connectButton:hover {
+  filter: brightness(0.92);
+}
+
+.connectButton:active {
+  transform: scale(0.98);
+}
+
+.accountButton {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  color: var(--text-primary);
+  padding: 0 11px 0 9px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.accountButton:hover {
+  border-color: var(--line-strong);
+}
+
+.accountChains {
+  display: inline-flex;
+}
+
+.accountChains > * + * {
+  margin-left: -4px;
+}
+
+.accountChains > * {
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--canvas);
+}
+
+.accountAddress {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dotLive,
+.dotWarn {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--up);
+}
+
+.dotWarn {
+  background: var(--fixture);
+}
+
+.wrongNetwork {
+  height: 34px;
+  border: 1px solid rgba(255, 157, 61, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 157, 61, 0.08);
+  color: var(--fixture);
+  padding: 0 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wrongNetwork:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* ---------------------------------------------------------------- responsive */
+
+@media (max-width: 900px) {
+  .header {
+    gap: 16px;
+  }
+
+  .networkText small {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .header {
+    position: static;
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 12px 0;
+  }
+
+  .headerEnd {
+    margin-left: auto;
+  }
+
+  .nav {
+    order: 3;
+    width: calc(100% + 24px);
+    height: 40px;
+    margin: 0 -12px;
+    overflow-x: auto;
+    border-top: 1px solid var(--line-soft);
+    padding: 0 6px;
+    scrollbar-width: none;
+  }
+
+  .networkText {
+    display: none;
+  }
+
+  .networkButton {
+    padding: 0 8px;
+  }
+}
+
+@media (max-width: 380px) {
+  .wordmark {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav a::after,
+  .chevron,
+  .networkList {
+    animation: none;
+    transition: none;
+  }
+}

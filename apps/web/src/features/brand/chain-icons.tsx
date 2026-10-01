@@ -10,8 +10,12 @@ import TokenHYPE from "@web3icons/react/icons/tokens/TokenHYPE";
 import TokenSOL from "@web3icons/react/icons/tokens/TokenSOL";
 import TokenUSDC from "@web3icons/react/icons/tokens/TokenUSDC";
 import TokenUSDT from "@web3icons/react/icons/tokens/TokenUSDT";
+import WalletBackpack from "@web3icons/react/icons/wallets/WalletBackpack";
+import WalletCoinbase from "@web3icons/react/icons/wallets/WalletCoinbase";
 import WalletMetamask from "@web3icons/react/icons/wallets/WalletMetamask";
 import WalletPhantom from "@web3icons/react/icons/wallets/WalletPhantom";
+import WalletRabby from "@web3icons/react/icons/wallets/WalletRabby";
+import WalletSolflare from "@web3icons/react/icons/wallets/WalletSolflare";
 
 type IconVariant = "branded" | "mono" | "background";
 type Web3Icon = ComponentType<Omit<SVGProps<SVGSVGElement>, "ref"> & { size?: number | string; variant?: IconVariant }>;
@@ -123,8 +127,19 @@ export function PairIcon({ base, quote, size = 20, className }: { base: string; 
   );
 }
 
-export function WalletIcon({ wallet, size = 16 }: { wallet: "phantom" | "metamask"; size?: number }) {
-  const Icon = wallet === "phantom" ? WalletPhantom : WalletMetamask;
+const WALLETS = {
+  phantom: WalletPhantom,
+  solflare: WalletSolflare,
+  backpack: WalletBackpack,
+  metamask: WalletMetamask,
+  rabby: WalletRabby,
+  coinbase: WalletCoinbase,
+} as const satisfies Record<string, Web3Icon>;
+
+export type KnownWallet = keyof typeof WALLETS;
+
+export function WalletIcon({ wallet, size = 16 }: { wallet: KnownWallet; size?: number }) {
+  const Icon = WALLETS[wallet];
   return (
     <span style={{ display: "inline-flex", flex: "none", lineHeight: 0 }}>
       <Icon size={size} variant="branded" aria-hidden />

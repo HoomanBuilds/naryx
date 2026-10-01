@@ -19,7 +19,7 @@ const HREFS: Record<string, string> = {
   Receipts: "#engine",
   Solvers: "#engine",
   "Settlement classes": "#shielded",
-  "Activation status": "/trade",
+  "Activation status": "/network",
 };
 
 function Crosshair() {
