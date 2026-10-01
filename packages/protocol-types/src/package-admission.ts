@@ -219,7 +219,9 @@ function validateObjectBindings(
   requireCondition(route.settlementClass === order.settlementClass, 'packageAdmission.route.settlementClass', 'settlement class mismatch');
   const quantityPolicy = order.settlementClass === 'ATOMIC_POSTCONDITION'
     ? 'EXACT_ATOMIC'
-    : order.hyperliquidQuantityPolicy;
+    : order.settlementClass === 'ASYNC_BONDED_SOLVER'
+      ? 'EXACT_NET'
+      : order.hyperliquidQuantityPolicy;
   requireCondition(route.quantityPolicyClass === quantityPolicy, 'packageAdmission.route.quantityPolicyClass', 'quantity policy mismatch');
 }
 
@@ -434,7 +436,9 @@ function validateLegsAndQuantities(
   requireAsset(spot.quantity.asset, order.quantity.asset, 'packageAdmission.route.spot.quantity.asset');
   requireAsset(perpetual.quantity.asset, order.quantity.asset, 'packageAdmission.route.perpetual.quantity.asset');
   requireCondition(perpetual.quantity.atoms === order.quantity.atoms, 'packageAdmission.route.perpetual.quantity.atoms', 'perpetual quantity mismatch');
-  const grossSpot = order.settlementClass === 'ATOMIC_POSTCONDITION'
+  const exactNetClass = order.settlementClass === 'ATOMIC_POSTCONDITION'
+    || order.settlementClass === 'ASYNC_BONDED_SOLVER';
+  const grossSpot = exactNetClass
     ? order.quantity
     : order.hyperliquidGrossSpotQuantity;
   requireCondition(grossSpot !== undefined, 'packageAdmission.order.hyperliquidGrossSpotQuantity', 'gross spot quantity is missing');
@@ -443,7 +447,7 @@ function validateLegsAndQuantities(
   requireAsset(quote.expectedNetSpotQuantity.asset, order.quantity.asset, 'packageAdmission.quote.expectedNetSpotQuantity.asset');
   requireAsset(quote.expectedBaseAssetFee.asset, order.quantity.asset, 'packageAdmission.quote.expectedBaseAssetFee.asset');
   requireCondition(quote.expectedBaseAssetFee.atoms >= 0n, 'packageAdmission.quote.expectedBaseAssetFee.atoms', 'base-asset fee is negative');
-  if (order.settlementClass === 'ATOMIC_POSTCONDITION') {
+  if (exactNetClass) {
     const expectedNet = order.action === 'ENTRY'
       ? grossSpot.atoms - quote.expectedBaseAssetFee.atoms
       : -grossSpot.atoms - quote.expectedBaseAssetFee.atoms;
@@ -669,7 +673,12 @@ function validateExecutableQuoteShape(
     requireCondition(quote.quoteMode === 'EXECUTION_COMMITMENT', 'packageAdmission.quote.quoteMode', 'Hyperliquid requires an execution commitment');
   }
   if (firm) {
-    requireCondition(order.action === 'ENTRY' && order.settlementClass === 'ATOMIC_POSTCONDITION', 'packageAdmission.quote.quoteMode', 'firm quotes require atomic entry');
+    requireCondition(
+      order.action === 'ENTRY'
+        && (order.settlementClass === 'ATOMIC_POSTCONDITION' || order.settlementClass === 'ASYNC_BONDED_SOLVER'),
+      'packageAdmission.quote.quoteMode',
+      'firm quotes require atomic or asynchronous bonded entry',
+    );
     requireCondition(quote.reservationId !== undefined, 'packageAdmission.quote.reservationId', 'firm quote reservation is missing');
   } else {
     requireCondition(quote.reservationId === undefined, 'packageAdmission.quote.reservationId', 'non-firm quote cannot carry a reservation');

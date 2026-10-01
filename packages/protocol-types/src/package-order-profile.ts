@@ -82,9 +82,11 @@ function validateInitialActivation(order: PackageOrder, context: string): void {
     `${context}.partialFillPolicy`,
     'initial activation requires EXACT_ALL_LEGS',
   );
-  const expectedTimeInForce = order.settlementClass === 'ATOMIC_POSTCONDITION'
-    ? 'FOK'
-    : 'IOC';
+  // Only the batched Hyperliquid class fills immediate-or-cancel; atomic and asynchronous bonded
+  // packages fill every leg exactly or not at all.
+  const expectedTimeInForce = order.settlementClass === 'BATCHED_IOC_WITH_RECOVERY'
+    ? 'IOC'
+    : 'FOK';
   requireCondition(
     order.packageTimeInForce === expectedTimeInForce,
     `${context}.packageTimeInForce`,
@@ -282,7 +284,28 @@ function validateAtomicProfile(order: PackageOrder, context: string): void {
     `${context}.expiryUnit`,
     'atomic profile requires a Solana or EVM clock',
   );
+  requireNoHyperliquidOrRecoveryTerms(order, context, 'atomic');
+}
 
+/**
+ * Asynchronous bonded entry (Arbitrum GMX): the solver opens both legs under a performance bond on
+ * the EVM clock. The trader signs no recovery terms; a solver fault is paid from the bond.
+ */
+function validateAsyncBondedProfile(order: PackageOrder, context: string): void {
+  requireCondition(
+    order.action === 'ENTRY',
+    `${context}.action`,
+    'asynchronous bonded profile supports entry only',
+  );
+  requireCondition(
+    order.expiryUnit === 'EVM_UNIX_SECONDS',
+    `${context}.expiryUnit`,
+    'asynchronous bonded profile requires the EVM clock',
+  );
+  requireNoHyperliquidOrRecoveryTerms(order, context, 'asynchronous bonded');
+}
+
+function requireNoHyperliquidOrRecoveryTerms(order: PackageOrder, context: string, profile: string): void {
   const forbidden: readonly [string, unknown][] = [
     ['hyperliquidQuantityPolicy', order.hyperliquidQuantityPolicy],
     ['hyperliquidGrossSpotQuantity', order.hyperliquidGrossSpotQuantity],
@@ -329,12 +352,12 @@ function validateAtomicProfile(order: PackageOrder, context: string): void {
   requireCondition(
     order.allowedRecoveryActions.length === 0,
     `${context}.allowedRecoveryActions`,
-    'atomic profile forbids recovery actions',
+    `${profile} profile forbids recovery actions`,
   );
   requireCondition(
     order.maxAggregateRecoveryLossQuote.atoms === 0n,
     `${context}.maxAggregateRecoveryLossQuote.atoms`,
-    'atomic profile requires zero recovery loss',
+    `${profile} profile requires zero recovery loss`,
   );
 }
 
@@ -572,6 +595,8 @@ export function validatePackageOrderProfile(
 
   if (order.settlementClass === 'ATOMIC_POSTCONDITION') {
     validateAtomicProfile(order, context);
+  } else if (order.settlementClass === 'ASYNC_BONDED_SOLVER') {
+    validateAsyncBondedProfile(order, context);
   } else {
     validateHyperliquidProfile(order, context);
   }

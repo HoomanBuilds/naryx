@@ -245,7 +245,8 @@ function loadContext(
     throw new EntryOrderValidationError("INACTIVE_CONTEXT", "Order context is not active.");
   }
   if (context.settlementClass !== "ATOMIC_POSTCONDITION"
-      && context.settlementClass !== "BATCHED_IOC_WITH_RECOVERY") {
+      && context.settlementClass !== "BATCHED_IOC_WITH_RECOVERY"
+      && context.settlementClass !== "ASYNC_BONDED_SOLVER") {
     throw new EntryOrderValidationError(
       "UNSUPPORTED_SETTLEMENT",
       "Settlement class is unsupported for entry.",

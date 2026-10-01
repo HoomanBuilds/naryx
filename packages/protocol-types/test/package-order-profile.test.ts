@@ -442,4 +442,25 @@ describe('package order semantic profiles', () => {
       MalformedInputError,
     );
   });
+
+  test('accepts asynchronous bonded EVM entry and refuses its other shapes', () => {
+    const asyncEntry = atomicInput({
+      settlementClass: 'ASYNC_BONDED_SOLVER',
+      expiryUnit: 'EVM_UNIX_SECONDS',
+      expiryValue: 2_000_000_000n,
+    });
+    assert.equal(validatePackageOrderProfile(asyncEntry).settlementClass, 'ASYNC_BONDED_SOLVER');
+    assert.throws(
+      () => validatePackageOrderProfile({ ...asyncEntry, expiryUnit: 'SOLANA_SLOT', expiryValue: 500_000_000n }),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => validatePackageOrderProfile({ ...asyncEntry, packageTimeInForce: 'IOC' }),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => validatePackageOrderProfile({ ...asyncEntry, hyperliquidQuantityPolicy: 'EXACT_NET' }),
+      MalformedInputError,
+    );
+  });
 });
