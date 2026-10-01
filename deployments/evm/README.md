@@ -332,6 +332,10 @@ The Arbitrum manifest has no field for the exit controller or the spot port, so 
 
 Every new contract's runtime code hash also belongs in the keeper's code-hash monitor targets. The indexer follows a lane through `NARYX_INDEXER_EVM_DOMAIN`, `NARYX_INDEXER_EVM_CONTRACTS` (the settlement contract: `PackageVerifier` on Base, the coordinator on Arbitrum), `NARYX_INDEXER_EVM_START_HEIGHT` (its deployment block), and `NARYX_INDEXER_EVM_BOND_VAULTS`.
 
+### Generating them
+
+Do not assemble these files by hand. Fill `deployments/evm/base-sepolia/release.template.json` or `deployments/evm/arbitrum-sepolia/release.template.json` outside the repository with the reviewed values and run `deployments/tools/release-manifests.mjs` with the broadcast records. It derives every address, code hash, deployment block, and the reviewed domain manifest hash from the broadcast and the live chain, checks the hash against `ProtocolConfig.domain()`, and writes the runtime manifests, order contexts, solver configs, keeper targets, indexer env, and web env. See `deployments/tools/README.md`.
+
 ## Release record
 
 After a reviewed lane completes, commit a non-secret record under `deployments/evm/<network>/` stating:

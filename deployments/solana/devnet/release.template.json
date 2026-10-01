@@ -1,0 +1,1079 @@
+{
+  "schemaVersion": 1,
+  "network": "solana-devnet",
+  "rpcUrlEnv": "NARYX_SOLANA_DEVNET_RPC_URL",
+  "inputs": {
+    "init": {
+      "$operator": "absolute path of the record contracts/solana/scripts/initialize-devnet.mjs --out wrote after the --send run"
+    },
+    "lookupTable": {
+      "$operator": "absolute path of the record contracts/solana/scripts/devnet-lookup-table.mjs --out wrote after the --send run"
+    }
+  },
+  "programs": {
+    "core": {
+      "programId": {
+        "$operator": "naryx_core (devnet-test-perp build) program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null when immutable"
+      },
+      "artifactSha256": {
+        "$operator": "sha256 of the reviewed naryx_core.so with trailing zero bytes removed"
+      }
+    },
+    "package_book": {
+      "programId": {
+        "$operator": "naryx_package_book program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_package_book.so trimmed sha256"
+      }
+    },
+    "reservation": {
+      "programId": {
+        "$operator": "naryx_inventory_reservation program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_inventory_reservation.so trimmed sha256"
+      }
+    },
+    "perp_adapter": {
+      "programId": {
+        "$operator": "naryx_test_perp_adapter program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_test_perp_adapter.so trimmed sha256"
+      }
+    },
+    "perp_venue": {
+      "programId": {
+        "$operator": "naryx_test_perp program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_test_perp.so trimmed sha256"
+      }
+    }
+  },
+  "coreIdlPath": "deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json",
+  "domainManifest": {
+    "manifestVersion": {
+      "$number": {
+        "$operator": "Devnet domain manifest version core was initialized with"
+      }
+    },
+    "environment": "devnet",
+    "domainId": "svm:devnet",
+    "runtimeClassId": "svm",
+    "runtimeClassVersion": 1,
+    "chainNamespace": "solana",
+    "chainReference": {
+      "$release": "genesisHash"
+    },
+    "executionVerifierId": {
+      "$release": "programs.core.programId"
+    },
+    "executionVerifierCodeHash": {
+      "$release": "programs.core.elfSha256"
+    },
+    "clockModelId": "solana-slot",
+    "finalityPolicyHash": {
+      "$bytes": {
+        "$operator": "reviewed finality policy manifest hash (0x + 64 hex)"
+      }
+    },
+    "addressCodecId": "solana-base58-pubkey",
+    "supportedSettlementClasses": [
+      "ATOMIC_POSTCONDITION"
+    ]
+  },
+  "definitions": {
+    "domain": {
+      "$same": [
+        {
+          "$release": "domainRef"
+        },
+        {
+          "$input": "init",
+          "pointer": "/fragments/runtimeManifest/domain"
+        }
+      ]
+    },
+    "spotAdapterRef": {
+      "$input": "init",
+      "pointer": "/fragments/solverConfig/spot/adapter"
+    },
+    "perpetualAdapterRef": {
+      "$input": "init",
+      "pointer": "/fragments/solverConfig/perpetual/adapter"
+    },
+    "baseAssetRef": {
+      "$input": "init",
+      "pointer": "/fragments/orderContext/baseAsset"
+    },
+    "quoteAssetRef": {
+      "$input": "init",
+      "pointer": "/fragments/orderContext/quoteAsset"
+    },
+    "res": {
+      "baseAsset": {
+        "subjectId": {
+          "$def": "baseAssetRef.assetId"
+        },
+        "manifestVersion": 1,
+        "manifestHash": {
+          "$def": "baseAssetRef.assetManifestHash"
+        }
+      },
+      "quoteAsset": {
+        "subjectId": {
+          "$def": "quoteAssetRef.assetId"
+        },
+        "manifestVersion": 1,
+        "manifestHash": {
+          "$def": "quoteAssetRef.assetManifestHash"
+        }
+      },
+      "spotVenue": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/spot/venue"
+      },
+      "perpetualVenue": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/perpetual/venue"
+      },
+      "spotMarket": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/spot/market"
+      },
+      "perpetualMarket": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/perpetual/market"
+      },
+      "spotAdapter": {
+        "subjectId": {
+          "$def": "spotAdapterRef.adapterId"
+        },
+        "manifestVersion": {
+          "$def": "spotAdapterRef.adapterManifestVersion"
+        },
+        "manifestHash": {
+          "$def": "spotAdapterRef.adapterManifestHash"
+        }
+      },
+      "perpetualAdapter": {
+        "subjectId": {
+          "$def": "perpetualAdapterRef.adapterId"
+        },
+        "manifestVersion": {
+          "$def": "perpetualAdapterRef.adapterManifestVersion"
+        },
+        "manifestHash": {
+          "$def": "perpetualAdapterRef.adapterManifestHash"
+        }
+      }
+    },
+    "activation": {
+      "activationUnit": "SOLANA_SLOT",
+      "activationValue": {
+        "$bigint": {
+          "$operator": "slot at which the registered records became active"
+        }
+      },
+      "governanceReference": {
+        "$operator": "governance reference string recorded with the registrations"
+      }
+    },
+    "templateManifest": {
+      "manifestVersion": 1,
+      "environment": "devnet",
+      "templateId": "cash-and-carry-v1",
+      "templateVersion": 1,
+      "supportedDomains": [
+        {
+          "$def": "domain"
+        }
+      ],
+      "orderSchemaHash": {
+        "$bytes": {
+          "$operator": "reviewed order schema hash"
+        }
+      },
+      "quoteSchemaHash": {
+        "$bytes": {
+          "$operator": "reviewed quote schema hash"
+        }
+      },
+      "routeSchemaHash": {
+        "$bytes": {
+          "$operator": "reviewed route schema hash"
+        }
+      },
+      "receiptSchemaHash": {
+        "$bytes": {
+          "$operator": "reviewed receipt schema hash"
+        }
+      },
+      "entryCompilerVersion": 1,
+      "exitCompilerVersion": 1,
+      "legCount": 2,
+      "legTypes": [
+        "spot-purchase",
+        "perp-sale"
+      ],
+      "supportedDirections": [
+        "LONG_SPOT_SHORT_PERP"
+      ],
+      "supportedSettlementClasses": [
+        "ATOMIC_POSTCONDITION"
+      ],
+      "allowedSpotAdapterIds": [
+        {
+          "$def": "res.spotAdapter.subjectId"
+        }
+      ],
+      "allowedPerpAdapterIds": [
+        {
+          "$def": "res.perpetualAdapter.subjectId"
+        }
+      ],
+      "riskPolicyHash": {
+        "$bytes": {
+          "$operator": "reviewed risk policy hash"
+        }
+      }
+    },
+    "templateManifestHash": {
+      "$same": [
+        {
+          "$protocol": "packageTemplateManifestHash",
+          "args": [
+            {
+              "$def": "templateManifest"
+            }
+          ]
+        },
+        {
+          "$input": "init",
+          "pointer": "/fragments/orderContext/packageTemplateManifestHash"
+        }
+      ]
+    },
+    "templateRegistryRecord": {
+      "$merge": [
+        {
+          "recordVersion": 1,
+          "environment": "devnet",
+          "domain": {
+            "$def": "domain"
+          },
+          "templateId": "cash-and-carry-v1",
+          "templateVersion": 1,
+          "packageTemplateManifestHash": {
+            "$def": "templateManifestHash"
+          },
+          "registryState": "ACTIVE"
+        },
+        {
+          "$def": "activation"
+        }
+      ]
+    },
+    "feePolicyManifest": {
+      "schemaVersion": 1,
+      "manifestVersion": 1,
+      "environment": "devnet",
+      "domain": {
+        "$def": "domain"
+      },
+      "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "feePolicyVersion": 1,
+      "activationUnit": "SOLANA_SLOT",
+      "activationValue": {
+        "$def": "activation.activationValue"
+      },
+      "serviceFeeRules": [],
+      "passThroughCostRules": [],
+      "refundPolicyVersion": 1,
+      "expiryUnit": "SOLANA_SLOT",
+      "expiryValue": {
+        "$bigint": {
+          "$operator": "fee policy expiry slot"
+        }
+      }
+    },
+    "recordCommon": {
+      "$merge": [
+        {
+          "recordVersion": 1,
+          "environment": "devnet",
+          "domain": {
+            "$def": "domain"
+          },
+          "registryState": "ACTIVE",
+          "riskLimits": [],
+          "allowedTemplates": [
+            {
+              "templateId": "cash-and-carry-v1",
+              "templateVersion": 1,
+              "packageTemplateManifestHash": {
+                "$def": "templateManifestHash"
+              }
+            }
+          ],
+          "allowedSettlementClasses": [
+            "ATOMIC_POSTCONDITION"
+          ]
+        },
+        {
+          "$def": "activation"
+        }
+      ]
+    },
+    "testPerpMarket": {
+      "$input": "init",
+      "pointer": "/accounts/testPerpMarket"
+    },
+    "solverId": {
+      "$input": "init",
+      "pointer": "/fragments/solverConfig/solverId"
+    },
+    "contextId": {
+      "$operator": "order context id, for example solana-devnet:sol-usdc:test-perp"
+    },
+    "keeperScopeId": {
+      "$operator": "keeper readiness scope id for this lane, equal to its incident journal scope"
+    },
+    "codeWatch": {
+      "chainRef": "solana:devnet",
+      "scopeId": {
+        "$def": "keeperScopeId"
+      }
+    }
+  },
+  "outputs": {
+    "api/solana-devnet-runtime.json": {
+      "format": "protocol-json",
+      "content": {
+        "schemaVersion": 1,
+        "activationState": "ACTIVE",
+        "domain": {
+          "$def": "domain"
+        },
+        "expectedGenesisHash": {
+          "$release": "genesisHash"
+        },
+        "programs": [
+          {
+            "$release": "programs.core.expectation"
+          },
+          {
+            "$release": "programs.package_book.expectation"
+          },
+          {
+            "$release": "programs.reservation.expectation"
+          },
+          {
+            "$release": "programs.perp_adapter.expectation"
+          },
+          {
+            "$release": "programs.perp_venue.expectation"
+          }
+        ],
+        "lookupTables": {
+          "$input": "lookupTable",
+          "pointer": "/fragments/runtimeManifest/lookupTables"
+        },
+        "coreIdl": {
+          "$release": "coreIdl"
+        },
+        "expectedCoreIdlHash": {
+          "$release": "coreIdlHash"
+        },
+        "perpVenueKind": "NARYX_TEST_PERP",
+        "testPerp": {
+          "$same": [
+            {
+              "$input": "init",
+              "pointer": "/fragments/runtimeManifest/testPerp"
+            },
+            {
+              "market": {
+                "$def": "testPerpMarket"
+              },
+              "oracle": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+              "feedIdHex": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+              "strategyIdHex": {
+                "$input": "init",
+                "pointer": "/fragments/runtimeManifest/testPerp/strategyIdHex"
+              }
+            }
+          ]
+        },
+        "admission": {
+          "domainManifest": {
+            "$release": "domainManifest"
+          },
+          "templateManifest": {
+            "$def": "templateManifest"
+          },
+          "templateRegistryRecord": {
+            "$def": "templateRegistryRecord"
+          },
+          "feePolicyManifest": {
+            "$def": "feePolicyManifest"
+          },
+          "activeRegistryRecords": [
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "ASSET",
+                  "subjectId": {
+                    "$def": "res.baseAsset.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.baseAsset.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.baseAsset.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "ASSET",
+                  "subjectId": {
+                    "$def": "res.quoteAsset.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.quoteAsset.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.quoteAsset.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "ADAPTER",
+                  "subjectId": {
+                    "$def": "res.spotAdapter.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.spotAdapter.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.spotAdapter.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "ADAPTER",
+                  "subjectId": {
+                    "$def": "res.perpetualAdapter.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.perpetualAdapter.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.perpetualAdapter.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "VENUE",
+                  "subjectId": {
+                    "$def": "res.spotVenue.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.spotVenue.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.spotVenue.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "VENUE",
+                  "subjectId": {
+                    "$def": "res.perpetualVenue.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.perpetualVenue.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.perpetualVenue.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "MARKET",
+                  "subjectId": {
+                    "$def": "res.spotMarket.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.spotMarket.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.spotMarket.manifestHash"
+                  }
+                }
+              ]
+            },
+            {
+              "$merge": [
+                {
+                  "$def": "recordCommon"
+                },
+                {
+                  "recordKind": "MARKET",
+                  "subjectId": {
+                    "$def": "res.perpetualMarket.subjectId"
+                  },
+                  "subjectManifestVersion": {
+                    "$def": "res.perpetualMarket.manifestVersion"
+                  },
+                  "subjectManifestHash": {
+                    "$def": "res.perpetualMarket.manifestHash"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "evidence": {
+          "evidenceClass": "SOLANA_FINALIZED_ACCOUNT_EVIDENCE_V1",
+          "settlementClass": "ATOMIC_POSTCONDITION",
+          "quoteMode": "FIRM_ONCHAIN",
+          "executionPlanKind": "SVM_ATOMIC_CPI",
+          "packetDataLimit": 1232,
+          "maxResolvedAddresses": 64,
+          "maxRouteComputeUnits": 1260000
+        }
+      }
+    },
+    "api/solana-devnet-order-context.json": {
+      "format": "protocol-json",
+      "content": {
+        "schemaVersion": 1,
+        "contextId": {
+          "$def": "contextId"
+        },
+        "orderVersion": 1,
+        "templateId": "cash-and-carry-v1",
+        "templateVersion": 1,
+        "packageTemplateManifestHash": {
+          "$def": "templateManifestHash"
+        },
+        "baseAsset": {
+          "$def": "baseAssetRef"
+        },
+        "quoteAsset": {
+          "$def": "quoteAssetRef"
+        },
+        "spotAdapter": {
+          "$def": "spotAdapterRef"
+        },
+        "perpetualAdapter": {
+          "$def": "perpetualAdapterRef"
+        },
+        "maxStalenessSlots": {
+          "$bigint": {
+            "$operator": "max order context staleness, finalized slots"
+          }
+        },
+        "expiryTtlSlots": {
+          "$bigint": {
+            "$operator": "order expiry TTL, slots"
+          }
+        },
+        "pollIntervalMs": {
+          "$number": {
+            "$operator": "poll interval, ms, at least 1000"
+          }
+        },
+        "inventorySpreadBps": {
+          "$number": {
+            "$operator": "solver inventory spread over the oracle, bps (same as the solver config)"
+          }
+        },
+        "maxEntrySpread": {
+          "baseAsset": {
+            "$def": "baseAssetRef"
+          },
+          "quoteAsset": {
+            "$def": "quoteAssetRef"
+          },
+          "quoteAtoms": {
+            "$bigint": {
+              "$operator": "max entry spread numerator, quote atoms"
+            }
+          },
+          "baseAtoms": {
+            "$bigint": {
+              "$operator": "max entry spread denominator, base atoms"
+            }
+          },
+          "roundingDirection": "CEIL"
+        },
+        "maximumQuantityAtoms": {
+          "$bigint": {
+            "$operator": "max order size, base atoms"
+          }
+        },
+        "maxSlippageBps": {
+          "$number": {
+            "$operator": "max slippage, bps"
+          }
+        },
+        "maxVenueFeeAtomsByAsset": [
+          {
+            "asset": {
+              "$def": "quoteAssetRef"
+            },
+            "maxAtoms": {
+              "$bigint": {
+                "$operator": "max venue fee, quote atoms"
+              }
+            }
+          }
+        ],
+        "maxMarginAddedAtoms": {
+          "$bigint": {
+            "$operator": "max margin added, quote atoms"
+          }
+        },
+        "maxProtocolFeeAtoms": {
+          "$bigint": {
+            "$operator": "max protocol fee, quote atoms"
+          }
+        },
+        "maxSolverFeeAtoms": {
+          "$bigint": {
+            "$operator": "max solver fee, quote atoms"
+          }
+        },
+        "maxPriorityFeeAtoms": {
+          "$bigint": {
+            "$operator": "max priority fee, quote atoms"
+          }
+        },
+        "maxDepositAtoms": {
+          "$bigint": {
+            "$operator": "max single deposit step, quote atoms"
+          }
+        },
+        "strategyMaxBaseLots": {
+          "$bigint": {
+            "$operator": "strategy max size, base lots"
+          }
+        },
+        "registry": {
+          "$input": "init",
+          "pointer": "/fragments/orderContext/registry"
+        }
+      }
+    },
+    "solver/solana-devnet-solver.json": {
+      "format": "protocol-json",
+      "content": {
+        "schemaVersion": 1,
+        "runtimeManifestPath": {
+          "$out": "api/solana-devnet-runtime.json"
+        },
+        "solverId": {
+          "$def": "solverId"
+        },
+        "solverCapabilityManifestHash": {
+          "$bytes": {
+            "$operator": "solver capability manifest hash"
+          }
+        },
+        "templateRegistryRecordHash": {
+          "$protocol": "packageTemplateRegistryRecordHash",
+          "args": [
+            {
+              "$def": "templateRegistryRecord"
+            }
+          ]
+        },
+        "feePolicyVersion": 1,
+        "feePolicyManifestHash": {
+          "$protocol": "feePolicyManifestHash",
+          "args": [
+            {
+              "$def": "feePolicyManifest"
+            }
+          ]
+        },
+        "candidateId": {
+          "$operator": "solver candidate id"
+        },
+        "evidenceGrade": {
+          "$operator": "evidence grade label"
+        },
+        "spot": {
+          "$merge": [
+            {
+              "$input": "init",
+              "pointer": "/fragments/solverConfig/spot"
+            },
+            {
+              "actionSequence": 0
+            }
+          ]
+        },
+        "perpetual": {
+          "$merge": [
+            {
+              "$input": "init",
+              "pointer": "/fragments/solverConfig/perpetual"
+            },
+            {
+              "actionSequence": 1
+            }
+          ]
+        },
+        "inventorySpreadBps": {
+          "$number": {
+            "$operator": "inventory spread over the oracle, bps"
+          }
+        },
+        "perpLimitToleranceBps": {
+          "$number": {
+            "$operator": "perp limit tolerance, bps, at most 500"
+          }
+        },
+        "quoteTtlSlots": {
+          "$bigint": {
+            "$operator": "quote TTL, slots"
+          }
+        },
+        "maxQuantityAtoms": {
+          "$bigint": {
+            "$operator": "max quote size, base atoms"
+          }
+        },
+        "computeUnitLimit": {
+          "$number": {
+            "$operator": "compute unit limit, at most 1260000"
+          }
+        },
+        "levelTtlSlots": {
+          "$bigint": {
+            "$operator": "package book level TTL, slots"
+          }
+        },
+        "levelCapacityUnits": {
+          "$bigint": {
+            "$operator": "package book level capacity, package units"
+          }
+        },
+        "accounts": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/accounts"
+        },
+        "resources": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/resources"
+        },
+        "spotBaseLotAtoms": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/spotBaseLotAtoms"
+        },
+        "series": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/series"
+        },
+        "resourceAdmissionCommitment": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/resourceAdmissionCommitment"
+        },
+        "route": {
+          "actions": {
+            "$operator": "reviewed ActionCommitmentInput[]"
+          },
+          "preconditions": {
+            "$operator": "reviewed StateConstraintInput[]"
+          },
+          "postconditions": {
+            "$operator": "reviewed StateConstraintInput[]"
+          },
+          "evidenceRequirements": {
+            "$operator": "reviewed EvidenceRequirementsInput"
+          }
+        }
+      }
+    },
+    "api/testnet-execution-policy.json": {
+      "format": "json",
+      "content": {
+        "domains": [
+          {
+            "domainId": "svm:devnet",
+            "quoteAssetId": {
+              "$def": "res.quoteAsset.subjectId"
+            },
+            "maxPrincipalAtomsPerOperation": {
+              "$operator": "per-operation principal cap, quote atoms, decimal string"
+            },
+            "maxPrincipalAtomsPerDay": {
+              "$operator": "per-UTC-day principal cap, quote atoms, decimal string"
+            },
+            "maxRecoveryLossAtomsPerOperation": {
+              "$operator": "per-operation recovery loss cap, quote atoms, decimal string"
+            }
+          }
+        ]
+      }
+    },
+    "keeper/code-watchlist.json": {
+      "format": "protocol-json",
+      "content": {
+        "intervalMs": 60000,
+        "evidenceTtlMs": {
+          "$naryxType": "bigint",
+          "value": "300000"
+        },
+        "journals": [
+          {
+            "journalPath": {
+              "$data": "keeper/solana-devnet-incidents.json"
+            },
+            "readinessDecision": {
+              "$operator": "current ReadinessDecision for this scope; use {\"$input\": \"readinessDecision\"} with an inputs entry"
+            }
+          }
+        ],
+        "targets": [
+          {
+            "$merge": [
+              {
+                "$def": "codeWatch"
+              },
+              {
+                "targetId": "solana-devnet-core",
+                "address": {
+                  "$release": "programs.core.programDataAddress"
+                },
+                "expectedCodeHash": {
+                  "$release": "programs.core.elfSha256Hex0x"
+                }
+              }
+            ]
+          },
+          {
+            "$merge": [
+              {
+                "$def": "codeWatch"
+              },
+              {
+                "targetId": "solana-devnet-package-book",
+                "address": {
+                  "$release": "programs.package_book.programDataAddress"
+                },
+                "expectedCodeHash": {
+                  "$release": "programs.package_book.elfSha256Hex0x"
+                }
+              }
+            ]
+          },
+          {
+            "$merge": [
+              {
+                "$def": "codeWatch"
+              },
+              {
+                "targetId": "solana-devnet-reservation",
+                "address": {
+                  "$release": "programs.reservation.programDataAddress"
+                },
+                "expectedCodeHash": {
+                  "$release": "programs.reservation.elfSha256Hex0x"
+                }
+              }
+            ]
+          },
+          {
+            "$merge": [
+              {
+                "$def": "codeWatch"
+              },
+              {
+                "targetId": "solana-devnet-perp-adapter",
+                "address": {
+                  "$release": "programs.perp_adapter.programDataAddress"
+                },
+                "expectedCodeHash": {
+                  "$release": "programs.perp_adapter.elfSha256Hex0x"
+                }
+              }
+            ]
+          },
+          {
+            "$merge": [
+              {
+                "$def": "codeWatch"
+              },
+              {
+                "targetId": "solana-devnet-perp-venue",
+                "address": {
+                  "$release": "programs.perp_venue.programDataAddress"
+                },
+                "expectedCodeHash": {
+                  "$release": "programs.perp_venue.elfSha256Hex0x"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "keeper/funding-mirror.json": {
+      "format": "json",
+      "content": {
+        "intervalMs": 3600000,
+        "recordPath": {
+          "$data": "keeper/funding-mirror-record.json"
+        },
+        "markets": [
+          {
+            "id": "solana-devnet-sol",
+            "chainRef": "solana:devnet",
+            "market": {
+              "$def": "testPerpMarket"
+            },
+            "programId": {
+              "$release": "programs.perp_venue.programId"
+            },
+            "coin": "SOL",
+            "minChange": {
+              "$operator": "smallest funding rate change worth a transaction, scaled per second rate, decimal string"
+            }
+          }
+        ]
+      }
+    },
+    "env/api.env": {
+      "format": "env",
+      "content": {
+        "NARYX_SOLANA_DEVNET_RUNTIME_ENABLED": "true",
+        "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST": {
+          "$out": "api/solana-devnet-runtime.json"
+        },
+        "NARYX_SOLANA_DEVNET_RPC_URL": {
+          "$env": "NARYX_SOLANA_DEVNET_RPC_URL"
+        },
+        "NARYX_SOLANA_DEVNET_PREPARATION_DB": {
+          "$data": "api/solana-devnet-preparation.db"
+        },
+        "NARYX_SOLANA_DEVNET_BINDING_ORIGIN": "http://127.0.0.1:8795",
+        "NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED": "true",
+        "NARYX_SOLANA_DEVNET_ORDER_CONTEXT": {
+          "$out": "api/solana-devnet-order-context.json"
+        }
+      }
+    },
+    "env/solver.env": {
+      "format": "env",
+      "content": {
+        "NARYX_SOLANA_DEVNET_SOLVER_ENABLED": "true",
+        "NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED": "false",
+        "NARYX_SOLANA_DEVNET_SOLVER_CONFIG": {
+          "$out": "solver/solana-devnet-solver.json"
+        },
+        "NARYX_SOLANA_DEVNET_SOLVER_KEYPAIR_PATH": {
+          "$operator": "absolute path, outside the repository, of the solver Solana CLI keypair file (mode 600)"
+        },
+        "NARYX_SOLANA_DEVNET_RPC_URL": {
+          "$env": "NARYX_SOLANA_DEVNET_RPC_URL"
+        },
+        "NARYX_SOLANA_DEVNET_BINDING_PORT": "8795",
+        "NARYX_SOLANA_DEVNET_SOLVER_JOURNAL_DB": {
+          "$data": "solver/solana-devnet-journal.db"
+        }
+      }
+    },
+    "env/keeper.env": {
+      "format": "env",
+      "content": {
+        "NARYX_KEEPER_RPC_URLS": {
+          "solana:devnet": {
+            "$env": "NARYX_SOLANA_DEVNET_RPC_URL"
+          }
+        },
+        "NARYX_CODE_WATCHLIST": {
+          "$out": "keeper/code-watchlist.json"
+        },
+        "NARYX_FUNDING_MIRROR_CONFIG": {
+          "$out": "keeper/funding-mirror.json"
+        },
+        "NARYX_FUNDING_MIRROR_WRITES": "disabled",
+        "NARYX_FUNDING_KEEPER_SOLANA_KEY_FILE": {
+          "$operator": "absolute path, outside the repository, of the test perp funding keeper keypair file, or an empty string while writes stay disabled"
+        }
+      }
+    },
+    "web/.env.production": {
+      "format": "env",
+      "content": {
+        "NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT": {
+          "$def": "res.quoteAsset.subjectId"
+        },
+        "NEXT_PUBLIC_SOLANA_DEVNET_RPC_URL": {
+          "$env": "NARYX_WEB_SOLANA_DEVNET_RPC_URL",
+          "optional": true
+        }
+      }
+    }
+  }
+}

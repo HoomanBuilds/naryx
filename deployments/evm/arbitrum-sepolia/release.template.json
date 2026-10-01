@@ -1,0 +1,446 @@
+{
+  "schemaVersion": 1,
+  "network": "arbitrum-sepolia",
+  "rpcUrlEnv": "NARYX_ARBITRUM_SEPOLIA_RPC_URL",
+  "inputs": {
+    "deploy": { "$operator": "absolute path of contracts/evm/broadcast/DeployArbitrumSepoliaAsyncGmx.s.sol/421614/run-latest.json" }
+  },
+  "contracts": {
+    "protocolConfig": { "return": "deploy", "index": 0, "name": "ProtocolConfig" },
+    "coordinator": { "return": "deploy", "index": 1, "name": "AsyncBondedPackageCoordinator" },
+    "orderVerifier": { "return": "deploy", "index": 2, "name": "GmxV2OrderVerifier" },
+    "exitOrderVerifier": { "return": "deploy", "index": 3, "name": "GmxV2ExitOrderVerifier" },
+    "accountFactory": { "return": "deploy", "index": 4, "name": "GmxV2IsolatedAccountFactory" },
+    "adapter": { "return": "deploy", "index": 5, "name": "GmxV2ArbitrumAdapter" },
+    "exitController": { "return": "deploy", "index": 6, "name": "GmxV2ExitController" },
+    "spotPort": { "return": "deploy", "index": 7, "name": "UniswapV3SpotPort" },
+    "accountImplementation": { "return": "deploy", "index": 8, "name": "GmxV2IsolatedAccount" },
+    "market": { "call": "accountFactory", "fn": "market" },
+    "collateralToken": { "call": "accountFactory", "fn": "collateralToken" },
+    "spotBaseToken": { "call": "spotPort", "fn": "baseToken" },
+    "spotPool": { "call": "spotPort", "fn": "pool" },
+    "gmxDataStore": { "address": "0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201" },
+    "gmxEventEmitter": { "address": "0xa973c2692C1556E1a3d478e745e9a75624AEDc73" },
+    "gmxExchangeRouter": { "address": "0x6B489dD5bB1AAE8df246359d59aA7316760a75d2" },
+    "gmxRouter": { "address": "0x72F13a44C8ba16a678CAD549F17bc9e06d2B8bD2" },
+    "gmxOrderVault": { "address": "0x1b8AC606de71686fd2a1AEDEcb6E0EFba28909a2" },
+    "gmxOrderHandler": { "address": "0xC881c2391611829d7bc81c12a285cB0201F08f8c" },
+    "gmxRoleStore": { "address": "0x433E3C47885b929aEcE4149E3c835E565a20D95c" },
+    "priceFeed": { "address": { "$operator": "reviewed Arbitrum Sepolia ETH/USD reference feed address" } }
+  },
+  "domainManifest": {
+    "manifestVersion": 2,
+    "environment": "testnet",
+    "domainId": "eip155:421614",
+    "runtimeClassId": "naryx-evm",
+    "runtimeClassVersion": 1,
+    "chainNamespace": "eip155",
+    "chainReference": "421614",
+    "executionVerifierId": "package-verifier-v1",
+    "executionVerifierCodeHash": { "$release": "contracts.coordinator.codeHashBytes" },
+    "clockModelId": "evm-unix-seconds",
+    "finalityPolicyHash": { "$bytes": { "$operator": "reviewed finality policy manifest hash (0x + 64 hex), the one used for the domain rotation" } },
+    "addressCodecId": "evm-address-20",
+    "supportedSettlementClasses": ["ASYNC_BONDED_SOLVER"]
+  },
+  "domainCheck": { "contract": "protocolConfig" },
+  "definitions": {
+    "domain": { "$release": "domainRef" },
+    "res": {
+      "baseAsset": { "subjectId": { "$operator": "ETH base asset subject id" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "base asset manifest hash" } } },
+      "quoteAsset": { "subjectId": { "$operator": "collateral (USDC) quote asset subject id" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "quote asset manifest hash" } } },
+      "spotVenue": { "subjectId": { "$operator": "spot venue subject id" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot venue manifest hash" } } },
+      "perpetualVenue": { "subjectId": { "$operator": "GMX venue subject id (route.perpetualVenueId)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual venue manifest hash" } } },
+      "spotMarket": { "subjectId": { "$operator": "spot market subject id" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot market manifest hash" } } },
+      "perpetualMarket": { "subjectId": { "$operator": "GMX market subject id (route.perpetualMarketId)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual market manifest hash" } } },
+      "spotAdapter": { "subjectId": { "$operator": "spot adapter subject id" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot adapter manifest hash" } } },
+      "perpetualAdapter": { "subjectId": { "$operator": "GMX adapter subject id (route.perpetualAdapterId)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual adapter manifest hash" } } }
+    },
+    "quoteDecimals": { "$number": { "$operator": "collateral token decimals" } },
+    "baseAssetRef": { "assetId": { "$def": "res.baseAsset.subjectId" }, "assetManifestHash": { "$def": "res.baseAsset.manifestHash" }, "decimals": 18 },
+    "quoteAssetRef": { "assetId": { "$def": "res.quoteAsset.subjectId" }, "assetManifestHash": { "$def": "res.quoteAsset.manifestHash" }, "decimals": { "$def": "quoteDecimals" } },
+    "spotAdapterRef": { "adapterId": { "$def": "res.spotAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.spotAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.spotAdapter.manifestHash" } },
+    "perpetualAdapterRef": { "adapterId": { "$def": "res.perpetualAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.perpetualAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.perpetualAdapter.manifestHash" } },
+    "activation": {
+      "activationUnit": "EVM_UNIX_SECONDS",
+      "activationValue": { "$bigint": { "$operator": "unix time at which the registered records became active" } },
+      "governanceReference": { "$operator": "governance reference string recorded with the registrations" }
+    },
+    "templateManifest": {
+      "manifestVersion": 1,
+      "environment": "testnet",
+      "templateId": "cash-and-carry-v1",
+      "templateVersion": 1,
+      "supportedDomains": [{ "$def": "domain" }],
+      "orderSchemaHash": { "$bytes": { "$operator": "reviewed order schema hash" } },
+      "quoteSchemaHash": { "$bytes": { "$operator": "reviewed quote schema hash" } },
+      "routeSchemaHash": { "$bytes": { "$operator": "reviewed route schema hash" } },
+      "receiptSchemaHash": { "$bytes": { "$operator": "reviewed receipt schema hash" } },
+      "entryCompilerVersion": 1,
+      "exitCompilerVersion": 1,
+      "legCount": 2,
+      "legTypes": ["spot-purchase", "perp-sale"],
+      "supportedDirections": ["LONG_SPOT_SHORT_PERP"],
+      "supportedSettlementClasses": ["ASYNC_BONDED_SOLVER"],
+      "allowedSpotAdapterIds": [{ "$def": "res.spotAdapter.subjectId" }],
+      "allowedPerpAdapterIds": [{ "$def": "res.perpetualAdapter.subjectId" }],
+      "riskPolicyHash": { "$bytes": { "$operator": "reviewed risk policy hash" } }
+    },
+    "templateManifestHash": { "$protocol": "packageTemplateManifestHash", "args": [{ "$def": "templateManifest" }] },
+    "templateRegistryRecord": {
+      "$merge": [
+        {
+          "recordVersion": 1,
+          "environment": "testnet",
+          "domain": { "$def": "domain" },
+          "templateId": "cash-and-carry-v1",
+          "templateVersion": 1,
+          "packageTemplateManifestHash": { "$def": "templateManifestHash" },
+          "registryState": "ACTIVE"
+        },
+        { "$def": "activation" }
+      ]
+    },
+    "feePolicyManifest": {
+      "schemaVersion": 1,
+      "manifestVersion": 1,
+      "environment": "testnet",
+      "domain": { "$def": "domain" },
+      "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "feePolicyVersion": 1,
+      "activationUnit": "EVM_UNIX_SECONDS",
+      "activationValue": { "$def": "activation.activationValue" },
+      "serviceFeeRules": [],
+      "passThroughCostRules": [],
+      "refundPolicyVersion": 1,
+      "expiryUnit": "EVM_UNIX_SECONDS",
+      "expiryValue": { "$bigint": { "$operator": "fee policy expiry, unix seconds" } }
+    },
+    "recordCommon": {
+      "$merge": [
+        {
+          "recordVersion": 1,
+          "environment": "testnet",
+          "domain": { "$def": "domain" },
+          "registryState": "ACTIVE",
+          "riskLimits": [],
+          "allowedTemplates": [{ "templateId": "cash-and-carry-v1", "templateVersion": 1, "packageTemplateManifestHash": { "$def": "templateManifestHash" } }],
+          "allowedSettlementClasses": ["ASYNC_BONDED_SOLVER"]
+        },
+        { "$def": "activation" }
+      ]
+    },
+    "seriesBinding": {
+      "schemaVersion": 1,
+      "bindingVersion": { "$number": { "$operator": "series binding version solvers put in reserved terms" } },
+      "domain": { "$def": "domain" },
+      "seriesManifestHash": { "$bytes": { "$operator": "series manifest hash" } },
+      "executionClassManifestHash": { "$def": "executionClassManifestHash" },
+      "templateId": "cash-and-carry-v1",
+      "templateVersion": 1,
+      "templateManifestHash": { "$def": "templateManifestHash" },
+      "settlementClass": "ASYNC_BONDED_SOLVER",
+      "settlementClassVersion": 1,
+      "baseAsset": { "subjectIdentity": { "$keccak": { "$def": "res.baseAsset.subjectId" } }, "manifestVersion": { "$def": "res.baseAsset.manifestVersion" }, "manifestHash": { "$def": "res.baseAsset.manifestHash" } },
+      "quoteAsset": { "subjectIdentity": { "$keccak": { "$def": "res.quoteAsset.subjectId" } }, "manifestVersion": { "$def": "res.quoteAsset.manifestVersion" }, "manifestHash": { "$def": "res.quoteAsset.manifestHash" } },
+      "quoteConvention": "annualized-net-yield-v1",
+      "entrySide": "ASK",
+      "spotBaseAtomsPerPackageUnit": { "$bigint": { "$operator": "spot base atoms per package unit" } },
+      "perpQuantityAtomsPerPackageUnit": { "$bigint": { "$operator": "perp quantity atoms per package unit" } }
+    },
+    "executionClassManifestHash": { "$bytes": { "$operator": "executionClassManifestHash deploy parameter (the coordinator's executionClassManifestHash())" } },
+    "seriesIdentityKey": { "$protocol": "cashCarrySeriesIdentityKey", "args": [{ "$def": "seriesBinding" }] },
+    "seriesBindingHash": { "$protocol": "cashCarrySeriesBindingV1Hash", "args": [{ "$def": "seriesBinding" }] },
+    "contextId": { "$operator": "order context id; the web terminal default is arbitrum-sepolia:eth-usdc:gmx" },
+    "priceFeedDecimals": { "$number": { "$operator": "reference feed decimals" } },
+    "keeperScopeId": { "$operator": "keeper readiness scope id for this lane, equal to its incident journal scope" },
+    "codeWatch": { "chainRef": "eip155:421614", "scopeId": { "$def": "keeperScopeId" } }
+  },
+  "outputs": {
+    "api/arbitrum-sepolia-runtime.json": {
+      "format": "protocol-json",
+      "content": {
+        "schemaVersion": 1,
+        "activationState": "ACTIVE",
+        "observationStartBlock": { "$release": "contracts.coordinator.deployBlock" },
+        "deployment": {
+          "admission": {
+            "domainManifest": { "$release": "domainManifest" },
+            "templateManifest": { "$def": "templateManifest" },
+            "templateRegistryRecord": { "$def": "templateRegistryRecord" },
+            "feePolicyManifest": { "$def": "feePolicyManifest" },
+            "activeRegistryRecords": [
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.baseAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.baseAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.baseAsset.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.quoteAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.quoteAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.quoteAsset.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ADAPTER", "subjectId": { "$def": "res.spotAdapter.subjectId" }, "subjectManifestVersion": { "$def": "res.spotAdapter.manifestVersion" }, "subjectManifestHash": { "$def": "res.spotAdapter.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ADAPTER", "subjectId": { "$def": "res.perpetualAdapter.subjectId" }, "subjectManifestVersion": { "$def": "res.perpetualAdapter.manifestVersion" }, "subjectManifestHash": { "$def": "res.perpetualAdapter.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "VENUE", "subjectId": { "$def": "res.spotVenue.subjectId" }, "subjectManifestVersion": { "$def": "res.spotVenue.manifestVersion" }, "subjectManifestHash": { "$def": "res.spotVenue.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "VENUE", "subjectId": { "$def": "res.perpetualVenue.subjectId" }, "subjectManifestVersion": { "$def": "res.perpetualVenue.manifestVersion" }, "subjectManifestHash": { "$def": "res.perpetualVenue.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "MARKET", "subjectId": { "$def": "res.spotMarket.subjectId" }, "subjectManifestVersion": { "$def": "res.spotMarket.manifestVersion" }, "subjectManifestHash": { "$def": "res.spotMarket.manifestHash" } }] },
+              { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "MARKET", "subjectId": { "$def": "res.perpetualMarket.subjectId" }, "subjectManifestVersion": { "$def": "res.perpetualMarket.manifestVersion" }, "subjectManifestHash": { "$def": "res.perpetualMarket.manifestHash" } }] }
+            ]
+          },
+          "domainManifest": { "$release": "domainManifest" },
+          "protocolConfig": { "$contract": "protocolConfig" },
+          "coordinator": { "$contract": "coordinator" },
+          "accountFactory": { "$contract": "accountFactory" },
+          "accountImplementation": { "$contract": "accountImplementation" },
+          "entryAdapter": { "$contract": "adapter" },
+          "orderVerifier": { "$contract": "orderVerifier" },
+          "market": { "$contract": "market" },
+          "collateralToken": { "$contract": "collateralToken" },
+          "gmx": {
+            "dataStore": { "$contract": "gmxDataStore" },
+            "eventEmitter": { "$contract": "gmxEventEmitter" },
+            "exchangeRouter": { "$contract": "gmxExchangeRouter" },
+            "router": { "$contract": "gmxRouter" },
+            "orderVault": { "$contract": "gmxOrderVault" },
+            "orderHandler": { "$contract": "gmxOrderHandler" },
+            "roleStore": { "$contract": "gmxRoleStore" }
+          },
+          "executionClassManifestHash": { "$def": "executionClassManifestHash" },
+          "route": {
+            "perpetualAdapterId": { "$def": "res.perpetualAdapter.subjectId" },
+            "perpetualMarketId": { "$def": "res.perpetualMarket.subjectId" },
+            "perpetualVenueId": { "$def": "res.perpetualVenue.subjectId" },
+            "evidenceProfileId": { "$operator": "reviewed evidence profile id" },
+            "stateReferenceSchemaHash": { "$bytes": { "$operator": "reviewed state reference schema hash" } },
+            "receiptSchemaHash": { "$bytes": { "$operator": "reviewed receipt schema hash" } },
+            "outcomeSchemaHash": { "$bytes": { "$operator": "reviewed outcome schema hash" } },
+            "coordinatorEvidenceSchemaHash": { "$keccak": "NARYX_ASYNC_VENUE_EVIDENCE_V1" },
+            "seriesIdentityKey": { "$def": "seriesIdentityKey" },
+            "seriesBindingVersion": { "$def": "seriesBinding.bindingVersion" },
+            "seriesBindingHash": { "$def": "seriesBindingHash" }
+          },
+          "bounds": {
+            "maximumRouteExpiryValue": { "$bigint": { "$operator": "maximum route expiry, unix seconds" } },
+            "maximumRecoveryDeadlineValue": { "$bigint": { "$operator": "maximum recovery deadline, unix seconds" } },
+            "maximumPackageQuantityAtoms": { "$bigint": { "$operator": "maximum package quantity, base atoms" } }
+          },
+          "finality": {
+            "policy": {
+              "requiredConfirmations": { "$number": { "$operator": "reviewed finality policy requiredConfirmations" } },
+              "requireFinalized": { "$operator": "reviewed finality policy requireFinalized, true or false" }
+            },
+            "manifestHash": { "$release": "domainManifest.finalityPolicyHash" }
+          }
+        }
+      }
+    },
+    "api/arbitrum-sepolia-order-context.json": {
+      "format": "protocol-json",
+      "content": {
+        "schemaVersion": 1,
+        "contextId": { "$def": "contextId" },
+        "orderVersion": 1,
+        "templateId": "cash-and-carry-v1",
+        "templateVersion": 1,
+        "packageTemplateManifestHash": { "$def": "templateManifestHash" },
+        "baseAsset": { "$def": "baseAssetRef" },
+        "quoteAsset": { "$def": "quoteAssetRef" },
+        "spotAdapter": { "$def": "spotAdapterRef" },
+        "perpetualAdapter": { "$def": "perpetualAdapterRef" },
+        "priceFeed": { "$contract": "priceFeed" },
+        "priceFeedDecimals": { "$def": "priceFeedDecimals" },
+        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds" } },
+        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 250" } },
+        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds" } },
+        "maxEntrySpread": {
+          "baseAsset": { "$def": "baseAssetRef" },
+          "quoteAsset": { "$def": "quoteAssetRef" },
+          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms" } },
+          "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
+          "roundingDirection": "CEIL"
+        },
+        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms" } },
+        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps" } },
+        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, quote atoms" } } }],
+        "maxMarginAddedAtoms": { "$bigint": { "$operator": "max margin added, quote atoms" } },
+        "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee, quote atoms" } },
+        "maxSolverFeeAtoms": { "$bigint": { "$operator": "max solver fee, quote atoms" } },
+        "maxPriorityFeeAtoms": { "$bigint": { "$operator": "max priority fee, quote atoms" } }
+      }
+    },
+    "solver/arbitrum-sepolia-quote.json": {
+      "format": "protocol-json",
+      "content": {
+        "version": 1,
+        "market": {
+          "domain": { "$def": "domain" },
+          "templateId": "cash-and-carry-v1",
+          "templateVersion": 1,
+          "packageTemplateManifestHash": { "$def": "templateManifestHash" },
+          "templateRegistryRecordHash": { "$protocol": "packageTemplateRegistryRecordHash", "args": [{ "$def": "templateRegistryRecord" }] },
+          "candidateId": { "$operator": "solver candidate id" },
+          "capacityBaseAtoms": { "$bigint": { "$operator": "solver capacity, base atoms" } },
+          "solverId": { "$operator": "solver id the route names" },
+          "solverCapabilityManifestHash": { "$bytes": { "$operator": "solver capability manifest hash" } },
+          "feePolicyVersion": 1,
+          "feePolicyManifestHash": { "$protocol": "feePolicyManifestHash", "args": [{ "$def": "feePolicyManifest" }] },
+          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds" } },
+          "venueWindowSeconds": { "$bigint": { "$operator": "GMX venue window, seconds" } },
+          "recoveryWindowSeconds": { "$bigint": { "$operator": "recovery window, seconds" } },
+          "marginBps": { "$number": { "$operator": "margin bps of perp notional" } },
+          "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
+          "rollbackSlippageBps": { "$number": { "$operator": "rollback slippage, bps" } },
+          "baseAsset": { "$def": "baseAssetRef" },
+          "quoteAsset": { "$def": "quoteAssetRef" },
+          "accountFactory": { "$release": "contracts.accountFactory.addressLower" },
+          "accountImplementation": { "$release": "contracts.accountImplementation.addressLower" },
+          "priceFeed": { "$contract": "priceFeed" },
+          "priceFeedDecimals": { "$def": "priceFeedDecimals" },
+          "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age, seconds" } },
+          "gmxDataStore": { "$contract": "gmxDataStore" },
+          "gmxMarket": { "$release": "contracts.market.addressLower" },
+          "spot": {
+            "adapter": { "$def": "spotAdapterRef" },
+            "venue": { "$def": "res.spotVenue" },
+            "market": { "$def": "res.spotMarket" },
+            "action": { "$operator": "reviewed spot ActionCommitmentInput (sequence 0)" }
+          },
+          "perpetual": {
+            "adapter": { "$def": "perpetualAdapterRef" },
+            "venue": { "$def": "res.perpetualVenue" },
+            "market": { "$def": "res.perpetualMarket" },
+            "action": { "$operator": "reviewed perpetual ActionCommitmentInput (sequence 1)" }
+          },
+          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]" },
+          "preconditions": { "$operator": "reviewed route preconditions" },
+          "postconditions": { "$operator": "reviewed route postconditions" },
+          "evidenceRequirements": { "$operator": "reviewed EvidenceRequirementsInput" },
+          "recovery": {
+            "policyVersion": { "$number": { "$operator": "recovery policy version" } },
+            "controllerId": { "$operator": "recovery controller id" },
+            "controllerCodeHash": { "$bytes": { "$operator": "recovery controller code hash" } },
+            "authorityModeId": { "$operator": "recovery authority mode id" },
+            "reconciledStateSchemaHash": { "$bytes": { "$operator": "reconciled state schema hash" } },
+            "actionBuilderCodeHash": { "$bytes": { "$operator": "recovery action builder code hash" } }
+          }
+        }
+      }
+    },
+    "solver/arbitrum-sepolia-executor.json": {
+      "format": "protocol-json",
+      "content": {
+        "version": 1,
+        "domain": { "$def": "domain" },
+        "coordinator": { "$contract": "coordinator" },
+        "adapter": { "$contract": "adapter" },
+        "accountFactory": { "$contract": "accountFactory" },
+        "accountImplementation": { "$contract": "accountImplementation" },
+        "collateralToken": { "$contract": "collateralToken" },
+        "spotPort": { "$contract": "spotPort" },
+        "spotBaseToken": { "$contract": "spotBaseToken" },
+        "gmxDataStore": { "$contract": "gmxDataStore" },
+        "gmxMarket": { "$release": "contracts.market.addressLower" },
+        "quoteAssetDecimals": { "$def": "quoteDecimals" },
+        "executionClassManifestHash": { "$0x": { "$def": "executionClassManifestHash" } },
+        "seriesIdentityKey": { "$0x": { "$def": "seriesIdentityKey" } },
+        "seriesBindingVersion": { "$def": "seriesBinding.bindingVersion" },
+        "seriesBindingHash": { "$0x": { "$def": "seriesBindingHash" } },
+        "bondAtoms": { "$bigint": { "$operator": "solver bond per package, quote atoms" } },
+        "recoveryReserveAtoms": { "$bigint": { "$operator": "recovery reserve, quote atoms" } },
+        "maxAggregateLossAtoms": { "$bigint": { "$operator": "max aggregate loss, quote atoms, at most the recovery reserve" } },
+        "maxIntermediateResidualAtoms": { "$bigint": { "$operator": "max intermediate residual, atoms" } },
+        "maxTerminalResidualAtoms": { "$bigint": { "$operator": "max terminal residual, atoms, at most the intermediate residual" } },
+        "slashRecipient": { "$lower": { "$operator": "slash recipient address" } },
+        "callbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit" } },
+        "executionFeeBufferBps": { "$number": { "$operator": "GMX execution fee buffer, bps" } },
+        "maxExecutionFeeWei": { "$bigint": { "$operator": "max GMX execution fee, wei" } },
+        "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms" } },
+        "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms" } },
+        "receiptWaitMs": { "$number": { "$operator": "receipt wait, ms, 1 to 20000" } }
+      }
+    },
+    "api/testnet-execution-policy.json": {
+      "format": "json",
+      "content": {
+        "domains": [{
+          "domainId": "eip155:421614",
+          "quoteAssetId": { "$def": "res.quoteAsset.subjectId" },
+          "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, quote atoms, decimal string" },
+          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, quote atoms, decimal string" },
+          "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, quote atoms, decimal string" }
+        }]
+      }
+    },
+    "keeper/code-watchlist.json": {
+      "format": "protocol-json",
+      "content": {
+        "intervalMs": 60000,
+        "evidenceTtlMs": { "$naryxType": "bigint", "value": "300000" },
+        "journals": [{
+          "journalPath": { "$data": "keeper/arbitrum-sepolia-incidents.json" },
+          "readinessDecision": { "$operator": "current ReadinessDecision for this scope; use {\"$input\": \"readinessDecision\"} with an inputs entry" }
+        }],
+        "targets": [
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-protocol-config", "address": { "$release": "contracts.protocolConfig.addressLower" }, "expectedCodeHash": { "$release": "contracts.protocolConfig.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-coordinator", "address": { "$release": "contracts.coordinator.addressLower" }, "expectedCodeHash": { "$release": "contracts.coordinator.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-order-verifier", "address": { "$release": "contracts.orderVerifier.addressLower" }, "expectedCodeHash": { "$release": "contracts.orderVerifier.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-exit-order-verifier", "address": { "$release": "contracts.exitOrderVerifier.addressLower" }, "expectedCodeHash": { "$release": "contracts.exitOrderVerifier.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-account-factory", "address": { "$release": "contracts.accountFactory.addressLower" }, "expectedCodeHash": { "$release": "contracts.accountFactory.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-adapter", "address": { "$release": "contracts.adapter.addressLower" }, "expectedCodeHash": { "$release": "contracts.adapter.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-exit-controller", "address": { "$release": "contracts.exitController.addressLower" }, "expectedCodeHash": { "$release": "contracts.exitController.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-spot-port", "address": { "$release": "contracts.spotPort.addressLower" }, "expectedCodeHash": { "$release": "contracts.spotPort.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-account-implementation", "address": { "$release": "contracts.accountImplementation.addressLower" }, "expectedCodeHash": { "$release": "contracts.accountImplementation.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-collateral-token", "address": { "$release": "contracts.collateralToken.addressLower" }, "expectedCodeHash": { "$release": "contracts.collateralToken.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-data-store", "address": { "$release": "contracts.gmxDataStore.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxDataStore.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-exchange-router", "address": { "$release": "contracts.gmxExchangeRouter.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxExchangeRouter.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-order-handler", "address": { "$release": "contracts.gmxOrderHandler.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxOrderHandler.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-price-feed", "address": { "$release": "contracts.priceFeed.addressLower" }, "expectedCodeHash": { "$release": "contracts.priceFeed.codeHash" } }] }
+        ]
+      }
+    },
+    "env/api.env": {
+      "format": "env",
+      "content": {
+        "NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED": "true",
+        "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST": { "$out": "api/arbitrum-sepolia-runtime.json" },
+        "NARYX_ARBITRUM_SEPOLIA_RPC_URL": { "$env": "NARYX_ARBITRUM_SEPOLIA_RPC_URL" },
+        "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED": "true",
+        "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT": { "$out": "api/arbitrum-sepolia-order-context.json" },
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED": "true",
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN": "http://127.0.0.1:8793"
+      }
+    },
+    "env/solver.env": {
+      "format": "env",
+      "content": {
+        "NARYX_ARBITRUM_SEPOLIA_QUOTE_ENABLED": "true",
+        "NARYX_ARBITRUM_SEPOLIA_QUOTE_CONFIG": { "$out": "solver/arbitrum-sepolia-quote.json" },
+        "NARYX_ARBITRUM_SEPOLIA_RPC_URL": { "$env": "NARYX_ARBITRUM_SEPOLIA_RPC_URL" },
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ENABLED": "true",
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_PORT": "8793",
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CONFIG": { "$out": "solver/arbitrum-sepolia-executor.json" },
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_DB": { "$data": "solver/arbitrum-sepolia-executor.db" },
+        "NARYX_ARBITRUM_SEPOLIA_SOLVER_KEY_PATH": { "$operator": "absolute path, outside the repository, of the Arbitrum Sepolia solver key file" },
+        "NARYX_ARBITRUM_SEPOLIA_SOLVER_ADDRESS": { "$operator": "address of that solver key" }
+      }
+    },
+    "env/keeper.env": {
+      "format": "env",
+      "content": {
+        "NARYX_KEEPER_RPC_URLS": { "eip155:421614": { "$env": "NARYX_ARBITRUM_SEPOLIA_RPC_URL" } },
+        "NARYX_CODE_WATCHLIST": { "$out": "keeper/code-watchlist.json" }
+      }
+    },
+    "env/indexer-arbitrum-sepolia.env": {
+      "format": "env",
+      "content": {
+        "NARYX_INDEXER_DB": { "$data": "indexer/arbitrum-sepolia.db" },
+        "NARYX_INDEXER_EVM_DOMAIN": "eip155:421614",
+        "NARYX_INDEXER_EVM_RPC_URLS": { "$env": "NARYX_ARBITRUM_SEPOLIA_RPC_URL" },
+        "NARYX_INDEXER_EVM_ASYNC_COORDINATORS": { "$release": "contracts.coordinator.addressLower" },
+        "NARYX_INDEXER_EVM_START_HEIGHT": { "$string": { "$release": "contracts.coordinator.deployBlock" } }
+      }
+    },
+    "web/.env.production": {
+      "format": "env",
+      "content": {
+        "NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN": { "$release": "contracts.collateralToken.address" },
+        "NEXT_PUBLIC_ARBITRUM_SEPOLIA_RPC_URL": { "$env": "NARYX_WEB_ARBITRUM_SEPOLIA_RPC_URL", "optional": true },
+        "NEXT_PUBLIC_ARBITRUM_SEPOLIA_CONTEXT_ID": { "$def": "contextId" }
+      }
+    }
+  }
+}

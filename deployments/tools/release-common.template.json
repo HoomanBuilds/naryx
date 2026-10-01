@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "network": "common",
+  "outputs": {
+    "env/api.env": {
+      "format": "env",
+      "content": {
+        "NARYX_API_HOST": "127.0.0.1",
+        "NARYX_API_PORT": "8787",
+        "NARYX_TERMINAL_ORIGIN": { "$operator": "exact HTTPS origin of the deployed web terminal, for example https://terminal.example" },
+        "NARYX_API_ORDER_DB": { "$data": "api/orders.db" },
+        "NARYX_API_LIFECYCLE_DB": { "$data": "api/package-lifecycle.db" },
+        "NARYX_API_EXECUTION_INTENT_DB": { "$data": "api/execution-intents.db" },
+        "NARYX_SOLVER_INTERNAL_ORIGIN": "http://127.0.0.1:8788",
+        "NARYX_EXECUTION_POLICY_FILE": { "$out": "api/testnet-execution-policy.json" },
+        "NARYX_EXECUTION_POLICY_DB": { "$data": "api/execution-policy.db" }
+      }
+    },
+    "api/testnet-execution-policy.json": {
+      "format": "json",
+      "content": { "version": 1, "domains": [] }
+    },
+    "env/solver.env": {
+      "format": "env",
+      "content": {
+        "NARYX_SOLVER_HOST": "127.0.0.1",
+        "NARYX_SOLVER_PORT": "8788",
+        "NARYX_API_INTERNAL_ORIGIN": "http://127.0.0.1:8787",
+        "NARYX_SOLVER_ED25519_KEY_PATH": { "$operator": "absolute path, outside the repository, of the solver Ed25519 PKCS8 PEM key file (the path only; the key is never read here)" },
+        "NARYX_SOLVER_ED25519_PUBLIC_KEY_HEX": { "$operator": "64 lowercase hex characters of that key's public key" },
+        "NARYX_SOLVER_QUOTE_DB": { "$data": "solver/quotes.db" }
+      }
+    },
+    "env/keeper.env": {
+      "format": "env",
+      "content": {
+        "NARYX_KEEPER_RPC_URLS": {}
+      }
+    },
+    "web/.env.production": {
+      "format": "env",
+      "content": {
+        "NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL": { "$operator": "public HTTPS base URL that reaches services/api" },
+        "NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL": { "$operator": "public HTTPS base URL of the public v1 market API" },
+        "NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID": { "$operator": "package market id the chart and book show, or an empty string" }
+      }
+    }
+  }
+}

@@ -118,6 +118,10 @@ The input path is mandatory and must be absolute. The script has a fixed `https:
 
 The preflight rejects mainnet and every non-Devnet genesis, missing accounts, nonexecutable programs, wrong upgradeable-loader ownership, invalid Program and ProgramData layouts, mismatched ProgramData linkage, deployment slot, or upgrade authority, and any supplied artifact, ELF, or header identity mismatch. Successful JSON output is derived read-only evidence for review. It is not a deployment record, activation record, support claim, write authorization, or proof that initialization occurred. The script never creates or updates a manifest.
 
+### Runtime files
+
+After deployment and initialization, fill `release.template.json` in this directory outside the repository and run `deployments/tools/release-manifests.mjs`. It reads each program's ProgramData identity live after proving the Devnet genesis hash, requires every live ELF to equal the reviewed artifact hash, runs `verifySolanaDevnetDeploymentIdentity`, and writes the runtime manifest, order context, solver config, keeper targets, and web env. See `deployments/tools/README.md`.
+
 ## Program code identity
 
 Two hashes identify every program, and a release or registration record carries both.
@@ -211,4 +215,33 @@ The services drive a Devnet entry end to end once the release above is deployed,
 - Solver (`NARYX_SOLANA_DEVNET_SOLVER_ENABLED`): signs `FIRM_ONCHAIN` quotes from the same Pyth price (inventory spot at the oracle plus `inventorySpreadBps`, the perp at the market's spread, impact, and taker fee) against a firm ask level in its own package book shard, and serves `POST /internal/solana-devnet/attempt-binding` on loopback. The binding funds and finalizes the inventory reservation and locks the quote (each finalized) only with `NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED=true`; otherwise it binds only an already live reservation and lock. Its key is a Solana CLI keypair file outside the repository whose public key is the solver id.
 - The API accepts a binding whose finalized slot is at most 32 slots behind or 160 slots ahead of its own admission slot, because the solver reads and writes at later finalized slots; expiry is still enforced at both slots and by the program.
 
-Operator prerequisites that are not automated: the package book class and the solver's shard (`initialize_class`, `initialize_shard`), the inventory reservation class, the solver's base and quote inventory token accounts, solver registration in core, the core resource and series registrations, and insurance vault funding. Releasing a funded reservation whose entry never executes (`release_reservation`) and the public exit binding are not yet served.
+- Web terminal: before the Devnet review, the Solana ticket reads `GET /internal/terminal/solana-devnet/account` and walks the wallet through each missing step as one v0 transaction, finalized before the next. The response carries the program allowlist (`programs`), the market and collateral vault, and the mints; the terminal accepts only the reviewed instruction templates, the wallet as the only signer, and a deposit no larger than the reported requirement.
+- Reservation release: `release_reservation` is permissionless after expiry. The solver releases only its own FUNDED or LIVE reservation in the reviewed class, only once the finalized slot reached expiry, and only when the vault holds exactly the reserved base atoms. It serves `POST /internal/solana-devnet/release-reservation {orderHash}` on loopback, and the binding service frees an expired earlier reservation that still holds the strategy's live pair before funding a new one. Both need `NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED=true`.
+- Exit: the firm core entry rejects `EXIT`, so a Devnet exit uses the public `execute_cash_and_carry` path with an Orca spot leg. It stays fail-closed (`PUBLIC_EXIT_BINDING_REQUIRED`) until an exit RFQ, a solver exit quote, and a registered Devnet Orca spot venue, market, and adapter exist.
+
+### Operator initialization runbook
+
+Every script below runs from `contracts/solana`, requires `--cluster devnet`, verifies the Devnet genesis hash from chain data, refuses keypair files inside the repository, the default Solana CLI wallet, or files readable by group or others, and only simulates unless `--send` is given. Each step is idempotent: an existing account is decoded and must match the plan or the run fails.
+
+1. Deploy and verify the release as described above, then write the candidate release manifest for `naryx_core`, `naryx_inventory_reservation`, `naryx_package_book`, `naryx_test_perp`, and `naryx_test_perp_adapter`.
+2. Write the initialization plan outside the repository: domain, governance canceller and pauser, solver id, base and quote mints and decimals, funding keeper, reservation class, package book class, shard reference, spot market units, quote limit, descriptor hashes, series hashes and units, and vault funding targets.
+3. Dry run, review the simulated steps, then send:
+
+   ```bash
+   node scripts/initialize-devnet.mjs --cluster devnet \
+     --release /abs/release.json --plan /abs/plan.json \
+     --payer /abs/payer.json --upgrade-authority /abs/upgrade.json \
+     --proposer /abs/proposer.json --executor /abs/executor.json \
+     --market-owner /abs/market-owner.json --solver /abs/solver.json \
+     [--funder /abs/funder.json] --out /abs/initialize-record.json [--send]
+   ```
+
+   The order is: core `initialize`, `propose_solver` and `schedule_unpause`, then their activations after the config delay; test perp `initialize_market` with the recommended parameters; the inventory reservation class; the package book class; asset, venue, market, and adapter registrations, each wave proposed and then activated after the delay; the series binding; the solver shard; the solver's base and quote token accounts; and insurance and fee vault top-ups in exact atoms. With `--send` the script waits for each activation slot; rerun it after `--max-wait-seconds` to resume. The record lists every account, each resource manifest document and its hash, and the `runtimeManifest`, `solverConfig`, and `orderContext` fragments.
+4. Create the address lookup table for the fixed accounts and add its fragment to the runtime manifest `lookupTables`:
+
+   ```bash
+   node scripts/devnet-lookup-table.mjs --cluster devnet --record /abs/initialize-record.json \
+     --payer /abs/payer.json --authority /abs/alt-authority.json [--table <address>] [--freeze] [--send]
+   ```
+
+5. Fund the solver's base inventory account, start the solver with writes enabled, and let it post its reference and firm ask levels.

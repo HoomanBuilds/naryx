@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "network": "hyperliquid-testnet",
+  "domainManifest": {
+    "manifestVersion": { "$number": { "$operator": "reviewed hypercore:testnet domain manifest version" } },
+    "environment": "testnet",
+    "domainId": "hypercore:testnet",
+    "runtimeClassId": { "$operator": "reviewed HyperCore runtime class id" },
+    "runtimeClassVersion": { "$number": { "$operator": "reviewed runtime class version" } },
+    "chainNamespace": { "$operator": "reviewed chain namespace" },
+    "chainReference": "testnet",
+    "executionVerifierId": { "$operator": "reviewed execution verifier id" },
+    "executionVerifierCodeHash": { "$bytes": { "$operator": "reviewed execution verifier code hash" } },
+    "clockModelId": { "$operator": "reviewed clock model id" },
+    "finalityPolicyHash": { "$bytes": { "$operator": "reviewed finality policy manifest hash" } },
+    "addressCodecId": { "$operator": "reviewed address codec id" },
+    "supportedSettlementClasses": ["BATCHED_IOC_WITH_RECOVERY"]
+  },
+  "definitions": {
+    "domainHashHex": { "$hex": { "$release": "domainManifestHash" } },
+    "tradingAccount": { "$lower": { "$operator": "Hyperliquid Testnet trading account address (lowercase 0x + 40 hex)" } },
+    "solverId": { "$operator": "solver id" },
+    "spot": {
+      "adapterId": { "$operator": "spot adapter id" }, "adapterManifestVersion": 1, "adapterManifestHash": { "$hex": { "$operator": "spot adapter manifest hash" } },
+      "venueId": { "$operator": "spot venue id" }, "venueManifestVersion": 1, "venueManifestHash": { "$hex": { "$operator": "spot venue manifest hash" } },
+      "marketId": { "$operator": "spot market id" }, "marketManifestVersion": 1, "marketManifestHash": { "$hex": { "$operator": "spot market manifest hash" } },
+      "assetId": { "$number": { "$operator": "spot asset id (10000 + universe index)" } },
+      "sizeDecimals": { "$number": { "$operator": "spot size decimals (spotMeta szDecimals)" } },
+      "tokenIndex": { "$number": { "$operator": "spot base token index" } },
+      "universeIndex": { "$number": { "$operator": "spot universe index" } }
+    },
+    "perpetual": {
+      "adapterId": { "$operator": "perpetual adapter id" }, "adapterManifestVersion": 1, "adapterManifestHash": { "$hex": { "$operator": "perpetual adapter manifest hash" } },
+      "venueId": { "$operator": "perpetual venue id" }, "venueManifestVersion": 1, "venueManifestHash": { "$hex": { "$operator": "perpetual venue manifest hash" } },
+      "marketId": { "$operator": "perpetual market id" }, "marketManifestVersion": 1, "marketManifestHash": { "$hex": { "$operator": "perpetual market manifest hash" } },
+      "assetId": { "$number": { "$operator": "perpetual asset id" } },
+      "sizeDecimals": { "$number": { "$operator": "perpetual size decimals (meta szDecimals)" } },
+      "assetIndex": { "$number": { "$operator": "perpetual asset index in meta.universe" } }
+    },
+    "baseAsset": { "assetId": { "$operator": "base asset id" }, "assetManifestHash": { "$hex": { "$operator": "base asset manifest hash" } }, "decimals": { "$def": "spot.sizeDecimals" } },
+    "quoteAsset": { "assetId": { "$operator": "quote asset id" }, "assetManifestHash": { "$hex": { "$operator": "quote asset manifest hash" } }, "decimals": { "$number": { "$operator": "quote asset decimals" } } },
+    "spotAdapterRef": { "adapterId": { "$def": "spot.adapterId" }, "adapterManifestVersion": { "$def": "spot.adapterManifestVersion" }, "adapterManifestHash": { "$def": "spot.adapterManifestHash" } },
+    "perpetualAdapterRef": { "adapterId": { "$def": "perpetual.adapterId" }, "adapterManifestVersion": { "$def": "perpetual.adapterManifestVersion" }, "adapterManifestHash": { "$def": "perpetual.adapterManifestHash" } },
+    "packageTemplateManifestHash": { "$hex": { "$operator": "reviewed cash-and-carry template manifest hash for hypercore:testnet" } }
+  },
+  "outputs": {
+    "api/hyperliquid-testnet-runtime.json": {
+      "format": "protocol-json",
+      "content": {
+        "version": 1,
+        "environment": "TESTNET",
+        "domain": { "domainId": "hypercore:testnet", "domainManifestVersion": { "$release": "domainManifest.manifestVersion" }, "domainManifestHash": { "$def": "domainHashHex" } },
+        "seriesManifestHash": { "$hex": { "$operator": "series manifest hash" } },
+        "executionClassManifestHash": { "$hex": { "$operator": "execution class manifest hash" } },
+        "solverId": { "$def": "solverId" },
+        "solverVerificationKey": { "$hex": { "$operator": "solver Ed25519 verification key, 64 hex (the common NARYX_SOLVER_ED25519_PUBLIC_KEY_HEX)" } },
+        "market": {
+          "spot": { "$def": "spot" },
+          "perpetual": { "$def": "perpetual" },
+          "quoteTokenIndex": { "$number": { "$operator": "quote token index" } }
+        },
+        "bounds": {
+          "maxEvidenceAgeMs": { "$number": { "$operator": "max evidence age, ms" } },
+          "maxFillPages": { "$number": { "$operator": "max fill pages" } },
+          "maxSnapshotSkewMs": { "$number": { "$operator": "max snapshot skew, ms" } }
+        },
+        "orderContext": {
+          "contextId": { "$operator": "order context id" },
+          "tradingAccount": { "$def": "tradingAccount" },
+          "orderVersion": 1,
+          "templateId": "cash-and-carry-v1",
+          "templateVersion": 1,
+          "packageTemplateManifestHash": { "$def": "packageTemplateManifestHash" },
+          "baseAsset": { "$def": "baseAsset" },
+          "quoteAsset": { "$def": "quoteAsset" },
+          "spotAdapter": { "$def": "spotAdapterRef" },
+          "perpetualAdapter": { "$def": "perpetualAdapterRef" },
+          "maxStalenessMs": { "$bigint": { "$operator": "max staleness, ms, above refreshIntervalMs and at most 120000" } },
+          "expiryTtlMs": { "$bigint": { "$operator": "order expiry TTL, ms" } },
+          "recoveryActionExpiryTtlMs": { "$bigint": { "$operator": "recovery action expiry TTL, ms" } },
+          "recoveryDeadlineTtlMs": { "$bigint": { "$operator": "recovery deadline TTL, ms" } },
+          "minRecoveryWindowMs": { "$bigint": { "$operator": "minimum recovery window, ms" } },
+          "livePricing": {
+            "refreshIntervalMs": { "$number": { "$operator": "book refresh interval, ms, 2000 to 60000" } },
+            "maxBookAgeMs": { "$number": { "$operator": "max book age, ms" } },
+            "maxBookSpreadBps": { "$number": { "$operator": "max book spread, bps" } },
+            "recoveryBandBps": { "$number": { "$operator": "recovery band, bps" } },
+            "feeShortfallSlackBps": { "$number": { "$operator": "fee shortfall slack, bps, at most 100" } }
+          },
+          "maxEntrySpread": {
+            "baseAsset": { "$def": "baseAsset" },
+            "quoteAsset": { "$def": "quoteAsset" },
+            "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator" } },
+            "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator" } },
+            "roundingDirection": "CEIL"
+          },
+          "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms" } },
+          "maxSlippageBps": { "$number": { "$operator": "max slippage, bps" } },
+          "maxNetSpotShortfallAtoms": { "$bigint": { "$operator": "max net spot shortfall, base atoms" } },
+          "maxNetSpotExcessAtoms": { "$bigint": { "$operator": "max net spot excess, base atoms" } },
+          "maxTerminalResidualBaseQuantityAtoms": { "$bigint": { "$operator": "max terminal residual base quantity" } },
+          "maxTerminalResidualQuoteValueAtoms": { "$bigint": { "$operator": "max terminal residual quote value" } },
+          "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAsset" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, quote atoms" } } }],
+          "maxMarginAddedAtoms": { "$bigint": { "$operator": "max margin added, quote atoms" } },
+          "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee" } },
+          "maxSolverFeeAtoms": { "$bigint": { "$operator": "max solver fee" } },
+          "maxPriorityFeeAtoms": { "$bigint": { "$operator": "max priority fee" } },
+          "minVenueReserveReturnedAtoms": { "$bigint": { "$operator": "min venue reserve returned" } },
+          "minWalletQuoteBalanceDeltaAtoms": { "$bigint": { "$operator": "min wallet quote balance delta" } },
+          "maxResidualBaseQuantityAtoms": { "$bigint": { "$operator": "max residual base quantity" } },
+          "maxRecoveryCostAtomsByAsset": [{ "asset": { "$def": "quoteAsset" }, "maxAtoms": { "$bigint": { "$operator": "max recovery cost, quote atoms" } } }],
+          "maxAggregateRecoveryLossQuoteAtoms": { "$bigint": { "$operator": "max aggregate recovery loss, quote atoms" } }
+        }
+      }
+    },
+    "solver/hyperliquid-testnet-quote.json": {
+      "format": "protocol-json",
+      "content": {
+        "version": 2,
+        "market": {
+          "domain": { "$release": "domainRef" },
+          "templateId": "cash-and-carry-v1",
+          "templateVersion": 1,
+          "packageTemplateManifestHash": { "$def": "packageTemplateManifestHash" },
+          "templateRegistryRecordHash": { "$hex": { "$operator": "template registry record hash" } },
+          "candidateId": { "$operator": "solver candidate id" },
+          "capacityBaseAtoms": { "$bigint": { "$operator": "solver capacity, base atoms" } },
+          "solverId": { "$def": "solverId" },
+          "solverCapabilityManifestHash": { "$hex": { "$operator": "solver capability manifest hash" } },
+          "feePolicyVersion": 1,
+          "feePolicyManifestHash": { "$hex": { "$operator": "fee policy manifest hash" } },
+          "routeTtlMs": { "$bigint": { "$operator": "route TTL, ms" } },
+          "quoteTtlMs": { "$bigint": { "$operator": "quote TTL, ms" } },
+          "marginBps": { "$number": { "$operator": "margin bps" } },
+          "baseAsset": { "$def": "baseAsset" },
+          "quoteAsset": { "$def": "quoteAsset" },
+          "maxBookAgeMs": { "$number": { "$operator": "max book age, ms" } },
+          "maxBookSpreadBps": { "$number": { "$operator": "max book spread, bps" } },
+          "spot": {
+            "adapter": { "$def": "spotAdapterRef" },
+            "venue": { "subjectId": { "$def": "spot.venueId" }, "manifestVersion": { "$def": "spot.venueManifestVersion" }, "manifestHash": { "$def": "spot.venueManifestHash" } },
+            "market": { "subjectId": { "$def": "spot.marketId" }, "manifestVersion": { "$def": "spot.marketManifestVersion" }, "manifestHash": { "$def": "spot.marketManifestHash" } },
+            "coin": { "$operator": "spot l2Book coin, for example @1" },
+            "sizeDecimals": { "$def": "spot.sizeDecimals" },
+            "action": { "$operator": "reviewed spot ActionCommitmentInput" }
+          },
+          "perpetual": {
+            "adapter": { "$def": "perpetualAdapterRef" },
+            "venue": { "subjectId": { "$def": "perpetual.venueId" }, "manifestVersion": { "$def": "perpetual.venueManifestVersion" }, "manifestHash": { "$def": "perpetual.venueManifestHash" } },
+            "market": { "subjectId": { "$def": "perpetual.marketId" }, "manifestVersion": { "$def": "perpetual.marketManifestVersion" }, "manifestHash": { "$def": "perpetual.marketManifestHash" } },
+            "coin": { "$operator": "perpetual l2Book coin, for example ETH" },
+            "sizeDecimals": { "$def": "perpetual.sizeDecimals" },
+            "action": { "$operator": "reviewed perpetual ActionCommitmentInput" }
+          },
+          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]" },
+          "preconditions": { "$operator": "reviewed route preconditions" },
+          "postconditions": { "$operator": "reviewed route postconditions" },
+          "evidenceRequirements": { "$operator": "reviewed EvidenceRequirementsInput" },
+          "recovery": {
+            "policyVersion": { "$number": { "$operator": "recovery policy version" } },
+            "controllerId": { "$operator": "recovery controller id" },
+            "controllerCodeHash": { "$hex": { "$operator": "recovery controller code hash" } },
+            "authorityModeId": { "$operator": "recovery authority mode id" },
+            "reconciledStateSchemaHash": { "$hex": { "$operator": "reconciled state schema hash" } },
+            "actionBuilderCodeHash": { "$hex": { "$operator": "recovery action builder code hash" } }
+          }
+        }
+      }
+    },
+    "api/testnet-execution-policy.json": {
+      "format": "json",
+      "content": {
+        "domains": [{
+          "domainId": "hypercore:testnet",
+          "quoteAssetId": { "$def": "quoteAsset.assetId" },
+          "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, quote atoms, decimal string" },
+          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, quote atoms, decimal string" },
+          "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, quote atoms, decimal string" }
+        }]
+      }
+    },
+    "env/api.env": {
+      "format": "env",
+      "content": {
+        "NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED": "true",
+        "NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT": "TESTNET",
+        "NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG": { "$out": "api/hyperliquid-testnet-runtime.json" },
+        "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED": "false",
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED": "false"
+      }
+    },
+    "env/solver.env": {
+      "format": "env",
+      "content": {
+        "NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED": "true",
+        "NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG": { "$out": "solver/hyperliquid-testnet-quote.json" },
+        "NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT": { "$def": "tradingAccount" },
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED": "false"
+      }
+    }
+  }
+}
