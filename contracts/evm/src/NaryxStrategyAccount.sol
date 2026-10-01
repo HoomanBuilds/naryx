@@ -196,6 +196,17 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
         return verifier.finalize(execution, admission, true);
     }
 
+    /// @notice Closes this account's open package record after the venue liquidated its perpetual leg.
+    /// Owner only; the verifier closes it only while the package's perpetual position is fully flat, and
+    /// the spot leg stays here for the owner to withdraw or sell.
+    function closeLiquidatedPackage() external nonReentrant returns (bytes32 closureHash) {
+        if (msg.sender != owner) revert UnauthorizedOwner(msg.sender);
+        if (block.chainid != deploymentChainId || address(verifier).codehash != verifierCodeHash) {
+            revert InvalidConfiguration();
+        }
+        return verifier.closeLiquidatedPackage();
+    }
+
     function withdrawIdleToken(IERC20 token, address recipient, uint256 amount) external nonReentrant {
         if (msg.sender != owner) revert UnauthorizedWithdrawal();
         if (address(token) == address(0) || recipient == address(0) || amount == 0) revert InvalidWithdrawal();

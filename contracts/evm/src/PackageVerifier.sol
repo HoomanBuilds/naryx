@@ -49,6 +49,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     bytes32 private constant PACKAGE_QUOTE_INTENT_FIELD = keccak256("package-quote-intent");
     bytes32 private constant PACKAGE_QUOTE_FILL_FIELD = keccak256("package-quote-fill");
     bytes32 private constant PACKAGE_QUOTE_INTENT_PREFIX = keccak256("NARYX_PACKAGE_QUOTE_INTENT_V1");
+    bytes32 private constant LIQUIDATION_CLOSURE_PREFIX = keccak256("NARYX_PACKAGE_LIQUIDATION_CLOSURE_V1");
 
     struct Execution {
         bytes32 domainIdHash;
@@ -160,6 +161,8 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     error PositionExists();
     error PositionMismatch();
     error PostconditionFailed();
+    error NoOpenPackage();
+    error PerpPositionStillOpen();
 
     event PackageVerified(
         bytes32 indexed receiptHash,
@@ -171,6 +174,16 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
         uint256 spotQuoteAtoms,
         bytes32 packageQuoteIntentHash,
         bytes32 packageQuoteFillCommitment
+    );
+
+    /// The open package record was closed without a package exit because the observer reports its
+    /// perpetual leg fully flat. The spot leg stays in the strategy account.
+    event PackageLiquidationClosed(
+        bytes32 indexed closureHash,
+        address indexed strategyAccount,
+        bytes32 indexed entryReceiptHash,
+        int128 postPerpBalanceWad,
+        uint256 nonce
     );
 
     ProtocolConfig public immutable config;
@@ -191,6 +204,7 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
     mapping(address strategyAccount => uint256 nonce) public nextNonce;
     mapping(address strategyAccount => OpenPackage packageState) private _openPackages;
     mapping(bytes32 receiptHash => Receipt receiptData) private _receipts;
+    mapping(bytes32 entryReceiptHash => bytes32 closureHash) public liquidationClosureOf;
 
     constructor(
         ProtocolConfig config_,
@@ -259,6 +273,41 @@ contract PackageVerifier is EIP712, ISpotFillRecorder {
 
     function openPackage(address strategyAccount) external view returns (OpenPackage memory) {
         return _openPackages[strategyAccount];
+    }
+
+    /// @notice Closes the caller's open package record after the venue liquidated its perpetual leg, so
+    /// the account's remaining spot leg is no longer locked behind an exit that can never match. Only the
+    /// strategy account itself calls this, and only while the package's own observer reports the position
+    /// at the package's instrument and expiry as fully flat. It consumes the account's next nonce, which
+    /// voids every instruction signed for it, and records a closure hash as evidence, not a receipt: no
+    /// package exit happened and no spot leg moved.
+    function closeLiquidatedPackage() external returns (bytes32 closureHash) {
+        if (block.chainid != deploymentChainId) revert InvalidConfiguration();
+        address strategyAccount = msg.sender;
+        OpenPackage storage open = _openPackages[strategyAccount];
+        bytes32 entryReceiptHash = open.entryReceiptHash;
+        if (entryReceiptHash == bytes32(0)) revert NoOpenPackage();
+        uint256 nonce = nextNonce[strategyAccount];
+        ISynFuturesPositionObserver.Position memory post = ISynFuturesPositionObserver(open.perpObserver)
+            .getPosition(open.perpInstrument, open.perpExpiry, strategyAccount);
+        if (post.size != 0 || post.entryNotional != 0) revert PerpPositionStillOpen();
+
+        nextNonce[strategyAccount] = nonce + 1;
+        closureHash = keccak256(
+            abi.encode(
+                LIQUIDATION_CLOSURE_PREFIX,
+                block.chainid,
+                address(this),
+                strategyAccount,
+                entryReceiptHash,
+                nonce,
+                post.balance,
+                block.number
+            )
+        );
+        liquidationClosureOf[entryReceiptHash] = closureHash;
+        delete _openPackages[strategyAccount];
+        emit PackageLiquidationClosed(closureHash, strategyAccount, entryReceiptHash, post.balance, nonce);
     }
 
     function begin(

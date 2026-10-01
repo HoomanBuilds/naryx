@@ -286,17 +286,7 @@ contract NaryxStrategyAccountFactoryTest is Test {
     }
 
     function testFactoryAccountEntersAndExitsThroughVerifierAgainstTheTestMarket() public {
-        vm.prank(owner);
-        account.depositPerpMargin(PERP_VENUE_ID, 400e6);
-
-        (, uint256 entryNotional,, uint256 margin) = market.previewOpen(-int128(int256(QUANTITY)), 400e18);
-        PackageVerifier.Execution memory entry = _execution(verifier.ENTRY(), 0);
-        entry.spotQuoteBoundAtoms = 2_000e6;
-        entry.expectedPostPerpSizeWad = -int128(int256(QUANTITY));
-        entry.minimumPostPerpBalanceWad = int128(int256(margin));
-        entry.maximumPostPerpBalanceWad = int128(int256(margin));
-        entry.maximumPostPerpEntryNotionalWad = uint128(entryNotional);
-        bytes32 entryReceiptHash = _executePackage(entry, _args(-int128(int256(QUANTITY)), 400e18));
+        (bytes32 entryReceiptHash, uint256 entryNotional, uint256 margin) = _openPackage();
 
         assertEq(weth.balanceOf(address(account)), QUANTITY);
         assertEq(usdc.balanceOf(address(account)), 600e6);
@@ -332,6 +322,56 @@ contract NaryxStrategyAccountFactoryTest is Test {
         vm.prank(owner);
         account.withdrawPerpMargin(PERP_VENUE_ID, 497_267_010);
         assertEq(usdc.balanceOf(address(account)), 2_500e6 + 497_267_010);
+    }
+
+    function testLiquidatedPackageClosesOnlyWhenThePerpLegIsFlatAndFreesTheSpotLeg() public {
+        (bytes32 entryReceiptHash,,) = _openPackage();
+
+        vm.startPrank(owner);
+        vm.expectRevert(NaryxStrategyAccount.OpenPackageExists.selector);
+        account.withdrawIdleToken(IERC20(address(weth)), owner, QUANTITY);
+        vm.expectRevert(PackageVerifier.PerpPositionStillOpen.selector);
+        account.closeLiquidatedPackage();
+        vm.stopPrank();
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(NaryxStrategyAccount.UnauthorizedOwner.selector, stranger));
+        account.closeLiquidatedPackage();
+
+        oracle.setPrice(2_350e8);
+        vm.prank(keeper);
+        market.liquidate(address(account));
+        assertEq(market.getPosition(address(market), EXPIRY, address(account)).size, 0);
+
+        vm.prank(owner);
+        bytes32 closureHash = account.closeLiquidatedPackage();
+        assertTrue(closureHash != bytes32(0));
+        assertEq(verifier.liquidationClosureOf(entryReceiptHash), closureHash);
+        assertFalse(verifier.hasOpenPackage(address(account)));
+        assertEq(verifier.nextNonce(address(account)), 2);
+        assertEq(weth.balanceOf(address(account)), QUANTITY);
+
+        vm.startPrank(owner);
+        vm.expectRevert(PackageVerifier.NoOpenPackage.selector);
+        account.closeLiquidatedPackage();
+        account.withdrawIdleToken(IERC20(address(weth)), owner, QUANTITY);
+        vm.stopPrank();
+        assertEq(weth.balanceOf(owner), QUANTITY);
+        assertEq(weth.balanceOf(address(account)), 0);
+    }
+
+    function _openPackage() private returns (bytes32 entryReceiptHash, uint256 entryNotional, uint256 margin) {
+        vm.prank(owner);
+        account.depositPerpMargin(PERP_VENUE_ID, 400e6);
+
+        (, entryNotional,, margin) = market.previewOpen(-int128(int256(QUANTITY)), 400e18);
+        PackageVerifier.Execution memory entry = _execution(verifier.ENTRY(), 0);
+        entry.spotQuoteBoundAtoms = 2_000e6;
+        entry.expectedPostPerpSizeWad = -int128(int256(QUANTITY));
+        entry.minimumPostPerpBalanceWad = int128(int256(margin));
+        entry.maximumPostPerpBalanceWad = int128(int256(margin));
+        entry.maximumPostPerpEntryNotionalWad = uint128(entryNotional);
+        entryReceiptHash = _executePackage(entry, _args(-int128(int256(QUANTITY)), 400e18));
     }
 
     function _executePackage(PackageVerifier.Execution memory execution, bytes32[2] memory perpArgs)

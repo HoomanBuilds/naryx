@@ -2213,6 +2213,19 @@
   },
   {
     "type": "function",
+    "name": "closeLiquidatedPackage",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "closureHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "config",
     "inputs": [],
     "outputs": [
@@ -2976,6 +2989,25 @@
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "liquidationClosureOf",
+    "inputs": [
+      {
+        "name": "entryReceiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "closureHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -4871,6 +4903,43 @@
   },
   {
     "type": "event",
+    "name": "PackageLiquidationClosed",
+    "inputs": [
+      {
+        "name": "closureHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "strategyAccount",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "entryReceiptHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "postPerpBalanceWad",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "nonce",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PackageVerified",
     "inputs": [
       {
@@ -5035,6 +5104,16 @@
   {
     "type": "error",
     "name": "InvalidTraderSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoOpenPackage",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PerpPositionStillOpen",
     "inputs": []
   },
   {

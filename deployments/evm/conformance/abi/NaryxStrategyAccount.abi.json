@@ -70,6 +70,19 @@
   },
   {
     "type": "function",
+    "name": "closeLiquidatedPackage",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "closureHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "delegationEpoch",
     "inputs": [],
     "outputs": [
