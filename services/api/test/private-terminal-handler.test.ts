@@ -61,7 +61,8 @@ test("private terminal validates previews and injected Devnet preparation", asyn
       },
     });
 
-    const accepted = await fetch(endpoint, {
+    // Without a live market source a domain answers unavailable rather than fixture numbers.
+    const unavailablePreview = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", Origin: origin },
       body: JSON.stringify({
@@ -72,20 +73,16 @@ test("private terminal validates previews and injected Devnet preparation", asyn
         quoteMode: "coordinated_limits",
       }),
     });
-    assert.equal(accepted.status, 200);
-    assert.equal(accepted.headers.get("access-control-allow-origin"), origin);
-    const preview = await accepted.json() as {
-      source: string;
-      executionAvailable: boolean;
-      size: { baseAtoms: string };
-      bound: { quoteAtoms: string };
-      legs: unknown[];
-    };
-    assert.equal(preview.source, "PRIVATE_TERMINAL_BFF");
-    assert.equal(preview.executionAvailable, false);
-    assert.equal(preview.size.baseAtoms, "100000001");
-    assert.match(preview.bound.quoteAtoms, /^\d+$/);
-    assert.equal(preview.legs.length, 2);
+    assert.equal(unavailablePreview.status, 503);
+    assert.equal(unavailablePreview.headers.get("access-control-allow-origin"), origin);
+    assert.equal((await unavailablePreview.json() as { error: { code: string } }).error.code,
+      "DOMAIN_MARKET_UNAVAILABLE");
+    const unavailableSnapshot = await fetch(`${serverUrl}/internal/terminal/snapshot?domain=solana`, {
+      headers: { Origin: origin },
+    });
+    assert.equal(unavailableSnapshot.status, 503);
+    assert.equal((await unavailableSnapshot.json() as { error: { code: string } }).error.code,
+      "DOMAIN_MARKET_UNAVAILABLE");
 
     const rejected = await fetch(endpoint, {
       method: "POST",

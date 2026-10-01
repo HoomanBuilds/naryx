@@ -76,6 +76,12 @@ export type WorkspaceModel = {
   emptyDetail: string;
 };
 
+/**
+ * FIXTURE_UNATTESTED is only the local fixture provider. OBSERVED_UNATTESTED is server-calculated
+ * from live, unsigned book observations. UNAVAILABLE marks a domain whose service market answered 503.
+ */
+export type TerminalEvidenceGrade = "FIXTURE_UNATTESTED" | "OBSERVED_UNATTESTED" | "UNAVAILABLE";
+
 export type TerminalViewModel = {
   environment: {
     label: string;
@@ -83,7 +89,7 @@ export type TerminalViewModel = {
     detail: string;
     capturedAt: string;
     source: "LOCAL_CONFORMANCE" | "PRIVATE_TERMINAL_BFF";
-    evidenceGrade: "FIXTURE_UNATTESTED";
+    evidenceGrade: TerminalEvidenceGrade;
     executionEnabled: boolean;
   };
   domains: TerminalDomain[];
@@ -157,23 +163,23 @@ export type SolanaExecutionPreparation = {
 
 export type TerminalPreview = {
   source: "LOCAL_CONFORMANCE" | "PRIVATE_TERMINAL_BFF";
-  environment: "LOCAL_CONFORMANCE";
+  environment: "LOCAL_CONFORMANCE" | "TESTNET" | "DEVNET";
   capturedAt: string;
-  evidenceGrade: "FIXTURE_UNATTESTED";
-  executionAvailable: false;
+  evidenceGrade: Exclude<TerminalEvidenceGrade, "UNAVAILABLE">;
+  executionAvailable: boolean;
   domain: DomainId;
   mode: PackageMode;
   quoteMode: QuoteMode;
   size: {
     baseAtoms: string;
     value: string;
-    symbol: "SOL";
+    symbol: string;
   };
   bound: {
     label: string;
     quoteAtoms: string;
     value: string;
-    symbol: "USDC";
+    symbol: string;
   };
   fees: Array<{
     label: string;
@@ -183,7 +189,7 @@ export type TerminalPreview = {
   totalFee: {
     amountAtoms: string;
     value: string;
-    symbol: "USDC";
+    symbol: string;
   };
   legs: PackageLeg[];
   action: {

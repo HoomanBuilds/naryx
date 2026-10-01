@@ -30,23 +30,23 @@ export type PreviewLeg = {
 
 export type PreviewResponse = {
   source: "PRIVATE_TERMINAL_BFF";
-  environment: "LOCAL_CONFORMANCE";
+  environment: "TESTNET" | "DEVNET";
   capturedAt: string;
-  evidenceGrade: "FIXTURE_UNATTESTED";
-  executionAvailable: false;
+  evidenceGrade: "OBSERVED_UNATTESTED";
+  executionAvailable: boolean;
   domain: DomainId;
   mode: PackageMode;
   quoteMode: QuoteMode;
   size: {
     baseAtoms: string;
     value: string;
-    symbol: "SOL";
+    symbol: string;
   };
   bound: {
     label: string;
     quoteAtoms: string;
     value: string;
-    symbol: "USDC";
+    symbol: string;
   };
   fees: Array<{
     label: string;
@@ -56,7 +56,7 @@ export type PreviewResponse = {
   totalFee: {
     amountAtoms: string;
     value: string;
-    symbol: "USDC";
+    symbol: string;
   };
   legs: PreviewLeg[];
   action: {

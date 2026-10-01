@@ -48,9 +48,16 @@ import {
   serializeLifecycleResponse,
 } from "./package-lifecycle-read.js";
 import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
-import { createTerminalPreview, parsePreviewRequest, PreviewValidationError } from "./terminal-preview.js";
+import {
+  createTerminalPreview,
+  parsePreviewRequest,
+  PreviewValidationError,
+  TerminalMarketUnavailableError,
+  type TerminalMarketContext,
+} from "./terminal-preview.js";
 import { createTerminalSnapshot } from "./terminal-snapshot.js";
-import { isDomainId } from "./terminal-types.js";
+import type { TerminalMarketSources } from "./private-terminal-manifest.js";
+import { isDomainId, type DomainId } from "./terminal-types.js";
 import {
   parseSolverAtomicQuoteRequest,
   SolverQuoteClientError,
@@ -234,6 +241,8 @@ export function createPrivateTerminalRequestHandler(
   hyperliquidTestnetContext?: HyperliquidTestnetTerminalContext,
   executionReadinessGate?: ExecutionReadinessGate<ExecutionReadinessScopeIdentity>,
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
+  terminalMarkets: TerminalMarketSources = {},
+  currentTimeMs: () => number = Date.now,
 ) {
   async function requireExecutionReadiness(
     handoff: ExecutionHandoff,
@@ -257,6 +266,25 @@ export function createPrivateTerminalRequestHandler(
   }
 
   const executionReadinessAvailable = executionReadinessGate !== undefined && executionReadinessScopes !== undefined;
+
+  // A domain reports execution only when its composed runtime and the readiness gate are both up.
+  function terminalExecutionAvailable(domain: DomainId): boolean {
+    if (!executionReadinessAvailable || runtimeHealth === undefined) return false;
+    switch (domain) {
+      case "solana":
+        return executionPorts.preparation !== undefined && runtimeHealth.solanaDevnet.available;
+      case "base":
+        return evmTestnetPorts.preparation !== undefined && runtimeHealth.baseTestnetAtomic.available;
+      case "arbitrum":
+        return evmTestnetPorts.asyncObservation !== undefined && runtimeHealth.arbitrumTestnetAsync.available;
+      case "hyperliquid":
+        return hyperliquidTestnetExecutionPort !== undefined && runtimeHealth.hyperliquidTestnet.available;
+    }
+  }
+
+  function terminalMarketContext(): TerminalMarketContext {
+    return { sources: terminalMarkets, nowMs: currentTimeMs(), executionAvailable: terminalExecutionAvailable };
+  }
 
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
@@ -479,7 +507,15 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 400, "INVALID_DOMAIN", "Exactly one supported domain is required.");
         return;
       }
-      sendJson(response, 200, createTerminalSnapshot(domains[0]));
+      try {
+        sendJson(response, 200, createTerminalSnapshot(domains[0], terminalMarketContext()));
+      } catch (error) {
+        if (error instanceof TerminalMarketUnavailableError) {
+          reject(response, 503, error.code, error.message);
+          return;
+        }
+        reject(response, 500, "INTERNAL_ERROR", "Snapshot calculation failed.");
+      }
       return;
     }
 
@@ -491,8 +527,12 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const previewRequest = parsePreviewRequest(await readJson(request));
-        sendJson(response, 200, createTerminalPreview(previewRequest));
+        sendJson(response, 200, createTerminalPreview(previewRequest, terminalMarketContext()));
       } catch (error) {
+        if (error instanceof TerminalMarketUnavailableError) {
+          reject(response, 503, error.code, error.message);
+          return;
+        }
         if (error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
           return;
@@ -1075,6 +1115,7 @@ export function createPrivateTerminalServer(
   executionReadinessGate?: ExecutionReadinessGate<ExecutionReadinessScopeIdentity>,
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
+  terminalMarkets: TerminalMarketSources = {},
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1093,6 +1134,7 @@ export function createPrivateTerminalServer(
     hyperliquidTestnetContext,
     executionReadinessGate,
     executionReadinessScopes,
+    terminalMarkets,
   );
   return createServer((request, response) => {
     // Public read-only routes answer before the private terminal's origin policy; every other

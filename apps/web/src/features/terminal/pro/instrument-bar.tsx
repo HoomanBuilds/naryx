@@ -39,9 +39,14 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
   const { unit, precision } = feed.seriesMeta("basis");
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const metrics = snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
-  // Reference metrics carry the snapshot's evidence grade; unattested values say so on screen,
-  // and a modeled return is never emphasized as if it were a promised yield.
-  const unattested = snapshot.environment.evidenceGrade === "FIXTURE_UNATTESTED";
+  // Reference metrics carry the snapshot's evidence grade on screen, and a modeled return is never
+  // emphasized as if it were a promised yield.
+  const grade = snapshot.environment.evidenceGrade;
+  const reference = grade === "FIXTURE_UNATTESTED"
+    ? { tag: "FIXTURE", className: styles.labelFixture, title: "These reference values are unattested fixtures, not market data." }
+    : grade === "OBSERVED_UNATTESTED"
+      ? { tag: "LIVE", className: styles.labelObserved, title: `Observed book prices captured ${snapshot.environment.capturedAt}. Unsigned and unattested.` }
+      : { tag: "UNAVAILABLE", className: styles.labelFixture, title: "No fresh live market is available for this domain." };
 
   return (
     <section className={styles.instrumentBar} aria-label="Instrument">
@@ -79,12 +84,10 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
           <dt>24h volume</dt>
           <dd>{stats === null ? "-" : Math.round(stats.volume).toLocaleString("en-US")}</dd>
         </div>
-        {unattested ? (
-          <div className={styles.metricSource} title="These reference values are unattested fixtures, not market data.">
-            <dt>Reference</dt>
-            <dd><span className={styles.labelFixture}>FIXTURE</span></dd>
-          </div>
-        ) : null}
+        <div className={styles.metricSource} title={reference.title}>
+          <dt>Reference</dt>
+          <dd><span className={reference.className}>{reference.tag}</span></dd>
+        </div>
         {metrics.map((entry) => (
           <div key={entry.label} title={entry.detail === undefined ? entry.label : `${entry.label}. ${entry.detail}`}>
             <dt>{SHORT_LABELS[entry.label] ?? entry.label}</dt>

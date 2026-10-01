@@ -53,6 +53,10 @@ import {
 import { createHyperliquidTestnetOrderRuntime } from "./hyperliquid-testnet-order-context.js";
 import { HyperliquidTestnetPriceFeed } from "./hyperliquid-testnet-price-feed.js";
 import {
+  createHyperliquidTestnetMarketSource,
+  type TerminalMarketSources,
+} from "./private-terminal-manifest.js";
+import {
   DurableHyperliquidTestnetTerminalExecutionPort,
   HttpHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
@@ -226,10 +230,12 @@ if (hyperliquidRuntimeEnabled) {
 }
 let hyperliquidOrderRuntime: ReturnType<typeof createHyperliquidTestnetOrderRuntime> | undefined;
 let hyperliquidPriceFeed: HyperliquidTestnetPriceFeed | undefined;
+let terminalMarkets: TerminalMarketSources = {};
 if (hyperliquidConfig !== undefined) {
   try {
     const priceFeed = new HyperliquidTestnetPriceFeed(hyperliquidConfig);
     hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed);
+    terminalMarkets = { hyperliquid: createHyperliquidTestnetMarketSource(hyperliquidConfig, priceFeed) };
     hyperliquidPriceFeed = priceFeed;
     // Not awaited: until a valid snapshot arrives the order context reports itself unknown.
     void priceFeed.start();
@@ -378,6 +384,7 @@ const server = createPrivateTerminalServer(
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(publicMarket?.internalHandler, publicMarket?.listener === undefined ? publicMarket?.handler : undefined),
+  terminalMarkets,
 );
 
 const publicServer = publicMarket?.listener === undefined

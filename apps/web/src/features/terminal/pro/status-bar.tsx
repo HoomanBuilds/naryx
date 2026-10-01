@@ -66,6 +66,8 @@ export function StatusBar({
       <span className={styles.statusDanger}>Mainnet writes prohibited</span>
       {snapshot.environment.source === "LOCAL_CONFORMANCE" ? (
         <span className={styles.statusItem} title="Fixture capture time">Fixture {snapshot.environment.capturedAt}</span>
+      ) : snapshot.environment.evidenceGrade === "OBSERVED_UNATTESTED" ? (
+        <span className={styles.statusItem} title="Live observation capture time">Observed {snapshot.environment.capturedAt}</span>
       ) : null}
       <UtcClock />
     </footer>

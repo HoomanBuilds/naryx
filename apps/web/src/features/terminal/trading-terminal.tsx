@@ -9,6 +9,7 @@ import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
+import { TerminalMarketUnavailableError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
   HyperliquidOrderCreateResponse,
   HyperliquidSelectedAttempt,
@@ -866,7 +867,11 @@ function Ticket({
             <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
           ))}
         </dl>
-        <p className={styles.summaryNote}>USDC conformance estimate. Balances are on the Portfolio page.</p>
+        <p className={styles.summaryNote}>
+          {preview?.evidenceGrade === "OBSERVED_UNATTESTED"
+            ? `${preview.bound.symbol} estimate from observed books, captured ${preview.capturedAt}.`
+            : preview ? "USDC conformance estimate." : "No live estimate is available."} Balances are on the Portfolio page.
+        </p>
       </details>
 
       {selectedDomain === "hyperliquid" ? (
@@ -1196,14 +1201,16 @@ export function TradingTerminal({
           setSnapshotDomain(selectedDomain);
           setProviderConnection("connected");
         }
-      } catch {
+      } catch (cause) {
         if (controller.signal.aborted) {
           return;
         }
-        // A configured service that fails is shown as offline; fixture data is never swapped in.
+        // A configured service that fails shows the domain's market as unavailable; neither fixture
+        // data nor another domain's numbers are kept. A 503 market answer keeps the service connected.
         if (active) {
+          setSnapshot((previous) => unavailableTerminalSnapshot(previous, selectedDomain));
           setSnapshotDomain(selectedDomain);
-          setProviderConnection("disconnected");
+          setProviderConnection(cause instanceof TerminalMarketUnavailableError ? "connected" : "disconnected");
         }
       }
     }
@@ -1274,13 +1281,15 @@ export function TradingTerminal({
             setProviderConnection("connected");
           }
         }
-      } catch {
+      } catch (cause) {
         if (controller.signal.aborted) {
           return;
         }
         if (active) {
           setPreview(null);
-          if (privateProvider) setProviderConnection("disconnected");
+          if (privateProvider && !(cause instanceof TerminalMarketUnavailableError)) {
+            setProviderConnection("disconnected");
+          }
         }
       }
     }, 200);

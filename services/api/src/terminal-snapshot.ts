@@ -1,100 +1,131 @@
+import { formatDecimalAtoms } from "./decimal.js";
 import {
-  PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 as manifest,
-  TERMINAL_CAPTURED_AT,
-} from "./private-terminal-manifest.js";
-import { createTerminalPreview } from "./terminal-preview.js";
-import type { DomainId, PackageMode } from "./terminal-types.js";
+  formatExact,
+  midpoint,
+  observedMarket,
+  previewFromMarket,
+  quotePrice,
+  resolveTerminalMarket,
+  type ObservedDecimal,
+  type TerminalMarketContext,
+} from "./terminal-preview.js";
+import type { TerminalMarketDescriptor } from "./private-terminal-manifest.js";
+import { SLIPPAGE_CHOICES, type DomainId, type PackageMode, type SlippageBps } from "./terminal-types.js";
 
 const DOMAINS = [
-  { id: "solana", label: "Solana", runtime: "SVM", state: "Fixture" },
-  { id: "base", label: "Base", runtime: "EVM", state: "Fixture" },
-  { id: "arbitrum", label: "Arbitrum", runtime: "EVM", state: "Fixture" },
-  { id: "hyperliquid", label: "Hyperliquid", runtime: "HyperCore", state: "Fixture" },
+  { id: "solana", label: "Solana", runtime: "SVM" },
+  { id: "base", label: "Base", runtime: "EVM" },
+  { id: "arbitrum", label: "Arbitrum", runtime: "EVM" },
+  { id: "hyperliquid", label: "Hyperliquid", runtime: "HyperCore" },
 ] as const;
 
-function plan(mode: PackageMode) {
-  const preview = createTerminalPreview({
-    domain: "solana",
-    mode,
-    size: "100",
-    slippageBps: 10,
-    quoteMode: "coordinated_limits",
-  });
-  return {
+/**
+ * Basis of the perpetual mid over the spot mid in basis points, truncated toward zero to 0.01 bps
+ * and signed, for example "+56.00 bps".
+ */
+export function formatBasisBps(spotMid: ObservedDecimal, perpMid: ObservedDecimal): string {
+  const scale = Math.max(spotMid.scale, perpMid.scale);
+  const spot = spotMid.digits * 10n ** BigInt(scale - spotMid.scale);
+  const perp = perpMid.digits * 10n ** BigInt(scale - perpMid.scale);
+  const hundredths = (perp - spot) * 1_000_000n / spot;
+  const magnitude = hundredths < 0n ? -hundredths : hundredths;
+  return `${hundredths < 0n ? "-" : "+"}${formatDecimalAtoms(magnitude, 2)} bps`;
+}
+
+function rateBps(rate: ObservedDecimal): string {
+  return formatExact(rate.scale >= 4
+    ? { digits: rate.digits, scale: rate.scale - 4 }
+    : { digits: rate.digits * 10n ** BigInt(4 - rate.scale), scale: 0 }, 0);
+}
+
+function defaultSlippage(descriptor: TerminalMarketDescriptor): SlippageBps {
+  if (descriptor.maxSlippageBps >= 10) return 10;
+  return SLIPPAGE_CHOICES[0];
+}
+
+export function createTerminalSnapshot(selectedDomain: DomainId, context: TerminalMarketContext) {
+  const { descriptor, market } = resolveTerminalMarket(selectedDomain, context, "SNAPSHOT_UNAVAILABLE");
+  const executionEnabled = context.executionAvailable(selectedDomain);
+  const capturedAt = new Date(market.capturedAtMs).toISOString();
+  const spotMid = midpoint(market.spotBid, market.spotAsk);
+  const perpMid = midpoint(market.perpBid, market.perpAsk);
+  const basis = formatBasisBps(spotMid, perpMid);
+  const unitAtoms = 10n ** BigInt(descriptor.baseDecimals);
+  const defaultSizeAtoms = unitAtoms < descriptor.maximumSizeAtoms ? unitAtoms : descriptor.maximumSizeAtoms;
+  const defaultSize = formatDecimalAtoms(defaultSizeAtoms, descriptor.baseDecimals);
+  const slippageBps = defaultSlippage(descriptor);
+  const plan = (mode: PackageMode) => ({
     mode,
     label: mode === "entry" ? "Entry sequence" : "Exit sequence",
     description: mode === "entry"
       ? "The hedge leg remains blocked until the spot receipt is accepted."
       : "The spot sale remains blocked until the perpetual close is accepted.",
-    legs: preview.legs,
-  };
-}
+    legs: previewFromMarket(
+      { domain: selectedDomain, mode, size: defaultSize, slippageBps, quoteMode: "coordinated_limits" },
+      descriptor,
+      market,
+      executionEnabled,
+    ).legs,
+  });
 
-export function createTerminalSnapshot(selectedDomain: DomainId) {
   return {
     environment: {
-      label: "LOCAL_CONFORMANCE",
-      title: "Private preview service",
-      detail: "Server-calculated fixture preview with no signer or executable route.",
-      capturedAt: TERMINAL_CAPTURED_AT,
+      label: descriptor.environment,
+      title: "Private terminal service",
+      detail: "Server-calculated from observed books. Unsigned and unattested.",
+      capturedAt,
       source: "PRIVATE_TERMINAL_BFF",
-      evidenceGrade: "FIXTURE_UNATTESTED",
-      executionEnabled: false,
+      evidenceGrade: "OBSERVED_UNATTESTED",
+      executionEnabled,
     },
     selectedDomain,
-    domains: DOMAINS,
+    domains: DOMAINS.map((domain) => {
+      const source = context.sources[domain.id];
+      const live = source !== undefined &&
+        observedMarket(source.descriptor, source.latest(), context.nowMs) !== undefined;
+      return { ...domain, state: live ? "Live" : "Unavailable" };
+    }),
     market: {
-      base: manifest.baseSymbol,
-      quote: manifest.quoteSymbol,
-      packageId: manifest.packageId,
+      base: descriptor.baseSymbol,
+      quote: descriptor.quoteSymbol,
+      packageId: descriptor.packageId,
       strategy: "Cash and carry",
       subtitle: "Spot long plus delta-neutral perpetual short",
       metrics: [
-        { label: "Spot reference", value: "$148.240", detail: "Fixture" },
-        { label: "Perp reference", value: "$149.070", detail: "Fixture" },
-        { label: "Basis", value: "+56.0 bps", accent: true },
+        { label: "Spot reference", value: quotePrice(descriptor, spotMid), detail: "Observed spot mid" },
+        { label: "Perp reference", value: quotePrice(descriptor, perpMid), detail: "Observed perpetual mid" },
+        { label: "Basis", value: basis, accent: true },
         {
-          label: "Expected net annualized yield",
-          value: "7.18%",
-          detail: "Fixture model",
-          accent: true,
+          label: "Taker fees",
+          value: `${rateBps(market.spotTakerRate)} / ${rateBps(market.perpTakerRate)} bps`,
+          detail: "Spot / perpetual, observed",
         },
-        { label: "Funding annualized", value: "8.36%", detail: "Fixture" },
-        { label: "Liquidity at size", value: "$250,000", detail: "100 SOL" },
-        { label: "Settlement class", value: "Coordinated", detail: "Isolated accounts" },
+        { label: "Settlement class", value: descriptor.settlement.label, detail: descriptor.settlement.detail },
       ],
     },
     chart: {
       title: "Package basis",
-      subtitle: "Deterministic one-hour reference window",
-      points: [
-        { label: "01:00", spot: 147.84, perp: 148.55, basisBps: 48.0 },
-        { label: "02:00", spot: 147.93, perp: 148.68, basisBps: 50.7 },
-        { label: "03:00", spot: 147.88, perp: 148.61, basisBps: 49.4 },
-        { label: "04:00", spot: 148.02, perp: 148.81, basisBps: 53.4 },
-        { label: "05:00", spot: 148.11, perp: 148.92, basisBps: 54.7 },
-        { label: "06:00", spot: 148.04, perp: 148.87, basisBps: 56.1 },
-        { label: "07:00", spot: 148.18, perp: 149.03, basisBps: 57.4 },
-        { label: "08:00", spot: 148.29, perp: 149.13, basisBps: 56.6 },
-        { label: "09:00", spot: 148.16, perp: 148.96, basisBps: 54.0 },
-        { label: "10:00", spot: 148.22, perp: 149.05, basisBps: 56.0 },
-        { label: "11:00", spot: 148.31, perp: 149.16, basisBps: 57.3 },
-        { label: "12:00", spot: 148.24, perp: 149.07, basisBps: 56.0 },
-      ],
+      subtitle: "Latest observed books",
+      points: [{
+        label: capturedAt.slice(11, 16),
+        spot: Number(formatExact(spotMid)),
+        perp: Number(formatExact(perpMid)),
+        basisBps: Number(basis.slice(0, -4)),
+      }],
     },
     plans: [plan("entry"), plan("exit")],
     ticket: {
-      defaultSize: "100",
-      sizeSymbol: "SOL",
-      defaultSlippageBps: 10,
+      defaultSize,
+      sizeSymbol: descriptor.baseSymbol,
+      defaultSlippageBps: slippageBps,
       quoteModes: [
         { id: "coordinated_limits", label: "Coordinated limits" },
         { id: "indicative_preview", label: "Indicative preview" },
       ],
       evidence: [
-        { label: "Manifest", value: `Private fixture manifest v${manifest.version}` },
-        { label: "Quote binding", value: "Server-calculated, unattested" },
-        { label: "Route status", value: "Preview only" },
+        { label: "Market source", value: `${descriptor.spot.venue}, ${descriptor.perp.venue}` },
+        { label: "Quote binding", value: "Server-calculated from observed books, unattested" },
+        { label: "Route status", value: executionEnabled ? "Execution gate available" : "Preview only" },
       ],
     },
     workspaces: [
@@ -108,7 +139,7 @@ export function createTerminalSnapshot(selectedDomain: DomainId) {
           { label: "PnL", numeric: true }, { label: "State" },
         ],
         emptyTitle: "No wallet positions",
-        emptyDetail: "The private preview service does not load wallet positions.",
+        emptyDetail: "The terminal snapshot does not load wallet positions.",
       },
       {
         tab: "orders",
@@ -120,7 +151,7 @@ export function createTerminalSnapshot(selectedDomain: DomainId) {
           { label: "State" },
         ],
         emptyTitle: "No open orders",
-        emptyDetail: "Execution is disabled for the private preview service.",
+        emptyDetail: "The terminal snapshot does not load open orders.",
       },
       {
         tab: "history",
@@ -131,7 +162,7 @@ export function createTerminalSnapshot(selectedDomain: DomainId) {
           { label: "State" },
         ],
         emptyTitle: "No execution history",
-        emptyDetail: "This deterministic snapshot contains no submitted packages.",
+        emptyDetail: "The terminal snapshot does not load submitted packages.",
       },
       {
         tab: "receipts",
@@ -141,7 +172,7 @@ export function createTerminalSnapshot(selectedDomain: DomainId) {
           { label: "Block", numeric: true }, { label: "Finality" }, { label: "Evidence" },
         ],
         emptyTitle: "No network receipts",
-        emptyDetail: "The preview service does not submit or collect execution receipts.",
+        emptyDetail: "Execution receipts appear in the package lifecycle, not the snapshot.",
       },
     ],
   };

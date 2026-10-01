@@ -1498,26 +1498,196 @@ function requirePreparation(
   });
 }
 
-function requireSnapshot(value: unknown): TerminalViewModel {
+const TERMINAL_DOMAINS: ReadonlySet<string> = new Set(["solana", "base", "arbitrum", "hyperliquid"]);
+const TERMINAL_SYMBOL_PATTERN = /^[A-Z0-9]{1,12}$/;
+const TERMINAL_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)\.[0-9]+$/;
+const TERMINAL_ATOMS_PATTERN = /^(0|[1-9][0-9]*)$/;
+const TERMINAL_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const TERMINAL_PRICE_PATTERN = /^\$(0|[1-9][0-9]*)\.[0-9]+$/;
+const TERMINAL_BASIS_PATTERN = /^[+-](0|[1-9][0-9]*)\.[0-9]{2} bps$/;
+const TERMINAL_MARKET_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
+  "DOMAIN_MARKET_UNAVAILABLE",
+  "SNAPSHOT_UNAVAILABLE",
+  "PREVIEW_UNAVAILABLE",
+]);
+
+/** The service is reachable but has no fresh live market for the requested domain. */
+export class TerminalMarketUnavailableError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("Live market data is unavailable for this domain.");
+    this.name = "TerminalMarketUnavailableError";
+    this.code = code;
+  }
+}
+
+async function terminalReadFailure(response: Response, name: string): Promise<Error> {
+  if (response.status === 503) {
+    try {
+      const payload = await response.json() as unknown;
+      const code = isRecord(payload) && isRecord(payload.error) ? payload.error.code : undefined;
+      if (typeof code === "string" && TERMINAL_MARKET_UNAVAILABLE_CODES.has(code)) {
+        return new TerminalMarketUnavailableError(code);
+      }
+    } catch {
+      // An unreadable 503 body is reported as a plain failure below.
+    }
+  }
+  return new Error(`Private terminal ${name} failed with ${response.status}.`);
+}
+
+/** Replaces every market number with an unavailable state; nothing from another domain is shown. */
+export function unavailableTerminalSnapshot(
+  previous: TerminalViewModel,
+  domain: DomainId,
+): TerminalViewModel {
+  return {
+    ...previous,
+    environment: {
+      label: "UNAVAILABLE",
+      title: "Market data unavailable",
+      detail: "The service has no fresh live market for this domain.",
+      capturedAt: "",
+      source: "PRIVATE_TERMINAL_BFF",
+      evidenceGrade: "UNAVAILABLE",
+      executionEnabled: false,
+    },
+    selectedDomain: domain,
+    domains: previous.domains.map((entry) => entry.id === domain ? { ...entry, state: "Unavailable" } : entry),
+    market: {
+      ...previous.market,
+      packageId: "Market unavailable",
+      metrics: [{ label: "Market data", value: "Unavailable", detail: "No fresh live observation" }],
+    },
+    chart: { ...previous.chart, points: [] },
+    plans: previous.plans.map((plan) => ({ ...plan, legs: [] })),
+  };
+}
+
+function requireTerminalText(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.length > 160) throw new Error(`${name} is invalid.`);
+  return value;
+}
+
+function requireTerminalAtoms(atoms: unknown, value: unknown, name: string): void {
+  if (typeof atoms !== "string" || !TERMINAL_ATOMS_PATTERN.test(atoms) ||
+      typeof value !== "string" || !TERMINAL_DECIMAL_PATTERN.test(value) ||
+      BigInt(value.replace(".", "")) !== BigInt(atoms)) {
+    throw new Error(`${name} is invalid.`);
+  }
+}
+
+function requireTerminalLegs(value: unknown): void {
+  if (!Array.isArray(value) || value.length > 8) throw new Error("Preview legs are invalid.");
+  value.forEach((leg, index) => {
+    if (!isRecord(leg) || leg.sequence !== index + 1) throw new Error("Preview leg is invalid.");
+    for (const key of ["action", "instrument", "venue", "quantity", "limitLabel", "limit", "state", "dependency"]) {
+      requireString(leg[key], `Preview leg ${key}`);
+    }
+  });
+}
+
+function requireObservedEnvironment(label: unknown, grade: unknown, capturedAt: unknown): void {
+  if ((label !== "TESTNET" && label !== "DEVNET") || grade !== "OBSERVED_UNATTESTED" ||
+      typeof capturedAt !== "string" || !TERMINAL_ISO_PATTERN.test(capturedAt) ||
+      !Number.isFinite(Date.parse(capturedAt))) {
+    throw new Error("Private terminal evidence is invalid.");
+  }
+}
+
+function requireSnapshot(value: unknown, domain: DomainId): TerminalViewModel {
   if (!isRecord(value) || !isRecord(value.environment) ||
       value.environment.source !== "PRIVATE_TERMINAL_BFF" ||
-      value.environment.executionEnabled !== false ||
+      typeof value.environment.executionEnabled !== "boolean" ||
+      value.selectedDomain !== domain ||
       !Array.isArray(value.domains) || !isRecord(value.market) ||
-      !isRecord(value.chart) || !Array.isArray(value.plans) ||
+      !isRecord(value.chart) || !Array.isArray(value.chart.points) || !Array.isArray(value.plans) ||
       !isRecord(value.ticket) || !Array.isArray(value.workspaces)) {
     throw new Error("Private terminal snapshot response is invalid.");
+  }
+  requireObservedEnvironment(value.environment.label, value.environment.evidenceGrade, value.environment.capturedAt);
+  requireTerminalText(value.environment.title, "Snapshot title");
+  requireTerminalText(value.environment.detail, "Snapshot detail");
+  for (const entry of value.domains) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || !TERMINAL_DOMAINS.has(entry.id)) {
+      throw new Error("Snapshot domain is invalid.");
+    }
+    requireString(entry.label, "Snapshot domain label");
+    requireString(entry.runtime, "Snapshot domain runtime");
+    requireString(entry.state, "Snapshot domain state");
+  }
+  const market = value.market;
+  if (typeof market.base !== "string" || !TERMINAL_SYMBOL_PATTERN.test(market.base) ||
+      typeof market.quote !== "string" || !TERMINAL_SYMBOL_PATTERN.test(market.quote) ||
+      !Array.isArray(market.metrics)) {
+    throw new Error("Snapshot market is invalid.");
+  }
+  requireString(market.packageId, "Snapshot package");
+  for (const metric of market.metrics) {
+    if (!isRecord(metric)) throw new Error("Snapshot metric is invalid.");
+    const label = requireString(metric.label, "Snapshot metric label");
+    const metricValue = requireString(metric.value, "Snapshot metric value");
+    if (((label === "Spot reference" || label === "Perp reference") && !TERMINAL_PRICE_PATTERN.test(metricValue)) ||
+        (label === "Basis" && !TERMINAL_BASIS_PATTERN.test(metricValue)) ||
+        (metric.detail !== undefined && typeof metric.detail !== "string") ||
+        (metric.accent !== undefined && typeof metric.accent !== "boolean")) {
+      throw new Error("Snapshot metric is invalid.");
+    }
+  }
+  for (const point of value.chart.points) {
+    if (!isRecord(point) || typeof point.label !== "string" ||
+        ![point.spot, point.perp, point.basisBps].every((entry) => typeof entry === "number" && Number.isFinite(entry))) {
+      throw new Error("Snapshot chart point is invalid.");
+    }
+  }
+  for (const plan of value.plans) {
+    if (!isRecord(plan) || (plan.mode !== "entry" && plan.mode !== "exit")) {
+      throw new Error("Snapshot plan is invalid.");
+    }
+    requireTerminalLegs(plan.legs);
+  }
+  const ticket = value.ticket;
+  if (typeof ticket.defaultSize !== "string" || !TERMINAL_DECIMAL_PATTERN.test(ticket.defaultSize) ||
+      typeof ticket.sizeSymbol !== "string" || !TERMINAL_SYMBOL_PATTERN.test(ticket.sizeSymbol) ||
+      ![5, 10, 25].includes(ticket.defaultSlippageBps as number) ||
+      !Array.isArray(ticket.quoteModes) || !Array.isArray(ticket.evidence)) {
+    throw new Error("Snapshot ticket is invalid.");
   }
   return value as TerminalViewModel;
 }
 
-function requirePreview(value: unknown): TerminalPreview {
+function requirePreview(value: unknown, input: TerminalPreviewInput): TerminalPreview {
   if (!isRecord(value) || value.source !== "PRIVATE_TERMINAL_BFF" ||
-      value.executionAvailable !== false || !isRecord(value.size) ||
-      !isRecord(value.bound) || !Array.isArray(value.fees) ||
-      !Array.isArray(value.legs) || !isRecord(value.totalFee) ||
-      !isRecord(value.action)) {
+      typeof value.executionAvailable !== "boolean" ||
+      value.domain !== input.domain || value.mode !== input.mode || value.quoteMode !== input.quoteMode ||
+      !isRecord(value.size) || !isRecord(value.bound) || !Array.isArray(value.fees) ||
+      !isRecord(value.totalFee) || !isRecord(value.action) || value.action.available !== false) {
     throw new Error("Private terminal preview response is invalid.");
   }
+  requireObservedEnvironment(value.environment, value.evidenceGrade, value.capturedAt);
+  requireTerminalAtoms(value.size.baseAtoms, value.size.value, "Preview size");
+  requireTerminalAtoms(value.bound.quoteAtoms, value.bound.value, "Preview bound");
+  requireTerminalAtoms(value.totalFee.amountAtoms, value.totalFee.value, "Preview total fee");
+  if (BigInt(value.size.baseAtoms as string) === BigInt(0) ||
+      typeof value.size.symbol !== "string" || !TERMINAL_SYMBOL_PATTERN.test(value.size.symbol) ||
+      typeof value.bound.symbol !== "string" || !TERMINAL_SYMBOL_PATTERN.test(value.bound.symbol) ||
+      value.totalFee.symbol !== value.bound.symbol) {
+    throw new Error("Private terminal preview amounts are invalid.");
+  }
+  requireString(value.bound.label, "Preview bound label");
+  let feeTotal = BigInt(0);
+  for (const fee of value.fees) {
+    if (!isRecord(fee)) throw new Error("Preview fee is invalid.");
+    requireString(fee.label, "Preview fee label");
+    requireTerminalAtoms(fee.amountAtoms, fee.value, "Preview fee");
+    feeTotal += BigInt(fee.amountAtoms as string);
+  }
+  if (feeTotal !== BigInt(value.totalFee.amountAtoms as string)) {
+    throw new Error("Preview fee total does not match its rows.");
+  }
+  requireTerminalLegs(value.legs);
+  requireString(value.action.reason, "Preview action reason");
   return value as TerminalPreview;
 }
 
@@ -2434,8 +2604,8 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         signal,
       },
     );
-    if (!response.ok) throw new Error(`Private terminal snapshot failed with ${response.status}.`);
-    return requireSnapshot(await response.json() as unknown);
+    if (!response.ok) throw await terminalReadFailure(response, "snapshot");
+    return requireSnapshot(await response.json() as unknown, domain);
   }
 
   async getPreview(
@@ -2451,8 +2621,8 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       body: JSON.stringify(input),
       signal,
     });
-    if (!response.ok) throw new Error(`Private terminal preview failed with ${response.status}.`);
-    return requirePreview(await response.json() as unknown);
+    if (!response.ok) throw await terminalReadFailure(response, "preview");
+    return requirePreview(await response.json() as unknown, input);
   }
 
   async getHyperliquidTestnetContext(signal?: AbortSignal): Promise<HyperliquidTestnetContext> {
