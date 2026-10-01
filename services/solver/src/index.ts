@@ -661,6 +661,7 @@ export {
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteRequestHandler,
   createInternalAtomicQuoteServer,
+  type InternalAtomicQuoteCandidateProvider,
   type InternalAtomicQuoteDependencies,
   type InternalAtomicQuoteOrderProvider,
   type InternalAtomicQuotePort,
@@ -710,6 +711,7 @@ export {
   type HyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntimeInput,
   type HyperliquidTestnetRecoveryIdentity,
+  type QuoteProviders,
 } from './hyperliquid-testnet-quote-runtime.js';
 export {
   HYPERLIQUID_TESTNET_QUOTE_ENABLED_ENV,
@@ -787,4 +789,6 @@ export {
   type HyperliquidTestnetMarketQualificationInput,
   type HyperliquidTestnetMarketReadPort,
   type HyperliquidTestnetMarketSnapshot,
+  type HyperliquidTestnetQuoteMarketReadPort,
+  type HyperliquidTestnetUserFeeRates,
 } from './hyperliquid-testnet-market-preflight.js';

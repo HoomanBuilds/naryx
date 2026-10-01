@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { Server } from 'node:http';
-import { LOCAL_ATOMIC_MARKET_CATALOG_V1 } from '@naryx/adapter-core';
+import { LOCAL_ATOMIC_MARKET_CATALOG_V1, localConformanceSlot } from '@naryx/adapter-core';
 import { SolanaConformanceAdapter } from '@naryx/adapter-solana';
 import { Connection } from '@solana/web3.js';
 import {
@@ -24,27 +24,9 @@ import {
   type LoadedHyperliquidTestnetExecutorRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
+import { explicitBoolean, loadSolverProcessConfig, tcpPort } from './solver-process-config.js';
 
 const ED25519_SPKI_PREFIX_BYTES = 12;
-
-function loopbackHost(value: string): string {
-  if (value === 'localhost' || value === '::1' || /^127(?:\.\d{1,3}){3}$/.test(value)) return value;
-  throw new Error('NARYX_SOLVER_HOST must be loopback');
-}
-
-function port(value: string | undefined, name = 'NARYX_SOLVER_PORT', fallback = 8_788): number {
-  if (value === undefined) return fallback;
-  if (!/^\d{1,5}$/.test(value)) throw new Error(`${name} must be a TCP port`);
-  const parsed = Number(value);
-  if (parsed < 1 || parsed > 65_535) throw new Error(`${name} must be a TCP port`);
-  return parsed;
-}
-
-function explicitBoolean(value: string | undefined, name: string): boolean {
-  if (value === undefined || value === 'false') return false;
-  if (value === 'true') return true;
-  throw new Error(`${name} must be true or false`);
-}
 
 function listen(server: Server, listenPort: number, host: string): Promise<void> {
   return new Promise((resolveListen, reject) => {
@@ -90,42 +72,27 @@ function loadSigner(path: string) {
   });
 }
 
-const host = loopbackHost(process.env.NARYX_SOLVER_HOST ?? '127.0.0.1');
-const listenPort = port(process.env.NARYX_SOLVER_PORT);
-const quoteDbPath = absolutePath(
-  process.env.NARYX_SOLVER_QUOTE_DB ?? '/tmp/naryx-local/solver-quotes.db',
-  'NARYX_SOLVER_QUOTE_DB',
-);
-const apiOrigin = process.env.NARYX_API_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8787';
-const signerPath = process.env.NARYX_SOLVER_ED25519_KEY_PATH;
-if (signerPath === undefined || signerPath.length === 0) {
-  throw new Error('NARYX_SOLVER_ED25519_KEY_PATH is required');
-}
-
-const environmentManifestPath = process.env.NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST;
-const executionSigner = loadSigner(signerPath);
-const store = new SqliteInternalAtomicQuoteStore(quoteDbPath);
-const manifestRuntime = environmentManifestPath === undefined
-  ? undefined
-  : await loadSolanaLocalEnvironmentRuntime(
-    absolutePath(environmentManifestPath, 'NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST'),
-    process.env.NARYX_SOLANA_LOCAL_SOLVER_ID ?? '',
-  );
+const config = loadSolverProcessConfig(process.env);
+const { host, port: listenPort, apiOrigin } = config;
+const executionSigner = loadSigner(config.signerPath);
+const store = new SqliteInternalAtomicQuoteStore(config.quoteDbPath);
+const manifestRuntime = config.localRuntime.kind === 'MANIFEST_VALIDATED'
+  ? await loadSolanaLocalEnvironmentRuntime(config.localRuntime.manifestPath, config.localRuntime.solverId)
+  : undefined;
 let validatorSlot = manifestRuntime?.initialSlot;
-const runtime = createLocalAtomicMarketRuntime(
-  manifestRuntime?.manifest.runtime.catalog ?? LOCAL_ATOMIC_MARKET_CATALOG_V1,
-  undefined,
-  manifestRuntime === undefined
-    ? undefined
-    : () => {
-      if (validatorSlot === undefined) throw new Error('validator clock is unavailable');
-      return validatorSlot;
-    },
-);
+const localNonceSource = new SqliteAtomicQuoteNonceSource(store, 'svm:local');
+const localRuntime = manifestRuntime !== undefined
+  ? createLocalAtomicMarketRuntime(manifestRuntime.manifest.runtime.catalog, localNonceSource, () => {
+    if (validatorSlot === undefined) throw new Error('validator clock is unavailable');
+    return validatorSlot;
+  })
+  : config.localRuntime.kind === 'LOCAL_FIXTURE'
+    ? createLocalAtomicMarketRuntime(LOCAL_ATOMIC_MARKET_CATALOG_V1, localNonceSource, localConformanceSlot)
+    : undefined;
 const hyperliquidQuoteRuntime = loadHyperliquidTestnetQuoteRuntime(process.env, {
   nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet'),
 });
-const quoteProviders = composeQuoteProviders(runtime.providers, hyperliquidQuoteRuntime?.providers);
+const quoteProviders = composeQuoteProviders(localRuntime?.providers, hyperliquidQuoteRuntime?.providers);
 const clockRefresh = manifestRuntime === undefined
   ? undefined
   : setInterval(() => {
@@ -140,12 +107,9 @@ const coordinator = createInternalAtomicQuoteCoordinator({
   signer: executionSigner,
   store,
 });
-const authorizationStore = manifestRuntime === undefined
-  ? undefined
-  : new SqliteSolanaExecutionAuthorizationStore(absolutePath(
-    process.env.NARYX_SOLVER_SOLANA_AUTHORIZATION_DB ?? '/tmp/naryx-local/solver-solana-authorizations.db',
-    'NARYX_SOLVER_SOLANA_AUTHORIZATION_DB',
-  ));
+const authorizationStore = config.localRuntime.kind === 'MANIFEST_VALIDATED'
+  ? new SqliteSolanaExecutionAuthorizationStore(config.localRuntime.authorizationDbPath)
+  : undefined;
 const authorization = manifestRuntime === undefined || authorizationStore === undefined
   ? undefined
   : new SolanaExecutionAuthorizationService({
@@ -171,7 +135,7 @@ let executorRuntime: LoadedHyperliquidTestnetExecutorRuntime | undefined;
 let executorServer: Server | undefined;
 let executorPort: number | undefined;
 if (executorEnabled) {
-  executorPort = port(
+  executorPort = tcpPort(
     process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT,
     'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT',
     8_792,
@@ -235,8 +199,13 @@ try {
   authorizationStore?.close();
   throw error;
 }
-const mode = manifestRuntime === undefined ? 'PHASE4_FIXTURE' : 'MANIFEST_VALIDATED';
-process.stdout.write(`Internal solver listening on http://${host}:${listenPort} runtime=${mode}\n`);
+const hyperliquidQuotes = hyperliquidQuoteRuntime === undefined ? 'DISABLED' : 'TESTNET_LIVE_BOOK';
+process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
+  + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes}\n`);
+if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
+  process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
+    + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);
+}
 if (executorServer !== undefined && executorPort !== undefined) {
   process.stdout.write(`Hyperliquid Testnet executor listening on http://${host}:${executorPort}\n`);
 }

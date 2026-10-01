@@ -3,7 +3,7 @@ import { packageOrderHash, toProtocolJson, validatePackageOrderProfile } from '@
 import type { Hash32, PackageOrder, ProtocolJsonValue } from '@naryx/protocol-types';
 import {
   planAtomicEntryRoute,
-  type AtomicRouteCandidateProvider,
+  type AtomicRouteCandidate,
   type AtomicRouteDecision,
 } from './atomic-route-decision.js';
 import {
@@ -43,6 +43,12 @@ export type InternalAtomicQuoteOrderProvider = (
   orderHash: Hash32,
 ) => PackageOrder | undefined | Promise<PackageOrder | undefined>;
 
+/** A candidate provider may read live venue state, so the coordinator awaits it before planning. */
+export type InternalAtomicQuoteCandidateProvider = (input: Readonly<{
+  order: PackageOrder;
+  orderHash: Hash32;
+}>) => readonly AtomicRouteCandidate[] | Promise<readonly AtomicRouteCandidate[]>;
+
 export type InternalAtomicQuoteTermsProvider = (input: Readonly<{
   order: PackageOrder;
   decision: AtomicRouteDecision;
@@ -50,7 +56,7 @@ export type InternalAtomicQuoteTermsProvider = (input: Readonly<{
 
 export interface InternalAtomicQuoteDependencies {
   readonly orders: InternalAtomicQuoteOrderProvider;
-  readonly candidates: AtomicRouteCandidateProvider;
+  readonly candidates: InternalAtomicQuoteCandidateProvider;
   readonly terms: InternalAtomicQuoteTermsProvider;
   readonly signer: Ed25519AtomicQuoteSigner;
   readonly store?: InternalAtomicQuoteStore;
@@ -185,9 +191,10 @@ export function createInternalAtomicQuoteCoordinator(
             'stored order does not match the requested hash',
           );
         }
+        const candidates = await dependencies.candidates({ order, orderHash: computedOrderHash });
         const decision = planAtomicEntryRoute(
           { order, orderHash: computedOrderHash },
-          dependencies.candidates,
+          () => candidates,
         );
         const terms = await dependencies.terms({ order, decision });
         const signed = await signAtomicEntryQuote({

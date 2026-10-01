@@ -318,7 +318,8 @@ export async function signAtomicEntryQuote(
   if (!sameAsset(netQuantity.asset, validatedOrder.quantity.asset)) {
     fail('BINDING_MISMATCH', 'expected net spot quantity must use the order base asset');
   }
-  if (!isHyperliquid && netQuantity.atoms !== grossQuantity.atoms - baseFee.atoms) {
+  // An entry spot buy receives the gross quantity less any fee charged in the base asset.
+  if (netQuantity.atoms !== grossQuantity.atoms - baseFee.atoms) {
     fail('BINDING_MISMATCH', 'expected net spot quantity must equal gross minus base fee');
   }
   if (isHyperliquid) {
@@ -326,13 +327,29 @@ export async function signAtomicEntryQuote(
     const maximum = validatedOrder.hyperliquidMaxNetSpotDelta;
     const residualBase = terms.expectedTerminalResidualBaseQuantity;
     const residualQuote = terms.expectedTerminalResidualQuoteValue;
+    // The expected terminal residual is the hedge mismatch between the expected net spot delta and
+    // the exact perpetual delta, valued with the signed reference price rounded up, and must stay
+    // within the signed caps.
+    const residual = netQuantity.atoms - validatedOrder.quantity.atoms;
+    const absoluteResidual = residual < 0n ? -residual : residual;
+    const valuation = validatedOrder.hyperliquidResidualValuationReferencePrice;
+    const residualValue = absoluteResidual === 0n
+      ? 0n
+      : valuation === undefined
+        ? undefined
+        : (absoluteResidual * valuation.quoteAtoms + valuation.baseAtoms - 1n) / valuation.baseAtoms;
+    const baseCap = validatedOrder.hyperliquidMaxTerminalResidualBaseQuantity;
+    const quoteCap = validatedOrder.hyperliquidMaxTerminalResidualQuoteValue;
     if (minimum === undefined || maximum === undefined
       || netQuantity.atoms < minimum.atoms || netQuantity.atoms > maximum.atoms
       || residualBase === undefined || residualQuote === undefined
+      || baseCap === undefined || quoteCap === undefined || residualValue === undefined
       || !sameAsset(residualBase.asset, validatedOrder.quantity.asset)
       || !sameAsset(residualQuote.asset, quoteAsset)
-      || residualBase.atoms !== validatedOrder.hyperliquidMaxTerminalResidualBaseQuantity?.atoms
-      || residualQuote.atoms !== validatedOrder.hyperliquidMaxTerminalResidualQuoteValue?.atoms) {
+      || residualBase.atoms !== absoluteResidual
+      || residualQuote.atoms !== residualValue
+      || residualBase.atoms > baseCap.atoms
+      || residualQuote.atoms > quoteCap.atoms) {
       fail('BINDING_MISMATCH', 'Hyperliquid net quantity and residuals must remain within signed bounds');
     }
   }

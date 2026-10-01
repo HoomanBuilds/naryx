@@ -12,15 +12,37 @@ Being the reference implementation is not a network claim. Team-operated solver 
 
 ## Current implementation
 
-The ordinary signed quote listener can optionally dispatch canonical `hypercore:testnet` entry
-orders to a separate reference cash-and-carry quote runtime. It is disabled unless
-`NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED=true` and a complete versioned protocol JSON config is
-provided through `NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG`. The runtime emits only
-`BATCHED_IOC_WITH_RECOVERY` routes with `HYPERCORE_BATCHED_IOC`, exact configured versioned market
-references, millisecond expiry, the order's explicit `EXACT_NET` or `BOUNDED_NET` residual policy,
-and zero protocol and solver fees. Quote nonces are reserved durably in the existing quote SQLite
-database. It performs no venue request, agent signing, or execution. Local Solana quote dispatch
-continues to use the existing local-only runtime and semantics.
+### Process composition and what is real
+
+`npm start` runs `dist/main.js`. The quote listener binds loopback only, on `NARYX_SOLVER_PORT` (default `8788`, the port `services/api` uses for `NARYX_SOLVER_INTERNAL_ORIGIN`). Every composed runtime reserves quote nonces durably in the SQLite quote database, so nonces survive restarts.
+
+Always required: `NARYX_SOLVER_ED25519_KEY_PATH` (an absolute path to an external Ed25519 private key; `NARYX_SOLVER_ED25519_PUBLIC_KEY_HEX` optionally pins its public key) and `NARYX_SOLVER_QUOTE_DB` (an absolute path to the durable quote database). Nothing defaults into `/tmp` outside fixture mode.
+
+The process composes only the runtimes it is explicitly configured for:
+
+| Runtime | Enabled by | Price source | Real or static |
+|---|---|---|---|
+| Manifest-validated local Solana | `NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST`, `NARYX_SOLANA_LOCAL_SOLVER_ID`, `NARYX_SOLVER_SOLANA_AUTHORIZATION_DB` | The manifest's local conformance catalog | Program identity, genesis hash, and validator slot clock are read from the local validator. Prices and fees are the conformance venue's configured catalog values, not a market. |
+| Hyperliquid Testnet quotes | `NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED=true`, `NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG`, `NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT` | Live Testnet `l2Book` and `userFees` | Prices and fee rates are read live per quote. Static values are listed below. |
+| Local fixture | `NARYX_LOCAL_FIXTURE_MODE=true` only | `LOCAL_ATOMIC_MARKET_CATALOG_V1` | Entirely static: fixed prices, zero fees, placeholder hashes, and a wall-clock-derived slot. Quotes are still signed with the configured solver key. The quote database may fall back to `/tmp/naryx-local/solver-quotes.db` only in this mode. It cannot be combined with a Solana environment manifest. |
+
+With none of them configured the listener starts with `runtime=NONE` and every quote fails closed. The startup line reports `runtime=` and `hyperliquidTestnetQuotes=`, and fixture mode prints an explicit warning.
+
+### Hyperliquid Testnet quote runtime
+
+The ordinary signed quote listener dispatches canonical `hypercore:testnet` entry orders to a separate reference cash-and-carry quote runtime when it is enabled. The runtime emits only `BATCHED_IOC_WITH_RECOVERY` routes with `HYPERCORE_BATCHED_IOC`, exact configured versioned market references, millisecond expiry, the order's explicit `EXACT_NET` or `BOUNDED_NET` residual policy, and zero protocol, solver, and builder fees. It performs no venue write, agent signing, or execution.
+
+For every quote it reads, signerless and through the official SDK pinned to `https://api.hyperliquid-testnet.xyz`, the spot `l2Book`, the perpetual `l2Book`, and `userFees` for `NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT`. There is one read attempt and no fallback URL or retry.
+
+- Each IOC limit is the trader's signed bound: the spot limit is `maxSpotQuoteIn` divided by the gross spot quantity, rounded down to HyperCore wire precision, and the perpetual limit is the exact signed `hyperliquidMinPerpSellPrice`.
+- The spot buy sweeps asks and the perpetual short sweeps bids, in book order, counting only levels at or inside the wire limit. A book that cannot fill the full size, is missing, mislabeled, unordered, stale or future-dated beyond `maxBookAgeMs`, crossed or locked, or wider than `maxBookSpreadBps` produces no quote. Only the levels the venue returns (top 20 per side) are counted.
+- Fee rates come from `userSpotCrossRate` and `userCrossRate`. A missing, malformed, or unavailable fee schedule produces no quote; nothing defaults to zero. The runtime applies no discount of its own to these rates.
+- All amounts are integer atoms. Spot cost and every fee round up and perpetual proceeds round down, against the trader. The spot taker fee is charged in the received base asset, so the expected net spot quantity is gross minus that fee. It must lie in the signed net interval, and the expected terminal residual is its exact mismatch against the perpetual quantity, valued with the signed reference price rounded up and bounded by the signed caps. An `EXACT_NET` order whose gross quantity does not absorb the base fee is not quoted.
+- The quoted entry spread is spot notional per gross unit minus perpetual notional per perpetual unit. Terms are signed from the same snapshot that selected the route, and a missing or superseded snapshot fails closed.
+
+The quote config is protocol JSON with `version: 2` and a `market` object. It carries only static identity and limits: domain, template, solver, fee policy, and recovery identities; adapter, venue, and market manifest references; base and quote asset references; per-leg `coin` and `sizeDecimals`; actions and account bindings; `capacityBaseAtoms`; `routeTtlMs` and `quoteTtlMs`; `maxBookAgeMs`; `maxBookSpreadBps`; and `marginBps`. It contains no prices, spreads, or fee rates, and a version 1 config is rejected. `marginBps` remains a static configured initial-margin fraction of perpetual notional, not a live leverage read. Lot alignment of both quantities is checked against `sizeDecimals` before any read.
+
+Expected amounts are quote inputs only. Settlement still reconciles individual authoritative fills, fee amounts, and fee tokens.
 
 The Hyperliquid submission service accepts only an existing compiled `HyperliquidExecutionPlan` for `hypercore:testnet`. It independently binds the master and trading account relation, subaccount vault context, agent wallet and lease, package commitments, exact official-shape IOC action, client order IDs, nonce, and request expiry. It requires an injected durable journal port whose compare-and-set lifecycle matches the keeper journal: `PREPARED`, `DURABLE_RECORD_CONFIRMED`, `SUBMITTED_UNKNOWN`, then acknowledgement, rejection, or reconciliation. An unavailable or inconsistent journal fails closed before signing or submission.
 

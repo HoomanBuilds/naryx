@@ -3,6 +3,7 @@ import type {
   L2BookResponse,
   MetaResponse,
   SpotMetaResponse,
+  UserFeesResponse,
 } from '@nktkas/hyperliquid/api/info';
 import type { HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
 import type { HyperliquidTestnetRuntimeMarketBinding } from './hyperliquid-testnet-runtime.js';
@@ -26,6 +27,15 @@ export interface HyperliquidTestnetMarketReadPort {
   readonly environment: 'testnet';
   readonly apiUrl: typeof HYPERLIQUID_TESTNET_MARKET_INFO_URL;
   read(spotCoin: string, perpetualCoin: string): Promise<HyperliquidTestnetMarketSnapshot>;
+}
+
+export type HyperliquidTestnetUserFeeRates = Pick<UserFeesResponse, 'userCrossRate' | 'userSpotCrossRate'>;
+
+export interface HyperliquidTestnetQuoteMarketReadPort {
+  readonly environment: 'testnet';
+  readonly apiUrl: typeof HYPERLIQUID_TESTNET_MARKET_INFO_URL;
+  l2Book(coin: string): Promise<L2BookResponse>;
+  userFees(user: `0x${string}`): Promise<HyperliquidTestnetUserFeeRates>;
 }
 
 export interface HyperliquidTestnetMarketQualificationConfig {
@@ -211,7 +221,13 @@ function planOrders(plan: HyperliquidExecutionPlan) {
   return { spot, perpetual };
 }
 
-export class HyperliquidSdkTestnetMarketReadClient implements HyperliquidTestnetMarketReadPort {
+export {
+  checkedBook as checkedHyperliquidTestnetBook,
+  decimal as hyperliquidTestnetDecimal,
+};
+
+export class HyperliquidSdkTestnetMarketReadClient
+implements HyperliquidTestnetMarketReadPort, HyperliquidTestnetQuoteMarketReadPort {
   readonly environment = 'testnet' as const;
   readonly apiUrl = HYPERLIQUID_TESTNET_MARKET_INFO_URL;
   readonly #client: InfoClient;
@@ -242,6 +258,14 @@ export class HyperliquidSdkTestnetMarketReadClient implements HyperliquidTestnet
       spotBook,
       perpetualBook,
     });
+  }
+
+  l2Book(coin: string): Promise<L2BookResponse> {
+    return this.#client.l2Book({ coin });
+  }
+
+  userFees(user: `0x${string}`): Promise<UserFeesResponse> {
+    return this.#client.userFees({ user });
   }
 }
 

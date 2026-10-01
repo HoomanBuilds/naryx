@@ -1,7 +1,17 @@
 import {
+  compareHypercoreWirePriceToExact,
+  formatHypercorePrice,
+  formatHypercoreSize,
+  type HypercoreFormattedPrice,
+} from '@naryx/adapter-hyperliquid';
+import {
   adapterRef,
+  assetRef,
   bytesEqual,
+  canonicalBytes,
+  compareBytes,
   domainRef,
+  encodeAssetRef,
   exactPrice,
   exactSignedRate,
   manifestHash,
@@ -9,6 +19,7 @@ import {
   versionedManifestRef,
   type ActionCommitmentInput,
   type AdapterRef,
+  type AssetAmount,
   type AssetRef,
   type DomainRef,
   type EvidenceRequirementsInput,
@@ -22,23 +33,32 @@ import {
   type RoutePayloadInput,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
-import type {
-  AtomicRouteCandidate,
-  AtomicRouteCandidateProvider,
-  AtomicRouteDecision,
-} from './atomic-route-decision.js';
+import type { AtomicRouteCandidate, AtomicRouteDecision } from './atomic-route-decision.js';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
-import type { InternalAtomicQuoteTermsProvider } from './internal-atomic-quote-server.js';
+import {
+  HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+  checkedHyperliquidTestnetBook,
+  hyperliquidTestnetDecimal,
+  type HyperliquidTestnetQuoteMarketReadPort,
+} from './hyperliquid-testnet-market-preflight.js';
+import type {
+  InternalAtomicQuoteCandidateProvider,
+  InternalAtomicQuoteTermsProvider,
+} from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
 
 const BPS_SCALE = 10_000n;
 const U256_MAX = (1n << 256n) - 1n;
+const ADDRESS = /^0x[0-9a-f]{40}$/;
+const MAX_PREPARED_QUOTES = 64;
 
 export interface HyperliquidTestnetQuoteLeg {
   readonly adapter: AdapterRef;
   readonly venue: VersionedManifestRef;
   readonly market: VersionedManifestRef;
-  readonly limitPrice: ExactPrice;
+  /** Exact l2Book coin identity, for example the spot universe name or the perpetual name. */
+  readonly coin: string;
+  readonly sizeDecimals: number;
   readonly action: ActionCommitmentInput;
 }
 
@@ -67,11 +87,16 @@ export interface HyperliquidTestnetQuoteRuntimeInput {
   readonly routeTtlMs: bigint;
   readonly quoteTtlMs: bigint;
   readonly marginBps: number;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly maxBookAgeMs: number;
+  readonly maxBookSpreadBps: number;
+  readonly tradingAccount: `0x${string}`;
+  readonly market: HyperliquidTestnetQuoteMarketReadPort;
   readonly currentTimeMs: () => bigint;
   readonly nonceSource: AtomicQuoteNonceSource;
   readonly spot: HyperliquidTestnetQuoteLeg;
   readonly perpetual: HyperliquidTestnetQuoteLeg;
-  readonly entrySpread: ExactSignedRate;
   readonly accountBindings: readonly RouteAccountBindingInput[];
   readonly preconditions: RoutePayloadInput['preconditions'];
   readonly postconditions: RoutePayloadInput['postconditions'];
@@ -79,11 +104,13 @@ export interface HyperliquidTestnetQuoteRuntimeInput {
   readonly recovery: HyperliquidTestnetRecoveryIdentity;
 }
 
+export interface QuoteProviders {
+  readonly candidates: InternalAtomicQuoteCandidateProvider;
+  readonly terms: InternalAtomicQuoteTermsProvider;
+}
+
 export interface HyperliquidTestnetQuoteRuntime {
-  readonly providers: Readonly<{
-    candidates: AtomicRouteCandidateProvider;
-    terms: InternalAtomicQuoteTermsProvider;
-  }>;
+  readonly providers: QuoteProviders;
 }
 
 function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void {
@@ -93,6 +120,14 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
       || input.capacityBaseAtoms <= 0n
       || typeof input.currentTimeMs !== 'function'
       || typeof input.nonceSource?.next !== 'function'
+      || input.market?.environment !== 'testnet'
+      || input.market.apiUrl !== HYPERLIQUID_TESTNET_MARKET_INFO_URL
+      || typeof input.market.l2Book !== 'function'
+      || typeof input.market.userFees !== 'function'
+      || typeof input.tradingAccount !== 'string'
+      || !ADDRESS.test(input.tradingAccount)
+      || !Number.isSafeInteger(input.maxBookAgeMs)
+      || input.maxBookAgeMs <= 0
       || input.accountBindings.length === 0
       || input.spot.action.sequence !== 0
       || input.perpetual.action.sequence !== 1
@@ -114,7 +149,19 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
     manifestHash(input.recovery.controllerCodeHash);
     manifestHash(input.recovery.reconciledStateSchemaHash);
     manifestHash(input.recovery.actionBuilderCodeHash);
-    for (const leg of [input.spot, input.perpetual]) {
+    const base = assetRef(
+      input.baseAsset.assetId, input.baseAsset.assetManifestHash, input.baseAsset.decimals,
+    );
+    const quote = assetRef(
+      input.quoteAsset.assetId, input.quoteAsset.assetManifestHash, input.quoteAsset.decimals,
+    );
+    if (sameAsset(base, quote)) throw new Error('base and quote assets must differ');
+    for (const [leg, maximumDecimals] of [[input.spot, 8], [input.perpetual, 6]] as const) {
+      if (typeof leg.coin !== 'string' || !/^[A-Za-z0-9@._:/-]{1,64}$/.test(leg.coin)
+        || !Number.isSafeInteger(leg.sizeDecimals) || leg.sizeDecimals < 0
+        || leg.sizeDecimals > maximumDecimals) {
+        throw new Error('leg market identity is invalid');
+      }
       adapterRef(leg.adapter);
       versionedManifestRef(
         leg.venue.subjectId,
@@ -126,12 +173,11 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
         leg.market.manifestVersion,
         leg.market.manifestHash,
       );
-      exactPrice(leg.limitPrice);
     }
-    exactSignedRate(input.entrySpread);
     requirePositive(input.routeTtlMs, 'routeTtlMs');
     requirePositive(input.quoteTtlMs, 'quoteTtlMs');
     requireBps(input.marginBps, 'marginBps');
+    requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
   } catch {
     throw new Error('Hyperliquid Testnet quote runtime configuration is incomplete or invalid');
   }
@@ -170,11 +216,146 @@ function requireBps(value: number, name: string): bigint {
 }
 
 function ceilDiv(numerator: bigint, denominator: bigint): bigint {
+  if (numerator < 0n || denominator <= 0n) throw new Error('invalid unsigned division');
   return (numerator + denominator - 1n) / denominator;
 }
 
-function notional(quantity: bigint, price: ExactPrice): bigint {
-  return ceilDiv(quantity * price.quoteAtoms, price.baseAtoms);
+function gcd(left: bigint, right: bigint): bigint {
+  let a = left < 0n ? -left : left;
+  let b = right < 0n ? -right : right;
+  while (b !== 0n) [a, b] = [b, a % b];
+  return a;
+}
+
+function pow10(exponent: number): bigint {
+  return 10n ** BigInt(exponent);
+}
+
+type Decimal = ReturnType<typeof hyperliquidTestnetDecimal>;
+type Book = ReturnType<typeof checkedHyperliquidTestnetBook>;
+
+/** An exact nonnegative rational amount of quote atoms. */
+interface QuoteValue {
+  readonly numerator: bigint;
+  readonly denominator: bigint;
+}
+
+function compareDecimals(left: Decimal, right: Decimal): number {
+  const scale = Math.max(left.scale, right.scale);
+  const normalizedLeft = left.atoms * pow10(scale - left.scale);
+  const normalizedRight = right.atoms * pow10(scale - right.scale);
+  return normalizedLeft < normalizedRight ? -1 : normalizedLeft > normalizedRight ? 1 : 0;
+}
+
+function reducedPrice(base: AssetRef, quote: AssetRef, quoteAtoms: bigint, baseAtoms: bigint): ExactPrice {
+  const divisor = gcd(quoteAtoms, baseAtoms);
+  return exactPrice({
+    baseAsset: base, quoteAsset: quote, quoteAtoms: quoteAtoms / divisor, baseAtoms: baseAtoms / divisor,
+    roundingDirection: 'FLOOR',
+  });
+}
+
+// A user fee rate is a nonnegative decimal fraction strictly below one. A missing or malformed
+// rate never defaults to zero.
+function feeRate(value: unknown, name: string): Readonly<{ numerator: bigint; denominator: bigint }> {
+  if (typeof value !== 'string') throw new Error(`${name} is unavailable`);
+  const parsed = hyperliquidTestnetDecimal(value, name);
+  const denominator = pow10(parsed.scale);
+  if (parsed.atoms >= denominator) throw new Error(`${name} must be below one`);
+  return Object.freeze({ numerator: parsed.atoms, denominator });
+}
+
+function liveBook(
+  value: Awaited<ReturnType<HyperliquidTestnetQuoteMarketReadPort['l2Book']>>,
+  coin: string,
+  name: string,
+  now: bigint,
+  input: HyperliquidTestnetQuoteRuntimeInput,
+): Book {
+  const book = checkedHyperliquidTestnetBook(value, coin, name);
+  const time = BigInt(book.time);
+  if (time > now || now - time > BigInt(input.maxBookAgeMs)) {
+    throw new Error(`${name} is stale or future-dated`);
+  }
+  const bid = hyperliquidTestnetDecimal(book.levels[0][0]!.px, `${name} best bid`);
+  const ask = hyperliquidTestnetDecimal(book.levels[1][0]!.px, `${name} best ask`);
+  if (compareDecimals(bid, ask) >= 0) throw new Error(`${name} is crossed or locked`);
+  const scale = Math.max(bid.scale, ask.scale);
+  const bidAtoms = bid.atoms * pow10(scale - bid.scale);
+  const askAtoms = ask.atoms * pow10(scale - ask.scale);
+  if ((askAtoms - bidAtoms) * BPS_SCALE > bidAtoms * BigInt(input.maxBookSpreadBps)) {
+    throw new Error(`${name} bid-ask spread exceeds the configured cap`);
+  }
+  return book;
+}
+
+/**
+ * Takes the side-appropriate levels in book order until the base quantity is filled. Levels beyond
+ * the wire limit price are never counted, and a book that cannot fill the whole quantity fails.
+ */
+function sweep(
+  book: Book,
+  side: 'BUY' | 'SELL',
+  quantityAtoms: bigint,
+  limit: HypercoreFormattedPrice,
+  base: AssetRef,
+  quote: AssetRef,
+  name: string,
+): QuoteValue {
+  const limitDecimal = Object.freeze({ atoms: limit.scaled, scale: limit.decimals });
+  const levels = side === 'BUY' ? book.levels[1] : book.levels[0];
+  const fills: Array<Readonly<{ atoms: bigint; price: Decimal }>> = [];
+  let remaining = quantityAtoms;
+  let scale = 0;
+  for (const level of levels) {
+    if (remaining === 0n) break;
+    const price = hyperliquidTestnetDecimal(level.px, `${name} price`);
+    const relation = compareDecimals(price, limitDecimal);
+    if (side === 'BUY' ? relation > 0 : relation < 0) break;
+    const size = hyperliquidTestnetDecimal(level.sz, `${name} size`);
+    // Book size finer than one base atom cannot be counted as available.
+    const available = size.scale <= base.decimals
+      ? size.atoms * pow10(base.decimals - size.scale)
+      : size.atoms / pow10(size.scale - base.decimals);
+    const taken = available < remaining ? available : remaining;
+    if (taken === 0n) continue;
+    fills.push(Object.freeze({ atoms: taken, price }));
+    remaining -= taken;
+    scale = Math.max(scale, price.scale);
+  }
+  if (remaining !== 0n) {
+    throw new Error(`${name} cannot fill the requested size within the signed limit`);
+  }
+  let total = 0n;
+  for (const fill of fills) total += fill.atoms * fill.price.atoms * pow10(scale - fill.price.scale);
+  return Object.freeze({
+    numerator: total * pow10(quote.decimals),
+    denominator: pow10(scale + base.decimals),
+  });
+}
+
+function entrySpread(
+  base: AssetRef,
+  quote: AssetRef,
+  spotNotional: bigint,
+  grossSpotAtoms: bigint,
+  perpNotional: bigint,
+  perpAtoms: bigint,
+): ExactSignedRate {
+  // entrySpread = spot notional / gross spot quantity - perpetual notional / perpetual quantity.
+  const numerator = spotNotional * perpAtoms - perpNotional * grossSpotAtoms;
+  const denominator = grossSpotAtoms * perpAtoms;
+  const divisor = numerator === 0n ? denominator : gcd(numerator, denominator);
+  return exactSignedRate({
+    baseAsset: base, quoteAsset: quote,
+    quoteAtoms: numerator / divisor, baseAtoms: denominator / divisor,
+    roundingDirection: 'CEIL',
+  });
+}
+
+function canonicalAmounts(amounts: readonly AssetAmount[]): readonly AssetAmount[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  return Object.freeze([...amounts].sort((left, right) => compareBytes(key(left.asset), key(right.asset))));
 }
 
 function recoverySlot(
@@ -239,23 +420,50 @@ function requireOrder(order: PackageOrder, input: HyperliquidTestnetQuoteRuntime
     throw new Error('configured Hyperliquid adapters are not permitted by the order');
   }
   const quoteAsset = order.maxSpotQuoteIn?.asset;
-  if (quoteAsset === undefined
-    || !sameAsset(input.spot.limitPrice.baseAsset, order.quantity.asset)
-    || !sameAsset(input.perpetual.limitPrice.baseAsset, order.quantity.asset)
-    || !sameAsset(input.spot.limitPrice.quoteAsset, quoteAsset)
-    || !sameAsset(input.perpetual.limitPrice.quoteAsset, quoteAsset)) {
+  const perpLimit = order.hyperliquidMinPerpSellPrice;
+  if (quoteAsset === undefined || perpLimit === undefined
+    || !sameAsset(input.baseAsset, order.quantity.asset)
+    || !sameAsset(input.quoteAsset, quoteAsset)
+    || !sameAsset(perpLimit.baseAsset, input.baseAsset)
+    || !sameAsset(perpLimit.quoteAsset, input.quoteAsset)) {
     throw new Error('configured Hyperliquid market assets do not match the order');
-  }
-  if (input.perpetual.limitPrice.quoteAtoms * order.hyperliquidMinPerpSellPrice!.baseAtoms
-    < order.hyperliquidMinPerpSellPrice!.quoteAtoms * input.perpetual.limitPrice.baseAtoms) {
-    throw new Error('configured perpetual price is below the signed order limit');
   }
 }
 
-function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnetQuoteRuntimeInput) {
+async function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnetQuoteRuntimeInput) {
   requireOrder(order, input);
+  const base = input.baseAsset;
+  const quoteAsset = input.quoteAsset;
+  const grossSpot = order.hyperliquidGrossSpotQuantity!;
+  formatHypercoreSize(grossSpot.atoms, base.decimals, input.spot.sizeDecimals);
+  formatHypercoreSize(order.quantity.atoms, base.decimals, input.perpetual.sizeDecimals);
+
+  // Each IOC limit is the trader's signed bound: the spot cap divided by the gross spot quantity,
+  // and the exact signed minimum perpetual sell price. The book sweep prices the expected fill.
+  const spotBound = reducedPrice(base, quoteAsset, order.maxSpotQuoteIn!.atoms, grossSpot.atoms);
+  const spotWire = formatHypercorePrice(spotBound, 8 - input.spot.sizeDecimals);
+  const spotLimit = reducedPrice(
+    base, quoteAsset,
+    spotWire.scaled * pow10(quoteAsset.decimals), pow10(spotWire.decimals + base.decimals),
+  );
+  const perpLimit = order.hyperliquidMinPerpSellPrice!;
+  const perpWire = formatHypercorePrice(perpLimit, 6 - input.perpetual.sizeDecimals);
+  if (compareHypercoreWirePriceToExact(perpWire, perpLimit) < 0) {
+    throw new Error('signed perpetual limit is not representable as a HyperCore sell limit');
+  }
+
+  const [spotBookValue, perpBookValue, fees] = await Promise.all([
+    input.market.l2Book(input.spot.coin),
+    input.market.l2Book(input.perpetual.coin),
+    input.market.userFees(input.tradingAccount),
+  ]);
   const now = requirePositive(input.currentTimeMs(), 'currentTimeMs');
   if (now >= order.expiryValue) throw new Error('order is expired');
+  const spotBook = liveBook(spotBookValue, input.spot.coin, 'spot book', now, input);
+  const perpBook = liveBook(perpBookValue, input.perpetual.coin, 'perpetual book', now, input);
+  const spotFeeRate = feeRate(fees?.userSpotCrossRate, 'userSpotCrossRate');
+  const perpFeeRate = feeRate(fees?.userCrossRate, 'userCrossRate');
+
   const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
   // The initial action expiry (the route expiry) must end strictly before both the package expiry
   // and the quote validity, so the quote always outlives the action it prices.
@@ -267,11 +475,43 @@ function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnet
   if (routeExpiryValue <= now) throw new Error('configured freshness window is empty');
   const quoteValidUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
 
-  const grossSpot = order.hyperliquidGrossSpotQuantity!;
-  const quoteAsset = order.maxSpotQuoteIn!.asset;
-  const spotNotional = notional(grossSpot.atoms, input.spot.limitPrice);
-  const perpNotional = notional(order.quantity.atoms, input.perpetual.limitPrice);
-  if (spotNotional > order.maxSpotQuoteIn!.atoms) throw new Error('configured spot price exceeds the order cap');
+  const spotCost = sweep(spotBook, 'BUY', grossSpot.atoms, spotWire, base, quoteAsset, 'spot book');
+  const perpProceeds = sweep(
+    perpBook, 'SELL', order.quantity.atoms, perpWire, base, quoteAsset, 'perpetual book',
+  );
+  // Expected amounts round against the trader: spot cost and every fee up, perpetual proceeds down.
+  const spotNotional = ceilDiv(spotCost.numerator, spotCost.denominator);
+  const perpNotional = perpProceeds.numerator / perpProceeds.denominator;
+  if (spotNotional > order.maxSpotQuoteIn!.atoms) throw new Error('spot sweep exceeds the order cap');
+  if (perpNotional <= 0n) throw new Error('perpetual sweep notional is zero');
+  // HyperCore charges a spot buy's taker fee in the received base asset.
+  const baseFeeAtoms = ceilDiv(grossSpot.atoms * spotFeeRate.numerator, spotFeeRate.denominator);
+  const perpFeeAtoms = ceilDiv(
+    perpProceeds.numerator * perpFeeRate.numerator,
+    perpProceeds.denominator * perpFeeRate.denominator,
+  );
+  const netSpotAtoms = grossSpot.atoms - baseFeeAtoms;
+  if (netSpotAtoms < order.hyperliquidMinNetSpotDelta!.atoms
+    || netSpotAtoms > order.hyperliquidMaxNetSpotDelta!.atoms) {
+    throw new Error('net spot quantity after the base-asset fee is outside the signed interval');
+  }
+  const residualAtoms = netSpotAtoms - order.quantity.atoms;
+  const absoluteResidual = residualAtoms < 0n ? -residualAtoms : residualAtoms;
+  const valuation = order.hyperliquidResidualValuationReferencePrice;
+  if (absoluteResidual !== 0n && valuation === undefined) {
+    throw new Error('a nonzero residual requires the signed residual valuation price');
+  }
+  const residualQuoteAtoms = absoluteResidual === 0n
+    ? 0n
+    : ceilDiv(absoluteResidual * valuation!.quoteAtoms, valuation!.baseAtoms);
+  if (absoluteResidual > order.hyperliquidMaxTerminalResidualBaseQuantity!.atoms
+    || residualQuoteAtoms > order.hyperliquidMaxTerminalResidualQuoteValue!.atoms) {
+    throw new Error('expected terminal residual exceeds the signed caps');
+  }
+  const baseFeeQuoteAtoms = ceilDiv(
+    baseFeeAtoms * spotCost.numerator,
+    spotCost.denominator * grossSpot.atoms,
+  );
   const marginAtoms = ceilDiv(perpNotional * requireBps(input.marginBps, 'marginBps'), BPS_SCALE);
   const route: RoutePayloadInput = {
     version: 1,
@@ -303,13 +543,13 @@ function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnet
         legIndex: 0, legRole: 'SPOT', actionSequence: input.spot.action.sequence,
         adapter: input.spot.adapter, venue: input.spot.venue, market: input.spot.market,
         baseAsset: order.quantity.asset, quoteAsset, side: 'BUY', quantity: grossSpot,
-        limitPrice: input.spot.limitPrice, timeInForce: 'IOC', reduceOnly: false,
+        limitPrice: spotLimit, timeInForce: 'IOC', reduceOnly: false,
       },
       {
         legIndex: 1, legRole: 'PERPETUAL', actionSequence: input.perpetual.action.sequence,
         adapter: input.perpetual.adapter, venue: input.perpetual.venue, market: input.perpetual.market,
         baseAsset: order.quantity.asset, quoteAsset, side: 'SELL', quantity: order.quantity,
-        limitPrice: input.perpetual.limitPrice, timeInForce: 'IOC', reduceOnly: false,
+        limitPrice: perpLimit, timeInForce: 'IOC', reduceOnly: false,
       },
     ],
     actions: [input.spot.action, input.perpetual.action],
@@ -329,31 +569,42 @@ function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidTestnet
         recoverySlot(action, sequence, order, input)),
     },
   };
-  const zeroBase = { asset: order.quantity.asset, atoms: 0n };
   const candidate: AtomicRouteCandidate = Object.freeze({
     candidateId: input.candidateId,
     active: true,
     capacityBaseAtoms: input.capacityBaseAtoms,
-    expectedNetPackageOutcomeQuoteAtoms: perpNotional - spotNotional,
-    expectedTotalFeesQuoteAtoms: 0n,
+    expectedNetPackageOutcomeQuoteAtoms: perpNotional - spotNotional - perpFeeAtoms,
+    expectedTotalFeesQuoteAtoms: perpFeeAtoms + baseFeeQuoteAtoms,
     evidenceGrade: 'HYPERLIQUID_TESTNET_REFERENCE',
     route,
   });
+  // No builder is attached to Naryx Hyperliquid orders, so builder fees are zero and the raw fill
+  // fee equals the normalized venue fee for each asset.
+  const venueFees = canonicalAmounts([
+    { asset: base, atoms: baseFeeAtoms },
+    { asset: quoteAsset, atoms: perpFeeAtoms },
+  ]);
+  const builderFees = venueFees.map((fee) => Object.freeze({ asset: fee.asset, atoms: 0n }));
   const terms: Omit<AtomicEntryQuoteTerms, 'quoteNonce'> = Object.freeze({
     solverId: input.solverId,
     solverCapabilityManifestHash: input.solverCapabilityManifestHash,
-    quotedOutcome: { kind: 'ENTRY_SPREAD' as const, entrySpread: input.entrySpread },
+    quotedOutcome: {
+      kind: 'ENTRY_SPREAD' as const,
+      entrySpread: entrySpread(
+        base, quoteAsset, spotNotional, grossSpot.atoms, perpNotional, order.quantity.atoms,
+      ),
+    },
     expectedSpotNotional: { asset: quoteAsset, atoms: spotNotional },
     expectedPerpNotional: { asset: quoteAsset, atoms: perpNotional },
     expectedGrossSpotQuantity: grossSpot,
-    expectedNetSpotQuantity: order.hyperliquidMinNetSpotDelta!,
-    expectedBaseAssetFee: zeroBase,
-    expectedTerminalResidualBaseQuantity: order.hyperliquidMaxTerminalResidualBaseQuantity!,
-    expectedTerminalResidualQuoteValue: order.hyperliquidMaxTerminalResidualQuoteValue!,
+    expectedNetSpotQuantity: { asset: base, atoms: netSpotAtoms },
+    expectedBaseAssetFee: { asset: base, atoms: baseFeeAtoms },
+    expectedTerminalResidualBaseQuantity: { asset: base, atoms: absoluteResidual },
+    expectedTerminalResidualQuoteValue: { asset: quoteAsset, atoms: residualQuoteAtoms },
     expectedMarginDelta: { asset: quoteAsset, atoms: marginAtoms },
-    expectedRawFillFeesByAsset: [zeroBase],
-    expectedBuilderFeesByAsset: [zeroBase],
-    expectedNormalizedVenueFeesByAsset: [zeroBase],
+    expectedRawFillFeesByAsset: venueFees,
+    expectedBuilderFeesByAsset: builderFees,
+    expectedNormalizedVenueFeesByAsset: venueFees,
     solverFee: { asset: quoteAsset, atoms: 0n },
     protocolFee: { asset: quoteAsset, atoms: 0n },
     expectedPriorityFee: { asset: quoteAsset, atoms: 0n },
@@ -371,45 +622,52 @@ export function createHyperliquidTestnetQuoteRuntime(
 ): HyperliquidTestnetQuoteRuntime {
   if (!input.enabled) throw new Error('Hyperliquid Testnet quote runtime is disabled');
   validateConfiguration(input);
-  let cached: ReturnType<typeof build> | undefined;
-  let cachedOrderHash: Hash32 | undefined;
-  const candidates: AtomicRouteCandidateProvider = ({ order, orderHash }) => {
-    const created = build(order, orderHash, input);
-    cached = created;
-    cachedOrderHash = Uint8Array.from(orderHash) as Hash32;
+  // Terms are taken from the same market snapshot that produced the selected candidate. A missing
+  // or superseded snapshot fails closed instead of re-reading the market.
+  const prepared = new Map<string, Awaited<ReturnType<typeof build>>>();
+  const key = (orderHash: Hash32) => Buffer.from(orderHash).toString('hex');
+  const candidates: InternalAtomicQuoteCandidateProvider = async ({ order, orderHash }) => {
+    const created = await build(order, orderHash, input);
+    prepared.delete(key(orderHash));
+    prepared.set(key(orderHash), created);
+    while (prepared.size > MAX_PREPARED_QUOTES) prepared.delete(prepared.keys().next().value!);
     return [created.candidate];
   };
-  const terms: InternalAtomicQuoteTermsProvider = ({ order, decision }: Readonly<{
+  const terms: InternalAtomicQuoteTermsProvider = ({ decision }: Readonly<{
     order: PackageOrder;
     decision: AtomicRouteDecision;
   }>) => {
-    const prepared = cached !== undefined && cachedOrderHash !== undefined
-      && bytesEqual(cachedOrderHash, decision.orderHash)
-      ? cached
-      : build(order, decision.orderHash, input);
+    const created = prepared.get(key(decision.orderHash));
+    if (created === undefined) throw new Error('no live Hyperliquid Testnet quote was prepared for the order');
     if (decision.candidateId !== input.candidateId
-      || !bytesEqual(routeHash(prepared.candidate.route), decision.routeHash)) {
-      throw new Error('route decision does not match the configured Hyperliquid Testnet market');
+      || !bytesEqual(routeHash(created.candidate.route), decision.routeHash)
+      || decision.expectedNetPackageOutcomeQuoteAtoms
+        !== created.candidate.expectedNetPackageOutcomeQuoteAtoms
+      || decision.expectedTotalFeesQuoteAtoms !== created.candidate.expectedTotalFeesQuoteAtoms) {
+      throw new Error('route decision does not match the prepared Hyperliquid Testnet quote');
     }
+    prepared.delete(key(decision.orderHash));
     const quoteNonce = input.nonceSource.next();
     if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
-    return Object.freeze({ ...prepared.terms, quoteNonce });
+    return Object.freeze({ ...created.terms, quoteNonce });
   };
   return Object.freeze({ providers: Object.freeze({ candidates, terms }) });
 }
 
 export function composeQuoteProviders(
-  local: HyperliquidTestnetQuoteRuntime['providers'],
-  hyperliquid?: HyperliquidTestnetQuoteRuntime['providers'],
-): HyperliquidTestnetQuoteRuntime['providers'] {
+  local: QuoteProviders | undefined,
+  hyperliquid?: QuoteProviders,
+): QuoteProviders {
   const select = (order: PackageOrder) => {
-    if (order.environment === 'local' && order.domain.domainId === 'svm:local') return local;
+    if (order.environment === 'local' && order.domain.domainId === 'svm:local'
+      && local !== undefined) return local;
     if (order.environment === 'testnet' && order.domain.domainId === 'hypercore:testnet'
       && hyperliquid !== undefined) return hyperliquid;
     throw new Error('no quote runtime is configured for the order domain');
   };
-  return Object.freeze({
+  const providers: QuoteProviders = {
     candidates: (value) => select(value.order).candidates(value),
     terms: (value) => select(value.order).terms(value),
-  });
+  };
+  return Object.freeze(providers);
 }

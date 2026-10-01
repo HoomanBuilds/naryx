@@ -1,7 +1,6 @@
-import { localConformanceSlot, type LocalAtomicMarketCatalog } from '@naryx/adapter-core';
+import type { LocalAtomicMarketCatalog } from '@naryx/adapter-core';
 import { payloadTemplateHash, type ActionCommitmentInput, type RouteAccountBindingInput } from '@naryx/protocol-types';
 import {
-  InMemoryAtomicQuoteNonceSource,
   createConfiguredAtomicMarketProviders,
   type AtomicQuoteNonceSource,
   type ConfiguredAtomicMarketProviders,
@@ -81,10 +80,12 @@ function actions(catalog: LocalAtomicMarketCatalog): readonly ActionCommitmentIn
   ]);
 }
 
+// Prices, fees, and identities come from the catalog, never from a live market. The caller supplies
+// the nonce source and the clock explicitly so a process never signs with implicit defaults.
 export function createLocalAtomicMarketRuntime(
   catalog: LocalAtomicMarketCatalog,
-  nonceSource: AtomicQuoteNonceSource = new InMemoryAtomicQuoteNonceSource(),
-  currentClock: () => bigint = () => localConformanceSlot(),
+  nonceSource: AtomicQuoteNonceSource,
+  currentClock: () => bigint,
 ): LocalAtomicMarketRuntime {
   const spreadQuoteAtoms = catalog.pricing.perpetual.quoteAtoms * catalog.pricing.spot.baseAtoms
     - catalog.pricing.spot.quoteAtoms * catalog.pricing.perpetual.baseAtoms;
