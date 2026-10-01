@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { firmReservationId } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
-import { priceSolanaDevnetEntry, selectFirmLevel } from '../src/solana-devnet-firm-quote.js';
+import { priceSolanaDevnetEntry, priceSolanaDevnetExit, selectFirmLevel } from '../src/solana-devnet-firm-quote.js';
 import {
   BorshWriter,
   accountDiscriminator,
@@ -41,6 +41,20 @@ test('prices a firm inventory spot leg and a test perp short in integer atoms', 
   assert.throws(() => priceSolanaDevnetEntry({ inventorySpreadBps: 10, perpLimitToleranceBps: 5, spotBaseLotAtoms: 1_000_000n }, market, 150_000n, 1_500_000n), /exact/);
 });
 
+test('prices a floored firm inventory bid and a rounded-up test perp buy-back in integer atoms', () => {
+  const config = { inventorySpreadBps: 10, perpLimitToleranceBps: 5, spotBaseLotAtoms: 1_000_000n };
+  const pricing = priceSolanaDevnetExit(config, market, 150_000n, 2_000_000_000n);
+  // Bid floored: 2000 lots x 150000 x 0.999; the spot minimum is that exact bid per lot.
+  assert.equal(pricing.firmQuoteAtoms, 299_700_000n);
+  assert.equal(pricing.spotLots * pricing.spotMinimumPerLot, 299_700_000n);
+  // Buy-back fills at the oracle plus 3 bps rounded up, fee and limit rounded up.
+  assert.equal(pricing.perpNotionalAtoms, 300_090_000n);
+  assert.equal(pricing.perpFeeAtoms, 150_045n);
+  assert.equal(pricing.perpLimitPerLot, 150_121n);
+  assert.equal(priceSolanaDevnetExit(config, market, 150_001n, 3_000_000n).firmQuoteAtoms, 449_552n);
+  assert.throws(() => priceSolanaDevnetExit(config, market, 150_000n, 1_500_000n), /exact/);
+});
+
 test('selects only a live firm ask level with the reviewed policy, capacity, and expiry window', () => {
   const policy = new Uint8Array(32).fill(4);
   const settlement = new Uint8Array(32).fill(5);
@@ -60,6 +74,8 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   assert.equal(selectFirmLevel(state, config, 11n, 450n, 550n), undefined);
   assert.equal(selectFirmLevel(state, config, 2n, 500n, 550n), undefined);
   assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, quoteMode: 1 }] }, config, 2n, 450n, 550n), undefined);
+  assert.equal(selectFirmLevel(state, config, 2n, 450n, 550n, 1), undefined);
+  assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, side: 1 }] }, config, 2n, 450n, 550n, 1)?.levelId, 77n);
 });
 
 test('decodes the inventory reservation account layout', () => {

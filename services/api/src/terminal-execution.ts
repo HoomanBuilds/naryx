@@ -73,7 +73,7 @@ export type NormalizedCashCarryExecutionRequest = Readonly<{
   idempotencyKey: string;
 }>;
 
-export type SolanaDevnetPlanKind = "TRADER_ENTRY" | "TRADER_RECOVERY_EXIT";
+export type SolanaDevnetPlanKind = "TRADER_ENTRY" | "TRADER_RECOVERY_EXIT" | "TRADER_FIRM_EXIT";
 
 export type SolanaLookupCommitmentDto = Readonly<{
   address: string;
@@ -406,10 +406,10 @@ export function validateUnsignedSolanaDevnetMaterialization(
   if (value.domain !== "svm:devnet" || value.genesisHash !== SOLANA_DEVNET_GENESIS_HASH) {
     throw new Error("materialization is not bound to Solana Devnet");
   }
-  const expectedPlanKind: SolanaDevnetPlanKind = request.mode === "entry"
-    ? "TRADER_ENTRY"
-    : "TRADER_RECOVERY_EXIT";
-  if (value.planKind !== expectedPlanKind) throw new Error("materialization plan kind does not match request mode");
+  const expectedPlanKind: SolanaDevnetPlanKind | undefined = request.mode === "entry"
+    ? value.planKind === "TRADER_ENTRY" ? "TRADER_ENTRY" : undefined
+    : value.planKind === "TRADER_RECOVERY_EXIT" || value.planKind === "TRADER_FIRM_EXIT" ? value.planKind : undefined;
+  if (expectedPlanKind === undefined) throw new Error("materialization plan kind does not match request mode");
   const domainManifestVersion = requirePositiveInteger(value.domainManifestVersion, "domainManifestVersion");
   const domainManifestHash = requireNonzeroCommitment(value.domainManifestHash, "domainManifestHash");
   const messageBytes = decodeCanonicalBase64(value.messageBase64, "messageBase64");

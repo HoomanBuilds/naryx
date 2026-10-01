@@ -5,6 +5,8 @@ import { requireSolanaDevnet, type SolanaDevnetSolverReadPort, type SolanaDevnet
 import type { SolanaDevnetSharedManifest, SolanaDevnetSolverConfig, SolanaDevnetSolverKey } from './solana-devnet-solver-config.js';
 import {
   BorshReader,
+  RESERVATION_ACTION_ENTRY,
+  RESERVATION_ACTION_EXIT,
   accountDiscriminator,
   associatedTokenAddress,
   decodeFirmReservation,
@@ -52,8 +54,8 @@ export function decodeLivePair(data: Uint8Array): Readonly<{ reservationClass: s
 }
 
 /**
- * `release_reservation` is permissionless once the reservation expired, and returns the vaulted base
- * inventory to the solver's reclaim account. The solver only releases its own reservation in its
+ * `release_reservation` (and `release_exit_reservation` for a buy-back) is permissionless once the
+ * reservation expired, and returns the vaulted inventory to the solver's reclaim account. The solver only releases its own reservation in its
  * reviewed class, only after the finalized slot reached expiry, only from FUNDED or LIVE, and only
  * when the vault holds exactly the reserved base atoms; every other state fails closed. Writes need
  * the solver write port, which exists only with NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED=true.
@@ -95,12 +97,17 @@ export function createSolanaDevnetReservationReleaser(dependencies: Readonly<{
     if (slot < state.expirySlot) {
       throw new SolanaDevnetReleaseError('NOT_READY', `reservation expires at slot ${state.expirySlot}; finalized slot is ${slot}`);
     }
-    const reclaim = associatedTokenAddress(solver, state.baseMint).toBase58();
-    if (state.solverReclaimBase !== reclaim) refused('reservation reclaim account is not the solver base inventory account');
+    // An entry reservation vaults base and returns it to the solver base account; an exit buy-back
+    // vaults quote and returns it to the solver quote account.
+    const exit = state.action === RESERVATION_ACTION_EXIT;
+    if (!exit && state.action !== RESERVATION_ACTION_ENTRY) refused('reservation action is unknown');
+    const reclaim = associatedTokenAddress(solver, exit ? state.quoteMint : state.baseMint).toBase58();
+    if ((exit ? state.solverQuote : state.solverReclaimBase) !== reclaim) refused(`reservation reclaim account is not the solver ${exit ? 'quote' : 'base'} inventory account`);
     if (vaultAccount === null || vaultAccount === undefined || vaultAccount.owner !== TOKEN_PROGRAM_ID) refused('reservation vault is absent');
     const vaultToken = decodeTokenAccount(vaultAccount.data);
-    if (vaultToken.mint !== state.baseMint || vaultToken.owner !== reservation.toBase58() || vaultToken.amount !== state.baseAtoms) {
-      refused('reservation vault does not hold exactly the reserved base atoms');
+    if (vaultToken.mint !== (exit ? state.quoteMint : state.baseMint) || vaultToken.owner !== reservation.toBase58()
+      || vaultToken.amount !== (exit ? state.quoteAtoms : state.baseAtoms)) {
+      refused(`reservation vault does not hold exactly the reserved ${exit ? 'quote' : 'base'} atoms`);
     }
     if (dependencies.writer === undefined) {
       throw new SolanaDevnetReleaseError('NOT_READY', 'solver writes are disabled');
@@ -120,7 +127,7 @@ export function createSolanaDevnetReservationReleaser(dependencies: Readonly<{
         meta(new PublicKey(reclaim), true),
         meta(new PublicKey(TOKEN_PROGRAM_ID), false),
       ],
-      data: instructionDiscriminator('release_reservation'),
+      data: instructionDiscriminator(exit ? 'release_exit_reservation' : 'release_reservation'),
     });
     const signature = await dependencies.writer.sendAndFinalize(
       [ComputeBudgetProgram.setComputeUnitLimit({ units: RELEASE_COMPUTE_UNITS }), instruction],

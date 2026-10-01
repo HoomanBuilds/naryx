@@ -375,6 +375,14 @@ export function solanaDevnetSizeAtoms(size: string): string {
     + BigInt((match[2] ?? "").padEnd(SOLANA_DEVNET_BASE_DECIMALS, "0") || "0")).toString();
 }
 
+/** Canonical decimal size for base atoms: no trailing fractional zeros, the inverse of the above. */
+export function solanaDevnetSizeFromAtoms(atoms: string): string {
+  const value = BigInt(atoms);
+  const scale = TEN ** BigInt(SOLANA_DEVNET_BASE_DECIMALS);
+  const fraction = (value % scale).toString().padStart(SOLANA_DEVNET_BASE_DECIMALS, "0").replace(/0+$/, "");
+  return fraction.length === 0 ? (value / scale).toString() : `${value / scale}.${fraction}`;
+}
+
 type OnboardingState = Readonly<{
   key: string;
   status: SolanaDevnetAccountStatus | null;

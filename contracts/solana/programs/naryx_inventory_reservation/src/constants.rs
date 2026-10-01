@@ -7,3 +7,5 @@ pub const DOMAIN_REF_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-identity";
 pub const RESERVATION_ID_DOMAIN: &[u8] = b"CON/v1/reservation-id";
 pub const RESERVATION_VERSION: u16 = 2;
 pub const RESERVATION_ACTION_ENTRY: u8 = 1;
+/// The solver buys the strategy's base back: it escrows quote and receives the base.
+pub const RESERVATION_ACTION_EXIT: u8 = 2;

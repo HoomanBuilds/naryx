@@ -245,6 +245,7 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
         "NARYX_SOLANA_DEVNET_ORDER_CONTEXT",
       )),
       port: new HttpSolanaDevnetMarketReadPort(process.env.NARYX_SOLANA_DEVNET_RPC_URL ?? ""),
+      orders: orderStore,
     });
     solanaDevnetOrderRuntime.feed.start();
   } catch (error) {

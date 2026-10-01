@@ -1883,11 +1883,11 @@ function requirePreparation(
     throw new Error("Domain manifest version must be positive.");
   }
   const domainManifestHash = requireHex32(value.domainManifestHash, "Domain manifest hash");
-  const expectedPlanKind = input.mode === "entry" ? "TRADER_ENTRY" : "TRADER_RECOVERY_EXIT";
-  if (value.planKind !== "TRADER_ENTRY" && value.planKind !== "TRADER_RECOVERY_EXIT") {
+  if (value.planKind !== "TRADER_ENTRY" && value.planKind !== "TRADER_RECOVERY_EXIT" &&
+      value.planKind !== "TRADER_FIRM_EXIT") {
     throw new Error("Execution preparation plan kind is invalid.");
   }
-  if (value.planKind !== expectedPlanKind) {
+  if ((value.planKind === "TRADER_ENTRY") !== (input.mode === "entry")) {
     throw new Error("Execution preparation plan kind does not match the reviewed mode.");
   }
 
@@ -3614,6 +3614,59 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw await serviceFailure(response, "Devnet account status");
     return parseSolanaDevnetAccountStatus(await response.json() as unknown, owner);
+  }
+
+  /**
+   * Firm Devnet exit: the service builds the canonical EXIT order for the wallet's open package from
+   * the live oracle, the wallet signs the order bytes, the solver quotes its firm buy-back bid, and
+   * the quote is selected. The returned size is the open package size the prepare step must use with
+   * the same idempotency key. Nothing is submitted here.
+   */
+  async createSolanaDevnetExitAttempt(
+    input: Readonly<{ owner: string; slippageBps: number; idempotencyKey: string }>,
+    signMessage: (message: Uint8Array) => Promise<string>,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ orderHashHex: string; quantityAtoms: string }>> {
+    const idempotencyKey = requireObservationIdempotencyKey(input.idempotencyKey);
+    const post = (path: string, body: unknown) => fetch(`${this.#baseUrl}${path}`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const created = await post("/internal/terminal/solana-devnet/exit-order", {
+      owner: input.owner,
+      slippageBps: input.slippageBps,
+      idempotencyKey,
+    });
+    if (!created.ok) throw await serviceFailure(created, "Devnet exit order");
+    const value = await created.json() as unknown;
+    if (!isRecord(value) || value.status !== "UNSIGNED_CREATED" || !isRecord(value.order) ||
+        typeof value.quantityAtoms !== "string" || !/^[1-9][0-9]{0,30}$/.test(value.quantityAtoms)) {
+      throw new Error("Devnet exit order response is invalid.");
+    }
+    const order = value.order;
+    if (order.idempotencyKey !== idempotencyKey || order.owner !== input.owner || order.settlementAccount !== input.owner ||
+        order.domainId !== "svm:devnet" || order.status !== "UNSIGNED_CREATED") {
+      throw new Error("Devnet exit order does not match the request.");
+    }
+    const orderHashHex = requireHex32(order.orderHashHex, "Exit order hash");
+    const orderBytes = decodeCanonicalBase64(order.orderBase64, "Exit order bytes");
+    if (orderBytes.length === 0) throw new Error("Exit order bytes are empty.");
+    const signature = requireCanonicalBase58Signature(await signMessage(orderBytes), "Exit authorization signature");
+    const authorized = await post(`/internal/terminal/orders/${orderHashHex}/authorize`, { signature });
+    if (!authorized.ok) throw await serviceFailure(authorized, "Exit order authorization");
+    const quoted = await post(`/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: crypto.randomUUID() });
+    if (!quoted.ok) throw await serviceFailure(quoted, "Exit solver quote");
+    const quote = await quoted.json() as unknown;
+    if (!isRecord(quote) || quote.orderHash !== orderHashHex) throw new Error("Exit solver quote does not match the order.");
+    const quoteHash = requireHex32(quote.quoteHash, "Exit quote hash");
+    const selected = await post(`/internal/terminal/orders/${orderHashHex}/select`, { quoteHash });
+    if (!selected.ok) throw await serviceFailure(selected, "Exit quote selection");
+    return Object.freeze({ orderHashHex, quantityAtoms: value.quantityAtoms });
   }
 
   async prepareSolanaExecution(

@@ -47,4 +47,22 @@ pub mod naryx_inventory_reservation {
     pub fn release_reservation(ctx: Context<ReleaseReservation>) -> Result<()> {
         release_reservation::release_reservation_handler(ctx)
     }
+
+    pub fn fund_exit_reservation(
+        ctx: Context<FundExitReservation>,
+        args: FundReservationArgs,
+    ) -> Result<()> {
+        exit_reservation::fund_exit_reservation_handler(ctx, args)
+    }
+
+    pub fn consume_exit_reservation(
+        ctx: Context<ConsumeExitReservation>,
+        args: ConsumeReservationArgs,
+    ) -> Result<()> {
+        exit_reservation::consume_exit_reservation_handler(ctx, args)
+    }
+
+    pub fn release_exit_reservation(ctx: Context<ReleaseExitReservation>) -> Result<()> {
+        exit_reservation::release_exit_reservation_handler(ctx)
+    }
 }

@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
+  compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
   type FirmCashCarryBinding,
   type FirmCashCarryQuoteArgs,
@@ -35,6 +36,9 @@ import {
   BorshWriter,
   QUOTE_MODE_FIRM_ONCHAIN,
   QUOTE_SIDE_ASK,
+  QUOTE_SIDE_BID,
+  RESERVATION_ACTION_ENTRY,
+  RESERVATION_ACTION_EXIT,
   accountDiscriminator,
   associatedTokenAddress,
   decodeFirmQuoteLock,
@@ -145,12 +149,13 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     reservationId: Uint8Array,
     expiry: bigint,
     units: bigint,
+    exit: boolean,
   ): FirmCashCarryQuoteArgs {
     const level = state.levels[record.slotIndex];
     if (level === undefined || !level.active || level.epoch !== state.shard.epoch || level.levelId !== record.levelId
-      || level.side !== QUOTE_SIDE_ASK || level.quoteMode !== QUOTE_MODE_FIRM_ONCHAIN || level.expirySlot !== expiry
+      || level.side !== (exit ? QUOTE_SIDE_BID : QUOTE_SIDE_ASK) || level.quoteMode !== QUOTE_MODE_FIRM_ONCHAIN || level.expirySlot !== expiry
       || units > level.remainingCapacity) {
-      notReady('the quoted firm ask level is no longer live; request a new quote');
+      notReady('the quoted firm level is no longer live; request a new quote');
     }
     const packagePrice = state.shard.referencePackagePrice + level.referenceOffset;
     const fill = packageFillCommitment({
@@ -181,7 +186,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       slotIndex: record.slotIndex,
       levelId: level.levelId,
       expectedLevelSequence: level.levelSequence,
-      expectedSide: 2,
+      expectedSide: exit ? 1 : 2,
       packageSizeUnits: units,
       expectedPackagePrice: packagePrice,
       expectedMaxFeeAtoms: 0n,
@@ -199,6 +204,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     const admission = await dependencies.admissions(attemptId);
     if (admission === undefined) throw new SolanaDevnetBindingError('ATTEMPT_NOT_FOUND', 'attempt was not found');
     const { order, quote, route } = admission;
+    const exit = order.action === 'EXIT';
     const record = journal.get(hex(admission.orderHash));
     if (record === undefined || record.response.quoteHash !== hex(admission.quoteHash)
       || record.response.routeHash !== hex(admission.routeHash)) {
@@ -220,18 +226,19 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     let state = await readSolanaDevnetQuoteState(rpc, manifest, config);
     if (state.slot >= expiry) notReady('the firm quote has expired; request a new quote');
     const accounts = deriveSolanaDevnetFirmAccounts({
-      manifest, config, market: state.market, owner: order.owner, orderHash: admission.orderHash, nonce: order.nonce, reservationId,
+      manifest, config, market: state.market, owner: order.owner, orderHash: admission.orderHash, nonce: order.nonce, reservationId, exit,
     });
     for (const binding of route.accountBindings) {
       const name = binding.routeBindingId.startsWith('firm-') ? binding.routeBindingId.slice(5) : undefined;
       if (name === undefined || accounts[name] !== binding.accountIdentity) mismatch(`route binding ${binding.routeBindingId} does not match live derivation`);
     }
 
-    // Trader readiness: own strategy controlled by the executor, delegated position, prefunded collateral.
+    // Trader readiness: own strategy controlled by the executor, delegated position, prefunded
+    // collateral for entry, and for exit the open package with the exact short.
     const traderReads = await read([
-      accounts.riseStrategy!, accounts.testPerpPosition!, accounts.executorAuthority!, accounts.solverRegistry!,
+      accounts.riseStrategy!, accounts.testPerpPosition!, accounts.executorAuthority!, accounts.solverRegistry!, accounts.openPackage!,
     ], state.slot);
-    const [strategyAccount, positionAccount, executorAccount, registryAccount] = traderReads;
+    const [strategyAccount, positionAccount, executorAccount, registryAccount, openPackageAccount] = traderReads;
     if (strategyAccount === null || strategyAccount === undefined || strategyAccount.owner !== programAddress(manifest, 'perp_adapter').programId) {
       notReady('trader strategy is not initialized');
     }
@@ -243,8 +250,12 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       notReady('trader test perp position is not initialized');
     }
     const position = decodeTestPerpPosition(positionAccount.data);
-    if (position.owner !== order.owner || position.delegate !== accounts.riseStrategy || position.baseLots !== 0n) {
-      notReady('trader position is not flat or not delegated to the strategy');
+    const expectedBaseLots = exit ? -(quantity / state.market.baseLotAtoms) : 0n;
+    if (position.owner !== order.owner || position.delegate !== accounts.riseStrategy || position.baseLots !== expectedBaseLots) {
+      notReady(exit ? 'trader position is not the exact open short' : 'trader position is not flat or not delegated to the strategy');
+    }
+    if (exit && (openPackageAccount === null || openPackageAccount === undefined || openPackageAccount.owner !== core.programId)) {
+      notReady('trader has no open package to exit');
     }
     if (executorAccount === null || executorAccount === undefined || executorAccount.owner !== core.programId) {
       notReady('trader executor authority is not initialized');
@@ -253,11 +264,15 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       || !decodeSolverRegistryActive(registryAccount.data).includes(config.solverId)) {
       mismatch('solver is not active in the core solver registry');
     }
-    const pricing = priceSolanaDevnetEntry(config, state.market, state.oraclePricePerLot, quantity);
-    // The program requires prefunded collateral at or above this floor before and after the fee.
-    const minimumCollateral = pricing.initialMarginAtoms > 0n ? pricing.initialMarginAtoms : 1n;
-    if (position.collateralAtoms < minimumCollateral + pricing.perpFeeAtoms) {
-      notReady(`trader collateral ${position.collateralAtoms} is below the required ${minimumCollateral + pricing.perpFeeAtoms} atoms`);
+    // The program requires prefunded collateral at or above this floor before and after the entry
+    // fee. A reduce-only exit carries no collateral floor; the venue enforces its own margin.
+    let minimumCollateral = 0n;
+    if (!exit) {
+      const pricing = priceSolanaDevnetEntry(config, state.market, state.oraclePricePerLot, quantity);
+      minimumCollateral = pricing.initialMarginAtoms > 0n ? pricing.initialMarginAtoms : 1n;
+      if (position.collateralAtoms < minimumCollateral + pricing.perpFeeAtoms) {
+        notReady(`trader collateral ${position.collateralAtoms} is below the required ${minimumCollateral + pricing.perpFeeAtoms} atoms`);
+      }
     }
 
     // Inventory reservation: fund and finalize when absent, finalize when funded, then lock.
@@ -278,7 +293,9 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
         }
       }
       if (reservation === undefined) {
+        // Entry escrows base and is paid quote; an exit buy-back escrows quote and is paid base.
         const solverBase = associatedTokenAddress(config.solverId, config.resources.baseAsset.subjectAddress).toBase58();
+        const solverQuote = associatedTokenAddress(config.solverId, config.resources.quoteAsset.subjectAddress).toBase58();
         instructions.push(new TransactionInstruction({
           programId: new PublicKey(reservationProgram.programId),
           keys: [
@@ -286,11 +303,11 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
             [accounts.config!, false, false], [accounts.reservationClass!, false, false], [accounts.reservationCapacity!, false, true],
             [accounts.reservation!, false, true], [accounts.livePair!, false, true], [accounts.reservationVault!, false, true],
             [config.resources.baseAsset.subjectAddress, false, false], [config.resources.quoteAsset.subjectAddress, false, false],
-            [solverBase, false, true], [accounts.solverQuote!, false, false], [accounts.executorBase!, false, false],
+            [solverBase, false, !exit], [solverQuote, false, exit], [accounts.executorBase!, false, false],
             [accounts.executorQuote!, false, false], [accounts.tokenProgram!, false, false], [accounts.systemProgram!, false, false],
           ].map(([pubkey, isSigner, isWritable]) => ({ pubkey: new PublicKey(pubkey as string), isSigner: isSigner as boolean, isWritable: isWritable as boolean })),
           data: new BorshWriter()
-            .bytes(instructionDiscriminator('fund_reservation'))
+            .bytes(instructionDiscriminator(exit ? 'fund_exit_reservation' : 'fund_reservation'))
             .domain(manifest.domain).bytes(reservationId).string(config.solverId).key(accounts.executorAuthority!)
             .u64(order.nonce).bytes(admission.orderHash).bytes(admission.routeHash).bytes(reservationNonce)
             .u64(quantity).u64(firmQuoteAtoms).u64(expiry)
@@ -318,7 +335,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     let quoteArgs: FirmCashCarryQuoteArgs;
     if (lock === undefined) {
       if (dependencies.writer === undefined) notReady('quote lock is absent and solver writes are disabled');
-      quoteArgs = quoteArgsFor(admission, state, record, accounts, reservationId, expiry, units);
+      quoteArgs = quoteArgsFor(admission, state, record, accounts, reservationId, expiry, units, exit);
       journal.recordLockArgs(record.orderHash, stringifyProtocolJson(quoteArgs, 'lockArgs'));
     } else {
       if (record.lockArgsJson === undefined) mismatch('a quote lock exists without journaled lock arguments');
@@ -340,12 +357,14 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
           ...(value.adapterClassId === undefined ? {} : { adapterClassId: value.adapterClassId }),
         };
       };
-      const spotLimit = perLot(route.legs[0]!.limitPrice, config.spotBaseLotAtoms, 'CEIL');
-      const perpLimit = perLot(route.legs[1]!.limitPrice, state.market.baseLotAtoms, 'FLOOR');
+      // Entry spot is a maximum and perp a minimum; an exit inverts both bounds.
+      const spotLimit = perLot(route.legs[0]!.limitPrice, config.spotBaseLotAtoms, exit ? 'FLOOR' : 'CEIL');
+      const perpLimit = perLot(route.legs[1]!.limitPrice, state.market.baseLotAtoms, exit ? 'CEIL' : 'FLOOR');
       const spotNotional = (quantity / config.spotBaseLotAtoms) * spotLimit;
       const perpNotional = (quantity / state.market.baseLotAtoms) * perpLimit;
       const entries = Object.entries(accounts).map(([name, address]) => [name, { address, routeBindingId: firmRouteBindingId(name) }]);
       return {
+        ...(exit ? { action: 'EXIT' as const } : {}),
         environment: 'devnet',
         domain: manifest.domain,
         coreIdl: manifest.coreIdl,
@@ -396,7 +415,8 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
           baseAtoms: liveReservation.baseAtoms,
           quoteAtoms: liveReservation.quoteAtoms,
           expirySlot: liveReservation.expirySlot,
-          action: 'ENTRY',
+          action: liveReservation.action === RESERVATION_ACTION_EXIT ? 'EXIT'
+            : liveReservation.action === RESERVATION_ACTION_ENTRY ? 'ENTRY' : mismatch('reservation action is unknown'),
         },
         quoteLock: {
           consumed: false,
@@ -451,9 +471,12 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       })) as unknown as FirmCashCarryBinding['tokenAccounts'];
     };
 
+    const compile = (binding: FirmCashCarryBinding) => (exit
+      ? compileFirmCashCarryExitPlan(admission, binding)
+      : compileFirmCashCarryPlan(admission, binding));
     if (lock === undefined) {
       const tokens = await readTokens(state.slot);
-      const plan = compileFirmCashCarryPlan(admission, assemble(state.slot, reservation, tokens, new Uint8Array(64)));
+      const plan = compile(assemble(state.slot, reservation, tokens, new Uint8Array(64)));
       await dependencies.writer!.sendAndFinalize([
         ComputeBudgetProgram.setComputeUnitLimit({ units: WRITE_COMPUTE_UNITS }),
         ...plan.solverLock.instructions,
@@ -489,7 +512,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     }
     const tokens = await readTokens(slot);
     const unsigned = assemble(slot, finalReservation, tokens, new Uint8Array(64));
-    const plan = compileFirmCashCarryPlan(admission, unsigned);
+    const plan = compile(unsigned);
     const signature = key.signDigest(plan.executionDigest);
     return Object.freeze({ ...unsigned, solverSignature: signature });
   }

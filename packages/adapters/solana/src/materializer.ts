@@ -11,6 +11,7 @@ import {
 } from '@solana/web3.js';
 import { bytesEqual, type DomainRef, type PackageAdmission } from '@naryx/protocol-types';
 import {
+  compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
   type AnyFirmCashCarryBinding,
   type SolanaMessageContext,
@@ -31,7 +32,13 @@ export type SolanaMaterializedPlanKind =
   | 'SOLVER_LOCK'
   | 'TRADER_ENTRY'
   | 'SOLVER_AUTHORIZED_EXIT'
-  | 'TRADER_RECOVERY_EXIT';
+  | 'TRADER_RECOVERY_EXIT'
+  | 'SOLVER_FIRM_EXIT_LOCK'
+  | 'TRADER_FIRM_EXIT';
+
+function isFirmExitKind(kind: SolanaMaterializedPlanKind): boolean {
+  return kind === 'SOLVER_FIRM_EXIT_LOCK' || kind === 'TRADER_FIRM_EXIT';
+}
 
 export interface SolanaLookupTableConfig {
   readonly address: PublicKey | string;
@@ -281,7 +288,8 @@ function planHashes(
 
 function selectedComputeUnitLimit(request: SolanaMaterializationRequest): number | null {
   if (request.planKind === 'SOLVER_LOCK') return null;
-  if (request.planKind === 'TRADER_ENTRY') return request.binding.computeUnitLimit;
+  if (request.planKind === 'SOLVER_FIRM_EXIT_LOCK') return null;
+  if (request.planKind === 'TRADER_ENTRY' || request.planKind === 'TRADER_FIRM_EXIT') return request.binding.computeUnitLimit;
   requireCondition(request.binding.publicExit !== undefined, 'public exit binding is required');
   return request.binding.publicExit.computeUnitLimit;
 }
@@ -348,6 +356,8 @@ export class SolanaUnsignedTransactionMaterializer {
       }
       requireCondition(request.binding.publicExit.activeDomain.domainId === this.#config.domain.domainId, 'public exit active domain identity mismatch');
     }
+    // A firm exit is its own top-level admission (an EXIT order), so its plan hashes are the admission's.
+    requireCondition(isFirmExitKind(request.planKind) === (request.binding.action === 'EXIT'), 'plan kind does not match the binding action');
     const computeUnitLimit = selectedComputeUnitLimit(request);
     requireCondition(computeUnitLimit === null || (Number.isInteger(computeUnitLimit) && computeUnitLimit > 0 && computeUnitLimit <= MAX_ROUTE_COMPUTE_UNITS), 'materialized plan exceeds the 1260000 CU route cap');
 
@@ -389,7 +399,7 @@ export class SolanaUnsignedTransactionMaterializer {
       addressLookupTables: Object.freeze(lookupAccounts),
     });
     let binding: AnyFirmCashCarryBinding;
-    if (request.planKind === 'SOLVER_LOCK' || request.planKind === 'TRADER_ENTRY') {
+    if (request.planKind === 'SOLVER_LOCK' || request.planKind === 'TRADER_ENTRY' || isFirmExitKind(request.planKind)) {
       const { publicExit: unusedExit, ...entryBinding } = request.binding;
       void unusedExit;
       binding = { ...entryBinding, messageContext };
@@ -401,30 +411,37 @@ export class SolanaUnsignedTransactionMaterializer {
         publicExit: { ...request.binding.publicExit, messageContext },
       };
     }
-    let compiled: ReturnType<typeof compileFirmCashCarryPlan>;
-    try {
-      compiled = compileFirmCashCarryPlan(request.admission, binding);
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('encoding overruns Uint8Array')) {
-        throw new Error('materialized transaction exceeds the 1232-byte wire limit');
+    const compile = <T>(build: () => T): T => {
+      try {
+        return build();
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('encoding overruns Uint8Array')) {
+          throw new Error('materialized transaction exceeds the 1232-byte wire limit');
+        }
+        throw error;
       }
-      throw error;
-    }
+    };
     let plan: SelectedPlan;
     let exit: PublicCashCarryExitPlan | undefined;
-    if (request.planKind === 'SOLVER_LOCK') {
-      plan = compiled.solverLock;
-    } else if (request.planKind === 'TRADER_ENTRY') {
-      plan = compiled.traderEntry;
+    if (isFirmExitKind(request.planKind)) {
+      const firmExit = compile(() => compileFirmCashCarryExitPlan(request.admission, binding));
+      plan = request.planKind === 'TRADER_FIRM_EXIT' ? firmExit.traderExit : firmExit.solverLock;
     } else {
-      requireCondition(compiled.publicExit.status === 'SUPPORTED', 'public exit plan is unavailable');
-      exit = compiled.publicExit;
-      if (request.planKind === 'SOLVER_AUTHORIZED_EXIT') {
-        requireCondition(exit.authorization.mode === 'SOLVER_AUTHORIZED', 'public exit is not solver-authorized');
+      const compiled = compile(() => compileFirmCashCarryPlan(request.admission, binding));
+      if (request.planKind === 'SOLVER_LOCK') {
+        plan = compiled.solverLock;
+      } else if (request.planKind === 'TRADER_ENTRY') {
+        plan = compiled.traderEntry;
       } else {
-        requireCondition(exit.authorization.mode === 'TRADER_RECOVERY', 'public exit is not trader recovery');
+        requireCondition(compiled.publicExit.status === 'SUPPORTED', 'public exit plan is unavailable');
+        exit = compiled.publicExit;
+        if (request.planKind === 'SOLVER_AUTHORIZED_EXIT') {
+          requireCondition(exit.authorization.mode === 'SOLVER_AUTHORIZED', 'public exit is not solver-authorized');
+        } else {
+          requireCondition(exit.authorization.mode === 'TRADER_RECOVERY', 'public exit is not trader recovery');
+        }
+        plan = exit;
       }
-      plan = exit;
     }
     requireCondition(plan.resolvedAddressCount <= MAX_RESOLVED_ADDRESSES, 'materialized plan exceeds 64 resolved addresses');
     requireCondition(plan.messageSize.status === 'PROVEN', 'materialized plan wire size is unproven');

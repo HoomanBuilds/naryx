@@ -1,4 +1,5 @@
 import { isAddress } from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { createPublicKey, verify } from "node:crypto";
 import { bytesEqual, enumDiscriminant, SETTLEMENT_CLASS } from "@naryx/protocol-types";
@@ -571,6 +572,16 @@ export function deriveSolanaDevnetLifecycleBinding(args: Readonly<{
     settlementClass = settlementRaw as SettlementClass;
     const orderHash = (admission as unknown as Record<string, unknown>).orderHash;
     entryOrderHex = toEntryOrderHex(orderHash, "admission orderHash");
+  } else if (isFirmExit(binding)) {
+    // A firm exit is its own admitted EXIT order; on Solana its entry receipt commitment is the
+    // entry order hash, which keys the package lifecycle.
+    action = "EXIT";
+    if (orderAction !== "EXIT") throw new Error("Admission order action does not match exit request.");
+    lifecycleDomain = asDomainRef((order as Record<string, unknown>).domain, "admission order domain");
+    const settlementRaw = (order as Record<string, unknown>).settlementClass;
+    if (settlementRaw !== "ATOMIC_POSTCONDITION") throw new Error("Firm exit settlement class is invalid.");
+    settlementClass = settlementRaw;
+    entryOrderHex = toEntryOrderHex((order as Record<string, unknown>).entryReceiptHash, "exit order entryReceiptHash");
   } else {
     action = "EXIT";
     // Top-level admission is historical entry evidence; effective exit order is publicExit.admission.order.
@@ -668,12 +679,49 @@ function testPerpPositionBinding(
   };
 }
 
+/**
+ * Firm exit evidence: the exit receipt at the exit order's receipt PDA naming the entry receipt
+ * PDA of (trader, entry order hash), the open package closed, and the test perp position flat.
+ */
+function firmExitPostconditionBinding(
+  admission: PackageAdmission,
+  binding: FirmCashCarryBinding,
+): SolanaDevnetPostconditionBinding {
+  const accounts = binding.accounts as unknown as Record<string, { address: unknown }>;
+  const trader = solanaAddress(accounts.trader?.address, "postcondition trader");
+  const coreProgram = solanaAddress(binding.deployments.core.programId, "postcondition core program");
+  const entryOrderHex = toEntryOrderHex(admission.order.entryReceiptHash, "exit order entryReceiptHash");
+  const entryReceiptAccount = PublicKey.findProgramAddressSync(
+    [Buffer.from("cash-carry-receipt"), new PublicKey(trader).toBuffer(), Buffer.from(entryOrderHex, "hex")],
+    new PublicKey(coreProgram),
+  )[0].toBase58();
+  return Object.freeze({
+    coreProgram,
+    receiptAccount: solanaAddress(accounts.receipt?.address, "postcondition receipt account"),
+    openPackageAccount: solanaAddress(accounts.openPackage?.address, "postcondition open package account"),
+    entryReceiptAccount,
+    orderHashHex: toCanonicalHex32(admission.orderHash, "postcondition order hash"),
+    quoteHashHex: toCanonicalHex32(admission.quoteHash, "postcondition quote hash"),
+    routeHashHex: toCanonicalHex32(admission.routeHash, "postcondition route hash"),
+    trader,
+    solver: solanaAddress(accounts.solver?.address, "postcondition solver"),
+    nonce: binding.executionArgs.nonce,
+    spotQuantityAtoms: binding.executionArgs.spotQuantityAtoms,
+    perpQuantityAtoms: binding.executionArgs.perpQuantityAtoms,
+    resourceAdmissionCommitmentHex: toCanonicalHex32(binding.resourceAdmissionCommitment, "postcondition resource admission"),
+    packageFillCommitmentHex: toCanonicalHex32(binding.quoteArgs.expectedFillCommitment, "postcondition package fill"),
+    ...testPerpPositionBinding(binding, accounts, trader, 0n),
+    recovery: false,
+  });
+}
+
 function deriveSolanaDevnetPostconditionBinding(args: Readonly<{
   request: NormalizedCashCarryExecutionRequest;
   admission: PackageAdmission;
   binding: FirmCashCarryBinding;
 }>): SolanaDevnetPostconditionBinding {
   const { request, admission, binding } = args;
+  if (request.mode === "exit" && isFirmExit(binding)) return firmExitPostconditionBinding(admission, binding);
   const exitSource = binding.publicExit;
   if (request.mode === "exit" && exitSource === undefined) throw new Error("Postcondition verification requires public exit evidence.");
   const source = request.mode === "entry" ? binding : exitSource!;
@@ -773,10 +821,27 @@ function copyRecord(record: {
   });
 }
 
+/** A firm exit binding carries action EXIT on the top-level binding; a public exit carries publicExit. */
+function isFirmExit(binding: FirmCashCarryBinding): boolean {
+  return (binding as unknown as { action?: unknown }).action === "EXIT";
+}
+
+function solanaDevnetPlanKind(
+  request: NormalizedCashCarryExecutionRequest,
+  binding: FirmCashCarryBinding,
+): SolanaDevnetPlanKind {
+  if (request.mode === "entry") {
+    if (isFirmExit(binding)) throw new Error("Entry preparation received an exit binding.");
+    return "TRADER_ENTRY";
+  }
+  return isFirmExit(binding) ? "TRADER_FIRM_EXIT" : "TRADER_RECOVERY_EXIT";
+}
+
 function mapToDto(
   materialization: UnsignedSolanaMaterialization,
   request: NormalizedCashCarryExecutionRequest,
   lifecycleBinding: SolanaDevnetLifecycleBinding,
+  binding: FirmCashCarryBinding,
 ): UnsignedSolanaDevnetMaterializationDto {
   if (!isRecord(materialization as unknown)) {
     throw new Error("Materialization must be an object.");
@@ -794,9 +859,7 @@ function mapToDto(
   if (materialization.genesisHash !== SOLANA_DEVNET_GENESIS_HASH) {
     throw new Error("Materialization genesis must be Solana Devnet.");
   }
-  const expectedPlanKind: SolanaDevnetPlanKind = request.mode === "entry"
-    ? "TRADER_ENTRY"
-    : "TRADER_RECOVERY_EXIT";
+  const expectedPlanKind = solanaDevnetPlanKind(request, binding);
   if (materialization.planKind !== expectedPlanKind) {
     throw new Error("Materialization plan kind does not match request mode.");
   }
@@ -1180,9 +1243,6 @@ export function createSolanaDevnetExecutionPorts(
         }
         const snapshot = copyRequest(request);
         const task: Promise<UnsignedSolanaDevnetMaterializationDto> = (async () => {
-          const expectedPlanKind: SolanaDevnetPlanKind = snapshot.mode === "entry"
-            ? "TRADER_ENTRY"
-            : "TRADER_RECOVERY_EXIT";
           const context = await contextProvider(snapshot);
           if (!isRecord(context as unknown)) {
             throw new Error("Execution context provider returned an invalid context.");
@@ -1202,6 +1262,7 @@ export function createSolanaDevnetExecutionPorts(
             requireSameDomain(domains.quote, domains.order, "Admission quote");
             requireSameDomain(domains.route, domains.order, "Admission route");
           }
+          const expectedPlanKind = solanaDevnetPlanKind(snapshot, binding);
           const lifecycleBinding = deriveSolanaDevnetLifecycleBinding({
             request: snapshot,
             admission,
@@ -1228,7 +1289,7 @@ export function createSolanaDevnetExecutionPorts(
           if (boundDomain !== undefined) {
             requireSameDomain(boundDomain, materialDomain, "Binding");
           }
-          const dto = mapToDto(materialization, snapshot, lifecycleBinding);
+          const dto = mapToDto(materialization, snapshot, lifecycleBinding, binding);
           store.save(snapshot, dto, lifecycleBinding, postconditionBinding);
           const stored = store.get(snapshot.idempotencyKey);
           if (stored === undefined) throw new Error("Prepared execution was not stored.");

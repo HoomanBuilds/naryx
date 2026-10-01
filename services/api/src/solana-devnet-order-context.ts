@@ -10,8 +10,19 @@ import {
   type ExactSignedRate,
   type FeeCap,
 } from "@naryx/protocol-types";
+import { decodeCashCarryExecutionReceipt, decodeOpenCashCarryPackage } from "@naryx/adapter-solana";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
-import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import {
+  createCanonicalExitOrder,
+  EntryOrderValidationError,
+  type ActiveOrderContext,
+  type ActiveOrderContextProvider,
+} from "./canonical-entry-order.js";
+import {
+  InternalOrderConflictError,
+  type InternalOrderCreateResult,
+  type InternalOrderStore,
+} from "./internal-order-store.js";
 import type { SolanaDevnetRuntimeManifest } from "./solana-devnet-runtime.js";
 import {
   anchorInstructionDiscriminator,
@@ -21,6 +32,7 @@ import {
   decodeTokenAccount,
   deriveSolanaDevnetTraderAccounts,
   priceTestPerpShortEntry,
+  testPerpSlippageBps,
   testPerpOraclePricePerLot,
   type SolanaDevnetTraderAccounts,
   type TestPerpMarketState,
@@ -354,15 +366,66 @@ export type SolanaDevnetAccountStatus = Readonly<{
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
 
+export type SolanaDevnetExitOrderRequest = Readonly<{
+  owner: string;
+  slippageBps: number;
+  idempotencyKey: string;
+}>;
+
+/** Exit limits derived from the live oracle and the trader's own open short. Integer atoms. */
+export type SolanaDevnetExitLimits = Readonly<{
+  quantityAtoms: bigint;
+  entryNotionalAtoms: bigint;
+  minSpotQuoteOutAtoms: bigint;
+  minExitQuoteOutcomeAtoms: bigint;
+}>;
+
 export type SolanaDevnetOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
   feed: SolanaDevnetMarketFeed;
   config: SolanaDevnetOrderContextConfig;
   accountStatus(owner: string, sizeAtoms: bigint): Promise<SolanaDevnetAccountStatus>;
-  /** GET /internal/terminal/solana-devnet/account?owner=<base58>&sizeAtoms=<atoms>. Read-only. */
+  /** Builds and stores the canonical EXIT order for the owner's open package. Needs the order store. */
+  createExitOrder(request: SolanaDevnetExitOrderRequest): Promise<InternalOrderCreateResult & Readonly<{ quantityAtoms: bigint }>>;
+  /**
+   * GET /internal/terminal/solana-devnet/account?owner=<base58>&sizeAtoms=<atoms>. Read-only.
+   * POST /internal/terminal/solana-devnet/exit-order {owner, slippageBps, idempotencyKey}.
+   */
   handler(request: IncomingMessage, response: ServerResponse): boolean;
 }>;
+
+/**
+ * Exit minimums: the spot leg must return at least the oracle bid less the inventory spread and the
+ * trader's slippage (rounded down), and the exit outcome (wallet quote delta plus the short's
+ * withdrawable PnL less the close fee) at least that minimum plus the entry notional less the
+ * worst-case buy-back notional and fee within the same slippage (rounded against the trader's favor).
+ */
+export function solanaDevnetExitLimits(
+  market: TestPerpMarketState,
+  oraclePricePerLot: bigint,
+  quantityAtoms: bigint,
+  entryNotionalAtoms: bigint,
+  inventorySpreadBps: number,
+  slippageBps: number,
+): SolanaDevnetExitLimits {
+  if (quantityAtoms <= 0n || quantityAtoms % market.baseLotAtoms !== 0n) fail("open quantity is not an exact market lot");
+  if (entryNotionalAtoms <= 0n) fail("open position entry notional is invalid");
+  const haircut = BigInt(inventorySpreadBps) + BigInt(slippageBps);
+  if (haircut >= BPS) fail("spread and slippage are too large");
+  const lots = quantityAtoms / market.baseLotAtoms;
+  const minSpotQuoteOutAtoms = (oraclePricePerLot * lots * (BPS - haircut)) / BPS;
+  const venueSlippage = testPerpSlippageBps(market, lots) + BigInt(slippageBps);
+  const maxCloseNotional = ((oraclePricePerLot * (BPS + venueSlippage) + BPS - 1n) / BPS) * lots;
+  const maxCloseFee = (maxCloseNotional * BigInt(market.takerFeeBps) + BPS - 1n) / BPS;
+  const outcome = minSpotQuoteOutAtoms + entryNotionalAtoms - maxCloseNotional - maxCloseFee;
+  return Object.freeze({
+    quantityAtoms,
+    entryNotionalAtoms,
+    minSpotQuoteOutAtoms,
+    minExitQuoteOutcomeAtoms: outcome > 0n ? outcome : 0n,
+  });
+}
 
 function meta(pubkey: string, isSigner: boolean, isWritable: boolean) {
   return Object.freeze({ pubkey, isSigner, isWritable });
@@ -389,6 +452,8 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
   manifest: SolanaDevnetRuntimeManifest;
   config: SolanaDevnetOrderContextConfig;
   port: SolanaDevnetMarketReadPort;
+  /** Without the order store the exit-order route answers 503. */
+  orders?: InternalOrderStore;
 }>): Promise<SolanaDevnetOrderRuntime> {
   const { manifest, port } = input;
   const config = validateConfig(input.config);
@@ -584,8 +649,146 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     });
   }
 
+  async function createExitOrder(
+    request: SolanaDevnetExitOrderRequest,
+  ): Promise<InternalOrderCreateResult & Readonly<{ quantityAtoms: bigint }>> {
+    if (input.orders === undefined) fail("order store is unavailable");
+    const owner = address(request.owner, "owner");
+    if (!Number.isSafeInteger(request.slippageBps) || request.slippageBps < 1 || request.slippageBps > config.maxSlippageBps) {
+      fail("slippage is out of bounds");
+    }
+    const derived = deriveSolanaDevnetTraderAccounts({
+      owner, strategyIdHex: manifest.testPerp.strategyIdHex, market: manifest.testPerp.market,
+      coreProgram: core, perpAdapterProgram: perpAdapter, perpVenueProgram: perpVenue, baseMint, quoteMint,
+    });
+    const snapshot = await feed.refresh();
+    await requireDevnet(port);
+    const slot = await port.getFinalizedSlot();
+    const [openAccount, positionAccount] = await port.getAccounts([derived.openPackage, derived.position], slot);
+    if (openAccount === null || openAccount === undefined || openAccount.owner !== core) fail("owner has no open package");
+    const open = decodeOpenCashCarryPackage(manifest.coreIdl, openAccount.data);
+    if (open.version !== 2 || open.trader !== owner || open.domain.domainId !== manifest.domain.domainId
+      || open.domain.domainManifestVersion !== manifest.domain.domainManifestVersion
+      || Buffer.compare(Buffer.from(open.domain.domainManifestHash), Buffer.from(manifest.domain.domainManifestHash)) !== 0
+      || open.spotQuantityAtoms !== open.perpQuantityAtoms) {
+      fail("open package is not this owner's package in the active domain");
+    }
+    const [receiptAccount] = await port.getAccounts([open.entryReceipt], slot);
+    if (receiptAccount === null || receiptAccount === undefined || receiptAccount.owner !== core) fail("entry receipt is absent");
+    const receipt = decodeCashCarryExecutionReceipt(manifest.coreIdl, receiptAccount.data);
+    // On Solana the entry receipt is the PDA of (trader, entry order hash), so the exit order
+    // commits to that hash and every consumer re-derives the receipt from it.
+    const receiptAddress = PublicKey.findProgramAddressSync(
+      [Buffer.from("cash-carry-receipt"), new PublicKey(owner).toBuffer(), Buffer.from(receipt.orderHash)],
+      new PublicKey(core),
+    )[0].toBase58();
+    if (receipt.action !== 1 || receipt.trader !== owner || receiptAddress !== open.entryReceipt) {
+      fail("entry receipt does not match the open package");
+    }
+    if (positionAccount === null || positionAccount === undefined || positionAccount.owner !== perpVenue) fail("test perp position is absent");
+    const position = decodeTestPerpPosition(positionAccount.data);
+    const limits = solanaDevnetExitLimits(
+      snapshot.market, snapshot.oraclePricePerLot, open.spotQuantityAtoms, position.entryNotionalAtoms,
+      config.inventorySpreadBps, request.slippageBps,
+    );
+    if (position.owner !== owner || position.delegate !== derived.strategy
+      || position.baseLots !== -(limits.quantityAtoms / snapshot.market.baseLotAtoms)) {
+      fail("test perp position is not the package's exact short");
+    }
+    const exitRequest = Object.freeze({
+      contextId: config.contextId,
+      owner,
+      settlementAccount: owner,
+      entryReceiptHash: Uint8Array.from(receipt.orderHash),
+      positionSizeAtoms: limits.quantityAtoms,
+      positionEntryNotionalAtoms: limits.entryNotionalAtoms,
+      minSpotQuoteOutAtoms: limits.minSpotQuoteOutAtoms,
+      minExitQuoteOutcomeAtoms: limits.minExitQuoteOutcomeAtoms,
+      idempotencyKey: request.idempotencyKey,
+      currentClock: slot,
+    });
+    const order = createCanonicalExitOrder(contexts, exitRequest);
+    const stored = input.orders.createOrGet({
+      order,
+      request: Object.freeze({
+        contextId: config.contextId,
+        owner,
+        settlementAccount: owner,
+        sizeAtoms: limits.quantityAtoms,
+        slippageBps: request.slippageBps,
+        idempotencyKey: request.idempotencyKey,
+        currentClock: slot,
+      }),
+    });
+    return Object.freeze({ ...stored, quantityAtoms: limits.quantityAtoms });
+  }
+
+  const handleExitOrder = (request: IncomingMessage, response: ServerResponse): void => {
+    if (request.method !== "POST") {
+      response.setHeader("Allow", "POST");
+      sendJson(response, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "Only POST is allowed." } });
+      return;
+    }
+    if (input.orders === undefined) {
+      sendJson(response, 503, { error: { code: "ORDER_CREATION_UNAVAILABLE", message: "Exit order creation is unavailable." } });
+      return;
+    }
+    void (async () => {
+      let body: unknown;
+      try {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        for await (const chunk of request) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          length += bytes.length;
+          if (length > 1_024) throw new Error("body too large");
+          chunks.push(bytes);
+        }
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+      } catch {
+        sendJson(response, 400, { error: { code: "INVALID_BODY", message: "Request body must be a small JSON object." } });
+        return;
+      }
+      const value = body as Record<string, unknown>;
+      if (typeof body !== "object" || body === null || Array.isArray(body)
+        || Object.keys(value).sort().join(",") !== "idempotencyKey,owner,slippageBps"
+        || typeof value.owner !== "string" || typeof value.slippageBps !== "number"
+        || typeof value.idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(value.idempotencyKey)) {
+        sendJson(response, 400, { error: { code: "INVALID_FIELDS", message: "Request must contain only owner, slippageBps, and idempotencyKey." } });
+        return;
+      }
+      try {
+        const result = await createExitOrder({
+          owner: value.owner,
+          slippageBps: value.slippageBps,
+          idempotencyKey: value.idempotencyKey,
+        });
+        sendJson(response, result.created ? 201 : 200, {
+          status: "UNSIGNED_CREATED",
+          created: result.created,
+          order: result.record,
+          quantityAtoms: result.quantityAtoms.toString(),
+          traderAuthorization: "REQUIRED",
+          solverQuoting: "REQUIRED",
+        });
+      } catch (error) {
+        if (error instanceof InternalOrderConflictError) {
+          sendJson(response, 409, { error: { code: error.code, message: error.message } });
+          return;
+        }
+        sendJson(response, error instanceof EntryOrderValidationError ? 400 : 409, {
+          error: { code: "EXIT_ORDER_REFUSED", message: error instanceof Error ? error.message : "Exit order creation failed closed." },
+        });
+      }
+    })();
+  };
+
   const handler = (request: IncomingMessage, response: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://api.internal");
+    if (url.pathname === "/internal/terminal/solana-devnet/exit-order" && url.search === "") {
+      handleExitOrder(request, response);
+      return true;
+    }
     if (url.pathname !== "/internal/terminal/solana-devnet/account") return false;
     if (request.method !== "GET") {
       response.setHeader("Allow", "GET");
@@ -605,5 +808,5 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     return true;
   };
 
-  return Object.freeze({ contexts, clock, feed, config, accountStatus, handler });
+  return Object.freeze({ contexts, clock, feed, config, accountStatus, createExitOrder, handler });
 }

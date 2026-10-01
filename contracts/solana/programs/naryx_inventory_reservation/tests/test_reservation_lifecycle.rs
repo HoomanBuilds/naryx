@@ -2,12 +2,13 @@ use anchor_lang::prelude::Pubkey;
 use naryx_core::{DomainRef, ProtocolId};
 use naryx_inventory_reservation::{
     constants::{
-        LIVE_PAIR_SEED, RESERVATION_ACTION_ENTRY, RESERVATION_CAPACITY_SEED,
+        LIVE_PAIR_SEED, RESERVATION_ACTION_ENTRY, RESERVATION_ACTION_EXIT, RESERVATION_CAPACITY_SEED,
         RESERVATION_CLASS_SEED, RESERVATION_SEED, RESERVATION_VAULT_SEED, RESERVATION_VERSION,
     },
     instructions::{domain_ref_identity, reservation_id},
     state::{
-        validate_entry_deltas, FirmReservation, LivePair, ReservationCapacity, ReservationState,
+        validate_entry_deltas, validate_exit_deltas, FirmReservation, LivePair,
+        ReservationCapacity, ReservationState,
     },
 };
 
@@ -284,6 +285,48 @@ fn reservation_lifecycle_guards_and_accounting() {
 
     validate_entry_deltas(10, 25, 2, 12, 40, 15, 5, 30, 10, 0).unwrap();
     assert!(validate_entry_deltas(10, 25, 2, 11, 40, 15, 5, 30, 10, 0).is_err());
+}
+
+#[test]
+fn exit_reservation_uses_only_exit_transitions_and_exact_buy_back_deltas() {
+    let domain = DomainRef::new("solana:devnet:naryx-core-v1", 1, [0x55; 32]).unwrap();
+    let base_mint = Pubkey::new_unique();
+    let quote_mint = Pubkey::new_unique();
+    let class = class_pda(&domain, &base_mint, &quote_mint, &Pubkey::new_unique());
+    let mut exit = funded(10, class, domain.clone(), base_mint, quote_mint);
+    exit.action = RESERVATION_ACTION_EXIT;
+    assert!(exit.is_current_exit() && !exit.is_current_entry());
+    exit.finalize(class, QUOTE_HASH, 9).unwrap();
+    assert!(exit
+        .consume(class, 7, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, 9)
+        .is_err());
+    assert!(exit
+        .consume_exit(class, 7, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, 10)
+        .is_err());
+    exit.consume_exit(class, 7, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, 9)
+        .unwrap();
+    assert_eq!(exit.state, ReservationState::Consumed);
+    assert!(exit.release_exit(class, 10).is_err());
+
+    let mut entry = funded(10, class, domain.clone(), base_mint, quote_mint);
+    entry.finalize(class, QUOTE_HASH, 9).unwrap();
+    assert!(entry
+        .consume_exit(class, 7, ORDER_HASH, QUOTE_HASH, ROUTE_HASH, 9)
+        .is_err());
+    assert!(entry.release_exit(class, 10).is_err());
+
+    let mut expired = funded(10, class, domain, base_mint, quote_mint);
+    expired.action = RESERVATION_ACTION_EXIT;
+    assert!(expired.release(class, 10).is_err());
+    assert!(expired.release_exit(class, 9).is_err());
+    expired.release_exit(class, 10).unwrap();
+    assert_eq!(expired.state, ReservationState::Released);
+
+    // Strategy base 10 -> 0, strategy quote 0 -> 25, solver base 3 -> 13, vault 25 -> 0.
+    validate_exit_deltas(10, 25, 10, 0, 0, 25, 3, 13, 25, 0).unwrap();
+    assert!(validate_exit_deltas(10, 25, 10, 1, 0, 25, 3, 13, 25, 0).is_err());
+    assert!(validate_exit_deltas(10, 25, 10, 0, 0, 24, 3, 13, 25, 1).is_err());
+    assert!(validate_exit_deltas(10, 25, 10, 0, 0, 25, 3, 12, 25, 0).is_err());
 }
 
 #[test]

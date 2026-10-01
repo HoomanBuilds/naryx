@@ -16,7 +16,10 @@ export const SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT = '7UVimffxr9ow1uXYxsr4LHAcV58m
 export const SOLANA_DEVNET_SOL_USD_FEED_ID_HEX = 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
 const PRICE_UPDATE_V2_DISCRIMINATOR = Buffer.from([34, 241, 35, 99, 157, 126, 244, 205]);
 const BPS = 10_000n;
+export const QUOTE_SIDE_BID = 1;
 export const QUOTE_SIDE_ASK = 2;
+export const RESERVATION_ACTION_ENTRY = 1;
+export const RESERVATION_ACTION_EXIT = 2;
 export const QUOTE_MODE_FIRM_ONCHAIN = 2;
 export const MAX_QUOTE_LEVELS = 32;
 
@@ -408,9 +411,21 @@ export function decodeTestPerpMarket(data: Uint8Array): TestPerpMarketState {
   });
 }
 
-export function decodeTestPerpPosition(data: Uint8Array): Readonly<{ market: string; owner: string; delegate: string; collateralAtoms: bigint; baseLots: bigint }> {
+export function decodeTestPerpPosition(data: Uint8Array): Readonly<{
+  market: string; owner: string; delegate: string; collateralAtoms: bigint; baseLots: bigint; entryNotionalAtoms: bigint;
+}> {
   const r = new BorshReader(data, accountDiscriminator('TestPerpPosition'), 'TestPerpPosition');
-  return Object.freeze({ market: r.key(), owner: r.key(), delegate: r.key(), collateralAtoms: r.u64(), baseLots: r.i64() });
+  return Object.freeze({
+    market: r.key(), owner: r.key(), delegate: r.key(), collateralAtoms: r.u64(), baseLots: r.i64(), entryNotionalAtoms: r.u64(),
+  });
+}
+
+/** The leading fields of naryx_core `OpenCashCarryPackage`. */
+export function decodeOpenCashCarryPackage(data: Uint8Array): Readonly<{
+  version: number; domain: DomainRef; trader: string; entryReceipt: string;
+}> {
+  const r = new BorshReader(data, accountDiscriminator('OpenCashCarryPackage'), 'OpenCashCarryPackage');
+  return Object.freeze({ version: r.u8(), domain: r.domain(), trader: r.key(), entryReceipt: r.key() });
 }
 
 export function decodeTestPerpStrategyController(data: Uint8Array): Readonly<{ owner: string; controller: string; market: string; position: string }> {
@@ -474,6 +489,28 @@ export function priceTestPerpShort(market: TestPerpMarketState, oraclePricePerLo
     notionalAtoms,
     feeAtoms: (notionalAtoms * BigInt(market.takerFeeBps) + BPS - 1n) / BPS,
     initialMarginAtoms: (oraclePricePerLot * baseLots * BigInt(market.initialMarginBps) + BPS - 1n) / BPS,
+  });
+}
+
+/**
+ * Buying back a short of `baseAtoms`: the test perp fills a bid at the oracle plus spread and impact,
+ * rounded up like the venue's `mul_div_ceil`, and charges the taker fee rounded up.
+ */
+export function priceTestPerpCloseShort(market: TestPerpMarketState, oraclePricePerLot: bigint, baseAtoms: bigint): Readonly<{
+  baseLots: bigint; fillPricePerLot: bigint; notionalAtoms: bigint; feeAtoms: bigint;
+}> {
+  if (baseAtoms <= 0n || baseAtoms % market.baseLotAtoms !== 0n) fail('quantity is not an exact market lot');
+  const baseLots = baseAtoms / market.baseLotAtoms;
+  const impactUnits = (baseLots + market.impactUnitLots - 1n) / market.impactUnitLots;
+  const slippage = impactUnits * BigInt(market.impactBpsPerUnit) + BigInt(market.halfSpreadBps);
+  if (slippage > BigInt(market.maxSlippageBps)) fail('quantity exceeds the market slippage bound');
+  const fillPricePerLot = (oraclePricePerLot * (BPS + slippage) + BPS - 1n) / BPS;
+  const notionalAtoms = fillPricePerLot * baseLots;
+  return Object.freeze({
+    baseLots,
+    fillPricePerLot,
+    notionalAtoms,
+    feeAtoms: (notionalAtoms * BigInt(market.takerFeeBps) + BPS - 1n) / BPS,
   });
 }
 

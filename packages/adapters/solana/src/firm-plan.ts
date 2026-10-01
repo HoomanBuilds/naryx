@@ -42,6 +42,7 @@ const I128_MIN = -(1n << 127n);
 const I128_MAX = (1n << 127n) - 1n;
 const FIRM_QUOTE_MODE = 2;
 const FIRM_QUOTE_SIDE = 2;
+const FIRM_EXIT_QUOTE_SIDE = 1;
 const RESERVATION_CLASS_VERSION = 2;
 // Fixed firm entry addresses other than the perp venue accounts: 57 with the eight Rise accounts.
 const FIXED_FIRM_ENTRY_BASE_ADDRESS_COUNT = 49;
@@ -235,7 +236,8 @@ export interface FirmReservationEvidence {
   readonly baseAtoms: bigint;
   readonly quoteAtoms: bigint;
   readonly expirySlot: bigint;
-  readonly action: 'ENTRY';
+  /** ENTRY: the solver sells base for escrowed base. EXIT: the solver buys base back with escrowed quote. */
+  readonly action: 'ENTRY' | 'EXIT';
 }
 
 export interface FirmQuoteLockEvidence {
@@ -286,7 +288,8 @@ export interface FirmCashCarryQuoteArgs {
   readonly slotIndex: number;
   readonly levelId: bigint;
   readonly expectedLevelSequence: bigint;
-  readonly expectedSide: 2;
+  /** 2 lifts the solver's ask on entry; 1 hits the solver's bid on a firm exit. */
+  readonly expectedSide: 1 | 2;
   readonly packageSizeUnits: bigint;
   readonly expectedPackagePrice: bigint;
   readonly expectedMaxFeeAtoms: 0n;
@@ -304,6 +307,8 @@ export interface SolanaMessageContext {
 }
 
 export interface FirmCashCarryBinding<K extends SolanaPerpVenueKind = 'PHOENIX_RISE'> {
+  /** Omitted means ENTRY. EXIT is the firm buy-back exit of the open package (test perp core build). */
+  readonly action?: 'ENTRY' | 'EXIT';
   readonly environment: 'local' | 'devnet' | 'testnet';
   readonly domain: DomainRef;
   readonly coreIdl: Idl;
@@ -371,6 +376,23 @@ export interface FirmCashCarryPlan {
   readonly publicExit: PublicCashCarryExitPlan | Readonly<{
     status: 'EVIDENCE_REQUIRED';
     code: 'PUBLIC_EXIT_BINDING_REQUIRED';
+  }>;
+}
+
+export interface FirmCashCarryExitPlan {
+  readonly kind: 'MULTI_TRANSACTION_FIRM_CASH_CARRY_EXIT_PLAN';
+  readonly atomicity: 'ONLY_TRADER_EXIT_TRANSACTION_IS_ATOMIC';
+  readonly domain: DomainRef;
+  readonly orderHash: Uint8Array;
+  readonly quoteHash: Uint8Array;
+  readonly routeHash: Uint8Array;
+  readonly executionDigest: Uint8Array;
+  readonly solverLock: UnsignedSolanaTransactionPlan & Readonly<{
+    stage: 'SOLVER_FIRM_QUOTE_LOCK';
+    prerequisite: 'FUNDED_FINALIZED_LIVE_RESERVATION';
+  }>;
+  readonly traderExit: UnsignedSolanaTransactionPlan & Readonly<{
+    stage: 'TRADER_ATOMIC_FIRM_EXIT';
   }>;
 }
 
@@ -474,6 +496,11 @@ function entryIdlSpecs(profile: SolanaPerpVenueProfile): readonly AccountSpec[] 
     ...profile.accounts.map((account) => ({ ...account, signer: false })),
     ...ENTRY_SUFFIX_SPECS,
   ];
+}
+
+function isExit(binding: AnyFirmCashCarryBinding): boolean {
+  requireCondition(binding.action === undefined || binding.action === 'ENTRY' || binding.action === 'EXIT', 'firm binding action is invalid');
+  return binding.action === 'EXIT';
 }
 
 function bindingProfile(binding: AnyFirmCashCarryBinding): SolanaPerpVenueProfile {
@@ -704,9 +731,9 @@ function borshQuoteArgs(args: FirmCashCarryQuoteArgs) {
   };
 }
 
-function borshExecutionArgs(args: FirmCashCarryExecutionArgs) {
+function borshExecutionArgs(args: FirmCashCarryExecutionArgs, exit: boolean) {
   return {
-    action: { Entry: {} },
+    action: exit ? { Exit: {} } : { Entry: {} },
     recovery: false,
     spot_quantity_atoms: bn(args.spotQuantityAtoms),
     perp_quantity_atoms: bn(args.perpQuantityAtoms),
@@ -761,7 +788,8 @@ function validatePackage(admission: PackageAdmission, binding: AnyFirmCashCarryB
   requireCondition(quote.environment === binding.environment && route.environment === binding.environment, 'package environment mismatch');
   requireCondition(sameDomain(order.domain, binding.domain), 'order domain mismatch');
   requireCondition(sameDomain(quote.domain, binding.domain) && sameDomain(route.domain, binding.domain), 'package domain mismatch');
-  requireCondition(order.action === 'ENTRY' && route.action === 'ENTRY', 'firm plan supports entry only');
+  const action = isExit(binding) ? 'EXIT' : 'ENTRY';
+  requireCondition(order.action === action && route.action === action, `firm ${action.toLowerCase()} plan requires a ${action} package`);
   requireCondition(quote.quoteMode === 'FIRM_ONCHAIN', 'firm plan requires FIRM_ONCHAIN quote mode');
   requireCondition(quote.solverSignatureScheme === 'ED25519', 'firm plan requires Ed25519 solver verification');
   requireCondition(order.templateId === 'cash-and-carry-v1' && route.templateId === order.templateId, 'cash-carry template mismatch');
@@ -785,7 +813,12 @@ function validatePackage(admission: PackageAdmission, binding: AnyFirmCashCarryB
   const spot = route.legs[0];
   const perp = route.legs[1];
   requireCondition(spot?.legRole === 'SPOT' && perp?.legRole === 'PERPETUAL', 'firm leg roles mismatch');
-  requireCondition(spot.side === 'BUY' && perp.side === 'SELL', 'firm leg sides mismatch');
+  requireCondition(
+    action === 'ENTRY'
+      ? spot.side === 'BUY' && perp.side === 'SELL' && !perp.reduceOnly
+      : spot.side === 'SELL' && perp.side === 'BUY' && perp.reduceOnly,
+    'firm leg sides mismatch',
+  );
   requireCondition(
     order.quantity.atoms === quote.expectedGrossSpotQuantity.atoms
       && spot.quantity.atoms === order.quantity.atoms
@@ -887,7 +920,8 @@ function validateSeriesAndAmounts(admission: PackageAdmission, binding: AnyFirmC
   requireBytes(quote.seriesManifestHash, hash32(series.seriesManifestHash, 'series manifest hash'), 'series commitment');
   requireBytes(quote.executionClassManifestHash, hash32(series.executionClassManifestHash, 'execution class manifest hash'), 'execution class commitment');
   requireBytes(quote.expectedSettlementClassIdentityHash, hash32(series.settlementClassIdentityHash, 'settlement class identity hash'), 'settlement class identity commitment');
-  requireCondition(series.entrySide === 'ASK' && quote.expectedSide === FIRM_QUOTE_SIDE, 'firm quote side mismatch');
+  const exit = isExit(binding);
+  requireCondition(series.entrySide === 'ASK' && quote.expectedSide === (exit ? FIRM_EXIT_QUOTE_SIDE : FIRM_QUOTE_SIDE), 'firm quote side mismatch');
   const spotUnit = checkedPositiveU64(series.spotBaseAtomsPerPackageUnit, 'spot atoms per package unit');
   const perpUnit = checkedPositiveU64(series.perpQuantityAtomsPerPackageUnit, 'perp atoms per package unit');
   requireCondition(execution.spotQuantityAtoms % spotUnit === 0n && execution.perpQuantityAtoms % perpUnit === 0n, 'package quantity is not an exact series unit');
@@ -901,8 +935,14 @@ function validateSeriesAndAmounts(admission: PackageAdmission, binding: AnyFirmC
   requireCondition(execution.spotQuantityAtoms % spotLot === 0n && execution.perpQuantityAtoms % perpLot === 0n, 'leg quantities are not exact market lots');
   requireCondition(execution.perpLimitQuoteAtomsPerBaseLot % perpTick === 0n, 'perp limit is not an exact market tick');
   const totalSpotLimit = (execution.spotQuantityAtoms / spotLot) * execution.spotLimitQuoteAtomsPerBaseLot;
-  requireCondition(binding.firmQuoteAtoms <= totalSpotLimit, 'firm quote exceeds the spot limit');
-  requireCondition(admission.order.maxSpotQuoteIn !== undefined && totalSpotLimit <= admission.order.maxSpotQuoteIn.atoms, 'spot limit exceeds the signed order bound');
+  if (exit) {
+    // The program enforces quote out >= the spot limit, so the limit must carry the signed minimum.
+    requireCondition(binding.firmQuoteAtoms >= totalSpotLimit, 'firm quote is below the spot minimum');
+    requireCondition(admission.order.minSpotQuoteOut !== undefined && totalSpotLimit >= admission.order.minSpotQuoteOut.atoms, 'spot minimum is below the signed order bound');
+  } else {
+    requireCondition(binding.firmQuoteAtoms <= totalSpotLimit, 'firm quote exceeds the spot limit');
+    requireCondition(admission.order.maxSpotQuoteIn !== undefined && totalSpotLimit <= admission.order.maxSpotQuoteIn.atoms, 'spot limit exceeds the signed order bound');
+  }
 
   checkedPositiveU64(execution.spotQuantityAtoms, 'spot quantity');
   checkedPositiveU64(execution.perpQuantityAtoms, 'perp quantity');
@@ -910,7 +950,7 @@ function validateSeriesAndAmounts(admission: PackageAdmission, binding: AnyFirmC
   checkedPositiveU64(execution.perpLimitQuoteAtomsPerBaseLot, 'perp quote limit');
   checkedPositiveU64(execution.packageNotionalAtoms, 'package notional');
   checkedUnsigned(execution.spotSqrtPriceLimit, U128_MAX, 'spot sqrt price limit');
-  requireCondition(execution.spotSqrtPriceLimit === 1n, 'firm entry spot sqrt price limit must be one');
+  requireCondition(execution.spotSqrtPriceLimit === 1n, 'firm spot sqrt price limit must be one');
   checkedSigned(execution.minimumRiseCollateralQuoteLots, I64_MIN, I64_MAX, 'minimum Rise collateral');
   checkedUnsigned(execution.clientOrderId, U128_MAX, 'client order id');
   checkedPositiveU64(execution.expirySlot, 'execution expiry');
@@ -1005,14 +1045,22 @@ function validateReservation(
   requireBytes(reservation.routeHash, admission.routeHash, 'reservation route commitment');
   requireKey(reservation.baseMint, identities.baseMint, 'reservation base mint');
   requireKey(reservation.quoteMint, identities.quoteMint, 'reservation quote mint');
-  requireKey(reservation.solverQuote, addresses.get('solverQuote')!, 'reservation solver quote account');
+  const exit = isExit(binding);
+  const solverQuoteAccount = associatedTokenAddress(identities.solver, identities.quoteMint);
+  requireKey(reservation.solverQuote, solverQuoteAccount, 'reservation solver quote account');
+  // The settlement slot carries the solver's quote account on entry and its base account on exit.
+  requireKey(
+    addresses.get('solverQuote')!,
+    exit ? associatedTokenAddress(identities.solver, identities.baseMint) : solverQuoteAccount,
+    'solver settlement account',
+  );
   requireKey(reservation.strategyBase, addresses.get('executorBase')!, 'reservation strategy base account');
   requireKey(reservation.strategyQuote, addresses.get('executorQuote')!, 'reservation strategy quote account');
   requireKey(reservation.solverReclaimBase, associatedTokenAddress(identities.solver, identities.baseMint), 'reservation solver reclaim account');
   requireCondition(reservation.baseAtoms === binding.executionArgs.spotQuantityAtoms, 'reservation base amount mismatch');
   requireCondition(reservation.quoteAtoms === binding.firmQuoteAtoms, 'reservation quote amount mismatch');
   requireCondition(reservation.expirySlot === quoteArgs.expectedExpirySlot, 'reservation expiry mismatch');
-  requireCondition(reservation.action === 'ENTRY' && binding.currentSlot < reservation.expirySlot, 'reservation action or expiry mismatch');
+  requireCondition(reservation.action === (exit ? 'EXIT' : 'ENTRY') && binding.currentSlot < reservation.expirySlot, 'reservation action or expiry mismatch');
 
   const reservationAddress = PublicKey.findProgramAddressSync([
     Buffer.from('reservation'),
@@ -1059,9 +1107,10 @@ function validateTokens(
   requireKey(addresses.get('tokenProgram')!, LEGACY_TOKEN_PROGRAM_ID, 'legacy SPL Token program');
   requireKey(addresses.get('instructionsSysvar')!, SYSVAR_INSTRUCTIONS_PUBKEY, 'instructions sysvar');
   requireKey(addresses.get('systemProgram')!, SystemProgram.programId, 'system program');
+  const exit = isExit(binding);
   const expected = {
-    reservationVault: { mint: identities.baseMint, authority: addresses.get('reservation')! },
-    solverQuote: { mint: identities.quoteMint, authority: identities.solver },
+    reservationVault: { mint: exit ? identities.quoteMint : identities.baseMint, authority: addresses.get('reservation')! },
+    solverQuote: { mint: exit ? identities.baseMint : identities.quoteMint, authority: identities.solver },
     traderBase: { mint: identities.baseMint, authority: identities.trader },
     traderQuote: { mint: identities.quoteMint, authority: identities.trader },
     executorBase: { mint: identities.baseMint, authority: addresses.get('executorAuthority')! },
@@ -1079,7 +1128,10 @@ function validateTokens(
       requireKey(addresses.get(name)!, associatedTokenAddress(expected[name].authority, expected[name].mint), `${name} associated token account`);
     }
   }
-  requireCondition(binding.tokenAccounts.reservationVault.amountAtoms === binding.reservation.baseAtoms, 'reservation vault funding mismatch');
+  requireCondition(
+    binding.tokenAccounts.reservationVault.amountAtoms === (exit ? binding.reservation.quoteAtoms : binding.reservation.baseAtoms),
+    'reservation vault funding mismatch',
+  );
   requireCondition(binding.tokenAccounts.executorBase.amountAtoms === 0n && binding.tokenAccounts.executorQuote.amountAtoms === 0n, 'executor token accounts must start empty');
 }
 
@@ -1100,7 +1152,7 @@ function executionDigest(
     admission.orderHash,
     admission.quoteHash,
     admission.routeHash,
-    Uint8Array.of(1),
+    Uint8Array.of(isExit(binding) ? 2 : 1),
     Uint8Array.of(0),
     bigEndian(execution.spotQuantityAtoms, 8),
     bigEndian(execution.perpQuantityAtoms, 8),
@@ -1190,10 +1242,7 @@ function firmPackageAccountsCommitment(addresses: ReadonlyMap<FirmAccountKey, Pu
   );
 }
 
-export function compileFirmCashCarryPlan(
-  admission: PackageAdmission,
-  binding: AnyFirmCashCarryBinding,
-): FirmCashCarryPlan {
+function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCashCarryBinding) {
   validatePackage(admission, binding);
   const profile = bindingProfile(binding);
   requireOnlyProfileVenueAccounts(binding.accounts, profile);
@@ -1269,7 +1318,7 @@ export function compileFirmCashCarryPlan(
       order_hash: Array.from(admission.orderHash),
       quote_hash: Array.from(admission.quoteHash),
       route_hash: Array.from(admission.routeHash),
-      args: borshExecutionArgs(binding.executionArgs),
+      args: borshExecutionArgs(binding.executionArgs, isExit(binding)),
       quote_args: quoteArgs,
       firm_quote_atoms: bn(binding.firmQuoteAtoms),
     }),
@@ -1295,6 +1344,21 @@ export function compileFirmCashCarryPlan(
   const entryAddressCount = resolvedAddressCount(identities.trader, entryInstructions);
   requireCondition(lockAddressCount <= MAX_RESOLVED_ADDRESSES, 'firm lock exceeds 64 resolved addresses');
   requireCondition(entryAddressCount <= MAX_RESOLVED_ADDRESSES, 'firm entry exceeds 64 resolved addresses');
+  return {
+    profile, addresses, identities, coreProgram, digest,
+    lockInstructions, lockAddressCount, entryInstructions, entryAddressCount,
+  };
+}
+
+export function compileFirmCashCarryPlan(
+  admission: PackageAdmission,
+  binding: AnyFirmCashCarryBinding,
+): FirmCashCarryPlan {
+  requireCondition(!isExit(binding), 'firm entry plan requires an entry binding');
+  const {
+    profile, addresses, identities, coreProgram, digest,
+    lockInstructions, lockAddressCount, entryInstructions, entryAddressCount,
+  } = compileFirmInstructions(admission, binding);
   const publicExit = binding.publicExit === undefined
     ? Object.freeze({ status: 'EVIDENCE_REQUIRED' as const, code: 'PUBLIC_EXIT_BINDING_REQUIRED' as const })
     : (() => {
@@ -1379,5 +1443,47 @@ export function compileFirmCashCarryPlan(
       messageSize: messageSize(identities.trader, entryInstructions, binding.messageContext),
     }),
     publicExit,
+  });
+}
+
+/**
+ * Compiles the firm exit: the solver's buy-back lock and the trader's one atomic exit transaction
+ * that closes the perp short, sells the exact spot base to the solver's escrowed bid, and closes the
+ * open package. Only the Devnet test perp core build accepts it.
+ */
+export function compileFirmCashCarryExitPlan(
+  admission: PackageAdmission,
+  binding: AnyFirmCashCarryBinding,
+): FirmCashCarryExitPlan {
+  requireCondition(isExit(binding), 'firm exit plan requires an exit binding');
+  requireCondition(binding.perpVenueKind === 'NARYX_TEST_PERP', 'firm exit is available only on the test perp venue');
+  requireCondition(binding.publicExit === undefined, 'firm exit binding must not carry a public exit');
+  const { identities, digest, lockInstructions, lockAddressCount, entryInstructions, entryAddressCount } =
+    compileFirmInstructions(admission, binding);
+  return Object.freeze({
+    kind: 'MULTI_TRANSACTION_FIRM_CASH_CARRY_EXIT_PLAN',
+    atomicity: 'ONLY_TRADER_EXIT_TRANSACTION_IS_ATOMIC',
+    domain: binding.domain,
+    orderHash: Uint8Array.from(admission.orderHash),
+    quoteHash: Uint8Array.from(admission.quoteHash),
+    routeHash: Uint8Array.from(admission.routeHash),
+    executionDigest: Uint8Array.from(digest),
+    solverLock: Object.freeze({
+      stage: 'SOLVER_FIRM_QUOTE_LOCK',
+      prerequisite: 'FUNDED_FINALIZED_LIVE_RESERVATION',
+      authorityRole: 'SOLVER',
+      payer: identities.solver,
+      instructions: lockInstructions,
+      resolvedAddressCount: lockAddressCount,
+      messageSize: messageSize(identities.solver, lockInstructions, binding.messageContext),
+    }),
+    traderExit: Object.freeze({
+      stage: 'TRADER_ATOMIC_FIRM_EXIT',
+      authorityRole: 'TRADER',
+      payer: identities.trader,
+      instructions: entryInstructions,
+      resolvedAddressCount: entryAddressCount,
+      messageSize: messageSize(identities.trader, entryInstructions, binding.messageContext),
+    }),
   });
 }

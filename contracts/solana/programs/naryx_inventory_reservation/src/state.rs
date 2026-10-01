@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use naryx_core::{DomainRef, ProtocolId};
 
 use crate::{
-    constants::{RESERVATION_ACTION_ENTRY, RESERVATION_VERSION},
+    constants::{RESERVATION_ACTION_ENTRY, RESERVATION_ACTION_EXIT, RESERVATION_VERSION},
     error::ErrorCode,
 };
 
@@ -111,7 +111,10 @@ impl FirmReservation {
         quote_hash: [u8; 32],
         current_slot: u64,
     ) -> Result<()> {
-        self.require_current_entry()?;
+        require!(
+            self.is_current_entry() || self.is_current_exit(),
+            ErrorCode::ClassParameterInvalid
+        );
         self.require_class(reservation_class)?;
         require!(quote_hash != [0u8; 32], ErrorCode::CommitmentZero);
         require!(
@@ -137,6 +140,45 @@ impl FirmReservation {
         current_slot: u64,
     ) -> Result<()> {
         self.require_current_entry()?;
+        self.consume_current(
+            reservation_class,
+            package_nonce,
+            order_hash,
+            quote_hash,
+            route_hash,
+            current_slot,
+        )
+    }
+
+    pub fn consume_exit(
+        &mut self,
+        reservation_class: Pubkey,
+        package_nonce: u64,
+        order_hash: [u8; 32],
+        quote_hash: [u8; 32],
+        route_hash: [u8; 32],
+        current_slot: u64,
+    ) -> Result<()> {
+        self.require_current_exit()?;
+        self.consume_current(
+            reservation_class,
+            package_nonce,
+            order_hash,
+            quote_hash,
+            route_hash,
+            current_slot,
+        )
+    }
+
+    fn consume_current(
+        &mut self,
+        reservation_class: Pubkey,
+        package_nonce: u64,
+        order_hash: [u8; 32],
+        quote_hash: [u8; 32],
+        route_hash: [u8; 32],
+        current_slot: u64,
+    ) -> Result<()> {
         self.require_class(reservation_class)?;
         require!(
             self.state == ReservationState::Live,
@@ -159,6 +201,15 @@ impl FirmReservation {
 
     pub fn release(&mut self, reservation_class: Pubkey, current_slot: u64) -> Result<()> {
         self.require_current_entry()?;
+        self.release_current(reservation_class, current_slot)
+    }
+
+    pub fn release_exit(&mut self, reservation_class: Pubkey, current_slot: u64) -> Result<()> {
+        self.require_current_exit()?;
+        self.release_current(reservation_class, current_slot)
+    }
+
+    fn release_current(&mut self, reservation_class: Pubkey, current_slot: u64) -> Result<()> {
         self.require_class(reservation_class)?;
         require!(self.is_open(), ErrorCode::ReservationStateInvalid);
         require!(
@@ -180,6 +231,11 @@ impl FirmReservation {
 
     pub fn require_current_entry(&self) -> Result<()> {
         require!(self.is_current_entry(), ErrorCode::ClassParameterInvalid);
+        Ok(())
+    }
+
+    pub fn require_current_exit(&self) -> Result<()> {
+        require!(self.is_current_exit(), ErrorCode::ClassParameterInvalid);
         Ok(())
     }
 }
@@ -207,6 +263,32 @@ pub fn validate_entry_deltas(
     Ok(())
 }
 
+/// Exit buy-back: the strategy delivers exactly `base_atoms` to the solver and receives exactly the
+/// escrowed `quote_atoms`, leaving the quote vault empty.
+#[allow(clippy::too_many_arguments)]
+pub fn validate_exit_deltas(
+    base_atoms: u64,
+    quote_atoms: u64,
+    strategy_base_before: u64,
+    strategy_base_after: u64,
+    strategy_quote_before: u64,
+    strategy_quote_after: u64,
+    solver_base_before: u64,
+    solver_base_after: u64,
+    vault_before: u64,
+    vault_after: u64,
+) -> Result<()> {
+    require!(
+        strategy_base_before.checked_sub(strategy_base_after) == Some(base_atoms)
+            && strategy_quote_after.checked_sub(strategy_quote_before) == Some(quote_atoms)
+            && solver_base_after.checked_sub(solver_base_before) == Some(base_atoms)
+            && vault_before.checked_sub(vault_after) == Some(quote_atoms)
+            && vault_after == 0,
+        ErrorCode::TokenDeltaMismatch
+    );
+    Ok(())
+}
+
 #[account]
 #[derive(InitSpace)]
 pub struct LivePair {
@@ -226,5 +308,9 @@ impl ReservationClass {
 impl FirmReservation {
     pub fn is_current_entry(&self) -> bool {
         self.version == RESERVATION_VERSION && self.action == RESERVATION_ACTION_ENTRY
+    }
+
+    pub fn is_current_exit(&self) -> bool {
+        self.version == RESERVATION_VERSION && self.action == RESERVATION_ACTION_EXIT
     }
 }

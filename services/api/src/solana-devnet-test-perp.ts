@@ -55,6 +55,7 @@ export type TestPerpPositionState = Readonly<{
   delegate: string;
   collateralAtoms: bigint;
   baseLots: bigint;
+  entryNotionalAtoms: bigint;
 }>;
 
 export type TestPerpStrategyState = Readonly<{
@@ -174,6 +175,7 @@ export function decodeTestPerpPosition(data: Uint8Array): TestPerpPositionState 
     delegate: reader.key(),
     collateralAtoms: reader.u64(),
     baseLots: reader.i64(),
+    entryNotionalAtoms: reader.u64(),
   });
 }
 

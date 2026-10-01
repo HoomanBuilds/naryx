@@ -59,6 +59,7 @@ const PACKAGE_BOOK_CONSUME_CAPACITY_DISCRIMINATOR: [u8; 8] =
     [0x93, 0x38, 0x6b, 0x07, 0x4f, 0x8a, 0xcd, 0xb0];
 pub(crate) const PACKAGE_BOOK_QUOTE_MODE_EXECUTION_COMMITMENT: u8 = 1;
 pub(crate) const PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN: u8 = 2;
+pub(crate) const PACKAGE_BOOK_QUOTE_SIDE_BID: u8 = 1;
 pub(crate) const PACKAGE_BOOK_QUOTE_SIDE_ASK: u8 = 2;
 pub(crate) const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
 const SERIES_INDEX_ACCOUNT_INDEX: usize = PACKAGE_BOOK_ACCOUNT_COUNT;
@@ -936,9 +937,14 @@ pub(crate) fn validate_quote_against_series(
                 == binding.settlement_class_identity_hash,
         ErrorCode::CashCarryQuoteSeriesMismatch
     );
+    // Entry lifts the series ask; a firm exit hits the solver's bid for the same package.
+    let expected_side = match execution.action {
+        CashCarryAction::Entry => PACKAGE_BOOK_QUOTE_SIDE_ASK,
+        CashCarryAction::Exit => PACKAGE_BOOK_QUOTE_SIDE_BID,
+    };
     require!(
         binding.entry_side == CASH_CARRY_SERIES_ENTRY_SIDE_ASK
-            && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_ASK,
+            && quote.expected_side == expected_side,
         ErrorCode::CashCarryQuoteSideMismatch
     );
     let package_size_units = derive_package_size_units(execution, binding)?;
@@ -1519,7 +1525,7 @@ fn validate_package_lifecycle(
     Ok(())
 }
 
-fn validate_open_package_identity(
+pub(crate) fn validate_open_package_identity(
     open: &OpenCashCarryPackage,
     trader: Pubkey,
     economic_package_commitment: [u8; 32],
@@ -2254,6 +2260,11 @@ mod tests {
         quote.package_size_units = 5;
         quote.expected_side = 1;
         assert!(validate_quote_against_series(&execution_args(), &quote, &binding).is_err());
+        let mut exit = execution_args();
+        exit.action = CashCarryAction::Exit;
+        assert_eq!(validate_quote_against_series(&exit, &quote, &binding).unwrap(), 5);
+        quote.expected_side = PACKAGE_BOOK_QUOTE_SIDE_ASK;
+        assert!(validate_quote_against_series(&exit, &quote, &binding).is_err());
 
         let mut non_divisible = execution_args();
         non_divisible.spot_quantity_atoms = 101;

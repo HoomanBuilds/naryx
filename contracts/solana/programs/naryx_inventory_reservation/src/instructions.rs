@@ -1,10 +1,12 @@
 pub mod consume_reservation;
+pub mod exit_reservation;
 pub mod finalize_reservation;
 pub mod fund_reservation;
 pub mod initialize_class;
 pub mod release_reservation;
 
 pub use consume_reservation::*;
+pub use exit_reservation::*;
 pub use finalize_reservation::*;
 pub use fund_reservation::*;
 pub use initialize_class::*;

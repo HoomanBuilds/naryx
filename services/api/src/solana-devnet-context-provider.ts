@@ -1,4 +1,5 @@
 import {
+  compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
   type FirmCashCarryBinding,
 } from "@naryx/adapter-solana";
@@ -68,9 +69,10 @@ export function createSolanaDevnetContextProvider(options: SolanaDevnetContextPr
     throw new Error("Solana Devnet evidence class is unsupported.");
   }
   return async (request: NormalizedCashCarryExecutionRequest): Promise<SolanaDevnetExecutionContext> => {
-    if (request.domain !== "svm:devnet" || request.mode !== "entry") {
-      fail("only svm:devnet durable entry attempts are supported");
+    if (request.domain !== "svm:devnet" || (request.mode !== "entry" && request.mode !== "exit")) {
+      fail("only svm:devnet durable entry and firm exit attempts are supported");
     }
+    const exit = request.mode === "exit";
     const record = options.orders.getByIdempotencyKey(request.idempotencyKey);
     if (record === undefined) fail("canonical order was not found");
     const order = options.orders.getCanonicalOrderByHash(record.orderHashHex);
@@ -93,6 +95,7 @@ export function createSolanaDevnetContextProvider(options: SolanaDevnetContextPr
       || record.domainManifestVersion !== order.domain.domainManifestVersion
       || record.domainManifestHashHex !== toHex(order.domain.domainManifestHash)
       || order.owner !== request.traderPublicKey
+      || order.action !== (exit ? "EXIT" : "ENTRY")
       || order.quantity.atoms.toString() !== request.sizeAtoms) {
       fail("request does not match the durable canonical order");
     }
@@ -126,8 +129,10 @@ export function createSolanaDevnetContextProvider(options: SolanaDevnetContextPr
       || !solanaDevnetBindingSlotWithinWindow(slot, binding.currentSlot)) {
       fail("live binding domain or finalized slot is outside the admitted window");
     }
+    if ((binding.action === "EXIT") !== exit) fail("live binding action does not match the request mode");
     try {
-      compileFirmCashCarryPlan(admission, binding);
+      if (exit) compileFirmCashCarryExitPlan(admission, binding);
+      else compileFirmCashCarryPlan(admission, binding);
     } catch (error) {
       fail(`registry, series, resource, or transaction binding failed validation: ${error instanceof Error ? error.message : "unknown error"}`);
     }

@@ -55,7 +55,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
-import { solanaDevnetSizeAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
+import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -1421,6 +1421,8 @@ export function TradingTerminal({
   } | null>(null);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [confirmingInWallet, setConfirmingInWallet] = useState(false);
+  // A Devnet exit closes the whole open package, so its size comes from the service's exit order.
+  const [solanaExitSize, setSolanaExitSize] = useState<{ key: string; size: string } | null>(null);
   const [idempotency, setIdempotency] = useState<{
     ticketKey: string;
     key: string;
@@ -1977,14 +1979,19 @@ export function TradingTerminal({
 
   async function prepareExecution(
     currentIdempotencyKey: string,
+    exitSize?: string,
   ): Promise<SolanaExecutionPreparation> {
     if (!privateProvider || !wallet.selectedAccount) {
       throw new Error("Private service and Devnet wallet are required.");
     }
+    const packageSize = mode === "exit"
+      ? exitSize ?? (solanaExitSize?.key === currentIdempotencyKey ? solanaExitSize.size : undefined)
+      : size;
+    if (packageSize === undefined) throw new Error("Create the Devnet exit order first.");
     const input: SolanaExecutionPreparationInput = {
       domain: "svm:devnet",
       mode,
-      size,
+      size: packageSize,
       slippageBps: slippage,
       quoteMode,
       traderPublicKey: wallet.selectedAccount.address,
@@ -2062,7 +2069,17 @@ export function TradingTerminal({
           ? idempotency.key
           : crypto.randomUUID();
       setIdempotency({ ticketKey, key });
-      const preparation = await prepareExecution(key);
+      let exitSize: string | undefined;
+      if (mode === "exit") {
+        // Exit order, wallet authorization, solver firm bid, and selection, all under this key.
+        const exitAttempt = await privateProvider.createSolanaDevnetExitAttempt(
+          { owner: wallet.selectedAccount.address, slippageBps: slippage, idempotencyKey: key },
+          wallet.signMessage,
+        );
+        exitSize = solanaDevnetSizeFromAtoms(exitAttempt.quantityAtoms);
+        setSolanaExitSize({ key, size: exitSize });
+      }
+      const preparation = await prepareExecution(key, exitSize);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
       recordAttempt({ attemptId: preparation.lifecycleAttemptId, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
       setLifecycleView({

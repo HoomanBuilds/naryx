@@ -17,6 +17,7 @@ import {
 } from '@solana/web3.js';
 import type { DomainRef, PackageAdmission } from '@naryx/protocol-types';
 import {
+  compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
   decodeCashCarryExecutionReceipt,
   FIRM_CASH_CARRY_ACCOUNT_NAMES,
@@ -1364,7 +1365,7 @@ test('rejects wrong genesis and an uncompressed oversized entry before materiali
   );
 });
 
-test('compiles a Devnet test perp firm entry against the devnet-test-perp core IDL', () => {
+function testPerpFixture() {
   const testPerpIdl = JSON.parse(readFileSync(new URL('../../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json', import.meta.url), 'utf8')) as Idl;
   const fixedAddress = (name: string): PublicKey => {
     const instruction = testPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
@@ -1418,7 +1419,11 @@ test('compiles a Devnet test perp firm entry against the devnet-test-perp core I
       perpMarket: { ...binding.resources.perpMarket, subjectAddress: testPerp.testPerpMarket!, programId: venueProgram },
     },
   };
+  return { binding, testPerp, testPerpIdl, testAdmission, testBinding };
+}
 
+test('compiles a Devnet test perp firm entry against the devnet-test-perp core IDL', () => {
+  const { binding, testPerp, testAdmission, testBinding } = testPerpFixture();
   const result = compileFirmCashCarryPlan(testAdmission, testBinding);
   const entryKeys = result.traderEntry.instructions[2]!.keys.map((key) => key.pubkey.toBase58());
   const strategyIndex = entryKeys.indexOf(binding.accounts.riseStrategy.address as string);
@@ -1429,4 +1434,75 @@ test('compiles a Devnet test perp firm entry against the devnet-test-perp core I
   assert.throws(() => compileFirmCashCarryPlan(testAdmission, mixed), /riseGlobalConfig does not match NARYX_TEST_PERP/);
   const riseIdl: FirmCashCarryBinding<'NARYX_TEST_PERP'> = { ...testBinding, coreIdl, expectedCoreIdlHash: solanaIdlContentHash(coreIdl) };
   assert.throws(() => compileFirmCashCarryPlan(testAdmission, riseIdl), /IDL/);
+});
+
+test('compiles a firm buy-back exit for the test perp and fails closed on entry-shaped evidence', () => {
+  const { testPerpIdl, testAdmission, testBinding } = testPerpFixture();
+  const baseMint = new PublicKey(testBinding.resources.baseAsset.subjectAddress);
+  const quoteMint = new PublicKey(testBinding.resources.quoteAsset.subjectAddress);
+  const solver = new PublicKey(testBinding.accounts.solver.address);
+  const solverBase = ata(solver, baseMint).toBase58();
+  const route = testAdmission.route;
+  const [spot, perp] = route.legs;
+  const order = testAdmission.order as unknown as Record<string, unknown>;
+  const { maxSpotQuoteIn: unusedMax, ...exitOrder } = order;
+  void unusedMax;
+  const exitAdmission = {
+    ...testAdmission,
+    order: { ...exitOrder, action: 'EXIT', minSpotQuoteOut: { asset: spot!.quoteAsset, atoms: 40n } },
+    route: {
+      ...route,
+      action: 'EXIT',
+      legs: [{ ...spot!, side: 'SELL' }, { ...perp!, side: 'BUY', reduceOnly: true }],
+      accountBindings: route.accountBindings.map((item) => item.routeBindingId === 'firm-solverQuote' ? { ...item, accountIdentity: solverBase } : item),
+    },
+  } as unknown as PackageAdmission;
+  const quoteArgs = { ...testBinding.quoteArgs, expectedSide: 1 as const };
+  const quoteArgsHash = domainHash(
+    'NARYX/firm-quote-args/v1',
+    new BorshCoder(testPerpIdl).types.encode('CashCarryQuoteArgs', quoteArgsForCoder({ ...testBinding, quoteArgs } as unknown as FirmCashCarryBinding)),
+  );
+  const exitBinding: FirmCashCarryBinding<'NARYX_TEST_PERP'> = {
+    ...testBinding,
+    action: 'EXIT',
+    accounts: { ...testBinding.accounts, solverQuote: { address: solverBase, routeBindingId: 'firm-solverQuote' } },
+    tokenAccounts: {
+      ...testBinding.tokenAccounts,
+      reservationVault: { ...testBinding.tokenAccounts.reservationVault, mint: quoteMint, amountAtoms: 50n },
+      solverQuote: { mint: baseMint, authority: solver, amountAtoms: 0n },
+    },
+    reservation: { ...testBinding.reservation, action: 'EXIT', solverQuote: ata(solver, quoteMint) },
+    quoteArgs,
+    quoteLock: { ...testBinding.quoteLock, quoteArgsHash },
+    executionArgs: { ...testBinding.executionArgs, spotLimitQuoteAtomsPerBaseLot: 4n, minimumRiseCollateralQuoteLots: 0n },
+  };
+
+  const result = compileFirmCashCarryExitPlan(exitAdmission, exitBinding);
+  assert.equal(result.kind, 'MULTI_TRANSACTION_FIRM_CASH_CARRY_EXIT_PLAN');
+  assert.equal(result.traderExit.authorityRole, 'TRADER');
+  const instruction = result.traderExit.instructions[2]!;
+  const decoded = new BorshCoder(testPerpIdl).instruction.decode(instruction.data);
+  assert.equal(decoded?.name, 'execute_firm_cash_and_carry');
+  assert.deepEqual((decoded?.data as { args: { action: object } }).args.action, { Exit: {} });
+  assert.equal((decoded?.data as { quote_args: { expected_side: number } }).quote_args.expected_side, 1);
+  assert.deepEqual(Array.from(result.traderExit.instructions[1]!.data.subarray(112)), Array.from(result.executionDigest));
+  assert.equal(instruction.keys.filter((key) => key.isSigner).length, 1);
+  assert.equal(instruction.keys[33]!.pubkey.toBase58(), solverBase);
+  const entryDigest = compileFirmCashCarryPlan(testAdmission, testBinding).executionDigest;
+  assert.notDeepEqual(Array.from(result.executionDigest), Array.from(entryDigest));
+
+  assert.throws(() => compileFirmCashCarryPlan(exitAdmission, exitBinding), /entry binding/);
+  assert.throws(() => compileFirmCashCarryExitPlan(testAdmission, { ...testBinding, action: 'EXIT' }), /EXIT package/);
+  assert.throws(() => compileFirmCashCarryExitPlan(exitAdmission, { ...exitBinding, quoteArgs: testBinding.quoteArgs }), /quote side/);
+  assert.throws(() => compileFirmCashCarryExitPlan(exitAdmission, { ...exitBinding, reservation: { ...exitBinding.reservation, action: 'ENTRY' } }), /reservation action/);
+  assert.throws(() => compileFirmCashCarryExitPlan(exitAdmission, {
+    ...exitBinding,
+    tokenAccounts: { ...exitBinding.tokenAccounts, reservationVault: { ...exitBinding.tokenAccounts.reservationVault, amountAtoms: 49n } },
+  }), /vault funding/);
+  // The program enforces quote out >= the spot minimum, so a minimum below the signed bound is refused.
+  assert.throws(() => compileFirmCashCarryExitPlan(exitAdmission, {
+    ...exitBinding,
+    executionArgs: { ...exitBinding.executionArgs, spotLimitQuoteAtomsPerBaseLot: 3n },
+  }), /signed order bound/);
+  assert.throws(() => compileFirmCashCarryExitPlan(exitAdmission, { ...exitBinding, firmQuoteAtoms: 39n }), /firm quote/);
 });

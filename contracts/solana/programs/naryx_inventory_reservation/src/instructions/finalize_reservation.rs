@@ -44,7 +44,8 @@ pub fn finalize_reservation_handler(
 ) -> Result<()> {
     require!(
         ctx.accounts.reservation_class.is_current_entry()
-            && ctx.accounts.reservation.is_current_entry(),
+            && (ctx.accounts.reservation.is_current_entry()
+                || ctx.accounts.reservation.is_current_exit()),
         ErrorCode::ClassParameterInvalid
     );
     let reservation_class = ctx.accounts.reservation_class.key();

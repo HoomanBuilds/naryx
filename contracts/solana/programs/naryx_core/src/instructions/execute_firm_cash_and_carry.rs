@@ -11,6 +11,11 @@ use anchor_spl::{
 };
 use solana_sha256_hasher::hashv;
 
+#[cfg(feature = "devnet-test-perp")]
+use crate::instructions::{
+    execute_cash_and_carry::validate_open_package_identity,
+    resource_registry::validate_cash_carry_exit_admission,
+};
 use crate::{
     constants::{
         CASH_CARRY_EXECUTOR_SEED, CASH_CARRY_NONCE_SEED, CASH_CARRY_OPEN_SEED,
@@ -31,7 +36,7 @@ use crate::{
             CashCarryAction, CashCarryExecutionArgs, CashCarryQuoteArgs, CashCarryResourceAccounts,
             CashCarryRuntimeAccounts, QuoteEvidence, OPEN_PACKAGE_VERSION, PACKAGE_ACCOUNTS_DOMAIN,
             PACKAGE_BOOK_ACCOUNT_COUNT, PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN,
-            PACKAGE_BOOK_QUOTE_SIDE_ASK, ROUTE_ACCOUNTS_DOMAIN,
+            PACKAGE_BOOK_QUOTE_SIDE_ASK, PACKAGE_BOOK_QUOTE_SIDE_BID, ROUTE_ACCOUNTS_DOMAIN,
         },
         resource_registry::{
             validate_cash_carry_admission, verify_code_identity, CashCarryResources,
@@ -68,6 +73,8 @@ const RESERVATION_ID_DOMAIN: &[u8] = b"CON/v1/reservation-id";
 const FIRM_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/firm-cash-carry-execution/v1";
 const FIRM_QUOTE_LOCK_SEED: &[u8] = b"firm-quote-lock";
 const FIRM_QUOTE_ARGS_DOMAIN: &[u8] = b"NARYX/firm-quote-args/v1";
+const RESERVATION_ACTION_ENTRY: u8 = 1;
+const RESERVATION_ACTION_EXIT: u8 = 2;
 pub const FIRM_FIXED_ACCOUNT_COUNT: usize = 49 + PERP_VENUE_ACCOUNT_COUNT;
 pub const FIRM_AUXILIARY_PROGRAM_COUNT: usize = 2;
 pub const MAX_FIRM_RISE_EXTRA_ACCOUNTS: usize =
@@ -201,7 +208,7 @@ pub fn lock_firm_quote_handler<'info>(
         ErrorCode::CashCarryHashZero
     );
     require!(
-        !ctx.accounts.config.entry_paused
+        (cfg!(feature = "devnet-test-perp") || !ctx.accounts.config.entry_paused)
             && quote.expected_quote_mode == PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN
             && quote.expected_reservation_policy_hash != [0; 32]
             && quote.reservation_id != [0; 32]
@@ -259,6 +266,19 @@ pub fn lock_firm_quote_handler<'info>(
             && reservation.state == ReservationStateWire::Live,
         ErrorCode::CashCarryQuoteAccountMismatch
     );
+    // The firm exit lane: a buy-back reservation locks only a bid, an entry reservation only an
+    // ask, and only entry locks are blocked by the entry pause.
+    #[cfg(feature = "devnet-test-perp")]
+    {
+        let exit = reservation.action == RESERVATION_ACTION_EXIT;
+        require!(
+            (exit && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_BID)
+                || (reservation.action == RESERVATION_ACTION_ENTRY
+                    && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_ASK
+                    && !ctx.accounts.config.entry_paused),
+            ErrorCode::CashCarryQuoteParameterInvalid
+        );
+    }
     let class_data = ctx.accounts.reservation_class.try_borrow_data()?;
     let class_discriminator = hashv(&[b"account:ReservationClass"]).to_bytes();
     require!(
@@ -462,6 +482,10 @@ pub(crate) fn handler<'info>(
     firm_quote_atoms: u64,
 ) -> Result<()> {
     validate_basic_inputs(order_hash, quote_hash, route_hash, &args)?;
+    #[cfg(feature = "devnet-test-perp")]
+    if args.action == CashCarryAction::Exit {
+        return execute_firm_exit(ctx, order_hash, quote_hash, route_hash, args, quote, firm_quote_atoms);
+    }
     require!(
         args.action == CashCarryAction::Entry && !args.recovery && args.spot_sqrt_price_limit == 1,
         ErrorCode::CashCarryQuoteActionInvalid
@@ -599,7 +623,14 @@ pub(crate) fn handler<'info>(
     let pre_base = ctx.accounts.firm.trader_base.amount;
     let pre_quote = ctx.accounts.firm.trader_quote.amount;
     fund_executor_quote(&ctx, firm_quote_atoms)?;
-    consume_reservation(&ctx, order_hash, quote_hash, route_hash, args.nonce)?;
+    consume_reservation(
+        &ctx,
+        b"consume_reservation",
+        order_hash,
+        quote_hash,
+        route_hash,
+        args.nonce,
+    )?;
     ctx.accounts.firm.executor_base.reload()?;
     ctx.accounts.firm.executor_quote.reload()?;
     validate_reservation_delivery(
@@ -617,6 +648,7 @@ pub(crate) fn handler<'info>(
             min_post_collateral_quote_lots: args.minimum_rise_collateral_quote_lots,
             client_order_id: args.client_order_id,
         },
+        true,
     )?;
     ctx.accounts.firm.trader_base.reload()?;
     ctx.accounts.firm.trader_quote.reload()?;
@@ -730,6 +762,347 @@ pub(crate) fn handler<'info>(
     Ok(())
 }
 
+/// Firm exit of an open package against a live buy-back reservation. The perp short is closed
+/// reduce-only, the trader's exact spot base moves through the executor to the solver, and the
+/// solver's escrowed firm quote moves through the executor to the trader, all in this instruction.
+/// Postconditions: spot base out equals the package quantity, quote in equals the firm amount and is
+/// at least the signed minimum, the perp position is flat, and the open package closes with an exit
+/// receipt. Exits are not blocked by the entry pause.
+#[cfg(feature = "devnet-test-perp")]
+fn execute_firm_exit<'info>(
+    ctx: Context<'info, ExecuteFirmCashAndCarry<'info>>,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: CashCarryExecutionArgs,
+    quote: CashCarryQuoteArgs,
+    firm_quote_atoms: u64,
+) -> Result<()> {
+    require!(
+        args.action == CashCarryAction::Exit && !args.recovery && args.spot_sqrt_price_limit == 1,
+        ErrorCode::CashCarryQuoteActionInvalid
+    );
+    validate_firm_quote_args(&args, &quote, firm_quote_atoms)?;
+    require!(
+        ctx.remaining_accounts.len() <= MAX_FIRM_RISE_EXTRA_ACCOUNTS,
+        ErrorCode::CashCarryQuoteAccountMismatch
+    );
+    let execution_slot = Clock::get()?.slot;
+    validate_expiry(execution_slot, args.expiry_slot)?;
+    let domain = ctx.accounts.config.domain.clone();
+    let open = &ctx.accounts.open_package;
+    require!(
+        open.version == OPEN_PACKAGE_VERSION && open.trader == ctx.accounts.trader.key(),
+        ErrorCode::CashCarryPackageNotOpen
+    );
+    // The reservation class and quote lock are bound to the active domain; a package opened under
+    // an earlier domain exits through the public or recovery path instead.
+    require!(open.domain == domain, ErrorCode::CashCarryOpenPackageMismatch);
+    let resources = &ctx.accounts.resources;
+    let admission = reconstruct_admission(resources, &args, domain.clone())?;
+    validate_cash_carry_exit_admission(
+        &domain,
+        &admission,
+        &CashCarryResources {
+            spot_adapter: &resources.spot_adapter_record,
+            perp_adapter: &resources.perp_adapter_record,
+            spot_market: &resources.spot_market_record,
+            perp_market: &resources.perp_market_record,
+            spot_venue: &resources.spot_venue_record,
+            perp_venue: &resources.perp_venue_record,
+            base_asset: &resources.base_asset_record,
+            quote_asset: &resources.quote_asset_record,
+        },
+    )?;
+    validate_resource_indices(resources, false)?;
+    validate_strategy_authority(
+        &ctx.accounts.executor_authority,
+        &domain,
+        ctx.accounts.trader.key(),
+        resources.base_asset_record.manifest.subject_address,
+        resources.quote_asset_record.manifest.subject_address,
+        ctx.accounts.rise_strategy.key(),
+    )?;
+    validate_firm_accounts(
+        &ctx.accounts,
+        &quote,
+        firm_quote_atoms,
+        order_hash,
+        quote_hash,
+        route_hash,
+        &args,
+        execution_slot,
+    )?;
+    validate_quote_series_binding_pair(
+        &ctx.accounts.config,
+        resources,
+        &ctx.accounts.series_index,
+        &ctx.accounts.series_record,
+        &args,
+        &quote,
+    )?;
+    let economic_commitment = economic_package_commitment(
+        &admission,
+        &[
+            resources.perp_adapter_record.key(),
+            resources.perp_market_record.key(),
+            resources.perp_venue_record.key(),
+            resources.base_asset_record.key(),
+            resources.quote_asset_record.key(),
+        ],
+    );
+    let package_commitment = hash_pubkeys(
+        PACKAGE_ACCOUNTS_DOMAIN,
+        &[
+            ctx.accounts.firm.trader_base.key(),
+            ctx.accounts.firm.trader_quote.key(),
+            ctx.accounts.rise_strategy.key(),
+        ],
+    );
+    validate_open_package_identity(
+        &ctx.accounts.open_package,
+        ctx.accounts.trader.key(),
+        economic_commitment,
+        package_commitment,
+        args.spot_quantity_atoms,
+        args.perp_quantity_atoms,
+    )?;
+    let quote_account_keys = [
+        ctx.accounts.quote_lock.key(),
+        ctx.accounts.series_index.key(),
+        ctx.accounts.series_record.key(),
+    ];
+    let quote_evidence = QuoteEvidence {
+        intent_commitment: quote_intent_commitment(
+            &domain,
+            &ctx.accounts.solver.key(),
+            &ctx.accounts.quote_lock.key(),
+            order_hash,
+            quote_hash,
+            route_hash,
+            &quote,
+            &quote_account_keys,
+        ),
+        fill_commitment: quote.expected_fill_commitment,
+    };
+    let resource_commitment =
+        resource_admission_commitment(&admission, &resource_record_keys(resources));
+    let route_commitment = firm_route_accounts_commitment(&ctx);
+    let quoted_digest = quoted_execution_digest(
+        &domain,
+        order_hash,
+        quote_hash,
+        route_hash,
+        &args,
+        resource_commitment,
+        &firm_execution_account_keys(&ctx),
+        quote_evidence,
+    );
+    let digest = hashv(&[
+        FIRM_EXECUTION_DIGEST_DOMAIN,
+        &quoted_digest,
+        &firm_quote_atoms.to_be_bytes(),
+    ])
+    .to_bytes();
+    require_solver_signature(
+        &ctx.accounts.runtime.instructions_sysvar,
+        &ctx.accounts.solver.key(),
+        &digest,
+    )?;
+    let (perp_base_lots, perp_limit_ticks, min_spot_quote_out_atoms) =
+        execution_units(&admission, resources)?;
+    require!(
+        firm_quote_atoms >= min_spot_quote_out_atoms,
+        ErrorCode::CashCarryPostconditionFailed
+    );
+    let (pre_rise_base_lots, pre_collateral) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
+    validate_preconditions(&args, pre_rise_base_lots, pre_collateral, perp_base_lots)?;
+
+    let pre_base = ctx.accounts.firm.trader_base.amount;
+    let pre_quote = ctx.accounts.firm.trader_quote.amount;
+    execute_rise(
+        &ctx,
+        PerpMarketOrderArgs {
+            base_lots: perp_base_lots,
+            limit_price_in_ticks: perp_limit_ticks,
+            last_valid_slot: args.expiry_slot - 1,
+            min_post_collateral_quote_lots: args.minimum_rise_collateral_quote_lots,
+            client_order_id: args.client_order_id,
+        },
+        false,
+    )?;
+    move_trader_base_to_executor(&ctx, args.spot_quantity_atoms)?;
+    consume_reservation(
+        &ctx,
+        b"consume_exit_reservation",
+        order_hash,
+        quote_hash,
+        route_hash,
+        args.nonce,
+    )?;
+    ctx.accounts.firm.executor_base.reload()?;
+    ctx.accounts.firm.executor_quote.reload()?;
+    validate_buy_back_delivery(
+        firm_quote_atoms,
+        ctx.accounts.firm.executor_base.amount,
+        ctx.accounts.firm.executor_quote.amount,
+    )?;
+    deliver_quote(&ctx, firm_quote_atoms)?;
+    ctx.accounts.firm.trader_base.reload()?;
+    ctx.accounts.firm.trader_quote.reload()?;
+    ctx.accounts.firm.executor_base.reload()?;
+    ctx.accounts.firm.executor_quote.reload()?;
+    require!(
+        ctx.accounts.firm.executor_base.amount == 0 && ctx.accounts.firm.executor_quote.amount == 0,
+        ErrorCode::CashCarryPostconditionFailed
+    );
+    let (post_rise_base_lots, post_collateral) =
+        perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
+    let spot_quote_delta_atoms = enforce_postconditions(
+        &args,
+        pre_base,
+        ctx.accounts.firm.trader_base.amount,
+        pre_quote,
+        ctx.accounts.firm.trader_quote.amount,
+        pre_rise_base_lots,
+        post_rise_base_lots,
+        post_collateral,
+        perp_base_lots,
+        min_spot_quote_out_atoms,
+    )?;
+    require!(
+        spot_quote_delta_atoms == firm_quote_atoms,
+        ErrorCode::CashCarryPostconditionFailed
+    );
+    ctx.accounts.quote_lock.consumed = true;
+
+    let entry_receipt = ctx.accounts.open_package.entry_receipt;
+    ctx.accounts.receipt.set_inner(CashCarryExecutionReceipt {
+        domain: domain.clone(),
+        order_hash,
+        quote_hash,
+        route_hash,
+        trader: ctx.accounts.trader.key(),
+        solver: ctx.accounts.solver.key(),
+        nonce: args.nonce,
+        execution_digest: digest,
+        quote_intent_commitment: quote_evidence.intent_commitment,
+        package_fill_commitment: quote_evidence.fill_commitment,
+        action: args.action.discriminant(),
+        recovery: false,
+        spot_quantity_atoms: args.spot_quantity_atoms,
+        perp_quantity_atoms: args.perp_quantity_atoms,
+        spot_quote_delta_atoms,
+        pre_base_balance: pre_base,
+        post_base_balance: ctx.accounts.firm.trader_base.amount,
+        pre_quote_balance: pre_quote,
+        post_quote_balance: ctx.accounts.firm.trader_quote.amount,
+        pre_rise_base_lots,
+        post_rise_base_lots,
+        pre_rise_collateral_quote_lots: pre_collateral,
+        post_rise_collateral_quote_lots: post_collateral,
+        execution_slot,
+        resource_admission_commitment: resource_commitment,
+        route_accounts_commitment: route_commitment,
+        entry_receipt,
+        bump: ctx.bumps.receipt,
+    });
+    ctx.accounts.nonce_marker.set_inner(CashCarryNonce {
+        order_hash,
+        execution_digest: digest,
+        bump: ctx.bumps.nonce_marker,
+    });
+    emit!(CashCarryExecutionRecorded {
+        receipt: ctx.accounts.receipt.key(),
+        domain,
+        order_hash,
+        quote_hash,
+        route_hash,
+        trader: ctx.accounts.trader.key(),
+        solver: ctx.accounts.solver.key(),
+        nonce: args.nonce,
+        execution_digest: digest,
+        quote_intent_commitment: quote_evidence.intent_commitment,
+        package_fill_commitment: quote_evidence.fill_commitment,
+        action: args.action.discriminant(),
+        recovery: false,
+        spot_quantity_atoms: args.spot_quantity_atoms,
+        perp_quantity_atoms: args.perp_quantity_atoms,
+        spot_quote_delta_atoms,
+        pre_base_balance: pre_base,
+        post_base_balance: ctx.accounts.firm.trader_base.amount,
+        pre_quote_balance: pre_quote,
+        post_quote_balance: ctx.accounts.firm.trader_quote.amount,
+        pre_rise_base_lots,
+        post_rise_base_lots,
+        pre_rise_collateral_quote_lots: pre_collateral,
+        post_rise_collateral_quote_lots: post_collateral,
+        execution_slot,
+        resource_admission_commitment: resource_commitment,
+        route_accounts_commitment: route_commitment,
+        entry_receipt,
+    });
+    ctx.accounts
+        .open_package
+        .close(ctx.accounts.trader.to_account_info())
+}
+
+/// After the buy-back CPI the executor holds exactly the firm quote and no base.
+#[cfg_attr(not(feature = "devnet-test-perp"), allow(dead_code))]
+fn validate_buy_back_delivery(
+    firm_quote_atoms: u64,
+    executor_base_atoms: u64,
+    executor_quote_atoms: u64,
+) -> Result<()> {
+    require!(
+        firm_quote_atoms != 0 && executor_base_atoms == 0 && executor_quote_atoms == firm_quote_atoms,
+        ErrorCode::CashCarryPostconditionFailed
+    );
+    Ok(())
+}
+
+#[cfg(feature = "devnet-test-perp")]
+fn move_trader_base_to_executor(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> Result<()> {
+    token::transfer(
+        CpiContext::new(
+            ctx.accounts.runtime.token_program.key(),
+            Transfer {
+                from: ctx.accounts.firm.trader_base.to_account_info(),
+                to: ctx.accounts.firm.executor_base.to_account_info(),
+                authority: ctx.accounts.trader.to_account_info(),
+            },
+        ),
+        amount,
+    )
+}
+
+#[cfg(feature = "devnet-test-perp")]
+fn deliver_quote(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> Result<()> {
+    let accounts = &ctx.accounts;
+    let trader = accounts.trader.key();
+    let strategy = accounts.rise_strategy.key();
+    let bump = [accounts.executor_authority.bump];
+    let signer: &[&[u8]] = &[
+        CASH_CARRY_EXECUTOR_SEED,
+        trader.as_ref(),
+        strategy.as_ref(),
+        bump.as_ref(),
+    ];
+    token::transfer(
+        CpiContext::new_with_signer(
+            accounts.runtime.token_program.key(),
+            Transfer {
+                from: accounts.firm.executor_quote.to_account_info(),
+                to: accounts.firm.trader_quote.to_account_info(),
+                authority: accounts.executor_authority.to_account_info(),
+            },
+            &[signer],
+        ),
+        amount,
+    )
+}
+
 fn validate_firm_quote_args(
     execution: &CashCarryExecutionArgs,
     quote: &CashCarryQuoteArgs,
@@ -749,7 +1122,11 @@ fn validate_firm_quote_args(
             && quote.expected_shard_sequence != 0
             && quote.level_id != 0
             && quote.expected_level_sequence != 0
-            && quote.expected_side == PACKAGE_BOOK_QUOTE_SIDE_ASK
+            && quote.expected_side
+                == match execution.action {
+                    CashCarryAction::Entry => PACKAGE_BOOK_QUOTE_SIDE_ASK,
+                    CashCarryAction::Exit => PACKAGE_BOOK_QUOTE_SIDE_BID,
+                }
             && quote.package_size_units != 0
             && quote.expected_max_fee_atoms == 0
             && quote.expected_expiry_slot != 0
@@ -811,6 +1188,19 @@ fn validate_firm_accounts(
         token::ID,
         ErrorCode::CashCarryTokenAccountMismatch
     );
+    let exit = execution.action == CashCarryAction::Exit;
+    // The solver settlement slot receives quote on entry and the bought-back base on exit; the
+    // reservation vault escrows the opposite asset.
+    let (solver_settlement_mint, vault_mint, vault_atoms, reservation_action) = if exit {
+        (base_mint, quote_mint, firm_quote_atoms, RESERVATION_ACTION_EXIT)
+    } else {
+        (
+            quote_mint,
+            base_mint,
+            execution.spot_quantity_atoms,
+            RESERVATION_ACTION_ENTRY,
+        )
+    };
     for (account, owner, mint) in [
         (&firm.trader_base, accounts.trader.key(), base_mint),
         (&firm.trader_quote, accounts.trader.key(), quote_mint),
@@ -824,7 +1214,11 @@ fn validate_firm_accounts(
             accounts.executor_authority.key(),
             quote_mint,
         ),
-        (&firm.solver_quote, accounts.solver.key(), quote_mint),
+        (
+            &firm.solver_quote,
+            accounts.solver.key(),
+            solver_settlement_mint,
+        ),
     ] {
         require_keys_eq!(
             account.owner,
@@ -981,7 +1375,7 @@ fn validate_firm_accounts(
     );
     require_keys_eq!(
         firm.reservation_vault.mint,
-        base_mint,
+        vault_mint,
         ErrorCode::CashCarryTokenAccountMismatch
     );
     require_keys_eq!(
@@ -1033,18 +1427,18 @@ fn validate_firm_accounts(
             && reservation_wire.quote_mint == quote_mint
             && reservation_wire.solver_reclaim_base
                 == get_associated_token_address(&solver, &base_mint)
-            && reservation_wire.solver_quote == firm.solver_quote.key()
+            && reservation_wire.solver_quote == get_associated_token_address(&solver, &quote_mint)
             && reservation_wire.strategy_base == firm.executor_base.key()
             && reservation_wire.strategy_quote == firm.executor_quote.key()
             && reservation_wire.base_atoms == execution.spot_quantity_atoms
             && reservation_wire.quote_atoms == firm_quote_atoms
             && reservation_wire.expiry_slot == quote.expected_expiry_slot
             && current_slot < reservation_wire.expiry_slot
-            && reservation_wire.action == 1
+            && reservation_wire.action == reservation_action
             && reservation_wire.state == ReservationStateWire::Live
             && reservation_wire.bump == reservation_bump
             && reservation_wire.vault_bump == vault_bump
-            && firm.reservation_vault.amount == reservation_wire.base_atoms,
+            && firm.reservation_vault.amount == vault_atoms,
         ErrorCode::CashCarryQuoteAccountMismatch
     );
     validate_quote_lock(
@@ -1243,6 +1637,7 @@ fn fund_executor_quote(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> R
 
 fn consume_reservation(
     ctx: &Context<ExecuteFirmCashAndCarry>,
+    instruction_name: &[u8],
     order_hash: [u8; 32],
     quote_hash: [u8; 32],
     route_hash: [u8; 32],
@@ -1250,7 +1645,7 @@ fn consume_reservation(
 ) -> Result<()> {
     let accounts = &ctx.accounts;
     let firm = &accounts.firm;
-    let mut data = hashv(&[b"global:consume_reservation"]).to_bytes()[..8].to_vec();
+    let mut data = hashv(&[b"global:", instruction_name]).to_bytes()[..8].to_vec();
     ConsumeReservationArgs {
         package_nonce,
         order_hash,
@@ -1343,6 +1738,7 @@ fn deliver_base(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> Result<(
 fn execute_rise<'info>(
     ctx: &Context<'info, ExecuteFirmCashAndCarry<'info>>,
     args: PerpMarketOrderArgs,
+    entry: bool,
 ) -> Result<()> {
     let accounts = &ctx.accounts;
     let trader = accounts.trader.key();
@@ -1366,7 +1762,7 @@ fn execute_rise<'info>(
         },
         &[signer],
         args,
-        true,
+        entry,
     )
 }
 
@@ -1500,6 +1896,22 @@ mod tests {
         lock.route_hash = route_hash;
         lock.consumed = true;
         assert!(check(&lock, &quote, 25, 98).is_err());
+    }
+
+    #[test]
+    fn firm_exit_requires_bid_and_exact_buy_back_delivery() {
+        let mut exit = execution();
+        exit.action = CashCarryAction::Exit;
+        let mut bid = quote();
+        bid.expected_side = PACKAGE_BOOK_QUOTE_SIDE_BID;
+        assert!(validate_firm_quote_args(&exit, &bid, 25).is_ok());
+        assert!(validate_firm_quote_args(&exit, &quote(), 25).is_err());
+        assert!(validate_firm_quote_args(&execution(), &bid, 25).is_err());
+        assert!(validate_buy_back_delivery(25, 0, 25).is_ok());
+        assert!(validate_buy_back_delivery(25, 0, 24).is_err());
+        assert!(validate_buy_back_delivery(25, 0, 26).is_err());
+        assert!(validate_buy_back_delivery(25, 1, 25).is_err());
+        assert!(validate_buy_back_delivery(0, 0, 0).is_err());
     }
 
     #[cfg(not(feature = "devnet-test-perp"))]

@@ -41,14 +41,18 @@ import {
   MAX_QUOTE_LEVELS,
   QUOTE_MODE_FIRM_ONCHAIN,
   QUOTE_SIDE_ASK,
+  QUOTE_SIDE_BID,
   TOKEN_PROGRAM_ID,
   associatedTokenAddress,
   bigEndian,
+  decodeOpenCashCarryPackage,
+  decodeTestPerpPosition,
   decodePackageQuoteShard,
   decodeQuoteLevelPage,
   decodeReservationClass,
   decodeTestPerpMarket,
   instructionDiscriminator,
+  priceTestPerpCloseShort,
   priceTestPerpShort,
   reservationIdFor,
   sameDomain,
@@ -112,6 +116,8 @@ export function deriveSolanaDevnetFirmAccounts(input: Readonly<{
   orderHash: Uint8Array;
   nonce: bigint;
   reservationId: Uint8Array;
+  /** A firm exit settles the bought-back base into the solver's base account. */
+  exit?: boolean;
 }>): SolanaDevnetFirmAccounts {
   const { manifest, config, market } = input;
   const core = new PublicKey(programAddress(manifest, 'core').programId);
@@ -153,7 +159,7 @@ export function deriveSolanaDevnetFirmAccounts(input: Readonly<{
     reservation: pda([Buffer.from('reservation'), reservationClass.toBuffer(), solver.toBuffer(), input.reservationId], reservationProgram),
     livePair: pda([Buffer.from('live-pair'), reservationClass.toBuffer(), solver.toBuffer(), new PublicKey(executorAuthority).toBuffer()], reservationProgram),
     reservationVault: pda([Buffer.from('reservation-vault'), reservationClass.toBuffer(), solver.toBuffer(), input.reservationId], reservationProgram),
-    solverQuote: associatedTokenAddress(solver, quoteMint).toBase58(),
+    solverQuote: associatedTokenAddress(solver, input.exit === true ? baseMint : quoteMint).toBase58(),
     traderBase: associatedTokenAddress(trader, baseMint).toBase58(),
     traderQuote: associatedTokenAddress(trader, quoteMint).toBase58(),
     executorBase: associatedTokenAddress(executorAuthority, baseMint).toBase58(),
@@ -380,16 +386,17 @@ export async function readSolanaDevnetQuoteState(
   return Object.freeze({ slot, market, oraclePricePerLot, reservationClass, shard, levels: page.levels });
 }
 
-/** A usable firm ask: active this epoch, the reviewed policy and settlement class, enough capacity. */
+/** A usable firm level: active this epoch, the reviewed policy and settlement class, enough capacity. */
 export function selectFirmLevel(
   state: SolanaDevnetLiveQuoteState,
   config: SolanaDevnetSolverConfig,
   units: bigint,
   minimumExpiry: bigint,
   maximumExpiry: bigint,
+  side: number = QUOTE_SIDE_ASK,
 ): QuoteLevelState | undefined {
   return state.levels.find((level) => level.active && level.epoch === state.shard.epoch
-    && level.side === QUOTE_SIDE_ASK && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
+    && level.side === side && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
     && bytesEqual(level.reservationPolicyHash, state.reservationClass.policyHash)
     && bytesEqual(level.settlementClassIdentityHash, config.series.settlementClassIdentityHash)
     && units >= level.minPackageSizeUnits && units <= level.maxPackageSizeUnits && units <= level.remainingCapacity
@@ -406,8 +413,12 @@ export function packageBookLevelInstructions(input: Readonly<{
   config: SolanaDevnetSolverConfig;
   state: SolanaDevnetLiveQuoteState;
   expirySlot: bigint;
+  /** Entry quotes an ask; a firm exit quotes the solver's bid. */
+  side?: number;
 }>) {
   const { manifest, config, state, expirySlot } = input;
+  const side = input.side ?? QUOTE_SIDE_ASK;
+  if (side !== QUOTE_SIDE_ASK && side !== QUOTE_SIDE_BID) fail('level side is invalid');
   const program = new PublicKey(programAddress(manifest, 'package_book').programId);
   const solver = new PublicKey(config.solverId);
   const keys = (levels: boolean) => [
@@ -439,7 +450,7 @@ export function packageBookLevelInstructions(input: Readonly<{
     .u64(reusing ? previous.levelSequence : 0n)
     .u64(reusing ? previous.levelSequence + 1n : 1n)
     .u64(reusing ? previous.levelId : levelId)
-    .u8(QUOTE_SIDE_ASK)
+    .u8(side)
     .u64(1n)
     .u64(config.levelCapacityUnits)
     .i128(0n)
@@ -504,13 +515,57 @@ export function priceSolanaDevnetEntry(
   });
 }
 
+export type SolanaDevnetExitPricing = Readonly<{
+  spotLots: bigint;
+  spotMinimumPerLot: bigint;
+  firmQuoteAtoms: bigint;
+  perpLots: bigint;
+  perpLimitPerLot: bigint;
+  perpNotionalAtoms: bigint;
+  perpFeeAtoms: bigint;
+}>;
+
+/**
+ * Firm inventory bid at the oracle less the inventory spread (rounded down), with the route spot
+ * minimum at that exact bid per lot, and the test perp buy-back at the market's own spread, impact,
+ * and taker fee with its limit rounded up to a tick. Integer atoms throughout.
+ */
+export function priceSolanaDevnetExit(
+  config: Pick<SolanaDevnetSolverConfig, 'inventorySpreadBps' | 'perpLimitToleranceBps' | 'spotBaseLotAtoms'>,
+  market: TestPerpMarketState,
+  oraclePricePerLot: bigint,
+  quantityAtoms: bigint,
+): SolanaDevnetExitPricing {
+  if (quantityAtoms % config.spotBaseLotAtoms !== 0n) fail('quantity is not an exact spot lot');
+  const spread = BigInt(config.inventorySpreadBps);
+  if (spread >= BPS) fail('inventory spread is invalid');
+  const perp = priceTestPerpCloseShort(market, oraclePricePerLot, quantityAtoms);
+  const spotLots = quantityAtoms / config.spotBaseLotAtoms;
+  const firmQuoteAtoms = (quantityAtoms * oraclePricePerLot * (BPS - spread)) / (market.baseLotAtoms * BPS);
+  const spotMinimumPerLot = firmQuoteAtoms / spotLots;
+  if (spotMinimumPerLot <= 0n) fail('firm bid is zero');
+  const tick = market.quoteTickAtomsPerBaseLot;
+  const ceilLimit = ceilDiv(perp.fillPricePerLot * (BPS + BigInt(config.perpLimitToleranceBps)), BPS);
+  return Object.freeze({
+    spotLots,
+    spotMinimumPerLot,
+    firmQuoteAtoms,
+    perpLots: perp.baseLots,
+    perpLimitPerLot: ceilDiv(ceilLimit, tick) * tick,
+    perpNotionalAtoms: perp.notionalAtoms,
+    perpFeeAtoms: perp.feeAtoms,
+  });
+}
+
 function requireOrder(order: PackageOrder, config: SolanaDevnetSolverConfig, manifest: SolanaDevnetSharedManifest): void {
-  const quoteAsset = order.maxSpotQuoteIn?.asset;
+  const exit = order.action === 'EXIT';
+  const quoteAsset = exit ? order.minSpotQuoteOut?.asset : order.maxSpotQuoteIn?.asset;
   if (order.environment !== 'devnet' || !sameDomain(order.domain, manifest.domain)
-    || order.action !== 'ENTRY' || order.direction !== 'LONG_SPOT_SHORT_PERP'
+    || (order.action !== 'ENTRY' && !exit) || order.direction !== 'LONG_SPOT_SHORT_PERP'
     || order.settlementClass !== 'ATOMIC_POSTCONDITION' || order.expiryUnit !== 'SOLANA_SLOT'
-    || order.partialFillPolicy !== 'EXACT_ALL_LEGS' || quoteAsset === undefined) {
-    fail('order is not a Devnet atomic long-spot short-perp entry');
+    || order.partialFillPolicy !== 'EXACT_ALL_LEGS' || quoteAsset === undefined
+    || (exit && (order.minExitQuoteOutcome === undefined || order.entryReceiptHash === undefined))) {
+    fail('order is not a Devnet atomic long-spot short-perp entry or exit');
   }
   if (order.settlementAccount !== order.owner) fail('Devnet settlement account must be the trader wallet');
   new PublicKey(order.owner);
@@ -560,30 +615,100 @@ export function createSolanaDevnetFirmQuotePort(
   if (key.publicKey.toBase58() !== new PublicKey(config.solverId).toBase58()) fail('solver key does not match solverId');
   const pending = new Map<string, Promise<InternalAtomicQuoteResponse>>();
 
+  /** Exit readiness: the trader's own open package for the receipt the order names and the exact short. */
+  async function readOpenShort(order: PackageOrder, slot: bigint, perpLots: bigint): Promise<bigint> {
+    const core = new PublicKey(programAddress(manifest, 'core').programId);
+    const trader = new PublicKey(order.owner);
+    const strategy = PublicKey.findProgramAddressSync(
+      [Buffer.from('test-perp-strategy'), trader.toBuffer(), Buffer.from(manifest.testPerp.strategyIdHex, 'hex')],
+      new PublicKey(programAddress(manifest, 'perp_adapter').programId),
+    )[0];
+    const accounts = {
+      riseStrategy: strategy.toBase58(),
+      openPackage: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-open'), trader.toBuffer(), strategy.toBuffer()], core)[0].toBase58(),
+      testPerpPosition: PublicKey.findProgramAddressSync(
+        [Buffer.from('test-perp-position'), new PublicKey(manifest.testPerp.market).toBuffer(), trader.toBuffer()],
+        new PublicKey(programAddress(manifest, 'perp_venue').programId),
+      )[0].toBase58(),
+    };
+    const [openAccount, positionAccount] = await rpc.getAccounts([accounts.openPackage, accounts.testPerpPosition], slot);
+    if (openAccount === null || openAccount === undefined || openAccount.owner !== core.toBase58()) fail('trader has no open package');
+    const open = decodeOpenCashCarryPackage(openAccount.data);
+    const entryReceipt = PublicKey.findProgramAddressSync(
+      [Buffer.from('cash-carry-receipt'), trader.toBuffer(), Buffer.from(order.entryReceiptHash!)], core,
+    )[0].toBase58();
+    if (open.trader !== trader.toBase58() || !sameDomain(open.domain, manifest.domain) || open.entryReceipt !== entryReceipt) {
+      fail('open package does not match the exit order entry receipt');
+    }
+    if (positionAccount === null || positionAccount === undefined
+      || positionAccount.owner !== programAddress(manifest, 'perp_venue').programId) {
+      fail('trader test perp position is absent');
+    }
+    const position = decodeTestPerpPosition(positionAccount.data);
+    if (position.owner !== trader.toBase58() || position.delegate !== accounts.riseStrategy || position.baseLots !== -perpLots) {
+      fail('trader position is not the exact open short');
+    }
+    if (position.entryNotionalAtoms !== order.expectedPrePositionEntryNotional.atoms) {
+      fail('position entry notional does not match the exit order');
+    }
+    return position.entryNotionalAtoms;
+  }
+
   async function sign(order: PackageOrder, request: InternalAtomicQuoteRequest): Promise<InternalAtomicQuoteResponse> {
     requireOrder(order, config, manifest);
+    const exit = order.action === 'EXIT';
     const orderHash = packageOrderHash(order);
     let state = await readSolanaDevnetQuoteState(rpc, manifest, config);
     if (state.slot >= order.expiryValue) fail('order is expired');
-    const pricing = priceSolanaDevnetEntry(config, state.market, state.oraclePricePerLot, order.quantity.atoms);
-    if (pricing.spotLots * pricing.spotLimitPerLot > order.maxSpotQuoteIn!.atoms) fail('firm spot price exceeds the order bound');
-    const venueCap = order.maxVenueFeeAtomsByAsset.find((cap) => sameAsset(cap.asset, order.maxSpotQuoteIn!.asset));
-    if (venueCap === undefined || pricing.perpFeeAtoms > venueCap.maxAtoms) fail('perp taker fee exceeds the order cap');
+    const quoteAsset = exit ? order.minSpotQuoteOut!.asset : order.maxSpotQuoteIn!.asset;
+    const baseAsset = order.quantity.asset;
+    const venueCap = order.maxVenueFeeAtomsByAsset.find((cap) => sameAsset(cap.asset, quoteAsset));
+    let leg: Readonly<{ spotLimitPerLot: bigint; perpLimitPerLot: bigint; firmQuoteAtoms: bigint; perpNotionalAtoms: bigint; perpFeeAtoms: bigint }>;
+    let quotedOutcome: SolverQuoteInput['quotedOutcome'];
+    if (exit) {
+      const pricing = priceSolanaDevnetExit(config, state.market, state.oraclePricePerLot, order.quantity.atoms);
+      if (pricing.firmQuoteAtoms < order.minSpotQuoteOut!.atoms
+        || pricing.spotLots * pricing.spotMinimumPerLot < order.minSpotQuoteOut!.atoms) {
+        fail('firm bid is below the order minimum');
+      }
+      if (venueCap === undefined || pricing.perpFeeAtoms > venueCap.maxAtoms) fail('perp taker fee exceeds the order cap');
+      const entryNotional = await readOpenShort(order, state.slot, pricing.perpLots);
+      // exitQuoteOutcome v1: wallet quote delta plus the venue-withdrawable delta (short PnL less fee).
+      const outcome = pricing.firmQuoteAtoms + entryNotional - pricing.perpNotionalAtoms - pricing.perpFeeAtoms;
+      if (outcome < order.minExitQuoteOutcome!.atoms) fail('exit outcome is below the order minimum');
+      leg = { ...pricing, spotLimitPerLot: pricing.spotMinimumPerLot };
+      quotedOutcome = { kind: 'EXIT_QUOTE_OUTCOME', exitQuoteOutcome: { asset: quoteAsset, atoms: outcome } };
+    } else {
+      const pricing = priceSolanaDevnetEntry(config, state.market, state.oraclePricePerLot, order.quantity.atoms);
+      if (pricing.spotLots * pricing.spotLimitPerLot > order.maxSpotQuoteIn!.atoms) fail('firm spot price exceeds the order bound');
+      if (venueCap === undefined || pricing.perpFeeAtoms > venueCap.maxAtoms) fail('perp taker fee exceeds the order cap');
+      const spreadQuoteAtoms = pricing.firmQuoteAtoms - pricing.perpNotionalAtoms + pricing.perpFeeAtoms;
+      const maxSpread = order.maxEntrySpread;
+      if (maxSpread === undefined || spreadQuoteAtoms * maxSpread.baseAtoms > maxSpread.quoteAtoms * order.quantity.atoms) {
+        fail('entry spread is worse than the order maximum');
+      }
+      leg = pricing;
+      quotedOutcome = {
+        kind: 'ENTRY_SPREAD',
+        entrySpread: { baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms, baseAtoms: order.quantity.atoms, roundingDirection: 'CEIL' },
+      };
+    }
+    const side = exit ? QUOTE_SIDE_BID : QUOTE_SIDE_ASK;
     const units = order.quantity.atoms / config.series.spotBaseAtomsPerPackageUnit;
     const latestExpiry = order.expiryValue < state.slot + config.quoteTtlSlots ? order.expiryValue : state.slot + config.quoteTtlSlots;
     if (latestExpiry - state.slot > state.reservationClass.maxTtlSlots) fail('quote TTL exceeds the reservation class TTL');
     // A route expiry must leave time to fund, lock, and sign; at least a third of the TTL.
     const minimumExpiry = state.slot + config.quoteTtlSlots / 3n;
-    let level = selectFirmLevel(state, config, units, minimumExpiry, latestExpiry);
+    let level = selectFirmLevel(state, config, units, minimumExpiry, latestExpiry, side);
     if (level === undefined) {
-      if (dependencies.writer === undefined) fail('no usable firm ask level and solver writes are disabled');
-      const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot: latestExpiry });
+      if (dependencies.writer === undefined) fail('no usable firm level and solver writes are disabled');
+      const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot: latestExpiry, side });
       await dependencies.writer.sendAndFinalize(plan.instructions, key.keypair);
       state = await readSolanaDevnetQuoteState(rpc, manifest, config);
       level = state.levels[plan.slotIndex];
       if (level === undefined || level.levelId !== plan.levelId
-        || selectFirmLevel({ ...state, levels: [level] }, config, units, state.slot, latestExpiry) === undefined) {
-        fail('refreshed firm ask level is not usable');
+        || selectFirmLevel({ ...state, levels: [level] }, config, units, state.slot, latestExpiry, side) === undefined) {
+        fail('refreshed firm level is not usable');
       }
     }
     const routeExpiryValue = level.expirySlot;
@@ -591,10 +716,8 @@ export function createSolanaDevnetFirmQuotePort(
     if (reservationNonce.length !== 32 || reservationNonce.every((byte) => byte === 0)) fail('reservation nonce is invalid');
     const reservationId = reservationIdFor(manifest.domain, config.solverId, orderHash, reservationNonce);
     const accounts = deriveSolanaDevnetFirmAccounts({
-      manifest, config, market: state.market, owner: order.owner, orderHash, nonce: order.nonce, reservationId,
+      manifest, config, market: state.market, owner: order.owner, orderHash, nonce: order.nonce, reservationId, exit,
     });
-    const quoteAsset = order.maxSpotQuoteIn!.asset;
-    const baseAsset = order.quantity.asset;
     const price = (quoteAtoms: bigint, baseAtoms: bigint, roundingDirection: 'CEIL' | 'FLOOR') => {
       const divisor = gcd(quoteAtoms, baseAtoms);
       return exactPrice({ baseAsset, quoteAsset, quoteAtoms: quoteAtoms / divisor, baseAtoms: baseAtoms / divisor, roundingDirection });
@@ -627,13 +750,13 @@ export function createSolanaDevnetFirmQuotePort(
       legs: [
         {
           legIndex: 0, legRole: 'SPOT', actionSequence: config.spot.actionSequence, adapter: config.spot.adapter,
-          venue: config.spot.venue, market: config.spot.market, baseAsset, quoteAsset, side: 'BUY', quantity: order.quantity,
-          limitPrice: price(pricing.spotLimitPerLot, config.spotBaseLotAtoms, 'CEIL'), timeInForce: 'FOK', reduceOnly: false,
+          venue: config.spot.venue, market: config.spot.market, baseAsset, quoteAsset, side: exit ? 'SELL' : 'BUY', quantity: order.quantity,
+          limitPrice: price(leg.spotLimitPerLot, config.spotBaseLotAtoms, exit ? 'FLOOR' : 'CEIL'), timeInForce: 'FOK', reduceOnly: false,
         },
         {
           legIndex: 1, legRole: 'PERPETUAL', actionSequence: config.perpetual.actionSequence, adapter: config.perpetual.adapter,
-          venue: config.perpetual.venue, market: config.perpetual.market, baseAsset, quoteAsset, side: 'SELL', quantity: order.quantity,
-          limitPrice: price(pricing.perpLimitPerLot, state.market.baseLotAtoms, 'FLOOR'), timeInForce: 'FOK', reduceOnly: false,
+          venue: config.perpetual.venue, market: config.perpetual.market, baseAsset, quoteAsset, side: exit ? 'BUY' : 'SELL', quantity: order.quantity,
+          limitPrice: price(leg.perpLimitPerLot, state.market.baseLotAtoms, exit ? 'CEIL' : 'FLOOR'), timeInForce: 'FOK', reduceOnly: exit,
         },
       ],
       actions: config.route.actions,
@@ -641,11 +764,6 @@ export function createSolanaDevnetFirmQuotePort(
       evidenceRequirements: config.route.evidenceRequirements,
     };
     const validatedRoute = routePayload(route, 'solanaDevnetRoute');
-    const spreadQuoteAtoms = pricing.firmQuoteAtoms - pricing.perpNotionalAtoms + pricing.perpFeeAtoms;
-    const maxSpread = order.maxEntrySpread;
-    if (maxSpread === undefined || spreadQuoteAtoms * maxSpread.baseAtoms > maxSpread.quoteAtoms * order.quantity.atoms) {
-      fail('entry spread is worse than the order maximum');
-    }
     const zeroQuote = { asset: quoteAsset, atoms: 0n };
     const unsigned: SolverQuoteInput = {
       version: 1,
@@ -658,19 +776,16 @@ export function createSolanaDevnetFirmQuotePort(
       solverVerificationKey: key.verificationKey,
       quoteMode: 'FIRM_ONCHAIN',
       routeHash: routeHash(validatedRoute),
-      quotedOutcome: {
-        kind: 'ENTRY_SPREAD',
-        entrySpread: { baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms, baseAtoms: order.quantity.atoms, roundingDirection: 'CEIL' },
-      },
-      expectedSpotNotional: { asset: quoteAsset, atoms: pricing.firmQuoteAtoms },
-      expectedPerpNotional: { asset: quoteAsset, atoms: pricing.perpNotionalAtoms },
+      quotedOutcome,
+      expectedSpotNotional: { asset: quoteAsset, atoms: leg.firmQuoteAtoms },
+      expectedPerpNotional: { asset: quoteAsset, atoms: leg.perpNotionalAtoms },
       expectedGrossSpotQuantity: order.quantity,
-      expectedNetSpotQuantity: order.quantity,
+      expectedNetSpotQuantity: exit ? { asset: baseAsset, atoms: -order.quantity.atoms } : order.quantity,
       expectedBaseAssetFee: { asset: baseAsset, atoms: 0n },
       expectedMarginDelta: zeroQuote,
-      expectedRawFillFeesByAsset: [{ asset: quoteAsset, atoms: pricing.perpFeeAtoms }],
+      expectedRawFillFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
       expectedBuilderFeesByAsset: [zeroQuote],
-      expectedNormalizedVenueFeesByAsset: [{ asset: quoteAsset, atoms: pricing.perpFeeAtoms }],
+      expectedNormalizedVenueFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
       solverFee: zeroQuote,
       protocolFee: zeroQuote,
       expectedPriorityFee: zeroQuote,
