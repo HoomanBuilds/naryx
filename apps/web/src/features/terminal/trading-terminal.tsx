@@ -1825,8 +1825,8 @@ export function TradingTerminal({
     domainLive("arbitrum", runtimeHealth) && quoteMode === "coordinated_limits";
   const evmSignTypedData = evmWallet.signTypedData;
   const signArbitrumExit = useCallback((typedData: unknown) => evmSignTypedData("arbitrum", typedData), [evmSignTypedData]);
-  const recordArbitrumExit = useCallback((attemptId: string, exitSize: string) => {
-    recordAttempt({ attemptId, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
+  const recordArbitrumExit = useCallback((attemptId: string, exitSize: string, owner: string) => {
+    recordAttempt({ attemptId, owner, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
   }, [recordAttempt]);
   const arbitrumExit = useArbitrumSepoliaExit({
     enabled: arbitrumExitEnabled && evmOnTarget,
@@ -2286,7 +2286,7 @@ export function TradingTerminal({
       }
       const preparation = await prepareExecution(key, exitSize);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
-      recordAttempt({ attemptId: preparation.lifecycleAttemptId, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
+      recordAttempt({ attemptId: preparation.lifecycleAttemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
       setLifecycleView({
         ticketKey,
         attemptId: preparation.lifecycleAttemptId,
@@ -2463,7 +2463,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectLocalQuote(base.quote);
         setLocalFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "solana", mode, size, flow: "conformance", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size, flow: "conformance", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed quote first.");
@@ -2515,7 +2515,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectHyperliquidQuote(context, base.quote);
         setHyperliquidFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "hyperliquid", mode, size, flow: "hyperliquid", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner, domain: "hyperliquid", mode, size, flow: "hyperliquid", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");
@@ -2727,7 +2727,7 @@ export function TradingTerminal({
         const attempt = await privateProvider.selectBaseQuote(base.quote);
         setBaseFlow({ ...base, attempt, busy: null, error: null });
         const recordedSize = mode === "exit" && account.openPackage ? atomsDecimal(account.openPackage.baseQuantityAtoms, 18) : size;
-        recordAttempt({ attemptId: attempt.attemptId, domain: "base", mode, size: recordedSize, flow: "base", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: base.owner, domain: "base", mode, size: recordedSize, flow: "base", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Accept the reviewed quote first.");
@@ -2916,7 +2916,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectArbitrumQuote(flow.quote);
         done({ attempt });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "arbitrum", mode, size, flow: "arbitrum", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: flow.owner, domain: "arbitrum", mode, size, flow: "arbitrum", createdAt: Date.now() });
         return;
       }
       if (!flow.attempt) throw new Error("Accept the reviewed quote first.");

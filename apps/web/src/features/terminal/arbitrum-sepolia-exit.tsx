@@ -107,8 +107,8 @@ export function useArbitrumSepoliaExit(input: Readonly<{
   contextId: string;
   slippageBps: number;
   signTypedData: (typedData: unknown) => Promise<string>;
-  /** The selected exit attempt and the package size it closes, as a base-asset decimal. */
-  onSelected: (attemptId: string, size: string) => void;
+  /** The selected exit attempt, the package size it closes as a base-asset decimal, and its owner. */
+  onSelected: (attemptId: string, size: string, owner: string) => void;
 }>) {
   const { enabled, owner, provider, contextId, slippageBps, signTypedData, onSelected } = input;
   const [flow, setFlow] = useState<ExitFlow | null>(null);
@@ -248,7 +248,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       if (nextStep === "select") {
         const attempt = await provider.selectArbitrumQuote(flowAtStart.quote!);
         done({ attempt });
-        onSelected(attempt.attemptId, decimalText(exitOrder.quantityAtoms, BASE_DECIMALS));
+        onSelected(attempt.attemptId, decimalText(exitOrder.quantityAtoms, BASE_DECIMALS), flowAtStart.owner);
         return;
       }
       const attempt = flowAtStart.attempt!;

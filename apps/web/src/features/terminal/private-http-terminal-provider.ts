@@ -344,7 +344,11 @@ export type PackageLifecycleReceipt = Readonly<{
   receiptHashHex: string;
 }>;
 
-/** One package from GET /internal/terminal/packages. */
+/**
+ * One package from GET /internal/terminal/packages. For Base and Arbitrum, `state` is the outcome
+ * the service last observed on chain, with the transaction and receipt reference that proved it;
+ * null when the service never observed one.
+ */
 export type OwnerPackageEntry = Readonly<{
   orderHash: string;
   domainId: string;
@@ -354,6 +358,9 @@ export type OwnerPackageEntry = Readonly<{
   createdAtMs: number;
   attemptId: string | null;
   state: string | null;
+  transactionHash: string | null;
+  blockNumber: string | null;
+  receiptHash: string | null;
 }>;
 
 export type PackageLifecycleResponse = Readonly<{
@@ -4341,9 +4348,15 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const payload = await response.json() as unknown;
     const packages = typeof payload === "object" && payload !== null && Array.isArray((payload as { packages?: unknown }).packages)
       ? (payload as { packages: unknown[] }).packages : [];
+    // Absent evidence fields (an older service) read as unobserved; a malformed one drops the entry.
+    const optional = (value: unknown, pattern: RegExp): string | null | false =>
+      value === undefined || value === null ? null : typeof value === "string" && pattern.test(value) ? value : false;
     return Object.freeze(packages.flatMap((entry): OwnerPackageEntry[] => {
       if (typeof entry !== "object" || entry === null) return [];
       const value = entry as Record<string, unknown>;
+      const transactionHash = optional(value.transactionHash, /^0x[0-9a-f]{64}$/);
+      const blockNumber = optional(value.blockNumber, /^(0|[1-9][0-9]{0,19})$/);
+      const receiptHash = optional(value.receiptHash, /^0x[0-9a-f]{64}$/);
       if (typeof value.orderHash !== "string" || !/^[0-9a-f]{64}$/.test(value.orderHash)
           || typeof value.domainId !== "string" || typeof value.action !== "string"
           || typeof value.quantityAtoms !== "string" || !/^\d{1,40}$/.test(value.quantityAtoms)
@@ -4351,7 +4364,8 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
           || value.quantityDecimals < 0 || value.quantityDecimals > 36
           || typeof value.createdAtMs !== "number" || !Number.isSafeInteger(value.createdAtMs)
           || (value.attemptId !== null && (typeof value.attemptId !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(value.attemptId)))
-          || (value.state !== null && typeof value.state !== "string")) {
+          || (value.state !== null && (typeof value.state !== "string" || !/^[A-Z_]{1,40}$/.test(value.state)))
+          || transactionHash === false || blockNumber === false || receiptHash === false) {
         return [];
       }
       return [Object.freeze({
@@ -4363,6 +4377,9 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         createdAtMs: value.createdAtMs,
         attemptId: value.attemptId as string | null,
         state: value.state as string | null,
+        transactionHash,
+        blockNumber,
+        receiptHash,
       })];
     }));
   }

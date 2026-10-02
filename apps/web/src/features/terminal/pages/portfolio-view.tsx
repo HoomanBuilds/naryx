@@ -8,6 +8,7 @@ import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "../shell/terminal-context";
+import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import { usePositions } from "./use-positions";
 import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
@@ -126,7 +127,7 @@ export function PortfolioView() {
         </div>
         <div>
           <span>Packages started here</span>
-          <strong>{attempts.length}</strong>
+          <strong>{attemptsOf(attempts, [solanaAddress, evmAddress].filter((owner): owner is string => owner !== null)).length}</strong>
           <small><Link href="/activity">View activity</Link></small>
         </div>
         <div>

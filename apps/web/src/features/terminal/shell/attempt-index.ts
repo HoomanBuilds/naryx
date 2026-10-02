@@ -6,10 +6,12 @@ import type { DomainId, PackageMode } from "../terminal-view-model";
 /**
  * The packages this browser has started, newest first. The private lifecycle API reads one attempt
  * at a time, so the Activity page needs to know which attempts to ask about. Only identifiers and
- * ticket parameters are kept; lifecycle state always comes from the service.
+ * ticket parameters are kept; lifecycle state always comes from the service. Each entry names the
+ * wallet that started it, so a browser shared by several wallets shows each only its own.
  */
 export type RecordedAttempt = Readonly<{
   attemptId: string;
+  owner: string;
   domain: DomainId;
   mode: PackageMode;
   size: string;
@@ -23,15 +25,31 @@ const LIMIT = 50;
 const EMPTY: readonly RecordedAttempt[] = Object.freeze([]);
 const DOMAINS: readonly string[] = ["solana", "base", "arbitrum", "hyperliquid"];
 const FLOWS: readonly string[] = ["devnet", "conformance", "hyperliquid", "base", "arbitrum"];
+const OWNER = /^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 
 let memory: string | null = null;
 let cachedRaw: string | null = null;
 let cachedValue: readonly RecordedAttempt[] = EMPTY;
 
+/** EVM addresses compare case-insensitively; Solana public keys are case-sensitive. */
+function ownerKey(owner: string): string {
+  return owner.startsWith("0x") ? owner.toLowerCase() : owner;
+}
+
+/**
+ * The recorded attempts the given wallets started. Entries recorded before owners were kept fail
+ * validation when read, so they are never attributed to anyone.
+ */
+export function attemptsOf(attempts: readonly RecordedAttempt[], owners: readonly string[]): readonly RecordedAttempt[] {
+  const keys = new Set(owners.map(ownerKey));
+  return attempts.filter((attempt) => keys.has(ownerKey(attempt.owner)));
+}
+
 function isAttempt(value: unknown): value is RecordedAttempt {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as Record<string, unknown>;
   return typeof entry.attemptId === "string" && /^[A-Za-z0-9:_-]{1,128}$/.test(entry.attemptId) &&
+    typeof entry.owner === "string" && OWNER.test(entry.owner) &&
     typeof entry.domain === "string" && DOMAINS.includes(entry.domain) &&
     (entry.mode === "entry" || entry.mode === "exit") &&
     typeof entry.size === "string" && /^\d{1,9}(?:\.\d{1,6})?$/.test(entry.size) &&
