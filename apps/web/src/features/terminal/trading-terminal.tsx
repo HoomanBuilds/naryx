@@ -156,7 +156,7 @@ type BaseFlowState = {
   error: string | null;
 };
 
-type BaseStep = "setup" | "create" | "quote" | "select" | "execute";
+type BaseStep = "setup" | "create" | "quote" | "select" | "execute" | "withdraw";
 
 const BASE_SETUP_TIMEOUT_MS = 180_000;
 
@@ -169,6 +169,14 @@ function quoteMarginAtoms(quote: BaseSolverQuote | null): string | undefined {
   const margin = quote?.quote.expectedMarginDelta as Record<string, unknown> | undefined;
   const atoms = protocolScalar(margin?.atoms);
   return /^(0|[1-9][0-9]*)$/.test(atoms) ? atoms : undefined;
+}
+
+/** Integer atoms as a plain decimal string, the form the ticket and Activity page record sizes in. */
+function atomsDecimal(atoms: string, decimals: number): string {
+  if (!/^(0|[1-9][0-9]*)$/.test(atoms)) return "-";
+  const padded = atoms.padStart(decimals + 1, "0");
+  const fraction = padded.slice(-decimals).replace(/0+$/, "");
+  return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""}`;
 }
 
 function quoteAtomsText(atoms: string, decimals: number): string {
@@ -726,6 +734,10 @@ function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
   const quote = flow?.quote ?? null;
   const observation = flow?.observation ?? null;
   const decimals = account?.quoteDecimals ?? 6;
+  const outcome = quote?.quote.quotedOutcome as Record<string, unknown> | undefined;
+  const exitOutcome = outcome?.kind === "EXIT_QUOTE_OUTCOME"
+    ? protocolScalar((outcome.exitQuoteOutcome as Record<string, unknown> | undefined)?.atoms)
+    : null;
   return (
     <section className={styles.executionReview} aria-labelledby="base-execution-title">
       <div className={styles.evidenceHeading}>
@@ -745,6 +757,10 @@ function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
           {flow?.order ? <><span>Spot quote cap</span><strong>{quoteAtomsText(account.requiredSpotQuoteAtoms, decimals)}</strong></> : null}
           {quote ? <><span>Quoted margin</span><strong>{quoteAtomsText(account.requiredMarginAtoms, decimals)}</strong></> : null}
           {account.steps.length > 0 ? <><span>Setup needed</span><strong>{account.steps.map((step) => step.label).join("; ")}</strong></> : null}
+          {account.openPackage ? <><span>Open package</span><strong>{atomsDecimal(account.openPackage.baseQuantityAtoms, 18)} base, {account.openPackage.packageSizeUnits} units</strong></> : null}
+          {account.openPackage ? <><span>Entry receipt</span><strong title={account.openPackage.entryReceiptHash}>{compact(account.openPackage.entryReceiptHash, 12, 10)}</strong></> : null}
+          {exitOutcome ? <><span>Quoted exit outcome</span><strong>{quoteAtomsText(exitOutcome, decimals)}</strong></> : null}
+          {account.withdrawals.length > 0 ? <><span>Withdrawals</span><strong>{account.withdrawals.map((step) => step.label).join("; ")}</strong></> : null}
         </div>
       ) : null}
       {flow?.order ? (
@@ -1666,15 +1682,22 @@ export function TradingTerminal({
     preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
   const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
-  const baseFlowEnabled = selectedDomain === "base" && mode === "entry" &&
+  // A Base exit closes the whole open package read from chain, so it needs no ticket preview.
+  const baseFlowEnabled = selectedDomain === "base" &&
     privateProvider !== null && providerConnection === "connected" &&
     runtimeHealth?.baseTestnetAtomic.available === true && executionGateUp &&
-    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
+    (mode === "exit" || preview?.source === "PRIVATE_TERMINAL_BFF") && quoteMode === "coordinated_limits";
   const baseOwner = baseFlowEnabled && evmTarget === "base" && evmOnTarget ? evmWallet.account : null;
   const baseSetupSteps = currentBaseFlow?.account?.steps ?? [];
-  const nextBaseStep: BaseStep | null = !currentBaseFlow?.account || currentBaseFlow.pendingSetup ||
-      currentBaseFlow.transactionHash
+  // Once the package is closed, by this exit or an earlier one, only owner withdrawals remain.
+  const baseExitClosed = mode === "exit" && currentBaseFlow?.account != null && currentBaseFlow.account.openPackage === null &&
+    (!currentBaseFlow.transactionHash || currentBaseFlow.observation?.lifecycle === "FINALIZED");
+  const nextBaseStep: BaseStep | null = !currentBaseFlow?.account || currentBaseFlow.pendingSetup
     ? null
+    : baseExitClosed ? (currentBaseFlow.account.withdrawals.length > 0 ? "withdraw" : null)
+    : currentBaseFlow.transactionHash ? null
+    : mode === "exit"
+      ? !currentBaseFlow.order ? "create" : !currentBaseFlow.quote ? "quote" : !currentBaseFlow.attempt ? "select" : "execute"
     : baseSetupSteps.some((step) => step.kind === "CREATE_ACCOUNT") ? "setup"
     : !currentBaseFlow.order ? "create"
     : !currentBaseFlow.quote ? "quote"
@@ -1751,6 +1774,16 @@ export function TradingTerminal({
         if (flow.pendingSetup) {
           return none("Confirming setup", `Waiting for the ${flow.pendingSetup.kind.replace(/_/g, " ").toLowerCase()} transaction to land on Base Sepolia.`);
         }
+        if (nextBaseStep === "withdraw") {
+          const withdrawal = flow.account.withdrawals[0];
+          if (withdrawal) return { kind: "base", label: withdrawal.label, reason: flow.error ?? "A testnet transaction your wallet signs on your own strategy account to return settled funds after the exit. Nothing trades.", disabled: false };
+        }
+        if (mode === "exit" && !flow.transactionHash && !flow.account.openPackage) {
+          return none("No open package", "This wallet's strategy account has no open package on Base Sepolia, so there is nothing to exit.");
+        }
+        if (mode === "entry" && !flow.transactionHash && flow.account.openPackage) {
+          return none("Package already open", "Your strategy account holds one open package. Exit it before entering another.");
+        }
         if (flow.transactionHash) {
           const lifecycle = flow.observation?.lifecycle;
           if (lifecycle === "FINALIZED") return none("Package finalized", "Both legs settled in one finalized Base Sepolia transaction. The receipt is in the package review.");
@@ -1766,6 +1799,7 @@ export function TradingTerminal({
           }
           return { kind: "base", label: setup.label, reason: reason ?? "A testnet wallet transaction that sets up your own strategy account. Nothing trades yet.", disabled: false };
         }
+        if (nextBaseStep === "create" && mode === "exit") return { kind: "base", label: "Create exit order", reason: reason ?? "Creates the canonical exit order for your open package. Its size, entry receipt, and minimums come from chain.", disabled: false };
         if (nextBaseStep === "create") return { kind: "base", label: "Create order", reason: reason ?? "Creates the canonical package order for your strategy account.", disabled: false };
         if (nextBaseStep === "quote") return { kind: "base", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote priced from the live pool and oracle.", disabled: false };
         if (nextBaseStep === "select") return { kind: "base", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the package review before accepting.", disabled: false };
@@ -2385,7 +2419,7 @@ export function TradingTerminal({
         if (!active) return;
         setBaseFlow((current) => {
           if (!current || current.pendingSetup !== basePending) return current;
-          const landed = !account.steps.some((step) => step.kind === basePending.kind);
+          const landed = ![...account.steps, ...account.withdrawals].some((step) => step.kind === basePending.kind);
           const timedOut = Date.now() - basePending.sentAt > BASE_SETUP_TIMEOUT_MS;
           if (!landed && !timedOut) return { ...current, account };
           return {
@@ -2441,6 +2475,18 @@ export function TradingTerminal({
     };
   }, [baseAttemptId, baseIdempotencyKey, baseObservationDone, baseObservedHash, privateProvider]);
 
+  // A finalized exit closed the package on chain; read the account again for its withdrawals.
+  const baseExitFinalized = mode === "exit" && currentBaseFlow?.observation?.lifecycle === "FINALIZED";
+  useEffect(() => {
+    if (!privateProvider || !baseExitFinalized || !basePollOwner || !baseObservedHash) return;
+    let active = true;
+    void privateProvider.getBaseAccountStatus(basePollOwner, {}).then((account) => {
+      if (!active) return;
+      setBaseFlow((current) => current?.transactionHash === baseObservedHash ? { ...current, account } : current);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [baseExitFinalized, baseObservedHash, basePollOwner, privateProvider]);
+
   async function handleBaseStep(step: BaseStep) {
     if (!privateProvider || !currentBaseFlow?.account || evmTarget !== "base") return;
     const base = currentBaseFlow;
@@ -2451,11 +2497,19 @@ export function TradingTerminal({
       marginAtoms: quoteMarginAtoms(flow.quote),
     });
     try {
-      if (step === "setup") {
-        const setup = account.steps[0];
+      if (step === "setup" || step === "withdraw") {
+        const setup = step === "setup" ? account.steps[0] : account.withdrawals[0];
         if (!setup) throw new Error("The strategy account needs no setup.");
         const hash = await evmWallet.sendTransaction("base", { to: setup.to, data: setup.data, value: "0" });
         setBaseFlow({ ...base, pendingSetup: { kind: setup.kind, hash, sentAt: Date.now() }, busy: null, error: null });
+        return;
+      }
+      if (step === "create" && mode === "exit") {
+        const order = await privateProvider.createBaseExitOrder(account, {
+          slippageBps: slippage,
+          idempotencyKey: crypto.randomUUID(),
+        });
+        setBaseFlow({ ...base, order, busy: null, error: null });
         return;
       }
       if (step === "create") {
@@ -2478,7 +2532,8 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectBaseQuote(base.quote);
         setBaseFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "base", mode, size, flow: "base", createdAt: Date.now() });
+        const recordedSize = mode === "exit" && account.openPackage ? atomsDecimal(account.openPackage.baseQuantityAtoms, 18) : size;
+        recordAttempt({ attemptId: attempt.attemptId, domain: "base", mode, size: recordedSize, flow: "base", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Accept the reviewed quote first.");

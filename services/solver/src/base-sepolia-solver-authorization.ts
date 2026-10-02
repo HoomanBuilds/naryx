@@ -28,10 +28,18 @@ import { recoverAddress, type Abi, type Address, type Hex, type LocalAccount } f
 import { privateKeyToAccount } from 'viem/accounts';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import type { QuoteProviders } from './hyperliquid-testnet-quote-runtime.js';
+import { createBaseSepoliaExitQuotePort } from './base-sepolia-exit-quote.js';
+import type {
+  InternalAtomicQuoteOrderProvider,
+  InternalAtomicQuotePort,
+  InternalAtomicQuoteStore,
+} from './internal-atomic-quote-server.js';
+import type { Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
 import {
   BASE_SEPOLIA_QUOTE_ENABLED_ENV,
+  createBaseSepoliaQuoteRuntime,
   createViemBaseSepoliaReadPort,
-  loadBaseSepoliaQuoteRuntime,
+  loadBaseSepoliaQuoteMarketConfig,
   loadBaseSepoliaSolverDeployment,
   readBaseSepoliaAccountOf,
   requireBaseSepoliaChain,
@@ -342,6 +350,12 @@ export function loadBaseSepoliaSolverKey(path: string | undefined, expectedAddre
 
 export type BaseSepoliaSolverRuntime = Readonly<{
   providers: QuoteProviders;
+  /** Quotes Base Sepolia exits itself and hands every other order to `fallback`. */
+  wrapExit(fallback: InternalAtomicQuotePort, dependencies: Readonly<{
+    orders: InternalAtomicQuoteOrderProvider;
+    signer: Ed25519AtomicQuoteSigner;
+    store: InternalAtomicQuoteStore;
+  }>): InternalAtomicQuotePort;
   listen(host: string): Promise<number>;
   close(): Promise<void>;
 }>;
@@ -365,7 +379,8 @@ export async function loadBaseSepoliaSolverRuntime(
   const deployment = loadBaseSepoliaSolverDeployment(env.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST);
   const chain = createViemBaseSepoliaReadPort(env.NARYX_BASE_SEPOLIA_RPC_URL ?? '');
   await requireBaseSepoliaChain(chain);
-  const providers = loadBaseSepoliaQuoteRuntime(env, { nonceSource: dependencies.nonceSource, deployment, chain });
+  const quoteInput = { ...loadBaseSepoliaQuoteMarketConfig(env), deployment, chain, nonceSource: dependencies.nonceSource };
+  const providers = createBaseSepoliaQuoteRuntime(quoteInput);
   const port = Number(env.NARYX_BASE_SEPOLIA_SOLVER_AUTHORIZATION_PORT ?? '8794');
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || dependencies.reservedPorts.includes(port)) {
     throw new Error('NARYX_BASE_SEPOLIA_SOLVER_AUTHORIZATION_PORT must be a free TCP port');
@@ -379,6 +394,7 @@ export async function loadBaseSepoliaSolverRuntime(
   }));
   return Object.freeze({
     providers,
+    wrapExit: (fallback, exitDependencies) => createBaseSepoliaExitQuotePort({ ...exitDependencies, input: quoteInput }, fallback),
     listen: (host: string) => new Promise<number>((resolveListen, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {

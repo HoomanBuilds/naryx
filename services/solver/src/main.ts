@@ -161,7 +161,9 @@ const solanaDevnetSolver = await loadSolanaDevnetSolverRuntime(process.env, {
   reservedPorts: [listenPort],
 });
 await solanaDevnetSolver?.listen(host);
-const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(coordinator) ?? coordinator, authorization);
+// Base Sepolia exits are quoted by the Base runtime; every other order reaches the entry coordinator.
+const quotePort = baseSolver?.wrapExit(coordinator, { orders: orderProvider.get, signer: executionSigner, store }) ?? coordinator;
+const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(quotePort) ?? quotePort, authorization);
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
   'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED',

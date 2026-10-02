@@ -3,6 +3,7 @@ import { parseAbi, type Address, type Hex } from 'viem';
 import { requiredEvmAddress, structField } from './readPort.js';
 
 const BPS = 10_000n;
+const WAD = 1_000_000_000_000_000_000n;
 const UINT64_MAX = (1n << 64n) - 1n;
 const INT128_MAX = (1n << 127n) - 1n;
 const UINT128_MASK = (1n << 128n) - 1n;
@@ -211,4 +212,48 @@ export function packageVerifierOpenPackage(value: unknown): PackageVerifierOpenP
     packageSizeUnits: quantity(13, 'packageSizeUnits'),
     entryPerpNotionalWad: quantity(14, 'entryPerpNotionalWad'),
   });
+}
+
+export interface TestPerpPositionState {
+  readonly balanceWad: bigint;
+  readonly sizeWad: bigint;
+  readonly entryNotionalWad: bigint;
+  readonly entryFundingIndex: bigint;
+}
+
+export interface TestPerpCloseSettlement {
+  readonly equityWad: bigint;
+  readonly fundingWad: bigint;
+  readonly chargedWad: bigint;
+  /** What the close credits to the trader's reserve at the market. */
+  readonly payoutWad: bigint;
+}
+
+/**
+ * Mirrors the market's full close (`_equity` then `_settle`): PnL against `exitNotionalWad` (the
+ * market's own `previewOpen` of the buy-back), funding to `currentFundingIndex` rounded against the
+ * trader, the taker fee charged only from positive equity, and the payout floored to a whole atom.
+ */
+export function testPerpCloseSettlement(input: Readonly<{
+  position: TestPerpPositionState;
+  exitNotionalWad: bigint;
+  feeWad: bigint;
+  currentFundingIndex: bigint;
+  collateralScale: bigint;
+}>): TestPerpCloseSettlement {
+  const { position, exitNotionalWad, feeWad, currentFundingIndex, collateralScale } = input;
+  requireCondition(typeof position?.sizeWad === 'bigint' && position.sizeWad !== 0n, 'test perp position is flat');
+  requireCondition(typeof exitNotionalWad === 'bigint' && exitNotionalWad >= 0n, 'exit notional must be nonnegative');
+  requireCondition(typeof feeWad === 'bigint' && feeWad >= 0n, 'close fee must be nonnegative');
+  requireCondition(typeof collateralScale === 'bigint' && collateralScale > 0n, 'test perp collateral scale must be positive');
+  const realized = position.sizeWad < 0n
+    ? position.entryNotionalWad - exitNotionalWad
+    : exitNotionalWad - position.entryNotionalWad;
+  const accrued = -position.sizeWad * (currentFundingIndex - position.entryFundingIndex);
+  const fundingWad = accrued >= 0n ? accrued / WAD : -((-accrued + WAD - 1n) / WAD);
+  const equityWad = position.balanceWad + realized + fundingWad;
+  if (equityWad <= 0n) return Object.freeze({ equityWad, fundingWad, chargedWad: 0n, payoutWad: 0n });
+  const floorToAtom = (value: bigint) => value - value % collateralScale;
+  const chargedWad = feeWad < floorToAtom(equityWad) ? feeWad : floorToAtom(equityWad);
+  return Object.freeze({ equityWad, fundingWad, chargedWad, payoutWad: floorToAtom(equityWad - chargedWad) });
 }

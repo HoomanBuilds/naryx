@@ -829,8 +829,10 @@ export type {
 export { EVM_DEPLOYMENT_AUTHORITY_ROLES, qualifyEvmDeploymentAuthority } from './authorityQualification.js';
 export type {
   PackageVerifierOpenPackage,
+  TestPerpCloseSettlement,
   TestPerpEntryLimits,
   TestPerpMarketParameters,
+  TestPerpPositionState,
 } from './testPerpMarket.js';
 export {
   CHAINLINK_AGGREGATOR_ABI,
@@ -843,5 +845,6 @@ export {
   deriveTestPerpEntryLimits,
   encodeTestPerpTradeArgs,
   packageVerifierOpenPackage,
+  testPerpCloseSettlement,
   testPerpFeeWad,
 } from './testPerpMarket.js';

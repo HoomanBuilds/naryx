@@ -157,6 +157,13 @@ test("scope principal is the order's spot quote cap plus its margin cap, in one 
   rejected(() => scopeFromOrder("BASE_TESTNET_ATOMIC_PREPARE", { attemptId: "a", idempotencyKey: "k", orderHash: "h" }, order({ spotAsset: "weth" })), /different assets/);
 });
 
+test("an exit carries zero principal and may not sign new spend or added margin", () => {
+  const request = { attemptId: "a", idempotencyKey: "k", orderHash: "h" };
+  const exit = { ...order({ margin: 0n }), action: "EXIT", maxSpotQuoteIn: undefined } as unknown as PackageOrder;
+  assert.equal(scopeFromOrder("BASE_TESTNET_ATOMIC_PREPARE", request, exit).principalAtoms, 0n);
+  rejected(() => scopeFromOrder("BASE_TESTNET_ATOMIC_PREPARE", request, { ...exit, maxMarginAdded: order({}).maxMarginAdded }), /must not sign/);
+});
+
 test("the resolver binds handoffs to durable orders and selected attempts only", () => {
   const record = { orderHashHex: "hash-1" };
   const attempt = { attemptId: "base-atomic-1", orderHash: "hash-1" };
