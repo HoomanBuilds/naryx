@@ -766,11 +766,16 @@ function terminalStatus(
     : { terminalStatus: 'PARTIALLY_FILLED_IOC_CANCELLED', openOrderStatus: 'NONE' };
 }
 
+// HyperCore charges a spot buy's taker fee in the received base token and every other fill's fee
+// in the quote token. A base-token fee is reported as a base-asset fee at the token's full precision,
+// so the account's spot balance delta equals the spot fill less that fee exactly.
 function reduceOrders(
   orders: readonly ExpectedOrder[],
   evidence: CollectedOrders,
   feeAsset: AssetRef,
   feeToken: string,
+  baseAsset: AssetRef,
+  baseFeeToken: string,
   window: HyperliquidEvidenceWindow,
   reasons: HyperliquidEvidenceIncompleteReason[],
 ): Readonly<{
@@ -786,6 +791,8 @@ function reduceOrders(
   const inputs: HyperliquidLegReconciliationInput[] = [];
   const observed: HyperliquidObservedFill[] = [];
   let feeAtoms = 0n;
+  let baseFeeAtoms = 0n;
+  let baseFeeObserved = false;
   const orderIds = new Set<number>();
   orders.forEach((order, index) => {
     const response = evidence.statuses[index]!.payload;
@@ -814,11 +821,13 @@ function reduceOrders(
         addReason(reasons, 'MALFORMED_RESPONSE');
       }
       for (const fill of matchedFills) {
+        const baseFee = order.role === 'SPOT' && fill.side === 'B' && fill.feeToken === baseFeeToken;
+        const knownFeeToken = fill.feeToken === feeToken || baseFee;
         if (fill.coin !== order.coin
           || (fill.cloid !== undefined && fill.cloid.toLowerCase() !== order.cloid)
-          || fill.feeToken !== feeToken
+          || !knownFeeToken
           || fill.time < window.startTimeMs || fill.time > window.endTimeMs) {
-          addReason(reasons, fill.feeToken !== feeToken
+          addReason(reasons, !knownFeeToken
             ? 'UNCERTAIN_FEE_EVIDENCE' : 'AMBIGUOUS_CLOID');
           continue;
         }
@@ -834,13 +843,18 @@ function reduceOrders(
         }
         let fillFeeAtoms: bigint;
         try {
-          fillFeeAtoms = decimalToAtoms(fill.fee, feeAsset.decimals);
+          fillFeeAtoms = decimalToAtoms(fill.fee, baseFee ? baseAsset.decimals : feeAsset.decimals);
         } catch {
           addReason(reasons, 'UNCERTAIN_FEE_EVIDENCE');
           continue;
         }
         filledSignedBaseAtoms += signedSize;
-        feeAtoms += fillFeeAtoms;
+        if (baseFee) {
+          baseFeeAtoms += fillFeeAtoms;
+          baseFeeObserved = true;
+        } else {
+          feeAtoms += fillFeeAtoms;
+        }
         observed.push(Object.freeze({
           clientOrderId: order.cloid,
           orderId: fill.oid,
@@ -883,12 +897,20 @@ function reduceOrders(
   });
   return Object.freeze({
     orderInputs: Object.freeze(inputs),
-    fees: Object.freeze([Object.freeze({
-      assetId: feeAsset.assetId,
-      assetDecimals: feeAsset.decimals,
-      amountAtoms: feeAtoms,
-      evidenceStatus: 'CONFIRMED' as const,
-    })]),
+    fees: Object.freeze([
+      Object.freeze({
+        assetId: feeAsset.assetId,
+        assetDecimals: feeAsset.decimals,
+        amountAtoms: feeAtoms,
+        evidenceStatus: 'CONFIRMED' as const,
+      }),
+      ...(baseFeeObserved ? [Object.freeze({
+        assetId: baseAsset.assetId,
+        assetDecimals: baseAsset.decimals,
+        amountAtoms: baseFeeAtoms,
+        evidenceStatus: 'CONFIRMED' as const,
+      })] : []),
+    ]),
     observedFills: Object.freeze(observed),
   });
 }
@@ -1025,7 +1047,8 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     const envelopes = allEnvelopes(accountData, orderData);
     verifySnapshotSkew(envelopes, window, reasons);
     const reduced = reduceOrders(
-      orders, orderData, attempt.plan.legs[0].quoteAsset, markets.feeToken, window, reasons,
+      orders, orderData, attempt.plan.legs[0].quoteAsset, markets.feeToken,
+      attempt.plan.legs[0].baseAsset, markets.spotBalanceCoin, window, reasons,
     );
     let spotBalance = 0n;
     let perpPosition = 0n;
@@ -1063,7 +1086,8 @@ export class HyperliquidAuthoritativeEvidenceCollector {
       perpetualPositionDeltaAtoms: perpPosition - checkpoint.perpetualPositionAtoms,
       observedPerpetualPositionAtoms: perpPosition,
       fees: Object.freeze(reduced.fees.map((fee) => Object.freeze({
-        asset: attempt.plan.legs[0].quoteAsset,
+        asset: fee.assetId === attempt.plan.legs[0].baseAsset.assetId
+          ? attempt.plan.legs[0].baseAsset : attempt.plan.legs[0].quoteAsset,
         amountAtoms: fee.amountAtoms,
         evidenceStatus: fee.evidenceStatus,
       }))),
@@ -1118,7 +1142,8 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     verifySnapshotSkew(envelopes, window, reasons);
     const reduced = reduceOrders(
       orders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
-      markets.feeToken, window, reasons,
+      markets.feeToken, attempt.sourceAttempt.plan.legs[0].baseAsset, markets.spotBalanceCoin,
+      window, reasons,
     );
     let spotBalance = 0n;
     let perpPosition = 0n;
@@ -1139,7 +1164,8 @@ export class HyperliquidAuthoritativeEvidenceCollector {
       perpetualPositionDeltaAtoms: perpPosition - checkpoint.perpetualPositionAtoms,
       observedPerpetualPositionAtoms: perpPosition,
       fees: Object.freeze(reduced.fees.map((fee) => Object.freeze({
-        asset: attempt.sourceAttempt.plan.legs[0].quoteAsset,
+        asset: fee.assetId === attempt.sourceAttempt.plan.legs[0].baseAsset.assetId
+          ? attempt.sourceAttempt.plan.legs[0].baseAsset : attempt.sourceAttempt.plan.legs[0].quoteAsset,
         amountAtoms: fee.amountAtoms,
         evidenceStatus: fee.evidenceStatus,
       }))),

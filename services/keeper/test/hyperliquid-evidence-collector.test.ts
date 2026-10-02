@@ -395,3 +395,32 @@ test('pins the concrete SDK client to the exact testnet Info environment', () =>
   assert.equal('exchange' in client, false);
   assert.equal('sign' in client, false);
 });
+
+test('accounts for a spot buy fee charged in the base token at the token precision', async () => {
+  const client = new FixtureClient();
+  const before = await checkpoint(client);
+  client.stamp = 9_950;
+  configureExact(client);
+  client.fills = [fill(spotCloid, 1, 10, '@7', 'B', '0.000001', 'UBTC'),
+    fill(perpCloid, 2, 11, 'BTC', 'A')];
+  client.spotTotal = '1.00000099';
+  const result = await new HyperliquidAuthoritativeEvidenceCollector(client)
+    .collectPackage(packageAttempt(), before, binding, evidenceWindow);
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(result.input.spot.filledSignedBaseAtoms, 100n);
+  assert.equal(result.input.netSpotDeltaAtoms, 99n);
+  assert.deepEqual(result.input.fees.map((fee) => [fee.assetId, fee.amountAtoms]),
+    [['usdc', 1n], ['ubtc', 1n]]);
+
+  // A base-token fee on the perpetual leg is not a known HyperCore fee path.
+  const perpClient = new FixtureClient();
+  const perpBefore = await checkpoint(perpClient);
+  perpClient.stamp = 9_950;
+  configureExact(perpClient);
+  perpClient.fills = [fill(spotCloid, 1, 10, '@7', 'B'),
+    fill(perpCloid, 2, 11, 'BTC', 'A', '0.000001', 'UBTC')];
+  const perpResult = await new HyperliquidAuthoritativeEvidenceCollector(perpClient)
+    .collectPackage(packageAttempt(), perpBefore, binding, evidenceWindow);
+  assert.equal(perpResult.status, 'INCOMPLETE');
+  assert.ok(perpResult.reasons.includes('UNCERTAIN_FEE_EVIDENCE'));
+});

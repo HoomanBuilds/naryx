@@ -25,6 +25,7 @@ import type {
   HyperliquidPackageAttempt,
   HyperliquidReconciliationSnapshot,
 } from './index.js';
+import { hyperliquidBaseFeeAtoms } from './hyperliquid-base-fee.js';
 
 const RECOVERY_CLOID_DOMAIN = 'naryx/hypercore/recovery-cloid/v1';
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
@@ -276,7 +277,8 @@ function requireFreshTerminalEvidence(
   requireCondition(evidence.spot.terminalStatus !== 'UNKNOWN'
     && evidence.perpetual.terminalStatus !== 'UNKNOWN',
   'uncertain terminal evidence cannot compile recovery');
-  requireCondition(evidence.netSpotDeltaAtoms === evidence.spot.filledSignedBaseAtoms,
+  requireCondition(evidence.netSpotDeltaAtoms === evidence.spot.filledSignedBaseAtoms
+      - hyperliquidBaseFeeAtoms(evidence.fees, attempt.plan.legs[0].baseAsset),
     'spot balance effects are ambiguous');
   return evidence;
 }

@@ -694,8 +694,12 @@ export function reconcileHyperliquidRecovery(
     .reduce((total, { evidence: order }) => total + order.filledSignedBaseAtoms, 0n);
   const recoveryPerpetualFill = orders.filter(({ plan }) => plan.role === 'PERPETUAL')
     .reduce((total, { evidence: order }) => total + order.filledSignedBaseAtoms, 0n);
+  // A recovery spot buy pays its taker fee in the base asset, as the source entry did.
+  const baseAsset = attempt.sourceAttempt.plan.legs[0].baseAsset;
+  const recoveryBaseFee = evidence.fees.filter((fee) => sameAsset(fee.asset, baseAsset))
+    .reduce((total, fee) => total + fee.amountAtoms, 0n);
   if (evidence.netSpotBalanceDeltaAtoms
-      !== sourceEvidence.netSpotDeltaAtoms + recoverySpotFill
+      !== sourceEvidence.netSpotDeltaAtoms + recoverySpotFill - recoveryBaseFee
     || evidence.perpetualPositionDeltaAtoms
       !== sourceEvidence.perpetualPositionDeltaAtoms + recoveryPerpetualFill
     || evidence.observedPerpetualPositionAtoms

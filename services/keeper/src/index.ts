@@ -23,6 +23,9 @@ import {
   type RecoveryPlan,
 } from '@naryx/protocol-types';
 
+import { hyperliquidBaseFeeAtoms } from './hyperliquid-base-fee.js';
+
+export * from './hyperliquid-base-fee.js';
 export * from './hyperliquid-submission-journal.js';
 export * from './hyperliquid-recovery-compiler.js';
 export * from './hyperliquid-recovery-validation.js';
@@ -915,6 +918,9 @@ export function reconcileHyperliquidPackageAttempt(
     || evidence.perpetualPositionDeltaAtoms !== evidence.perpetual.filledSignedBaseAtoms
     || attempt.plan.prePerpetualPositionAtoms + evidence.perpetualPositionDeltaAtoms
       !== evidence.observedPerpetualPositionAtoms
+    // The shared account's spot delta must be exactly this package's spot fill less its base fee.
+    || evidence.netSpotDeltaAtoms !== evidence.spot.filledSignedBaseAtoms
+      - hyperliquidBaseFeeAtoms(evidence.fees, attempt.plan.legs[0].baseAsset)
   ) {
     return manualLock(attempt, 'EVIDENCE_INCONSISTENT', evidence);
   }

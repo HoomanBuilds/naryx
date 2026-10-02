@@ -17,6 +17,7 @@ import {
   type RecoveryActionSlot,
 } from '@naryx/protocol-types';
 import type { HyperliquidPackageAttempt } from './index.js';
+import { hyperliquidBaseFeeAtoms } from './hyperliquid-base-fee.js';
 import {
   NARYX_UNSIGNED_HYPERCORE_RECOVERY,
   type HyperliquidRecoveryExecutionPlan,
@@ -236,6 +237,7 @@ function validateSourceAttempt(attempt: HyperliquidPackageAttempt): void {
     && evidence.perpetual.clientOrderId === attempt.plan.perpetualClientOrderId,
   'source order identity mismatch');
   requireCondition(evidence.netSpotDeltaAtoms === evidence.spot.filledSignedBaseAtoms
+      - hyperliquidBaseFeeAtoms(evidence.fees, attempt.plan.legs[0].baseAsset)
     && evidence.perpetualPositionDeltaAtoms === evidence.perpetual.filledSignedBaseAtoms
     && evidence.observedPerpetualPositionAtoms
       === attempt.plan.prePerpetualPositionAtoms + evidence.perpetualPositionDeltaAtoms,

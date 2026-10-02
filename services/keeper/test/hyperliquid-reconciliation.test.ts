@@ -473,3 +473,21 @@ test('attributes exactly one package delta on an omnibus account that holds othe
   assert.equal(partial.recoveryObligation?.remainingPerpetualDeltaAtoms, -40n);
   assert.equal(partial.recoveryObligation?.targetPerpetualPositionAtoms, -600n);
 });
+
+test('attributes a spot fill net of its base-token fee dust and locks unexplained dust', () => {
+  const dusty = reconcileHyperliquidPackageAttempt(attempt('BOUNDED_NET'), snapshot({
+    netSpotDeltaAtoms: 97n,
+    fees: [
+      { assetId: 'USDC', assetDecimals: 6, amountAtoms: 10n, evidenceStatus: 'CONFIRMED' },
+      { assetId: 'btc', assetDecimals: 8, amountAtoms: 3n, evidenceStatus: 'CONFIRMED' },
+    ],
+  }));
+  assert.equal(dusty.status, 'COMPLETED_BOUNDED');
+
+  // The same balance move without a matching base fee is another package's effect.
+  const unexplained = reconcileHyperliquidPackageAttempt(attempt('BOUNDED_NET'), snapshot({
+    netSpotDeltaAtoms: 97n,
+  }));
+  assert.equal(unexplained.status, 'MANUAL_INTERVENTION');
+  assert.deepEqual(unexplained.reasons, ['EVIDENCE_INCONSISTENT']);
+});
