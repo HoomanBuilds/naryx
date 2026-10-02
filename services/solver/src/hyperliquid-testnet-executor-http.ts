@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parseProtocolJson, stringifyProtocolJson, type PackageAdmission } from '@naryx/protocol-types';
 import type {
@@ -9,8 +10,15 @@ import type {
   HyperliquidTestnetRuntimeCoordinatorResult,
   HyperliquidTestnetRuntimeRawCommitment,
 } from './hyperliquid-testnet-runtime.js';
+import {
+  HyperliquidTestnetLane,
+  HyperliquidTestnetLaneError,
+  type HyperliquidLaneNotSubmittedReason,
+  type HyperliquidLaneState,
+} from './hyperliquid-testnet-lane.js';
 
 export const SOLVER_TESTNET_EXECUTE_PATH = '/internal/solver/hyperliquid-testnet/execute';
+export const SOLVER_TESTNET_ATTEMPT_STATUS_PATH = '/internal/solver/hyperliquid-testnet/attempt-status';
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
@@ -22,6 +30,24 @@ const MAX_EVIDENCE = 64;
 export type HyperliquidTestnetExecutorRequest = Readonly<{
   attemptId: string;
   idempotencyKey: string;
+}>;
+
+/** `resolve` fences an attempt the lane never received; plain polling only reads. */
+export type HyperliquidTestnetAttemptStatusRequest = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  resolve: boolean;
+}>;
+
+export type HyperliquidTestnetAttemptStatusResponse = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  domain: 'hypercore:testnet';
+  environment: 'TESTNET';
+  state: 'QUEUED' | 'EXECUTING' | 'COMPLETED' | 'INTERRUPTED' | 'UNKNOWN';
+  queuePosition: number | null;
+  lane: HyperliquidLaneState;
+  result: HyperliquidTestnetExecutorResult | null;
 }>;
 
 export type HyperliquidTestnetExecutorResult =
@@ -89,6 +115,9 @@ export type HyperliquidTestnetExecutorResult =
       actionCommitment: string;
       requestCommitment: string;
       rawEvidenceCommitments: readonly string[];
+      /** Account-wide deltas over the serialized window, so exactly this package's fills. */
+      observedNetSpotDeltaAtoms?: string;
+      observedPerpetualDeltaAtoms?: string;
     }>
   | Readonly<{
       attemptId: string;
@@ -130,20 +159,32 @@ export interface HyperliquidTestnetAttemptHandoff {
 
 export interface HyperliquidTestnetExecutorPort {
   execute(request: HyperliquidTestnetExecutorRequest): Promise<HyperliquidTestnetExecutorResult>;
+  status(request: HyperliquidTestnetAttemptStatusRequest): Promise<HyperliquidTestnetAttemptStatusResponse>;
 }
+
+/** The omnibus trading account's live inventory, read under the lane lock. */
+export type HyperliquidTestnetAccountInventory = Readonly<{
+  perpetualPositionAtoms: bigint;
+  spotBalanceAtoms: bigint;
+}>;
 
 export type HyperliquidTestnetExecutorRuntime = Readonly<{
   attempts: HyperliquidTestnetTrustedAttemptProvider;
-  preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<void>;
-  prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidTestnetRuntimeCoordinatorInput;
+  preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidTestnetAccountInventory | void>;
+  prepareAttempt(
+    attempt: HyperliquidTestnetAttemptHandoff,
+    inventory?: HyperliquidTestnetAccountInventory,
+  ): HyperliquidTestnetRuntimeCoordinatorInput;
   coordinator: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
+  /** The durable lane; absent, the executor serializes in memory for this process only. */
+  lane?: HyperliquidTestnetLane;
 }>;
 
 export type HyperliquidTestnetExecutorRuntimeFactory = () => HyperliquidTestnetExecutorRuntime;
 
 export class HyperliquidTestnetExecutorError extends Error {
   readonly code: 'INVALID_REQUEST' | 'ATTEMPT_NOT_FOUND' | 'ATTEMPT_IDENTITY_MISMATCH' |
-    'INVALID_ATTEMPT' | 'INVALID_RESULT';
+    'INVALID_ATTEMPT' | 'INVALID_RESULT' | 'ATTEMPT_INTERRUPTED';
 
   constructor(code: HyperliquidTestnetExecutorError['code'], message: string) {
     super(message);
@@ -177,6 +218,39 @@ function parseRequest(value: unknown): HyperliquidTestnetExecutorRequest {
   requireCondition(typeof value.idempotencyKey === 'string' && ID.test(value.idempotencyKey),
     'INVALID_REQUEST', 'idempotencyKey is invalid');
   return Object.freeze({ attemptId: value.attemptId, idempotencyKey: value.idempotencyKey });
+}
+
+function parseStatusRequest(value: unknown): HyperliquidTestnetAttemptStatusRequest {
+  requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
+  requireCondition(hasExactKeys(value, ['attemptId', 'idempotencyKey', 'resolve']), 'INVALID_REQUEST',
+    'request must contain only attemptId, idempotencyKey, and resolve');
+  requireCondition(typeof value.resolve === 'boolean', 'INVALID_REQUEST', 'resolve must be a boolean');
+  const identity = parseRequest({ attemptId: value.attemptId, idempotencyKey: value.idempotencyKey });
+  return Object.freeze({ ...identity, resolve: value.resolve });
+}
+
+/** A lane refusal: nothing was signed or sent, and the reason is committed rather than echoed. */
+export function hyperliquidLaneNotSubmitted(
+  attemptId: string,
+  idempotencyKey: string,
+  reason: HyperliquidLaneNotSubmittedReason,
+): HyperliquidTestnetExecutorResult {
+  return Object.freeze({
+    attemptId,
+    idempotencyKey,
+    domain: 'hypercore:testnet' as const,
+    environment: 'TESTNET' as const,
+    status: 'NOT_SUBMITTED' as const,
+    evidenceStatus: 'PRECONDITION_REJECTED' as const,
+    actionCommitment: null,
+    requestCommitment: null,
+    errorCommitment: `0x${createHash('sha256')
+      .update(JSON.stringify({ name: 'HyperliquidTestnetLane', reason })).digest('hex')}`,
+  });
+}
+
+function signedAtoms(value: unknown): string | undefined {
+  return typeof value === 'bigint' ? value.toString() : undefined;
 }
 
 function safeInteger(value: unknown, name: string, positive = false): number {
@@ -341,6 +415,10 @@ function sanitizeResult(
     || packageStatus === 'COMPLETED_BOUNDED' || packageStatus === 'RECOVERY_REQUIRED'
     || packageStatus === 'MANUAL_INTERVENTION', 'INVALID_RESULT',
   'final package status is invalid');
+  const evidence = isRecord(reconciliation.attempt.acceptedEvidence)
+    ? reconciliation.attempt.acceptedEvidence : undefined;
+  const netSpot = signedAtoms(evidence?.netSpotDeltaAtoms);
+  const perpetual = signedAtoms(evidence?.perpetualPositionDeltaAtoms);
   return Object.freeze({
     ...base(request), status: 'RECONCILED' as const,
     submissionStatus: status, packageStatus,
@@ -348,6 +426,10 @@ function sanitizeResult(
       packageStatus === 'NO_EFFECT' || packageStatus === 'COMPLETED_EXACT'
         || packageStatus === 'COMPLETED_BOUNDED'),
     actionCommitment, requestCommitment, rawEvidenceCommitments,
+    ...(netSpot === undefined || perpetual === undefined ? {} : {
+      observedNetSpotDeltaAtoms: netSpot,
+      observedPerpetualDeltaAtoms: perpetual,
+    }),
   });
 }
 
@@ -362,17 +444,49 @@ export function createHyperliquidTestnetExecutor(
     && typeof runtime.prepareAttempt === 'function'
     && typeof runtime.coordinator?.execute === 'function', 'INVALID_ATTEMPT',
   'executor runtime factory returned incomplete ports');
+  const lane = runtime.lane ?? new HyperliquidTestnetLane({ notSubmitted: hyperliquidLaneNotSubmitted });
+  const laneError = (error: unknown): unknown =>
+    error instanceof HyperliquidTestnetLaneError && error.code !== 'LANE_CORRUPT'
+      ? new HyperliquidTestnetExecutorError(error.code, error.message)
+      : error;
   return Object.freeze({
     async execute(rawRequest: HyperliquidTestnetExecutorRequest): Promise<HyperliquidTestnetExecutorResult> {
       const request = parseRequest(rawRequest);
-      const resolved = await runtime.attempts.resolve(request.attemptId);
-      if (resolved === undefined) {
-        throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
+      try {
+        // Everything from the authority read to the last reconciliation runs inside the lane, so
+        // the inventory read here and the deltas measured later belong to this attempt only.
+        return await lane.run(request.attemptId, request.idempotencyKey, async (enterSubmission) => {
+          const resolved = await runtime.attempts.resolve(request.attemptId);
+          if (resolved === undefined) {
+            throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
+          }
+          const handoff = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
+          const inventory = await runtime.preflight(handoff);
+          const input = runtime.prepareAttempt(handoff, inventory ?? undefined);
+          enterSubmission();
+          return sanitizeResult(request, await runtime.coordinator.execute(input));
+        });
+      } catch (error) {
+        throw laneError(error);
       }
-      const handoff = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
-      await runtime.preflight(handoff);
-      const input = runtime.prepareAttempt(handoff);
-      return sanitizeResult(request, await runtime.coordinator.execute(input));
+    },
+    async status(rawRequest: HyperliquidTestnetAttemptStatusRequest): Promise<HyperliquidTestnetAttemptStatusResponse> {
+      const request = parseStatusRequest(rawRequest);
+      let status;
+      try {
+        status = request.resolve
+          ? lane.resolve(request.attemptId, request.idempotencyKey)
+          : lane.status(request.attemptId, request.idempotencyKey);
+      } catch (error) {
+        throw laneError(error);
+      }
+      return Object.freeze({
+        ...base(request),
+        state: status.state,
+        queuePosition: status.state === 'QUEUED' ? status.queuePosition : null,
+        lane: lane.laneState().state,
+        result: status.state === 'COMPLETED' ? status.result : null,
+      });
     },
   });
 }
@@ -389,7 +503,7 @@ function isLoopbackAddress(address: string | undefined): boolean {
   });
 }
 
-async function readRequest(request: IncomingMessage): Promise<HyperliquidTestnetExecutorRequest> {
+async function readRequest(request: IncomingMessage): Promise<unknown> {
   const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim();
   requireCondition(contentType === 'application/json', 'INVALID_REQUEST',
     'Content-Type must be application/json');
@@ -405,12 +519,11 @@ async function readRequest(request: IncomingMessage): Promise<HyperliquidTestnet
     chunks.push(bytes);
   }
   try {
-    return parseRequest(parseProtocolJson(
+    return parseProtocolJson(
       Buffer.concat(chunks).toString('utf8'),
       'solver.hyperliquidTestnet.executeRequest',
-    ));
-  } catch (error) {
-    if (error instanceof HyperliquidTestnetExecutorError) throw error;
+    );
+  } catch {
     throw new HyperliquidTestnetExecutorError('INVALID_REQUEST', 'request body is invalid');
   }
 }
@@ -436,7 +549,8 @@ export function createHyperliquidTestnetExecutorRequestHandler(
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
-    if (url.pathname !== SOLVER_TESTNET_EXECUTE_PATH || url.search !== '') {
+    if ((url.pathname !== SOLVER_TESTNET_EXECUTE_PATH
+      && url.pathname !== SOLVER_TESTNET_ATTEMPT_STATUS_PATH) || url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'internal route was not found');
       return;
     }
@@ -450,11 +564,14 @@ export function createHyperliquidTestnetExecutorRequestHandler(
       return;
     }
     try {
-      sendJson(response, 200, await executor.execute(await readRequest(request)));
+      const body = await readRequest(request);
+      sendJson(response, 200, url.pathname === SOLVER_TESTNET_EXECUTE_PATH
+        ? await executor.execute(parseRequest(body))
+        : await executor.status(parseStatusRequest(body)));
     } catch (error) {
       if (error instanceof HyperliquidTestnetExecutorError) {
         const status = error.code === 'ATTEMPT_NOT_FOUND' ? 404
-          : error.code === 'ATTEMPT_IDENTITY_MISMATCH' ? 409
+          : error.code === 'ATTEMPT_IDENTITY_MISMATCH' || error.code === 'ATTEMPT_INTERRUPTED' ? 409
             : error.code === 'INVALID_REQUEST' || error.code === 'INVALID_ATTEMPT' ? 400 : 502;
         reject(response, status, error.code, error.message);
         return;

@@ -433,3 +433,43 @@ test('fails closed on identity, fee, deadline, overfill, ratio, and impossible-p
     /no satisfiable outcome/,
   );
 });
+
+test('attributes exactly one package delta on an omnibus account that holds other packages', () => {
+  const omnibus = () => beginHyperliquidReconciliation(markHyperliquidSubmissionUnknown(
+    createHyperliquidPackageAttempt({
+      ...executionPlan(),
+      prePerpPositionAtoms: -500n,
+      signedPerpTargetAtoms: -600n,
+    }, account),
+  ));
+  const completed = reconcileHyperliquidPackageAttempt(omnibus(), snapshot({
+    observedPerpetualPositionAtoms: -600n,
+    perpetualPositionTargetAtoms: -600n,
+  }));
+  assert.equal(completed.status, 'COMPLETED_EXACT');
+
+  // Another package moving the account inside the window breaks the attribution and locks.
+  const leaked = reconcileHyperliquidPackageAttempt(omnibus(), snapshot({
+    perpetualPositionDeltaAtoms: -150n,
+    observedPerpetualPositionAtoms: -650n,
+    perpetualPositionTargetAtoms: -600n,
+  }));
+  assert.equal(leaked.status, 'MANUAL_INTERVENTION');
+  assert.deepEqual(leaked.reasons, ['EVIDENCE_INCONSISTENT']);
+
+  // Recovery owes only the unfilled part of this package, never a trade back to a flat account.
+  const partial = reconcileHyperliquidPackageAttempt(omnibus(), snapshot({
+    perpetual: {
+      clientOrderId: perpetualClientOrderId,
+      terminalStatus: 'PARTIALLY_FILLED_IOC_CANCELLED',
+      openOrderStatus: 'NONE',
+      filledSignedBaseAtoms: -60n,
+    },
+    perpetualPositionDeltaAtoms: -60n,
+    observedPerpetualPositionAtoms: -560n,
+    perpetualPositionTargetAtoms: -600n,
+  }));
+  assert.equal(partial.status, 'RECOVERY_REQUIRED');
+  assert.equal(partial.recoveryObligation?.remainingPerpetualDeltaAtoms, -40n);
+  assert.equal(partial.recoveryObligation?.targetPerpetualPositionAtoms, -600n);
+});

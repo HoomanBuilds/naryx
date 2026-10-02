@@ -1,6 +1,8 @@
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
   HyperliquidExecutionPlanner,
+  decimalToAtoms,
+  type HyperliquidExecutionPlan,
   type HyperliquidExecutionPlannerOptions,
 } from '@naryx/adapter-hyperliquid';
 import { adapterRef, versionedManifestRef } from '@naryx/protocol-types';
@@ -19,10 +21,13 @@ import {
   type HyperliquidTestnetEvidenceHttpOptions,
 } from './hyperliquid-testnet-evidence-http.js';
 import {
+  hyperliquidLaneNotSubmitted,
+  type HyperliquidTestnetAccountInventory,
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
+import { HyperliquidTestnetLane } from './hyperliquid-testnet-lane.js';
 import { HyperliquidSqliteDurableJournal } from './hyperliquid-sqlite-journal.js';
 import {
   HyperliquidAuthorityFenceStore,
@@ -31,6 +36,7 @@ import {
   type HyperliquidAuthorityClearanceInput,
   type HyperliquidAuthorityClearancePort,
   type HyperliquidTestnetAuthorityReadPort,
+  type HyperliquidTestnetAuthoritySnapshot,
 } from './hyperliquid-testnet-authority.js';
 import {
   HyperliquidSdkTestnetMarketReadClient,
@@ -38,7 +44,10 @@ import {
   type HyperliquidTestnetMarketQualificationConfig,
   type HyperliquidTestnetMarketReadPort,
 } from './hyperliquid-testnet-market-preflight.js';
-import { HyperliquidTestnetRuntimeCoordinator } from './hyperliquid-testnet-runtime.js';
+import {
+  HyperliquidTestnetRuntimeCoordinator,
+  type HyperliquidTestnetStructuralEvidencePort,
+} from './hyperliquid-testnet-runtime.js';
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 
@@ -57,6 +66,8 @@ export type LoadedHyperliquidTestnetExecutorRuntime = Readonly<{
   status: HyperliquidTestnetExecutorRuntimeStatus;
   runtimeFactory: HyperliquidTestnetExecutorRuntimeFactory | undefined;
   clearAuthorityIncident(input: HyperliquidAuthorityClearanceInput): Promise<void>;
+  /** Operator release of a lane blocked by an attempt whose recovery was resolved and reviewed. */
+  releaseLane(holderAttemptId: string): void;
   close(): void;
 }>;
 
@@ -203,6 +214,51 @@ function marketQualificationConfig(
   });
 }
 
+/**
+ * The trading account's perpetual position and spot base balance for the configured market, from
+ * the authority snapshot read under the lane lock. Venue decimals that atoms cannot hold fail closed.
+ */
+export function hyperliquidTestnetAccountInventory(
+  snapshot: Pick<HyperliquidTestnetAuthoritySnapshot, 'perpetualState' | 'spotState'>,
+  perpetualCoin: string,
+  spotTokenIndex: number,
+  baseDecimals: number,
+): HyperliquidTestnetAccountInventory {
+  const positions = snapshot.perpetualState.assetPositions.filter((entry) => entry.position.coin === perpetualCoin);
+  const balances = snapshot.spotState.balances.filter((balance) => 'token' in balance && balance.token === spotTokenIndex);
+  if (positions.length > 1 || balances.length > 1) throw new Error('trading account inventory is ambiguous');
+  return Object.freeze({
+    perpetualPositionAtoms: positions[0] === undefined
+      ? 0n : decimalToAtoms(positions[0].position.szi, baseDecimals, 'perpetual position'),
+    spotBalanceAtoms: balances[0] === undefined
+      ? 0n : decimalToAtoms(balances[0].total, baseDecimals, 'spot balance'),
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// The keeper checkpoint re-reads the account before submission; it must see exactly the position
+// the plan targets from, or another actor moved the account and nothing is sent.
+function checkpointBoundEvidence(
+  evidence: HyperliquidTestnetStructuralEvidencePort<unknown, unknown>,
+): HyperliquidTestnetStructuralEvidencePort<unknown, unknown> {
+  return Object.freeze({
+    async prepare(input: Parameters<typeof evidence.prepare>[0]) {
+      const prepared = await evidence.prepare(input);
+      if (prepared.status === 'PREPARED') {
+        const checkpoint = isRecord(prepared.state) ? prepared.state.checkpoint : undefined;
+        if (!isRecord(checkpoint) || checkpoint.perpetualPositionAtoms !== input.plan.prePerpPositionAtoms) {
+          throw new Error('checkpoint perpetual position does not match the planned account pre-position');
+        }
+      }
+      return prepared;
+    },
+    reconcile: (...args: Parameters<typeof evidence.reconcile>) => evidence.reconcile(...args),
+  });
+}
+
 function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidExecutionPlannerOptions {
   const marketRef = (value: Readonly<Record<string, unknown>>) => ({
     adapter: adapterRef({
@@ -252,6 +308,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       async clearAuthorityIncident() {
         throw new Error('Hyperliquid Testnet authority clearance is unavailable');
       },
+      releaseLane() {
+        throw new Error('Hyperliquid Testnet execution lane is unavailable');
+      },
       close() {},
     });
   }
@@ -284,7 +343,13 @@ export async function loadHyperliquidTestnetExecutorRuntime(
 
   const journal = new HyperliquidSqliteDurableJournal({ databasePath: journalPath });
   const authorityStore = new HyperliquidAuthorityFenceStore(journalPath);
+  let lane: HyperliquidTestnetLane | undefined;
   try {
+    lane = new HyperliquidTestnetLane({
+      databasePath: journalPath,
+      notSubmitted: hyperliquidLaneNotSubmitted,
+      ...(dependencies.currentTimeMs === undefined ? {} : { currentTimeMs: dependencies.currentTimeMs }),
+    });
     const currentTimeMs = dependencies.currentTimeMs ?? Date.now;
     const expectedLeverageMode = required(
       environment, 'NARYX_HYPERLIQUID_TESTNET_EXPECTED_LEVERAGE_MODE',
@@ -333,12 +398,22 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     }
     const submitter = new HyperliquidSdkTestnetOrderSubmitter(signer, transport);
     const submission = new HyperliquidTestnetPackageSubmissionService(journal, submitter);
-    const coordinator = new HyperliquidTestnetRuntimeCoordinator(evidence, submission);
+    const coordinator = new HyperliquidTestnetRuntimeCoordinator(checkpointBoundEvidence(evidence), submission);
     const runtime = Object.freeze({
       attempts,
-      async preflight(attempt: HyperliquidTestnetAttemptHandoff) {
-        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission);
-        await authorityPreflight.qualify(attempt.admission);
+      lane,
+      async preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidTestnetAccountInventory> {
+        const snapshot = await authorityPreflight.qualify(attempt.admission);
+        const inventory = hyperliquidTestnetAccountInventory(
+          snapshot,
+          qualificationConfig.perpetualName,
+          attempt.market.spot.tokenIndex,
+          attempt.admission.order.quantity.asset.decimals,
+        );
+        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
+          accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
+        });
+        requireExitInventory(plan, inventory);
         await marketPreflight.qualify({
           plan,
           binding: {
@@ -348,12 +423,17 @@ export async function loadHyperliquidTestnetExecutorRuntime(
             quoteTokenIndex: attempt.market.quoteTokenIndex,
           },
         });
+        return inventory;
       },
-      prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff) {
+      prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff, inventory?: HyperliquidTestnetAccountInventory) {
+        if (inventory === undefined) throw new Error('the account inventory read under the lane lock is required');
         const now = currentTimeMs();
         if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');
         const nowMs = BigInt(now);
-        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission);
+        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
+          accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
+        });
+        requireExitInventory(plan, inventory);
         const context = journal.submissionContext({
           account: expectedAccount,
           agentWallet: expectedAgent,
@@ -404,14 +484,26 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       }),
       runtimeFactory: () => runtime,
       clearAuthorityIncident: (input) => authorityPreflight.clearIncident(input),
+      releaseLane: (holderAttemptId) => lane!.release(holderAttemptId),
       close: () => {
+        lane?.close();
         authorityStore.close();
         journal.close();
       },
     });
   } catch (error) {
+    lane?.close();
     authorityStore.close();
     journal.close();
     throw error;
+  }
+}
+
+// An exit sells spot the omnibus account must already hold for this package.
+function requireExitInventory(plan: HyperliquidExecutionPlan, inventory: HyperliquidTestnetAccountInventory): void {
+  const spot = plan.legs.find((leg) => leg.role === 'SPOT');
+  if (spot !== undefined && spot.signedBaseDeltaAtoms < 0n
+    && inventory.spotBalanceAtoms + spot.signedBaseDeltaAtoms < 0n) {
+    throw new Error('trading account spot balance does not cover the package exit');
   }
 }

@@ -350,7 +350,8 @@ export class HyperliquidTestnetAuthorityPreflight {
     }
   }
 
-  async qualify(admission: PackageAdmission): Promise<void> {
+  /** Returns the qualified snapshot, so the caller reads account inventory from the same read. */
+  async qualify(admission: PackageAdmission): Promise<HyperliquidTestnetAuthoritySnapshot> {
     try {
       requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'INITIALIZING',
         'durable authority fence blocks new submissions');
@@ -364,6 +365,7 @@ export class HyperliquidTestnetAuthorityPreflight {
       this.#validateSnapshot(snapshot, admission, nowMs);
       requireCondition(this.#store.activate() === 'ACTIVE',
         'durable authority fence is not active');
+      return snapshot;
     } catch (error) {
       this.#store.incidentLock();
       throw error;

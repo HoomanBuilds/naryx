@@ -767,8 +767,9 @@ function recoveryObligation(
     observedPerpetualDeltaAtoms: evidence.perpetualPositionDeltaAtoms,
     observedPerpetualPositionAtoms: evidence.observedPerpetualPositionAtoms,
     targetPerpetualPositionAtoms: attempt.plan.perpetualPositionTargetAtoms,
+    // The trading account can hold other packages, so recovery owes only this package's own delta.
     remainingPerpetualDeltaAtoms:
-      attempt.plan.perpetualPositionTargetAtoms - evidence.observedPerpetualPositionAtoms,
+      attempt.plan.plannedPerpetualDeltaAtoms - evidence.perpetualPositionDeltaAtoms,
     remainingNetSpotDeltaToMinimumAtoms:
       limits.minNetSpotDeltaAtoms - evidence.netSpotDeltaAtoms,
     remainingNetSpotDeltaToMaximumAtoms:

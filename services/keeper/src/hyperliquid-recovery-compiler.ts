@@ -308,7 +308,7 @@ function validateRecoveryObligation(
   requireCondition(obligation.targetPerpetualPositionAtoms
     === attempt.plan.perpetualPositionTargetAtoms
     && obligation.remainingPerpetualDeltaAtoms
-      === attempt.plan.perpetualPositionTargetAtoms - evidence.observedPerpetualPositionAtoms,
+      === attempt.plan.plannedPerpetualDeltaAtoms - evidence.perpetualPositionDeltaAtoms,
   'recovery obligation perpetual target mismatch');
   const terminal = attempt.plan.terminalResidualPolicy;
   const minSpot = terminal.kind === 'EXACT_NET'

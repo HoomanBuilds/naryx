@@ -17,6 +17,7 @@ import {
   createInternalAtomicQuoteCoordinator,
   createInternalAtomicQuoteServer,
   createHyperliquidTestnetExecutorServer,
+  createHyperliquidTestnetExitQuotePort,
   createLocalAtomicMarketRuntime,
   ArbitrumSepoliaExecutor,
   HttpArbitrumSepoliaAttemptProvider,
@@ -161,8 +162,12 @@ const solanaDevnetSolver = await loadSolanaDevnetSolverRuntime(process.env, {
   reservedPorts: [listenPort],
 });
 await solanaDevnetSolver?.listen(host);
-// Base Sepolia exits are quoted by the Base runtime; every other order reaches the entry coordinator.
-const quotePort = baseSolver?.wrapExit(coordinator, { orders: orderProvider.get, signer: executionSigner, store }) ?? coordinator;
+// Hyperliquid and Base Sepolia exits are quoted by their runtimes; every other order reaches the
+// entry coordinator.
+const hyperliquidQuotePort = hyperliquidQuoteRuntime === undefined ? coordinator : createHyperliquidTestnetExitQuotePort({
+  exit: hyperliquidQuoteRuntime.exit, orders: orderProvider.get, signer: executionSigner, store,
+}, coordinator);
+const quotePort = baseSolver?.wrapExit(hyperliquidQuotePort, { orders: orderProvider.get, signer: executionSigner, store }) ?? hyperliquidQuotePort;
 const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(quotePort) ?? quotePort, authorization);
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,

@@ -45,7 +45,11 @@ import type {
   InternalAtomicQuoteCandidateProvider,
   InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
-import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
+import type { AtomicEntryQuoteTerms, Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
+import {
+  signHyperliquidTestnetExitQuote,
+  type SignedHyperliquidTestnetExitQuote,
+} from './hyperliquid-testnet-exit-quote.js';
 
 const BPS_SCALE = 10_000n;
 const U256_MAX = (1n << 256n) - 1n;
@@ -109,8 +113,16 @@ export interface QuoteProviders {
   readonly terms: InternalAtomicQuoteTermsProvider;
 }
 
+/** Signs a complete-package EXIT quote for one package of the omnibus account. */
+export type HyperliquidTestnetExitQuoter = (input: Readonly<{
+  order: PackageOrder;
+  orderHash: Hash32;
+  signer: Ed25519AtomicQuoteSigner;
+}>) => Promise<SignedHyperliquidTestnetExitQuote>;
+
 export interface HyperliquidTestnetQuoteRuntime {
   readonly providers: QuoteProviders;
+  readonly exit: HyperliquidTestnetExitQuoter;
 }
 
 function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void {
@@ -366,44 +378,41 @@ function recoverySlot(
 ): RecoveryActionSlotInput {
   const spot = input.spot;
   const perpetual = input.perpetual;
+  // An exit sells spot and buys the short back, so completing and rolling back trade the opposite
+  // sides of an entry; only the perpetual buy-back is reduce-only.
+  const exit = order.action === 'EXIT';
   if (action === 'CANCEL_OPEN_ORDERS') {
     return { sequence, action, targetLeg: 1, adapter: perpetual.adapter, markets: [perpetual.market] };
   }
-  if (action === 'COMPLETE_SPOT') {
+  if (action === 'COMPLETE_SPOT' || action === 'ROLLBACK_SPOT') {
+    const buys = (action === 'COMPLETE_SPOT') !== exit;
     return {
       sequence, action, targetLeg: 0, adapter: spot.adapter, markets: [spot.market],
-      maxQuantity: order.hyperliquidGrossSpotQuantity!, limitPrice: order.maxRecoverySpotBuyPrice!,
+      maxQuantity: order.hyperliquidGrossSpotQuantity!,
+      limitPrice: buys ? order.maxRecoverySpotBuyPrice! : order.minRecoverySpotSellPrice!,
       reduceOnly: false, timeInForce: 'IOC',
     };
   }
-  if (action === 'COMPLETE_PERP') {
-    return {
-      sequence, action, targetLeg: 1, adapter: perpetual.adapter, markets: [perpetual.market],
-      maxQuantity: order.quantity, limitPrice: order.minRecoveryPerpSellPrice!,
-      reduceOnly: false, timeInForce: 'IOC',
-    };
-  }
-  if (action === 'ROLLBACK_SPOT') {
-    return {
-      sequence, action, targetLeg: 0, adapter: spot.adapter, markets: [spot.market],
-      maxQuantity: order.hyperliquidGrossSpotQuantity!, limitPrice: order.minRecoverySpotSellPrice!,
-      reduceOnly: false, timeInForce: 'IOC',
-    };
-  }
+  const buys = (action === 'COMPLETE_PERP') === exit;
   return {
     sequence, action, targetLeg: 1, adapter: perpetual.adapter, markets: [perpetual.market],
-    maxQuantity: order.quantity, limitPrice: order.maxRecoveryPerpBuyPrice!,
-    reduceOnly: true, timeInForce: 'IOC',
+    maxQuantity: order.quantity,
+    limitPrice: buys ? order.maxRecoveryPerpBuyPrice! : order.minRecoveryPerpSellPrice!,
+    reduceOnly: buys, timeInForce: 'IOC',
   };
 }
 
-function requireOrder(order: PackageOrder, input: HyperliquidTestnetQuoteRuntimeInput): void {
+function requireOrder(
+  order: PackageOrder,
+  input: HyperliquidTestnetQuoteRuntimeInput,
+  action: PackageOrder['action'] = 'ENTRY',
+): void {
   if (!input.enabled) throw new Error('Hyperliquid Testnet quote runtime is disabled');
   if (order.environment !== 'testnet'
     || order.domain.domainId !== 'hypercore:testnet'
     || order.expiryUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
-    || order.action !== 'ENTRY'
+    || order.action !== action
     || !sameDomain(order.domain, input.domain)) {
     throw new Error('order is outside the configured Hyperliquid Testnet quote domain');
   }
@@ -419,8 +428,8 @@ function requireOrder(order: PackageOrder, input: HyperliquidTestnetQuoteRuntime
     || !order.permittedPerpAdapters.some((adapter) => sameAdapter(adapter, input.perpetual.adapter))) {
     throw new Error('configured Hyperliquid adapters are not permitted by the order');
   }
-  const quoteAsset = order.maxSpotQuoteIn?.asset;
-  const perpLimit = order.hyperliquidMinPerpSellPrice;
+  const quoteAsset = action === 'ENTRY' ? order.maxSpotQuoteIn?.asset : order.minSpotQuoteOut?.asset;
+  const perpLimit = action === 'ENTRY' ? order.hyperliquidMinPerpSellPrice : order.hyperliquidMaxPerpBuyPrice;
   if (quoteAsset === undefined || perpLimit === undefined
     || !sameAsset(input.baseAsset, order.quantity.asset)
     || !sameAsset(input.quoteAsset, quoteAsset)
@@ -617,6 +626,192 @@ async function build(order: PackageOrder, orderHash: Hash32, input: HyperliquidT
   return Object.freeze({ candidate, terms });
 }
 
+/**
+ * Prices a complete-package exit of one package held in the omnibus account: sell exactly the
+ * package's spot and buy back exactly its short, both IOC at the trader's signed limits.
+ */
+export async function buildHyperliquidTestnetExit(
+  order: PackageOrder,
+  orderHash: Hash32,
+  input: HyperliquidTestnetQuoteRuntimeInput,
+): Promise<Readonly<{ route: RoutePayloadInput; terms: Omit<AtomicEntryQuoteTerms, 'quoteNonce'> }>> {
+  requireOrder(order, input, 'EXIT');
+  const base = input.baseAsset;
+  const quoteAsset = input.quoteAsset;
+  const grossSpot = order.hyperliquidGrossSpotQuantity!;
+  const minSpotQuoteOut = order.minSpotQuoteOut!;
+  const minOutcome = order.minExitQuoteOutcome!;
+  formatHypercoreSize(grossSpot.atoms, base.decimals, input.spot.sizeDecimals);
+  formatHypercoreSize(order.quantity.atoms, base.decimals, input.perpetual.sizeDecimals);
+  if (minSpotQuoteOut.atoms <= 0n) throw new Error('exit order needs a positive spot proceeds floor');
+
+  // The spot sell floor is the signed minimum proceeds over the gross spot sold, rounded up onto
+  // the wire; the perpetual buy-back cap is the exact signed maximum, which must not round up.
+  const divisor = gcd(minSpotQuoteOut.atoms, grossSpot.atoms);
+  const spotWire = formatHypercorePrice(exactPrice({
+    baseAsset: base, quoteAsset,
+    quoteAtoms: minSpotQuoteOut.atoms / divisor, baseAtoms: grossSpot.atoms / divisor,
+    roundingDirection: 'CEIL',
+  }), 8 - input.spot.sizeDecimals);
+  const spotLimit = reducedPrice(
+    base, quoteAsset,
+    spotWire.scaled * pow10(quoteAsset.decimals), pow10(spotWire.decimals + base.decimals),
+  );
+  const perpLimit = order.hyperliquidMaxPerpBuyPrice!;
+  const perpWire = formatHypercorePrice(perpLimit, 6 - input.perpetual.sizeDecimals);
+  if (compareHypercoreWirePriceToExact(perpWire, perpLimit) > 0) {
+    throw new Error('signed perpetual limit is not representable as a HyperCore buy limit');
+  }
+
+  const [spotBookValue, perpBookValue, fees] = await Promise.all([
+    input.market.l2Book(input.spot.coin),
+    input.market.l2Book(input.perpetual.coin),
+    input.market.userFees(input.tradingAccount),
+  ]);
+  const now = requirePositive(input.currentTimeMs(), 'currentTimeMs');
+  if (now >= order.expiryValue) throw new Error('order is expired');
+  const spotBook = liveBook(spotBookValue, input.spot.coin, 'spot book', now, input);
+  const perpBook = liveBook(perpBookValue, input.perpetual.coin, 'perpetual book', now, input);
+  const spotFeeRate = feeRate(fees?.userSpotCrossRate, 'userSpotCrossRate');
+  const perpFeeRate = feeRate(fees?.userCrossRate, 'userCrossRate');
+  const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  const routeExpiryValue = [
+    order.expiryValue - 1n,
+    now + requirePositive(input.routeTtlMs, 'routeTtlMs'),
+    now + quoteTtl - 1n,
+  ].reduce((left, right) => left < right ? left : right);
+  if (routeExpiryValue <= now) throw new Error('configured freshness window is empty');
+  const quoteValidUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
+
+  const spotProceeds = sweep(spotBook, 'SELL', grossSpot.atoms, spotWire, base, quoteAsset, 'spot book');
+  const perpCost = sweep(perpBook, 'BUY', order.quantity.atoms, perpWire, base, quoteAsset, 'perpetual book');
+  // Against the trader: proceeds round down, the buy-back cost and every fee round up. HyperCore
+  // charges a spot sell's taker fee in the received quote asset, so the base delta is exact.
+  const spotNotional = spotProceeds.numerator / spotProceeds.denominator;
+  const perpNotional = ceilDiv(perpCost.numerator, perpCost.denominator);
+  if (spotNotional < minSpotQuoteOut.atoms) throw new Error('spot sweep is below the signed proceeds floor');
+  const spotFeeAtoms = ceilDiv(
+    spotProceeds.numerator * spotFeeRate.numerator,
+    spotProceeds.denominator * spotFeeRate.denominator,
+  );
+  const perpFeeAtoms = ceilDiv(
+    perpCost.numerator * perpFeeRate.numerator,
+    perpCost.denominator * perpFeeRate.denominator,
+  );
+  const netSpotAtoms = -grossSpot.atoms;
+  if (netSpotAtoms < order.hyperliquidMinNetSpotDelta!.atoms
+    || netSpotAtoms > order.hyperliquidMaxNetSpotDelta!.atoms) {
+    throw new Error('exit net spot quantity is outside the signed interval');
+  }
+  const residualAtoms = netSpotAtoms + order.quantity.atoms;
+  const absoluteResidual = residualAtoms < 0n ? -residualAtoms : residualAtoms;
+  const valuation = order.hyperliquidResidualValuationReferencePrice;
+  if (absoluteResidual !== 0n && valuation === undefined) {
+    throw new Error('a nonzero residual requires the signed residual valuation price');
+  }
+  const residualQuoteAtoms = absoluteResidual === 0n
+    ? 0n
+    : ceilDiv(absoluteResidual * valuation!.quoteAtoms, valuation!.baseAtoms);
+  if (absoluteResidual > order.hyperliquidMaxTerminalResidualBaseQuantity!.atoms
+    || residualQuoteAtoms > order.hyperliquidMaxTerminalResidualQuoteValue!.atoms) {
+    throw new Error('expected terminal residual exceeds the signed caps');
+  }
+  // exitQuoteOutcome v1: spot proceeds less the spot fee, plus the short's entry notional less the
+  // buy-back notional and its fee.
+  const outcome = spotNotional - spotFeeAtoms
+    + order.expectedPrePositionEntryNotional.atoms - perpNotional - perpFeeAtoms;
+  if (outcome < minOutcome.atoms) throw new Error('exit outcome is below the signed minimum');
+  const route: RoutePayloadInput = {
+    version: 1,
+    environment: order.environment,
+    domain: order.domain,
+    orderHash,
+    templateId: order.templateId,
+    templateVersion: order.templateVersion,
+    packageTemplateManifestHash: order.packageTemplateManifestHash,
+    templateRegistryRecordHash: input.templateRegistryRecordHash,
+    owner: order.owner,
+    settlementAccount: order.settlementAccount,
+    solver: input.solverId,
+    direction: order.direction,
+    action: order.action,
+    quantityPolicyClass: order.hyperliquidQuantityPolicy!,
+    partialFillPolicy: order.partialFillPolicy,
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    executionPlanKind: 'HYPERCORE_BATCHED_IOC',
+    routeExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    routeExpiryValue,
+    feePolicyVersion: input.feePolicyVersion,
+    feePolicyManifestHash: input.feePolicyManifestHash,
+    accountBindings: input.accountBindings,
+    serviceCharges: [],
+    preconditions: input.preconditions,
+    legs: [
+      {
+        legIndex: 0, legRole: 'SPOT', actionSequence: input.spot.action.sequence,
+        adapter: input.spot.adapter, venue: input.spot.venue, market: input.spot.market,
+        baseAsset: order.quantity.asset, quoteAsset, side: 'SELL', quantity: grossSpot,
+        limitPrice: spotLimit, timeInForce: 'IOC', reduceOnly: false,
+      },
+      {
+        legIndex: 1, legRole: 'PERPETUAL', actionSequence: input.perpetual.action.sequence,
+        adapter: input.perpetual.adapter, venue: input.perpetual.venue, market: input.perpetual.market,
+        baseAsset: order.quantity.asset, quoteAsset, side: 'BUY', quantity: order.quantity,
+        limitPrice: perpLimit, timeInForce: 'IOC', reduceOnly: true,
+      },
+    ],
+    actions: [input.spot.action, input.perpetual.action],
+    postconditions: input.postconditions,
+    evidenceRequirements: input.evidenceRequirements,
+    recoveryPlan: {
+      ...input.recovery,
+      recoveryExpiryUnit: order.hyperliquidRecoveryExpiryUnit!,
+      maxActionExpiryValue: order.hyperliquidMaxRecoveryActionExpiryValue!,
+      deadlineValue: order.hyperliquidRecoveryDeadlineValue!,
+      minRecoveryWindowMs: order.hyperliquidMinRecoveryWindowMs!,
+      maxRecoveryCostCaps: order.maxRecoveryCostAtomsByAsset,
+      maxAggregateRecoveryLoss: order.maxAggregateRecoveryLossQuote,
+      maxIntermediateResidual: order.quantity,
+      maxTerminalResidual: order.hyperliquidMaxTerminalResidualBaseQuantity!,
+      actionSlots: order.allowedRecoveryActions.map((action, sequence) =>
+        recoverySlot(action, sequence, order, input)),
+    },
+  };
+  // Every exit fee is charged in the quote asset, so the base-asset fee is zero; no builder is attached.
+  const venueFees = canonicalAmounts([
+    { asset: base, atoms: 0n },
+    { asset: quoteAsset, atoms: spotFeeAtoms + perpFeeAtoms },
+  ]);
+  const terms: Omit<AtomicEntryQuoteTerms, 'quoteNonce'> = Object.freeze({
+    solverId: input.solverId,
+    solverCapabilityManifestHash: input.solverCapabilityManifestHash,
+    quotedOutcome: {
+      kind: 'EXIT_QUOTE_OUTCOME' as const,
+      exitQuoteOutcome: { asset: quoteAsset, atoms: outcome },
+    },
+    expectedSpotNotional: { asset: quoteAsset, atoms: spotNotional },
+    expectedPerpNotional: { asset: quoteAsset, atoms: perpNotional },
+    expectedGrossSpotQuantity: grossSpot,
+    expectedNetSpotQuantity: { asset: base, atoms: netSpotAtoms },
+    expectedBaseAssetFee: { asset: base, atoms: 0n },
+    expectedTerminalResidualBaseQuantity: { asset: base, atoms: absoluteResidual },
+    expectedTerminalResidualQuoteValue: { asset: quoteAsset, atoms: residualQuoteAtoms },
+    expectedMarginDelta: { asset: quoteAsset, atoms: 0n },
+    expectedRawFillFeesByAsset: venueFees,
+    expectedBuilderFeesByAsset: venueFees.map((fee) => Object.freeze({ asset: fee.asset, atoms: 0n })),
+    expectedNormalizedVenueFeesByAsset: venueFees,
+    solverFee: { asset: quoteAsset, atoms: 0n },
+    protocolFee: { asset: quoteAsset, atoms: 0n },
+    expectedPriorityFee: { asset: quoteAsset, atoms: 0n },
+    maxRecoveryCostAtomsByAsset: order.maxRecoveryCostAtomsByAsset,
+    feePolicyVersion: input.feePolicyVersion,
+    feePolicyManifestHash: input.feePolicyManifestHash,
+    validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    validUntilValue: quoteValidUntilValue,
+  });
+  return Object.freeze({ route, terms });
+}
+
 export function createHyperliquidTestnetQuoteRuntime(
   input: HyperliquidTestnetQuoteRuntimeInput,
 ): HyperliquidTestnetQuoteRuntime {
@@ -651,7 +846,15 @@ export function createHyperliquidTestnetQuoteRuntime(
     if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
     return Object.freeze({ ...created.terms, quoteNonce });
   };
-  return Object.freeze({ providers: Object.freeze({ candidates, terms }) });
+  const exit: HyperliquidTestnetExitQuoter = async ({ order, orderHash, signer }) => {
+    const built = await buildHyperliquidTestnetExit(order, orderHash, input);
+    const quoteNonce = input.nonceSource.next();
+    if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
+    return signHyperliquidTestnetExitQuote({
+      order, orderHash, route: built.route, terms: { ...built.terms, quoteNonce }, signer,
+    });
+  };
+  return Object.freeze({ providers: Object.freeze({ candidates, terms }), exit });
 }
 
 export function composeQuoteProviders(

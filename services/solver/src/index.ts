@@ -705,8 +705,15 @@ export {
   type LocalAtomicMarketRuntime,
 } from './local-atomic-market-runtime.js';
 export {
+  createHyperliquidTestnetExitQuotePort,
+  signHyperliquidTestnetExitQuote,
+  type SignedHyperliquidTestnetExitQuote,
+} from './hyperliquid-testnet-exit-quote.js';
+export {
+  buildHyperliquidTestnetExit,
   composeQuoteProviders,
   createHyperliquidTestnetQuoteRuntime,
+  type HyperliquidTestnetExitQuoter,
   type HyperliquidTestnetQuoteLeg,
   type HyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntimeInput,
@@ -741,12 +748,17 @@ export {
   type HyperliquidTestnetLoopbackCoordinatorOptions,
 } from './hyperliquid-testnet-evidence-http.js';
 export {
+  SOLVER_TESTNET_ATTEMPT_STATUS_PATH,
   SOLVER_TESTNET_EXECUTE_PATH,
   HyperliquidTestnetExecutorError,
   createHyperliquidTestnetExecutor,
   createHyperliquidTestnetExecutorRequestHandler,
   createHyperliquidTestnetExecutorServer,
+  hyperliquidLaneNotSubmitted,
   validateHyperliquidTestnetRuntimeAttempt,
+  type HyperliquidTestnetAccountInventory,
+  type HyperliquidTestnetAttemptStatusRequest,
+  type HyperliquidTestnetAttemptStatusResponse,
   type HyperliquidTestnetExecutorPort,
   type HyperliquidTestnetExecutorRequest,
   type HyperliquidTestnetExecutorResult,
@@ -756,12 +768,23 @@ export {
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 export {
+  HyperliquidTestnetLane,
+  HyperliquidTestnetLaneError,
+  hyperliquidLaneReleases,
+  type HyperliquidLaneAttemptStatus,
+  type HyperliquidLaneNotSubmittedReason,
+  type HyperliquidLaneState,
+  type HyperliquidLaneTask,
+  type HyperliquidTestnetLaneOptions,
+} from './hyperliquid-testnet-lane.js';
+export {
   API_HYPERLIQUID_TESTNET_ATTEMPT_PATH,
   HttpHyperliquidTestnetTrustedAttemptProvider,
   type HyperliquidTestnetAttemptHttpOptions,
 } from './hyperliquid-testnet-attempt-http.js';
 export {
   HYPERLIQUID_TESTNET_EXECUTION_ENABLED_ENV,
+  hyperliquidTestnetAccountInventory,
   loadHyperliquidTestnetExecutorRuntime,
   type HyperliquidTestnetExecutorRuntimeDependencies,
   type HyperliquidTestnetExecutorRuntimeStatus,

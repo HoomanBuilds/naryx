@@ -440,3 +440,24 @@ test('the initial action expiry ends strictly before the quote validity and pack
   assert.throws(() => planner().compile(admission({ routeExpiryValue: 980n })), /strictly before the quote validity/);
   assert.throws(() => planner().compile(admission({ routeExpiryValue: 1_000n, quoteValidUntilValue: 1_200n })), /strictly before the package expiry/);
 });
+
+test('targets the omnibus account position plus only this package delta', () => {
+  const entry = planner().compile(admission(), { accountPrePerpPositionAtoms: -30_000n });
+  assert.equal(entry.prePerpPositionAtoms, -30_000n);
+  assert.equal(entry.signedPerpDeltaAtoms, -10_000n);
+  assert.equal(entry.signedPerpTargetAtoms, -40_000n);
+
+  const exit = planner().compile(admission({ action: 'EXIT' }), { accountPrePerpPositionAtoms: -30_000n });
+  assert.equal(exit.signedPerpDeltaAtoms, 10_000n);
+  assert.equal(exit.signedPerpTargetAtoms, -20_000n);
+  assert.equal(
+    planner().compile(admission({ action: 'EXIT' }), { accountPrePerpPositionAtoms: -10_000n })
+      .signedPerpTargetAtoms,
+    0n,
+  );
+  // A reduce-only buy-back larger than the whole account short would cross zero.
+  assert.throws(
+    () => planner().compile(admission({ action: 'EXIT' }), { accountPrePerpPositionAtoms: -9_999n }),
+    /cross the zero perp position/,
+  );
+});

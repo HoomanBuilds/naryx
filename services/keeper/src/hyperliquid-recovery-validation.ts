@@ -254,7 +254,7 @@ function validateSourceAttempt(attempt: HyperliquidPackageAttempt): void {
     ? terminal.netSpotDeltaAtoms
     : terminal.maxNetSpotDeltaAtoms;
   requireCondition(obligation.remainingPerpetualDeltaAtoms
-      === attempt.plan.perpetualPositionTargetAtoms - evidence.observedPerpetualPositionAtoms
+      === attempt.plan.plannedPerpetualDeltaAtoms - evidence.perpetualPositionDeltaAtoms
     && obligation.remainingNetSpotDeltaToMinimumAtoms
       === minimumSpot - evidence.netSpotDeltaAtoms
     && obligation.remainingNetSpotDeltaToMaximumAtoms

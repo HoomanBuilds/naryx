@@ -44,6 +44,15 @@ export interface HyperliquidExecutionPlannerOptions {
   readonly perpetual: HyperliquidMarketBindingInput;
 }
 
+export interface HyperliquidCompileOptions {
+  /**
+   * The trading account's live perpetual position, read by the executor under its lane lock. An
+   * omnibus account holds other packages, so the account target is this position plus this
+   * package's own delta. Absent, the order's signed pre-position is the account position.
+   */
+  readonly accountPrePerpPositionAtoms?: bigint;
+}
+
 export interface HypercoreOrderWire {
   readonly a: number;
   readonly b: boolean;
@@ -474,8 +483,10 @@ export class HyperliquidExecutionPlanner {
     );
   }
 
-  compile(admission: PackageAdmission): HyperliquidExecutionPlan {
+  compile(admission: PackageAdmission, options: HyperliquidCompileOptions = {}): HyperliquidExecutionPlan {
     const { order, quote, route } = admission;
+    const accountPre = options.accountPrePerpPositionAtoms;
+    requireCondition(accountPre === undefined || typeof accountPre === 'bigint', 'account pre-position must be integer atoms');
     requireCondition(
       order.environment === this.#environment
         && quote.environment === this.#environment
@@ -535,7 +546,8 @@ export class HyperliquidExecutionPlanner {
     requireCondition(spotLeg.quantity.atoms === grossSpot.atoms, 'gross spot quantity mismatch');
     requireCondition(perpetualLeg.quantity.atoms === order.quantity.atoms, 'exact perpetual quantity mismatch');
     const signedPerpDeltaAtoms = order.action === 'ENTRY' ? -order.quantity.atoms : order.quantity.atoms;
-    const signedPerpTargetAtoms = order.expectedPrePositionSize.atoms + signedPerpDeltaAtoms;
+    const prePerpPositionAtoms = accountPre ?? order.expectedPrePositionSize.atoms;
+    const signedPerpTargetAtoms = prePerpPositionAtoms + signedPerpDeltaAtoms;
     requireCondition(order.action === 'ENTRY' || signedPerpTargetAtoms <= 0n, 'reduce-only exit would cross the zero perp position');
 
     const signedPerpPrice = order.action === 'ENTRY'
@@ -705,7 +717,7 @@ export class HyperliquidExecutionPlanner {
       }),
       legs,
       grossSpotQuantityAtoms: grossSpot.atoms,
-      prePerpPositionAtoms: order.expectedPrePositionSize.atoms,
+      prePerpPositionAtoms,
       signedPerpDeltaAtoms,
       signedPerpTargetAtoms,
       terminalResidualPolicy: terminalResidualPolicy(admission, signedPerpDeltaAtoms),

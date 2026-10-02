@@ -4,14 +4,22 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { HYPERCORE_IOC_ORDER_ACTION_CLASS_ID } from '@naryx/adapter-hyperliquid';
+import { HYPERCORE_IOC_ORDER_ACTION_CLASS_ID, HyperliquidExecutionPlanner } from '@naryx/adapter-hyperliquid';
 import {
   adapterRef,
   assetAmount,
   assetRef,
   domainRef,
   exactPrice,
+  fromHex,
+  fromProtocolJson,
+  hash32,
   packageOrderHash,
+  routePayload,
+  solverQuote,
+  type PackageAdmission,
+  type RoutePayloadInput,
+  type SolverQuoteInput,
   payloadTemplateHash,
   validatePackageOrderProfile,
   versionedManifestRef,
@@ -428,4 +436,72 @@ test('persists quote nonces across SQLite store restarts', () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('quotes a complete-package exit that sells the package spot and buys back its short', async () => {
+  const {
+    maxEntrySpread: _spread,
+    maxSpotQuoteIn: _cap,
+    hyperliquidMinPerpSellPrice: _floor,
+    ...entry
+  } = orderInput();
+  const order = validatePackageOrderProfile({
+    ...entry,
+    action: 'EXIT',
+    hyperliquidGrossSpotQuantity: assetAmount(base, 1_000_000n),
+    hyperliquidMinNetSpotDelta: assetAmount(base, -1_000_000n),
+    hyperliquidMaxNetSpotDelta: assetAmount(base, -1_000_000n),
+    expectedPreStrategySpotQuantity: assetAmount(base, 1_000_000n),
+    exitOutcomeSchemaVersion: 1,
+    entryReceiptHash: hash32('ab'.repeat(32)),
+    expectedPrePositionSize: assetAmount(base, -1_000_000n),
+    expectedPrePositionEntryNotional: assetAmount(quote, 600_939_400n),
+    minSpotQuoteOut: assetAmount(quote, 590_000_000n),
+    minExitQuoteOutcome: assetAmount(quote, 500_000_000n),
+    hyperliquidMaxPerpBuyPrice: price(615n),
+    maxMarginAdded: assetAmount(quote, 0n),
+  });
+  const orderHash = packageOrderHash(order);
+  const runtime = createHyperliquidTestnetQuoteRuntime(runtimeInput({ next: () => 42n }));
+  const signed = await runtime.exit({ order, orderHash, signer: quoteSigner() });
+  const route = routePayload(fromProtocolJson(signed.route, 'route') as RoutePayloadInput);
+  const signedQuote = solverQuote(fromProtocolJson(signed.quote, 'quote') as SolverQuoteInput);
+
+  const [spotLeg, perpLeg] = route.legs;
+  assert.deepEqual([spotLeg?.side, spotLeg?.reduceOnly, spotLeg?.quantity.atoms], ['SELL', false, 1_000_000n]);
+  assert.deepEqual([perpLeg?.side, perpLeg?.reduceOnly, perpLeg?.quantity.atoms], ['BUY', true, 1_000_000n]);
+  assert.ok(route.routeExpiryValue < signedQuote.validUntilValue);
+  // 0.01 BTC sold at the 59990 bid and bought back at the 60110 ask; fees in USDC round up.
+  assert.equal(signedQuote.expectedSpotNotional.atoms, 599_900_000n);
+  assert.equal(signedQuote.expectedPerpNotional.atoms, 601_100_000n);
+  assert.equal(signedQuote.expectedNetSpotQuantity.atoms, -1_000_000n);
+  assert.deepEqual(feeAtoms(signedQuote.expectedNormalizedVenueFeesByAsset), {
+    'hypercore:testnet:btc': 0n, 'hypercore:testnet:usdc': 690_425n,
+  });
+  assert.deepEqual(signedQuote.quotedOutcome, {
+    kind: 'EXIT_QUOTE_OUTCOME',
+    exitQuoteOutcome: { asset: quote, atoms: 599_048_975n },
+  });
+  const slots = Object.fromEntries(route.recoveryPlan!.actionSlots.map((slot) => [slot.action, slot]));
+  assert.equal(slots.COMPLETE_SPOT?.limitPrice?.quoteAtoms, 580n);
+  assert.deepEqual([slots.COMPLETE_PERP?.reduceOnly, slots.COMPLETE_PERP?.limitPrice?.quoteAtoms], [true, 620n]);
+  assert.deepEqual([slots.ROLLBACK_PERP?.reduceOnly, slots.ROLLBACK_PERP?.limitPrice?.quoteAtoms], [false, 580n]);
+
+  // The adapter compiles the signed exit against the omnibus account's aggregate short.
+  const plan = new HyperliquidExecutionPlanner({
+    environment: 'testnet',
+    seriesIdentity: { domain, seriesManifestHash: hash('4'), executionClassManifestHash: hash('5') },
+    spot: { adapter: spotAdapter, venue, market: spotMarket, assetId: 10_001, sizeDecimals: 5 },
+    perpetual: { adapter: perpetualAdapter, venue, market: perpetualMarket, assetId: 3, sizeDecimals: 5 },
+  }).compile({
+    order, route, quote: signedQuote, orderHash,
+    routeHash: fromHex(signed.routeHash), quoteHash: fromHex(signed.quoteHash),
+  } as unknown as PackageAdmission, { accountPrePerpPositionAtoms: -3_000_000n });
+  assert.equal(plan.signedPerpTargetAtoms, -2_000_000n);
+  assert.deepEqual(plan.legs.map((leg) => [leg.order.b, leg.order.r, leg.order.p]), [
+    [false, false, '59000'], [true, true, '61500'],
+  ]);
+  await assert.rejects(runtime.exit({
+    order: validatePackageOrderProfile(orderInput()), orderHash, signer: quoteSigner(),
+  }), /outside the configured Hyperliquid Testnet quote domain/);
 });
