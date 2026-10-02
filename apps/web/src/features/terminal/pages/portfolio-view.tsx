@@ -121,8 +121,8 @@ export function PortfolioView() {
         </div>
         <div>
           <span>Open packages</span>
-          <strong>0</strong>
-          <small>None reported by the service</small>
+          <strong>{positionsLoading && positions.length === 0 ? "-" : positions.length}</strong>
+          <small>{unreadable.length > 0 ? "Some networks could not be read" : "Read from each network"}</small>
         </div>
         <div>
           <span>Packages started here</span>
