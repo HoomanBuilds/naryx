@@ -198,3 +198,20 @@ test("a ledger created under the first table rule is rebuilt once, keeping its r
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("a package listing shows each Hyperliquid entry and exit attempt's state", withLedger((ledger) => {
+  ledger.reserveEntry({ attemptId: "entry-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1_000n, limits: LIMITS });
+  assert.equal(ledger.attemptOutcome("entry-1")?.state, "PENDING_ENTRY");
+  ledger.settleEntry("entry-1", reconciled("entry-1", "COMPLETED_EXACT", "100", "-100"), 600n);
+  assert.equal(ledger.attemptOutcome("entry-1")?.state, "OPEN");
+  assert.ok(ledger.attemptOutcome("entry-1")?.receiptHash);
+  ledger.bindExitOrder("entry-1", ALICE, "09".repeat(32));
+  ledger.beginExit("exit-1", {
+    owner: ALICE, orderHash: "09".repeat(32), perpQuantityAtoms: 100n, grossSpotQuantityAtoms: 100n, spotLotAtoms: 1n,
+    entryReceiptHash: ledger.packages(ALICE)[0]!.entryReceiptHash!,
+  });
+  ledger.settleExit("exit-1", reconciled("exit-1", "COMPLETED_EXACT", "-100", "100"));
+  assert.equal(ledger.attemptOutcome("exit-1")?.state, "CLOSED");
+  assert.equal(ledger.attemptOutcome("entry-1")?.state, "OPENED");
+  assert.equal(ledger.attemptOutcome("unknown"), undefined);
+}));

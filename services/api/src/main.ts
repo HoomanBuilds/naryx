@@ -691,7 +691,8 @@ referenceRecorder?.start();
 
 // Each lane's store answers only for its own attempt IDs.
 const ownerPackageOutcomes: OwnerPackageOutcomeReader = (attemptId) =>
-  basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId);
+  basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId)
+  ?? hyperliquidOwnerLedger?.attemptOutcome(attemptId);
 
 const server = createPrivateTerminalServer(
   config,

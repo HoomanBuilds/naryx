@@ -395,6 +395,22 @@ export class HyperliquidTestnetOwnerLedger {
     this.#db.close();
   }
 
+  /**
+   * What an owner's package listing shows for one Hyperliquid attempt: an exit attempt shows its
+   * package's state; an entry shows the package's state until its exit begins, then OPENED (the
+   * exit's own row carries what followed). An entry that had no effect was removed and has none.
+   */
+  attemptOutcome(attemptId: string): Readonly<{
+    state: string; transactionHash: null; blockNumber: null; receiptHash: string | null;
+  }> | undefined {
+    const row = this.#db.prepare(
+      "SELECT * FROM hyperliquid_owner_packages WHERE entry_attempt_id = ? OR exit_attempt_id = ?",
+    ).get(attemptId, attemptId) as PackageRow | undefined;
+    if (row === undefined) return undefined;
+    const state = row.exit_attempt_id === attemptId || row.exit_attempt_id === null ? row.state : "OPENED";
+    return Object.freeze({ state, transactionHash: null, blockNumber: null, receiptHash: row.entry_receipt_hash });
+  }
+
   #row(attemptId: string): PackageRow | undefined {
     return this.#db.prepare("SELECT * FROM hyperliquid_owner_packages WHERE entry_attempt_id = ?")
       .get(attemptId) as PackageRow | undefined;

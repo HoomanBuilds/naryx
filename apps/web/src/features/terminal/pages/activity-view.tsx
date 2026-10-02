@@ -38,8 +38,8 @@ function stateText(state: string) {
 }
 
 function statePill(state: string) {
-  if (/COMPLETE|FINAL|SETTLED|EXECUTED|CLOSED/.test(state)) return styles.pillOk;
-  if (/FAIL|REJECT|ABORT|EXPIRED|RECOVERY|REVERT|CANCEL|CONFLICT|MISMATCH|FROZEN|MANUAL/.test(state)) return styles.pillBad;
+  if (/COMPLETE|FINAL|SETTLED|EXECUTED|CLOSED|^OPEN/.test(state)) return styles.pillOk;
+  if (/FAIL|REJECT|ABORT|EXPIRED|RECOVERY|REVERT|CANCEL|CONFLICT|MISMATCH|FROZEN|MANUAL|UNRESOLVED/.test(state)) return styles.pillBad;
   return styles.pill;
 }
 
