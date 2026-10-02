@@ -1,3 +1,4 @@
+import type { ExactPrice } from "@naryx/protocol-types";
 import {
   createCanonicalEntryOrder,
   type ActiveOrderContext,
@@ -24,10 +25,19 @@ export interface InternalOrderClockPort {
   currentClock(context: ActiveOrderContext): Promise<bigint>;
 }
 
+/**
+ * A lane's size-aware entry price: what its venue charges now for exactly this size, per base atom.
+ * It replaces the context's reference price for that one order. Undefined keeps the reference price.
+ */
+export interface InternalOrderSpotPricePort {
+  entrySpotPrice(context: ActiveOrderContext, sizeAtoms: bigint): Promise<ExactPrice | undefined>;
+}
+
 export type InternalOrderPorts = Readonly<{
   contexts: ActiveOrderContextProvider;
   store: InternalOrderStore;
   clock: InternalOrderClockPort;
+  spotPrice?: InternalOrderSpotPricePort;
 }>;
 
 type TerminalOrderBrowserRequest = Readonly<{
@@ -167,7 +177,15 @@ export class InternalOrderCoordinator {
       idempotencyKey: parsed.idempotencyKey,
       currentClock,
     });
-    const order = createCanonicalEntryOrder(this.ports.contexts, request);
+    // Validated against the context first, so an invalid request never reaches a venue read.
+    let order = createCanonicalEntryOrder(this.ports.contexts, request);
+    const spotReferencePrice = await this.ports.spotPrice?.entrySpotPrice(context, sizeAtoms);
+    if (spotReferencePrice !== undefined) {
+      order = createCanonicalEntryOrder((contextId) => {
+        const live = this.ports.contexts(contextId);
+        return live === undefined ? undefined : Object.freeze({ ...live, spotReferencePrice });
+      }, request);
+    }
     return this.ports.store.createOrGet({ order, request });
   }
 

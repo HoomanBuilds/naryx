@@ -21,6 +21,7 @@ import {
   loadTestnetExecutionPolicy,
 } from "./testnet-execution-policy.js";
 import type { ActiveOrderContext } from "./canonical-entry-order.js";
+import type { InternalOrderSpotPricePort } from "./terminal-orders.js";
 import {
   createBaseSepoliaRuntime,
   createViemBaseSepoliaReadClient,
@@ -594,6 +595,18 @@ const orderClock = Object.freeze({
     return orderRuntime.clock.currentClock(context);
   },
 });
+// Lanes that buy spot from a pool price each entry from the pool's executable cost for its size.
+const orderSpotPrice: InternalOrderSpotPricePort = Object.freeze({
+  entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint) => {
+    if (baseOrderRuntime !== undefined && context.contextId === baseOrderRuntime.config.contextId) {
+      return baseOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
+    }
+    if (arbitrumOrderRuntime !== undefined && context.contextId === arbitrumOrderRuntime.config.contextId) {
+      return arbitrumOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
+    }
+    return undefined;
+  },
+});
 // Testnet execution approval: automatic within the operator's per-domain caps. Without both the
 // policy file and its decision database, every execution handoff stays refused (fail closed).
 const executionPolicyFile = process.env.NARYX_EXECUTION_POLICY_FILE;
@@ -642,7 +655,7 @@ referenceRecorder?.start();
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
-  { contexts: orderContexts, store: orderStore, clock: orderClock },
+  { contexts: orderContexts, store: orderStore, clock: orderClock, spotPrice: orderSpotPrice },
   runtime.hyperliquidTestnet,
   baseOrderRuntime === undefined || runtime.evmTestnet.preparation === undefined
     ? runtime.evmTestnet

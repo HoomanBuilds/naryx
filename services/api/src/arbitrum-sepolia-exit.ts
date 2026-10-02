@@ -5,13 +5,15 @@ import {
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
 import { ArbitrumSepoliaMarketFeed, gmxPositionFeeFactorKey } from "./arbitrum-sepolia-market-source.js";
-import type {
-  ArbitrumSepoliaOrderRuntime,
-  ArbitrumSepoliaPriceReadPort,
-  ArbitrumSepoliaReferencePriceSnapshot,
+import {
+  arbitrumSepoliaSpotQuoteTarget,
+  type ArbitrumSepoliaOrderRuntime,
+  type ArbitrumSepoliaPriceReadPort,
+  type ArbitrumSepoliaReferencePriceSnapshot,
 } from "./arbitrum-sepolia-order-context.js";
 import { createCanonicalExitOrder } from "./canonical-entry-order.js";
 import type { InternalOrderCreateResult, InternalOrderStore } from "./internal-order-store.js";
+import { quoteUniswapV3Sell } from "./uniswap-v3-quoter.js";
 
 const BPS = 10_000n;
 const POOL_FEE_SCALE = 1_000_000n;
@@ -172,7 +174,8 @@ export type ArbitrumSepoliaExitLimits = Readonly<{
 
 /**
  * Exit minimums, every amount rounded against the trader. The spot leg must return at least the
- * lower of the pool mid and the reference price, less the pool fee and the trader's slippage. The
+ * lower of the pool mid and the reference price less the pool fee, and of the quoter's executable
+ * proceeds for exactly that base (price impact included), less the trader's slippage. The
  * GMX decrease, which pays collateral plus the short's PnL less fees to the owner, must return at
  * least its value with the short bought back at the reference plus slippage, less the larger
  * position fee factor; the slippage is applied once more to that value as the allowance for
@@ -185,6 +188,8 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
   quoteDecimals: number;
   reference: Pick<ArbitrumSepoliaReferencePriceSnapshot, "answer" | "decimals">;
   pool: Readonly<{ sqrtPriceX96: bigint; baseIsToken0: boolean; poolFee: bigint }>;
+  /** The quoter's proceeds for an exact-input sale of exactly `position.quantityAtoms`. */
+  spotQuoteOutAtoms: bigint;
   positionFeeFactor: bigint;
   slippageBps: number;
 }>): ArbitrumSepoliaExitLimits {
@@ -194,6 +199,7 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
     || position.quantityAtoms <= 0n || position.sizeInUsd <= 0n || position.sizeInTokens <= 0n
     || position.collateralAtoms < 0n || reference.answer <= 0n || pool.sqrtPriceX96 <= 0n
     || pool.poolFee < 0n || pool.poolFee >= POOL_FEE_SCALE
+    || typeof input.spotQuoteOutAtoms !== "bigint" || input.spotQuoteOutAtoms <= 0n
     || input.positionFeeFactor < 0n || input.positionFeeFactor >= GMX_FLOAT_PRECISION
     || input.quoteDecimals < 0 || input.quoteDecimals > GMX_USD_DECIMALS) {
     fail("INVALID_EXIT", "Exit pricing inputs are invalid.");
@@ -208,8 +214,12 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
   const [numerator, denominator] = poolNumerator * referenceDenominator < referenceNumerator * poolDenominator
     ? [poolNumerator, poolDenominator]
     : [referenceNumerator, referenceDenominator];
-  const minSpotQuoteOutAtoms = (position.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee) * (BPS - slippage))
-    / (denominator * POOL_FEE_SCALE * BPS);
+  const priceNumeratorOut = position.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee);
+  const priceDenominatorOut = denominator * POOL_FEE_SCALE;
+  const [spotNumerator, spotDenominator] = input.spotQuoteOutAtoms * priceDenominatorOut < priceNumeratorOut
+    ? [input.spotQuoteOutAtoms, 1n]
+    : [priceNumeratorOut, priceDenominatorOut];
+  const minSpotQuoteOutAtoms = (spotNumerator * (BPS - slippage)) / (spotDenominator * BPS);
   if (minSpotQuoteOutAtoms <= 0n) fail("INVALID_EXIT", "The spot leg's minimum proceeds round to zero.");
 
   // GMX prices are USD per base atom with 30 decimals; the buy-back price rounds up.
@@ -278,12 +288,14 @@ export async function createArbitrumSepoliaExitOrder(input: Readonly<{
     getUint(gmxPositionFeeFactorKey(market, false), "position fee factor"),
   ]);
   if (sizeInUsd !== open.positionSizeUsd) fail("CHAIN_MISMATCH", "GMX position size changed while reading.");
+  const spotQuoteOutAtoms = await quoteUniswapV3Sell(port, arbitrumSepoliaSpotQuoteTarget(config, pool), open.spotBaseAtoms);
   const limits = arbitrumSepoliaExitLimits({
     position: { quantityAtoms: open.spotBaseAtoms, sizeInUsd, sizeInTokens, collateralAtoms },
     baseDecimals: config.baseAsset.decimals,
     quoteDecimals: config.quoteAsset.decimals,
     reference,
     pool,
+    spotQuoteOutAtoms,
     positionFeeFactor: positiveFee > negativeFee ? positiveFee : negativeFee,
     slippageBps: input.slippageBps,
   });

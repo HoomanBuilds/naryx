@@ -11,6 +11,7 @@ import {
   equalAddress,
   packageVerifierOpenPackage,
   requiredEvmAddress,
+  type EvmContractIdentity,
 } from "@naryx/adapter-evm";
 import {
   bytesEqual,
@@ -30,7 +31,11 @@ import {
   type BaseSepoliaAtomicDeploymentConfiguration,
   type BaseSepoliaAtomicLiveReads,
 } from "./base-sepolia-atomic-context-provider.js";
-import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import {
+  EntryOrderValidationError,
+  type ActiveOrderContext,
+  type ActiveOrderContextProvider,
+} from "./canonical-entry-order.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import {
   BASE_SEPOLIA_CHAIN_REFERENCE,
@@ -38,7 +43,13 @@ import {
   EvmTestnetTerminalValidationError,
   type EvmTestnetAccountPort,
 } from "./evm-testnet-runtime-ports.js";
-import type { InternalOrderClockPort } from "./terminal-orders.js";
+import type { InternalOrderClockPort, InternalOrderSpotPricePort } from "./terminal-orders.js";
+import {
+  executableSpotPrice,
+  quoteUniswapV3Buy,
+  verifyUniswapV3Quoter,
+  type UniswapV3SpotQuoteTarget,
+} from "./uniswap-v3-quoter.js";
 
 const CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/;
 const Q192 = 1n << 192n;
@@ -56,6 +67,8 @@ export interface BaseSepoliaOrderContextConfig {
   readonly quoteAsset: AssetRef;
   readonly spotAdapter: AdapterRef;
   readonly perpetualAdapter: AdapterRef;
+  /** The canonical Uniswap V3 QuoterV2; entry and exit bounds come from its quote for the exact size. */
+  readonly spotQuoter: EvmContractIdentity;
   readonly maxStalenessSeconds: bigint;
   readonly pollIntervalMs: number;
   readonly expiryTtlSeconds: bigint;
@@ -94,6 +107,7 @@ export type BaseSepoliaMarketSnapshot = Readonly<{
 export type BaseSepoliaOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
+  spotPrice: InternalOrderSpotPricePort;
   feed: BaseSepoliaMarketFeed;
   account: EvmTestnetAccountPort;
   config: BaseSepoliaOrderContextConfig;
@@ -125,6 +139,10 @@ function validateConfig(config: BaseSepoliaOrderContextConfig, deployment?: Base
     || !Number.isSafeInteger(config.maxSlippageBps) || config.maxSlippageBps < 1 || config.maxSlippageBps > 10_000
     || !Array.isArray(config.maxVenueFeeAtomsByAsset) || config.maxVenueFeeAtomsByAsset.length === 0) {
     throw new Error("Base Sepolia order context configuration is invalid.");
+  }
+  requiredEvmAddress(config.spotQuoter?.address, "spotQuoter.address");
+  if (!/^0x[0-9a-f]{64}$/.test(config.spotQuoter.expectedCodeHash) || /^0x0+$/.test(config.spotQuoter.expectedCodeHash)) {
+    throw new Error("Base order context spot quoter code hash is invalid.");
   }
   positive(config.maxStalenessSeconds, "maxStalenessSeconds");
   positive(config.expiryTtlSeconds, "expiryTtlSeconds");
@@ -282,6 +300,21 @@ export class BaseSepoliaMarketFeed {
   }
 }
 
+/** The pinned quoter and the deployment's pool tokens, at the pool fee the feed read live. */
+export function baseSepoliaSpotQuoteTarget(
+  config: Pick<BaseSepoliaOrderContextConfig, "spotQuoter">,
+  deployment: BaseSepoliaAtomicDeploymentConfiguration,
+  poolFee: bigint,
+): UniswapV3SpotQuoteTarget {
+  return Object.freeze({
+    chainId: BigInt(BASE_SEPOLIA_CHAIN_REFERENCE),
+    quoter: config.spotQuoter,
+    baseToken: requiredEvmAddress(deployment.deployment.baseAsset.address, "baseAsset"),
+    quoteToken: requiredEvmAddress(deployment.deployment.quoteAsset.address, "quoteAsset"),
+    poolFee,
+  });
+}
+
 function setupStep(kind: string, label: string, to: Address, data: Hex) {
   return Object.freeze({ kind, label, to, data, value: "0" as const });
 }
@@ -307,7 +340,12 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
   validateConfig(config, deployment);
   const identity = deployment.deployment;
   const feed = new BaseSepoliaMarketFeed(config, deployment, port);
-  await feed.refresh();
+  const initial = await feed.refresh();
+  await verifyUniswapV3Quoter(
+    port,
+    baseSepoliaSpotQuoteTarget(config, deployment, initial.poolFee),
+    requiredEvmAddress(identity.spot.market.address, "spot.market"),
+  );
   const domain = domainRefFromManifest(identity.domainManifest);
   let cached: Readonly<{ snapshot: BaseSepoliaMarketSnapshot; context: ActiveOrderContext }> | undefined;
   const contexts: ActiveOrderContextProvider = (contextId) => {
@@ -360,6 +398,17 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
       if (context.contextId !== config.contextId) throw new Error("Base Sepolia order context is unknown.");
       await requireChain();
       return port.latestBlockTimestamp();
+    },
+  });
+  // The pool's exact-output cost for this size, fee and price impact included, replaces the mid ask.
+  const spotPrice: InternalOrderSpotPricePort = Object.freeze({
+    entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint) => {
+      const snapshot = feed.latest();
+      if (context.contextId !== config.contextId || snapshot === undefined) {
+        throw new EntryOrderValidationError("UNKNOWN_CONTEXT", "Order context is unknown.");
+      }
+      const target = baseSepoliaSpotQuoteTarget(config, deployment, snapshot.poolFee);
+      return executableSpotPrice(config.baseAsset, config.quoteAsset, await quoteUniswapV3Buy(port, target, sizeAtoms), sizeAtoms);
     },
   });
   const factory = requiredEvmAddress(identity.strategyAccountFactory.address, "strategyAccountFactory");
@@ -500,5 +549,5 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
       });
     },
   });
-  return Object.freeze({ contexts, clock, feed, account, config });
+  return Object.freeze({ contexts, clock, spotPrice, feed, account, config });
 }

@@ -40,6 +40,8 @@ const COLLATERAL = 2_500_124n;
 const ANSWER = 250_012_345_678n;
 // A pool mid of 10000 USD per ETH, above the reference, so the reference prices the spot leg.
 const POOL = Object.freeze({ sqrtPriceX96: 2n ** 96n / 10_000n, baseIsToken0: true, poolFee: 3_000n });
+// 0.01 ETH at the reference less the 0.3% pool fee: what a sale with no price impact would return.
+const MID_PROCEEDS = 24_926_231n;
 
 function deployment(): ArbitrumSepoliaAsyncDeploymentConfiguration {
   const manifest = domainManifest({
@@ -85,7 +87,8 @@ function config(): ArbitrumSepoliaOrderContextConfig {
     baseAsset: base, quoteAsset: quote,
     spotAdapter: adapterRef({ adapterId: "uniswap-v3-spot", adapterManifestVersion: 1, adapterManifestHash: hash(4) }),
     perpetualAdapter: adapterRef({ adapterId: "gmx-v2-arbitrum", adapterManifestVersion: 1, adapterManifestHash: hash(5) }),
-    priceFeed: identity(evmAddress(0x55), 0x55), priceFeedDecimals: 8, maxStalenessSeconds: 60n, pollIntervalMs: 5_000,
+    priceFeed: identity(evmAddress(0x55), 0x55), priceFeedDecimals: 8, spotQuoter: identity(evmAddress(0x56), 0x56),
+    maxStalenessSeconds: 60n, pollIntervalMs: 5_000,
     expiryTtlSeconds: 600n,
     maxEntrySpread: { baseAsset: base, quoteAsset: quote, quoteAtoms: 1n, baseAtoms: 10n ** 12n, roundingDirection: "CEIL" },
     maximumQuantityAtoms: 10n ** 17n, maxSlippageBps: 100,
@@ -110,6 +113,7 @@ function chain(state: { activePackage: Hex; activeExit: Hex }): ArbitrumSepoliaP
   const codes = new Map<string, Hex>([
     [configuration.accountFactory.address, configuration.accountFactory.expectedCodeHash],
     [evmAddress(0x55), word(0x55)],
+    [evmAddress(0x56), word(0x56)],
     [configuration.spotPort!.address, configuration.spotPort!.expectedCodeHash],
   ]);
   return {
@@ -135,6 +139,8 @@ function chain(state: { activePackage: Hex; activeExit: Hex }): ArbitrumSepoliaP
         case "baseToken": case "token0": return evmAddress(0x99);
         case "quoteToken": return collateral;
         case "slot0": return [POOL.sqrtPriceX96, 0, 0, 0, 0, 0, true];
+        case "factory": return evmAddress(0x57);
+        case "quoteExactInputSingle": return [MID_PROCEEDS, POOL.sqrtPriceX96, 1, 0n];
         default: throw new Error(`unexpected read ${functionName}`);
       }
     },
@@ -145,7 +151,7 @@ test("Arbitrum exit limits round against the trader and refuse an underwater sho
   const input = {
     position: { quantityAtoms: QUANTITY, sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY, collateralAtoms: COLLATERAL },
     baseDecimals: 18, quoteDecimals: 6, reference: { answer: ANSWER, decimals: 8 }, pool: POOL,
-    positionFeeFactor: 5n * 10n ** 26n, slippageBps: 100,
+    spotQuoteOutAtoms: MID_PROCEEDS, positionFeeFactor: 5n * 10n ** 26n, slippageBps: 100,
   };
   const limits = arbitrumSepoliaExitLimits(input);
   // Spot: 0.01 ETH at the 2500.12345678 reference less the 0.3% pool fee and 1% slippage, rounded down.
@@ -155,6 +161,9 @@ test("Arbitrum exit limits round against the trader and refuse an underwater sho
   assert.equal(limits.minPerpOutputAtoms, 2_215_234n);
   assert.equal(limits.minExitQuoteOutcomeAtoms, 26_892_202n);
   assert.equal(limits.entryNotionalAtoms, 25_001_234n);
+  // A thin pool's executable proceeds below the reference figure set the spot floor: 20,000,000 less 1%.
+  const thin = arbitrumSepoliaExitLimits({ ...input, spotQuoteOutAtoms: 20_000_000n });
+  assert.deepEqual([thin.minSpotQuoteOutAtoms, thin.minExitQuoteOutcomeAtoms], [19_800_000n, 19_800_000n + 2_215_234n]);
   assert.throws(
     () => arbitrumSepoliaExitLimits({ ...input, position: { ...input.position, collateralAtoms: 1n } }),
     (error: unknown) => error instanceof ArbitrumSepoliaExitError && error.code === "POSITION_UNDERWATER",

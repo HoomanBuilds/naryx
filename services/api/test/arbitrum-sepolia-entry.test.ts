@@ -33,6 +33,8 @@ const identity = (address: Address, byte: number) => ({
 });
 const owner = evmAddress(0x33);
 const priceFeed = identity(evmAddress(0x55), 0x55);
+const spotQuoter = identity(evmAddress(0x56), 0x56);
+const spotPort = identity(evmAddress(0x5a), 0x5a);
 const base = assetRef("eip155:421614:weth", hash(2), 18);
 const quote = assetRef("eip155:421614:usdc", hash(3), 6);
 
@@ -106,6 +108,7 @@ function config(): ArbitrumSepoliaOrderContextConfig {
     perpetualAdapter: adapterRef({ adapterId: "gmx-v2-arbitrum", adapterManifestVersion: 1, adapterManifestHash: hash(5) }),
     priceFeed,
     priceFeedDecimals: 8,
+    spotQuoter,
     maxStalenessSeconds: 60n,
     pollIntervalMs: 5_000,
     expiryTtlSeconds: 600n,
@@ -120,23 +123,47 @@ function config(): ArbitrumSepoliaOrderContextConfig {
   };
 }
 
-function pricePort(state: { chainId: bigint; now: bigint; updatedAt: bigint }): ArbitrumSepoliaPriceReadPort {
+/** The reference feed, the factory's spot pool, and the pinned quoter. */
+function pricePort(
+  state: { chainId: bigint; now: bigint; updatedAt: bigint },
+  quotedAmountIn: () => bigint = () => 25_076_000n,
+): ArbitrumSepoliaPriceReadPort {
+  const codes = new Map<string, Hex>([
+    [priceFeed.address, priceFeed.expectedCodeHash],
+    [evmAddress(3), identity(evmAddress(3), 3).expectedCodeHash],
+    [spotQuoter.address, spotQuoter.expectedCodeHash],
+    [spotPort.address, spotPort.expectedCodeHash],
+  ]);
   return {
     chainId: async () => state.chainId,
-    codeHash: async (address) => address === priceFeed.address ? priceFeed.expectedCodeHash
-      : address === evmAddress(3) ? identity(evmAddress(3), 3).expectedCodeHash : undefined,
+    codeHash: async (address) => codes.get(address.toLowerCase()),
     latestBlockTimestamp: async () => state.now,
     readContract: async ({ functionName }) => {
-      if (functionName === "decimals") return 8;
-      if (functionName === "latestRoundData") return [5n, 250_012_345_678n, state.updatedAt, state.updatedAt, 5n];
-      throw new Error(`unexpected read ${functionName}`);
+      switch (functionName) {
+        case "decimals": return 8;
+        case "latestRoundData": return [5n, 250_012_345_678n, state.updatedAt, state.updatedAt, 5n];
+        case "spotPort": return spotPort.address;
+        case "spotPortCodeHash": return spotPort.expectedCodeHash;
+        case "pool": return evmAddress(0x88);
+        case "poolFee": return 100;
+        case "baseToken": case "token0": return evmAddress(0x99);
+        case "quoteToken": return evmAddress(7);
+        case "slot0": return [2n ** 96n, 0, 0, 0, 0, 0, true];
+        case "getUint": return 5n * 10n ** 26n;
+        case "factory": return evmAddress(0x57);
+        case "quoteExactOutputSingle": return [quotedAmountIn(), 2n ** 96n, 1, 0n];
+        default: throw new Error(`unexpected read ${functionName}`);
+      }
     },
   };
 }
 
 test("Arbitrum order context prices from the live feed, enforces chain-time staleness, and admits any owner", async () => {
   const state = { chainId: 421_614n, now: 1_000_000n, updatedAt: 999_990n };
-  const runtime = await createArbitrumSepoliaOrderRuntime({ config: config(), deployment: deployment(), port: pricePort(state) });
+  let quotedAmountIn = 25_076_000n;
+  const runtime = await createArbitrumSepoliaOrderRuntime({
+    config: config(), deployment: deployment(), port: pricePort(state, () => quotedAmountIn),
+  });
   const context = runtime.contexts("arbitrum-sepolia:eth-usdc:gmx");
   assert.equal(context?.settlementClass, "ASYNC_BONDED_SOLVER");
   assert.equal(context?.capturedAtClock, 999_990n);
@@ -160,6 +187,12 @@ test("Arbitrum order context prices from the live feed, enforces chain-time stal
   assert.equal(created.order.expiryValue, 1_000_600n);
   // Ceil of 0.01 ETH at the reference price plus 1% slippage: 25.251246913478 USDC.
   assert.equal(created.order.maxSpotQuoteIn?.atoms, 25_251_247n);
+  // The solver prices the spot leg at the reference, so the entry price is the larger of the reference
+  // and the pool's exact-output cost for the size: 25.076 USDC for 0.01 ETH here, the reference below it.
+  const executable = await runtime.spotPrice.entrySpotPrice(context!, 10n ** 16n);
+  assert.equal(executable!.quoteAtoms * 10n ** 16n, 25_076_000n * executable!.baseAtoms);
+  quotedAmountIn = 25_001_234n;
+  assert.equal(await runtime.spotPrice.entrySpotPrice(context!, 10n ** 16n), context!.spotReferencePrice);
   const rejects = (overrides: Record<string, unknown>, code: string) => assert.throws(
     () => createCanonicalEntryOrder(runtime.contexts, overrides as never),
     (error: unknown) => error instanceof EntryOrderValidationError && error.code === code,

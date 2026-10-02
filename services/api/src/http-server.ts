@@ -872,7 +872,7 @@ export function createPrivateTerminalRequestHandler(
         });
       } catch (error) {
         if (error instanceof TerminalOrderValidationError || error instanceof EntryOrderValidationError) {
-          reject(response, 400, error.code, error.message);
+          reject(response, error.code === "INSUFFICIENT_LIQUIDITY" ? 409 : 400, error.code, error.message);
           return;
         }
         if (error instanceof InternalOrderConflictError) {

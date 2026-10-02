@@ -44,6 +44,13 @@ export type ArbitrumSepoliaMarketSnapshot = Readonly<{
   observedAtMs: number;
 }>;
 
+/** A refresh also names the pool and its tokens, which the spot quoter needs. */
+export type ArbitrumSepoliaMarketRead = ArbitrumSepoliaMarketSnapshot & Readonly<{
+  pool: Address;
+  baseToken: Address;
+  quoteToken: Address;
+}>;
+
 /**
  * The spot pool and GMX fee behind the Arbitrum Sepolia terminal market: the factory's spot port
  * (checked against the code hash the factory pinned), its Uniswap V3 pool price and fee, and the GMX
@@ -70,7 +77,7 @@ export class ArbitrumSepoliaMarketFeed {
     return this.#latest;
   }
 
-  async refresh(): Promise<ArbitrumSepoliaMarketSnapshot> {
+  async refresh(): Promise<ArbitrumSepoliaMarketRead> {
     try {
       const read = (address: Address, abi: typeof FACTORY_ABI | typeof SPOT_PORT_ABI | typeof POOL_ABI | typeof DATA_STORE_ABI, functionName: string, args?: readonly unknown[]) =>
         this.#port.readContract({ address, abi, functionName, ...(args === undefined ? {} : { args }) });
@@ -106,14 +113,19 @@ export class ArbitrumSepoliaMarketFeed {
         || typeof positionFeeFactor !== "bigint" || positionFeeFactor >= GMX_FLOAT_PRECISION) {
         throw new Error("Arbitrum Sepolia spot pool or GMX fee read is invalid.");
       }
-      this.#latest = Object.freeze({
+      const baseToken = requiredEvmAddress(String(baseValue), "spotPort.baseToken");
+      const snapshot: ArbitrumSepoliaMarketRead = Object.freeze({
         sqrtPriceX96,
-        baseIsToken0: requiredEvmAddress(String(token0), "pool.token0") === requiredEvmAddress(String(baseValue), "spotPort.baseToken"),
+        baseIsToken0: requiredEvmAddress(String(token0), "pool.token0") === baseToken,
         poolFee: BigInt(poolFee),
         positionFeeFactor,
         observedAtMs: Date.now(),
+        pool,
+        baseToken,
+        quoteToken: quote,
       });
-      return this.#latest;
+      this.#latest = snapshot;
+      return snapshot;
     } catch (error) {
       this.#latest = undefined;
       throw error;
