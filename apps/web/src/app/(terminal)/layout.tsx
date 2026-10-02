@@ -24,11 +24,12 @@ export const viewport: Viewport = {
 
 export default function TerminalLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   // The private execution service, the public v1 market API, and the package market it shows.
-  // Without them the terminal runs on the labeled local conformance fixture.
+  // Without them the terminal runs on the labeled local conformance fixture. An empty value counts as
+  // unset, so a deployment without the public market API leaves those panels unconfigured.
   const config = {
-    privateApiBaseUrl: process.env.NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL ?? null,
-    publicApiBaseUrl: process.env.NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL ?? null,
-    packageMarketId: process.env.NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID ?? null,
+    privateApiBaseUrl: process.env.NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL || null,
+    publicApiBaseUrl: process.env.NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL || null,
+    packageMarketId: process.env.NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID || null,
   };
   return (
     <html
