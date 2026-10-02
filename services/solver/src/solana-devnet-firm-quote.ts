@@ -68,6 +68,22 @@ const BPS = 10_000n;
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
+
+const shardWriteTails = new Map<string, Promise<unknown>>();
+
+/** Runs package book writes for one shard one at a time within this solver process. */
+export async function withShardWriteLock<T>(shard: string, task: () => Promise<T>): Promise<T> {
+  const previous = shardWriteTails.get(shard) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  const tail = run.catch(() => undefined);
+  shardWriteTails.set(shard, tail);
+  try {
+    return await run;
+  } finally {
+    if (shardWriteTails.get(shard) === tail) shardWriteTails.delete(shard);
+  }
+}
+
 function fail(message: string): never {
   throw new Error(`Solana Devnet firm quote: ${message}`);
 }
@@ -702,14 +718,26 @@ export function createSolanaDevnetFirmQuotePort(
     let level = selectFirmLevel(state, config, units, minimumExpiry, latestExpiry, side);
     if (level === undefined) {
       if (dependencies.writer === undefined) fail('no usable firm level and solver writes are disabled');
-      const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot: latestExpiry, side });
-      await dependencies.writer.sendAndFinalize(plan.instructions, key.keypair);
-      state = await readSolanaDevnetQuoteState(rpc, manifest, config);
-      level = state.levels[plan.slotIndex];
-      if (level === undefined || level.levelId !== plan.levelId
-        || selectFirmLevel({ ...state, levels: [level] }, config, units, state.slot, latestExpiry, side) === undefined) {
-        fail('refreshed firm level is not usable');
-      }
+      const writer = dependencies.writer;
+      // Every user quotes against the one shard, and a level write must name the shard's next
+      // sequence. Writes are serialized here, and the shard is re-read under the lock: a request that
+      // waited may find the level another request just wrote, and never sends a stale sequence.
+      const written = await withShardWriteLock(config.accounts.packageBookShard, async () => {
+        let current = await readSolanaDevnetQuoteState(rpc, manifest, config);
+        const existing = selectFirmLevel(current, config, units, minimumExpiry, latestExpiry, side);
+        if (existing !== undefined) return { state: current, level: existing };
+        const plan = packageBookLevelInstructions({ manifest, config, state: current, expirySlot: latestExpiry, side });
+        await writer.sendAndFinalize(plan.instructions, key.keypair);
+        current = await readSolanaDevnetQuoteState(rpc, manifest, config);
+        const fresh = current.levels[plan.slotIndex];
+        if (fresh === undefined || fresh.levelId !== plan.levelId
+          || selectFirmLevel({ ...current, levels: [fresh] }, config, units, current.slot, latestExpiry, side) === undefined) {
+          fail('refreshed firm level is not usable');
+        }
+        return { state: current, level: fresh };
+      });
+      state = written.state;
+      level = written.level;
     }
     const routeExpiryValue = level.expirySlot;
     const reservationNonce = dependencies.randomNonce?.() ?? Uint8Array.from(randomBytes(32));
