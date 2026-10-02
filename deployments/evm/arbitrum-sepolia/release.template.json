@@ -254,8 +254,8 @@
           "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
           "roundingDirection": "CEIL"
         },
-        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms" } },
-        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps" } },
+        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms (recommended at most 1% of the WETH seeded in the spot pool: every entry buys WETH from that pool, so its depth bounds all users' open positions together)" } },
+        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps (recommended 100; it must cover the pool price impact of a maximum-size order, or that order reverts after the user signs)" } },
         "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, quote atoms" } } }],
         "maxMarginAddedAtoms": { "$bigint": { "$operator": "max margin added, quote atoms" } },
         "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee, quote atoms" } },

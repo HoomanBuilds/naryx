@@ -38,6 +38,12 @@ operator step 2.
 
 - Base: deploy `NaryxTestUSDC`; seed the WETH / tUSDC Uniswap V3 pool at the Chainlink price.
 - Arbitrum: seed the WETH / USDC.SG pool (fee 100) at the Chainlink price. USDC.SG is GMX's token.
+- Size the pools before the packages. Every Base and Arbitrum entry buys WETH from its pool and
+  every exit sells it back, so the WETH seeded in a pool bounds all users' open positions on that
+  lane together, and testnet ETH is the scarce input (faucets pay little per day). Seed as much
+  WETH as you can collect, then set the lane's maximum order size to about 1% of it (for example
+  2 WETH seeded allows 0.02 WETH packages) and keep slippage above that size's price impact. The
+  runbook examples seed 1 WETH, which suits a private test, not a public launch.
 - Solana: create the faucet test USDC mint; claim for the funder and the solver.
 
 ## 3. Deploy and activate each lane
