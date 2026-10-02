@@ -1,3 +1,4 @@
+import { listOwnerPackages, OwnerPackageQueryError, parseOwnerPackageQuery } from "./terminal-packages.js";
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -159,6 +160,7 @@ function applyCors(
   response.setHeader("Access-Control-Allow-Origin", origin);
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Max-Age", "600");
   response.setHeader("Vary", "Origin");
   return true;
 }
@@ -241,9 +243,15 @@ export function createPrivateTerminalRequestHandler(
   terminalMarkets: TerminalMarketSources = {},
   currentTimeMs: () => number = Date.now,
 ) {
+  /**
+   * `commit` records the approval and counts it against the caps; it runs only where the owner's
+   * own signature is proven. `check` runs before the owner has signed and records nothing, so an
+   * unsigned request can never consume a domain's or a wallet's daily caps.
+   */
   async function requireExecutionReadiness(
     handoff: ExecutionHandoff,
     request: Readonly<{ attemptId?: string; idempotencyKey: string }>,
+    mode: "check" | "commit" = "commit",
   ): Promise<void> {
     if (executionReadinessGate === undefined || executionReadinessScopes === undefined) {
       throw new ExecutionReadinessError("READINESS_UNAVAILABLE", "Execution readiness is not configured.");
@@ -252,6 +260,10 @@ export function createPrivateTerminalRequestHandler(
     if (scope.handoff !== handoff || scope.idempotencyKey !== request.idempotencyKey ||
         (request.attemptId !== undefined && scope.attemptId !== request.attemptId)) {
       throw new ExecutionReadinessError("READINESS_REJECTED", "Resolved execution scope does not match the handoff request.");
+    }
+    if (mode === "check" && executionReadinessGate.check !== undefined) {
+      executionReadinessGate.check(scope);
+      return;
     }
     executionReadinessGate.authorize(scope);
   }
@@ -447,6 +459,36 @@ export function createPrivateTerminalRequestHandler(
         return;
       }
       sendJson(response, 200, hyperliquidTestnetContext);
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/packages") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (!hasOrderPorts(orderPorts)) {
+        reject(response, 503, "ORDER_CREATION_UNAVAILABLE", "Package listing is unavailable.");
+        return;
+      }
+      try {
+        const owner = parseOwnerPackageQuery(url.searchParams);
+        sendJson(response, 200, {
+          owner,
+          packages: listOwnerPackages(owner, {
+            orders: orderPorts.store,
+            ...(executionIntentStore === undefined ? {} : { intents: executionIntentStore }),
+            ...(lifecycleStore === undefined ? {} : { lifecycle: lifecycleStore }),
+          }),
+        });
+      } catch (error) {
+        if (error instanceof OwnerPackageQueryError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "PACKAGE_LISTING_FAILED", "Package listing failed closed.");
+      }
       return;
     }
 
@@ -649,7 +691,8 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetPrepareAtomicAuthorizationRequest(await readJson(request));
-        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_AUTHORIZE", terminalRequest);
+        // Before the owner signs the permit: checked, not counted.
+        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_AUTHORIZE", terminalRequest, "check");
         const sanitized = validateEvmTestnetAtomicAuthorization(
           await evmTestnetPorts.authorization.prepare(terminalRequest),
           terminalRequest,
@@ -679,11 +722,13 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetPrepareAtomicRequest(await readJson(request));
-        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_PREPARE", terminalRequest);
+        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_PREPARE", terminalRequest, "check");
         const sanitized = validateEvmTestnetAtomicPreparation(
           await evmTestnetPorts.preparation.prepare(terminalRequest),
           terminalRequest,
         );
+        // Preparation recovered the owner's permit signature, so the approval now counts.
+        await requireExecutionReadiness("BASE_TESTNET_ATOMIC_PREPARE", terminalRequest, "commit");
         sendJson(response, 200, sanitized);
       } catch (error) {
         if (rejectReadiness(response, error)) return;
@@ -737,11 +782,16 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseEvmTestnetObserveAsyncRequest(await readJson(request));
-        await requireExecutionReadiness("ARBITRUM_TESTNET_ASYNC_HANDOFF", terminalRequest);
+        await requireExecutionReadiness("ARBITRUM_TESTNET_ASYNC_HANDOFF", terminalRequest, "check");
         const sanitized = validateEvmTestnetAsyncObservation(
           await evmTestnetPorts.asyncObservation.observe(terminalRequest),
           terminalRequest,
         );
+        // The coordinator records a reservation only after the owner signed it, so from then on
+        // the approval counts (once; later polls reuse it).
+        if (sanitized.lifecycle !== "NOT_FOUND") {
+          await requireExecutionReadiness("ARBITRUM_TESTNET_ASYNC_HANDOFF", terminalRequest, "commit");
+        }
         sendJson(response, 200, sanitized);
       } catch (error) {
         if (rejectReadiness(response, error)) return;
@@ -1174,6 +1224,21 @@ export function createPrivateTerminalServer(
     if ((request.url ?? "").includes("\\")) {
       reject(response, 400, "INVALID_PATH", "Request path is invalid.");
       return;
+    }
+    // Every browser route, including the lane routes mounted ahead of the private handler (Solana
+    // account, faucet, and exit order; Arbitrum owner routes), answers under the one origin policy,
+    // and its preflight is answered here.
+    if ((request.url ?? "").startsWith("/internal/terminal/")) {
+      if (!applyCors(request, response, config.terminalOrigin)) return;
+      if (request.method === "OPTIONS") {
+        if (request.headers.origin === undefined) {
+          reject(response, 403, "ORIGIN_REQUIRED", "Preflight requires an allowed browser origin.");
+        } else {
+          response.statusCode = 204;
+          response.end();
+        }
+        return;
+      }
     }
     // Public read-only routes answer before the private terminal's origin policy; every other
     // path falls through to the private handler unchanged.

@@ -1,3 +1,4 @@
+import { listOwnerPackages, OwnerPackageQueryError, parseOwnerPackageQuery } from "../src/terminal-packages.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -172,6 +173,38 @@ test("internal order store persists canonical entry orders across reopen", () =>
     assert.deepEqual(replayed.record, persisted);
   } finally {
     reopened.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("owner package listing finds a wallet's orders from any device, EVM owners case-insensitively", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-api-orders-"));
+  const context = activeContext();
+  const provider: ActiveOrderContextProvider = (contextId) => (contextId === context.contextId ? context : undefined);
+  const owner = "0x00000000000000000000000000000000000000Ab";
+  const store = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  try {
+    for (const [index, who] of [owner, owner, "0x00000000000000000000000000000000000000cd"].entries()) {
+      const request = Object.freeze({
+        contextId: "test-context-1",
+        owner: who,
+        settlementAccount: "strategy-account-1",
+        sizeAtoms: 1_000_000_000n,
+        slippageBps: 10,
+        idempotencyKey: `test-owner-key-000${index}`,
+        currentClock: 1_000_500n + BigInt(index),
+      });
+      store.createOrGet({ order: createCanonicalEntryOrder(provider, request), request });
+    }
+    const packages = listOwnerPackages(owner.toLowerCase(), { orders: store });
+    assert.equal(packages.length, 2);
+    assert.ok(packages.every((entry) => entry.action === "ENTRY" && entry.quantityAtoms === "1000000000" && entry.attemptId === null));
+    assert.equal(listOwnerPackages("0x00000000000000000000000000000000000000cd", { orders: store }).length, 1);
+    assert.equal(parseOwnerPackageQuery(new URLSearchParams({ owner })), owner);
+    assert.throws(() => parseOwnerPackageQuery(new URLSearchParams({ owner, extra: "1" })), OwnerPackageQueryError);
+    assert.throws(() => parseOwnerPackageQuery(new URLSearchParams({ owner: "not-a-wallet" })), OwnerPackageQueryError);
+  } finally {
+    store.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 });

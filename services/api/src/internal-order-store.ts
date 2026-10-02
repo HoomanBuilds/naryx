@@ -42,6 +42,8 @@ export interface InternalOrderStore {
   getByOrderHash(orderHash: Uint8Array | string): InternalOrderRecord | undefined;
   getByIdempotencyKey(idempotencyKey: string): InternalOrderRecord | undefined;
   getCanonicalOrderByHash(orderHash: Uint8Array | string): PackageOrder | undefined;
+  /** The owner's orders, newest first. EVM owners match case-insensitively; others exactly. */
+  listByOwner?(owner: string, limit: number): readonly InternalOrderRecord[];
   close(): void;
 }
 
@@ -400,6 +402,8 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
   private readonly db: Database.Database;
   private readonly selectByKey: Database.Statement;
   private readonly selectByHash: Database.Statement;
+  private readonly selectByOwner: Database.Statement;
+  private readonly selectByEvmOwner: Database.Statement;
   private readonly insertOrder: Database.Statement;
   private readonly updateOrderJson: Database.Statement;
   private readonly createOrGetTxn: (parsed: ParsedOrderInput) => InternalOrderCreateResult;
@@ -427,6 +431,11 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
         );
       }
       db.exec(SCHEMA_SQL);
+      // Owner lookups for the cross-device package list; EVM owners are matched case-insensitively.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS internal_orders_owner ON internal_orders (owner, created_at_ms DESC);
+        CREATE INDEX IF NOT EXISTS internal_orders_owner_lower ON internal_orders (lower(owner), created_at_ms DESC);
+      `);
       const userVersion = db.pragma("user_version", { simple: true });
       if (userVersion === 0) {
         db.pragma(`user_version = ${SCHEMA_VERSION}`);
@@ -445,6 +454,12 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
       this.db = db;
       this.selectByKey = db.prepare("SELECT * FROM internal_orders WHERE idempotency_key = ?");
       this.selectByHash = db.prepare("SELECT * FROM internal_orders WHERE order_hash = ?");
+      this.selectByOwner = db.prepare(
+        "SELECT * FROM internal_orders WHERE owner = ? ORDER BY created_at_ms DESC LIMIT ?",
+      );
+      this.selectByEvmOwner = db.prepare(
+        "SELECT * FROM internal_orders WHERE lower(owner) = ? ORDER BY created_at_ms DESC LIMIT ?",
+      );
       this.updateOrderJson = db.prepare(
         "UPDATE internal_orders SET order_json = ? WHERE idempotency_key = ? AND order_json IS NULL",
       );
@@ -548,6 +563,17 @@ export class SqliteInternalOrderStore implements InternalOrderStore {
     const bytes = normalizeHashInput(orderHash, "orderHash");
     const row = this.selectByHash.get(Buffer.from(bytes)) as OrderRow | undefined;
     return row === undefined ? undefined : rowToCanonicalOrder(row);
+  }
+
+  listByOwner(owner: string, limit: number): readonly InternalOrderRecord[] {
+    if (typeof owner !== "string" || owner.length === 0 || owner.length > 128) {
+      throw new InternalOrderStoreError("INVALID_OWNER", "Owner is invalid.");
+    }
+    const bounded = Math.max(1, Math.min(100, Math.trunc(limit)));
+    const rows = (/^0x[0-9a-fA-F]{40}$/.test(owner)
+      ? this.selectByEvmOwner.all(owner.toLowerCase(), bounded)
+      : this.selectByOwner.all(owner, bounded)) as OrderRow[];
+    return Object.freeze(rows.map(rowToRecord));
   }
 
   close(): void {

@@ -37,6 +37,7 @@ function scope(attemptId: string, principalAtoms: bigint, extra: Partial<Testnet
     environment: "testnet",
     domainId: "eip155:84532",
     orderHash: `order-${attemptId}`,
+    owner: "0x00000000000000000000000000000000000000aa",
     quoteAssetId: USDC,
     principalAtoms,
     recoveryLossAtoms: 0n,
@@ -90,6 +91,7 @@ test("an attempt within caps is approved once and reused by its later handoffs",
 });
 
 test("per-operation, daily, loss, asset, domain, and mainnet limits fail closed", () => {
+  // A per-owner cap at the full day keeps this test about the domain caps alone.
   withGate((gate) => {
     rejected(() => gate.authorize(scope("big", 1_000_000_001n)), /per-operation cap/);
     rejected(() => gate.authorize(scope("loss", 1n, { recoveryLossAtoms: 50_000_001n })), /recovery-loss/);
@@ -133,6 +135,37 @@ test("an unreadable policy makes execution unavailable, not approved", () => {
   try {
     assert.throws(() => gate.authorize(scope("x", 1n)), (error: unknown) =>
       error instanceof ExecutionReadinessError && error.code === "READINESS_UNAVAILABLE");
+  } finally {
+    gate.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("one wallet cannot take the whole day, and unsigned checks consume nothing", () => {
+  withGate((gate) => {
+    const alice = (id: string, atoms: bigint) => scope(id, atoms, { owner: "0x00000000000000000000000000000000000000a1" });
+    const bob = (id: string, atoms: bigint) => scope(id, atoms, { owner: "0x00000000000000000000000000000000000000b2" });
+    // Checks before the owner signs record nothing, however many arrive.
+    for (let index = 0; index < 10; index += 1) gate.check(alice(`c${index}`, 1_000_000_000n));
+    gate.authorize(alice("a1", 1_000_000_000n));
+    rejected(() => gate.check(alice("a2", 600_000_000n)), /wallet's daily cap/);
+    rejected(() => gate.authorize(alice("a2", 600_000_000n)), /wallet's daily cap/);
+    // Another wallet still trades the rest of the day.
+    gate.authorize(bob("b1", 1_000_000_000n));
+    rejected(() => gate.authorize(bob("b2", 600_000_000n)), /daily cap/);
+  }, policyText({ maxPrincipalAtomsPerOwnerPerDay: "1500000000" }));
+});
+
+test("an approved attempt is refused once its domain is disabled", () => {
+  const directory = mkdtempSync(join(tmpdir(), "naryx-policy-"));
+  let text = policyText();
+  const gate = new TestnetCapExecutionGate({ policy: () => parseTestnetExecutionPolicy(text), databasePath: join(directory, "decisions.db") });
+  try {
+    gate.authorize(scope("z1", 10n));
+    text = policyText({ domainId: "eip155:421614" });
+    rejected(() => gate.authorize(scope("z1", 10n)), /not enabled/);
+    rejected(() => gate.check(scope("z1", 10n)), /not enabled/);
+    assert.throws(() => parseTestnetExecutionPolicy(policyText({ maxPrincipalAtomsPerOwnerPerDay: "1" })), /per owner per day/);
   } finally {
     gate.close();
     rmSync(directory, { recursive: true, force: true });

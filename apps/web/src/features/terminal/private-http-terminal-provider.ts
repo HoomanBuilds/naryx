@@ -344,6 +344,18 @@ export type PackageLifecycleReceipt = Readonly<{
   receiptHashHex: string;
 }>;
 
+/** One package from GET /internal/terminal/packages. */
+export type OwnerPackageEntry = Readonly<{
+  orderHash: string;
+  domainId: string;
+  action: string;
+  quantityAtoms: string;
+  quantityDecimals: number;
+  createdAtMs: number;
+  attemptId: string | null;
+  state: string | null;
+}>;
+
 export type PackageLifecycleResponse = Readonly<{
   attempt: PackageLifecycleAttempt;
   receipts: readonly PackageLifecycleReceipt[];
@@ -3743,6 +3755,49 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error(`Execution preparation failed with ${response.status}.`);
     }
     return requirePreparation(await response.json() as unknown, input);
+  }
+
+  /**
+   * The packages a wallet created, newest first, from the service's durable records, so the
+   * Activity page follows the wallet across devices. Malformed entries are dropped.
+   */
+  async listOwnerPackages(owner: string, signal?: AbortSignal): Promise<readonly OwnerPackageEntry[]> {
+    if (!/^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/.test(owner)) throw new Error("Wallet address is invalid.");
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/packages?${new URLSearchParams({ owner }).toString()}`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw new Error("Package list is temporarily unavailable.");
+    const payload = await response.json() as unknown;
+    const packages = typeof payload === "object" && payload !== null && Array.isArray((payload as { packages?: unknown }).packages)
+      ? (payload as { packages: unknown[] }).packages : [];
+    return Object.freeze(packages.flatMap((entry): OwnerPackageEntry[] => {
+      if (typeof entry !== "object" || entry === null) return [];
+      const value = entry as Record<string, unknown>;
+      if (typeof value.orderHash !== "string" || !/^[0-9a-f]{64}$/.test(value.orderHash)
+          || typeof value.domainId !== "string" || typeof value.action !== "string"
+          || typeof value.quantityAtoms !== "string" || !/^\d{1,40}$/.test(value.quantityAtoms)
+          || typeof value.quantityDecimals !== "number" || !Number.isSafeInteger(value.quantityDecimals)
+          || value.quantityDecimals < 0 || value.quantityDecimals > 36
+          || typeof value.createdAtMs !== "number" || !Number.isSafeInteger(value.createdAtMs)
+          || (value.attemptId !== null && (typeof value.attemptId !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(value.attemptId)))
+          || (value.state !== null && typeof value.state !== "string")) {
+        return [];
+      }
+      return [Object.freeze({
+        orderHash: value.orderHash,
+        domainId: value.domainId,
+        action: value.action,
+        quantityAtoms: value.quantityAtoms,
+        quantityDecimals: value.quantityDecimals,
+        createdAtMs: value.createdAtMs,
+        attemptId: value.attemptId as string | null,
+        state: value.state as string | null,
+      })];
+    }));
   }
 
   async getPackageLifecycle(

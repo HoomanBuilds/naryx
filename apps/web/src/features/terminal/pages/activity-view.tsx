@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useQueries } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
-import type { PackageLifecycleResponse } from "../private-http-terminal-provider";
+import { useEvmWallet } from "@/features/wallet/evm-wallet";
+import { useSolanaWallet } from "@/features/wallet/solana-wallet";
+import type { OwnerPackageEntry, PackageLifecycleResponse } from "../private-http-terminal-provider";
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
 import type { RecordedAttempt } from "../shell/attempt-index";
 import styles from "./pages.module.css";
@@ -40,9 +42,66 @@ function readable(attempt: RecordedAttempt) {
   return attempt.flow !== "hyperliquid" && attempt.flow !== "base" && attempt.flow !== "arbitrum";
 }
 
+const DOMAIN_OF: Readonly<Record<string, Readonly<{ domain: RecordedAttempt["domain"]; flow: RecordedAttempt["flow"] }>>> = {
+  "svm:devnet": { domain: "solana", flow: "devnet" },
+  "eip155:84532": { domain: "base", flow: "base" },
+  "eip155:421614": { domain: "arbitrum", flow: "arbitrum" },
+  "hypercore:testnet": { domain: "hyperliquid", flow: "hyperliquid" },
+};
+
+function decimalSize(atoms: string, decimals: number): string {
+  const padded = atoms.padStart(decimals + 1, "0");
+  const whole = padded.slice(0, padded.length - decimals);
+  const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "").slice(0, 6);
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+/** A package the service recorded for a connected wallet, as an Activity row with its service state. */
+type Row = RecordedAttempt & Readonly<{ serviceState?: string | null }>;
+
+function fromService(entry: OwnerPackageEntry): Row | null {
+  const lane = DOMAIN_OF[entry.domainId];
+  if (lane === undefined || entry.attemptId === null) return null;
+  return {
+    attemptId: entry.attemptId,
+    domain: lane.domain,
+    flow: lane.flow,
+    mode: entry.action === "EXIT" ? "exit" : "entry",
+    size: decimalSize(entry.quantityAtoms, entry.quantityDecimals),
+    createdAt: entry.createdAtMs,
+    serviceState: entry.state,
+  };
+}
+
 export function ActivityView() {
-  const { attempts, privateProvider, clearAttempts } = useTerminal();
+  const { attempts: localAttempts, privateProvider, clearAttempts } = useTerminal();
   const [openId, setOpenId] = useState<string | null>(null);
+  const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
+  const evmOwner = useEvmWallet().account;
+  const owners = [solanaOwner, evmOwner].filter((owner): owner is string => owner !== null);
+  // The service's record follows the wallet across devices; this browser's list adds attempts made
+  // before a wallet was connected. One row per attempt, newest first.
+  const ownerQueries = useQueries({
+    queries: owners.map((owner) => ({
+      queryKey: ["owner-packages", owner],
+      enabled: privateProvider !== null,
+      refetchInterval: 30_000,
+      queryFn: ({ signal }: { signal: AbortSignal }) => {
+        if (!privateProvider) throw new Error("Private service not configured.");
+        return privateProvider.listOwnerPackages(owner, signal);
+      },
+    })),
+  });
+  const serviceRows = ownerQueries.flatMap((query) => query.data ?? []).map(fromService);
+  const serviceKey = serviceRows.map((row) => row?.attemptId ?? "").join(",");
+  const attempts: readonly Row[] = useMemo(() => {
+    const byId = new Map<string, Row>();
+    for (const row of serviceRows) if (row !== null) byId.set(row.attemptId, row);
+    for (const attempt of localAttempts) if (!byId.has(attempt.attemptId)) byId.set(attempt.attemptId, attempt);
+    return [...byId.values()].sort((left, right) => right.createdAt - left.createdAt);
+    // serviceRows is rebuilt each render; its identity is captured by serviceKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localAttempts, serviceKey]);
   const lifecycles = useQueries({
     queries: attempts.map((attempt) => ({
       queryKey: ["lifecycle", attempt.attemptId],
@@ -62,7 +121,7 @@ export function ActivityView() {
       <div className={styles.pageHead}>
         <div>
           <h1>Activity</h1>
-          <p>Every package this browser started, with its durable lifecycle state and the receipt chain the service recorded for it.</p>
+          <p>Every package your connected wallets started, on any device, with its durable lifecycle state and the receipt chain the service recorded for it.</p>
         </div>
         {attempts.length > 0 ? (
           <div className={styles.headActions}>
@@ -112,7 +171,7 @@ export function ActivityView() {
                 const lifecycle = query?.data ?? null;
                 const open = attempt.attemptId === openId;
                 const state = !readable(attempt)
-                  ? "See ticket"
+                  ? (attempt.serviceState ? stateText(attempt.serviceState) : "See ticket")
                   : lifecycle ? stateText(lifecycle.attempt.state)
                   : privateProvider === null ? "Unavailable"
                   : query?.isError ? "Unavailable" : "Loading";

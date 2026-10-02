@@ -45,6 +45,11 @@ export type TestnetDomainCaps = Readonly<{
   quoteAssetId: string;
   maxPrincipalAtomsPerOperation: bigint;
   maxPrincipalAtomsPerDay: bigint;
+  /**
+   * What one owner wallet may commit per UTC day, so no single user exhausts the domain's day.
+   * Defaults to four full-size operations, capped at the domain's daily cap.
+   */
+  maxPrincipalAtomsPerOwnerPerDay: bigint;
   maxRecoveryLossAtomsPerOperation: bigint;
 }>;
 
@@ -93,7 +98,7 @@ export function parseTestnetExecutionPolicy(text: string): TestnetExecutionPolic
   const domains = root.domains.map((entry, index): TestnetDomainCaps => {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) policyFail(`domains[${index}] must be an object.`);
     const value = entry as Record<string, unknown>;
-    const allowed = ["domainId", "quoteAssetId", "maxPrincipalAtomsPerOperation", "maxPrincipalAtomsPerDay", "maxRecoveryLossAtomsPerOperation"];
+    const allowed = ["domainId", "quoteAssetId", "maxPrincipalAtomsPerOperation", "maxPrincipalAtomsPerDay", "maxPrincipalAtomsPerOwnerPerDay", "maxRecoveryLossAtomsPerOperation"];
     const extra = Object.keys(value).filter((key) => !allowed.includes(key));
     if (extra.length > 0) policyFail(`domains[${index}] has unknown fields ${extra.join(", ")}.`);
     if (typeof value.domainId !== "string" || !DOMAIN_ID_PATTERN.test(value.domainId)) policyFail(`domains[${index}].domainId is invalid.`);
@@ -105,11 +110,19 @@ export function parseTestnetExecutionPolicy(text: string): TestnetExecutionPolic
     const perDay = atoms(value.maxPrincipalAtomsPerDay, `domains[${index}].maxPrincipalAtomsPerDay`);
     const loss = atoms(value.maxRecoveryLossAtomsPerOperation, `domains[${index}].maxRecoveryLossAtomsPerOperation`);
     if (perOperation === 0n || perDay < perOperation) policyFail(`domains[${index}] caps must satisfy 0 < per operation <= per day.`);
+    const defaultPerOwner = perOperation * 4n < perDay ? perOperation * 4n : perDay;
+    const perOwner = value.maxPrincipalAtomsPerOwnerPerDay === undefined
+      ? defaultPerOwner
+      : atoms(value.maxPrincipalAtomsPerOwnerPerDay, `domains[${index}].maxPrincipalAtomsPerOwnerPerDay`);
+    if (perOwner < perOperation || perOwner > perDay) {
+      policyFail(`domains[${index}] caps must satisfy per operation <= per owner per day <= per day.`);
+    }
     return Object.freeze({
       domainId: value.domainId,
       quoteAssetId: value.quoteAssetId,
       maxPrincipalAtomsPerOperation: perOperation,
       maxPrincipalAtomsPerDay: perDay,
+      maxPrincipalAtomsPerOwnerPerDay: perOwner,
       maxRecoveryLossAtomsPerOperation: loss,
     });
   });
@@ -153,6 +166,8 @@ export type TestnetExecutionScope = Readonly<{
   environment: string;
   domainId: string;
   orderHash: string;
+  /** The order owner: the wallet whose signature the committing handoff proves. */
+  owner: string;
   quoteAssetId: string;
   /** Worst-case quote spent: the spot-leg quote cap plus the margin cap. */
   principalAtoms: bigint;
@@ -183,6 +198,8 @@ export function scopeFromOrder(
     environment: order.environment,
     domainId: order.domain.domainId,
     orderHash: request.orderHash,
+    // EVM addresses compare case-insensitively; Solana base58 keys are case-sensitive.
+    owner: /^0x[0-9a-fA-F]{40}$/.test(order.owner) ? order.owner.toLowerCase() : order.owner,
     quoteAssetId: quoteAsset,
     principalAtoms: (order.maxSpotQuoteIn?.atoms ?? 0n) + order.maxMarginAdded.atoms,
     recoveryLossAtoms: order.maxAggregateRecoveryLossQuote.atoms,
@@ -245,9 +262,10 @@ export type TestnetExecutionGateOptions = Readonly<{
 }>;
 
 /**
- * The cap gate. An attempt is approved once and counted once against its domain's daily cap;
- * later handoffs of the same attempt (Base authorize then prepare) reuse that approval. A denial
- * is recorded and never counts toward the day.
+ * The cap gate. An attempt is approved once and counted once against its domain's daily cap and its
+ * owner's daily cap; later handoffs of the same attempt reuse that approval. Steps before the owner
+ * has signed only `check`, which records nothing, so unsigned requests cannot consume anyone's caps.
+ * A denial from `authorize` is recorded and never counts toward the day.
  */
 export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetExecutionScope> {
   readonly #policy: () => TestnetExecutionPolicy;
@@ -255,6 +273,7 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
   readonly #db: Database.Database;
   readonly #getApproval: Database.Statement;
   readonly #dayRows: Database.Statement;
+  readonly #ownerDayRows: Database.Statement;
   readonly #insertApproval: Database.Statement;
   readonly #insertHandoff: Database.Statement;
   readonly #insertDenial: Database.Statement;
@@ -299,14 +318,22 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
         decided_at_ms INTEGER NOT NULL
       ) STRICT;
     `);
+    const columns = this.#db.prepare("PRAGMA table_info(testnet_execution_approvals)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "owner")) {
+      this.#db.exec("ALTER TABLE testnet_execution_approvals ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    }
+    this.#db.exec("CREATE INDEX IF NOT EXISTS testnet_execution_approvals_owner_day ON testnet_execution_approvals (domain_id, utc_day, owner)");
     this.#getApproval = this.#db.prepare("SELECT * FROM testnet_execution_approvals WHERE attempt_id = ?");
     this.#dayRows = this.#db.prepare(
       "SELECT principal_atoms FROM testnet_execution_approvals WHERE domain_id = ? AND utc_day = ?",
     );
+    this.#ownerDayRows = this.#db.prepare(
+      "SELECT principal_atoms FROM testnet_execution_approvals WHERE domain_id = ? AND utc_day = ? AND owner = ?",
+    );
     this.#insertApproval = this.#db.prepare(`
       INSERT INTO testnet_execution_approvals
-        (attempt_id, domain_id, order_hash, quote_asset_id, principal_atoms, utc_day, policy_hash, decision_hash, decided_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (attempt_id, domain_id, order_hash, quote_asset_id, principal_atoms, utc_day, policy_hash, decision_hash, decided_at_ms, owner)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.#insertHandoff = this.#db.prepare(`
       INSERT INTO testnet_execution_handoffs (handoff, attempt_id, idempotency_key, decision_hash, decided_at_ms)
@@ -320,27 +347,64 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
     `);
   }
 
-  authorize(scope: TestnetExecutionScope): ExecutionReadinessReceipt {
-    const now = this.#nowMs();
-    let policy: TestnetExecutionPolicy;
+  #currentPolicy(): TestnetExecutionPolicy {
     try {
-      policy = this.#policy();
+      return this.#policy();
     } catch (error) {
       throw new ExecutionReadinessError(
         "READINESS_UNAVAILABLE",
         error instanceof Error ? error.message : "The testnet execution policy is unavailable.",
       );
     }
+  }
+
+  /** Bounds every handoff must meet under the current policy, approved before or not. */
+  #staticCaps(scope: TestnetExecutionScope, policy: TestnetExecutionPolicy, deny: (reason: string) => never): TestnetDomainCaps {
+    if (isMainnetScope(scope.environment, scope.domainId)) deny("Mainnet execution is forbidden regardless of policy.");
+    const caps = policy.domains.find((entry) => entry.domainId === scope.domainId);
+    if (caps === undefined) deny(`Domain ${scope.domainId} is not enabled for testnet execution.`);
+    if (scope.quoteAssetId !== caps.quoteAssetId) deny("The order's quote asset is not the asset its domain caps are set in.");
+    if (scope.recoveryLossAtoms > caps.maxRecoveryLossAtomsPerOperation) deny("The order's recovery-loss bound exceeds the per-operation cap.");
+    return caps;
+  }
+
+  /** The caps an unapproved attempt must also fit under: per operation, the domain's day, and its owner's day. */
+  #checkCaps(scope: TestnetExecutionScope, policy: TestnetExecutionPolicy, day: string, deny: (reason: string) => never): void {
+    const caps = this.#staticCaps(scope, policy, deny);
+    if (scope.principalAtoms > caps.maxPrincipalAtomsPerOperation) deny("The order's worst-case spend exceeds the per-operation cap.");
+    const sum = (rows: { principal_atoms: string }[]) => rows.reduce((total, row) => total + BigInt(row.principal_atoms), 0n);
+    const spent = sum(this.#dayRows.all(scope.domainId, day) as { principal_atoms: string }[]);
+    if (spent + scope.principalAtoms > caps.maxPrincipalAtomsPerDay) deny("The order would exceed the domain's daily cap.");
+    const ownerSpent = sum(this.#ownerDayRows.all(scope.domainId, day, scope.owner) as { principal_atoms: string }[]);
+    if (ownerSpent + scope.principalAtoms > caps.maxPrincipalAtomsPerOwnerPerDay) {
+      deny("The order would exceed this wallet's daily cap; try a smaller size or again tomorrow (UTC).");
+    }
+  }
+
+  /** Checks that `authorize` would approve this attempt now, recording nothing. */
+  check(scope: TestnetExecutionScope): void {
+    const policy = this.#currentPolicy();
+    const deny: (reason: string) => never = (reason) => rejectScope(reason);
+    const existing = this.#getApproval.get(scope.attemptId) as Record<string, string | number> | undefined;
+    if (existing !== undefined) {
+      this.#staticCaps(scope, policy, deny);
+      if (existing.domain_id !== scope.domainId || existing.order_hash !== scope.orderHash ||
+          existing.principal_atoms !== scope.principalAtoms.toString()) {
+        deny("The attempt was approved for a different order.");
+      }
+      return;
+    }
+    this.#checkCaps(scope, policy, utcDay(this.#nowMs()), deny);
+  }
+
+  authorize(scope: TestnetExecutionScope): ExecutionReadinessReceipt {
+    const now = this.#nowMs();
+    const policy = this.#currentPolicy();
     // Annotated so control-flow analysis treats every call as terminating. The denial row is
     // written after the transaction rolls back, below.
     const deny: (reason: string) => never = (reason) => rejectScope(reason);
     const decide = this.#db.transaction((): ExecutionReadinessReceipt => {
-      if (isMainnetScope(scope.environment, scope.domainId)) deny("Mainnet execution is forbidden regardless of policy.");
-      const caps = policy.domains.find((entry) => entry.domainId === scope.domainId);
-      if (caps === undefined) deny(`Domain ${scope.domainId} is not enabled for testnet execution.`);
-      if (scope.quoteAssetId !== caps.quoteAssetId) deny("The order's quote asset is not the asset its domain caps are set in.");
-      if (scope.recoveryLossAtoms > caps.maxRecoveryLossAtomsPerOperation) deny("The order's recovery-loss bound exceeds the per-operation cap.");
-
+      this.#staticCaps(scope, policy, deny);
       const existing = this.#getApproval.get(scope.attemptId) as Record<string, string | number> | undefined;
       if (existing !== undefined) {
         if (existing.domain_id !== scope.domainId || existing.order_hash !== scope.orderHash ||
@@ -357,11 +421,8 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
         });
       }
 
-      if (scope.principalAtoms > caps.maxPrincipalAtomsPerOperation) deny("The order's worst-case spend exceeds the per-operation cap.");
       const day = utcDay(now);
-      const spent = (this.#dayRows.all(scope.domainId, day) as { principal_atoms: string }[])
-        .reduce((total, row) => total + BigInt(row.principal_atoms), 0n);
-      if (spent + scope.principalAtoms > caps.maxPrincipalAtomsPerDay) deny("The order would exceed the domain's daily cap.");
+      this.#checkCaps(scope, policy, day, deny);
 
       const hash = decisionHash({
         attemptId: scope.attemptId,
@@ -374,7 +435,7 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
       });
       this.#insertApproval.run(
         scope.attemptId, scope.domainId, scope.orderHash, scope.quoteAssetId,
-        scope.principalAtoms.toString(), day, policy.policyHash, hash, now,
+        scope.principalAtoms.toString(), day, policy.policyHash, hash, now, scope.owner,
       );
       this.#insertHandoff.run(scope.handoff, scope.attemptId, scope.idempotencyKey, hash, now);
       return Object.freeze({

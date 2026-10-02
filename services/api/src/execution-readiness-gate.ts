@@ -92,7 +92,13 @@ export interface ExecutionReadinessEvidenceStore {
 }
 
 export interface ExecutionReadinessGate<Scope extends ExecutionReadinessScopeIdentity = ExecutionReadinessScope> {
+  /** Approves and records the handoff. Called where the owner's own signature is already proven. */
   authorize(scope: Scope): ExecutionReadinessReceipt;
+  /**
+   * Checks that the handoff would be approved without recording anything, for steps that run
+   * before the owner has signed. A gate without it is checked with `authorize`.
+   */
+  check?(scope: Scope): void;
 }
 
 export class ExecutionReadinessError extends Error {
