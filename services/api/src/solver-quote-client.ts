@@ -147,7 +147,11 @@ export function verifySolverAtomicQuoteResponse(
     || quote.environment !== order.environment
     || route.routeExpiryUnit !== order.expiryUnit
     || quote.validUntilUnit !== order.expiryUnit
-    || route.routeExpiryValue !== quote.validUntilValue
+    // A batched HyperCore route's expiry is its initial action's expiresAfter, which must end
+    // strictly before the quote validity; every other route ends with its quote.
+    || (order.settlementClass === "BATCHED_IOC_WITH_RECOVERY"
+      ? route.routeExpiryValue >= quote.validUntilValue || quote.validUntilValue > order.expiryValue
+      : route.routeExpiryValue !== quote.validUntilValue)
     || route.routeExpiryValue > order.expiryValue
     || typeof currentClock !== "bigint"
     || currentClock <= 0n

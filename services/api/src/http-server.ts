@@ -661,7 +661,10 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const terminalRequest = parseHyperliquidTestnetTerminalExecutionRequest(await readJson(request));
-        await requireExecutionReadiness("HYPERLIQUID_TESTNET_EXECUTE", terminalRequest);
+        // The caps count only once the package owner's own signature is proven.
+        await requireExecutionReadiness("HYPERLIQUID_TESTNET_EXECUTE", terminalRequest, "check");
+        hyperliquidTestnetExecutionPort.requireOwnerAuthorization?.(terminalRequest);
+        await requireExecutionReadiness("HYPERLIQUID_TESTNET_EXECUTE", terminalRequest, "commit");
         const sanitized = validateHyperliquidTestnetTerminalExecutionResult(
           await hyperliquidTestnetExecutionPort.execute(terminalRequest),
           terminalRequest,
@@ -862,7 +865,7 @@ export function createPrivateTerminalRequestHandler(
           created: result.created,
           order: result.record,
           traderAuthorization: selectionKind === "HYPERLIQUID_TESTNET"
-            ? "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED"
+            ? "OWNER_EVM_SIGNATURE_REQUIRED"
             : "REQUIRED",
           solverQuoting: "REQUIRED",
           note: "Unsigned order stored. Trader authorization and solver quoting are still required. No signing, quoting, or submission was performed.",
@@ -908,7 +911,7 @@ export function createPrivateTerminalRequestHandler(
             response,
             409,
             "EXTERNAL_ACCOUNT_AUTHORIZATION_REQUIRED",
-            "Hyperliquid Testnet authorization is enforced by the configured account and solver executor boundary.",
+            "Hyperliquid Testnet packages are authorized by the owner wallet at /internal/terminal/hyperliquid-testnet/authorize.",
           );
           return;
         }

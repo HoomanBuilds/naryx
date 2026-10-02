@@ -132,6 +132,10 @@
           "maxResidualBaseQuantityAtoms": { "$bigint": { "$operator": "max residual base quantity" } },
           "maxRecoveryCostAtomsByAsset": [{ "asset": { "$def": "quoteAsset" }, "maxAtoms": { "$bigint": { "$operator": "max recovery cost, quote atoms" } } }],
           "maxAggregateRecoveryLossQuoteAtoms": { "$bigint": { "$operator": "max aggregate recovery loss, quote atoms" } }
+        },
+        "omnibus": {
+          "maxOpenPackagesPerOwner": { "$number": { "$operator": "open packages one owner wallet may hold in the shared trading account, 1 to 16, for example 1" } },
+          "maxOpenNotionalQuoteAtoms": { "$bigint": { "$operator": "total entry notional the shared trading account carries across all owners, quote atoms, within its funded testnet balance" } }
         }
       }
     },

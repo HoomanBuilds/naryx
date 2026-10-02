@@ -24,6 +24,8 @@ import {
   type HyperliquidTestnetRuntimeConfig,
   type SolverAtomicQuoteResponse,
 } from "../src/index.js";
+import { HyperliquidTestnetOwnerLedger } from "../src/hyperliquid-testnet-owner-ledger.js";
+import { createHyperliquidTestnetExitOrderFactory } from "../src/hyperliquid-testnet-owner-routes.js";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const CONTEXT_ID = "hyperliquid:testnet:btc-carry-v1";
@@ -195,7 +197,7 @@ const orderRequest = (size: string, idempotencyKey: string) => ({
   idempotencyKey,
 });
 
-test("Hyperliquid Testnet context prices orders from the live snapshot and rejects arbitrary accounts", async () => {
+test("Hyperliquid Testnet context prices orders from the live snapshot for any owner wallet in the trading account", async () => {
   const market = fakeMarket();
   const feed = priceFeed(market);
   assert.equal(await feed.refresh(), true);
@@ -212,7 +214,8 @@ test("Hyperliquid Testnet context prices orders from the live snapshot and rejec
       domainManifestHash: "11".repeat(32),
     },
     environment: "TESTNET",
-    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+    authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+    maxOpenPackagesPerOwner: null,
   });
   const context = runtime.contexts(CONTEXT_ID)!;
   assert.equal(context.capturedAtClock, BigInt(START_MS));
@@ -254,12 +257,24 @@ test("Hyperliquid Testnet context prices orders from the live snapshot and rejec
       coordinator.createOrder(orderRequest("0.00001", "hyper-order-key-0002")),
       /shortfall cannot exceed package quantity/,
     );
+    // The owner is the user's own wallet; settlement stays in the configured trading account.
+    const owned = await coordinator.createOrder({
+      ...orderRequest("1", "hyper-order-key-0003"),
+      owner: "0x2222222222222222222222222222222222222222",
+    });
+    assert.equal(owned.record.owner, "0x2222222222222222222222222222222222222222");
+    assert.equal(owned.record.settlementAccount, ACCOUNT);
     await assert.rejects(
       coordinator.createOrder({
-        ...orderRequest("1", "hyper-order-key-0003"),
+        ...orderRequest("1", "hyper-order-key-0004"),
         owner: "0x2222222222222222222222222222222222222222",
+        settlementAccount: "0x2222222222222222222222222222222222222222",
       }),
       /configured hosted account/,
+    );
+    await assert.rejects(
+      coordinator.createOrder({ ...orderRequest("1", "hyper-order-key-0005"), owner: `0x${"AB".repeat(20)}` }),
+      /not a valid wallet/,
     );
   });
 });
@@ -461,6 +476,63 @@ test("Hyperliquid Testnet selection uses its own durable attempt identity withou
   } finally {
     intents.close();
     orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a Hyperliquid exit sells exactly the owner's package spot and buys back exactly its short, priced against the trader", async () => {
+  const market = fakeMarket();
+  const feed = priceFeed(market);
+  assert.equal(await feed.refresh(), true);
+  const runtimeConfig = config();
+  const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
+  const owner = "0x2222222222222222222222222222222222222222";
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-exit-"));
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  try {
+    const limits = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 10n ** 12n };
+    ledger.reserveEntry({ attemptId: "entry-owner-0001", owner, orderHash: "0e".repeat(32), notionalAtoms: 1n, limits });
+    // One BTC short; the spot buy paid its 35-atom fee in base, so the package holds 0.99965 BTC.
+    const hash = `0x${"dd".repeat(32)}`;
+    ledger.settleEntry("entry-owner-0001", {
+      attemptId: "entry-owner-0001", idempotencyKey: "idem-0123456789ABCD", domain: "hypercore:testnet",
+      environment: "TESTNET", status: "RECONCILED", submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_BOUNDED",
+      reasons: [], actionCommitment: hash, requestCommitment: hash, rawEvidenceCommitments: [],
+      observedNetSpotDeltaAtoms: "99965", observedPerpetualDeltaAtoms: "-100000",
+    }, 60_010_000_000n);
+    const exit = createHyperliquidTestnetExitOrderFactory({
+      config: runtimeConfig.orderContext!, contexts: runtime.contexts, clock: runtime.clock,
+      prices: feed, ledger, orders,
+    });
+    await assert.rejects(
+      exit({ owner: "0x3333333333333333333333333333333333333333", slippageBps: 25, idempotencyKey: "hyper-exit-key-0000" }),
+      /no open Hyperliquid testnet package/,
+    );
+    const created = await exit({ owner, slippageBps: 25, idempotencyKey: "hyper-exit-key-0001" });
+    const order = orders.getCanonicalOrderByHash(created.record.orderHashHex)!;
+    assert.equal(order.action, "EXIT");
+    assert.equal(order.owner, owner);
+    assert.equal(order.settlementAccount, ACCOUNT);
+    assert.equal(order.packageTimeInForce, "IOC");
+    assert.equal(order.quantity.atoms, 100_000n);
+    assert.equal(order.hyperliquidGrossSpotQuantity?.atoms, 99_965n);
+    assert.equal(order.hyperliquidMinNetSpotDelta?.atoms, -99_965n);
+    assert.equal(order.hyperliquidMaxNetSpotDelta?.atoms, -99_965n);
+    assert.equal(order.expectedPreStrategySpotQuantity?.atoms, 99_965n);
+    assert.equal(order.expectedPrePositionSize.atoms, -100_000n);
+    assert.equal(Buffer.from(order.entryReceiptHash!).toString("hex"), ledger.openPackage(owner)?.entryReceiptHash);
+    // 0.99965 BTC at the 60000.5 bid less 25 bps is 59829.5510754375 USDC, rounded down.
+    assert.equal(order.minSpotQuoteOut?.atoms, 59_829_551_075n);
+    // The buy-back cap is the 60011.5 ask plus 25 bps, rounded down as a buy limit.
+    const cap = order.hyperliquidMaxPerpBuyPrice!;
+    assert.deepEqual([cap.quoteAtoms, cap.baseAtoms, cap.roundingDirection], [48_129_223n, 80n, "FLOOR"]);
+    // Proceeds less the 0.035% spot fee, plus the entry notional, less the capped buy-back and its 0.045% fee.
+    assert.equal(order.minExitQuoteOutcome?.atoms, 59_630_009_294n);
+    assert.equal(ledger.openPackage(owner)?.exitOrderHash, created.record.orderHashHex);
+  } finally {
+    orders.close();
+    ledger.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 });

@@ -9,6 +9,8 @@ import {
 import type { InternalOrderClockPort } from "./terminal-orders.js";
 
 const BPS_SCALE = 10_000n;
+/** A package owner is the user's own EVM wallet: lowercase, nonzero. */
+export const HYPERLIQUID_TESTNET_OWNER_PATTERN = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 
 export type HyperliquidTestnetOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
@@ -16,6 +18,10 @@ export type HyperliquidTestnetOrderRuntime = Readonly<{
   terminalContext: HyperliquidTestnetTerminalContext;
 }>;
 
+/**
+ * Every package is owned by the wallet that signs its authorization and settles in Naryx's single
+ * funded Testnet trading account, which executes it on the owner's behalf.
+ */
 export type HyperliquidTestnetTerminalContext = Readonly<{
   contextId: string;
   tradingAccount: string;
@@ -25,11 +31,19 @@ export type HyperliquidTestnetTerminalContext = Readonly<{
     domainManifestHash: string;
   }>;
   environment: "TESTNET";
-  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE";
+  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT";
+  maxOpenPackagesPerOwner: number | null;
 }>;
 
 // Quote units per base unit, as an exact fraction of decimal Hyperliquid prices.
 type Fraction = Readonly<{ numerator: bigint; denominator: bigint }>;
+
+/** Exit bounds for one package from the live books, rounded against the trader. Integer atoms. */
+export type HyperliquidTestnetExitLimits = Readonly<{
+  minSpotQuoteOutAtoms: bigint;
+  maxPerpBuyPrice: ExactPrice;
+  minExitQuoteOutcomeAtoms: bigint;
+}>;
 
 export type HyperliquidTestnetLivePrices = Readonly<{
   spotReferencePrice: ExactPrice;
@@ -118,6 +132,51 @@ export function deriveHyperliquidTestnetLivePrices(
   });
 }
 
+function ceilDivide(numerator: bigint, denominator: bigint): bigint {
+  return (numerator + denominator - 1n) / denominator;
+}
+
+/**
+ * The spot leg must return at least the spot bid less the slippage on the package's spot (rounded
+ * down); the short is bought back at no more than the perpetual ask plus the slippage. The outcome
+ * floor is those proceeds less the spot taker fee, plus the entry notional less the worst-case
+ * buy-back notional and its taker fee, every fee rounded up; a negative floor becomes zero.
+ */
+export function deriveHyperliquidTestnetExitLimits(
+  baseAsset: AssetRef,
+  quoteAsset: AssetRef,
+  snapshot: HyperliquidTestnetPriceSnapshot,
+  spotQuantityAtoms: bigint,
+  perpQuantityAtoms: bigint,
+  entryNotionalAtoms: bigint,
+  slippageBps: number,
+): HyperliquidTestnetExitLimits {
+  if (spotQuantityAtoms <= 0n || perpQuantityAtoms <= 0n || entryNotionalAtoms <= 0n
+    || !Number.isSafeInteger(slippageBps) || slippageBps < 1 || slippageBps >= 10_000) {
+    throw new Error("Hyperliquid exit inputs are invalid.");
+  }
+  const slippage = BigInt(slippageBps);
+  const bid = scaled(decimalFraction(snapshot.spot.bid, "spot bid"), BPS_SCALE - slippage);
+  const baseScale = 10n ** BigInt(baseAsset.decimals);
+  const quoteScale = 10n ** BigInt(quoteAsset.decimals);
+  const minSpotQuoteOutAtoms = (spotQuantityAtoms * bid.numerator * quoteScale) / (bid.denominator * baseScale);
+  const ask = scaled(decimalFraction(snapshot.perp.ask, "perpetual ask"), BPS_SCALE + slippage);
+  const maxPerpBuyPrice = atomPrice(baseAsset, quoteAsset, ask, "FLOOR");
+  const maxCloseNotional = ceilDivide(perpQuantityAtoms * maxPerpBuyPrice.quoteAtoms, maxPerpBuyPrice.baseAtoms);
+  const spotFee = decimalFraction(snapshot.spotTakerRate, "spotTakerRate");
+  const perpFee = decimalFraction(snapshot.perpTakerRate, "perpTakerRate");
+  const outcome = minSpotQuoteOutAtoms
+    - ceilDivide(minSpotQuoteOutAtoms * spotFee.numerator, spotFee.denominator)
+    + entryNotionalAtoms - maxCloseNotional
+    - ceilDivide(maxCloseNotional * perpFee.numerator, perpFee.denominator);
+  if (minSpotQuoteOutAtoms <= 0n) throw new Error("Hyperliquid exit spot proceeds floor is zero.");
+  return Object.freeze({
+    minSpotQuoteOutAtoms,
+    maxPerpBuyPrice,
+    minExitQuoteOutcomeAtoms: outcome > 0n ? outcome : 0n,
+  });
+}
+
 export function createHyperliquidTestnetOrderRuntime(
   config: HyperliquidTestnetRuntimeConfig,
   priceFeed: HyperliquidTestnetPriceSource,
@@ -179,7 +238,7 @@ export function createHyperliquidTestnetOrderRuntime(
       minVenueReserveReturnedAtoms: order.minVenueReserveReturnedAtoms,
       minWalletQuoteBalanceDeltaAtoms: order.minWalletQuoteBalanceDeltaAtoms,
       maxResidualBaseQuantityAtoms: order.maxResidualBaseQuantityAtoms,
-      requiredOwner: order.tradingAccount,
+      ownerPattern: HYPERLIQUID_TESTNET_OWNER_PATTERN,
       requiredSettlementAccount: order.tradingAccount,
       hyperliquidQuantityPolicy: "BOUNDED_NET",
       hyperliquidMaxNetSpotShortfallAtoms: order.maxNetSpotShortfallAtoms,
@@ -228,7 +287,8 @@ export function createHyperliquidTestnetOrderRuntime(
       domainManifestHash: Buffer.from(config.domain.domainManifestHash).toString("hex"),
     }),
     environment: "TESTNET",
-    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+    authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+    maxOpenPackagesPerOwner: config.omnibus?.maxOpenPackagesPerOwner ?? null,
   });
   return Object.freeze({ contexts, clock, terminalContext });
 }

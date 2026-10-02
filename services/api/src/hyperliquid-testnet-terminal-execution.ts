@@ -12,9 +12,13 @@ import {
 
 const SCHEMA_VERSION = 1;
 const EXECUTOR_PATH = "/internal/solver/hyperliquid-testnet/execute";
+const EXECUTOR_STATUS_PATH = "/internal/solver/hyperliquid-testnet/attempt-status";
 const MAX_RESPONSE_BYTES = 65_536;
-const DEFAULT_TIMEOUT_MS = 5_000;
-const MAX_TIMEOUT_MS = 30_000;
+// The executor runs one package at a time, so a handoff can wait behind a bounded queue of
+// earlier packages before its own authority read, submission, and reconciliation.
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 300_000;
+const STATUS_TIMEOUT_MS = 5_000;
 let cachedRepositoryRoot: string | undefined;
 
 type StoredExecutionRow = Readonly<{
@@ -23,10 +27,38 @@ type StoredExecutionRow = Readonly<{
   result_json: unknown;
 }>;
 
+export type HyperliquidTestnetAttemptState =
+  | Readonly<{ state: "QUEUED"; queuePosition: number; lane: HyperliquidTestnetLaneState }>
+  | Readonly<{ state: "EXECUTING" | "UNCERTAIN" | "NOT_STARTED"; lane: HyperliquidTestnetLaneState | null }>
+  | Readonly<{ state: "COMPLETED"; result: HyperliquidTestnetTerminalExecutionResult }>;
+
+export type HyperliquidTestnetLaneState = "FREE" | "EXECUTING" | "BLOCKED";
+
+type ExecutorAttemptStatus = Readonly<{
+  state: "QUEUED" | "EXECUTING" | "COMPLETED" | "INTERRUPTED" | "UNKNOWN";
+  queuePosition: number | null;
+  lane: HyperliquidTestnetLaneState;
+  result: HyperliquidTestnetTerminalExecutionResult | null;
+}>;
+
 export interface TrustedHyperliquidTestnetAttemptExecutor {
   executeAttempt(
     request: HyperliquidTestnetTerminalExecutionRequest,
   ): Promise<HyperliquidTestnetTerminalExecutionResult>;
+  /** `resolve` fences an attempt the executor never received, so its outcome becomes definite. */
+  attemptStatus?(
+    request: HyperliquidTestnetTerminalExecutionRequest & Readonly<{ resolve: boolean }>,
+  ): Promise<ExecutorAttemptStatus>;
+}
+
+/**
+ * Owner-side admission around the trusted handoff: `admit` refuses or reserves before anything
+ * is sent, and `settle` records each terminal outcome exactly once.
+ */
+export interface HyperliquidTestnetExecutionGuard {
+  requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest): void;
+  admit(request: HyperliquidTestnetTerminalExecutionRequest): void;
+  settle(request: HyperliquidTestnetTerminalExecutionRequest, result: HyperliquidTestnetTerminalExecutionResult): void;
 }
 
 export type HyperliquidTestnetExecutorHttpOptions = Readonly<{
@@ -111,6 +143,32 @@ function executorTimeout(value: number | undefined): number {
   return checked;
 }
 
+function executorAttemptStatus(
+  value: unknown,
+  request: HyperliquidTestnetTerminalExecutionRequest,
+): ExecutorAttemptStatus {
+  const record = value as Record<string, unknown>;
+  if (typeof value !== "object" || value === null || Array.isArray(value)
+    || Object.keys(record).sort().join(",")
+      !== "attemptId,domain,environment,idempotencyKey,lane,queuePosition,result,state"
+    || record.attemptId !== request.attemptId || record.idempotencyKey !== request.idempotencyKey
+    || record.domain !== "hypercore:testnet" || record.environment !== "TESTNET"
+    || (record.lane !== "FREE" && record.lane !== "EXECUTING" && record.lane !== "BLOCKED")
+    || !["QUEUED", "EXECUTING", "COMPLETED", "INTERRUPTED", "UNKNOWN"].includes(record.state as string)
+    || (record.state === "QUEUED") !== (typeof record.queuePosition === "number"
+      && Number.isSafeInteger(record.queuePosition) && record.queuePosition >= 0)
+    || (record.state !== "QUEUED" && record.queuePosition !== null)
+    || (record.state === "COMPLETED") === (record.result === null)) {
+    throw new Error("Hyperliquid executor status response is invalid.");
+  }
+  return Object.freeze({
+    state: record.state as ExecutorAttemptStatus["state"],
+    queuePosition: record.queuePosition as number | null,
+    lane: record.lane as HyperliquidTestnetLaneState,
+    result: record.result === null ? null : validateHyperliquidTestnetTerminalExecutionResult(record.result, request),
+  });
+}
+
 async function boundedProtocolJson(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
   const statedLength = response.headers.get("content-length");
@@ -183,6 +241,27 @@ implements TrustedHyperliquidTestnetAttemptExecutor {
       request,
     );
   }
+
+  async attemptStatus(
+    request: HyperliquidTestnetTerminalExecutionRequest & Readonly<{ resolve: boolean }>,
+  ): Promise<ExecutorAttemptStatus> {
+    let response: Response;
+    try {
+      response = await this.#fetch(`${this.#origin}${EXECUTOR_STATUS_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: stringifyProtocolJson(request, "hyperliquidTestnet.executorStatusRequest"),
+        redirect: "error",
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error("Hyperliquid executor status request failed.");
+    }
+    if (!response.ok) {
+      throw new Error(`Hyperliquid executor status request failed with HTTP ${response.status}.`);
+    }
+    return executorAttemptStatus(await boundedProtocolJson(response), request);
+  }
 }
 
 export class DurableHyperliquidTestnetTerminalExecutionPort
@@ -197,8 +276,14 @@ implements HyperliquidTestnetTerminalExecutionPort {
   readonly #insertPending: Database.Statement;
   readonly #complete: Database.Statement;
   readonly #markUncertain: Database.Statement;
+  readonly #resolveUncertain: Database.Statement;
+  readonly #guard: HyperliquidTestnetExecutionGuard | undefined;
 
-  constructor(path: string, executor: TrustedHyperliquidTestnetAttemptExecutor) {
+  constructor(
+    path: string,
+    executor: TrustedHyperliquidTestnetAttemptExecutor,
+    guard?: HyperliquidTestnetExecutionGuard,
+  ) {
     if (executor === null || typeof executor !== "object" ||
         typeof executor.executeAttempt !== "function") {
       throw new Error("A trusted Hyperliquid Testnet attempt executor is required.");
@@ -231,6 +316,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
       throw new Error("Hyperliquid terminal execution store schema version is unsupported.");
     }
     this.#executor = executor;
+    this.#guard = guard;
     this.#select = this.#db.prepare(`
       SELECT attempt_id, status, result_json
       FROM hyperliquid_terminal_executions
@@ -250,6 +336,11 @@ implements HyperliquidTestnetTerminalExecutionPort {
       UPDATE hyperliquid_terminal_executions
       SET status = 'UNCERTAIN', result_json = NULL
       WHERE idempotency_key = ? AND attempt_id = ? AND status = 'PENDING'
+    `);
+    this.#resolveUncertain = this.#db.prepare(`
+      UPDATE hyperliquid_terminal_executions
+      SET status = 'COMPLETED', result_json = ?
+      WHERE idempotency_key = ? AND attempt_id = ? AND status IN ('PENDING', 'UNCERTAIN')
     `);
   }
 
@@ -295,6 +386,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
   ): Promise<HyperliquidTestnetTerminalExecutionResult> {
     const stored = this.#stored(request);
     if (stored !== undefined) return stored;
+    this.#guard?.admit(request);
     try {
       this.#insertPending.run(request.idempotencyKey, request.attemptId);
     } catch {
@@ -314,6 +406,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
       const serialized = JSON.stringify(result);
       const update = this.#complete.run(serialized, request.idempotencyKey, request.attemptId);
       if (update.changes !== 1) throw uncertain();
+      this.#guard?.settle(request, result);
       return result;
     } catch (error) {
       try {
@@ -344,6 +437,50 @@ implements HyperliquidTestnetTerminalExecutionPort {
     });
     this.#inFlight.set(request.idempotencyKey, { attemptId: request.attemptId, promise });
     return promise;
+  }
+
+  requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest): void {
+    this.#guard?.requireOwnerAuthorization(request);
+  }
+
+  /**
+   * Where the attempt stands. Polling while this process waits on the executor only reads; an
+   * uncertain handoff is resolved by the executor's durable record, fencing an attempt it never
+   * received, so the stored outcome becomes definite without resubmission.
+   */
+  async status(request: HyperliquidTestnetTerminalExecutionRequest): Promise<HyperliquidTestnetAttemptState> {
+    const row = this.#select.get(request.idempotencyKey) as StoredExecutionRow | undefined;
+    if (row === undefined) return Object.freeze({ state: "NOT_STARTED" as const, lane: null });
+    if (row.attempt_id !== request.attemptId) {
+      throw new HyperliquidTestnetTerminalExecutionStateError(
+        "IDEMPOTENCY_CONFLICT",
+        "Hyperliquid idempotency key is already bound to a different attempt.",
+      );
+    }
+    if (row.status === "COMPLETED") {
+      const result = this.#stored(request)!;
+      this.#guard?.settle(request, result);
+      return Object.freeze({ state: "COMPLETED" as const, result });
+    }
+    if (this.#executor.attemptStatus === undefined) {
+      return Object.freeze({ state: "UNCERTAIN" as const, lane: null });
+    }
+    const inFlight = this.#inFlight.get(request.idempotencyKey)?.attemptId === request.attemptId;
+    const status = await this.#executor.attemptStatus({ ...request, resolve: !inFlight });
+    if (status.state === "COMPLETED" && status.result !== null) {
+      if (!inFlight) {
+        const update = this.#resolveUncertain.run(JSON.stringify(status.result), request.idempotencyKey, request.attemptId);
+        if (update.changes === 1) this.#guard?.settle(request, status.result);
+      }
+      return Object.freeze({ state: "COMPLETED" as const, result: status.result });
+    }
+    if (status.state === "QUEUED") {
+      return Object.freeze({ state: "QUEUED" as const, queuePosition: status.queuePosition ?? 0, lane: status.lane });
+    }
+    return Object.freeze({
+      state: status.state === "EXECUTING" ? "EXECUTING" as const : "UNCERTAIN" as const,
+      lane: status.lane,
+    });
   }
 
   close(): void {

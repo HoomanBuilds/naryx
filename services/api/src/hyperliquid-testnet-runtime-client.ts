@@ -122,6 +122,16 @@ export type HyperliquidTestnetRuntimeConfig = Readonly<{
   market: HyperliquidTestnetMarketMetadata;
   bounds: HyperliquidTestnetExecutionBounds;
   orderContext?: HyperliquidTestnetOrderContextConfig;
+  omnibus?: HyperliquidTestnetOmnibusLimits;
+}>;
+
+/**
+ * Fairness bounds of the shared trading account that executes every user's packages: open
+ * packages per owner wallet, and the total entry notional the account carries at once.
+ */
+export type HyperliquidTestnetOmnibusLimits = Readonly<{
+  maxOpenPackagesPerOwner: number;
+  maxOpenNotionalQuoteAtoms: bigint;
 }>;
 
 export type HyperliquidTestnetOrderContextConfig = Readonly<{
@@ -475,6 +485,8 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
     "seriesManifestHash", "solverId", "solverVerificationKey", "version",
     ...(typeof rootRecord === "object" && rootRecord !== null && "orderContext" in rootRecord
       ? ["orderContext"] : []),
+    ...(typeof rootRecord === "object" && rootRecord !== null && "omnibus" in rootRecord
+      ? ["omnibus"] : []),
   ];
   const root = exactObject(parsed, rootKeys, "runtime config");
   if (root.version !== 1 || root.environment !== "TESTNET") {
@@ -547,6 +559,19 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
         || checkedOrderContext.baseAsset.decimals !== checkedMarket.perpetual.sizeDecimals)) {
     fail("INVALID_CONFIGURATION", "Hyperliquid order context does not match configured market metadata");
   }
+  let omnibus: HyperliquidTestnetOmnibusLimits | undefined;
+  if (root.omnibus !== undefined) {
+    const limits = exactObject(root.omnibus, ["maxOpenNotionalQuoteAtoms", "maxOpenPackagesPerOwner"], "omnibus");
+    const perOwner = requirePositiveInteger(limits.maxOpenPackagesPerOwner, "omnibus.maxOpenPackagesPerOwner");
+    if (perOwner > 16) fail("INVALID_CONFIGURATION", "omnibus.maxOpenPackagesPerOwner is out of range");
+    if (typeof limits.maxOpenNotionalQuoteAtoms !== "bigint" || limits.maxOpenNotionalQuoteAtoms <= 0n) {
+      fail("INVALID_CONFIGURATION", "omnibus.maxOpenNotionalQuoteAtoms must be positive quote atoms");
+    }
+    omnibus = Object.freeze({
+      maxOpenPackagesPerOwner: perOwner,
+      maxOpenNotionalQuoteAtoms: limits.maxOpenNotionalQuoteAtoms,
+    });
+  }
   return Object.freeze({
     domain: checkedDomain,
     seriesManifestHash: checkedSolverKey(root.seriesManifestHash),
@@ -556,6 +581,7 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
     market: checkedMarket,
     bounds: executionBounds(bounds as HyperliquidTestnetExecutionBounds),
     ...(checkedOrderContext === undefined ? {} : { orderContext: checkedOrderContext }),
+    ...(omnibus === undefined ? {} : { omnibus }),
   });
 }
 

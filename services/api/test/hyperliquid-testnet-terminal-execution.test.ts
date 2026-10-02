@@ -221,3 +221,54 @@ test("durable Hyperliquid terminal execution fences thrown and invalid outcomes"
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("durable Hyperliquid terminal execution resolves a timed-out handoff from the executor record", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-resolve-"));
+  let executions = 0;
+  const resolves: boolean[] = [];
+  const settled: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const executor: TrustedHyperliquidTestnetAttemptExecutor = {
+    executeAttempt: async (request) => {
+      executions += 1;
+      if (request.attemptId === REQUEST.attemptId) throw new Error("executor request timed out");
+      await gate;
+      return result(request);
+    },
+    attemptStatus: async (request) => {
+      resolves.push(request.resolve);
+      return request.attemptId === REQUEST.attemptId
+        ? { state: "COMPLETED", queuePosition: null, lane: "FREE", result: result(REQUEST) }
+        : { state: "QUEUED", queuePosition: 1, lane: "EXECUTING", result: null };
+    },
+  };
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(join(scratch, "execution.db"), executor, {
+    requireOwnerAuthorization: () => {},
+    admit: () => {},
+    settle: (_request, outcome) => { settled.push(outcome.status); },
+  });
+  try {
+    await assert.rejects(port.execute(REQUEST), /timed out/);
+    await assert.rejects(port.execute(REQUEST), stateError("EXECUTION_OUTCOME_UNCERTAIN"));
+    // Nothing waits on the executor any more, so the status call resolves (fencing if unreceived).
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
+    assert.deepEqual(resolves, [true]);
+    assert.deepEqual(settled, ["RECONCILED"]);
+    assert.deepEqual(await port.execute(REQUEST), result(REQUEST));
+    assert.equal(executions, 1);
+
+    // While this process still waits on a queued handoff, polling only reads.
+    const queued = { attemptId: "attempt-queued-000001", idempotencyKey: "idem-queued-0000001" };
+    const pending = port.execute(queued);
+    assert.deepEqual(await port.status(queued), { state: "QUEUED", queuePosition: 1, lane: "EXECUTING" });
+    assert.deepEqual(resolves, [true, false]);
+    release();
+    assert.deepEqual(await pending, result(queued));
+    assert.deepEqual(await port.status({ attemptId: "attempt-never-0000001", idempotencyKey: "idem-never-00000001" }),
+      { state: "NOT_STARTED", lane: null });
+  } finally {
+    port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

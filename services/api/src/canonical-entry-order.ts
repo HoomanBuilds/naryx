@@ -59,6 +59,7 @@ export interface ActiveOrderContext {
   readonly minWalletQuoteBalanceDeltaAtoms: bigint;
   readonly maxResidualBaseQuantityAtoms: bigint;
   readonly requiredOwner?: string;
+  readonly ownerPattern?: RegExp;
   readonly requiredSettlementAccount?: string;
   readonly hyperliquidQuantityPolicy?: Exclude<QuantityPolicyClass, "EXACT_ATOMIC">;
   readonly hyperliquidMaxNetSpotShortfallAtoms?: bigint;
@@ -293,6 +294,9 @@ function loadContext(
       "ACCOUNT_MISMATCH",
       "Owner and settlement account must match the configured hosted account.",
     );
+  }
+  if (context.ownerPattern !== undefined && !context.ownerPattern.test(request.owner)) {
+    throw new EntryOrderValidationError("INVALID_OWNER", "Owner is not a valid wallet for this context.");
   }
   requireU32Version(context.orderVersion, "INVALID_CONTEXT", "Order version is invalid.");
   requireU32Version(context.templateVersion, "INVALID_CONTEXT", "Template version is invalid.");

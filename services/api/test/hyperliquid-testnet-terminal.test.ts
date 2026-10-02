@@ -26,7 +26,8 @@ const TERMINAL_CONTEXT: HyperliquidTestnetTerminalContext = Object.freeze({
     domainManifestHash: "11".repeat(32),
   }),
   environment: "TESTNET",
-  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+  maxOpenPackagesPerOwner: 1,
 });
 
 async function listen(server: ReturnType<typeof createPrivateTerminalServer>): Promise<string> {

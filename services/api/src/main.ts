@@ -88,6 +88,12 @@ import {
   DurableHyperliquidTestnetTerminalExecutionPort,
   HttpHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
+import { HyperliquidTestnetOwnerLedger } from "./hyperliquid-testnet-owner-ledger.js";
+import {
+  createHyperliquidTestnetExecutionGuard,
+  createHyperliquidTestnetExitOrderFactory,
+  createHyperliquidTestnetOwnerRoutes,
+} from "./hyperliquid-testnet-owner-routes.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -404,18 +410,32 @@ if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
 }
 let hyperliquidExecutionRuntime: DurableHyperliquidTestnetTerminalExecutionPort | undefined;
 let hyperliquidExecutionRuntimeError: unknown;
+// Every user's package executes in the one configured trading account; the owner ledger records
+// which wallet owns which package and gates entries and exits on the owner's signature.
+let hyperliquidOwnerLedger: HyperliquidTestnetOwnerLedger | undefined;
 if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
   try {
     if (process.env.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== "TESTNET") {
       throw new Error("NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.");
     }
+    const orderContext = hyperliquidConfig?.orderContext;
+    if (orderContext === undefined) throw new Error("Hyperliquid Testnet order context is required for execution.");
+    const executionDb = absolutePath(
+      process.env.NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB ?? "",
+      "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB",
+    );
+    hyperliquidOwnerLedger = new HyperliquidTestnetOwnerLedger(executionDb);
     hyperliquidExecutionRuntime = new DurableHyperliquidTestnetTerminalExecutionPort(
-      absolutePath(
-        process.env.NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB ?? "",
-        "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB",
-      ),
+      executionDb,
       new HttpHyperliquidTestnetAttemptExecutor({
         executorOrigin: process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? "",
+      }),
+      createHyperliquidTestnetExecutionGuard({
+        ledger: hyperliquidOwnerLedger,
+        intents: executionIntentStore,
+        orders: orderStore,
+        tradingAccount: orderContext.tradingAccount,
+        limits: hyperliquidConfig?.omnibus,
       }),
     );
   } catch (error) {
@@ -465,6 +485,28 @@ const factories: PrivateTerminalRuntimeFactories = {
       } : {}),
     };
 const runtime = composePrivateTerminalRuntime(process.env, factories, reportRuntimeFailure);
+const hyperliquidOrderContext = hyperliquidConfig?.orderContext;
+const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliquidOrderContext === undefined
+  || hyperliquidExecutionRuntime === undefined
+  ? undefined
+  : createHyperliquidTestnetOwnerRoutes({
+    tradingAccount: hyperliquidOrderContext.tradingAccount,
+    maxOpenPackagesPerOwner: hyperliquidConfig?.omnibus?.maxOpenPackagesPerOwner ?? null,
+    ledger: hyperliquidOwnerLedger,
+    intents: executionIntentStore,
+    orders: orderStore,
+    ...(hyperliquidOrderRuntime === undefined || hyperliquidPriceFeed === undefined ? {} : {
+      createExitOrder: createHyperliquidTestnetExitOrderFactory({
+        config: hyperliquidOrderContext,
+        contexts: hyperliquidOrderRuntime.contexts,
+        clock: hyperliquidOrderRuntime.clock,
+        prices: hyperliquidPriceFeed,
+        ledger: hyperliquidOwnerLedger,
+        orders: orderStore,
+      }),
+    }),
+    attemptStatus: (request) => hyperliquidExecutionRuntime!.status(request),
+  });
 type RouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
 function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[]): RouteHandler | undefined {
   const present = handlers.filter((handler): handler is RouteHandler => handler !== undefined);
@@ -541,6 +583,7 @@ const server = createPrivateTerminalServer(
     arbitrumOwnerRoutes,
     solanaDevnetOrderRuntime?.handler,
     baseExitRoutes,
+    hyperliquidOwnerRoutes,
   ),
   {
     ...terminalMarkets,
@@ -583,6 +626,7 @@ function shutdown(): void {
     solanaLocalPreparationStore?.close();
     basePreparationStore?.close();
     hyperliquidExecutionRuntime?.close();
+    hyperliquidOwnerLedger?.close();
     publicMarket?.close();
     process.exitCode = 0;
   });

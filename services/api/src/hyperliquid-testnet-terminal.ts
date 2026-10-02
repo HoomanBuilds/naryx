@@ -5,6 +5,7 @@ const REQUEST_KEYS = ["attemptId", "idempotencyKey"] as const;
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const COMMITMENT_PATTERN = /^0x[0-9a-f]{64}$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+const SIGNED_ATOMS_PATTERN = /^(?:0|-?[1-9][0-9]{0,77})$/;
 const MAX_REASONS = 8;
 const MAX_EVIDENCE = 64;
 
@@ -103,6 +104,9 @@ export type HyperliquidTestnetTerminalExecutionResult =
     actionCommitment: string;
     requestCommitment: string;
     rawEvidenceCommitments: readonly string[];
+    /** Account-wide deltas over the executor's serialized window: exactly this package's fills. */
+    observedNetSpotDeltaAtoms?: string;
+    observedPerpetualDeltaAtoms?: string;
   }>
   | Readonly<{
     attemptId: string;
@@ -119,6 +123,8 @@ export interface HyperliquidTestnetTerminalExecutionPort {
   execute(
     request: HyperliquidTestnetTerminalExecutionRequest,
   ): Promise<HyperliquidTestnetTerminalExecutionResult>;
+  /** Throws a validation error unless the package owner's signature is recorded for the attempt. */
+  requireOwnerAuthorization?(request: HyperliquidTestnetTerminalExecutionRequest): void;
 }
 
 export class HyperliquidTestnetTerminalValidationError extends Error {
@@ -345,8 +351,18 @@ export function validateHyperliquidTestnetTerminalExecutionResult(
       });
     }
     case "RECONCILED": {
-      if (!hasExactKeys(value, [...BASE_KEYS, "actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"].sort())) {
+      const reconciledKeys = [...BASE_KEYS, "actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"];
+      const observed = "observedNetSpotDeltaAtoms" in value;
+      if (!hasExactKeys(value, (observed
+        ? [...reconciledKeys, "observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms"]
+        : reconciledKeys).sort())) {
         throw new Error("RECONCILED has invalid fields");
+      }
+      if (observed && (typeof value.observedNetSpotDeltaAtoms !== "string"
+        || !SIGNED_ATOMS_PATTERN.test(value.observedNetSpotDeltaAtoms)
+        || typeof value.observedPerpetualDeltaAtoms !== "string"
+        || !SIGNED_ATOMS_PATTERN.test(value.observedPerpetualDeltaAtoms))) {
+        throw new Error("observed package deltas must be signed integer atoms");
       }
       if (value.packageStatus !== "NO_EFFECT" && value.packageStatus !== "COMPLETED_EXACT" &&
           value.packageStatus !== "COMPLETED_BOUNDED" && value.packageStatus !== "RECOVERY_REQUIRED" &&
@@ -369,6 +385,10 @@ export function validateHyperliquidTestnetTerminalExecutionResult(
         actionCommitment: requireCommitment(value.actionCommitment, "actionCommitment"),
         requestCommitment: requireCommitment(value.requestCommitment, "requestCommitment"),
         rawEvidenceCommitments: requireEvidenceCommitments(value.rawEvidenceCommitments),
+        ...(observed ? {
+          observedNetSpotDeltaAtoms: value.observedNetSpotDeltaAtoms as string,
+          observedPerpetualDeltaAtoms: value.observedPerpetualDeltaAtoms as string,
+        } : {}),
       });
     }
     case "HANDOFF_REJECTED": {

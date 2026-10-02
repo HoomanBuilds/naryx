@@ -187,6 +187,20 @@ test("Hyperliquid runtime config requires exact Testnet identities", () => {
       () => loadHyperliquidTestnetRuntimeConfig(path),
       errorCode("INVALID_CONFIGURATION"),
     );
+
+    // The shared account's fairness limits are exact, positive, and bounded.
+    const omnibus = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 50_000_000n };
+    writeFileSync(path, stringifyProtocolJson({ ...config, omnibus }, "test.omnibus"));
+    assert.deepEqual(loadHyperliquidTestnetRuntimeConfig(path).omnibus, omnibus);
+    for (const invalid of [
+      { ...omnibus, maxOpenPackagesPerOwner: 0 },
+      { ...omnibus, maxOpenPackagesPerOwner: 17 },
+      { ...omnibus, maxOpenNotionalQuoteAtoms: 0n },
+      { maxOpenPackagesPerOwner: 1 },
+    ]) {
+      writeFileSync(path, stringifyProtocolJson({ ...config, omnibus: invalid }, "test.omnibus.invalid"));
+      assert.throws(() => loadHyperliquidTestnetRuntimeConfig(path), errorCode("INVALID_CONFIGURATION"));
+    }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
