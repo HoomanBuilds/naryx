@@ -213,7 +213,8 @@ if (executorEnabled) {
   if (executorRuntime.runtimeFactory === undefined) {
     throw new Error('Hyperliquid Testnet executor runtime is unavailable');
   }
-  executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory);
+  // The loopback release-lane route is the operator surface of the runtime's journaled lane release.
+  executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory, executorRuntime);
 }
 
 // Arbitrum Sepolia async executor: disabled unless explicitly enabled. Only the solver key is loaded,

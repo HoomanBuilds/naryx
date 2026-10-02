@@ -5,7 +5,12 @@ import {
   type HyperliquidExecutionPlan,
   type HyperliquidExecutionPlannerOptions,
 } from '@naryx/adapter-hyperliquid';
-import { adapterRef, versionedManifestRef } from '@naryx/protocol-types';
+import {
+  adapterRef,
+  parseProtocolJson,
+  stringifyProtocolJson,
+  versionedManifestRef,
+} from '@naryx/protocol-types';
 import {
   HYPERLIQUID_SERVER_SIGNER_SCOPE,
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
@@ -22,12 +27,19 @@ import {
 } from './hyperliquid-testnet-evidence-http.js';
 import {
   hyperliquidLaneNotSubmitted,
+  hyperliquidReconciledExecutorResult,
   type HyperliquidTestnetAccountInventory,
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetAttemptHandoff,
+  type HyperliquidTestnetLaneReleaseRequest,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
-import { HyperliquidTestnetLane } from './hyperliquid-testnet-lane.js';
+import {
+  HyperliquidTestnetLane,
+  HyperliquidTestnetLaneError,
+  hyperliquidLaneReleases,
+  type HyperliquidLaneRelease,
+} from './hyperliquid-testnet-lane.js';
 import { HyperliquidSqliteDurableJournal } from './hyperliquid-sqlite-journal.js';
 import {
   HyperliquidAuthorityFenceStore,
@@ -46,6 +58,7 @@ import {
 } from './hyperliquid-testnet-market-preflight.js';
 import {
   HyperliquidTestnetRuntimeCoordinator,
+  type HyperliquidTestnetRuntimeEvidenceWindow,
   type HyperliquidTestnetStructuralEvidencePort,
 } from './hyperliquid-testnet-runtime.js';
 
@@ -66,8 +79,11 @@ export type LoadedHyperliquidTestnetExecutorRuntime = Readonly<{
   status: HyperliquidTestnetExecutorRuntimeStatus;
   runtimeFactory: HyperliquidTestnetExecutorRuntimeFactory | undefined;
   clearAuthorityIncident(input: HyperliquidAuthorityClearanceInput): Promise<void>;
-  /** Operator release of a lane blocked by an attempt whose recovery was resolved and reviewed. */
-  releaseLane(holderAttemptId: string): void;
+  /**
+   * Journaled operator release of a blocked lane: FINAL only when a fresh keeper reconciliation of
+   * the holder shows nothing pending, ABANDONED on the operator's stated reason.
+   */
+  releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
   close(): void;
 }>;
 
@@ -239,14 +255,75 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-// The keeper checkpoint re-reads the account before submission; it must see exactly the position
-// the plan targets from, or another actor moved the account and nothing is sent.
-function checkpointBoundEvidence(
+export type HyperliquidTestnetEvidenceAlignmentOptions = Readonly<{
+  currentTimeMs: () => number;
+  /** Keeps an attempt's reconcile inputs (protocol JSON) so a FINAL lane release can re-read them. */
+  recordContext: (attemptId: string, contextJson: string) => void;
+  sleep?: (milliseconds: number) => Promise<void>;
+}>;
+
+export type HyperliquidTestnetAlignedEvidence = HyperliquidTestnetStructuralEvidencePort<unknown, unknown>
+  & Readonly<{ reconcileStored(contextJson: string): Promise<unknown> }>;
+
+const RECONCILE_READS = 3;
+const RECONCILE_RETRY_DELAY_MS = 1_000;
+const MAX_READ_BUDGET_MS = 5_000;
+const CONTEXT_JSON = 'solver.hyperliquidTestnet.reconcileContext';
+
+// The keeper checks every read it makes against the window's now, so each window closes at a short
+// read deadline after the call starts: the reads land inside it and the age bound still holds.
+function readBudgetMs(window: HyperliquidTestnetRuntimeEvidenceWindow): number {
+  return Math.max(1, Math.min(MAX_READ_BUDGET_MS, Math.floor(window.maxEvidenceAgeMs / 4)));
+}
+
+/**
+ * The keeper evidence port as the executor uses it. The checkpoint must see exactly the position the
+ * plan targets from, or another actor moved the account and nothing is sent. Reconciliation opens
+ * at the checkpoint read, so the measured deltas run from exactly that read, and an incomplete read
+ * (fills not yet visible) is re-read a bounded number of times inside the evidence age bound.
+ */
+export function hyperliquidTestnetAlignedEvidence(
   evidence: HyperliquidTestnetStructuralEvidencePort<unknown, unknown>,
-): HyperliquidTestnetStructuralEvidencePort<unknown, unknown> {
+  options: HyperliquidTestnetEvidenceAlignmentOptions,
+): HyperliquidTestnetAlignedEvidence {
+  const sleep = options.sleep
+    ?? ((milliseconds: number) => new Promise<void>((resolve) => { setTimeout(resolve, milliseconds); }));
+  const clock = (): number => {
+    const value = options.currentTimeMs();
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error('trusted clock is invalid');
+    return value;
+  };
+  const reconcileAligned = async (
+    prepared: unknown,
+    handoff: Parameters<typeof evidence.reconcile>[1],
+    binding: Parameters<typeof evidence.reconcile>[2],
+    window: HyperliquidTestnetRuntimeEvidenceWindow,
+  ): Promise<unknown> => {
+    const checkpoint = isRecord(prepared) ? prepared.checkpoint : undefined;
+    const startTimeMs = isRecord(checkpoint) ? checkpoint.observedAtMs : undefined;
+    if (typeof startTimeMs !== 'number' || !Number.isSafeInteger(startTimeMs) || startTimeMs < 0) {
+      throw new Error('prepared checkpoint time is invalid');
+    }
+    const budget = readBudgetMs(window);
+    for (let read = 1; ; read += 1) {
+      const deadline = clock() + budget;
+      const result = await evidence.reconcile(prepared, handoff, binding, {
+        ...window, startTimeMs, endTimeMs: deadline, nowMs: deadline,
+      });
+      const incomplete = isRecord(result) && result.status === 'EVIDENCE_INCOMPLETE';
+      if (!incomplete || read >= RECONCILE_READS
+        || clock() + RECONCILE_RETRY_DELAY_MS + budget - startTimeMs > window.maxEvidenceAgeMs) {
+        return result;
+      }
+      await sleep(RECONCILE_RETRY_DELAY_MS);
+    }
+  };
   return Object.freeze({
     async prepare(input: Parameters<typeof evidence.prepare>[0]) {
-      const prepared = await evidence.prepare(input);
+      const deadline = clock() + readBudgetMs(input.window);
+      const prepared = await evidence.prepare({
+        ...input, window: { ...input.window, endTimeMs: deadline, nowMs: deadline },
+      });
       if (prepared.status === 'PREPARED') {
         const checkpoint = isRecord(prepared.state) ? prepared.state.checkpoint : undefined;
         if (!isRecord(checkpoint) || checkpoint.perpetualPositionAtoms !== input.plan.prePerpPositionAtoms) {
@@ -255,7 +332,32 @@ function checkpointBoundEvidence(
       }
       return prepared;
     },
-    reconcile: (...args: Parameters<typeof evidence.reconcile>) => evidence.reconcile(...args),
+    async reconcile(...args: Parameters<typeof evidence.reconcile>) {
+      const [prepared, handoff, binding, window] = args;
+      const attemptId = isRecord(prepared) ? prepared.attemptId : undefined;
+      if (typeof attemptId !== 'string' || attemptId.length === 0) {
+        throw new Error('prepared evidence state is invalid');
+      }
+      try {
+        options.recordContext(attemptId, stringifyProtocolJson({ prepared, handoff, binding, window }, CONTEXT_JSON));
+      } catch {
+        // Without a stored context the lane can only be released as ABANDONED; reconciliation goes on.
+      }
+      return reconcileAligned(prepared, handoff, binding, window);
+    },
+    async reconcileStored(contextJson: string) {
+      const context = parseProtocolJson(contextJson, CONTEXT_JSON);
+      if (!isRecord(context) || !isRecord(context.handoff) || !isRecord(context.binding)
+        || !isRecord(context.window)) {
+        throw new Error('stored reconcile context is invalid');
+      }
+      return reconcileAligned(
+        context.prepared,
+        context.handoff as unknown as Parameters<typeof evidence.reconcile>[1],
+        context.binding as unknown as Parameters<typeof evidence.reconcile>[2],
+        context.window as unknown as HyperliquidTestnetRuntimeEvidenceWindow,
+      );
+    },
   });
 }
 
@@ -308,7 +410,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       async clearAuthorityIncident() {
         throw new Error('Hyperliquid Testnet authority clearance is unavailable');
       },
-      releaseLane() {
+      async releaseLane() {
         throw new Error('Hyperliquid Testnet execution lane is unavailable');
       },
       close() {},
@@ -398,7 +500,22 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     }
     const submitter = new HyperliquidSdkTestnetOrderSubmitter(signer, transport);
     const submission = new HyperliquidTestnetPackageSubmissionService(journal, submitter);
-    const coordinator = new HyperliquidTestnetRuntimeCoordinator(checkpointBoundEvidence(evidence), submission);
+    const lanePort = lane;
+    const alignedEvidence = hyperliquidTestnetAlignedEvidence(evidence, {
+      currentTimeMs,
+      recordContext: (attemptId, contextJson) => lanePort.recordReconcileContext(attemptId, contextJson),
+    });
+    const coordinator = new HyperliquidTestnetRuntimeCoordinator(alignedEvidence, submission);
+    // A fresh keeper reconciliation of the holder from its stored inputs, or undefined.
+    const freshHolderResult = async (stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0]) => {
+      const context = lanePort.reconcileContext(stored.attemptId);
+      if (context === undefined) return undefined;
+      try {
+        return hyperliquidReconciledExecutorResult(stored, await alignedEvidence.reconcileStored(context));
+      } catch {
+        return undefined;
+      }
+    };
     const runtime = Object.freeze({
       attempts,
       lane,
@@ -484,7 +601,30 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       }),
       runtimeFactory: () => runtime,
       clearAuthorityIncident: (input) => authorityPreflight.clearIncident(input),
-      releaseLane: (holderAttemptId) => lane!.release(holderAttemptId),
+      async releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease> {
+        const holder = lanePort.blockedHolder();
+        if (holder === undefined || holder.attemptId !== request.attemptId) {
+          throw new HyperliquidTestnetLaneError(
+            'LANE_NOT_BLOCKED_BY_ATTEMPT',
+            'Hyperliquid lane is not blocked by that attempt',
+          );
+        }
+        if (request.disposition === 'ABANDONED') {
+          return lanePort.release({
+            holderAttemptId: holder.attemptId, disposition: 'ABANDONED', reason: request.reason,
+          });
+        }
+        const result = holder.result === null ? undefined : await freshHolderResult(holder.result);
+        if (result === undefined || !hyperliquidLaneReleases(result)) {
+          throw new HyperliquidTestnetLaneError(
+            'HOLDER_NOT_FINAL',
+            'fresh evidence does not show a final outcome for the holder; resolve it and release it as ABANDONED',
+          );
+        }
+        return lanePort.release({
+          holderAttemptId: holder.attemptId, disposition: 'FINAL', reason: request.reason, result,
+        });
+      },
       close: () => {
         lane?.close();
         authorityStore.close();

@@ -9,7 +9,9 @@ import type { HyperliquidTestnetExecutorResult } from './hyperliquid-testnet-exe
  * reconciliation. Reconciliation measures account-wide deltas, so the serialized window is what
  * makes the observed delta belong to exactly one package. An attempt whose outcome leaves the
  * account in an unresolved state keeps the lane blocked until an operator releases it, so no later
- * package can move the account under a pending recovery.
+ * package can move the account under a pending recovery. A release is journaled: either fresh
+ * authoritative evidence shows the holder's outcome is final, or the operator abandons the holder
+ * with a stated reason.
  */
 
 export type HyperliquidLaneState = 'FREE' | 'EXECUTING' | 'BLOCKED';
@@ -46,8 +48,40 @@ export type HyperliquidLaneTask = (
   enterSubmission: () => void,
 ) => Promise<HyperliquidTestnetExecutorResult>;
 
+export type HyperliquidLaneReleaseDisposition = 'FINAL' | 'ABANDONED';
+
+/** FINAL carries the holder's fresh final result; ABANDONED releases on the operator's reason alone. */
+export type HyperliquidLaneReleaseInput =
+  | Readonly<{
+      holderAttemptId: string;
+      disposition: 'FINAL';
+      reason: string;
+      result: HyperliquidTestnetExecutorResult;
+    }>
+  | Readonly<{ holderAttemptId: string; disposition: 'ABANDONED'; reason: string }>;
+
+export type HyperliquidLaneRelease = Readonly<{
+  holderAttemptId: string;
+  disposition: HyperliquidLaneReleaseDisposition;
+  reason: string;
+  blockedReason: string | null;
+  resultStatus: string | null;
+  releasedAtMs: number;
+}>;
+
+export type HyperliquidLaneBlockedHolder = Readonly<{
+  attemptId: string;
+  blockedReason: string | null;
+  /** The holder's stored result; null when it was interrupted before any result. */
+  result: HyperliquidTestnetExecutorResult | null;
+}>;
+
+/** A journaled operator reason: 8 to 280 printable ASCII characters. */
+export const HYPERLIQUID_LANE_RELEASE_REASON = /^[\x20-\x7E]{8,280}$/;
+
 export class HyperliquidTestnetLaneError extends Error {
-  readonly code: 'ATTEMPT_IDENTITY_MISMATCH' | 'ATTEMPT_INTERRUPTED' | 'LANE_CORRUPT';
+  readonly code: 'ATTEMPT_IDENTITY_MISMATCH' | 'ATTEMPT_INTERRUPTED' | 'LANE_CORRUPT'
+    | 'INVALID_RELEASE' | 'LANE_NOT_BLOCKED_BY_ATTEMPT' | 'HOLDER_NOT_FINAL';
 
   constructor(code: HyperliquidTestnetLaneError['code'], message: string) {
     super(message);
@@ -79,6 +113,7 @@ interface AttemptRow {
 interface LockRow {
   readonly state: string;
   readonly holder_attempt_id: string | null;
+  readonly reason: string | null;
 }
 
 export class HyperliquidTestnetLane {
@@ -128,6 +163,19 @@ export class HyperliquidTestnetLane {
           result_json TEXT,
           updated_at_ms INTEGER NOT NULL,
           CHECK ((state = 'COMPLETED') = (result_json IS NOT NULL))
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS hyperliquid_lane_releases (
+          holder_attempt_id TEXT PRIMARY KEY,
+          disposition TEXT NOT NULL CHECK (disposition IN ('FINAL', 'ABANDONED')),
+          reason TEXT NOT NULL,
+          blocked_reason TEXT,
+          result_status TEXT,
+          released_at_ms INTEGER NOT NULL
+        ) STRICT;
+        CREATE TABLE IF NOT EXISTS hyperliquid_lane_reconcile_contexts (
+          attempt_id TEXT PRIMARY KEY,
+          context_json TEXT NOT NULL,
+          updated_at_ms INTEGER NOT NULL
         ) STRICT;
       `);
       this.#recoverAfterRestart();
@@ -206,13 +254,95 @@ export class HyperliquidTestnetLane {
     return Object.freeze({ state: 'COMPLETED' as const, result });
   }
 
-  /** Operator release of a lane blocked by an attempt whose recovery was resolved out of band. */
-  release(holderAttemptId: string): void {
-    const update = this.#db.prepare(`
-      UPDATE hyperliquid_lane_lock SET state = 'FREE', holder_attempt_id = NULL, reason = NULL, updated_at_ms = ?
-      WHERE singleton = 1 AND state = 'BLOCKED' AND holder_attempt_id = ?
-    `).run(this.#now(), holderAttemptId);
-    if (update.changes !== 1) throw new Error('Hyperliquid lane is not blocked by that attempt');
+  /** The attempt blocking the lane, with its stored result, or undefined when the lane is not blocked. */
+  blockedHolder(): HyperliquidLaneBlockedHolder | undefined {
+    const lock = this.#lock();
+    if (lock.state !== 'BLOCKED' || lock.holder_attempt_id === null) return undefined;
+    const row = this.#row(lock.holder_attempt_id);
+    return Object.freeze({
+      attemptId: lock.holder_attempt_id,
+      blockedReason: lock.reason,
+      result: row?.state === 'COMPLETED' ? this.#decode(row) : null,
+    });
+  }
+
+  /**
+   * Operator release of a blocked lane, journaled. FINAL needs a fresh result for the holder that
+   * leaves nothing pending, and it replaces the holder's stored result; ABANDONED needs only the
+   * operator's reason and keeps the holder's stored outcome as it was.
+   */
+  release(input: HyperliquidLaneReleaseInput): HyperliquidLaneRelease {
+    if (typeof input?.reason !== 'string' || !HYPERLIQUID_LANE_RELEASE_REASON.test(input.reason)
+      || input.reason.trim().length < 8
+      || (input.disposition !== 'FINAL' && input.disposition !== 'ABANDONED')) {
+      throw new HyperliquidTestnetLaneError(
+        'INVALID_RELEASE',
+        'a release needs FINAL or ABANDONED and a reason of 8 to 280 printable ASCII characters',
+      );
+    }
+    if (input.disposition === 'FINAL' && !hyperliquidLaneReleases(input.result)) {
+      throw new HyperliquidTestnetLaneError('HOLDER_NOT_FINAL', 'the holder outcome is not final');
+    }
+    return this.#db.transaction(() => {
+      const lock = this.#lock();
+      if (lock.state !== 'BLOCKED' || lock.holder_attempt_id !== input.holderAttemptId) {
+        throw new HyperliquidTestnetLaneError(
+          'LANE_NOT_BLOCKED_BY_ATTEMPT',
+          'Hyperliquid lane is not blocked by that attempt',
+        );
+      }
+      let resultStatus: string | null = null;
+      if (input.disposition === 'FINAL') {
+        const row = this.#row(input.holderAttemptId);
+        const result = input.result;
+        if (row === undefined || result.attemptId !== row.attempt_id
+          || result.idempotencyKey !== row.idempotency_key) {
+          throw new HyperliquidTestnetLaneError(
+            'ATTEMPT_IDENTITY_MISMATCH',
+            'the final result does not belong to the attempt holding the lane',
+          );
+        }
+        this.#db.prepare(`
+          UPDATE hyperliquid_lane_attempts SET state = 'COMPLETED', result_json = ?, updated_at_ms = ?
+          WHERE attempt_id = ?
+        `).run(JSON.stringify(result), this.#now(), row.attempt_id);
+        resultStatus = result.status === 'RECONCILED' ? result.packageStatus : result.status;
+      }
+      const release: HyperliquidLaneRelease = Object.freeze({
+        holderAttemptId: input.holderAttemptId,
+        disposition: input.disposition,
+        reason: input.reason,
+        blockedReason: lock.reason,
+        resultStatus,
+        releasedAtMs: this.#now(),
+      });
+      this.#db.prepare(`
+        INSERT INTO hyperliquid_lane_releases
+          (holder_attempt_id, disposition, reason, blocked_reason, result_status, released_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        release.holderAttemptId, release.disposition, release.reason,
+        release.blockedReason, release.resultStatus, release.releasedAtMs,
+      );
+      this.#setLock('FREE', null, null);
+      return release;
+    }).immediate();
+  }
+
+  /** Keeps the latest reconcile inputs of an attempt so a later FINAL release can re-read them. */
+  recordReconcileContext(attemptId: string, contextJson: string): void {
+    this.#db.prepare(`
+      INSERT INTO hyperliquid_lane_reconcile_contexts (attempt_id, context_json, updated_at_ms)
+      VALUES (?, ?, ?)
+      ON CONFLICT(attempt_id) DO UPDATE SET context_json = excluded.context_json,
+        updated_at_ms = excluded.updated_at_ms
+    `).run(attemptId, contextJson, this.#now());
+  }
+
+  reconcileContext(attemptId: string): string | undefined {
+    return this.#db.prepare<[string], { context_json: string }>(`
+      SELECT context_json FROM hyperliquid_lane_reconcile_contexts WHERE attempt_id = ?
+    `).get(attemptId)?.context_json;
   }
 
   close(): void {
@@ -304,7 +434,7 @@ export class HyperliquidTestnetLane {
 
   #lock(): LockRow {
     const row = this.#db.prepare<[], LockRow>(
-      'SELECT state, holder_attempt_id FROM hyperliquid_lane_lock WHERE singleton = 1',
+      'SELECT state, holder_attempt_id, reason FROM hyperliquid_lane_lock WHERE singleton = 1',
     ).get();
     if (row === undefined || (row.state !== 'FREE' && row.state !== 'EXECUTING' && row.state !== 'BLOCKED')) {
       throw new HyperliquidTestnetLaneError('LANE_CORRUPT', 'Hyperliquid lane lock is missing');

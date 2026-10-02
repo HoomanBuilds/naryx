@@ -11,14 +11,19 @@ import type {
   HyperliquidTestnetRuntimeRawCommitment,
 } from './hyperliquid-testnet-runtime.js';
 import {
+  HYPERLIQUID_LANE_RELEASE_REASON,
   HyperliquidTestnetLane,
   HyperliquidTestnetLaneError,
   type HyperliquidLaneNotSubmittedReason,
+  type HyperliquidLaneRelease,
+  type HyperliquidLaneReleaseDisposition,
   type HyperliquidLaneState,
 } from './hyperliquid-testnet-lane.js';
 
 export const SOLVER_TESTNET_EXECUTE_PATH = '/internal/solver/hyperliquid-testnet/execute';
 export const SOLVER_TESTNET_ATTEMPT_STATUS_PATH = '/internal/solver/hyperliquid-testnet/attempt-status';
+/** Operator-only: direct loopback callers, never a proxied or browser request. */
+export const SOLVER_TESTNET_RELEASE_LANE_PATH = '/internal/solver/hyperliquid-testnet/release-lane';
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
@@ -38,6 +43,17 @@ export type HyperliquidTestnetAttemptStatusRequest = Readonly<{
   idempotencyKey: string;
   resolve: boolean;
 }>;
+
+export type HyperliquidTestnetLaneReleaseRequest = Readonly<{
+  attemptId: string;
+  disposition: HyperliquidLaneReleaseDisposition;
+  reason: string;
+}>;
+
+/** The operator actions of a loaded executor runtime that the loopback route exposes. */
+export interface HyperliquidTestnetLaneOperator {
+  releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
+}
 
 export type HyperliquidTestnetAttemptStatusResponse = Readonly<{
   attemptId: string;
@@ -227,6 +243,20 @@ function parseStatusRequest(value: unknown): HyperliquidTestnetAttemptStatusRequ
   requireCondition(typeof value.resolve === 'boolean', 'INVALID_REQUEST', 'resolve must be a boolean');
   const identity = parseRequest({ attemptId: value.attemptId, idempotencyKey: value.idempotencyKey });
   return Object.freeze({ ...identity, resolve: value.resolve });
+}
+
+export function parseHyperliquidTestnetLaneReleaseRequest(value: unknown): HyperliquidTestnetLaneReleaseRequest {
+  requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
+  requireCondition(hasExactKeys(value, ['attemptId', 'disposition', 'reason']), 'INVALID_REQUEST',
+    'request must contain only attemptId, disposition, and reason');
+  requireCondition(typeof value.attemptId === 'string' && ID.test(value.attemptId),
+    'INVALID_REQUEST', 'attemptId is invalid');
+  requireCondition(value.disposition === 'FINAL' || value.disposition === 'ABANDONED',
+    'INVALID_REQUEST', 'disposition must be FINAL or ABANDONED');
+  requireCondition(typeof value.reason === 'string' && HYPERLIQUID_LANE_RELEASE_REASON.test(value.reason)
+    && value.reason.trim().length >= 8, 'INVALID_REQUEST',
+  'reason must be 8 to 280 printable ASCII characters');
+  return Object.freeze({ attemptId: value.attemptId, disposition: value.disposition, reason: value.reason });
 }
 
 /** A lane refusal: nothing was signed or sent, and the reason is committed rather than echoed. */
@@ -433,6 +463,39 @@ function sanitizeResult(
   });
 }
 
+const SUBMISSION_STATUS_NAMES: Readonly<Record<SubmissionStatus, HyperliquidPackageSubmissionResult['status']>> = {
+  ACKNOWLEDGED: 'SUBMISSION_ACKNOWLEDGED',
+  REJECTED: 'SUBMISSION_REJECTED',
+  AMBIGUOUS: 'SUBMISSION_AMBIGUOUS',
+};
+
+/**
+ * The executor result of a fresh keeper reconciliation of an attempt whose submission outcome the
+ * lane already stored; undefined when the stored result records no submission to reconcile.
+ */
+export function hyperliquidReconciledExecutorResult(
+  stored: HyperliquidTestnetExecutorResult,
+  reconciliation: unknown,
+): HyperliquidTestnetExecutorResult | undefined {
+  if (stored.status !== 'RECONCILIATION_INCOMPLETE' && stored.status !== 'RECONCILIATION_DEFERRED'
+    && stored.status !== 'RECONCILED') return undefined;
+  const submission = {
+    attemptId: stored.attemptId,
+    status: SUBMISSION_STATUS_NAMES[stored.submissionStatus],
+    actionCommitment: stored.actionCommitment,
+    requestCommitment: stored.requestCommitment,
+  } as unknown as HandoffSubmission;
+  return sanitizeResult(
+    { attemptId: stored.attemptId, idempotencyKey: stored.idempotencyKey },
+    { status: 'RECONCILIATION_OBSERVED', submission, reconciliation },
+  );
+}
+
+type HandoffSubmission = Extract<
+  HyperliquidTestnetRuntimeCoordinatorResult<unknown, unknown>,
+  { status: 'RECONCILIATION_OBSERVED' }
+>['submission'];
+
 export function createHyperliquidTestnetExecutor(
   factory?: HyperliquidTestnetExecutorRuntimeFactory,
 ): HyperliquidTestnetExecutorPort | undefined {
@@ -446,7 +509,8 @@ export function createHyperliquidTestnetExecutor(
   'executor runtime factory returned incomplete ports');
   const lane = runtime.lane ?? new HyperliquidTestnetLane({ notSubmitted: hyperliquidLaneNotSubmitted });
   const laneError = (error: unknown): unknown =>
-    error instanceof HyperliquidTestnetLaneError && error.code !== 'LANE_CORRUPT'
+    error instanceof HyperliquidTestnetLaneError
+      && (error.code === 'ATTEMPT_IDENTITY_MISMATCH' || error.code === 'ATTEMPT_INTERRUPTED')
       ? new HyperliquidTestnetExecutorError(error.code, error.message)
       : error;
   return Object.freeze({
@@ -503,6 +567,15 @@ function isLoopbackAddress(address: string | undefined): boolean {
   });
 }
 
+// A same-host reverse proxy forwards with these headers; an operator action never arrives that way.
+function directLoopbackRequest(request: IncomingMessage): boolean {
+  return isLoopbackAddress(request.socket.remoteAddress)
+    && request.headers.origin === undefined
+    && request.headers['x-forwarded-for'] === undefined
+    && request.headers.forwarded === undefined
+    && request.headers['x-real-ip'] === undefined;
+}
+
 async function readRequest(request: IncomingMessage): Promise<unknown> {
   const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim();
   requireCondition(contentType === 'application/json', 'INVALID_REQUEST',
@@ -540,8 +613,45 @@ function reject(response: ServerResponse, status: number, code: string, message:
   sendJson(response, status, { error: { code, message } });
 }
 
+const RELEASE_ERROR_STATUS: Readonly<Record<HyperliquidTestnetLaneError['code'], number>> = {
+  INVALID_RELEASE: 400,
+  LANE_NOT_BLOCKED_BY_ATTEMPT: 409,
+  HOLDER_NOT_FINAL: 409,
+  ATTEMPT_IDENTITY_MISMATCH: 409,
+  ATTEMPT_INTERRUPTED: 409,
+  LANE_CORRUPT: 500,
+};
+
+async function releaseLane(
+  request: IncomingMessage,
+  response: ServerResponse,
+  operator: HyperliquidTestnetLaneOperator | undefined,
+): Promise<void> {
+  if (!directLoopbackRequest(request)) {
+    reject(response, 403, 'DIRECT_LOOPBACK_REQUIRED', 'lane release is a direct loopback operator action');
+    return;
+  }
+  if (operator === undefined) {
+    reject(response, 503, 'EXECUTION_UNAVAILABLE', 'Hyperliquid Testnet execution is unavailable');
+    return;
+  }
+  try {
+    const body = parseHyperliquidTestnetLaneReleaseRequest(await readRequest(request));
+    sendJson(response, 200, await operator.releaseLane(body));
+  } catch (error) {
+    if (error instanceof HyperliquidTestnetExecutorError) {
+      reject(response, 400, error.code, error.message);
+    } else if (error instanceof HyperliquidTestnetLaneError) {
+      reject(response, RELEASE_ERROR_STATUS[error.code], error.code, error.message);
+    } else {
+      reject(response, 502, 'RELEASE_FAILED', 'Hyperliquid lane release failed closed');
+    }
+  }
+}
+
 export function createHyperliquidTestnetExecutorRequestHandler(
   executor?: HyperliquidTestnetExecutorPort,
+  operator?: HyperliquidTestnetLaneOperator,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!isLoopbackAddress(request.socket.remoteAddress)) {
@@ -550,13 +660,18 @@ export function createHyperliquidTestnetExecutorRequestHandler(
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
     if ((url.pathname !== SOLVER_TESTNET_EXECUTE_PATH
-      && url.pathname !== SOLVER_TESTNET_ATTEMPT_STATUS_PATH) || url.search !== '') {
+      && url.pathname !== SOLVER_TESTNET_ATTEMPT_STATUS_PATH
+      && url.pathname !== SOLVER_TESTNET_RELEASE_LANE_PATH) || url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'internal route was not found');
       return;
     }
     if (request.method !== 'POST') {
       response.setHeader('allow', 'POST');
       reject(response, 405, 'METHOD_NOT_ALLOWED', 'only POST is allowed');
+      return;
+    }
+    if (url.pathname === SOLVER_TESTNET_RELEASE_LANE_PATH) {
+      await releaseLane(request, response, operator);
       return;
     }
     if (executor === undefined) {
@@ -583,9 +698,11 @@ export function createHyperliquidTestnetExecutorRequestHandler(
 
 export function createHyperliquidTestnetExecutorServer(
   factory?: HyperliquidTestnetExecutorRuntimeFactory,
+  operator?: HyperliquidTestnetLaneOperator,
 ) {
   const handler = createHyperliquidTestnetExecutorRequestHandler(
     createHyperliquidTestnetExecutor(factory),
+    operator,
   );
   return createServer((request, response) => {
     handler(request, response).catch(() => {
