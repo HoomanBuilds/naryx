@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
@@ -10,6 +10,7 @@ import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
+import { useArbitrumSepoliaExit } from "./arbitrum-sepolia-exit";
 import { ArbitrumObservationError, TerminalMarketUnavailableError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
   ArbitrumAccountStatus,
@@ -918,7 +919,7 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
 }
 
 export type PrimaryAction = Readonly<{
-  kind: "connect" | "switch" | "prepare" | "sign" | "solana-onboard" | "hyperliquid" | "base" | "arbitrum" | "none";
+  kind: "connect" | "switch" | "prepare" | "sign" | "solana-onboard" | "hyperliquid" | "base" | "arbitrum" | "arbitrum-exit" | "none";
   label: string;
   reason: string;
   disabled: boolean;
@@ -940,6 +941,7 @@ function Ticket({
   hyperliquidFlow,
   baseFlow,
   arbitrumFlow,
+  arbitrumExitPanel,
   nowMs,
   executionReview,
   submission,
@@ -972,6 +974,8 @@ function Ticket({
   hyperliquidFlow: HyperliquidFlowState | null;
   baseFlow: BaseFlowState | null;
   arbitrumFlow: ArbitrumFlowState | null;
+  /** The Arbitrum exit review, present only in exit mode. */
+  arbitrumExitPanel: ReactNode;
   nowMs: number;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
@@ -1217,6 +1221,8 @@ function Ticket({
           </summary>
           <BaseSepoliaPanel flow={baseFlow} />
         </details>
+      ) : selectedDomain === "arbitrum" && arbitrumExitPanel ? (
+        arbitrumExitPanel
       ) : selectedDomain === "arbitrum" && arbitrumFlow ? (
         <details className={styles.flowDetails} open={arbitrumFlow.quote !== null}>
           <summary>
@@ -1758,6 +1764,23 @@ export function TradingTerminal({
   const arbitrumContextId = snapshotDomain === "arbitrum" && preview?.source === "PRIVATE_TERMINAL_BFF"
     ? snapshot.market.packageId
     : ARBITRUM_CONTEXT_ID;
+  const arbitrumExitEnabled = selectedDomain === "arbitrum" && mode === "exit" &&
+    privateProvider !== null && providerConnection === "connected" &&
+    domainLive("arbitrum", runtimeHealth) && quoteMode === "coordinated_limits";
+  const evmSignTypedData = evmWallet.signTypedData;
+  const signArbitrumExit = useCallback((typedData: unknown) => evmSignTypedData("arbitrum", typedData), [evmSignTypedData]);
+  const recordArbitrumExit = useCallback((attemptId: string, exitSize: string) => {
+    recordAttempt({ attemptId, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
+  }, [recordAttempt]);
+  const arbitrumExit = useArbitrumSepoliaExit({
+    enabled: arbitrumExitEnabled && evmOnTarget,
+    owner: evmWallet.account,
+    provider: privateProvider,
+    contextId: arbitrumContextId,
+    slippageBps: slippage,
+    signTypedData: signArbitrumExit,
+    onSelected: recordArbitrumExit,
+  });
   const arbitrumFunding = currentArbitrumFlow?.authorization?.funding ?? null;
   const arbitrumWindowClosed = arbitrumFunding !== null &&
     Math.floor(nowMs / 1000) >= Number(arbitrumFunding.reclaimAfterUnixSeconds);
@@ -1852,6 +1875,7 @@ export function TradingTerminal({
         if (nextBaseStep === "select") return { kind: "base", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the package review before accepting.", disabled: false };
         if (nextBaseStep === "execute") return { kind: "base", label: "Sign and submit", reason: reason ?? "Your wallet signs the package permit, then submits the one transaction that settles both legs or neither.", disabled: false };
       }
+      if (evmTarget === "arbitrum" && arbitrumExitEnabled) return arbitrumExit.action;
       if (evmTarget === "arbitrum" && arbitrumFlowEnabled) {
         const flow = currentArbitrumFlow;
         if (!flow?.account) {
@@ -1906,11 +1930,9 @@ export function TradingTerminal({
                 ? "Testnet execution uses coordinated limits."
                 : "A current service preview is required."
           : evmTarget === "arbitrum" && domainLive("arbitrum", runtimeHealth)
-            ? mode !== "entry"
-              ? "Exit runs from an open package."
-              : quoteMode !== "coordinated_limits"
-                ? "Testnet execution uses coordinated limits."
-                : "The private terminal service is not connected."
+            ? quoteMode !== "coordinated_limits"
+              ? "Testnet execution uses coordinated limits."
+              : "The private terminal service is not connected."
             : "Package contracts are not deployed on this testnet yet. The package, quotes, and fees shown are a preview.",
       );
     }
@@ -2046,6 +2068,8 @@ export function TradingTerminal({
     }
     return { kind: "sign", label: "Sign and submit", reason: "Your wallet shows the exact reviewed Devnet transaction before signing.", disabled: false };
   }, [
+    arbitrumExit.action,
+    arbitrumExitEnabled,
     arbitrumFlowEnabled,
     baseFlowEnabled,
     currentArbitrumFlow,
@@ -2948,6 +2972,7 @@ export function TradingTerminal({
     else if (primaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
     else if (primaryAction.kind === "base" && nextBaseStep) void handleBaseStep(nextBaseStep);
     else if (primaryAction.kind === "arbitrum" && nextArbitrumStep) void handleArbitrumStep(nextArbitrumStep);
+    else if (primaryAction.kind === "arbitrum-exit") void arbitrumExit.advance();
   }
 
   function jumpToTicket(nextMode: PackageMode) {
@@ -2994,12 +3019,13 @@ export function TradingTerminal({
             hyperliquidFlow={currentHyperliquidFlow}
             baseFlow={currentBaseFlow}
             arbitrumFlow={currentArbitrumFlow}
+            arbitrumExitPanel={arbitrumExitEnabled ? arbitrumExit.panel : null}
             nowMs={nowMs}
             executionReview={currentExecutionReview}
             submission={currentSubmission}
             confirming={confirmingInWallet}
             action={{ ...primaryAction, reason: actionReason }}
-            actionBusy={executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null}
+            actionBusy={executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null || arbitrumExit.busy}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}

@@ -766,6 +766,19 @@ function requireBaseSelectedAttempt(value: unknown, quote: BaseSolverQuote): Bas
 /** Unsigned wallet call the Arbitrum owner routes hand back; its value is decimal wei. */
 export type ArbitrumWalletCall = Readonly<{ to: string; data: string; value: string }>;
 
+/** The package the owner's factory account holds, read from chain on every status request. */
+export type ArbitrumOpenPackage = Readonly<{
+  packageId: string;
+  entryRequestKey: string | null;
+  entryExecuted: boolean;
+  /** The GMX short's size in 30-decimal USD. */
+  positionSizeUsd: string;
+  spotBaseAtoms: string;
+  /** An exit already submitted and not yet terminal. */
+  activeExitRequestKey: string | null;
+  exitable: boolean;
+}>;
+
 /** The owner's Arbitrum Sepolia factory account, and the creation call when it is not deployed yet. */
 export type ArbitrumAccountStatus = Readonly<{
   owner: string;
@@ -773,7 +786,133 @@ export type ArbitrumAccountStatus = Readonly<{
   accountFactory: string;
   deployed: boolean;
   createAccount: Readonly<{ to: string; data: string; value: "0" }> | null;
+  openPackage: ArbitrumOpenPackage | null;
 }>;
+
+/** The canonical EXIT order for the open package, with the minimums it signs. Atoms are decimal strings. */
+export type ArbitrumExitOrder = Readonly<{
+  order: BaseOrderRecord;
+  packageId: string;
+  quantityAtoms: string;
+  limits: Readonly<{
+    entryNotionalAtoms: string;
+    minSpotQuoteOutAtoms: string;
+    minPerpOutputAtoms: string;
+    minExitQuoteOutcomeAtoms: string;
+  }>;
+}>;
+
+/** The EIP-712 fields of the exit controller's ExitAuthorization, in its typehash order. */
+const ARBITRUM_EXIT_FIELDS = [
+  ["packageId", "bytes32"], ["entryRequestKey", "bytes32"], ["spotRegistrationHash", "bytes32"],
+  ["account", "address"], ["owner", "address"], ["receiver", "address"], ["spotProceedsRecipient", "address"],
+  ["feePayer", "address"], ["executionFeeRefundRecipient", "address"], ["market", "address"],
+  ["collateralToken", "address"], ["isLong", "bool"], ["fullCloseSizeUsd", "uint256"], ["spotBaseAtoms", "uint256"],
+  ["spotMinQuoteAtoms", "uint256"], ["packageNonce", "uint256"], ["exitOrderHash", "bytes32"],
+  ["exitQuoteHash", "bytes32"], ["exitRouteHash", "bytes32"], ["exitFillCommitment", "bytes32"],
+  ["acceptablePrice", "uint256"], ["minOutputAmount", "uint256"], ["executionFeeWei", "uint256"],
+  ["callbackGasLimit", "uint256"], ["authorizationExpiry", "uint64"], ["cancelAfter", "uint64"], ["nonce", "uint256"],
+] as const;
+
+/** The full close the owner's wallet signs: the solver pays the GMX fee, every proceed goes to the owner. */
+export type ArbitrumExitAuthorization = Readonly<{
+  attemptId: string;
+  packageId: string;
+  owner: string;
+  account: string;
+  exitController: string;
+  typedData: Readonly<{
+    domain: Readonly<{ name: "Naryx GMX V2 Exit"; version: "1"; chainId: 421614; verifyingContract: string }>;
+    types: Readonly<{ ExitAuthorization: readonly Readonly<{ name: string; type: string }>[] }>;
+    primaryType: "ExitAuthorization";
+    message: Readonly<Record<string, string | boolean>>;
+  }>;
+  digest: string;
+  signed: boolean;
+}>;
+
+/** The reviewed exit as the wallet signs it, with integer fields as bigint. */
+export function arbitrumExitWalletTypedData(authorization: ArbitrumExitAuthorization) {
+  return {
+    ...authorization.typedData,
+    message: Object.fromEntries(ARBITRUM_EXIT_FIELDS.map(([name, type]) => {
+      const value = authorization.typedData.message[name];
+      return [name, type.startsWith("uint") ? BigInt(value as string) : value];
+    })),
+  };
+}
+
+/**
+ * Binds the solver's prepared exit to the attempt, the wallet, and its open package: the exact
+ * fields, the attempt's own hashes, owner-only proceeds, and a digest recomputed from the message.
+ */
+function requireArbitrumExitAuthorization(
+  value: unknown,
+  expected: Readonly<{ attempt: ArbitrumSelectedAttempt; owner: string; account: string; packageId: string; signed: boolean | null }>,
+): ArbitrumExitAuthorization {
+  if (!isRecord(value)) throw new Error("Arbitrum exit authorization is invalid.");
+  requireExactKeys(value, [
+    "version", "attemptId", "packageId", "chainId", "owner", "account", "exitController", "typedData", "digest", "signed",
+  ], "Arbitrum exit authorization");
+  const typedData = value.typedData;
+  if (value.version !== 1 || value.attemptId !== expected.attempt.attemptId || value.chainId !== 421614 ||
+      typeof value.signed !== "boolean" || (expected.signed !== null && value.signed !== expected.signed) ||
+      !isRecord(typedData) || !isRecord(typedData.domain) || !isRecord(typedData.types) || !isRecord(typedData.message) ||
+      typedData.primaryType !== "ExitAuthorization") {
+    throw new Error("Arbitrum exit authorization binding is invalid.");
+  }
+  requireExactKeys(typedData, ["domain", "types", "primaryType", "message"], "Arbitrum exit typed data");
+  requireExactKeys(typedData.domain, ["name", "version", "chainId", "verifyingContract"], "Arbitrum exit domain");
+  requireExactKeys(typedData.types, ["ExitAuthorization"], "Arbitrum exit types");
+  requireExactKeys(typedData.message, ARBITRUM_EXIT_FIELDS.map(([name]) => name), "Arbitrum exit message");
+  const fields = typedData.types.ExitAuthorization;
+  const exitController = requireEvmAddress(value.exitController, "Arbitrum exit controller");
+  if (typedData.domain.name !== "Naryx GMX V2 Exit" || typedData.domain.version !== "1" || typedData.domain.chainId !== 421614 ||
+      typedData.domain.verifyingContract !== exitController || !Array.isArray(fields) ||
+      fields.length !== ARBITRUM_EXIT_FIELDS.length || fields.some((field, index) => !isRecord(field) ||
+        Object.keys(field).length !== 2 || field.name !== ARBITRUM_EXIT_FIELDS[index]![0] ||
+        field.type !== ARBITRUM_EXIT_FIELDS[index]![1])) {
+    throw new Error("Arbitrum exit typed data is invalid.");
+  }
+  const message: Record<string, string | boolean> = {};
+  for (const [name, type] of ARBITRUM_EXIT_FIELDS) {
+    const field = typedData.message[name];
+    message[name] = type === "bytes32" ? requireEvmHash(field, `Arbitrum exit ${name}`)
+      : type === "address" ? requireEvmAddress(field, `Arbitrum exit ${name}`).toLowerCase()
+        : type === "bool" ? (() => { if (typeof field !== "boolean") throw new Error(`Arbitrum exit ${name} is invalid.`); return field; })()
+          : requireEvmDecimal(field, `Arbitrum exit ${name}`);
+  }
+  const owner = expected.owner.toLowerCase();
+  const { attempt } = expected;
+  if (!sameAddress(requireEvmAddress(value.owner, "Arbitrum exit owner"), owner) ||
+      !sameAddress(requireEvmAddress(value.account, "Arbitrum exit account"), expected.account) ||
+      value.packageId !== expected.packageId || message.packageId !== expected.packageId ||
+      message.owner !== owner || message.receiver !== owner || message.spotProceedsRecipient !== owner ||
+      !sameAddress(message.account as string, expected.account) || message.isLong !== false ||
+      message.exitOrderHash !== `0x${attempt.orderHash}` || message.exitQuoteHash !== `0x${attempt.quoteHash}` ||
+      message.exitRouteHash !== `0x${attempt.routeHash}`) {
+    throw new Error("Arbitrum exit authorization is not for this wallet's open package and attempt.");
+  }
+  const authorization: ArbitrumExitAuthorization = Object.freeze({
+    attemptId: attempt.attemptId,
+    packageId: expected.packageId,
+    owner,
+    account: expected.account,
+    exitController,
+    typedData: Object.freeze({
+      domain: Object.freeze({ name: "Naryx GMX V2 Exit", version: "1", chainId: 421614, verifyingContract: exitController }),
+      types: Object.freeze({ ExitAuthorization: ARBITRUM_EXIT_FIELDS.map(([name, type]) => Object.freeze({ name, type })) }),
+      primaryType: "ExitAuthorization",
+      message: Object.freeze(message),
+    }),
+    digest: requireEvmHash(value.digest, "Arbitrum exit digest"),
+    signed: value.signed,
+  });
+  if (hashTypedData(arbitrumExitWalletTypedData(authorization) as never).toLowerCase() !== authorization.digest) {
+    throw new Error("Arbitrum exit digest does not match its typed data.");
+  }
+  return authorization;
+}
 
 export type ArbitrumOrderRecord = BaseOrderRecord;
 export type ArbitrumSolverQuote = LocalSolverQuote;
@@ -865,7 +1004,7 @@ function requireArbitrumCalldata(value: unknown, name: string): string {
 function requireArbitrumAccountStatus(value: unknown, owner: string): ArbitrumAccountStatus {
   if (!isRecord(value)) throw new Error("Arbitrum account status is invalid.");
   requireExactKeys(value, [
-    "version", "domainId", "chainId", "owner", "account", "accountFactory", "deployed", "createAccount",
+    "version", "domainId", "chainId", "owner", "account", "accountFactory", "deployed", "createAccount", "openPackage",
   ], "Arbitrum account status");
   if (value.version !== 1 || value.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID ||
       value.chainId !== Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE) || typeof value.deployed !== "boolean" ||
@@ -896,12 +1035,33 @@ function requireArbitrumAccountStatus(value: unknown, owner: string): ArbitrumAc
     }
     createAccount = Object.freeze({ to: call.to as string, data, value: "0" as const });
   }
+  let openPackage: ArbitrumOpenPackage | null = null;
+  if (value.openPackage !== null) {
+    const open = value.openPackage;
+    if (!isRecord(open) || !value.deployed) throw new Error("Arbitrum open package is invalid.");
+    requireExactKeys(open, [
+      "packageId", "entryRequestKey", "entryExecuted", "positionSizeUsd", "spotBaseAtoms", "activeExitRequestKey", "exitable",
+    ], "Arbitrum open package");
+    if (typeof open.entryExecuted !== "boolean" || typeof open.exitable !== "boolean") {
+      throw new Error("Arbitrum open package is invalid.");
+    }
+    openPackage = Object.freeze({
+      packageId: requireEvmHash(open.packageId, "Arbitrum open package id"),
+      entryRequestKey: open.entryRequestKey === null ? null : requireEvmHash(open.entryRequestKey, "Arbitrum entry request key"),
+      entryExecuted: open.entryExecuted,
+      positionSizeUsd: requireEvmDecimal(open.positionSizeUsd, "Arbitrum position size"),
+      spotBaseAtoms: requireEvmDecimal(open.spotBaseAtoms, "Arbitrum spot inventory"),
+      activeExitRequestKey: open.activeExitRequestKey === null ? null : requireEvmHash(open.activeExitRequestKey, "Arbitrum active exit"),
+      exitable: open.exitable,
+    });
+  }
   return Object.freeze({
     owner: (value.owner as string).toLowerCase(),
     account: account.toLowerCase(),
     accountFactory: accountFactory.toLowerCase(),
     deployed: value.deployed,
     createAccount,
+    openPackage,
   });
 }
 
@@ -3785,6 +3945,81 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         authorized.funding.reclaimAfterUnixSeconds !== prepared.funding.reclaimAfterUnixSeconds) {
       throw new Error("Arbitrum authorization changed after review. Prepare the reservation again.");
     }
+    return authorized;
+  }
+
+  /** Builds the canonical EXIT order for the wallet's open package from chain; nothing is signed or sent. */
+  async createArbitrumExitOrder(
+    account: ArbitrumAccountStatus,
+    input: Readonly<{ contextId: string; slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumExitOrder> {
+    const open = account.openPackage;
+    if (!account.deployed || open === null || !open.exitable) throw new Error("This wallet holds no exitable Arbitrum package.");
+    const request = {
+      owner: account.owner,
+      slippageBps: requireInteger(input.slippageBps, "Arbitrum exit slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    const response = await this.#postJson("/internal/terminal/arbitrum-sepolia/exit-order", request, signal);
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum exit order");
+    const value = await response.json() as unknown;
+    const order = requireEvmOrderCreateResponse(value, {
+      contextId: requireProtocolId(input.contextId, "Arbitrum context id"),
+      owner: account.owner,
+      settlementAccount: account.account,
+      idempotencyKey: request.idempotencyKey,
+    }, ARBITRUM_SEPOLIA_DOMAIN_ID, "Arbitrum exit");
+    const body = value as Record<string, unknown>;
+    const limits = body.limits;
+    if (body.packageId !== open.packageId || body.quantityAtoms !== open.spotBaseAtoms || !isRecord(limits)) {
+      throw new Error("Arbitrum exit order is not for the open package.");
+    }
+    requireExactKeys(limits, ["entryNotionalAtoms", "minSpotQuoteOutAtoms", "minPerpOutputAtoms", "minExitQuoteOutcomeAtoms"], "Arbitrum exit limits");
+    return Object.freeze({
+      order,
+      packageId: open.packageId,
+      quantityAtoms: open.spotBaseAtoms,
+      limits: Object.freeze({
+        entryNotionalAtoms: requireEvmDecimal(limits.entryNotionalAtoms, "Arbitrum entry notional"),
+        minSpotQuoteOutAtoms: requireEvmDecimal(limits.minSpotQuoteOutAtoms, "Arbitrum spot minimum"),
+        minPerpOutputAtoms: requireEvmDecimal(limits.minPerpOutputAtoms, "Arbitrum close minimum"),
+        minExitQuoteOutcomeAtoms: requireEvmDecimal(limits.minExitQuoteOutcomeAtoms, "Arbitrum exit outcome minimum"),
+      }),
+    });
+  }
+
+  async prepareArbitrumExitAuthorization(
+    attempt: ArbitrumSelectedAttempt,
+    exit: Readonly<{ account: ArbitrumAccountStatus; packageId: string }>,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumExitAuthorization> {
+    if (!ARBITRUM_ATTEMPT_ID_PATTERN.test(attempt.attemptId)) throw new Error("Arbitrum attempt id is invalid.");
+    const response = await this.#postJson(
+      "/internal/terminal/arbitrum-sepolia/prepare-exit-authorization", { attemptId: attempt.attemptId }, signal,
+    );
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum exit preparation");
+    return requireArbitrumExitAuthorization(await response.json() as unknown, {
+      attempt, owner: exit.account.owner, account: exit.account.account, packageId: exit.packageId, signed: null,
+    });
+  }
+
+  async authorizeArbitrumExit(
+    prepared: ArbitrumExitAuthorization,
+    attempt: ArbitrumSelectedAttempt,
+    ownerSignature: string,
+    signal?: AbortSignal,
+  ): Promise<ArbitrumExitAuthorization> {
+    if (!EVM_SIGNATURE_PATTERN.test(ownerSignature)) throw new Error("Arbitrum owner signature is invalid.");
+    const response = await this.#postJson(
+      "/internal/terminal/arbitrum-sepolia/authorize-exit", { attemptId: prepared.attemptId, ownerSignature }, signal,
+    );
+    if (!response.ok) throw await serviceFailure(response, "Arbitrum exit authorization");
+    const authorized = requireArbitrumExitAuthorization(await response.json() as unknown, {
+      attempt, owner: prepared.owner, account: prepared.account, packageId: prepared.packageId, signed: true,
+    });
+    // The signed exit must be the one the owner reviewed, not a fresh preparation.
+    if (authorized.digest !== prepared.digest) throw new Error("Arbitrum exit changed after review. Prepare it again.");
     return authorized;
   }
 
