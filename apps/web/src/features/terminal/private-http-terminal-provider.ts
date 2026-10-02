@@ -508,6 +508,23 @@ export type BaseAccountSetupStep = Readonly<{
   value: "0";
 }>;
 
+/** An owner-signed strategy account call that returns settled funds after an exit. */
+export type BaseAccountWithdrawal = Readonly<{
+  kind: "WITHDRAW_MARGIN" | "WITHDRAW_QUOTE" | "WITHDRAW_BASE";
+  label: string;
+  to: string;
+  data: string;
+  value: "0";
+}>;
+
+/** The verifier's open package record for the account, read from chain by the service. */
+export type BaseOpenPackage = Readonly<{
+  entryReceiptHash: string;
+  baseQuantityAtoms: string;
+  packageSizeUnits: string;
+  entryPerpNotionalWad: string;
+}>;
+
 /** The owner's Base Sepolia factory account and the wallet transactions it still needs. */
 export type BaseAccountStatus = Readonly<{
   contextId: string;
@@ -522,6 +539,9 @@ export type BaseAccountStatus = Readonly<{
   requiredMarginAtoms: string;
   fundingCovered: boolean;
   steps: readonly BaseAccountSetupStep[];
+  accountBaseAtoms: string;
+  openPackage: BaseOpenPackage | null;
+  withdrawals: readonly BaseAccountWithdrawal[];
 }>;
 
 export type BaseOrderRecord = Readonly<{
@@ -546,6 +566,7 @@ export type BaseSelectedAttempt = Readonly<{
 
 const BASE_ATTEMPT_ID_PATTERN = /^base-atomic-[0-9a-f]{52}$/;
 const BASE_SETUP_KINDS = new Set(["CREATE_ACCOUNT", "FUND_ACCOUNT", "DEPOSIT_MARGIN"]);
+const BASE_WITHDRAWAL_KINDS = new Set(["WITHDRAW_MARGIN", "WITHDRAW_QUOTE", "WITHDRAW_BASE"]);
 
 /** The service's own refusal reason when it sent one, so the ticket can say what to fix. */
 async function serviceFailure(response: Response, label: string): Promise<Error> {
@@ -564,35 +585,60 @@ async function serviceFailure(response: Response, label: string): Promise<Error>
 function requireBaseAccountStatus(value: unknown, owner: string): BaseAccountStatus {
   if (!isRecord(value)) throw new Error("Base account status is invalid.");
   requireExactKeys(value, [
-    "account", "accountQuoteAtoms", "chainReference", "contextId", "deployed", "domainId",
-    "environment", "fundingCovered", "owner", "quoteDecimals", "requiredMarginAtoms",
-    "requiredSpotQuoteAtoms", "reserveAtoms", "steps", "walletQuoteAtoms",
+    "account", "accountBaseAtoms", "accountQuoteAtoms", "chainReference", "contextId", "deployed", "domainId",
+    "environment", "fundingCovered", "openPackage", "owner", "quoteDecimals", "requiredMarginAtoms",
+    "requiredSpotQuoteAtoms", "reserveAtoms", "steps", "walletQuoteAtoms", "withdrawals",
   ], "Base account status");
   if (value.domainId !== BASE_SEPOLIA_DOMAIN_ID || value.chainReference !== BASE_SEPOLIA_CHAIN_REFERENCE ||
       value.environment !== "TESTNET" || typeof value.deployed !== "boolean" ||
-      typeof value.fundingCovered !== "boolean" || !Array.isArray(value.steps) ||
+      typeof value.fundingCovered !== "boolean" || !Array.isArray(value.steps) || !Array.isArray(value.withdrawals) ||
       requireEvmAddress(value.owner, "Base account owner").toLowerCase() !== owner.toLowerCase()) {
     throw new Error("Base account status binding is invalid.");
   }
-  const steps = value.steps.map((step) => {
+  const account = requireEvmAddress(value.account, "Base strategy account");
+  const walletCall = (step: unknown, kinds: ReadonlySet<string>) => {
     if (!isRecord(step)) throw new Error("Base account setup step is invalid.");
     requireExactKeys(step, ["data", "kind", "label", "to", "value"], "Base account setup step");
-    if (!BASE_SETUP_KINDS.has(step.kind as string) || step.value !== "0" ||
+    if (!kinds.has(step.kind as string) || step.value !== "0" ||
         typeof step.data !== "string" || !/^0x(?:[0-9a-f]{2})+$/.test(step.data)) {
       throw new Error("Base account setup step is invalid.");
     }
     return Object.freeze({
-      kind: step.kind as BaseAccountSetupStep["kind"],
+      kind: step.kind as string,
       label: requireString(step.label, "Base setup step label"),
       to: requireEvmAddress(step.to, "Base setup step target"),
       data: step.data,
       value: "0" as const,
     });
+  };
+  const steps = value.steps.map((step) => walletCall(step, BASE_SETUP_KINDS) as BaseAccountSetupStep);
+  // Withdrawals are calls on the owner's own strategy account and nothing else.
+  const withdrawals = value.withdrawals.map((step) => {
+    const call = walletCall(step, BASE_WITHDRAWAL_KINDS) as BaseAccountWithdrawal;
+    if (call.to.toLowerCase() !== account.toLowerCase()) throw new Error("Base withdrawal target is not the strategy account.");
+    return call;
   });
+  let openPackage: BaseOpenPackage | null = null;
+  if (value.openPackage !== null) {
+    if (!isRecord(value.openPackage)) throw new Error("Base open package is invalid.");
+    requireExactKeys(value.openPackage, [
+      "baseQuantityAtoms", "entryPerpNotionalWad", "entryReceiptHash", "packageSizeUnits",
+    ], "Base open package");
+    const entryReceiptHash = value.openPackage.entryReceiptHash;
+    if (typeof entryReceiptHash !== "string" || !/^0x[0-9a-f]{64}$/.test(entryReceiptHash)) {
+      throw new Error("Base open package receipt is invalid.");
+    }
+    openPackage = Object.freeze({
+      entryReceiptHash,
+      baseQuantityAtoms: requireEvmDecimal(value.openPackage.baseQuantityAtoms, "Base open package size"),
+      packageSizeUnits: requireEvmDecimal(value.openPackage.packageSizeUnits, "Base open package units"),
+      entryPerpNotionalWad: requireEvmDecimal(value.openPackage.entryPerpNotionalWad, "Base open package notional"),
+    });
+  }
   return Object.freeze({
     contextId: requireProtocolId(value.contextId, "Base context id"),
     owner: value.owner as string,
-    account: requireEvmAddress(value.account, "Base strategy account"),
+    account,
     deployed: value.deployed,
     quoteDecimals: requireInteger(value.quoteDecimals, "Base quote decimals", 36),
     walletQuoteAtoms: requireEvmDecimal(value.walletQuoteAtoms, "Base wallet balance"),
@@ -602,6 +648,9 @@ function requireBaseAccountStatus(value: unknown, owner: string): BaseAccountSta
     requiredMarginAtoms: requireEvmDecimal(value.requiredMarginAtoms, "Base margin requirement"),
     fundingCovered: value.fundingCovered,
     steps: Object.freeze(steps),
+    accountBaseAtoms: requireEvmDecimal(value.accountBaseAtoms, "Base account base balance"),
+    openPackage,
+    withdrawals: Object.freeze(withdrawals),
   });
 }
 
@@ -3321,6 +3370,36 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw await serviceFailure(response, "Base order creation");
     return requireBaseOrderCreateResponse(await response.json() as unknown, request);
+  }
+
+  /** The canonical EXIT order for the owner's open package; the service reads every quantity from chain. */
+  async createBaseExitOrder(
+    account: BaseAccountStatus,
+    input: Readonly<{ slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<BaseOrderRecord> {
+    const request = {
+      owner: account.owner,
+      slippageBps: requireInteger(input.slippageBps, "Base exit slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    if (request.slippageBps === 0) throw new Error("Base exit limits are invalid.");
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/base-sepolia/exit-order`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Base exit order creation");
+    return requireBaseOrderCreateResponse(await response.json() as unknown, {
+      contextId: account.contextId,
+      owner: account.owner,
+      settlementAccount: account.account,
+      idempotencyKey: request.idempotencyKey,
+    });
   }
 
   async requestBaseQuote(

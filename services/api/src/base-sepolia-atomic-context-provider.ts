@@ -3,10 +3,12 @@ import {
   NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
   NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
   NARYX_TEST_PERP_MARKET_ABI,
+  PACKAGE_VERIFIER_ACCOUNT_ABI,
   deriveTestPerpEntryLimits,
   encodeTestPerpTradeArgs,
   equalAddress,
   equalHash,
+  packageVerifierOpenPackage,
   prepareEvmTraderPermitAuthorization,
   requiredEvmAddress,
   validateFinalityPolicy,
@@ -298,6 +300,20 @@ async function deriveAttemptBounds(
   }
   const deadline = [order.expiryValue, quote.validUntilValue, route.routeExpiryValue]
     .reduce((left, right) => left < right ? left : right);
+  const verifier = requiredEvmAddress(configuration.deployment.packageVerifier.address, "packageVerifier");
+  const [packageNonce, openRecord] = await Promise.all([
+    reads.readContract({ address: verifier, abi: PACKAGE_VERIFIER_ACCOUNT_ABI, functionName: "nextNonce", args: [account] }),
+    reads.readContract({ address: verifier, abi: PACKAGE_VERIFIER_ACCOUNT_ABI, functionName: "openPackage", args: [account] }),
+  ]);
+  if (typeof packageNonce !== "bigint" || packageNonce < 0n) {
+    fail("PACKAGE_NONCE_INVALID", "Package verifier nonce read is malformed.");
+  }
+  let open;
+  try {
+    open = packageVerifierOpenPackage(openRecord);
+  } catch {
+    fail("OPEN_PACKAGE_INVALID", "Package verifier open package read is malformed.");
+  }
   const spotFillCommitment = Uint8Array.from(Buffer.from(keccak256(encodePacked(
     ["bytes", "bytes32", "bytes32", "bytes32"],
     [SPOT_FILL_DOMAIN, `0x${toHex(admission.orderHash)}`, `0x${toHex(admission.quoteHash)}`, `0x${toHex(admission.routeHash)}`],
@@ -306,16 +322,26 @@ async function deriveAttemptBounds(
     strategyAccount: account,
     solver: requiredEvmAddress(configuration.executionPolicy.solver, "executionPolicy.solver"),
     spotFillCommitment,
+    packageNonce,
     perpExpiry: expiry,
   };
   if (order.action === "EXIT") {
-    if (position.size !== -quantity) {
+    // The verifier admits an exit only of the exact open package record, so bind to it here.
+    if (open === null) fail("NO_OPEN_PACKAGE", "The strategy account has no open package to exit.");
+    if (order.entryReceiptHash === undefined
+      || !equalHash(open.entryReceiptHash, `0x${toHex(order.entryReceiptHash)}`)
+      || open.baseQuantityAtoms !== quantity || open.perpQuantityWad !== quantity
+      || !equalAddress(open.perpInstrument, market) || open.perpExpiry !== expiry) {
+      fail("OPEN_PACKAGE_MISMATCH", "The exit order does not match the open package record.");
+    }
+    if (position.size !== -quantity || position.entryNotional !== open.entryPerpNotionalWad) {
       fail("PERP_POSITION_MISMATCH", "Open test perpetual position does not match the exit quantity.");
     }
     return Object.freeze({
       deadline,
       bounds: Object.freeze({
         ...common,
+        expectedPrePerpEntryNotionalWad: open.entryPerpNotionalWad,
         expectedPrePerpBalanceWad: position.balance,
         minimumPostPerpBalanceWad: 0n,
         maximumPostPerpBalanceWad: 0n,
@@ -325,7 +351,7 @@ async function deriveAttemptBounds(
       }),
     });
   }
-  if (position.size !== 0n || position.balance !== 0n || position.entryNotional !== 0n) {
+  if (open !== null || position.size !== 0n || position.balance !== 0n || position.entryNotional !== 0n) {
     fail("PERP_POSITION_EXISTS", "The strategy account already holds a test perpetual position.");
   }
   if (await read("opensPaused") === true) fail("PERP_OPENS_PAUSED", "Test perpetual opens are paused.");
@@ -364,6 +390,7 @@ async function deriveAttemptBounds(
     deadline,
     bounds: Object.freeze({
       ...common,
+      expectedPrePerpEntryNotionalWad: 0n,
       expectedPrePerpBalanceWad: 0n,
       ...limits,
       perpArgs: encodeTestPerpTradeArgs({ deadline, expiry, sizeDeltaWad: -quantity, balanceDeltaWad: balanceWad }),

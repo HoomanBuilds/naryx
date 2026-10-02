@@ -6,8 +6,10 @@ import {
   NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
   NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
   NARYX_TEST_PERP_MARKET_ABI,
+  PACKAGE_VERIFIER_ACCOUNT_ABI,
   UNISWAP_V3_POOL_ABI,
   equalAddress,
+  packageVerifierOpenPackage,
   requiredEvmAddress,
 } from "@naryx/adapter-evm";
 import {
@@ -357,6 +359,8 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
   const factory = requiredEvmAddress(identity.strategyAccountFactory.address, "strategyAccountFactory");
   const market = requiredEvmAddress(identity.perpetual.market.address, "perpetual.market");
   const quoteToken = requiredEvmAddress(identity.quoteAsset.address, "quoteAsset");
+  const baseToken = requiredEvmAddress(identity.baseAsset.address, "baseAsset");
+  const verifier = requiredEvmAddress(identity.packageVerifier.address, "packageVerifier");
   const venueSubjectId = keccak256(stringToHex(identity.perpetual.venue.subjectId));
   const decimals = config.quoteAsset.decimals;
   const account: EvmTestnetAccountPort = Object.freeze({
@@ -380,10 +384,10 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
           "Requested account funding is outside the reviewed testnet limits.",
         );
       }
-      const balanceOf = (holder: Address) => port.readContract({
-        address: quoteToken, abi: ERC20_ABI, functionName: "balanceOf", args: [holder],
+      const balanceOf = (holder: Address, token: Address = quoteToken) => port.readContract({
+        address: token, abi: ERC20_ABI, functionName: "balanceOf", args: [holder],
       }) as Promise<bigint>;
-      const [walletQuoteAtoms, accountQuoteAtoms, reserveAtoms] = await Promise.all([
+      const [walletQuoteAtoms, accountQuoteAtoms, reserveAtoms, accountBaseAtoms, openRecord] = await Promise.all([
         balanceOf(resolved.owner),
         resolved.deployed ? balanceOf(resolved.account) : Promise.resolve(0n),
         resolved.deployed
@@ -391,7 +395,15 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
             address: market, abi: NARYX_TEST_PERP_MARKET_ABI, functionName: "reserveOf", args: [resolved.account],
           }) as Promise<bigint>
           : Promise.resolve(0n),
+        resolved.deployed ? balanceOf(resolved.account, baseToken) : Promise.resolve(0n),
+        resolved.deployed
+          ? port.readContract({
+            address: verifier, abi: PACKAGE_VERIFIER_ACCOUNT_ABI, functionName: "openPackage", args: [resolved.account],
+          })
+          : Promise.resolve(undefined),
       ]);
+      // From chain, never browser state, so an open package is found again from any device.
+      const open = openRecord === undefined ? null : packageVerifierOpenPackage(openRecord);
       const marginShortfall = marginAtoms > reserveAtoms ? marginAtoms - reserveAtoms : 0n;
       const accountNeeds = spotQuoteAtoms + marginShortfall;
       const fundShortfall = accountNeeds > accountQuoteAtoms ? accountNeeds - accountQuoteAtoms : 0n;
@@ -421,6 +433,40 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
           }),
         ));
       }
+      // After an exit the settled perp payout sits in the venue reserve and the proceeds in the
+      // account. Owner-signed withdrawals return both to the wallet; the account allows idle
+      // withdrawals only while no package is open.
+      const withdrawals = [];
+      if (resolved.deployed && open === null) {
+        if (reserveAtoms > 0n) {
+          withdrawals.push(setupStep(
+            "WITHDRAW_MARGIN",
+            `Withdraw ${formatAtoms(reserveAtoms, decimals)} USDC perp reserve to strategy account`,
+            resolved.account,
+            encodeFunctionData({
+              abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+              functionName: "withdrawPerpMargin",
+              args: [venueSubjectId, reserveAtoms],
+            }),
+          ));
+        }
+        for (const [token, atoms, label] of [
+          [quoteToken, accountQuoteAtoms, `${formatAtoms(accountQuoteAtoms, decimals)} USDC`],
+          [baseToken, accountBaseAtoms, `${formatAtoms(accountBaseAtoms, config.baseAsset.decimals)} base asset`],
+        ] as const) {
+          if (atoms <= 0n) continue;
+          withdrawals.push(setupStep(
+            token === quoteToken ? "WITHDRAW_QUOTE" : "WITHDRAW_BASE",
+            `Withdraw ${label} to wallet`,
+            resolved.account,
+            encodeFunctionData({
+              abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
+              functionName: "withdrawIdleToken",
+              args: [token, resolved.owner, atoms],
+            }),
+          ));
+        }
+      }
       return Object.freeze({
         domainId: BASE_SEPOLIA_DOMAIN_ID,
         chainReference: BASE_SEPOLIA_CHAIN_REFERENCE,
@@ -437,6 +483,14 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
         requiredMarginAtoms: marginAtoms.toString(),
         fundingCovered: fundShortfall <= walletQuoteAtoms,
         steps: Object.freeze(steps),
+        accountBaseAtoms: accountBaseAtoms.toString(),
+        openPackage: open === null ? null : Object.freeze({
+          entryReceiptHash: open.entryReceiptHash,
+          baseQuantityAtoms: open.baseQuantityAtoms.toString(),
+          packageSizeUnits: open.packageSizeUnits.toString(),
+          entryPerpNotionalWad: open.entryPerpNotionalWad.toString(),
+        }),
+        withdrawals: Object.freeze(withdrawals),
       });
     },
   });

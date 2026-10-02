@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { deriveTestPerpEntryLimits, encodeTestPerpTradeArgs, testPerpFeeWad } from '../src/index.js';
+import {
+  deriveTestPerpEntryLimits,
+  encodeTestPerpTradeArgs,
+  testPerpCloseSettlement,
+  testPerpFeeWad,
+} from '../src/index.js';
 
 const market = { takerFeeBps: 5n, initialMarginBps: 1_000n, collateralScale: 1_000_000_000_000n };
 const WAD = 1_000_000_000_000_000_000n;
@@ -54,4 +59,37 @@ test('packs the trade header and a negative size as two int128 halves', () => {
   assert.throws(() => encodeTestPerpTradeArgs({
     deadline: 2_000n, expiry: 1, sizeDeltaWad: 0n, balanceDeltaWad: 0n,
   }), /size delta must be nonzero/);
+});
+
+test('settles a short close like the market: funding against the trader, fee from positive equity only', () => {
+  const scale = market.collateralScale;
+  // Short 1 at 3000 with 400 margin; the buy-back costs 2990 plus a 1.495 fee and longs paid 2.5.
+  const position = { balanceWad: 400n * WAD, sizeWad: -WAD, entryNotionalWad: 3_000n * WAD, entryFundingIndex: 7n };
+  const exitNotionalWad = 2_990n * WAD;
+  const feeWad = testPerpFeeWad(exitNotionalWad, market);
+  const settled = testPerpCloseSettlement({
+    position, exitNotionalWad, feeWad, currentFundingIndex: 7n + 2_500_000_000_000_000_000n, collateralScale: scale,
+  });
+  assert.equal(settled.fundingWad, 2_500_000_000_000_000_000n);
+  assert.equal(settled.equityWad, 412_500_000_000_000_000_000n);
+  assert.equal(settled.chargedWad, feeWad);
+  assert.equal(settled.payoutWad, settled.equityWad - feeWad);
+  // Half a unit short and one wei of index: received funding rounds down, paid funding rounds up.
+  const half = { ...position, sizeWad: -WAD / 2n };
+  assert.equal(testPerpCloseSettlement({ position: half, exitNotionalWad, feeWad, currentFundingIndex: 8n, collateralScale: scale }).fundingWad, 0n);
+  assert.equal(testPerpCloseSettlement({ position: half, exitNotionalWad, feeWad, currentFundingIndex: 6n, collateralScale: scale }).fundingWad, -1n);
+  // Equity of 1.5 atoms against a larger fee: the charge takes the whole atom and nothing pays out.
+  const thin = testPerpCloseSettlement({
+    position: { ...position, balanceWad: 2n * scale }, exitNotionalWad: 3_000n * WAD + scale / 2n, feeWad, currentFundingIndex: 7n, collateralScale: scale,
+  });
+  assert.equal(thin.chargedWad, scale);
+  assert.equal(thin.payoutWad, 0n);
+  const underwater = testPerpCloseSettlement({
+    position, exitNotionalWad: 3_500n * WAD, feeWad, currentFundingIndex: 7n, collateralScale: scale,
+  });
+  assert.equal(underwater.payoutWad, 0n);
+  assert.equal(underwater.chargedWad, 0n);
+  assert.throws(() => testPerpCloseSettlement({
+    position: { ...position, sizeWad: 0n }, exitNotionalWad, feeWad, currentFundingIndex: 7n, collateralScale: scale,
+  }), /flat/);
 });

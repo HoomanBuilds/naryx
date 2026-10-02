@@ -191,6 +191,13 @@ export function scopeFromOrder(
   if (order.maxAggregateRecoveryLossQuote.asset.assetId !== quoteAsset) {
     rejectScope("The order's recovery-loss cap is not in its quote asset.");
   }
+  // An exit spends no new quote: its spot leg sells, its perp close only returns margin, and it signs
+  // no spot quote cap and no added margin, so its principal is zero. Counting its sale value would let
+  // the daily entry cap trap a package the cap already admitted; the domain allowlist, mainnet
+  // refusal, quote asset, and recovery-loss checks still apply to it.
+  if (order.action === "EXIT" && (order.maxSpotQuoteIn !== undefined || order.maxMarginAdded.atoms !== 0n)) {
+    rejectScope("An exit order must not sign new spot spend or added margin.");
+  }
   return Object.freeze({
     handoff,
     attemptId: request.attemptId,

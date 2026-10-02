@@ -107,6 +107,16 @@ export interface EvmAtomicExecutionBounds {
   readonly traderSignature: Hex;
   readonly solverSignature: Hex;
   readonly spotFillCommitment: Hash32;
+  /**
+   * The verifier's `nextNonce(strategyAccount)` read from chain. The order nonce is an off-chain
+   * request identity; the verifier admits only the account's next package nonce.
+   */
+  readonly packageNonce: bigint;
+  /**
+   * Exit only: the open package's exact `entryPerpNotionalWad` from chain. The order commits it in
+   * quote atoms, which cannot carry the WAD remainder the verifier compares; zero for an entry.
+   */
+  readonly expectedPrePerpEntryNotionalWad: bigint;
   readonly expectedPrePerpBalanceWad: bigint;
   readonly minimumPostPerpBalanceWad: bigint;
   readonly maximumPostPerpBalanceWad: bigint;
@@ -469,11 +479,18 @@ function buildEvmAtomicMaterial(
   const baseQuantityAtoms = positiveUint(order.quantity.atoms, UINT256_MAX, 'baseQuantityAtoms');
   const perpQuantityWad = positiveUint(exactWad(perpLeg.quantity.atoms, perpLeg.quantity.asset.decimals, 'perpQuantityWad'), UINT256_MAX, 'perpQuantityWad');
   const expectedPrePerpSizeWad = int128(exactWad(order.expectedPrePositionSize.atoms, order.expectedPrePositionSize.asset.decimals, 'expectedPrePerpSizeWad'), 'expectedPrePerpSizeWad');
-  const expectedPrePerpEntryNotionalWad = uint(exactWad(order.expectedPrePositionEntryNotional.atoms, order.expectedPrePositionEntryNotional.asset.decimals, 'expectedPrePerpEntryNotionalWad'), UINT128_MAX, 'expectedPrePerpEntryNotionalWad');
+  const expectedPrePerpEntryNotionalWad = uint(bounds.expectedPrePerpEntryNotionalWad, UINT128_MAX, 'expectedPrePerpEntryNotionalWad');
+  requireCondition(
+    order.action === 'EXIT' || expectedPrePerpEntryNotionalWad === 0n,
+    'entry requires a zero pre-position entry notional',
+  );
+  requireCondition(
+    scaleDecimals(expectedPrePerpEntryNotionalWad, 18, order.expectedPrePositionEntryNotional.asset.decimals, 'FLOOR', 'expectedPrePerpEntryNotionalWad') === order.expectedPrePositionEntryNotional.atoms,
+    'pre-position entry notional does not match the order',
+  );
   const expectedPostPerpSizeWad = int128(expectedPrePerpSizeWad + (order.action === 'ENTRY' ? -perpQuantityWad : perpQuantityWad), 'expectedPostPerpSizeWad');
   const spotQuoteBound = order.action === 'ENTRY' ? order.maxSpotQuoteIn : order.minSpotQuoteOut;
   requireCondition(spotQuoteBound !== undefined && sameAsset(spotQuoteBound.asset, deployment.quoteAsset), 'spot quote bound is missing or uses the wrong asset');
-  const packageNotionalQuoteAtoms = uint(quote.expectedSpotNotional.atoms, UINT256_MAX, 'packageNotionalQuoteAtoms');
   const action = enumDiscriminant(PACKAGE_ACTION, order.action, 'order.action');
   const seriesBinding = validateSeriesBinding(
     seriesBindingInput,
@@ -489,6 +506,18 @@ function buildEvmAtomicMaterial(
   const seriesBindingHash = cashCarrySeriesBindingV1Hash(seriesBinding);
   const spotLimit = mulDiv(spotLeg.limitPrice.quoteAtoms, positiveUint(deployment.spot.baseLotAtoms, UINT256_MAX, 'spot.baseLotAtoms'), spotLeg.limitPrice.baseAtoms, spotLeg.limitPrice.roundingDirection, 'spot.limitQuoteAtomsPerBaseLot');
   const perpLimit = mulDiv(perpLeg.limitPrice.quoteAtoms, positiveUint(deployment.perpetual.baseLotAtoms, UINT256_MAX, 'perpetual.baseLotAtoms'), perpLeg.limitPrice.baseAtoms, perpLeg.limitPrice.roundingDirection, 'perpetual.limitQuoteAtomsPerBaseLot');
+  // ResourceRegistry.validateCashCarry admits exactly the larger leg limit notional, lots times limit.
+  requireCondition(
+    spotLeg.quantity.atoms % deployment.spot.baseLotAtoms === 0n && perpLeg.quantity.atoms % deployment.perpetual.baseLotAtoms === 0n,
+    'leg quantity is not a whole number of base lots',
+  );
+  const spotLimitNotional = (spotLeg.quantity.atoms / deployment.spot.baseLotAtoms) * spotLimit;
+  const perpLimitNotional = (perpLeg.quantity.atoms / deployment.perpetual.baseLotAtoms) * perpLimit;
+  const packageNotionalQuoteAtoms = positiveUint(
+    spotLimitNotional > perpLimitNotional ? spotLimitNotional : perpLimitNotional,
+    UINT256_MAX,
+    'packageNotionalQuoteAtoms',
+  );
 
   const execution = {
     domainIdHash: identityHash(domain.domainId),
@@ -524,7 +553,7 @@ function buildEvmAtomicMaterial(
     maximumPostPerpBalanceWad: int128(bounds.maximumPostPerpBalanceWad, 'maximumPostPerpBalanceWad'),
     maximumPostPerpEntryNotionalWad: uint(bounds.maximumPostPerpEntryNotionalWad, UINT128_MAX, 'maximumPostPerpEntryNotionalWad'),
     entryReceiptHash: optionalHash(order.entryReceiptHash, 'entryReceiptHash'),
-    nonce: uint(order.nonce, UINT256_MAX, 'nonce'),
+    nonce: uint(bounds.packageNonce, UINT256_MAX, 'packageNonce'),
     deadline: uint(deadline, UINT256_MAX, 'deadline'),
   };
 
@@ -798,15 +827,24 @@ export type {
   QualifiedEvmDeploymentAuthority,
 } from './authorityQualification.js';
 export { EVM_DEPLOYMENT_AUTHORITY_ROLES, qualifyEvmDeploymentAuthority } from './authorityQualification.js';
-export type { TestPerpEntryLimits, TestPerpMarketParameters } from './testPerpMarket.js';
+export type {
+  PackageVerifierOpenPackage,
+  TestPerpCloseSettlement,
+  TestPerpEntryLimits,
+  TestPerpMarketParameters,
+  TestPerpPositionState,
+} from './testPerpMarket.js';
 export {
   CHAINLINK_AGGREGATOR_ABI,
   ERC20_ABI,
   NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
   NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
   NARYX_TEST_PERP_MARKET_ABI,
+  PACKAGE_VERIFIER_ACCOUNT_ABI,
   UNISWAP_V3_POOL_ABI,
   deriveTestPerpEntryLimits,
   encodeTestPerpTradeArgs,
+  packageVerifierOpenPackage,
+  testPerpCloseSettlement,
   testPerpFeeWad,
 } from './testPerpMarket.js';

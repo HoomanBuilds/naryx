@@ -142,6 +142,8 @@ test('accepts only the exact signed-bounds wire shape for co-signing', () => {
     strategyAccount: account,
     solver: address('f'),
     spotFillCommitment: `0x${hash('1')}`,
+    packageNonce: '4',
+    expectedPrePerpEntryNotionalWad: '0',
     expectedPrePerpBalanceWad: '0',
     minimumPostPerpBalanceWad: '1',
     maximumPostPerpBalanceWad: '2',
@@ -151,6 +153,7 @@ test('accepts only the exact signed-bounds wire shape for co-signing', () => {
   };
   const parsed = parseBaseSepoliaAuthorizationBounds(wire);
   assert.equal(parsed.maximumPostPerpEntryNotionalWad, 3n);
+  assert.equal(parsed.packageNonce, 4n);
   assert.throws(() => parseBaseSepoliaAuthorizationBounds({ ...wire, extra: 1 }), /malformed/);
   assert.throws(() => parseBaseSepoliaAuthorizationBounds({ ...wire, minimumPostPerpBalanceWad: '1.5' }), /decimal/);
 });

@@ -3,7 +3,11 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { isAbsolute } from 'node:path';
 import {
+  NARYX_TEST_PERP_MARKET_ABI,
+  PACKAGE_VERIFIER_ACCOUNT_ABI,
   equalAddress,
+  equalHash,
+  packageVerifierOpenPackage,
   prepareEvmSolverAuthorization,
   prepareEvmTraderPermitAuthorization,
   requiredEvmAddress,
@@ -13,20 +17,29 @@ import {
   bytesEqual,
   fromProtocolJson,
   solverSignatureDigest,
+  toHex,
   validatePackageAdmission,
   type Hash32,
   type PackageOrderInput,
   type RoutePayloadInput,
   type SolverQuoteInput,
 } from '@naryx/protocol-types';
-import { recoverAddress, type Hex, type LocalAccount } from 'viem';
+import { recoverAddress, type Abi, type Address, type Hex, type LocalAccount } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import type { QuoteProviders } from './hyperliquid-testnet-quote-runtime.js';
+import { createBaseSepoliaExitQuotePort } from './base-sepolia-exit-quote.js';
+import type {
+  InternalAtomicQuoteOrderProvider,
+  InternalAtomicQuotePort,
+  InternalAtomicQuoteStore,
+} from './internal-atomic-quote-server.js';
+import type { Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
 import {
   BASE_SEPOLIA_QUOTE_ENABLED_ENV,
+  createBaseSepoliaQuoteRuntime,
   createViemBaseSepoliaReadPort,
-  loadBaseSepoliaQuoteRuntime,
+  loadBaseSepoliaQuoteMarketConfig,
   loadBaseSepoliaSolverDeployment,
   readBaseSepoliaAccountOf,
   requireBaseSepoliaChain,
@@ -89,9 +102,9 @@ function integer(value: unknown, name: string): bigint {
 export function parseBaseSepoliaAuthorizationBounds(value: unknown): EvmAtomicAuthorizationBounds {
   const record = value as Record<string, unknown> | null;
   const keys = [
-    'currentUnixSeconds', 'expectedPrePerpBalanceWad', 'maximumPostPerpBalanceWad',
-    'maximumPostPerpEntryNotionalWad', 'minimumPostPerpBalanceWad', 'perpArgs', 'perpExpiry', 'solver',
-    'spotFillCommitment', 'strategyAccount',
+    'currentUnixSeconds', 'expectedPrePerpBalanceWad', 'expectedPrePerpEntryNotionalWad',
+    'maximumPostPerpBalanceWad', 'maximumPostPerpEntryNotionalWad', 'minimumPostPerpBalanceWad',
+    'packageNonce', 'perpArgs', 'perpExpiry', 'solver', 'spotFillCommitment', 'strategyAccount',
   ];
   if (typeof record !== 'object' || record === null || Object.keys(record).sort().join(',') !== keys.join(',')
     || !Array.isArray(record.perpArgs) || record.perpArgs.length !== 2
@@ -111,6 +124,8 @@ export function parseBaseSepoliaAuthorizationBounds(value: unknown): EvmAtomicAu
     strategyAccount,
     solver,
     spotFillCommitment: hashBytes(record.spotFillCommitment, 'spotFillCommitment'),
+    packageNonce: integer(record.packageNonce, 'packageNonce'),
+    expectedPrePerpEntryNotionalWad: integer(record.expectedPrePerpEntryNotionalWad, 'expectedPrePerpEntryNotionalWad'),
     expectedPrePerpBalanceWad: integer(record.expectedPrePerpBalanceWad, 'expectedPrePerpBalanceWad'),
     minimumPostPerpBalanceWad: integer(record.minimumPostPerpBalanceWad, 'minimumPostPerpBalanceWad'),
     maximumPostPerpBalanceWad: integer(record.maximumPostPerpBalanceWad, 'maximumPostPerpBalanceWad'),
@@ -134,6 +149,48 @@ function verifyOwnQuote(quote: { solverVerificationKey: Uint8Array; signature: U
     return verify(null, Buffer.from(digest), publicKey, Buffer.from(quote.signature));
   } catch {
     return false;
+  }
+}
+
+/**
+ * The account state the signed bounds must equal on chain: the verifier's next package nonce and,
+ * for an exit, the exact open package record and short it closes, ending flat with no balance.
+ */
+async function requireAccountState(
+  chain: BaseSepoliaReadPort,
+  deployment: BaseSepoliaSolverDeployment['deployment'],
+  order: Readonly<{ action: string; quantity: { atoms: bigint }; entryReceiptHash?: Uint8Array }>,
+  bounds: EvmAtomicAuthorizationBounds,
+): Promise<void> {
+  const verifier = requiredEvmAddress(deployment.packageVerifier.address, 'packageVerifier');
+  const read = (address: Address, abi: Abi, functionName: string, args: readonly unknown[]) =>
+    chain.readContract({ address, abi, functionName, args });
+  const [nonce, openRecord] = await Promise.all([
+    read(verifier, PACKAGE_VERIFIER_ACCOUNT_ABI as Abi, 'nextNonce', [bounds.strategyAccount]),
+    read(verifier, PACKAGE_VERIFIER_ACCOUNT_ABI as Abi, 'openPackage', [bounds.strategyAccount]),
+  ]);
+  if (nonce !== bounds.packageNonce) fail('NOT_AUTHORIZED', "bounds nonce is not the account's next package nonce");
+  let open;
+  try {
+    open = packageVerifierOpenPackage(openRecord);
+  } catch {
+    fail('NOT_AUTHORIZED', 'open package read is malformed');
+  }
+  if (order.action !== 'EXIT') return;
+  const quantity = order.quantity.atoms;
+  if (open === null || order.entryReceiptHash === undefined
+    || !equalHash(open.entryReceiptHash, `0x${toHex(order.entryReceiptHash)}`)
+    || open.baseQuantityAtoms !== quantity || open.perpQuantityWad !== quantity
+    || open.entryPerpNotionalWad !== bounds.expectedPrePerpEntryNotionalWad) {
+    fail('NOT_AUTHORIZED', 'exit bounds do not match the open package record');
+  }
+  const market = requiredEvmAddress(deployment.perpetual.market.address, 'perpetual.market');
+  const position = await read(market, NARYX_TEST_PERP_MARKET_ABI as Abi, 'getPosition', [market, bounds.perpExpiry, bounds.strategyAccount]) as
+    Record<string, unknown> | undefined;
+  if (position?.size !== -quantity || position.balance !== bounds.expectedPrePerpBalanceWad
+    || bounds.minimumPostPerpBalanceWad !== 0n || bounds.maximumPostPerpBalanceWad !== 0n
+    || bounds.maximumPostPerpEntryNotionalWad !== 0n) {
+    fail('NOT_AUTHORIZED', 'exit bounds do not close the exact open short');
   }
 }
 
@@ -187,6 +244,7 @@ export function createBaseSepoliaSolverAuthorization(options: BaseSepoliaSolverA
       fail('NOT_AUTHORIZED', 'bounds strategy account is not the owner factory account');
     }
     const deployment = options.deployment.deployment;
+    await requireAccountState(options.chain, deployment, admission.order, bounds);
     const series = options.deployment.seriesBindingInput;
     let traderDigest: Hex;
     let solverDigest: Hex;
@@ -292,6 +350,12 @@ export function loadBaseSepoliaSolverKey(path: string | undefined, expectedAddre
 
 export type BaseSepoliaSolverRuntime = Readonly<{
   providers: QuoteProviders;
+  /** Quotes Base Sepolia exits itself and hands every other order to `fallback`. */
+  wrapExit(fallback: InternalAtomicQuotePort, dependencies: Readonly<{
+    orders: InternalAtomicQuoteOrderProvider;
+    signer: Ed25519AtomicQuoteSigner;
+    store: InternalAtomicQuoteStore;
+  }>): InternalAtomicQuotePort;
   listen(host: string): Promise<number>;
   close(): Promise<void>;
 }>;
@@ -315,7 +379,8 @@ export async function loadBaseSepoliaSolverRuntime(
   const deployment = loadBaseSepoliaSolverDeployment(env.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST);
   const chain = createViemBaseSepoliaReadPort(env.NARYX_BASE_SEPOLIA_RPC_URL ?? '');
   await requireBaseSepoliaChain(chain);
-  const providers = loadBaseSepoliaQuoteRuntime(env, { nonceSource: dependencies.nonceSource, deployment, chain });
+  const quoteInput = { ...loadBaseSepoliaQuoteMarketConfig(env), deployment, chain, nonceSource: dependencies.nonceSource };
+  const providers = createBaseSepoliaQuoteRuntime(quoteInput);
   const port = Number(env.NARYX_BASE_SEPOLIA_SOLVER_AUTHORIZATION_PORT ?? '8794');
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || dependencies.reservedPorts.includes(port)) {
     throw new Error('NARYX_BASE_SEPOLIA_SOLVER_AUTHORIZATION_PORT must be a free TCP port');
@@ -329,6 +394,7 @@ export async function loadBaseSepoliaSolverRuntime(
   }));
   return Object.freeze({
     providers,
+    wrapExit: (fallback, exitDependencies) => createBaseSepoliaExitQuotePort({ ...exitDependencies, input: quoteInput }, fallback),
     listen: (host: string) => new Promise<number>((resolveListen, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {

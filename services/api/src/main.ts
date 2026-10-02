@@ -32,6 +32,7 @@ import {
   type BaseSepoliaOrderRuntime,
 } from "./base-sepolia-order-context.js";
 import { createHttpBaseSepoliaSolverAuthorizer } from "./base-sepolia-solver-authorization.js";
+import { createBaseSepoliaExitOrderRoutes, createBaseSepoliaExitOrderService } from "./base-sepolia-exit-order.js";
 import {
   createArbitrumSepoliaRuntime,
   createViemArbitrumSepoliaReadClient,
@@ -162,6 +163,7 @@ let baseRuntime: Awaited<ReturnType<typeof createBaseSepoliaRuntime>> | undefine
 let baseRuntimeError: unknown;
 let basePreparationStore: SqlitePreparedEvmTestnetAtomicStore | undefined;
 let baseOrderRuntime: BaseSepoliaOrderRuntime | undefined;
+let baseExitRoutes: ReturnType<typeof createBaseSepoliaExitOrderRoutes> | undefined;
 if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
   try {
     const baseManifestPath = absolutePath(
@@ -196,9 +198,20 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
       orders: orderStore,
     });
     baseOrderRuntime.feed.start();
+    // Base Sepolia exit path: the canonical EXIT order for the owner's open package, read from chain.
+    baseExitRoutes = createBaseSepoliaExitOrderRoutes({
+      terminalOrigin: config.terminalOrigin,
+      service: createBaseSepoliaExitOrderService({
+        runtime: baseOrderRuntime,
+        deployment: baseManifest.deployment,
+        port: baseClient,
+        orders: orderStore,
+      }),
+    });
   } catch (error) {
     baseRuntime = undefined;
     baseOrderRuntime = undefined;
+    baseExitRoutes = undefined;
     baseRuntimeError = error;
     reportRuntimeFailure("baseTestnetAtomic", error);
   }
@@ -527,6 +540,7 @@ const server = createPrivateTerminalServer(
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
     arbitrumOwnerRoutes,
     solanaDevnetOrderRuntime?.handler,
+    baseExitRoutes,
   ),
   {
     ...terminalMarkets,

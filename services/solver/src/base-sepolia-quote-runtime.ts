@@ -123,18 +123,18 @@ export type BaseSepoliaEntryPricing = Readonly<{
   marginAtoms: bigint;
 }>;
 
-function sameAsset(left: AssetRef, right: AssetRef): boolean {
+export function sameAsset(left: AssetRef, right: AssetRef): boolean {
   return left.assetId === right.assetId && left.decimals === right.decimals
     && bytesEqual(left.assetManifestHash, right.assetManifestHash);
 }
 
-function sameAdapter(left: AdapterRef, right: AdapterRef): boolean {
+export function sameAdapter(left: AdapterRef, right: AdapterRef): boolean {
   return left.adapterId === right.adapterId
     && left.adapterManifestVersion === right.adapterManifestVersion
     && bytesEqual(left.adapterManifestHash, right.adapterManifestHash);
 }
 
-function sameDomain(left: DomainRef, right: DomainRef): boolean {
+export function sameDomain(left: DomainRef, right: DomainRef): boolean {
   return left.domainId === right.domainId
     && left.domainManifestVersion === right.domainManifestVersion
     && bytesEqual(left.domainManifestHash, right.domainManifestHash);
@@ -147,7 +147,7 @@ function gcd(left: bigint, right: bigint): bigint {
   return a;
 }
 
-function reducedPrice(
+export function reducedPrice(
   base: AssetRef,
   quote: AssetRef,
   quoteAtoms: bigint,
@@ -489,6 +489,17 @@ export function loadBaseSepoliaSolverDeployment(path: string | undefined): BaseS
   return deployment;
 }
 
+/** The reviewed quote market config; entry and exit quotes price and route from the same one. */
+export function loadBaseSepoliaQuoteMarketConfig(env: NodeJS.ProcessEnv): BaseSepoliaQuoteMarketConfig {
+  const decoded = absoluteJson(env.NARYX_BASE_SEPOLIA_QUOTE_CONFIG, 'NARYX_BASE_SEPOLIA_QUOTE_CONFIG', 'baseSepoliaQuoteConfig');
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)
+    || (decoded as Record<string, unknown>).version !== 1
+    || typeof (decoded as Record<string, unknown>).market !== 'object') {
+    throw new Error('Base Sepolia quote config must be version 1 with market');
+  }
+  return (decoded as Record<string, unknown>).market as BaseSepoliaQuoteMarketConfig;
+}
+
 export function loadBaseSepoliaQuoteRuntime(
   env: NodeJS.ProcessEnv,
   dependencies: Readonly<{
@@ -497,14 +508,8 @@ export function loadBaseSepoliaQuoteRuntime(
     chain: BaseSepoliaReadPort;
   }>,
 ): QuoteProviders {
-  const decoded = absoluteJson(env.NARYX_BASE_SEPOLIA_QUOTE_CONFIG, 'NARYX_BASE_SEPOLIA_QUOTE_CONFIG', 'baseSepoliaQuoteConfig');
-  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)
-    || (decoded as Record<string, unknown>).version !== 1
-    || typeof (decoded as Record<string, unknown>).market !== 'object') {
-    throw new Error('Base Sepolia quote config must be version 1 with market');
-  }
   return createBaseSepoliaQuoteRuntime({
-    ...((decoded as Record<string, unknown>).market as BaseSepoliaQuoteMarketConfig),
+    ...loadBaseSepoliaQuoteMarketConfig(env),
     deployment: dependencies.deployment,
     chain: dependencies.chain,
     nonceSource: dependencies.nonceSource,

@@ -638,6 +638,8 @@ function liveReads(chain: FakeChain, configuration: BaseSepoliaAtomicDeploymentC
         case "takerFeeBps": return 5;
         case "initialMarginBps": return 500;
         case "previewOpen": return [3_000n * WAD, chain.previewNotionalWad, 3n * WAD, (read.args?.[1] as bigint) - 3n * WAD];
+        case "nextNonce": return 4n;
+        case "openPackage": return { entryReceiptHash: `0x${"00".repeat(32)}` };
         default: throw new Error(`unexpected contract read ${read.functionName}`);
       }
     },
@@ -694,6 +696,8 @@ test("derives live entry bounds for the owner account and freezes them for prepa
     assert.equal(bounds.solver, solver);
     assert.equal(bounds.perpExpiry, 4_294_967_295);
     assert.equal(bounds.expectedPrePerpBalanceWad, 0n);
+    assert.equal(bounds.packageNonce, 4n);
+    assert.equal(bounds.expectedPrePerpEntryNotionalWad, 0n);
     // 400 USDC of margin less the 5 bps fee at a +/-1% oracle move around a 6000 notional.
     assert.equal(bounds.maximumPostPerpEntryNotionalWad, 6_060n * WAD);
     assert.equal(bounds.minimumPostPerpBalanceWad, 400n * WAD - 3_030_000_000_000_000_000n);
