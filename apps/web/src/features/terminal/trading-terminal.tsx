@@ -2745,8 +2745,9 @@ export function TradingTerminal({
       setBaseFlow({ ...base, preparation, transactionHash, busy: null, error: null });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Base Sepolia action failed.";
-      // An expired quote cannot be re-selected for the same order: start a fresh order instead.
-      const restart = step === "execute" && /expired|admission/i.test(message);
+      // An expired quote cannot be re-selected for the same order, and a prepared call the network
+      // refuses would only revert again if re-sent: start a fresh order instead.
+      const restart = step === "execute" && /expired|admission|would revert/i.test(message);
       setBaseFlow((previous) => ({
         ...(previous ?? base),
         ...(restart ? { order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID() } : {}),

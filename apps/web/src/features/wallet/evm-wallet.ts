@@ -58,6 +58,8 @@ function walletError(cause: unknown, action: "connect" | "switch" | "sign" | "su
   if (name === "InsufficientFundsError" || /insufficient funds|exceeds the balance|gas required exceeds/i.test(message)) {
     return "Not enough testnet ETH for gas on this network. Get some from the Gas link on the Portfolio page, then retry.";
   }
+  // The wallet's gas estimate ran the call and it reverted, so nothing was sent.
+  if (action === "submit" && /revert/i.test(message)) return "The transaction would revert on the network, so it was not sent.";
   if (action === "switch") return "Network change failed. Switch networks in your wallet.";
   return action === "connect" ? "Wallet connection failed." : action === "sign" ? "Wallet could not sign the package authorization." : "Wallet could not submit the testnet transaction.";
 }
