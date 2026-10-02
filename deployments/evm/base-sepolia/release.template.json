@@ -251,7 +251,7 @@
         "maxEntrySpread": {
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
-          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms" } },
+          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms (the fraction must be in lowest terms: 50 quote per WETH is 1 / 20000000000)" } },
           "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
           "roundingDirection": "CEIL"
         },

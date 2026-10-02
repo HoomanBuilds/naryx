@@ -17,6 +17,7 @@ import {
   bytesEqual,
   domainRefFromManifest,
   exactPrice,
+  exactSignedRate,
   parseProtocolJson,
   type AdapterRef,
   type AssetRef,
@@ -152,6 +153,13 @@ function validateConfig(config: BaseSepoliaOrderContextConfig, deployment?: Base
   nonnegative(config.maxProtocolFeeAtoms, "maxProtocolFeeAtoms");
   nonnegative(config.maxSolverFeeAtoms, "maxSolverFeeAtoms");
   nonnegative(config.maxPriorityFeeAtoms, "maxPriorityFeeAtoms");
+  // Every order signs the spread cap, so a non-canonical rate (for example not in lowest terms) is
+  // refused here, at load, instead of failing each order.
+  try {
+    exactSignedRate(config.maxEntrySpread, "maxEntrySpread");
+  } catch (error) {
+    throw new Error(`Base Sepolia order context maxEntrySpread is invalid: ${error instanceof Error ? error.message : "malformed"}`);
+  }
   if (deployment === undefined) return;
   const identity = deployment.deployment;
   if (!sameAsset(config.baseAsset, identity.baseAsset) || !sameAsset(config.quoteAsset, identity.quoteAsset)
