@@ -1557,6 +1557,14 @@ export function TradingTerminal({
   const currentBaseFlow = baseFlow?.ticketKey === ticketKey && baseFlow.owner === evmWallet.account
     ? baseFlow
     : null;
+  // A Base exit closes the whole open package read from chain, so the ticket shows that size.
+  const baseOpenPackage = currentBaseFlow?.account?.openPackage ?? null;
+  const baseExitSize = selectedDomain === "base" && mode === "exit" && baseOpenPackage !== null
+    ? atomsDecimal(baseOpenPackage.baseQuantityAtoms, 18)
+    : null;
+  useEffect(() => {
+    if (baseExitSize !== null && baseExitSize !== size) setSize(baseExitSize);
+  }, [baseExitSize, size]);
   // Once funding is sent the flow outlives ticket edits, so the reclaim path is never lost.
   const currentArbitrumFlow = arbitrumFlow !== null && arbitrumFlow.owner === evmWallet.account &&
     (arbitrumFlow.ticketKey === ticketKey || (selectedDomain === "arbitrum" && arbitrumFlow.fundHash !== null))
