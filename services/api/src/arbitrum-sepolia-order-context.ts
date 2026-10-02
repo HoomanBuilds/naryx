@@ -18,7 +18,7 @@ import {
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
 import { ArbitrumSepoliaMarketFeed, type ArbitrumSepoliaMarketRead } from "./arbitrum-sepolia-market-source.js";
-import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import { venueFeeCapsWithBase, type ActiveOrderContext, type ActiveOrderContextProvider } from "./canonical-entry-order.js";
 import type { InternalOrderClockPort, InternalOrderSpotPricePort } from "./terminal-orders.js";
 import {
   executableSpotPrice,
@@ -287,7 +287,8 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       maxEntrySpread: config.maxEntrySpread,
       maximumQuantityAtoms,
       maxSlippageBps: config.maxSlippageBps,
-      maxVenueFeeAtomsByAsset: config.maxVenueFeeAtomsByAsset,
+      // GMX charges the position fee in the quote asset; every quote also lists a zero base fee.
+      maxVenueFeeAtomsByAsset: venueFeeCapsWithBase(config.baseAsset, config.maxVenueFeeAtomsByAsset),
       maxMarginAddedAtoms: config.maxMarginAddedAtoms,
       maxProtocolFeeAtoms: config.maxProtocolFeeAtoms,
       maxSolverFeeAtoms: config.maxSolverFeeAtoms,

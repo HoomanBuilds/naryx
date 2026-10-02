@@ -15,11 +15,7 @@ import {
 } from "@naryx/adapter-evm";
 import {
   bytesEqual,
-  canonicalBytes,
-  canonicalFeeCaps,
-  compareBytes,
   domainRefFromManifest,
-  encodeAssetRef,
   exactPrice,
   exactSignedRate,
   parseProtocolJson,
@@ -38,6 +34,7 @@ import {
 } from "./base-sepolia-atomic-context-provider.js";
 import {
   EntryOrderValidationError,
+  venueFeeCapsWithBase,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
 } from "./canonical-entry-order.js";
@@ -181,12 +178,7 @@ function validateConfig(config: BaseSepoliaOrderContextConfig, deployment?: Base
 export function baseSepoliaVenueFeeCaps(
   config: Pick<BaseSepoliaOrderContextConfig, "baseAsset" | "maxVenueFeeAtomsByAsset">,
 ): readonly FeeCap[] {
-  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
-  const caps = [...config.maxVenueFeeAtomsByAsset];
-  if (!caps.some((cap) => bytesEqual(key(cap.asset), key(config.baseAsset)))) {
-    caps.push({ asset: config.baseAsset, maxAtoms: 0n });
-  }
-  return canonicalFeeCaps(caps.sort((left, right) => compareBytes(key(left.asset), key(right.asset))));
+  return venueFeeCapsWithBase(config.baseAsset, config.maxVenueFeeAtomsByAsset);
 }
 
 export function loadBaseSepoliaOrderContextConfig(path: string): BaseSepoliaOrderContextConfig {

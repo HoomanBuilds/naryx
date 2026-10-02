@@ -15,6 +15,7 @@ import {
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
 } from "../src/index.js";
+import { venueFeeCapsWithBase } from "../src/canonical-entry-order.js";
 
 const BASE_HASH = "22".repeat(32);
 const QUOTE_HASH = "33".repeat(32);
@@ -154,4 +155,17 @@ test("shared local catalog produces active order and clock ports", async () => {
   assert.equal(context.spotAdapters[0]?.adapterId, "solana-conformance-v1");
   assert.equal(await runtime.clock.currentClock(context), 5_000n);
   assert.equal(runtime.contexts("unknown"), undefined);
+});
+
+test("an EVM lane's order venue fee caps always include the base asset, at zero unless configured", () => {
+  const base = assetRef("eip155:421614:weth", "11".repeat(32), 18);
+  const quote = assetRef("eip155:421614:usdc", "22".repeat(32), 6);
+  const caps = venueFeeCapsWithBase(base, [{ asset: quote, maxAtoms: 5_000_000n }]);
+  assert.equal(caps.length, 2);
+  assert.equal(caps.find((cap) => cap.asset.assetId === base.assetId)?.maxAtoms, 0n);
+  assert.equal(caps.find((cap) => cap.asset.assetId === quote.assetId)?.maxAtoms, 5_000_000n);
+  // A configured base cap is kept, not duplicated.
+  const configured = venueFeeCapsWithBase(base, [{ asset: quote, maxAtoms: 1n }, { asset: base, maxAtoms: 7n }]);
+  assert.equal(configured.length, 2);
+  assert.equal(configured.find((cap) => cap.asset.assetId === base.assetId)?.maxAtoms, 7n);
 });

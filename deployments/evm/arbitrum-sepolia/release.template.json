@@ -61,6 +61,7 @@
     "baseAssetRef": { "assetId": { "$def": "res.baseAsset.subjectId" }, "assetManifestHash": { "$def": "res.baseAsset.manifestHash" }, "decimals": 18 },
     "quoteAssetRef": { "assetId": { "$def": "res.quoteAsset.subjectId" }, "assetManifestHash": { "$def": "res.quoteAsset.manifestHash" }, "decimals": { "$def": "quoteDecimals" } },
     "spotAdapterRef": { "adapterId": { "$def": "res.spotAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.spotAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.spotAdapter.manifestHash" } },
+    "maxVenueFeeAtoms": { "$bigint": { "$operator": "max venue fees per package (GMX position fee at the maximum order size, with headroom), quote atoms; the order cap and the fee policy pass-through limit" } },
     "perpetualAdapterRef": { "adapterId": { "$def": "res.perpetualAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.perpetualAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.perpetualAdapter.manifestHash" } },
     "activation": {
       "activationUnit": "EVM_UNIX_SECONDS",
@@ -108,11 +109,22 @@
       "environment": "testnet",
       "domain": { "$def": "domain" },
       "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "scopeQuantityPolicyClass": "EXACT_NET",
+      "scopeSettlementClass": "ASYNC_BONDED_SOLVER",
+      "scopeAccountModeClass": "user-owned-v1",
       "feePolicyVersion": 1,
       "activationUnit": "EVM_UNIX_SECONDS",
       "activationValue": { "$def": "activation.activationValue" },
       "serviceFeeRules": [],
-      "passThroughCostRules": [],
+      "passThroughCostRules": [{
+        "costCategory": "VENUE",
+        "costAssetId": { "$def": "res.quoteAsset.subjectId" },
+        "costAssetManifestHash": { "$def": "res.quoteAsset.manifestHash" },
+        "costAssetDecimals": { "$def": "quoteDecimals" },
+        "maxAtoms": { "$def": "maxVenueFeeAtoms" },
+        "roundingDirection": "TOWARD_ZERO",
+        "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+      }],
       "refundPolicyVersion": 1,
       "expiryUnit": "EVM_UNIX_SECONDS",
       "expiryValue": { "$bigint": { "$operator": "fee policy expiry, unix seconds" } }
@@ -170,6 +182,7 @@
             "templateManifest": { "$def": "templateManifest" },
             "templateRegistryRecord": { "$def": "templateRegistryRecord" },
             "feePolicyManifest": { "$def": "feePolicyManifest" },
+            "accountModeClass": "user-owned-v1",
             "activeRegistryRecords": [
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.baseAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.baseAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.baseAsset.manifestHash" } }] },
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.quoteAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.quoteAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.quoteAsset.manifestHash" } }] },
@@ -258,7 +271,7 @@
         },
         "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms (recommended at most 1% of the WETH seeded in the spot pool: every entry buys WETH from that pool, so its depth bounds all users' open positions together)" } },
         "maxSlippageBps": { "$number": { "$operator": "max slippage, bps (recommended 100; bounds and refusals already include each order's price impact from the pinned quoter, so this covers pool movement between order creation and execution)" } },
-        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, quote atoms" } } }],
+        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$def": "maxVenueFeeAtoms" } }],
         "maxMarginAddedAtoms": { "$bigint": { "$operator": "max margin added, quote atoms" } },
         "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee, quote atoms" } },
         "maxSolverFeeAtoms": { "$bigint": { "$operator": "max solver fee, quote atoms" } },
