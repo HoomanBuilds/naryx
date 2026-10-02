@@ -1,5 +1,6 @@
 import { mulDiv, type Hash32 } from '@naryx/protocol-types';
-import { parseAbi } from 'viem';
+import { parseAbi, type Address, type Hex } from 'viem';
+import { requiredEvmAddress, structField } from './readPort.js';
 
 const BPS = 10_000n;
 const UINT64_MAX = (1n << 64n) - 1n;
@@ -19,6 +20,14 @@ export const NARYX_STRATEGY_ACCOUNT_OWNER_ABI = parseAbi([
   'function verifier() view returns (address)',
   'function depositPerpMargin(bytes32 venueSubjectId, uint256 amount)',
   'function withdrawPerpMargin(bytes32 venueSubjectId, uint256 amount)',
+  'function withdrawIdleToken(address token, address recipient, uint256 amount)',
+]);
+
+/** The `PackageVerifier` per-account state an exit and the next package bind to. */
+export const PACKAGE_VERIFIER_ACCOUNT_ABI = parseAbi([
+  'struct OpenPackage { bytes32 entryReceiptHash; bytes32 seriesIdentityKey; uint32 seriesBindingVersion; bytes32 seriesBindingHash; bytes32 routeHash; address spotPort; address perpObserver; address perpInstrument; uint32 perpExpiry; address baseToken; address quoteToken; uint256 baseQuantityAtoms; uint256 perpQuantityWad; uint128 packageSizeUnits; uint128 entryPerpNotionalWad; }',
+  'function openPackage(address strategyAccount) view returns (OpenPackage)',
+  'function nextNonce(address strategyAccount) view returns (uint256)',
 ]);
 
 /** Reads of the Base Sepolia `NaryxTestPerpMarket`. Balances, notionals, and prices are WAD. */
@@ -28,6 +37,7 @@ export const NARYX_TEST_PERP_MARKET_ABI = parseAbi([
   'function reserveOf(address trader) view returns (uint256)',
   'function previewOpen(int128 sizeDelta, uint256 balanceWad) view returns (uint256 fillPriceWad, uint256 entryNotionalWad, uint256 feeWad, uint256 marginWad)',
   'function oraclePriceWad() view returns (uint256)',
+  'function currentFundingIndex() view returns (int256)',
   'function oracle() view returns (address)',
   'function collateral() view returns (address)',
   'function expiry() view returns (uint32)',
@@ -158,4 +168,47 @@ export function encodeTestPerpTradeArgs(input: Readonly<{
   const header = (input.deadline << 56n) | BigInt(input.expiry);
   const packed = ((input.sizeDeltaWad & UINT128_MASK) << 128n) | (input.balanceDeltaWad & UINT128_MASK);
   return Object.freeze([word(header), word(packed)] as const);
+}
+
+export interface PackageVerifierOpenPackage {
+  readonly entryReceiptHash: Hex;
+  readonly routeHash: Hex;
+  readonly perpInstrument: Address;
+  readonly perpExpiry: number;
+  readonly baseToken: Address;
+  readonly quoteToken: Address;
+  readonly baseQuantityAtoms: bigint;
+  readonly perpQuantityWad: bigint;
+  readonly packageSizeUnits: bigint;
+  readonly entryPerpNotionalWad: bigint;
+}
+
+/** The verifier's `openPackage(account)` record, or null when the account has none open. */
+export function packageVerifierOpenPackage(value: unknown): PackageVerifierOpenPackage | null {
+  const hash = (index: number, name: string): Hex => {
+    const field = structField(value, index, name);
+    requireCondition(typeof field === 'string' && /^0x[0-9a-fA-F]{64}$/.test(field), `open package ${name} is malformed`);
+    return field.toLowerCase() as Hex;
+  };
+  const quantity = (index: number, name: string): bigint => {
+    const field = structField(value, index, name);
+    requireCondition(typeof field === 'bigint' && field >= 0n, `open package ${name} is malformed`);
+    return field;
+  };
+  const entryReceiptHash = hash(0, 'entryReceiptHash');
+  if (/^0x0{64}$/.test(entryReceiptHash)) return null;
+  const perpExpiry = Number(structField(value, 8, 'perpExpiry'));
+  requireCondition(Number.isSafeInteger(perpExpiry) && perpExpiry > 0, 'open package perpExpiry is malformed');
+  return Object.freeze({
+    entryReceiptHash,
+    routeHash: hash(4, 'routeHash'),
+    perpInstrument: requiredEvmAddress(structField(value, 7, 'perpInstrument'), 'openPackage.perpInstrument'),
+    perpExpiry,
+    baseToken: requiredEvmAddress(structField(value, 9, 'baseToken'), 'openPackage.baseToken'),
+    quoteToken: requiredEvmAddress(structField(value, 10, 'quoteToken'), 'openPackage.quoteToken'),
+    baseQuantityAtoms: quantity(11, 'baseQuantityAtoms'),
+    perpQuantityWad: quantity(12, 'perpQuantityWad'),
+    packageSizeUnits: quantity(13, 'packageSizeUnits'),
+    entryPerpNotionalWad: quantity(14, 'entryPerpNotionalWad'),
+  });
 }

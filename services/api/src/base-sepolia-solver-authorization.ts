@@ -17,6 +17,8 @@ export function serializeBaseSepoliaAuthorizationBounds(bounds: EvmAtomicAuthori
     strategyAccount: bounds.strategyAccount,
     solver: bounds.solver,
     spotFillCommitment: hexBytes(bounds.spotFillCommitment),
+    packageNonce: bounds.packageNonce.toString(),
+    expectedPrePerpEntryNotionalWad: bounds.expectedPrePerpEntryNotionalWad.toString(),
     expectedPrePerpBalanceWad: bounds.expectedPrePerpBalanceWad.toString(),
     minimumPostPerpBalanceWad: bounds.minimumPostPerpBalanceWad.toString(),
     maximumPostPerpBalanceWad: bounds.maximumPostPerpBalanceWad.toString(),

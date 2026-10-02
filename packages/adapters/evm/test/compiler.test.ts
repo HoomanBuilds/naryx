@@ -437,6 +437,8 @@ const bounds: EvmAtomicExecutionBounds = {
   traderSignature: signatureHex(9),
   solverSignature: signatureHex(10),
   spotFillCommitment: hash(55),
+  packageNonce: 3n,
+  expectedPrePerpEntryNotionalWad: 0n,
   expectedPrePerpBalanceWad: 10n,
   minimumPostPerpBalanceWad: 0n,
   maximumPostPerpBalanceWad: 100n,
@@ -664,9 +666,59 @@ test('accepts an exact historical exit binding across current domain and asset r
     exitAdmission(currentDomain, currentBaseAsset, currentQuoteAsset),
     rotatedIdentity,
     seriesBinding(historicalDomain),
-    { ...bounds, maximumPostPerpEntryNotionalWad: 0n },
+    { ...bounds, maximumPostPerpEntryNotionalWad: 0n, expectedPrePerpEntryNotionalWad: EXIT_ENTRY_NOTIONAL_WAD },
   );
   const execution = decodedExecution(compiled.payload.data);
   assert.equal(execution.seriesBindingVersion, 1);
   assert.equal(execution.packageSizeUnits, 2n);
+});
+
+// The open package's exact WAD entry notional: 5,000 quote atoms (6 decimals) plus a sub-atom remainder.
+const EXIT_ENTRY_NOTIONAL_WAD = 5_000_000_000n * 1_000_000_000_000n + 123_456_789n;
+
+test('binds the exit to the chain nonce and the exact WAD entry notional the order commits in quote atoms', () => {
+  const domainManifest = manifest('eip155:84532', 84_532n);
+  const identity = deployment(domainManifest, 84_532n);
+  const exit = exitAdmission(domainManifest, baseAsset, quoteAsset);
+  const exitBounds = { ...bounds, maximumPostPerpEntryNotionalWad: 0n, expectedPrePerpEntryNotionalWad: EXIT_ENTRY_NOTIONAL_WAD };
+  const execution = decodedExecution(compileEvmAtomicPackage(exit, identity, seriesBinding(domainManifest), exitBounds).payload.data);
+  assert.equal(execution.nonce, 3n);
+  assert.notEqual(execution.nonce, exit.order.nonce);
+  assert.equal(execution.expectedPrePerpEntryNotionalWad, EXIT_ENTRY_NOTIONAL_WAD);
+  assert.equal(execution.spotQuoteBoundAtoms, 5_500_000_000n);
+  // One whole quote atom off the order's committed notional, in either direction, fails closed.
+  for (const wrong of [EXIT_ENTRY_NOTIONAL_WAD + 1_000_000_000_000n, EXIT_ENTRY_NOTIONAL_WAD - 1_000_000_000_000n]) {
+    assert.throws(
+      () => compileEvmAtomicPackage(exit, identity, seriesBinding(domainManifest), { ...exitBounds, expectedPrePerpEntryNotionalWad: wrong }),
+      /pre-position entry notional does not match the order/,
+    );
+  }
+  assert.throws(
+    () => compileEvmAtomicPackage(admission(domainManifest), identity, seriesBinding(domainManifest), { ...bounds, expectedPrePerpEntryNotionalWad: 1n }),
+    /entry requires a zero pre-position entry notional/,
+  );
+});
+
+test('signs the package notional the resource registry admits: the larger leg lots times limit', () => {
+  const domainManifest = manifest('eip155:84532', 84_532n);
+  const admitted = admission(domainManifest);
+  const identity = deployment(domainManifest, 84_532n);
+  const decoded = decodeFunctionData({
+    abi: NARYX_STRATEGY_ACCOUNT_ABI,
+    data: compileEvmAtomicPackage(admitted, identity, seriesBinding(domainManifest), bounds).payload.data,
+  });
+  const execution = decoded.args?.[0] as { packageNotionalQuoteAtoms: bigint };
+  const resource = decoded.args?.[1] as {
+    spot: { quantityAtoms: bigint; limitQuoteAtomsPerBaseLot: bigint };
+    perpetual: { quantityAtoms: bigint; limitQuoteAtomsPerBaseLot: bigint };
+    packageNotionalQuoteAtoms: bigint;
+  };
+  const spot = resource.spot.quantityAtoms / identity.spot.baseLotAtoms * resource.spot.limitQuoteAtomsPerBaseLot;
+  const perp = resource.perpetual.quantityAtoms / identity.perpetual.baseLotAtoms * resource.perpetual.limitQuoteAtomsPerBaseLot;
+  assert.equal(execution.packageNotionalQuoteAtoms, spot > perp ? spot : perp);
+  assert.equal(resource.packageNotionalQuoteAtoms, execution.packageNotionalQuoteAtoms);
+  assert.throws(
+    () => compileEvmAtomicPackage(admitted, { ...identity, spot: { ...identity.spot, baseLotAtoms: 3n } }, seriesBinding(domainManifest), bounds),
+    /whole number of base lots/,
+  );
 });
