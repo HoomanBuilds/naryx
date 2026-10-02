@@ -42,7 +42,8 @@ operator step 2.
   every exit sells it back, so the WETH seeded in a pool bounds all users' open positions on that
   lane together, and testnet ETH is the scarce input (faucets pay little per day). Seed as much
   WETH as you can collect, then set the lane's maximum order size to about 1% of it (for example
-  2 WETH seeded allows 0.02 WETH packages) and keep slippage above that size's price impact. The
+  2 WETH seeded allows 0.02 WETH packages). Order bounds include each size's price impact from the
+  pinned Uniswap quoter, and a size the pool cannot fill is refused before signing. The
   runbook examples seed 1 WETH, which suits a private test, not a public launch.
 - Solana: create the faucet test USDC mint; claim for the funder and the solver.
 
