@@ -49,6 +49,13 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
                 executor: executor,
                 pauser: pauser,
                 solver: solver,
+                quote: DeployBaseSepoliaAtomicPackage.SpotQuote({
+                    token: IERC20(0x036CbD53842c5426634e7929541eC2318f3dCF7e),
+                    tokenCodeHash: 0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c,
+                    pool: 0x46880b404CD35c165EDdefF7421019F8dD25F4Ad,
+                    poolCodeHash: 0xbbda0bdc9da3fd1f4832633a5ea75dc401ca24fdbca3d64a2511f27583ec7c4d,
+                    poolFee: 3000
+                }),
                 perpetualMarket: NaryxTestPerpMarket.Parameters({
                     owner: makeAddr("marketOwner"),
                     fundingKeeper: makeAddr("fundingKeeper"),

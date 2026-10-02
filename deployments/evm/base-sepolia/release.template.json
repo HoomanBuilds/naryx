@@ -18,10 +18,10 @@
     "testPerpMarket": { "return": "deploy", "index": 8, "name": "NaryxTestPerpMarket" },
     "validationHelper": { "call": "packageVerifier", "fn": "validationHelper" },
     "referenceAccount": { "call": "strategyAccountFactory", "fn": "referenceAccount" },
-    "uniswapPool": { "call": "spotPort", "fn": "pool", "expect": "0x46880b404CD35c165EDdefF7421019F8dD25F4Ad", "expectCodeHash": "0xbbda0bdc9da3fd1f4832633a5ea75dc401ca24fdbca3d64a2511f27583ec7c4d" },
+    "uniswapPool": { "call": "spotPort", "fn": "pool" },
     "uniswapFactory": { "call": "spotPort", "fn": "factory", "expect": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24", "expectCodeHash": "0x02ee6e36873eea6fbb674a23d53b735646f12dc84efa08eac17872fe2fad9d06" },
     "weth": { "call": "spotPort", "fn": "baseToken", "expect": "0x4200000000000000000000000000000000000006", "expectCodeHash": "0x83f731a17e6c0cdd04bc6f60b15d3e789e215b71403087b84b48650a1e5cbb21" },
-    "usdc": { "call": "spotPort", "fn": "quoteToken", "expect": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "expectCodeHash": "0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c" },
+    "quoteToken": { "call": "spotPort", "fn": "quoteToken" },
     "oracle": { "call": "testPerpMarket", "fn": "oracle", "expect": "0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1" },
     "reservationBook": { "return": "firm", "index": 0, "name": "FirmInventoryReservationBook" },
     "directSpotPort": { "return": "firm", "index": 1, "name": "DirectInventorySpotPort" },
@@ -49,10 +49,10 @@
     "domain": { "$release": "domainRef" },
     "res": {
       "baseAsset": { "subjectId": { "$operator": "WETH asset subject id registered in configure step 5 (route baseAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "WETH asset manifest hash" } } },
-      "quoteAsset": { "subjectId": { "$operator": "USDC asset subject id (route quoteAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "USDC asset manifest hash" } } },
+      "quoteAsset": { "subjectId": { "$operator": "quote (Naryx Test USDC) asset subject id (route quoteAsset)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "quote asset manifest hash" } } },
       "spotVenue": { "subjectId": { "$operator": "Uniswap V3 venue subject id (route spotVenue)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot venue manifest hash" } } },
       "perpetualVenue": { "subjectId": { "$operator": "test perp venue subject id (route perpetualVenue)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual venue manifest hash" } } },
-      "spotMarket": { "subjectId": { "$operator": "WETH/USDC pool market subject id (route spotMarket)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot market manifest hash" } } },
+      "spotMarket": { "subjectId": { "$operator": "WETH/quote pool market subject id (route spotMarket)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot market manifest hash" } } },
       "perpetualMarket": { "subjectId": { "$operator": "test perp market subject id (route perpetualMarket)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual market manifest hash" } } },
       "spotAdapter": { "subjectId": { "$operator": "spot adapter subject id (route spotAdapter)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "spot adapter manifest hash" } } },
       "perpetualAdapter": { "subjectId": { "$operator": "perpetual adapter subject id (route perpetualAdapter)" }, "manifestVersion": 1, "manifestHash": { "$bytes": { "$operator": "perpetual adapter manifest hash" } } }
@@ -155,7 +155,7 @@
       },
       "perpetualObserver": { "$contract": "testPerpMarket" },
       "baseAsset": { "$merge": [{ "$def": "res.baseAsset" }, { "$contract": "weth" }, { "decimals": 18 }] },
-      "quoteAsset": { "$merge": [{ "$def": "res.quoteAsset" }, { "$contract": "usdc" }, { "decimals": 6 }] }
+      "quoteAsset": { "$merge": [{ "$def": "res.quoteAsset" }, { "$contract": "quoteToken" }, { "decimals": 6 }] }
     },
     "seriesBinding": {
       "schemaVersion": 1,
@@ -336,7 +336,7 @@
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-bond-vault", "address": { "$release": "contracts.bondVault.addressLower" }, "expectedCodeHash": { "$release": "contracts.bondVault.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-uniswap-pool", "address": { "$release": "contracts.uniswapPool.addressLower" }, "expectedCodeHash": { "$release": "contracts.uniswapPool.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-weth", "address": { "$release": "contracts.weth.addressLower" }, "expectedCodeHash": { "$release": "contracts.weth.codeHash" } }] },
-          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-usdc", "address": { "$release": "contracts.usdc.addressLower" }, "expectedCodeHash": { "$release": "contracts.usdc.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-usdc", "address": { "$release": "contracts.quoteToken.addressLower" }, "expectedCodeHash": { "$release": "contracts.quoteToken.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-eth-usd-oracle", "address": { "$release": "contracts.oracle.addressLower" }, "expectedCodeHash": { "$release": "contracts.oracle.codeHash" } }] }
         ]
       }
@@ -402,7 +402,7 @@
     "web/.env.production": {
       "format": "env",
       "content": {
-        "NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN": { "$release": "contracts.usdc.address" },
+        "NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN": { "$release": "contracts.quoteToken.address" },
         "NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL": { "$env": "NARYX_WEB_BASE_SEPOLIA_RPC_URL", "optional": true }
       }
     }

@@ -62,6 +62,16 @@ contract DeployBaseSepoliaFirmLiquidity is Script {
         vm.stopBroadcast();
     }
 
+    /// @notice Broadcasts `deployWith`: the hosted test deployment pairs WETH with Naryx Test USDC.
+    function runWith(Parameters calldata parameters, Tokens calldata tokens)
+        external
+        returns (Deployment memory deployment)
+    {
+        vm.startBroadcast();
+        deployment = deployWith(parameters, tokens);
+        vm.stopBroadcast();
+    }
+
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
         deployment = deployWith(
             parameters,
@@ -71,7 +81,8 @@ contract DeployBaseSepoliaFirmLiquidity is Script {
         );
     }
 
-    /// @notice Deploys against the given token pair; `deploy` pins the canonical Base Sepolia pair.
+    /// @notice Deploys against the given token pair, each pinned by its reviewed code hash; `deploy` pins WETH and
+    /// Circle test USDC.
     function deployWith(Parameters calldata parameters, Tokens memory tokens)
         public
         returns (Deployment memory deployment)

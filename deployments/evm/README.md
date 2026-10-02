@@ -112,6 +112,38 @@ console.log("0x" + toHex(domainManifestHash({
 
 `FINALITY_POLICY_HASH` is the reviewed finality policy manifest hash. It must equal `finality.manifestHash` in the runtime manifest.
 
+## Test USDC and spot liquidity
+
+Circle's faucet grants a few test USDC per request, which cannot fund a demo. The hosted test deployment therefore settles in test USDC anyone can mint:
+
+- Base Sepolia: `NaryxTestUSDC` (`tUSDC`, 6 decimals). `mint(recipient, amount)` is public while the recipient holds at most 10,000,000 tUSDC; it has no owner, and its constructor refuses every chain except `84532`, `421614`, and the local `31337`. The web terminal's Get test USDC button calls it from the trader's own wallet.
+- Arbitrum Sepolia: the GMX ETH/USD market's short token, `USDC.SG` `0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773`, which is GMX's own public `mint(address,uint256)` test token. GMX collateral must be that token, so no Naryx token is deployed there; the same button calls the same function.
+
+Deploy the Base token (it prints its address; record `cast codehash` of it as the reviewed quote code hash):
+
+```bash
+forge script script/DeployNaryxTestUSDC.s.sol:DeployNaryxTestUSDC \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast
+```
+
+The spot leg trades on the canonical Uniswap V3 contracts, as on mainnet. The public WETH pools against Circle USDC (Base) and USDC.SG (Arbitrum, fee tiers 500 and 3000) are empty and far from the market price, so seed a WETH pool against the test quote at the live Chainlink price. `SeedUniswapV3TestPool` creates the pool at the oracle price when the fee tier has none, refuses a pool already trading more than `maxPoolDeviationBps` away from the oracle, wraps the sender's ETH, mints the test quote, and adds one position `halfWidthTicks` either side of the price. `Parameters`, in order: `quoteToken`, `fee`, `oracle`, `maxOracleAgeSeconds`, `maxPoolDeviationBps`, `halfWidthTicks`, `baseAmount` (wei), `quoteAmount` (quote atoms), `liquidityRecipient`.
+
+```bash
+# Base Sepolia: fee 500, Chainlink ETH/USD, +-2,000 ticks (about +-22%), 1 WETH against 3,000,000 tUSDC.
+forge script script/SeedUniswapV3TestPool.s.sol:SeedUniswapV3TestPool \
+  --sig "run((address,uint24,address,uint32,uint16,int24,uint256,uint256,address))" \
+  "($TEST_USDC,500,0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1,3600,100,2000,1000000000000000000,3000000000000,$LIQUIDITY_OWNER)" \
+  --rpc-url "$BASE_SEPOLIA_RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
+
+# Arbitrum Sepolia: fee 100 (tick spacing 1) has no pool yet; Chainlink ETH/USD 0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165.
+forge script script/SeedUniswapV3TestPool.s.sol:SeedUniswapV3TestPool \
+  --sig "run((address,uint24,address,uint32,uint16,int24,uint256,uint256,address))" \
+  "(0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773,100,0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165,86400,100,2000,1000000000000000000,3000000000000,$LIQUIDITY_OWNER)" \
+  --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" --account naryx-arbitrum-deployer --sender "$DEPLOYER" --broadcast --slow
+```
+
+The returned `pool` and `cast codehash` of it are the reviewed spot pool inputs for the lane deploy below. Run the script again to add depth; it reuses the pool while it trades within the deviation bound. Trades move the pool away from the oracle over time; seed a new range, or let the solver's quotes (which price the pool, not the oracle) carry the difference.
+
 ## Base Sepolia lane
 
 Domain identifier: the Base scripts fix `domainId` to `eip155:84532`, and `ProtocolConfig`, `PackageVerifier`, and the registries pin it at construction. The API, the web terminal, the execution intent store, and the EVM adapter use the same CAIP-2 identifier, as Arbitrum uses `eip155:421614`. Changing it later needs a new `ProtocolConfig` and `PackageVerifier`.
@@ -122,11 +154,11 @@ export RPC_URL="$BASE_SEPOLIA_RPC_URL"
 
 ### 1. Deploy the atomic package
 
-`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), and `perpetualMarket` (the `NaryxTestPerpMarket.Parameters` tuple below). The Uniswap V3 factory, pool, WETH, and USDC identities and code hashes are pinned constants in the script. The script deploys no strategy account: accounts are created per owner through `NaryxStrategyAccountFactory`.
+`DeployBaseSepoliaAtomicPackage.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (the provisional hash), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `solver` (initial active solver), `quote` as `(token,tokenCodeHash,pool,poolCodeHash,poolFee)` (Naryx Test USDC and the seeded pool above), and `perpetualMarket` (the `NaryxTestPerpMarket.Parameters` tuple below). The Uniswap V3 factory and WETH identities and code hashes are pinned constants; the script requires a six-decimal quote token with the reviewed code hash and the factory's WETH pool for it at `poolFee`. The script deploys no strategy account: accounts are created per owner through `NaryxStrategyAccountFactory`.
 
 ```bash
 forge script script/DeployBaseSepoliaAtomicPackage.s.sol:DeployBaseSepoliaAtomicPackage \
-  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,(address,address,address,address,address,uint32,uint32,uint16,uint16,uint16,uint128,uint16,uint16,uint16,uint128,uint128,uint128)))" \
+  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,(address,bytes32,address,bytes32,uint24),(address,address,address,address,address,uint32,uint32,uint16,uint16,uint16,uint128,uint16,uint16,uint16,uint128,uint128,uint128)))" \
   "$BASE_DEPLOY_PARAMETERS" \
   --rpc-url "$RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
@@ -146,7 +178,7 @@ Margin never comes from the strategy account's wallet during a package (the veri
 | `owner` | separate testnet wallet | pauses new opens, rotates the funding keeper, funds insurance |
 | `fundingKeeper` | separate testnet wallet | sets the funding rate |
 | `feeRecipient` | separate address | receives taker fees and liquidation penalties in its reserve |
-| `collateral` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | USDC; the script rejects any other |
+| `collateral` | the `quote.token` address | Naryx Test USDC; the script rejects any token but the quote token |
 | `oracle` | `0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1` | Chainlink ETH/USD, 8 decimals |
 | `expiry` | `4294967295` | perpetual expiry; every `perpArgs` header and `perpExpiry` must equal it |
 | `maxOracleAgeSeconds` | `3600` | a round older than this rejects every trade and liquidation (cap 1 day) |
@@ -217,12 +249,12 @@ Both steps refuse unless entry is paused and the active domain is exactly the re
 
 ### 4. Deploy the firm liquidity layer
 
-`DeployBaseSepoliaFirmLiquidity.Parameters`, in order: `config`, `configCodeHash`, `verifier`, `verifierCodeHash` (both read from the chain), `reservationMaximumTtlSeconds`, `maximumBaseAtomsPerReservation`, `maximumReservedBaseAtomsPerSolver`, `shardSolver`, `seriesManifestHash`, `executionClassManifestHash`, `shardLimits` as `(maxHeartbeatSeconds,maxBatchSize,maxLevelCount)`, `bondClaimsAuthority`, `bondDisputeResolver`. The shard's series and execution class hashes must equal the route's below.
+`DeployBaseSepoliaFirmLiquidity.Parameters`, in order: `config`, `configCodeHash`, `verifier`, `verifierCodeHash` (both read from the chain), `reservationMaximumTtlSeconds`, `maximumBaseAtomsPerReservation`, `maximumReservedBaseAtomsPerSolver`, `shardSolver`, `seriesManifestHash`, `executionClassManifestHash`, `shardLimits` as `(maxHeartbeatSeconds,maxBatchSize,maxLevelCount)`, `bondClaimsAuthority`, `bondDisputeResolver`. `runWith` takes the token pair `(base,quote,baseCodeHash,quoteCodeHash)`: WETH and the same quote token as the atomic package (`run` pins Circle test USDC). The shard's series and execution class hashes must equal the route's below.
 
 ```bash
 forge script script/DeployBaseSepoliaFirmLiquidity.s.sol:DeployBaseSepoliaFirmLiquidity \
-  --sig "run((address,bytes32,address,bytes32,uint64,uint256,uint256,address,bytes32,bytes32,(uint64,uint16,uint32),address,address))" \
-  "$BASE_FIRM_PARAMETERS" \
+  --sig "runWith((address,bytes32,address,bytes32,uint64,uint256,uint256,address,bytes32,bytes32,(uint64,uint16,uint32),address,address),(address,address,bytes32,bytes32))" \
+  "$BASE_FIRM_PARAMETERS" "(0x4200000000000000000000000000000000000006,$TEST_USDC,0x83f731a17e6c0cdd04bc6f60b15d3e789e215b71403087b84b48650a1e5cbb21,$TEST_USDC_CODE_HASH)" \
   --rpc-url "$RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
 
@@ -277,7 +309,7 @@ The GMX Arbitrum Sepolia addresses are pinned constants in `DeployArbitrumSepoli
 
 One stage deploys everything and binds it into the account factory. There is no per-user account here: any wallet later creates its own account with `GmxV2IsolatedAccountFactory.create(owner)`, an ERC-1167 clone of the reviewed implementation at a CREATE2 address salted by `keccak256(abi.encode(owner))`. One coordinator admission of the shared adapter covers every factory account.
 
-`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The spot quote token must be the collateral token. No reviewed Arbitrum Sepolia Uniswap V3 pool against the GMX collateral token is pinned in this repository; without one, do not deploy.
+`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The spot quote token must be the collateral token (`USDC.SG`). Use the fee 100 WETH/USDC.SG pool seeded above: factory `0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e`, WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`, and the code hashes read with `cast codehash`.
 
 ```bash
 forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsyncGmx \
