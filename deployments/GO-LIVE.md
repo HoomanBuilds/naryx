@@ -185,7 +185,8 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   unused execution fee to the owner, not the solver.
 - Hyperliquid: every user's package runs in the service's shared testnet account (Hyperliquid's
   faucet does not fund new users), one package at a time; an outcome that is not final blocks the
-  lane until an operator releases it (`deployments/aws/README.md`, Operating). A spot buy's fee is
+  lane until fresh evidence shows it final (released automatically) or an operator releases it
+  (`deployments/aws/README.md`, Operating). A spot buy's fee is
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
 - Solana: firm entry and exit have no end-to-end LiteSVM test.
