@@ -44,12 +44,14 @@ export type TestnetDomainCaps = Readonly<{
   /** The asset every cap is denominated in; the order's quote spend must be in this asset. */
   quoteAssetId: string;
   maxPrincipalAtomsPerOperation: bigint;
-  maxPrincipalAtomsPerDay: bigint;
   /**
-   * What one owner wallet may commit per UTC day, so no single user exhausts the domain's day.
-   * Defaults to four full-size operations, capped at the domain's daily cap.
+   * Optional emergency brakes, null when unset. Like large venues, Naryx does not ration normal
+   * trading by default: capacity comes from the solver's own funds, and every trade is still
+   * bounded per operation. An operator who wants a daily brake sets one for the domain, and one
+   * per owner wallet so a single user cannot use up the domain's day.
    */
-  maxPrincipalAtomsPerOwnerPerDay: bigint;
+  maxPrincipalAtomsPerDay: bigint | null;
+  maxPrincipalAtomsPerOwnerPerDay: bigint | null;
   maxRecoveryLossAtomsPerOperation: bigint;
 }>;
 
@@ -107,14 +109,14 @@ export function parseTestnetExecutionPolicy(text: string): TestnetExecutionPolic
     seen.add(value.domainId);
     if (typeof value.quoteAssetId !== "string" || !ASSET_ID_PATTERN.test(value.quoteAssetId)) policyFail(`domains[${index}].quoteAssetId is invalid.`);
     const perOperation = atoms(value.maxPrincipalAtomsPerOperation, `domains[${index}].maxPrincipalAtomsPerOperation`);
-    const perDay = atoms(value.maxPrincipalAtomsPerDay, `domains[${index}].maxPrincipalAtomsPerDay`);
+    // A daily brake is optional: absent (or an empty generated value) means none.
+    const optionalAtoms = (entry: unknown, name: string) => entry === undefined || entry === "" ? null : atoms(entry, name);
+    const perDay = optionalAtoms(value.maxPrincipalAtomsPerDay, `domains[${index}].maxPrincipalAtomsPerDay`);
+    const perOwner = optionalAtoms(value.maxPrincipalAtomsPerOwnerPerDay, `domains[${index}].maxPrincipalAtomsPerOwnerPerDay`);
     const loss = atoms(value.maxRecoveryLossAtomsPerOperation, `domains[${index}].maxRecoveryLossAtomsPerOperation`);
-    if (perOperation === 0n || perDay < perOperation) policyFail(`domains[${index}] caps must satisfy 0 < per operation <= per day.`);
-    const defaultPerOwner = perOperation * 4n < perDay ? perOperation * 4n : perDay;
-    const perOwner = value.maxPrincipalAtomsPerOwnerPerDay === undefined
-      ? defaultPerOwner
-      : atoms(value.maxPrincipalAtomsPerOwnerPerDay, `domains[${index}].maxPrincipalAtomsPerOwnerPerDay`);
-    if (perOwner < perOperation || perOwner > perDay) {
+    if (perOperation === 0n) policyFail(`domains[${index}].maxPrincipalAtomsPerOperation must be positive.`);
+    if (perDay !== null && perDay < perOperation) policyFail(`domains[${index}] caps must satisfy per operation <= per day.`);
+    if ((perOwner !== null && perOwner < perOperation) || (perDay !== null && perOwner !== null && perOwner > perDay)) {
       policyFail(`domains[${index}] caps must satisfy per operation <= per owner per day <= per day.`);
     }
     return Object.freeze({
@@ -381,11 +383,15 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
     const caps = this.#staticCaps(scope, policy, deny);
     if (scope.principalAtoms > caps.maxPrincipalAtomsPerOperation) deny("The order's worst-case spend exceeds the per-operation cap.");
     const sum = (rows: { principal_atoms: string }[]) => rows.reduce((total, row) => total + BigInt(row.principal_atoms), 0n);
-    const spent = sum(this.#dayRows.all(scope.domainId, day) as { principal_atoms: string }[]);
-    if (spent + scope.principalAtoms > caps.maxPrincipalAtomsPerDay) deny("The order would exceed the domain's daily cap.");
-    const ownerSpent = sum(this.#ownerDayRows.all(scope.domainId, day, scope.owner) as { principal_atoms: string }[]);
-    if (ownerSpent + scope.principalAtoms > caps.maxPrincipalAtomsPerOwnerPerDay) {
-      deny("The order would exceed this wallet's daily cap; try a smaller size or again tomorrow (UTC).");
+    if (caps.maxPrincipalAtomsPerDay !== null) {
+      const spent = sum(this.#dayRows.all(scope.domainId, day) as { principal_atoms: string }[]);
+      if (spent + scope.principalAtoms > caps.maxPrincipalAtomsPerDay) deny("The order would exceed the domain's daily cap.");
+    }
+    if (caps.maxPrincipalAtomsPerOwnerPerDay !== null) {
+      const ownerSpent = sum(this.#ownerDayRows.all(scope.domainId, day, scope.owner) as { principal_atoms: string }[]);
+      if (ownerSpent + scope.principalAtoms > caps.maxPrincipalAtomsPerOwnerPerDay) {
+        deny("The order would exceed this wallet's daily cap; try a smaller size or again tomorrow (UTC).");
+      }
     }
   }
 

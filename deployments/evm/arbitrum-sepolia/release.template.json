@@ -363,8 +363,6 @@
           "domainId": "eip155:421614",
           "quoteAssetId": { "$def": "res.quoteAsset.subjectId" },
           "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerOwnerPerDay": { "$operator": "per-wallet per-UTC-day principal cap, quote atoms, decimal string (at least per-operation, at most per-day)" },
           "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, quote atoms, decimal string" }
         }]
       }

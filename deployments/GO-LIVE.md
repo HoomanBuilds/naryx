@@ -78,13 +78,21 @@ hashes, domain and template hashes, oracle reads, Hyperliquid metadata).
 Set the Hyperliquid template's `executionEnabled` to `true` only once the agent wallet is approved
 and funded; `false` serves quotes without executing.
 
-Limits every lane template asks for, sized for many users sharing the operator's inventory:
+Limits, modelled on how large venues bound risk rather than ration trading:
 
-- The per-operation and per-day principal caps: per package and per network per UTC day.
-- `maxPrincipalAtomsPerOwnerPerDay`: per wallet per UTC day, so one wallet cannot spend the whole
-  day's cap. Exits count as zero principal, so a user can always close.
+- `maxPrincipalAtomsPerOperation` and `maxRecoveryLossAtomsPerOperation`: every package, every lane.
+- Capacity comes from the solver's own funds: a trade the solver cannot fill fails cleanly before
+  anything moves (Base reverts atomically, an Arbitrum reservation fails without the bond).
 - Hyperliquid `omnibus`: open packages per wallet in the shared trading account, and the total
-  entry notional the account carries. Without it the API refuses Hyperliquid entries.
+  entry notional the account carries (an open-interest limit). Without it the API refuses
+  Hyperliquid entries.
+- Each lane's entry in the generated `api/testnet-execution-policy.json` is its on/off switch:
+  remove a domain to stop new trades on it at once (exits on a removed domain are refused too, so
+  prefer this only for emergencies).
+- Optional daily brakes, off by default: add `maxPrincipalAtomsPerDay` (per network per UTC day)
+  and `maxPrincipalAtomsPerOwnerPerDay` (per wallet) to the lane's entry under the
+  `api/testnet-execution-policy.json` output in your template copy. Exits count as zero principal
+  against them.
 - Arbitrum `exitCallbackGasLimit`: the GMX callback of a full close also sells the spot leg, so it
   needs far more gas than the entry callback.
 

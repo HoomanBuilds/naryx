@@ -106,6 +106,26 @@ test("per-operation, daily, loss, asset, domain, and mainnet limits fail closed"
   });
 });
 
+test("without daily brakes, trading is bounded per operation only, like a venue", () => {
+  const text = JSON.stringify({
+    version: 1,
+    domains: [{
+      domainId: "eip155:84532",
+      quoteAssetId: USDC,
+      maxPrincipalAtomsPerOperation: "1000000000",
+      maxPrincipalAtomsPerDay: "",
+      maxRecoveryLossAtomsPerOperation: "50000000",
+    }],
+  });
+  const parsed = parseTestnetExecutionPolicy(text);
+  assert.equal(parsed.domains[0]?.maxPrincipalAtomsPerDay, null);
+  assert.equal(parsed.domains[0]?.maxPrincipalAtomsPerOwnerPerDay, null);
+  withGate((gate) => {
+    for (let index = 0; index < 12; index += 1) gate.authorize(scope(`n${index}`, 1_000_000_000n));
+    rejected(() => gate.authorize(scope("over", 1_000_000_001n)), /per-operation cap/);
+  }, text);
+});
+
 test("an approved attempt cannot be rebound to a different order", () => {
   withGate((gate) => {
     gate.authorize(scope("r1", 10n));
