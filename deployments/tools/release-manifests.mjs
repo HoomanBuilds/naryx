@@ -645,6 +645,10 @@ async function validate(written, envs, liveEnv, log) {
         solana.loadSolanaDevnetSharedManifest(config.runtimeManifestPath);
         log('solver: Solana Devnet solver config and shared manifest load');
       }
+      if (solver.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED === 'true') {
+        await hyperliquidExecutorCheck(solver);
+        log('solver: Hyperliquid Testnet executor markets and tokens match live testnet metadata');
+      }
       if (solver.NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED === 'true') {
         (await dist('services/solver', 'hyperliquid-testnet-quote-config.js')).loadHyperliquidTestnetQuoteRuntime(solver, {
           nonceSource, market: {}, currentTimeMs: () => BigInt(Date.now()),
@@ -714,6 +718,40 @@ async function hyperliquidMetadataCheck(config) {
   if (token === undefined || token.szDecimals !== config.market.spot.sizeDecimals) fail('Hyperliquid spot token index or size decimals do not match testnet metadata.');
   if (universe === undefined || !universe.tokens.includes(config.market.spot.tokenIndex) || !universe.tokens.includes(config.market.quoteTokenIndex)) {
     fail('Hyperliquid spot universe does not pair the configured spot and quote tokens.');
+  }
+}
+
+/** The executor's market qualification names, token ids, and canonical flags must be the live testnet ones. */
+async function hyperliquidExecutorCheck(solver) {
+  const post = async (body) => {
+    const response = await fetch(HYPERLIQUID_TESTNET_INFO, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) fail(`Hyperliquid Testnet info returned HTTP ${response.status}.`);
+    return response.json();
+  };
+  const [meta, spotMeta] = await Promise.all([post({ type: 'meta' }), post({ type: 'spotMeta' })]);
+  const env = (name) => solver[`NARYX_HYPERLIQUID_TESTNET_${name}`];
+  const token = (prefix) => {
+    const entry = spotMeta.tokens?.find((item) => item.name === env(`${prefix}_NAME`));
+    if (entry === undefined) fail(`solver.env: ${prefix}_NAME is not a Hyperliquid Testnet spot token.`);
+    if (String(entry.tokenId).toLowerCase() !== env(`${prefix}_ID`)) fail(`solver.env: ${prefix}_ID is not the live tokenId of ${env(`${prefix}_NAME`)}.`);
+    if (String(entry.isCanonical === true) !== env(`${prefix}_CANONICAL`)) fail(`solver.env: ${prefix}_CANONICAL does not match testnet metadata.`);
+    return entry;
+  };
+  const base = token('SPOT_TOKEN');
+  const quote = token('QUOTE_TOKEN');
+  if (String(base.szDecimals) !== env('SPOT_SIZE_DECIMALS')) fail('solver.env: SPOT_SIZE_DECIMALS does not match the spot token szDecimals.');
+  const universe = spotMeta.universe?.find((item) => item.name === env('SPOT_UNIVERSE_NAME'));
+  if (universe === undefined || !universe.tokens.includes(base.index) || !universe.tokens.includes(quote.index)) {
+    fail('solver.env: SPOT_UNIVERSE_NAME is not the live spot pair of the configured tokens.');
+  }
+  if (String(universe.isCanonical === true) !== env('SPOT_UNIVERSE_CANONICAL')) fail('solver.env: SPOT_UNIVERSE_CANONICAL does not match testnet metadata.');
+  const allowed = String(env('ALLOWED_SPOT_TOKEN_INDICES')).split(',').map(Number);
+  if (!allowed.includes(base.index) || !allowed.includes(quote.index)) fail('solver.env: ALLOWED_SPOT_TOKEN_INDICES must hold the spot and quote token indexes.');
+  const perpetual = meta.universe?.find((item) => item.name === env('PERPETUAL_NAME'));
+  if (perpetual === undefined || String(perpetual.szDecimals) !== env('PERPETUAL_SIZE_DECIMALS')) {
+    fail('solver.env: PERPETUAL_NAME or PERPETUAL_SIZE_DECIMALS does not match testnet metadata.');
   }
 }
 

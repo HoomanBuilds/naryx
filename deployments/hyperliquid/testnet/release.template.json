@@ -41,7 +41,29 @@
     "quoteAsset": { "assetId": { "$operator": "quote asset id" }, "assetManifestHash": { "$hex": { "$operator": "quote asset manifest hash" } }, "decimals": { "$number": { "$operator": "quote asset decimals" } } },
     "spotAdapterRef": { "adapterId": { "$def": "spot.adapterId" }, "adapterManifestVersion": { "$def": "spot.adapterManifestVersion" }, "adapterManifestHash": { "$def": "spot.adapterManifestHash" } },
     "perpetualAdapterRef": { "adapterId": { "$def": "perpetual.adapterId" }, "adapterManifestVersion": { "$def": "perpetual.adapterManifestVersion" }, "adapterManifestHash": { "$def": "perpetual.adapterManifestHash" } },
-    "packageTemplateManifestHash": { "$hex": { "$operator": "reviewed cash-and-carry template manifest hash for hypercore:testnet" } }
+    "packageTemplateManifestHash": { "$hex": { "$operator": "reviewed cash-and-carry template manifest hash for hypercore:testnet" } },
+    "quoteTokenIndex": { "$number": { "$operator": "quote token index (spotMeta tokens index of USDC, normally 0)" } },
+    "executionEnabled": { "$operator": "true to execute Hyperliquid Testnet packages (needs the approved agent key and a funded trading account), false for quotes only" },
+    "executor": {
+      "agentAddress": { "$lower": { "$operator": "approved Hyperliquid Testnet API (agent) wallet address, lowercase 0x + 40 hex" } },
+      "agentKeyPath": { "$operator": "absolute path, outside the repository, of that agent wallet's key file (the path only; the key is never read here)" },
+      "accountKind": { "$operator": "MASTER when the trading account is the master account, SUBACCOUNT when it is a subaccount" },
+      "masterAccount": { "$lower": { "$operator": "Hyperliquid Testnet master account address, lowercase (equal to the trading account for MASTER)" } },
+      "signerLeaseId": { "$operator": "signer lease id, a stable name for this executor process, for example hl-testnet-executor-1" },
+      "spotUniverseName": { "$operator": "spotMeta universe name of the spot pair, for example @1" },
+      "spotUniverseCanonical": { "$operator": "spotMeta universe isCanonical, true or false" },
+      "spotTokenName": { "$operator": "spotMeta token name of the spot base token" },
+      "spotTokenCanonical": { "$operator": "spotMeta token isCanonical of the spot base token, true or false" },
+      "spotTokenId": { "$lower": { "$operator": "spotMeta tokenId of the spot base token, 0x + 32 hex" } },
+      "quoteTokenName": { "$operator": "spotMeta token name of the quote token, normally USDC" },
+      "quoteTokenCanonical": { "$operator": "spotMeta token isCanonical of the quote token, true or false" },
+      "quoteTokenId": { "$lower": { "$operator": "spotMeta tokenId of the quote token, 0x + 32 hex" } },
+      "perpetualName": { "$operator": "meta universe name of the perpetual, for example ETH" },
+      "minimumSpotDepth": { "$operator": "minimum spot book depth the executor requires, decimal base units" },
+      "minimumPerpetualDepth": { "$operator": "minimum perpetual book depth the executor requires, decimal base units" },
+      "leverageMode": { "$operator": "perpetual leverage mode the trading account must use: cross or isolated" },
+      "maxReferenceDivergenceBps": { "$operator": "max divergence between the spot and perpetual reference prices, bps (testnet books can sit far apart; measure before choosing, for example 500)" }
+    }
   },
   "outputs": {
     "api/hyperliquid-testnet-runtime.json": {
@@ -57,7 +79,7 @@
         "market": {
           "spot": { "$def": "spot" },
           "perpetual": { "$def": "perpetual" },
-          "quoteTokenIndex": { "$number": { "$operator": "quote token index" } }
+          "quoteTokenIndex": { "$def": "quoteTokenIndex" }
         },
         "bounds": {
           "maxEvidenceAgeMs": { "$number": { "$operator": "max evidence age, ms" } },
@@ -185,8 +207,11 @@
         "NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED": "true",
         "NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT": "TESTNET",
         "NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG": { "$out": "api/hyperliquid-testnet-runtime.json" },
-        "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED": "false",
-        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED": "false"
+        "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED": { "$def": "executionEnabled" },
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED": { "$def": "executionEnabled" },
+        "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ORIGIN": "http://127.0.0.1:8789",
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN": "http://127.0.0.1:8792",
+        "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB": { "$data": "api/hyperliquid-testnet-execution.db" }
       }
     },
     "env/solver.env": {
@@ -195,7 +220,39 @@
         "NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED": "true",
         "NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG": { "$out": "solver/hyperliquid-testnet-quote.json" },
         "NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT": { "$def": "tradingAccount" },
-        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED": "false"
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED": { "$def": "executionEnabled" },
+        "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT": "8792",
+        "NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT": "TESTNET",
+        "NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN": "http://127.0.0.1:8789",
+        "NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB": { "$data": "solver/hyperliquid-testnet-journal.db" },
+        "NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID": { "$def": "executor.signerLeaseId" },
+        "NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS": { "$def": "executor.agentAddress" },
+        "NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH": { "$def": "executor.agentKeyPath" },
+        "NARYX_HYPERLIQUID_TESTNET_ACCOUNT_KIND": { "$def": "executor.accountKind" },
+        "NARYX_HYPERLIQUID_TESTNET_MASTER_ACCOUNT": { "$def": "executor.masterAccount" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_NAME": { "$def": "executor.spotUniverseName" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_CANONICAL": { "$def": "executor.spotUniverseCanonical" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_NAME": { "$def": "executor.spotTokenName" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_CANONICAL": { "$def": "executor.spotTokenCanonical" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_ID": { "$def": "executor.spotTokenId" },
+        "NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_NAME": { "$def": "executor.quoteTokenName" },
+        "NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_CANONICAL": { "$def": "executor.quoteTokenCanonical" },
+        "NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_ID": { "$def": "executor.quoteTokenId" },
+        "NARYX_HYPERLIQUID_TESTNET_PERPETUAL_NAME": { "$def": "executor.perpetualName" },
+        "NARYX_HYPERLIQUID_TESTNET_SPOT_SIZE_DECIMALS": { "$def": "spot.sizeDecimals" },
+        "NARYX_HYPERLIQUID_TESTNET_PERPETUAL_SIZE_DECIMALS": { "$def": "perpetual.sizeDecimals" },
+        "NARYX_HYPERLIQUID_TESTNET_MINIMUM_SPOT_DEPTH": { "$def": "executor.minimumSpotDepth" },
+        "NARYX_HYPERLIQUID_TESTNET_MINIMUM_PERPETUAL_DEPTH": { "$def": "executor.minimumPerpetualDepth" },
+        "NARYX_HYPERLIQUID_TESTNET_ALLOWED_SPOT_TOKEN_INDICES": { "$join": [{ "$def": "spot.tokenIndex" }, { "$def": "quoteTokenIndex" }], "separator": "," },
+        "NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS": { "$def": "executor.perpetualName" },
+        "NARYX_HYPERLIQUID_TESTNET_EXPECTED_LEVERAGE_MODE": { "$def": "executor.leverageMode" },
+        "NARYX_HYPERLIQUID_TESTNET_EXPECTED_PORTFOLIO_MARGIN_ENABLED": "false",
+        "NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_AGE_MS": "10000",
+        "NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_SNAPSHOT_SKEW_MS": "5000",
+        "NARYX_HYPERLIQUID_TESTNET_MAX_REFERENCE_DIVERGENCE_BPS": { "$def": "executor.maxReferenceDivergenceBps" },
+        "NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_SNAPSHOT_AGE_MS": "30000",
+        "NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_CLEARANCE_AGE_MS": "30000",
+        "NARYX_HYPERLIQUID_TESTNET_AUTHORITY_INCIDENT_BUFFER_MS": "604800000"
       }
     }
   }

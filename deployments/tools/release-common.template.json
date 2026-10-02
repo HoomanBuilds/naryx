@@ -34,6 +34,8 @@
     "env/keeper.env": {
       "format": "env",
       "content": {
+        "NARYX_KEEPER_HOST": "127.0.0.1",
+        "NARYX_KEEPER_PORT": "8789",
         "NARYX_KEEPER_RPC_URLS": {}
       }
     },
@@ -41,8 +43,8 @@
       "format": "env",
       "content": {
         "NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL": { "$operator": "public HTTPS base URL that reaches services/api" },
-        "NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL": { "$operator": "public HTTPS base URL of the public v1 market API" },
-        "NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID": { "$operator": "package market id the chart and book show, or an empty string" }
+        "NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL": { "$env": "NARYX_WEB_PUBLIC_API_BASE_URL", "optional": true },
+        "NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID": { "$env": "NARYX_WEB_PACKAGE_MARKET_ID", "optional": true }
       }
     }
   }
