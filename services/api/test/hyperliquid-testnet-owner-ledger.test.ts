@@ -73,7 +73,7 @@ test("an owner exits only their own open package, and exactly it", withLedger((l
   ledger.bindExitOrder(open.entryAttemptId, ALICE, "e1".repeat(32));
   const exact = {
     owner: ALICE, orderHash: "e1".repeat(32), perpQuantityAtoms: 100n,
-    grossSpotQuantityAtoms: 100n, entryReceiptHash: open.entryReceiptHash!,
+    grossSpotQuantityAtoms: 100n, spotLotAtoms: 1n, entryReceiptHash: open.entryReceiptHash!,
   };
   // An exit order presented under another wallet, or for a different size, closes nothing.
   assert.throws(() => ledger.beginExit("exit-bob-1", { ...exact, owner: BOB }), refused("EXIT_PACKAGE_MISMATCH"));
@@ -134,6 +134,7 @@ test("only the owner wallet's typed-data signature authorizes its package", with
     orders: { getCanonicalOrderByHash: () => order },
     tradingAccount: TRADING,
     limits: LIMITS,
+    spotLotAtoms: 1n,
   });
   const request = { attemptId: `hyperliquid-testnet-${"ab".repeat(24)}`, idempotencyKey: KEY };
   assert.throws(() => guard.admit(request), /OWNER_AUTHORIZATION_REQUIRED|must sign/);

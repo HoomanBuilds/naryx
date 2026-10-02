@@ -25,6 +25,8 @@ export type HyperliquidOwnerPackage = Readonly<{
   entryReceiptHash: string | null;
   exitOrderHash: string | null;
   exitAttemptId: string | null;
+  /** The spot an exit sells: the package spot floored to the spot lot; the rest stays as dust. */
+  exitSpotQuantityAtoms: bigint | null;
   openedAtMs: number | null;
   closedAtMs: number | null;
 }>;
@@ -57,6 +59,8 @@ export type HyperliquidExitOrderTerms = Readonly<{
   orderHash: string;
   perpQuantityAtoms: bigint;
   grossSpotQuantityAtoms: bigint;
+  /** Base atoms per spot size unit: the exit sells the package spot floored to it. */
+  spotLotAtoms: bigint;
   entryReceiptHash: string;
 }>;
 
@@ -75,6 +79,7 @@ type PackageRow = Readonly<{
   entry_receipt_hash: string | null;
   exit_order_hash: string | null;
   exit_attempt_id: string | null;
+  exit_spot_quantity_atoms: string | null;
   opened_at_ms: number | null;
   closed_at_ms: number | null;
 }>;
@@ -121,6 +126,7 @@ function decode(row: PackageRow): HyperliquidOwnerPackage {
     entryReceiptHash: row.entry_receipt_hash,
     exitOrderHash: row.exit_order_hash,
     exitAttemptId: row.exit_attempt_id,
+    exitSpotQuantityAtoms: optionalAtoms(row.exit_spot_quantity_atoms ?? null),
     openedAtMs: row.opened_at_ms,
     closedAtMs: row.closed_at_ms,
   });
@@ -189,6 +195,10 @@ export class HyperliquidTestnetOwnerLedger {
       ) STRICT;
       CREATE INDEX IF NOT EXISTS hyperliquid_owner_packages_owner ON hyperliquid_owner_packages(owner, state);
     `);
+    const columns = this.#db.prepare("PRAGMA table_info(hyperliquid_owner_packages)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "exit_spot_quantity_atoms")) {
+      this.#db.exec("ALTER TABLE hyperliquid_owner_packages ADD COLUMN exit_spot_quantity_atoms TEXT");
+    }
   }
 
   recordAuthorization(orderHash: string, owner: string, signature: string): void {
@@ -306,7 +316,8 @@ export class HyperliquidTestnetOwnerLedger {
 
   /**
    * Starts an exit only for the package the exit order was built for, owned by the order's owner,
-   * selling exactly its spot and buying back exactly its short.
+   * selling its spot floored to the spot lot and buying back exactly its short. The sub-lot
+   * remainder is base-fee dust that stays in the trading account under the residual caps.
    */
   beginExit(attemptId: string, terms: HyperliquidExitOrderTerms): void {
     this.#db.transaction(() => {
@@ -317,15 +328,19 @@ export class HyperliquidTestnetOwnerLedger {
         throw new HyperliquidOwnerLedgerError("EXIT_PACKAGE_MISMATCH", "The exit order does not close a package this wallet owns.");
       }
       if (row.state === "EXITING" && row.exit_attempt_id === attemptId) return;
+      const spot = row.spot_quantity_atoms === null ? 0n : BigInt(row.spot_quantity_atoms);
+      const lot = terms.spotLotAtoms;
       if (row.state !== "OPEN" || row.perp_quantity_atoms !== terms.perpQuantityAtoms.toString()
-        || row.spot_quantity_atoms !== terms.grossSpotQuantityAtoms.toString()
+        || typeof lot !== "bigint" || lot <= 0n || terms.grossSpotQuantityAtoms <= 0n
+        || terms.grossSpotQuantityAtoms !== spot - spot % lot
         || row.entry_receipt_hash !== terms.entryReceiptHash) {
         throw new HyperliquidOwnerLedgerError("EXIT_PACKAGE_MISMATCH", "The exit order does not close exactly the open package.");
       }
       this.#db.prepare(`
-        UPDATE hyperliquid_owner_packages SET state = 'EXITING', exit_attempt_id = ?, updated_at_ms = ?
+        UPDATE hyperliquid_owner_packages
+        SET state = 'EXITING', exit_attempt_id = ?, exit_spot_quantity_atoms = ?, updated_at_ms = ?
         WHERE entry_attempt_id = ? AND state = 'OPEN'
-      `).run(attemptId, this.#now(), row.entry_attempt_id);
+      `).run(attemptId, terms.grossSpotQuantityAtoms.toString(), this.#now(), row.entry_attempt_id);
     }).immediate();
   }
 
@@ -334,9 +349,10 @@ export class HyperliquidTestnetOwnerLedger {
     this.#db.prepare(`
       UPDATE hyperliquid_owner_packages
       SET state = ?, exit_attempt_id = CASE WHEN ? = 'OPEN' THEN NULL ELSE exit_attempt_id END,
+        exit_spot_quantity_atoms = CASE WHEN ? = 'OPEN' THEN NULL ELSE exit_spot_quantity_atoms END,
         closed_at_ms = CASE WHEN ? = 'CLOSED' THEN ? ELSE closed_at_ms END, updated_at_ms = ?
       WHERE exit_attempt_id = ? AND state = 'EXITING'
-    `).run(next, next, next, this.#now(), this.#now(), attemptId);
+    `).run(next, next, next, next, this.#now(), this.#now(), attemptId);
   }
 
   close(): void {

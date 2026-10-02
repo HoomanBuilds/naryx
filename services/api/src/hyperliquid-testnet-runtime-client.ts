@@ -555,8 +555,10 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
         || checkedOrderContext.perpetualAdapter.adapterId !== checkedMarket.perpetual.adapterId
         || checkedOrderContext.perpetualAdapter.adapterManifestVersion !== checkedMarket.perpetual.adapterManifestVersion
         || toHex(checkedOrderContext.perpetualAdapter.adapterManifestHash) !== checkedMarket.perpetual.adapterManifestHash
-        || checkedOrderContext.baseAsset.decimals !== checkedMarket.spot.sizeDecimals
-        || checkedOrderContext.baseAsset.decimals !== checkedMarket.perpetual.sizeDecimals)) {
+        // The base asset is carried at its spot token's full precision (weiDecimals), at least as
+        // fine as both size grids, so base-token fee dust stays exact.
+        || checkedOrderContext.baseAsset.decimals < checkedMarket.spot.sizeDecimals
+        || checkedOrderContext.baseAsset.decimals < checkedMarket.perpetual.sizeDecimals)) {
     fail("INVALID_CONFIGURATION", "Hyperliquid order context does not match configured market metadata");
   }
   let omnibus: HyperliquidTestnetOmnibusLimits | undefined;
@@ -583,6 +585,21 @@ export function loadHyperliquidTestnetRuntimeConfig(path: string): HyperliquidTe
     ...(checkedOrderContext === undefined ? {} : { orderContext: checkedOrderContext }),
     ...(omnibus === undefined ? {} : { omnibus }),
   });
+}
+
+/** Base atoms in one HyperCore size unit when the base asset is carried at its token precision. */
+export function hyperliquidTestnetLotAtoms(baseDecimals: number, sizeDecimals: number): bigint {
+  if (!Number.isSafeInteger(baseDecimals) || !Number.isSafeInteger(sizeDecimals)
+    || sizeDecimals < 0 || baseDecimals < sizeDecimals) {
+    fail("INVALID_CONFIGURATION", "Hyperliquid size decimals exceed the base asset precision");
+  }
+  return 10n ** BigInt(baseDecimals - sizeDecimals);
+}
+
+/** Base atoms per spot size unit for a config that carries an order context. */
+export function hyperliquidTestnetSpotLotAtoms(config: HyperliquidTestnetRuntimeConfig): bigint {
+  if (config.orderContext === undefined) fail("INVALID_CONFIGURATION", "Hyperliquid order context is missing");
+  return hyperliquidTestnetLotAtoms(config.orderContext.baseAsset.decimals, config.market.spot.sizeDecimals);
 }
 
 export function createHyperliquidTestnetAttemptPreparationPort(

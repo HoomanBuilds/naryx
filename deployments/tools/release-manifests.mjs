@@ -716,6 +716,14 @@ async function hyperliquidMetadataCheck(config) {
   const universe = spotMeta.universe?.find((entry) => entry.index === config.market.spot.universeIndex);
   if (perpetual === undefined || perpetual.szDecimals !== config.market.perpetual.sizeDecimals) fail('Hyperliquid perpetual asset index or size decimals do not match testnet metadata.');
   if (token === undefined || token.szDecimals !== config.market.spot.sizeDecimals) fail('Hyperliquid spot token index or size decimals do not match testnet metadata.');
+  // Balances and base-token fees are reconciled exactly at each token's full precision (weiDecimals).
+  const quote = spotMeta.tokens?.find((entry) => entry.index === config.market.quoteTokenIndex);
+  if (config.orderContext !== undefined && token.weiDecimals !== config.orderContext.baseAsset.decimals) {
+    fail('Hyperliquid base asset decimals must equal the spot token weiDecimals on testnet.');
+  }
+  if (config.orderContext !== undefined && quote?.weiDecimals !== config.orderContext.quoteAsset.decimals) {
+    fail('Hyperliquid quote asset decimals must equal the quote token weiDecimals on testnet.');
+  }
   if (universe === undefined || !universe.tokens.includes(config.market.spot.tokenIndex) || !universe.tokens.includes(config.market.quoteTokenIndex)) {
     fail('Hyperliquid spot universe does not pair the configured spot and quote tokens.');
   }

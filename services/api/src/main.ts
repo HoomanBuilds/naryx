@@ -63,6 +63,7 @@ import {
 } from "./solana-local-execution.js";
 import {
   createHyperliquidTestnetEvidenceRuntime,
+  hyperliquidTestnetSpotLotAtoms,
   loadHyperliquidTestnetRuntimeConfig,
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
@@ -443,6 +444,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         orders: orderStore,
         tradingAccount: orderContext.tradingAccount,
         limits: hyperliquidConfig?.omnibus,
+        spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
       }),
     );
   } catch (error) {
@@ -505,6 +507,7 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
     ...(hyperliquidOrderRuntime === undefined || hyperliquidPriceFeed === undefined ? {} : {
       createExitOrder: createHyperliquidTestnetExitOrderFactory({
         config: hyperliquidOrderContext,
+        spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
         contexts: hyperliquidOrderRuntime.contexts,
         clock: hyperliquidOrderRuntime.clock,
         prices: hyperliquidPriceFeed,

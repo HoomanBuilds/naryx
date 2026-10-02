@@ -41,8 +41,8 @@ function hashesAsHex(value: unknown): unknown {
   return value;
 }
 
-function config(): HyperliquidTestnetRuntimeConfig {
-  const baseAsset = assetRef("hypercore:testnet:btc", "31".repeat(32), 5);
+function config(baseDecimals = 5): HyperliquidTestnetRuntimeConfig {
+  const baseAsset = assetRef("hypercore:testnet:btc", "31".repeat(32), baseDecimals);
   const quoteAsset = assetRef("hypercore:testnet:usdc", "32".repeat(32), 6);
   return {
     domain: domainRef("hypercore:testnet", 1, "11".repeat(32)),
@@ -502,7 +502,7 @@ test("a Hyperliquid exit sells exactly the owner's package spot and buys back ex
       observedNetSpotDeltaAtoms: "99965", observedPerpetualDeltaAtoms: "-100000",
     }, 60_010_000_000n);
     const exit = createHyperliquidTestnetExitOrderFactory({
-      config: runtimeConfig.orderContext!, contexts: runtime.contexts, clock: runtime.clock,
+      config: runtimeConfig.orderContext!, spotLotAtoms: 1n, contexts: runtime.contexts, clock: runtime.clock,
       prices: feed, ledger, orders,
     });
     await assert.rejects(
@@ -530,6 +530,74 @@ test("a Hyperliquid exit sells exactly the owner's package spot and buys back ex
     // Proceeds less the 0.035% spot fee, plus the entry notional, less the capped buy-back and its 0.045% fee.
     assert.equal(order.minExitQuoteOutcome?.atoms, 59_630_009_294n);
     assert.equal(ledger.openPackage(owner)?.exitOrderHash, created.record.orderHashHex);
+  } finally {
+    orders.close();
+    ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a base asset at its token precision sizes entries in whole lots and exits leave sub-lot fee dust", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-wei-"));
+  const path = join(scratch, "runtime.json");
+  const write = (baseDecimals: number) => writeFileSync(path, stringifyProtocolJson(hashesAsHex({
+    version: 1, environment: "TESTNET", ...config(baseDecimals),
+  })));
+  // Base decimals may be finer than both size grids (spotMeta weiDecimals), never coarser.
+  write(8);
+  assert.equal(loadHyperliquidTestnetRuntimeConfig(path).orderContext?.baseAsset.decimals, 8);
+  write(4);
+  assert.throws(() => loadHyperliquidTestnetRuntimeConfig(path), /does not match configured market metadata/);
+
+  const base = config(8);
+  const runtimeConfig: HyperliquidTestnetRuntimeConfig = {
+    ...base,
+    orderContext: { ...base.orderContext!, maxTerminalResidualBaseQuantityAtoms: 100_000n },
+  };
+  const market = fakeMarket();
+  const feed = priceFeed(market, runtimeConfig);
+  assert.equal(await feed.refresh(), true);
+  const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
+  assert.equal(runtime.contexts(CONTEXT_ID)?.quantityStepAtoms, 1_000n);
+  const owner = "0x2222222222222222222222222222222222222222";
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  try {
+    const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
+    await assert.rejects(
+      coordinator.createOrder({ ...orderRequest("0.05000001", "hyper-wei-key-00001"), owner }),
+      /whole number of venue lots/,
+    );
+    const limits = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 10n ** 12n };
+    ledger.reserveEntry({ attemptId: "entry-owner-0002", owner, orderHash: "0f".repeat(32), notionalAtoms: 1n, limits });
+    // The spot buy paid its fee in base at full precision: 0.99965123 BTC against a 1 BTC short.
+    const hash = `0x${"dd".repeat(32)}`;
+    ledger.settleEntry("entry-owner-0002", {
+      attemptId: "entry-owner-0002", idempotencyKey: "idem-0123456789ABCD", domain: "hypercore:testnet",
+      environment: "TESTNET", status: "RECONCILED", submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_BOUNDED",
+      reasons: [], actionCommitment: hash, requestCommitment: hash, rawEvidenceCommitments: [],
+      observedNetSpotDeltaAtoms: "99965123", observedPerpetualDeltaAtoms: "-100000000",
+    }, 60_010_000_000n);
+    const exit = createHyperliquidTestnetExitOrderFactory({
+      config: runtimeConfig.orderContext!, spotLotAtoms: 1_000n, contexts: runtime.contexts, clock: runtime.clock,
+      prices: feed, ledger, orders,
+    });
+    const created = await exit({ owner, slippageBps: 25, idempotencyKey: "hyper-wei-exit-0001" });
+    const order = orders.getCanonicalOrderByHash(created.record.orderHashHex)!;
+    // The sell is floored to the 0.00001 spot lot; 123 atoms of dust stay in the trading account.
+    assert.equal(order.hyperliquidGrossSpotQuantity?.atoms, 99_965_000n);
+    assert.equal(order.hyperliquidMinNetSpotDelta?.atoms, -99_965_000n);
+    assert.equal(order.hyperliquidMaxNetSpotDelta?.atoms, -99_965_000n);
+    assert.equal(order.expectedPreStrategySpotQuantity?.atoms, 99_965_123n);
+    assert.equal(order.quantity.atoms, 100_000_000n);
+    const terms = {
+      owner, orderHash: created.record.orderHashHex, perpQuantityAtoms: 100_000_000n, spotLotAtoms: 1_000n,
+      entryReceiptHash: ledger.openPackage(owner)!.entryReceiptHash!,
+    };
+    assert.throws(() => ledger.beginExit("exit-wei-0001", { ...terms, grossSpotQuantityAtoms: 99_965_123n }),
+      /does not close exactly/);
+    ledger.beginExit("exit-wei-0001", { ...terms, grossSpotQuantityAtoms: 99_965_000n });
+    assert.equal(ledger.packages(owner)[0]?.exitSpotQuantityAtoms, 99_965_000n);
   } finally {
     orders.close();
     ledger.close();

@@ -49,6 +49,8 @@ export interface ActiveOrderContext {
   readonly spotReferencePrice: ExactPrice;
   readonly maxEntrySpread: ExactSignedRate;
   readonly maximumQuantityAtoms: bigint;
+  /** When set, every size must be a whole multiple of it (a venue lot in base atoms). */
+  readonly quantityStepAtoms?: bigint;
   readonly maxSlippageBps: number;
   readonly maxVenueFeeAtomsByAsset: readonly FeeCap[];
   readonly maxMarginAddedAtoms: bigint;
@@ -278,6 +280,14 @@ function loadContext(
   }
   if (request.sizeAtoms > context.maximumQuantityAtoms) {
     throw new EntryOrderValidationError("OVERSIZED", "Size exceeds the active context maximum.");
+  }
+  if (context.quantityStepAtoms !== undefined) {
+    if (typeof context.quantityStepAtoms !== "bigint" || context.quantityStepAtoms <= 0n) {
+      throw new EntryOrderValidationError("INVALID_CONTEXT", "Quantity step must be positive.");
+    }
+    if (request.sizeAtoms % context.quantityStepAtoms !== 0n) {
+      throw new EntryOrderValidationError("INVALID_SIZE", "Size must be a whole number of venue lots.");
+    }
   }
   if (!Number.isSafeInteger(context.maxSlippageBps) ||
       context.maxSlippageBps < 1 ||

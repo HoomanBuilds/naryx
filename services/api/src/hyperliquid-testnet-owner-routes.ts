@@ -161,6 +161,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
+  /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
+  spotLotAtoms: bigint;
 }>): HyperliquidTestnetExecutionGuard {
   const entryNotional = (attemptId: string): bigint => {
     const selected = options.intents.getSelectedQuote(attemptId);
@@ -216,6 +218,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           orderHash,
           perpQuantityAtoms: order.quantity.atoms,
           grossSpotQuantityAtoms: order.hyperliquidGrossSpotQuantity?.atoms ?? 0n,
+          spotLotAtoms: options.spotLotAtoms,
           entryReceiptHash: order.entryReceiptHash === undefined ? "" : hex(order.entryReceiptHash),
         });
       } catch (error) {
@@ -234,11 +237,15 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
 }
 
 /**
- * Builds and stores the canonical EXIT of the owner's open package from the live books: sell
- * exactly the package's spot and buy back exactly its short, executed by the trading account.
+ * Builds and stores the canonical EXIT of the owner's open package from the live books: sell the
+ * package's spot floored to the spot lot and buy back exactly its short, executed by the trading
+ * account. HyperCore sells whole size units only, so the sub-lot remainder (the base-token fee
+ * dust of the entry) stays in the trading account, bounded by the terminal residual caps.
  */
 export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
   config: HyperliquidTestnetOrderContextConfig;
+  /** Base atoms per spot size unit. */
+  spotLotAtoms: bigint;
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
   prices: HyperliquidTestnetPriceSource;
@@ -272,11 +279,18 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
     if (currentClock < context.capturedAtClock || currentClock - context.capturedAtClock > context.maxStaleness) {
       throw new OwnerRouteError(503, "STALE_CONTEXT", "Live Hyperliquid testnet prices are stale.");
     }
+    if (typeof options.spotLotAtoms !== "bigint" || options.spotLotAtoms <= 0n) {
+      throw new OwnerRouteError(503, "CONTEXT_UNAVAILABLE", "The Hyperliquid spot lot is not configured.");
+    }
+    const spotSellAtoms = open.spotQuantityAtoms - open.spotQuantityAtoms % options.spotLotAtoms;
+    if (spotSellAtoms <= 0n) {
+      throw new OwnerRouteError(409, "EXIT_BELOW_SPOT_LOT", "The package spot is smaller than one spot lot.");
+    }
     const limits = deriveHyperliquidTestnetExitLimits(
       config.baseAsset, config.quoteAsset, snapshot,
-      open.spotQuantityAtoms, open.perpQuantityAtoms, open.entryNotionalAtoms, request.slippageBps,
+      spotSellAtoms, open.perpQuantityAtoms, open.entryNotionalAtoms, request.slippageBps,
     );
-    const residual = open.perpQuantityAtoms - open.spotQuantityAtoms;
+    const residual = open.perpQuantityAtoms - spotSellAtoms;
     if ((residual < 0n ? -residual : residual) > config.maxTerminalResidualBaseQuantityAtoms) {
       throw new OwnerRouteError(409, "EXIT_RESIDUAL_EXCEEDS_CAP", "The package spot and short differ by more than the residual cap.");
     }
@@ -317,10 +331,10 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
       partialFillPolicy: "EXACT_ALL_LEGS",
       quantity: { asset: config.baseAsset, atoms: open.perpQuantityAtoms },
       hyperliquidQuantityPolicy: "BOUNDED_NET",
-      hyperliquidGrossSpotQuantity: { asset: config.baseAsset, atoms: open.spotQuantityAtoms },
+      hyperliquidGrossSpotQuantity: { asset: config.baseAsset, atoms: spotSellAtoms },
       // HyperCore charges a spot sell's fee in quote, so the base delta is exactly the spot sold.
-      hyperliquidMinNetSpotDelta: { asset: config.baseAsset, atoms: -open.spotQuantityAtoms },
-      hyperliquidMaxNetSpotDelta: { asset: config.baseAsset, atoms: -open.spotQuantityAtoms },
+      hyperliquidMinNetSpotDelta: { asset: config.baseAsset, atoms: -spotSellAtoms },
+      hyperliquidMaxNetSpotDelta: { asset: config.baseAsset, atoms: -spotSellAtoms },
       hyperliquidMaxTerminalResidualBaseQuantity: {
         asset: config.baseAsset, atoms: config.maxTerminalResidualBaseQuantityAtoms,
       },
@@ -387,6 +401,10 @@ function packageView(entry: HyperliquidOwnerPackage) {
     state: entry.state,
     perpQuantityAtoms: atoms(entry.perpQuantityAtoms),
     spotQuantityAtoms: atoms(entry.spotQuantityAtoms),
+    exitSpotQuantityAtoms: atoms(entry.exitSpotQuantityAtoms),
+    // Base-fee dust below one spot lot that the exit leaves in the shared trading account.
+    retainedSpotDustAtoms: entry.exitSpotQuantityAtoms === null || entry.spotQuantityAtoms === null
+      ? null : (entry.spotQuantityAtoms - entry.exitSpotQuantityAtoms).toString(),
     entryNotionalAtoms: atoms(entry.entryNotionalAtoms),
     entryReceiptHash: entry.entryReceiptHash,
     exitAttemptId: entry.exitAttemptId,

@@ -1,6 +1,9 @@
 import { exactPrice, type AssetRef, type ExactPrice, type RoundingDirection } from "@naryx/protocol-types";
 import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
-import type { HyperliquidTestnetRuntimeConfig } from "./hyperliquid-testnet-runtime-client.js";
+import {
+  hyperliquidTestnetLotAtoms,
+  type HyperliquidTestnetRuntimeConfig,
+} from "./hyperliquid-testnet-runtime-client.js";
 import {
   parseHyperliquidDecimal,
   type HyperliquidTestnetPriceSnapshot,
@@ -192,6 +195,11 @@ export function createHyperliquidTestnetOrderRuntime(
     }
     return BigInt(value);
   };
+  // A size must fill whole units on both the spot and the perpetual size grids.
+  const quantityStepAtoms = hyperliquidTestnetLotAtoms(
+    order.baseAsset.decimals,
+    Math.min(config.market.spot.sizeDecimals, config.market.perpetual.sizeDecimals),
+  );
   let cached: Readonly<{ snapshot: HyperliquidTestnetPriceSnapshot; context: ActiveOrderContext }> | undefined;
   const contexts: ActiveOrderContextProvider = (contextId) => {
     if (contextId !== order.contextId) return undefined;
@@ -229,6 +237,7 @@ export function createHyperliquidTestnetOrderRuntime(
       spotReferencePrice: prices.spotReferencePrice,
       maxEntrySpread: order.maxEntrySpread,
       maximumQuantityAtoms: order.maximumQuantityAtoms,
+      quantityStepAtoms,
       maxSlippageBps: order.maxSlippageBps,
       maxVenueFeeAtomsByAsset: order.maxVenueFeeAtomsByAsset,
       maxMarginAddedAtoms: order.maxMarginAddedAtoms,
