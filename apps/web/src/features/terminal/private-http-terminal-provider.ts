@@ -2350,7 +2350,8 @@ const TERMINAL_SYMBOL_PATTERN = /^[A-Z0-9]{1,12}$/;
 const TERMINAL_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)\.[0-9]+$/;
 const TERMINAL_ATOMS_PATTERN = /^(0|[1-9][0-9]*)$/;
 const TERMINAL_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const TERMINAL_PRICE_PATTERN = /^\$(0|[1-9][0-9]*)\.[0-9]+$/;
+// The service prints USD-quoted prices as "$2679.99" and any other quote asset as "2679.99 TUSDC".
+const TERMINAL_PRICE_PATTERN = /^(\$(0|[1-9][0-9]*)\.[0-9]+|(0|[1-9][0-9]*)\.[0-9]+ [A-Z0-9]{1,12})$/;
 const TERMINAL_BASIS_PATTERN = /^[+-](0|[1-9][0-9]*)\.[0-9]{2} bps$/;
 const TERMINAL_MARKET_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   "DOMAIN_MARKET_UNAVAILABLE",
