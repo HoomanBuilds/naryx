@@ -2,7 +2,11 @@ import type { TerminalViewModel } from "./terminal-view-model";
 
 export type ChartInterval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 export type ChartSeriesKey = "basis" | "spot" | "perp";
-export type FeedLabel = "FIXTURE" | "OBSERVED";
+/**
+ * FIXTURE is deterministic local data, OBSERVED is the public package book and tape, and REFERENCE
+ * is the private API's recorded samples of each lane's live spot and perp references.
+ */
+export type FeedLabel = "FIXTURE" | "OBSERVED" | "REFERENCE";
 
 export const CHART_INTERVALS: readonly { id: ChartInterval; label: string; seconds: number }[] = [
   { id: "1m", label: "1m", seconds: 60 },
@@ -12,6 +16,10 @@ export const CHART_INTERVALS: readonly { id: ChartInterval; label: string; secon
   { id: "4h", label: "4H", seconds: 14_400 },
   { id: "1d", label: "1D", seconds: 86_400 },
 ];
+export const CHART_SERIES: readonly ChartSeriesKey[] = ["basis", "spot", "perp"];
+/** The chart's persisted selection; a feed that fetches per series reads the same settings. */
+export const CHART_INTERVAL_SETTING = { key: "chart.interval", fallback: "15m" } as const;
+export const CHART_SERIES_SETTING = { key: "chart.series", fallback: "basis" } as const;
 
 export interface Candle {
   /** Bucket open time in UTC seconds. */
@@ -41,14 +49,29 @@ export interface TapeTrade {
   readonly source: "DIRECT" | "IMPLIED";
 }
 
+export interface SeriesMeta {
+  readonly title: string;
+  readonly unit: string;
+  readonly precision: number;
+  /** Set when this series comes from a different source than the feed's own label. */
+  readonly label?: FeedLabel;
+  readonly note?: string;
+  /** False when the candles carry no volume. */
+  readonly volume?: boolean;
+  /** What the chart says when the series has no candles in the window. */
+  readonly empty?: { readonly title: string; readonly detail: string };
+}
+
 export interface MarketFeed {
   /** FIXTURE data is deterministic local data and is never presented as market data. */
   readonly label: FeedLabel;
   readonly sourceNote: string;
+  /** Unit and precision of depth and tape prices when they differ from the basis series. */
+  readonly book?: { readonly unit: string; readonly precision: number };
   candles(series: ChartSeriesKey, interval: ChartInterval): readonly Candle[];
   depth(): { readonly bids: readonly DepthLevel[]; readonly asks: readonly DepthLevel[]; readonly tick: number };
   tape(): readonly TapeTrade[];
-  seriesMeta(series: ChartSeriesKey): { readonly title: string; readonly unit: string; readonly precision: number };
+  seriesMeta(series: ChartSeriesKey): SeriesMeta;
 }
 
 const CANDLE_COUNT = 320;
@@ -233,9 +256,10 @@ export function fixtureMarketFeed(snapshot: TerminalViewModel): MarketFeed {
     depth,
     tape,
     seriesMeta(key) {
-      if (key === "basis") return { title: `${snapshot.market.packageId} basis`, unit: "bps", precision: 1 };
-      if (key === "spot") return { title: `${snapshot.market.base} spot reference`, unit: snapshot.market.quote, precision: 3 };
-      return { title: `${snapshot.market.base} perpetual reference`, unit: snapshot.market.quote, precision: 3 };
+      const empty = { title: "No candles in this window", detail: "The fixture has no candles for this interval." };
+      if (key === "basis") return { title: `${snapshot.market.packageId} basis`, unit: "bps", precision: 1, empty };
+      if (key === "spot") return { title: `${snapshot.market.base} spot reference`, unit: snapshot.market.quote, precision: 3, empty };
+      return { title: `${snapshot.market.base} perpetual reference`, unit: snapshot.market.quote, precision: 3, empty };
     },
   };
 }

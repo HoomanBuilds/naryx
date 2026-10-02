@@ -120,9 +120,17 @@ function DepthChart({ feed, unit }: { feed: MarketFeed; unit: string }) {
     setHover({ x: x(last.price), price: last.price, side, direct: last.direct, total: last.total });
   }
 
+  // An empty book has no price range to draw; it is said, not plotted.
+  const empty = model.bids.length + model.asks.length === 0;
+
   return (
     <div ref={ref} className={styles.svgHost}>
-      {width > 0 && height > 0 ? (
+      {empty ? (
+        <div className={styles.chartEmpty} role="status">
+          <strong>No package depth</strong>
+          <span>{feed.label === "REFERENCE" ? "Package depth is published only by the public market API, which this deployment does not run." : "The package book has no resting orders."}</span>
+        </div>
+      ) : width > 0 && height > 0 ? (
         <svg width={width} height={height} role="img" aria-label="Cumulative package depth" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
           {sizeTicks.map((tick) => (
             <g key={`s${tick}`}>
@@ -326,7 +334,7 @@ export function ChartWorkspace({
       </div>
       <div key={view} className={styles.viewFade}>
         {view === "chart" ? <PriceChart feed={feed} /> : null}
-        {view === "depth" ? <div className={styles.chartBody}><DepthChart feed={feed} unit="bps" /></div> : null}
+        {view === "depth" ? <div className={styles.chartBody}><DepthChart feed={feed} unit={feed.book?.unit ?? "bps"} /></div> : null}
         {view === "payoff" ? <div className={styles.chartBody}><PayoffChart feed={feed} snapshot={snapshot} preview={preview} size={size} /></div> : null}
       </div>
     </section>

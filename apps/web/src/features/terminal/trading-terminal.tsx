@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
+import { useReferenceMarketFeed } from "./reference-market-feed";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
@@ -1441,6 +1442,7 @@ export function TradingTerminal({
     selectedDomain,
     privateProvider,
     runtimeHealth,
+    privateApiBaseUrl,
     publicApiBaseUrl,
     packageMarketId,
     recordAttempt,
@@ -1466,8 +1468,17 @@ export function TradingTerminal({
     "positions",
     ["positions", "orders", "history", "receipts"],
   );
+  // With a private API the chart shows its recorded reference history; the fixture is only for the
+  // local terminal without one.
+  const reference = useReferenceMarketFeed(privateApiBaseUrl, selectedDomain, snapshot.market);
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
-  const { feed, status: feedStatus } = usePublicMarketFeed(publicApiBaseUrl, packageMarketId, fixtureFeed);
+  const { feed, status: publicFeedStatus } = usePublicMarketFeed(
+    publicApiBaseUrl,
+    packageMarketId,
+    reference.feed ?? fixtureFeed,
+    reference.feed,
+  );
+  const feedStatus = publicFeedStatus ?? reference.status;
   const wallet = useSolanaWallet();
   const evmWallet = useEvmWallet();
   const walletModal = useWalletModal();

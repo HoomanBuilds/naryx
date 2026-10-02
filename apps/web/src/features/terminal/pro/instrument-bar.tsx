@@ -21,22 +21,23 @@ const SHORT_LABELS: Readonly<Record<string, string>> = {
  * the snapshot's reference metrics. Every value keeps its source label.
  */
 export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel; feed: MarketFeed }) {
+  // Windows are by time, not candle count, so a gap in the history never stretches "24h".
   const stats = useMemo(() => {
     const hourly = feed.candles("basis", "1h");
-    const last = hourly[hourly.length - 1];
-    const dayAgo = hourly[hourly.length - 25];
-    const window = hourly.slice(-24);
-    if (last === undefined || dayAgo === undefined || window.length === 0) return null;
+    const last = hourly.at(-1);
+    if (last === undefined) return null;
+    const dayAgo = hourly.findLast((candle) => candle.time <= last.time - 86_400);
+    const window = hourly.filter((candle) => candle.time > last.time - 86_400);
     return {
       last: last.close,
-      change: last.close - dayAgo.close,
+      change: dayAgo === undefined ? null : last.close - dayAgo.close,
       high: Math.max(...window.map((candle) => candle.high)),
       low: Math.min(...window.map((candle) => candle.low)),
       volume: window.reduce((sum, candle) => sum + candle.volume, 0),
     };
   }, [feed]);
-  const tone = stats === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
-  const { unit, precision } = feed.seriesMeta("basis");
+  const tone = stats === null || stats.change === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
+  const { unit, precision, volume: hasVolume } = feed.seriesMeta("basis");
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const metrics = snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
   // Reference metrics carry the snapshot's evidence grade on screen, and a modeled return is never
@@ -70,7 +71,7 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
       <dl className={styles.instrumentStats}>
         <div>
           <dt>24h change</dt>
-          <dd className={tone}>{stats === null ? "-" : `${stats.change >= 0 ? "+" : ""}${stats.change.toFixed(precision)} ${unit}`}</dd>
+          <dd className={tone}>{stats === null || stats.change === null ? "-" : `${stats.change >= 0 ? "+" : ""}${stats.change.toFixed(precision)} ${unit}`}</dd>
         </div>
         <div>
           <dt>24h high</dt>
@@ -82,7 +83,7 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
         </div>
         <div>
           <dt>24h volume</dt>
-          <dd>{stats === null ? "-" : Math.round(stats.volume).toLocaleString("en-US")}</dd>
+          <dd>{stats === null || hasVolume === false ? "-" : Math.round(stats.volume).toLocaleString("en-US")}</dd>
         </div>
         <div className={styles.metricSource} title={reference.title}>
           <dt>Reference</dt>

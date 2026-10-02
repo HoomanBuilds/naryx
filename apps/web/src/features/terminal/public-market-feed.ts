@@ -8,6 +8,7 @@ import {
   type ChartSeriesKey,
   type DepthLevel,
   type MarketFeed,
+  type SeriesMeta,
   type TapeTrade,
 } from "./market-feed";
 
@@ -132,18 +133,37 @@ interface LiveState {
   readonly version: number;
 }
 
+const BOOK_UNIT = { unit: "ticks", precision: 0 } as const;
+const PACKAGE_PRICE: SeriesMeta = {
+  title: "Package price",
+  unit: "ticks",
+  precision: 0,
+  empty: { title: "No trades in this window", detail: "Candles appear as soon as the package book records a trade." },
+};
+
+function unpublishedLeg(series: ChartSeriesKey): SeriesMeta {
+  return {
+    title: series === "spot" ? "Spot leg (not published)" : "Perp leg (not published)",
+    unit: "ticks",
+    precision: 0,
+    empty: { title: "Leg prices are not published", detail: "The public market API publishes the package price only." },
+  };
+}
+
 /**
  * The terminal's market data from the public v1 API: executable package depth and the observed
  * package tape, read in full first and then pushed over the API's WebSocket stream, with polling
- * every few seconds whenever the stream is down. Candles are rebuilt from the observed trades, so the
- * chart shows only what traded. Until the first successful read, and whenever the API has never
- * answered, the fixture feed stays in place under its FIXTURE label; after a failed poll the last
- * observed data stays on screen and the status says it is stale.
+ * every few seconds whenever the stream is down. Package price candles are rebuilt from the observed
+ * trades, so they show only what traded. The spot and perp series, and the basis series until the
+ * book records its first trade, come from `reference` under its own label; without one they stay
+ * empty. A configured market never shows `fallback`; after a failed poll the last observed data
+ * stays on screen and the status says it is stale.
  */
 export function usePublicMarketFeed(
   baseUrl: string | null,
   packageMarketId: string | null,
   fallback: MarketFeed,
+  reference: MarketFeed | null,
 ): { readonly feed: MarketFeed; readonly status: PublicFeedStatus | null } {
   const configured = baseUrl !== null && packageMarketId !== null;
   const [live, setLive] = useState<LiveState | null>(null);
@@ -292,25 +312,35 @@ export function usePublicMarketFeed(
 
   const feed = useMemo<MarketFeed>(() => {
     if (!configured) return fallback;
-    // A configured market never shows fixture data: until the API answers, the feed is empty.
+    // Leg prices are not public market data; the reference history fills them under its own label,
+    // and fills the basis series too until the package book has a trade.
+    const traded = live !== null && live.trades.length > 0;
+    const fromReference = (series: ChartSeriesKey) => reference !== null && (series !== "basis" || !traded);
+    const referenceMeta = (series: ChartSeriesKey): SeriesMeta | undefined => reference === null
+      ? undefined
+      : { ...reference.seriesMeta(series), label: reference.label, note: reference.sourceNote };
+    const referenceNote = reference === null
+      ? ""
+      : ` Spot and perp series${traded ? "" : ", and basis until the first package trade,"} are ${reference.label} data. ${reference.sourceNote}`;
+    // A configured market never shows fixture data: until the API answers, the book is empty.
     if (live === null) {
       return {
         label: "OBSERVED",
-        sourceNote: `Package ${packageMarketId}: waiting for the public market API.`,
-        candles: () => [],
+        sourceNote: `Package ${packageMarketId}: waiting for the public market API.${referenceNote}`,
+        book: BOOK_UNIT,
+        candles: (series: ChartSeriesKey, interval: ChartInterval) => reference?.candles(series, interval) ?? [],
         depth: () => ({ bids: [], asks: [], tick: 1 }),
         tape: () => [],
-        seriesMeta: (series: ChartSeriesKey) => series === "basis"
-          ? { title: "Package price", unit: "ticks", precision: 0 }
-          : { title: series === "spot" ? "Spot leg (not published)" : "Perp leg (not published)", unit: "ticks", precision: 0 },
+        seriesMeta: (series: ChartSeriesKey) => referenceMeta(series) ?? (series === "basis" ? PACKAGE_PRICE : unpublishedLeg(series)),
       };
     }
     const candleCache = new Map<ChartInterval, Candle[]>();
     return {
       label: "OBSERVED",
-      sourceNote: `Package ${packageMarketId}: executable depth and observed trades from the public market API.`,
+      sourceNote: `Package ${packageMarketId}: executable depth and observed trades from the public market API.${referenceNote}`,
+      book: BOOK_UNIT,
       candles(series: ChartSeriesKey, interval: ChartInterval) {
-        // Only the package price is published; leg prices are not public market data.
+        if (fromReference(series)) return reference?.candles(series, interval) ?? [];
         if (series !== "basis") return [];
         const cached = candleCache.get(interval);
         if (cached !== undefined) return cached;
@@ -326,11 +356,11 @@ export function usePublicMarketFeed(
         return [...live.trades].reverse().slice(0, 200);
       },
       seriesMeta(series: ChartSeriesKey) {
-        if (series === "basis") return { title: "Package price", unit: "ticks", precision: 0 };
-        return { title: series === "spot" ? "Spot leg (not published)" : "Perp leg (not published)", unit: "ticks", precision: 0 };
+        if (fromReference(series)) return referenceMeta(series) ?? PACKAGE_PRICE;
+        return series === "basis" ? PACKAGE_PRICE : unpublishedLeg(series);
       },
     };
-  }, [configured, live, fallback, packageMarketId]);
+  }, [configured, live, fallback, packageMarketId, reference]);
 
   return { feed, status: configured ? status : null };
 }
