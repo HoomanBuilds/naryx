@@ -2,7 +2,6 @@
 pragma solidity 0.8.37;
 
 import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
-import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {GmxV2ArbitrumAdapter} from "./GmxV2ArbitrumAdapter.sol";
 import {GmxV2IsolatedAccount} from "./GmxV2IsolatedAccount.sol";
@@ -14,6 +13,7 @@ import {
     IGmxV2OrderCallbackReceiver,
     IGmxV2RoleStore
 } from "./interfaces/IGmxV2.sol";
+import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 /// @notice The shared full-close controller for every account of one `GmxV2IsolatedAccountFactory`. Each
 /// exit is authorized by the EIP-712 signature of the account's factory-recorded owner, and nonces and the
@@ -211,7 +211,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         address owner = factory.ownerOf(address(account));
         _validateAuthorization(authorization, account, owner);
         bytes32 authorizationHash = _hashTypedDataV4(_authorizationHash(authorization));
-        if (!SignatureChecker.isValidSignatureNow(owner, authorizationHash, ownerSignature)) {
+        if (!OwnerSignature.isValidNow(owner, authorizationHash, ownerSignature)) {
             revert InvalidSignature();
         }
         GmxV2.ExitRegistration memory registration = _registration(authorization, authorizationHash);

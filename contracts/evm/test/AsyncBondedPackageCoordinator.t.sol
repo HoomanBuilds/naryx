@@ -8,6 +8,7 @@ import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
+import {Eip7702Delegate, RevertingSignatureOwner, WrongMagicSignatureOwner} from "./OwnerSignature.t.sol";
 
 contract AsyncBondToken is ERC20 {
     constructor() ERC20("Bond", "BOND") {}
@@ -164,6 +165,28 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         coordinator.close(id, 2);
         assertEq(token.balanceOf(SLASH_RECIPIENT), terms.bondAtoms);
         assertEq(token.balanceOf(RESERVE_RECIPIENT), terms.recoveryReserveAtoms);
+    }
+
+    function testDelegatedEoaOwnerReservesWithItsOwnSignature() public {
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, _request());
+        bytes memory signature = _sign(terms);
+        vm.signAndAttachDelegation(address(new Eip7702Delegate()), OWNER_KEY);
+        vm.prank(SOLVER);
+        bytes32 id = coordinator.reserve(terms, signature);
+        assertGt(owner.code.length, 0);
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.RESERVED));
+        assertEq(coordinator.nextNonce(owner), 1);
+    }
+
+    function testContractOwnerWithWrongMagicOrRevertIsRejected() public {
+        address[2] memory rejecting = [address(new WrongMagicSignatureOwner()), address(new RevertingSignatureOwner())];
+        for (uint256 i; i < rejecting.length; ++i) {
+            AsyncBondedPackageCoordinator.Terms memory terms = _terms(rejecting[i], _request());
+            bytes memory signature = _sign(terms);
+            vm.prank(SOLVER);
+            vm.expectRevert(AsyncBondedPackageCoordinator.InvalidSignature.selector);
+            coordinator.reserve(terms, signature);
+        }
     }
 
     function testAdmissionAndCodeIdentityFailClosed() public {

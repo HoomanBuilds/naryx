@@ -10,6 +10,7 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {LocalCashCarryVenue} from "../src/LocalCashCarryVenue.sol";
 import {AtomicPackageExecutor} from "../src/AtomicPackageExecutor.sol";
+import {Eip7702Delegate, RevertingSignatureOwner, WrongMagicSignatureOwner} from "./OwnerSignature.t.sol";
 
 contract LocalToken is ERC20 {
     constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
@@ -182,6 +183,28 @@ contract AtomicPackageExecutorTest is Test {
         (uint256 quantity, uint256 collateral,) = executor.positions(address(wallet));
         assertEq(quantity, 5);
         assertEq(collateral, 4);
+    }
+
+    function testDelegatedEoaTraderEntersWithItsOwnSignature() public {
+        AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry);
+        vm.signAndAttachDelegation(address(new Eip7702Delegate()), traderKey);
+        executor.execute(entry, traderSignature, solverSignature);
+        assertGt(trader.code.length, 0);
+        (uint256 quantity,,) = executor.positions(trader);
+        assertEq(quantity, 5);
+        assertEq(executor.nextNonce(trader), 1);
+    }
+
+    function testContractTraderWithWrongMagicOrRevertIsRejected() public {
+        address[2] memory rejecting = [address(new WrongMagicSignatureOwner()), address(new RevertingSignatureOwner())];
+        for (uint256 i; i < rejecting.length; ++i) {
+            AtomicPackageExecutor.Execution memory entry = _execution(ENTRY, 5, 9, 4);
+            entry.trader = rejecting[i];
+            (bytes memory traderSignature, bytes memory solverSignature) = _sign(entry);
+            vm.expectRevert(AtomicPackageExecutor.InvalidTraderSignature.selector);
+            executor.execute(entry, traderSignature, solverSignature);
+        }
     }
 
     function testFieldAndAccountSubstitutionReverts() public {

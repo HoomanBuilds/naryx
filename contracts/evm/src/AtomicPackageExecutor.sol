@@ -5,11 +5,11 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
-import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {LocalCashCarryVenue} from "./LocalCashCarryVenue.sol";
+import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -237,7 +237,7 @@ contract AtomicPackageExecutor is EIP712, ReentrancyGuard {
         if (execution.action == ENTRY && config.entryPaused()) revert EntryPaused();
 
         bytes32 traderDigest = _hashTypedDataV4(_executionHash(TRADER_PERMIT_TYPEHASH, execution));
-        if (!SignatureChecker.isValidSignatureNow(execution.trader, traderDigest, traderSignature)) {
+        if (!OwnerSignature.isValidNow(execution.trader, traderDigest, traderSignature)) {
             revert InvalidTraderSignature();
         }
     }

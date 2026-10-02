@@ -16,6 +16,12 @@ import {GmxV2IsolatedAccountFactory} from "../src/GmxV2IsolatedAccountFactory.so
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
 import {GmxV2, IGmxV2ExchangeRouter, IGmxV2OrderCallbackReceiver} from "../src/interfaces/IGmxV2.sol";
+import {
+    Eip7702Delegate,
+    Erc1271SignerOwner,
+    RevertingSignatureOwner,
+    WrongMagicSignatureOwner
+} from "./OwnerSignature.t.sol";
 
 contract GmxTestToken is ERC20 {
     constructor() ERC20("Collateral", "COL") {}
@@ -1386,6 +1392,37 @@ contract GmxV2ExitControllerTest is GmxV2FactoryRoute {
         assertEq(exitController.finalPackageReceipt(exitRequestKey).commitment, bytes32(0));
     }
 
+    function testDelegatedEoaOwnerSubmitsFullCloseWithItsOwnSignature() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes memory signature = _sign(authorization);
+        vm.signAndAttachDelegation(address(new Eip7702Delegate()), OWNER_KEY);
+        vm.prank(feePayer);
+        bytes32 exitRequestKey = exitController.submitFullClose{value: EXECUTION_FEE}(authorization, signature);
+        assertGt(owner.code.length, 0);
+        assertNotEq(exitRequestKey, bytes32(0));
+        assertEq(exitController.nextNonce(address(account)), 1);
+    }
+
+    /// The factory recorded `owner` before it had code; etching stands in for a contract owner at that address.
+    function testOwnerSignatureRejectsWrongSignerWrongMagicAndRevertThenFollowsErc1271() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        uint256 walletSignerKey = 0x1271;
+        bytes memory walletSignature = _signWith(walletSignerKey, authorization);
+        address[3] memory owners =
+            [address(0), address(new WrongMagicSignatureOwner()), address(new RevertingSignatureOwner())];
+        for (uint256 i; i < owners.length; ++i) {
+            if (owners[i] != address(0)) vm.etch(owner, owners[i].code);
+            vm.prank(feePayer);
+            vm.expectRevert(GmxV2ExitController.InvalidSignature.selector);
+            exitController.submitFullClose{value: EXECUTION_FEE}(authorization, walletSignature);
+        }
+
+        vm.etch(owner, address(new Erc1271SignerOwner(vm.addr(walletSignerKey))).code);
+        vm.prank(feePayer);
+        exitController.submitFullClose{value: EXECUTION_FEE}(authorization, walletSignature);
+        assertEq(exitController.nextNonce(address(account)), 1);
+    }
+
     function _submit(GmxV2ExitController.ExitAuthorization memory authorization) private returns (bytes32 requestKey) {
         bytes memory signature = _sign(authorization);
         vm.prank(feePayer);
@@ -1394,8 +1431,16 @@ contract GmxV2ExitControllerTest is GmxV2FactoryRoute {
     }
 
     function _sign(GmxV2ExitController.ExitAuthorization memory authorization) private view returns (bytes memory) {
+        return _signWith(OWNER_KEY, authorization);
+    }
+
+    function _signWith(uint256 key, GmxV2ExitController.ExitAuthorization memory authorization)
+        private
+        view
+        returns (bytes memory)
+    {
         bytes32 digest = exitController.exitDigest(authorization);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_KEY, digest);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         return abi.encodePacked(r, s, v);
     }
 
