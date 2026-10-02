@@ -1,6 +1,6 @@
 import type { EvmAtomicAuthorizationBounds } from "@naryx/adapter-evm";
 import type { Hex } from "viem";
-import type { EvmTestnetSolverAuthorizer } from "./evm-testnet-runtime-ports.js";
+import { EvmTestnetTerminalValidationError, type EvmTestnetSolverAuthorizer } from "./evm-testnet-runtime-ports.js";
 
 export const BASE_SEPOLIA_SOLVER_AUTHORIZATION_PATH = "/internal/base-sepolia/solver-authorizations";
 
@@ -65,6 +65,14 @@ export function createHttpBaseSepoliaSolverAuthorizer(
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
+    if (response.status === 409) {
+      // The solver re-admitted the attempt at chain time and declined; its reason says what to redo.
+      const body = await response.json().catch(() => undefined) as { error?: { message?: unknown } } | undefined;
+      const reason = typeof body?.error?.message === "string" && body.error.message.length <= 200
+        ? body.error.message
+        : "no reason given";
+      throw new EvmTestnetTerminalValidationError("SOLVER_DECLINED", `The solver declined to co-sign the package: ${reason}.`);
+    }
     if (!response.ok) throw new Error(`Base Sepolia solver refused authorization with HTTP ${response.status}.`);
     const body = await response.json() as Record<string, unknown>;
     if (body?.version !== 1 || body.attemptId !== attemptId
