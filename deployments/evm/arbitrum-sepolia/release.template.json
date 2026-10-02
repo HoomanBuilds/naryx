@@ -186,6 +186,8 @@
           "accountFactory": { "$contract": "accountFactory" },
           "accountImplementation": { "$contract": "accountImplementation" },
           "entryAdapter": { "$contract": "adapter" },
+          "exitController": { "$contract": "exitController" },
+          "spotPort": { "$contract": "spotPort" },
           "orderVerifier": { "$contract": "orderVerifier" },
           "market": { "$contract": "market" },
           "collateralToken": { "$contract": "collateralToken" },
@@ -349,7 +351,9 @@
         "maxExecutionFeeWei": { "$bigint": { "$operator": "max GMX execution fee, wei" } },
         "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms" } },
         "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms" } },
-        "receiptWaitMs": { "$number": { "$operator": "receipt wait, ms, 1 to 20000" } }
+        "receiptWaitMs": { "$number": { "$operator": "receipt wait, ms, 1 to 20000" } },
+        "exitController": { "$contract": "exitController" },
+        "exitCallbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit for a full close, whose callback also sells the spot leg and releases the package" } }
       }
     },
     "api/testnet-execution-policy.json": {

@@ -275,8 +275,15 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
 }
 let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
 let arbitrumRuntimeError: unknown;
+// The executor client exists before the observation runtime, which reads the solver's exit authorizations.
+let arbitrumExecutor: HttpArbitrumSepoliaAttemptExecutor | undefined;
 if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
   try {
+    if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED")) {
+      arbitrumExecutor = new HttpArbitrumSepoliaAttemptExecutor({
+        executorOrigin: process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN ?? "",
+      });
+    }
     const arbitrumManifestPath = absolutePath(
       process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
       "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
@@ -287,8 +294,10 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
       intents: executionIntentStore,
       orders: orderStore,
       client: createViemArbitrumSepoliaReadClient(arbitrumRpcUrl),
+      ...(arbitrumExecutor === undefined ? {} : { exitAuthorizations: arbitrumExecutor }),
     });
   } catch (error) {
+    arbitrumExecutor = undefined;
     arbitrumRuntimeError = error;
     reportRuntimeFailure("arbitrumTestnetAsync", error);
   }
@@ -326,11 +335,8 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
   }
 }
 let arbitrumOwnerRoutes: ReturnType<typeof createArbitrumSepoliaOwnerRoutes> | undefined;
-if (arbitrumRuntime !== undefined && explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED")) {
+if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
   try {
-    const arbitrumExecutor = new HttpArbitrumSepoliaAttemptExecutor({
-      executorOrigin: process.env.NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN ?? "",
-    });
     arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, arbitrumExecutor);
     arbitrumOwnerRoutes = createArbitrumSepoliaOwnerRoutes({
       terminalOrigin: config.terminalOrigin,
@@ -342,6 +348,7 @@ if (arbitrumRuntime !== undefined && explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_E
       port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
       intents: executionIntentStore,
       orders: orderStore,
+      ...(arbitrumOrderRuntime === undefined ? {} : { exit: { runtime: arbitrumOrderRuntime, orders: orderStore } }),
     });
   } catch (error) {
     arbitrumOwnerRoutes = undefined;

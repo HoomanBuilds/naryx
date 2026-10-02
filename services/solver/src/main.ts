@@ -26,6 +26,7 @@ import {
   createViemArbitrumSepoliaWritePort,
   loadArbitrumSepoliaExecutorConfig,
   loadArbitrumSepoliaKey,
+  loadArbitrumSepoliaExitQuotes,
   loadArbitrumSepoliaQuoteRuntime,
   requireArbitrumSepoliaChain,
   loadHyperliquidTestnetAgentSigner,
@@ -162,12 +163,20 @@ const solanaDevnetSolver = await loadSolanaDevnetSolverRuntime(process.env, {
   reservedPorts: [listenPort],
 });
 await solanaDevnetSolver?.listen(host);
-// Hyperliquid and Base Sepolia exits are quoted by their runtimes; every other order reaches the
-// entry coordinator.
+// Hyperliquid, Base Sepolia, and Arbitrum Sepolia exits are quoted by their runtimes; every other order
+// reaches the entry coordinator.
 const hyperliquidQuotePort = hyperliquidQuoteRuntime === undefined ? coordinator : createHyperliquidTestnetExitQuotePort({
   exit: hyperliquidQuoteRuntime.exit, orders: orderProvider.get, signer: executionSigner, store,
 }, coordinator);
-const quotePort = baseSolver?.wrapExit(hyperliquidQuotePort, { orders: orderProvider.get, signer: executionSigner, store }) ?? hyperliquidQuotePort;
+const baseQuotePort = baseSolver?.wrapExit(hyperliquidQuotePort, { orders: orderProvider.get, signer: executionSigner, store }) ?? hyperliquidQuotePort;
+// Arbitrum Sepolia EXIT orders are quoted from the owner's open package on chain.
+const arbitrumExitQuotes = loadArbitrumSepoliaExitQuotes(process.env, {
+  nonceSource: new SqliteAtomicQuoteNonceSource(store, 'eip155:421614'),
+  orders: orderProvider.get,
+  signer: executionSigner,
+  store,
+});
+const quotePort = arbitrumExitQuotes?.wrap(baseQuotePort) ?? baseQuotePort;
 const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(quotePort) ?? quotePort, authorization);
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,

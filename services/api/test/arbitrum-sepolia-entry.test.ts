@@ -273,7 +273,12 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
     terminalOrigin: "http://localhost:3000",
     deployment: configuration,
     executor: new HttpArbitrumSepoliaAttemptExecutor({ executorOrigin: "http://127.0.0.1:8793", fetchImplementation }),
-    port: { chainId: async () => 421_614n, codeHash: async () => arbitrumSepoliaAccountCodeHash(configuration) },
+    port: {
+      chainId: async () => 421_614n,
+      codeHash: async () => arbitrumSepoliaAccountCodeHash(configuration),
+      latestBlockTimestamp: async () => 1n,
+      readContract: async () => `0x${"0".repeat(64)}`,
+    },
     intents: {
       getAttempt: () => ({ status: "ARBITRUM_ASYNC_QUOTE_SELECTED", domainId: "eip155:421614", orderHash: "1".repeat(64) }),
     } as never,

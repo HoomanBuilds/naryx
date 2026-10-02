@@ -1,4 +1,8 @@
 import { hashTypedData, type Address, type Hex } from "viem";
+import {
+  validateArbitrumSepoliaExitAuthorization,
+  type ArbitrumSepoliaExitAuthorization,
+} from "./arbitrum-sepolia-exit.js";
 import type {
   EvmTestnetAsyncObservationPort,
   EvmTestnetObserveAsyncRequest,
@@ -7,6 +11,8 @@ import type {
 const EXECUTOR_PATH = "/internal/solver/arbitrum-sepolia/execute";
 const PREPARE_PATH = "/internal/solver/arbitrum-sepolia/prepare";
 const AUTHORIZE_PATH = "/internal/solver/arbitrum-sepolia/authorize";
+const PREPARE_EXIT_PATH = "/internal/solver/arbitrum-sepolia/prepare-exit";
+const AUTHORIZE_EXIT_PATH = "/internal/solver/arbitrum-sepolia/authorize-exit";
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const DECIMAL = /^(0|[1-9][0-9]{0,77})$/;
 const CALLDATA = /^0x(?:[0-9a-f]{2}){4,4096}$/;
@@ -17,15 +23,19 @@ const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STATUSES = new Set([
   "AWAITING_OWNER_SIGNATURE", "AWAITING_OWNER_FUNDING", "IN_FLIGHT", "VENUE_PENDING", "SETTLED", "RECOVERY_REQUIRED",
-  "FAILED",
+  "FAILED", "CANCELLED",
 ]);
-const STEPS = new Set(["APPROVE_COORDINATOR", "RESERVE", "SUBMIT", "MARK_PENDING", "RELAY", "CLOSE"]);
+const STEPS = new Set([
+  "APPROVE_COORDINATOR", "RESERVE", "SUBMIT", "MARK_PENDING", "RELAY", "CLOSE",
+  "SUBMIT_EXIT", "RECONCILE_EXIT", "PROCESS_RECONCILIATION", "FINALIZE_EXIT",
+]);
 
 export type ArbitrumSepoliaExecutionSummary = Readonly<{
   attemptId: string;
+  /** CANCELLED: an exit's GMX close was cancelled or recovered, so the package stays open. */
   status:
     | "AWAITING_OWNER_SIGNATURE" | "AWAITING_OWNER_FUNDING"
-    | "IN_FLIGHT" | "VENUE_PENDING" | "SETTLED" | "RECOVERY_REQUIRED" | "FAILED";
+    | "IN_FLIGHT" | "VENUE_PENDING" | "SETTLED" | "RECOVERY_REQUIRED" | "FAILED" | "CANCELLED";
   packageId: string;
   coordinatorState: string;
   requestKey: string | null;
@@ -79,6 +89,12 @@ export type ArbitrumSepoliaOwnerAuthorization = Readonly<{
 export interface ArbitrumSepoliaOwnerAuthorizationExecutor {
   prepare(attemptId: string): Promise<ArbitrumSepoliaOwnerAuthorization>;
   authorize(attemptId: string, ownerSignature: string): Promise<ArbitrumSepoliaOwnerAuthorization>;
+}
+
+/** Prepares and records the owner's own exit authorization signature; the service never holds the owner key. */
+export interface ArbitrumSepoliaExitAuthorizationExecutor {
+  prepareExit(attemptId: string): Promise<ArbitrumSepoliaExitAuthorization>;
+  authorizeExit(attemptId: string, ownerSignature: string): Promise<ArbitrumSepoliaExitAuthorization>;
 }
 
 export class ArbitrumSepoliaHandoffError extends Error {
@@ -192,8 +208,16 @@ export function validateArbitrumSepoliaOwnerAuthorization(
   return Object.freeze(record) as unknown as ArbitrumSepoliaOwnerAuthorization;
 }
 
+function exitAuthorization(value: unknown, attemptId: string): ArbitrumSepoliaExitAuthorization {
+  try {
+    return validateArbitrumSepoliaExitAuthorization(value, attemptId);
+  } catch {
+    invalidAuthorization();
+  }
+}
+
 export class HttpArbitrumSepoliaAttemptExecutor
-implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExecutor {
+implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExecutor, ArbitrumSepoliaExitAuthorizationExecutor {
   readonly #origin: string;
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
@@ -246,6 +270,24 @@ implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExec
     }
     const authorization = validateArbitrumSepoliaOwnerAuthorization(
       await this.#post(AUTHORIZE_PATH, { attemptId, ownerSignature }),
+      attemptId,
+    );
+    if (!authorization.signed) invalidAuthorization();
+    return authorization;
+  }
+
+  async prepareExit(attemptId: string): Promise<ArbitrumSepoliaExitAuthorization> {
+    if (!ATTEMPT_ID.test(attemptId)) throw new ArbitrumSepoliaHandoffError("INVALID_ATTEMPT", "Attempt ID is invalid.");
+    return exitAuthorization(await this.#post(PREPARE_EXIT_PATH, { attemptId }), attemptId);
+  }
+
+  async authorizeExit(attemptId: string, ownerSignature: string): Promise<ArbitrumSepoliaExitAuthorization> {
+    if (!ATTEMPT_ID.test(attemptId)) throw new ArbitrumSepoliaHandoffError("INVALID_ATTEMPT", "Attempt ID is invalid.");
+    if (typeof ownerSignature !== "string" || !SIGNATURE.test(ownerSignature)) {
+      throw new ArbitrumSepoliaHandoffError("INVALID_SIGNATURE", "Owner signature must be a lowercase 65-byte hex string.");
+    }
+    const authorization = exitAuthorization(
+      await this.#post(AUTHORIZE_EXIT_PATH, { attemptId, ownerSignature }),
       attemptId,
     );
     if (!authorization.signed) invalidAuthorization();

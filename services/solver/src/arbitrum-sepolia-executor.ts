@@ -26,6 +26,7 @@ import {
 import {
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   encodeAbiParameters,
   encodeFunctionData,
   hashTypedData,
@@ -41,6 +42,13 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import { arbitrumSepolia } from 'viem/chains';
 import {
+  ARBITRUM_EXIT_CONTROLLER_ABI,
+  ARBITRUM_EXIT_VIEWS_ABI,
+  arbitrumExitTypedData,
+  readArbitrumSepoliaOpenPosition,
+  type ArbitrumExitAuthorization,
+} from './arbitrum-sepolia-exit.js';
+import {
   ARBITRUM_SEPOLIA_CHAIN_ID,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   GMX_DATA_STORE_KEYS,
@@ -48,6 +56,7 @@ import {
   arbitrumSepoliaAccountOf,
   ceilDiv,
   createViemArbitrumSepoliaReadPort,
+  gmxDecreaseExecutionFeeWei,
   gmxIncreaseExecutionFeeWei,
   readGmxExecutionFeeParameters,
   readGmxUint,
@@ -61,6 +70,8 @@ import {
 export const SOLVER_ARBITRUM_SEPOLIA_EXECUTE_PATH = '/internal/solver/arbitrum-sepolia/execute';
 export const SOLVER_ARBITRUM_SEPOLIA_PREPARE_PATH = '/internal/solver/arbitrum-sepolia/prepare';
 export const SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_PATH = '/internal/solver/arbitrum-sepolia/authorize';
+export const SOLVER_ARBITRUM_SEPOLIA_PREPARE_EXIT_PATH = '/internal/solver/arbitrum-sepolia/prepare-exit';
+export const SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_EXIT_PATH = '/internal/solver/arbitrum-sepolia/authorize-exit';
 export const API_ARBITRUM_SEPOLIA_ATTEMPT_PATH = '/internal/solver/attempts/';
 export const ARBITRUM_SEPOLIA_EXECUTOR_CONFIG_VERSION = 1;
 
@@ -71,7 +82,7 @@ const PRIVATE_KEY = /^0x[0-9a-f]{64}$/;
 const ZERO_HASH = `0x${'0'.repeat(64)}` as Hex;
 const BPS_SCALE = 10_000n;
 const GMX_USD_DECIMALS = 30;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const MAX_BODY_BYTES = 1_024;
 const MAX_RESPONSE_BYTES = 262_144;
@@ -124,6 +135,7 @@ export const ARBITRUM_ACCOUNT_FACTORY_ABI = parseAbi([
   'function implementation() view returns (address)',
   'function accountCodeHash() view returns (bytes32)',
   'function adapter() view returns (address)',
+  'function exitController() view returns (address)',
   'function create(address owner) returns (address)',
 ]);
 export const ERC20_ABI = parseAbi([
@@ -138,6 +150,8 @@ const STATE = Object.freeze({
 const STATE_NAMES = Object.freeze(Object.keys(STATE)) as readonly (keyof typeof STATE)[];
 // Adapter request outcomes that relayEvidence forwards to the coordinator.
 const RELAYABLE_REQUEST_STATUS = new Set([2, 3, 4, 5]);
+const EXIT_STATUS = Object.freeze({ NONE: 0, PENDING: 1, EXECUTED: 2, CANCELLED: 3, FROZEN: 4, RECOVERED: 5, CONFLICT: 6 });
+const EXIT_STATUS_NAMES = Object.freeze(Object.keys(EXIT_STATUS)) as readonly (keyof typeof EXIT_STATUS)[];
 
 export interface ArbitrumSepoliaExecutorConfig {
   readonly domain: DomainRef;
@@ -169,6 +183,10 @@ export interface ArbitrumSepoliaExecutorConfig {
   readonly maxCollateralAtoms: bigint;
   readonly maxSpotQuoteAtoms: bigint;
   readonly receiptWaitMs: number;
+  /** The factory-bound GmxV2ExitController. Exits fail closed without it. */
+  readonly exitController?: ArbitrumSepoliaContractIdentity;
+  /** GMX callback gas for a full close, whose callback also sells the spot leg and releases the package. */
+  readonly exitCallbackGasLimit?: bigint;
 }
 
 export interface ArbitrumSepoliaExecutionAttempt {
@@ -195,17 +213,21 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
   writeContract(request: ArbitrumSepoliaWriteRequest): Promise<Hex>;
   /** Waits up to waitMs; null means not yet mined. */
   receipt(hash: Hex, waitMs: number): Promise<'success' | 'reverted' | null>;
+  /** The logs of a mined transaction. */
+  receiptLogs(hash: Hex): Promise<readonly Readonly<{ address: Address; topics: readonly Hex[]; data: Hex }>[]>;
 }
 
 export type ArbitrumSepoliaExecutionStep =
-  | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE';
+  | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE'
+  | 'SUBMIT_EXIT' | 'RECONCILE_EXIT' | 'PROCESS_RECONCILIATION' | 'FINALIZE_EXIT';
 
 export interface ArbitrumSepoliaExecutionResult {
   readonly version: 1;
   readonly attemptId: string;
+  /** CANCELLED: an exit's GMX close was cancelled or recovered, so the package stays open. */
   readonly status:
     | 'AWAITING_OWNER_SIGNATURE' | 'AWAITING_OWNER_FUNDING'
-    | 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'RECOVERY_REQUIRED' | 'FAILED';
+    | 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'RECOVERY_REQUIRED' | 'FAILED' | 'CANCELLED';
   readonly packageId: Hex;
   readonly coordinatorState: string;
   readonly requestKey: Hex | null;
@@ -310,6 +332,8 @@ export function createViemArbitrumSepoliaWritePort(rpcUrl: string, account: Loca
         throw error;
       }
     },
+    receiptLogs: async (hash: Hex) => (await publicClient.getTransactionReceipt({ hash })).logs
+      .map((log) => ({ address: lower(log.address), topics: log.topics, data: log.data })),
   });
 }
 
@@ -395,6 +419,34 @@ export interface ArbitrumSepoliaOwnerAuthorizationRequest {
   }>;
 }
 
+/** The journaled full close: the owner's exit authorization and its EIP-712 digest. */
+export interface ArbitrumSepoliaExitPlan {
+  readonly attemptId: string;
+  readonly packageId: Hex;
+  readonly account: Address;
+  readonly authorization: ArbitrumExitAuthorization;
+  readonly digest: Hex;
+}
+
+/** What the owner's browser wallet signs to close its package. Integers are decimal strings. */
+export interface ArbitrumSepoliaExitAuthorizationRequest {
+  readonly version: 1;
+  readonly attemptId: string;
+  readonly packageId: Hex;
+  readonly chainId: number;
+  readonly owner: Address;
+  readonly account: Address;
+  readonly exitController: Address;
+  readonly typedData: Readonly<{
+    domain: Readonly<{ name: string; version: string; chainId: number; verifyingContract: Address }>;
+    types: Readonly<{ ExitAuthorization: readonly Readonly<{ name: string; type: string }>[] }>;
+    primaryType: 'ExitAuthorization';
+    message: Readonly<Record<string, string | boolean>>;
+  }>;
+  readonly digest: Hex;
+  readonly signed: boolean;
+}
+
 function tupleType(name: 'Terms' | 'VenueRequest') {
   const fn = ARBITRUM_ASYNC_COORDINATOR_ABI.find((item) => item.type === 'function'
     && item.name === (name === 'Terms' ? 'packageId' : 'submitRequest'));
@@ -468,9 +520,24 @@ function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
       config.maxExecutionFeeWei, config.maxCollateralAtoms, config.maxSpotQuoteAtoms]
       .some((value) => typeof value !== 'bigint' || value <= 0n)
     || config.maxAggregateLossAtoms > config.recoveryReserveAtoms
-    || config.maxTerminalResidualAtoms > config.maxIntermediateResidualAtoms) {
+    || config.maxTerminalResidualAtoms > config.maxIntermediateResidualAtoms
+    || (config.exitController === undefined) !== (config.exitCallbackGasLimit === undefined)
+    || (config.exitController !== undefined && (!ADDRESS.test(config.exitController.address)
+      || !HASH.test(config.exitController.expectedCodeHash) || config.exitController.expectedCodeHash === ZERO_HASH))
+    || (config.exitCallbackGasLimit !== undefined
+      && (typeof config.exitCallbackGasLimit !== 'bigint' || config.exitCallbackGasLimit <= 0n))) {
     throw new Error('Arbitrum Sepolia executor configuration is incomplete or invalid');
   }
+}
+
+type TransactionRecord = { txHash: Hex; status: 'SENT' | 'CONFIRMED' | 'REVERTED' };
+
+/** One durable send ledger: a recorded transaction is never resent. */
+interface TransactionLedger {
+  transaction(attemptId: string, step: ArbitrumSepoliaExecutionStep): TransactionRecord | undefined;
+  transactions(attemptId: string): { step: ArbitrumSepoliaExecutionStep; txHash: Hex; status: string }[];
+  recordSent(attemptId: string, step: ArbitrumSepoliaExecutionStep, txHash: Hex): void;
+  recordOutcome(attemptId: string, step: ArbitrumSepoliaExecutionStep, status: 'CONFIRMED' | 'REVERTED'): void;
 }
 
 /** The durable per-attempt journal. A recorded transaction is never resent. */
@@ -501,7 +568,25 @@ export class SqliteArbitrumSepoliaExecutionJournal {
         status TEXT NOT NULL CHECK (status IN ('SENT', 'CONFIRMED', 'REVERTED')),
         PRIMARY KEY (attempt_id, step)
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS arbitrum_exit_plans (
+        attempt_id TEXT PRIMARY KEY,
+        package_id TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        owner_signature TEXT,
+        request_key TEXT UNIQUE,
+        final_receipt TEXT,
+        failed_reason TEXT
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS arbitrum_exit_transactions (
+        attempt_id TEXT NOT NULL REFERENCES arbitrum_exit_plans(attempt_id),
+        step TEXT NOT NULL,
+        tx_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('SENT', 'CONFIRMED', 'REVERTED')),
+        PRIMARY KEY (attempt_id, step)
+      ) STRICT;
     `);
+    // Version 2 journals gain only the additive exit tables above.
+    this.#db.prepare('UPDATE arbitrum_executor_schema SET version = ? WHERE version = 2').run(SCHEMA_VERSION);
     const version = this.#db.prepare('SELECT version FROM arbitrum_executor_schema').pluck().get();
     if (version !== SCHEMA_VERSION) {
       this.#db.close();
@@ -580,6 +665,94 @@ export class SqliteArbitrumSepoliaExecutionJournal {
     `).run(status, attemptId, step);
   }
 
+  exitPlan(attemptId: string): ArbitrumSepoliaExitPlan | undefined {
+    const row = this.#db.prepare('SELECT plan_json FROM arbitrum_exit_plans WHERE attempt_id = ?')
+      .get(attemptId) as { plan_json: string } | undefined;
+    return row === undefined
+      ? undefined
+      : parseProtocolJson(row.plan_json, 'arbitrumExitPlan') as unknown as ArbitrumSepoliaExitPlan;
+  }
+
+  saveExitPlan(plan: ArbitrumSepoliaExitPlan): ArbitrumSepoliaExitPlan {
+    this.#db.prepare(`
+      INSERT INTO arbitrum_exit_plans (attempt_id, package_id, plan_json) VALUES (?, ?, ?)
+      ON CONFLICT(attempt_id) DO NOTHING
+    `).run(plan.attemptId, plan.packageId, stringifyProtocolJson(plan as never, 'arbitrumExitPlan'));
+    const stored = this.exitPlan(plan.attemptId);
+    if (stored === undefined || stored.packageId !== plan.packageId) {
+      fail('JOURNAL_CONFLICT', 'a different exit plan is already journaled for the attempt');
+    }
+    return stored;
+  }
+
+  #exitColumn(attemptId: string, column: 'owner_signature' | 'request_key' | 'final_receipt' | 'failed_reason') {
+    const row = this.#db.prepare(`SELECT ${column} AS value FROM arbitrum_exit_plans WHERE attempt_id = ?`)
+      .get(attemptId) as { value: string | null } | undefined;
+    return row?.value ?? undefined;
+  }
+
+  /** Sets a write-once exit column; a different value for the same attempt is refused. */
+  #setExitColumn(attemptId: string, column: 'owner_signature' | 'request_key' | 'final_receipt', value: string): void {
+    this.#db.prepare(`UPDATE arbitrum_exit_plans SET ${column} = ? WHERE attempt_id = ? AND ${column} IS NULL`)
+      .run(value, attemptId);
+    if (this.#exitColumn(attemptId, column) !== value) {
+      fail('JOURNAL_CONFLICT', `a different exit ${column.replace('_', ' ')} is already journaled for the attempt`);
+    }
+  }
+
+  exitOwnerSignature(attemptId: string): Hex | undefined {
+    return this.#exitColumn(attemptId, 'owner_signature') as Hex | undefined;
+  }
+
+  saveExitOwnerSignature(attemptId: string, signature: Hex): void {
+    this.#setExitColumn(attemptId, 'owner_signature', signature);
+  }
+
+  exitRequestKey(attemptId: string): Hex | undefined {
+    return this.#exitColumn(attemptId, 'request_key') as Hex | undefined;
+  }
+
+  saveExitRequestKey(attemptId: string, requestKey: Hex): void {
+    this.#setExitColumn(attemptId, 'request_key', requestKey);
+  }
+
+  /** The final package receipt commitment the exit controller recorded. */
+  exitFinalReceipt(attemptId: string): Hex | undefined {
+    return this.#exitColumn(attemptId, 'final_receipt') as Hex | undefined;
+  }
+
+  saveExitFinalReceipt(attemptId: string, commitment: Hex): void {
+    this.#setExitColumn(attemptId, 'final_receipt', commitment);
+  }
+
+  exitFailed(attemptId: string): string | undefined {
+    return this.#exitColumn(attemptId, 'failed_reason');
+  }
+
+  markExitFailed(attemptId: string, reason: string): void {
+    this.#db.prepare('UPDATE arbitrum_exit_plans SET failed_reason = ? WHERE attempt_id = ? AND failed_reason IS NULL')
+      .run(reason, attemptId);
+  }
+
+  readonly exitLedger: TransactionLedger = Object.freeze({
+    transaction: (attemptId: string, step: ArbitrumSepoliaExecutionStep) => this.#db.prepare(
+      'SELECT tx_hash AS txHash, status FROM arbitrum_exit_transactions WHERE attempt_id = ? AND step = ?',
+    ).get(attemptId, step) as TransactionRecord | undefined,
+    transactions: (attemptId: string) => this.#db.prepare(`
+      SELECT step, tx_hash AS txHash, status FROM arbitrum_exit_transactions WHERE attempt_id = ? ORDER BY rowid
+    `).all(attemptId) as { step: ArbitrumSepoliaExecutionStep; txHash: Hex; status: string }[],
+    recordSent: (attemptId: string, step: ArbitrumSepoliaExecutionStep, txHash: Hex) => {
+      this.#db.prepare(`
+        INSERT INTO arbitrum_exit_transactions (attempt_id, step, tx_hash, status) VALUES (?, ?, ?, 'SENT')
+      `).run(attemptId, step, txHash);
+    },
+    recordOutcome: (attemptId: string, step: ArbitrumSepoliaExecutionStep, status: 'CONFIRMED' | 'REVERTED') => {
+      this.#db.prepare(`
+        UPDATE arbitrum_exit_transactions SET status = ? WHERE attempt_id = ? AND step = ? AND status = 'SENT'
+      `).run(status, attemptId, step);
+    },
+  });
+
   close(): void {
     this.#db.close();
   }
@@ -608,7 +781,46 @@ export class ArbitrumSepoliaExecutor {
   }
 
   advance(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
-    return this.#enqueue(attemptId, () => this.#advance(attemptId));
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      const route = await this.#route(attemptId);
+      return route.exit ? this.#advanceExit(attemptId, route.attempt) : this.#advance(attemptId, route.attempt);
+    });
+  }
+
+  /** Builds and journals the unsigned full close, then returns what the owner's wallet must sign. */
+  prepareExit(attemptId: string): Promise<ArbitrumSepoliaExitAuthorizationRequest> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      const plan = await this.#journaledExitPlan(attemptId);
+      if (this.#options.journal.exitFailed(attemptId) !== undefined) fail('ATTEMPT_FAILED', 'attempt already failed closed');
+      return this.#exitAuthorizationRequest(plan);
+    });
+  }
+
+  /** Journals the owner's EIP-712 exit signature after recovering it to the package owner. Nothing is sent. */
+  authorizeExit(attemptId: string, ownerSignature: string): Promise<ArbitrumSepoliaExitAuthorizationRequest> {
+    return this.#enqueue(attemptId, async () => {
+      if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
+      }
+      const { journal } = this.#options;
+      const plan = journal.exitPlan(attemptId);
+      if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared exit authorization');
+      if (journal.exitFailed(attemptId) !== undefined) fail('ATTEMPT_FAILED', 'attempt already failed closed');
+      let signer: Address;
+      try {
+        signer = lower(await recoverTypedDataAddress({
+          ...arbitrumExitTypedData(plan.authorization, this.#exitController()),
+          signature: ownerSignature as Hex,
+        } as never));
+      } catch {
+        fail('INVALID_SIGNATURE', 'owner signature is malformed');
+      }
+      if (signer !== lower(plan.authorization.owner)) fail('INVALID_SIGNATURE', 'signature was not made by the package owner');
+      journal.saveExitOwnerSignature(attemptId, ownerSignature as Hex);
+      return this.#exitAuthorizationRequest(plan);
+    });
   }
 
   /** Builds and journals the unsigned plan, then returns what the owner's wallet must sign and send. */
@@ -655,9 +867,24 @@ export class ArbitrumSepoliaExecutor {
     return next;
   }
 
-  async #journaledPlan(attemptId: string): Promise<ArbitrumSepoliaExecutionPlan> {
+  async #journaledPlan(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExecutionPlan> {
     const { journal } = this.#options;
-    return journal.plan(attemptId) ?? journal.savePlan(await this.#plan(attemptId));
+    return journal.plan(attemptId) ?? journal.savePlan(await this.#plan(attemptId, resolved));
+  }
+
+  async #resolve(attemptId: string): Promise<ArbitrumSepoliaExecutionAttempt> {
+    const attempt = await this.#options.attempts.resolve(attemptId);
+    if (attempt === undefined || attempt.attemptId !== attemptId) fail('ATTEMPT_NOT_FOUND', 'selected attempt was not found');
+    return attempt;
+  }
+
+  /** A journaled plan decides an attempt's kind; otherwise its selected order's action does. */
+  async #route(attemptId: string): Promise<{ exit: boolean; attempt?: ArbitrumSepoliaExecutionAttempt }> {
+    const { journal } = this.#options;
+    if (journal.exitPlan(attemptId) !== undefined) return { exit: true };
+    if (journal.plan(attemptId) !== undefined) return { exit: false };
+    const attempt = await this.#resolve(attemptId);
+    return { exit: attempt.order.action === 'EXIT', attempt };
   }
 
   #authorizationRequest(plan: ArbitrumSepoliaExecutionPlan): ArbitrumSepoliaOwnerAuthorizationRequest {
@@ -708,12 +935,12 @@ export class ArbitrumSepoliaExecutor {
     });
   }
 
-  async #advance(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
+  async #advance(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExecutionResult> {
     const { chain, journal } = this.#options;
     await this.#requireChain();
     const failure = journal.failed(attemptId);
     if (failure !== undefined) return this.#result(attemptId, journal.plan(attemptId)!, 'FAILED', undefined);
-    const plan = await this.#journaledPlan(attemptId);
+    const plan = await this.#journaledPlan(attemptId, resolved);
     try {
       let state = await this.#state(plan);
       if (state.state === STATE.NONE) {
@@ -784,6 +1011,334 @@ export class ArbitrumSepoliaExecutor {
     }
   }
 
+  async #journaledExitPlan(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExitPlan> {
+    const { journal } = this.#options;
+    return journal.exitPlan(attemptId) ?? journal.saveExitPlan(await this.#exitPlan(attemptId, resolved));
+  }
+
+  #exitController(): Address {
+    const identity = this.#options.config.exitController;
+    if (identity === undefined) fail('EXIT_UNAVAILABLE', 'the Arbitrum Sepolia exit controller is not configured');
+    return lower(identity.address);
+  }
+
+  #exitAuthorizationRequest(plan: ArbitrumSepoliaExitPlan): ArbitrumSepoliaExitAuthorizationRequest {
+    const exitController = this.#exitController();
+    const typedData = arbitrumExitTypedData(plan.authorization, exitController);
+    const message = Object.fromEntries(Object.entries(plan.authorization).map(([name, value]) => [
+      name, typeof value === 'bigint' ? value.toString() : typeof value === 'boolean' ? value : String(value).toLowerCase(),
+    ]));
+    return Object.freeze({
+      version: 1,
+      attemptId: plan.attemptId,
+      packageId: plan.packageId,
+      chainId: Number(ARBITRUM_SEPOLIA_CHAIN_ID),
+      owner: lower(plan.authorization.owner),
+      account: plan.account,
+      exitController,
+      typedData: Object.freeze({ ...typedData, message: Object.freeze(message) }),
+      digest: plan.digest,
+      signed: this.#options.journal.exitOwnerSignature(plan.attemptId) !== undefined,
+    });
+  }
+
+  #exitResult(
+    plan: ArbitrumSepoliaExitPlan,
+    status: ArbitrumSepoliaExecutionResult['status'],
+    exitStatus: number | undefined,
+  ): ArbitrumSepoliaExecutionResult {
+    const requestKey = this.#options.journal.exitRequestKey(plan.attemptId);
+    return Object.freeze({
+      version: 1,
+      attemptId: plan.attemptId,
+      status,
+      packageId: plan.packageId,
+      coordinatorState: exitStatus === undefined ? 'EXIT_UNKNOWN' : `EXIT_${EXIT_STATUS_NAMES[exitStatus]!}`,
+      requestKey: requestKey ?? null,
+      transactions: Object.freeze(this.#options.journal.exitLedger.transactions(plan.attemptId)
+        .map((entry) => Object.freeze(entry))),
+    });
+  }
+
+  async #exitEvidence(requestKey: Hex) {
+    const record = await this.#read(this.#exitController(), ARBITRUM_EXIT_CONTROLLER_ABI, 'exitEvidence', [requestKey]) as readonly unknown[];
+    const status = Number(record[0]);
+    if (!Number.isSafeInteger(status) || status < 0 || status >= EXIT_STATUS_NAMES.length
+      || typeof record[3] !== 'boolean' || typeof record[4] !== 'boolean') {
+      fail('CHAIN_MISMATCH', 'exit evidence is invalid');
+    }
+    return Object.freeze({ status, reconciling: record[3], released: record[4] });
+  }
+
+  /**
+   * Live preconditions of `submitFullClose`, read just before the solver pays the GMX execution fee: the
+   * pinned code, the factory binding, the open package and its full short, no other active exit, the
+   * authorization nonce, and the controller's own digest of the journaled authorization.
+   */
+  async #requireExitSubmittable(plan: ArbitrumSepoliaExitPlan): Promise<string | undefined> {
+    const { config, chain } = this.#options;
+    const exitController = this.#exitController();
+    for (const [identity, name] of [
+      [config.exitController!, 'exit controller'], [config.adapter, 'adapter'], [config.accountFactory, 'account factory'],
+      [config.accountImplementation, 'account implementation'], [config.collateralToken, 'collateral token'],
+      [config.spotPort, 'spot port'], [config.gmxDataStore, 'GMX data store'],
+    ] as const) await requireArbitrumSepoliaCode(chain, identity, name);
+    const { authorization } = plan;
+    const [boundExit, activePackage, activeRequest, shortSize, longSize, activeExit, nonce, digest] = await Promise.all([
+      this.#read(lower(config.accountFactory.address), ARBITRUM_ACCOUNT_FACTORY_ABI, 'exitController'),
+      this.#read(lower(config.adapter.address), ARBITRUM_EXIT_VIEWS_ABI, 'activePackageOf', [plan.account]),
+      this.#read(lower(config.adapter.address), ARBITRUM_EXIT_VIEWS_ABI, 'activeRequestKeyOf', [plan.account]),
+      this.#read(plan.account, ARBITRUM_EXIT_VIEWS_ABI, 'positionSize', [false]),
+      this.#read(plan.account, ARBITRUM_EXIT_VIEWS_ABI, 'positionSize', [true]),
+      this.#read(exitController, ARBITRUM_EXIT_CONTROLLER_ABI, 'activeExitRequestKey', [plan.account]),
+      this.#read(exitController, ARBITRUM_EXIT_CONTROLLER_ABI, 'nextNonce', [plan.account]),
+      this.#read(exitController, ARBITRUM_EXIT_CONTROLLER_ABI, 'exitDigest', [authorization]),
+    ]);
+    if (!sameAddress(boundExit, exitController)) return 'the factory no longer binds the configured exit controller';
+    if (hashValue(activePackage, 'active package') !== plan.packageId
+      || hashValue(activeRequest, 'active request key') !== authorization.entryRequestKey) {
+      return 'the package is no longer open on the adapter';
+    }
+    if (shortSize !== authorization.fullCloseSizeUsd || longSize !== 0n) return 'the GMX position changed since the exit was prepared';
+    if (hashValue(activeExit, 'active exit') !== ZERO_HASH) return 'another exit for the account is already active';
+    if (nonce !== authorization.nonce) return 'the exit authorization nonce was already used';
+    if (hashValue(digest, 'exitDigest') !== plan.digest) return 'the exit controller digest no longer matches the authorization';
+    return undefined;
+  }
+
+  /** The exit request key the controller emitted in the confirmed submission for exactly this digest. */
+  async #submittedExitKey(plan: ArbitrumSepoliaExitPlan, txHash: Hex): Promise<Hex> {
+    const exitController = this.#exitController();
+    const keys: Hex[] = [];
+    for (const log of await this.#options.chain.receiptLogs(txHash)) {
+      if (!sameAddress(log.address, exitController)) continue;
+      try {
+        const event = decodeEventLog({ abi: ARBITRUM_EXIT_CONTROLLER_ABI, topics: log.topics as never, data: log.data });
+        const args = event.args as { packageId?: Hex; requestKey?: Hex; authorizationHash?: Hex };
+        if (event.eventName === 'ExitSubmitted' && hashValue(args.packageId, 'exit package') === plan.packageId
+          && hashValue(args.authorizationHash, 'exit authorization') === plan.digest) {
+          keys.push(hashValue(args.requestKey, 'exit request key'));
+        }
+      } catch {
+        continue;
+      }
+    }
+    if (keys.length !== 1 || keys[0] === ZERO_HASH) fail('CHAIN_MISMATCH', 'the submission did not emit exactly one matching exit');
+    return keys[0]!;
+  }
+
+  /**
+   * Submits the owner-signed full close once, paying the GMX execution fee, then drives the controller:
+   * GMX keepers execute or cancel the decrease, whose callback normally sells the spot leg and records
+   * the final receipt. An executed but unreleased exit is finalized once; a close still pending after
+   * `cancelAfter` is cancelled or reconciled once, and processed once more if it stays reconciling.
+   * Anything left after those single attempts is reported for recovery rather than retried.
+   */
+  async #advanceExit(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExecutionResult> {
+    const { chain, journal } = this.#options;
+    const ledger = journal.exitLedger;
+    const plan = await this.#journaledExitPlan(attemptId, resolved);
+    if (journal.exitFailed(attemptId) !== undefined) return this.#exitResult(plan, 'FAILED', undefined);
+    const exitController = this.#exitController();
+    const control = (step: ArbitrumSepoliaExecutionStep, functionName: string, requestKey: Hex) => this.#send(plan, step, {
+      address: exitController, abi: ARBITRUM_EXIT_CONTROLLER_ABI, functionName, args: [requestKey],
+    }, ledger);
+    try {
+      let requestKey = journal.exitRequestKey(attemptId);
+      if (requestKey === undefined) {
+        const signature = journal.exitOwnerSignature(attemptId);
+        if (signature === undefined) return this.#exitResult(plan, 'AWAITING_OWNER_SIGNATURE', undefined);
+        if (ledger.transaction(attemptId, 'SUBMIT_EXIT') === undefined) {
+          const reason = await chain.latestBlockTimestamp() >= plan.authorization.authorizationExpiry
+            ? 'the exit authorization expired before submission'
+            : await this.#requireExitSubmittable(plan);
+          if (reason !== undefined) {
+            journal.markExitFailed(attemptId, reason);
+            return this.#exitResult(plan, 'FAILED', undefined);
+          }
+        }
+        const txHash = await this.#send(plan, 'SUBMIT_EXIT', {
+          address: exitController, abi: ARBITRUM_EXIT_CONTROLLER_ABI, functionName: 'submitFullClose',
+          args: [plan.authorization, signature], value: plan.authorization.executionFeeWei,
+        }, ledger);
+        requestKey = await this.#submittedExitKey(plan, txHash);
+        journal.saveExitRequestKey(attemptId, requestKey);
+      }
+      let exit = await this.#exitEvidence(requestKey);
+      if (exit.status === EXIT_STATUS.EXECUTED && !exit.released) {
+        await control('FINALIZE_EXIT', 'finalizeExecutedExit', requestKey);
+        exit = await this.#exitEvidence(requestKey);
+      } else if (exit.status === EXIT_STATUS.PENDING || exit.status === EXIT_STATUS.FROZEN) {
+        if (!exit.reconciling && await chain.latestBlockTimestamp() >= plan.authorization.cancelAfter) {
+          await control('RECONCILE_EXIT', 'requestCancellationOrReconciliation', requestKey);
+          exit = await this.#exitEvidence(requestKey);
+        } else if (exit.reconciling && ledger.transaction(attemptId, 'PROCESS_RECONCILIATION') === undefined) {
+          await control('PROCESS_RECONCILIATION', 'processReconciliation', requestKey);
+          exit = await this.#exitEvidence(requestKey);
+        }
+      }
+      if (exit.status === EXIT_STATUS.EXECUTED && exit.released) {
+        const receipt = await this.#read(exitController, ARBITRUM_EXIT_CONTROLLER_ABI, 'finalPackageReceipt', [requestKey]) as Record<string, unknown>;
+        const commitment = hashValue(receipt.commitment, 'final receipt commitment');
+        if (commitment === ZERO_HASH || hashValue(receipt.exitRequestKey, 'final receipt exit') !== requestKey
+          || !sameAddress(receipt.recipient, plan.authorization.owner)) {
+          fail('CHAIN_MISMATCH', 'released exit carries no matching final package receipt');
+        }
+        journal.saveExitFinalReceipt(attemptId, commitment);
+        return this.#exitResult(plan, 'SETTLED', exit.status);
+      }
+      if (exit.status === EXIT_STATUS.CANCELLED || exit.status === EXIT_STATUS.RECOVERED) {
+        return this.#exitResult(plan, 'CANCELLED', exit.status);
+      }
+      const waiting = (exit.status === EXIT_STATUS.PENDING || exit.status === EXIT_STATUS.FROZEN)
+        && ledger.transaction(attemptId, 'PROCESS_RECONCILIATION') === undefined;
+      return this.#exitResult(plan, waiting ? 'VENUE_PENDING' : 'RECOVERY_REQUIRED', exit.status);
+    } catch (error) {
+      if (error instanceof InFlight) return this.#exitResult(plan, 'IN_FLIGHT', undefined);
+      if (error instanceof ArbitrumSepoliaExecutorError && error.code === 'TRANSACTION_REVERTED') {
+        // Only a reverted submission leaves no exit on GMX; any later revert leaves a live exit to recover.
+        if (journal.exitRequestKey(attemptId) === undefined) {
+          journal.markExitFailed(attemptId, error.message);
+          return this.#exitResult(plan, 'FAILED', undefined);
+        }
+        return this.#exitResult(plan, 'RECOVERY_REQUIRED', undefined);
+      }
+      throw error;
+    }
+  }
+
+  /** Derives the owner's full close from the selected EXIT attempt and the open package on chain. */
+  async #exitPlan(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExitPlan> {
+    const { config, chain } = this.#options;
+    const exitController = this.#exitController();
+    const callbackGasLimit = config.exitCallbackGasLimit;
+    if (callbackGasLimit === undefined) fail('EXIT_UNAVAILABLE', 'the exit callback gas limit is not configured');
+    const attempt = resolved ?? await this.#resolve(attemptId);
+    const { order, route } = attempt;
+    if (order.domain.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
+      || order.domain.domainManifestVersion !== config.domain.domainManifestVersion
+      || !bytesEqual(order.domain.domainManifestHash, config.domain.domainManifestHash)
+      || order.settlementClass !== 'ASYNC_BONDED_SOLVER' || order.action !== 'EXIT'
+      || route.executionPlanKind !== 'EVM_ASYNC_REQUEST' || route.recoveryPlan === undefined
+      || order.entryReceiptHash === undefined || order.minSpotQuoteOut === undefined
+      || order.minExitQuoteOutcome === undefined) {
+      fail('ATTEMPT_MISMATCH', 'attempt is not a reviewed Arbitrum Sepolia async exit');
+    }
+    const owner = lower(order.owner);
+    const solver = chain.account;
+    const factory = lower(config.accountFactory.address);
+    const implementation = lower(config.accountImplementation.address);
+    if (!ADDRESS.test(owner) || owner === solver) fail('ACCOUNT_MISMATCH', 'package owner must be a wallet other than the solver');
+    const account = arbitrumSepoliaAccountOf(factory, implementation, owner);
+    if (lower(route.settlementAccount) !== account || lower(order.settlementAccount) !== account) {
+      fail('ACCOUNT_MISMATCH', 'settlement account is not the owner factory account');
+    }
+    for (const [identity, name] of [
+      [config.exitController!, 'exit controller'], [config.adapter, 'adapter'], [config.accountFactory, 'account factory'],
+      [config.accountImplementation, 'account implementation'], [config.collateralToken, 'collateral token'],
+      [config.spotPort, 'spot port'], [config.gmxDataStore, 'GMX data store'],
+    ] as const) await requireArbitrumSepoliaCode(chain, identity, name);
+    const accountCodeHash = arbitrumSepoliaAccountCodeHash(implementation);
+    if ((await chain.codeHash(account))?.toLowerCase() !== accountCodeHash) {
+      fail('ACCOUNT_NOT_CREATED', 'the owner has no factory account');
+    }
+    const [recordedOwner, boundCodeHash, boundAdapter, boundExit, onchainOwner] = await Promise.all([
+      this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'ownerOf', [account]),
+      this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'accountCodeHash'),
+      this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'adapter'),
+      this.#read(factory, ARBITRUM_ACCOUNT_FACTORY_ABI, 'exitController'),
+      this.#read(account, ARBITRUM_ISOLATED_ACCOUNT_ABI, 'owner'),
+    ]);
+    if (!sameAddress(recordedOwner, owner) || hashValue(boundCodeHash, 'account code hash') !== accountCodeHash
+      || !sameAddress(boundAdapter, config.adapter.address) || !sameAddress(boundExit, exitController)
+      || !sameAddress(onchainOwner, owner)) {
+      fail('CHAIN_MISMATCH', 'factory account, owner, adapter, or exit controller binding does not match');
+    }
+    const dataStore = lower(config.gmxDataStore.address);
+    const position = await readArbitrumSepoliaOpenPosition(chain, {
+      factory, implementation, adapter: lower(config.adapter.address), exitController,
+      market: lower(config.gmxMarket), collateralToken: lower(config.collateralToken.address), dataStore,
+    }, owner);
+    const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - config.quoteAssetDecimals);
+    if (hex(order.entryReceiptHash) !== position.packageId || position.activeExitRequestKey !== ZERO_HASH
+      || order.expectedPrePositionEntryNotional.atoms * usdScale !== position.sizeInUsd
+      || order.expectedPrePositionSize.atoms !== -order.quantity.atoms
+      || position.spotRegistration.baseAtoms !== order.quantity.atoms
+      || position.spotRegistration.fundingOwner !== owner
+      || !sameAddress(position.spotRegistration.port, config.spotPort.address)) {
+      fail('CHAIN_MISMATCH', 'exit order does not match the open package on chain');
+    }
+
+    const now = await chain.latestBlockTimestamp();
+    const authorizationExpiry = route.routeExpiryValue;
+    const cancelAfter = route.recoveryPlan.maxActionExpiryValue;
+    const requestExpiration = await readGmxUint(chain, dataStore, GMX_DATA_STORE_KEYS.requestExpirationTime);
+    // Any submission before the authorization expires must still meet GMX's cancellation delay.
+    if (now >= authorizationExpiry || authorizationExpiry >= cancelAfter || cancelAfter < authorizationExpiry + requestExpiration) {
+      fail('DEADLINE', 'route deadlines no longer leave a valid GMX exit window');
+    }
+    const [feeParameters, decreaseOrderGasLimit, gasPrice] = await Promise.all([
+      readGmxExecutionFeeParameters(chain, dataStore),
+      readGmxUint(chain, dataStore, GMX_DATA_STORE_KEYS.decreaseOrderGasLimit),
+      chain.gasPrice(),
+    ]);
+    const executionFeeWei = gmxDecreaseExecutionFeeWei(
+      feeParameters, decreaseOrderGasLimit, callbackGasLimit, gasPrice, BigInt(config.executionFeeBufferBps),
+    );
+    requirePositive(executionFeeWei, config.maxExecutionFeeWei, 'execution fee');
+    const perpetual = route.legs.find((leg) => leg.legRole === 'PERPETUAL');
+    if (perpetual?.limitPrice === undefined || perpetual.side !== 'BUY' || !perpetual.reduceOnly) {
+      fail('ATTEMPT_MISMATCH', 'route is missing the perpetual close bound');
+    }
+    // A short close accepts any fill at or below this price, so the bound rounds down.
+    const acceptablePrice = (perpetual.limitPrice.quoteAtoms * usdScale) / perpetual.limitPrice.baseAtoms;
+    // GMX checks the decrease output in USD; the signed outcome less the signed spot floor, at par.
+    const minPerpOutputAtoms = order.minExitQuoteOutcome.atoms - order.minSpotQuoteOut.atoms;
+    if (acceptablePrice <= 0n || minPerpOutputAtoms <= 0n || order.minSpotQuoteOut.atoms <= 0n) {
+      fail('ATTEMPT_MISMATCH', 'exit price or output bounds are not positive');
+    }
+    const nonce = position.exitNonce;
+    const authorization: ArbitrumExitAuthorization = Object.freeze({
+      packageId: position.packageId,
+      entryRequestKey: position.entryRequestKey,
+      spotRegistrationHash: position.spotRegistrationHash,
+      account,
+      owner,
+      receiver: owner,
+      spotProceedsRecipient: owner,
+      feePayer: solver,
+      executionFeeRefundRecipient: solver,
+      market: lower(config.gmxMarket),
+      collateralToken: lower(config.collateralToken.address),
+      isLong: false,
+      fullCloseSizeUsd: position.sizeInUsd,
+      spotBaseAtoms: order.quantity.atoms,
+      spotMinQuoteAtoms: order.minSpotQuoteOut.atoms,
+      packageNonce: position.spotRegistration.packageNonce,
+      exitOrderHash: attempt.orderHash,
+      exitQuoteHash: attempt.quoteHash,
+      exitRouteHash: attempt.routeHash,
+      exitFillCommitment: encodeHash(
+        [{ type: 'string' }, { type: 'string' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' }, { type: 'uint256' }],
+        [FILL_COMMITMENT_DOMAIN, 'EXIT', attempt.orderHash, attempt.quoteHash, attempt.routeHash, nonce],
+      ),
+      acceptablePrice,
+      minOutputAmount: minPerpOutputAtoms * usdScale,
+      executionFeeWei,
+      callbackGasLimit,
+      authorizationExpiry,
+      cancelAfter,
+      nonce,
+    });
+    const digest = hashTypedData(arbitrumExitTypedData(authorization, exitController) as never);
+    // The controller's own view must agree with the locally derived digest before the owner signs it.
+    const onchain = await this.#read(exitController, ARBITRUM_EXIT_CONTROLLER_ABI, 'exitDigest', [authorization]);
+    if (hashValue(onchain, 'exitDigest') !== digest) {
+      fail('CHAIN_MISMATCH', 'exit controller digest does not match the locally derived authorization');
+    }
+    return Object.freeze({ attemptId, packageId: position.packageId, account, authorization, digest });
+  }
+
   #coordinator(): Address {
     return lower(this.#options.config.coordinator.address);
   }
@@ -822,22 +1377,28 @@ export class ArbitrumSepoliaExecutor {
     await this.#send(plan, step, { address: token, abi: ERC20_ABI, functionName: 'approve', args: [spender, atoms] });
   }
 
-  async #send(plan: ArbitrumSepoliaExecutionPlan, step: ArbitrumSepoliaExecutionStep, request: ArbitrumSepoliaWriteRequest) {
-    const { chain, journal, config } = this.#options;
-    let recorded = journal.transaction(plan.attemptId, step);
+  async #send(
+    plan: Pick<ArbitrumSepoliaExecutionPlan, 'attemptId'>,
+    step: ArbitrumSepoliaExecutionStep,
+    request: ArbitrumSepoliaWriteRequest,
+    ledger: TransactionLedger = this.#options.journal,
+  ): Promise<Hex> {
+    const { chain, config } = this.#options;
+    let recorded = ledger.transaction(plan.attemptId, step);
     if (recorded === undefined) {
       await this.#requireChain();
       const txHash = await chain.writeContract(request);
       if (!HASH.test(txHash)) fail('CHAIN_MISMATCH', 'RPC returned an invalid transaction hash');
-      journal.recordSent(plan.attemptId, step, txHash);
+      ledger.recordSent(plan.attemptId, step, txHash);
       recorded = { txHash, status: 'SENT' };
     }
-    if (recorded.status === 'CONFIRMED') return;
+    if (recorded.status === 'CONFIRMED') return recorded.txHash;
     if (recorded.status === 'REVERTED') fail('TRANSACTION_REVERTED', `${step} transaction reverted`);
     const outcome = await chain.receipt(recorded.txHash, config.receiptWaitMs);
     if (outcome === null) throw new InFlight();
-    journal.recordOutcome(plan.attemptId, step, outcome === 'success' ? 'CONFIRMED' : 'REVERTED');
+    ledger.recordOutcome(plan.attemptId, step, outcome === 'success' ? 'CONFIRMED' : 'REVERTED');
     if (outcome !== 'success') fail('TRANSACTION_REVERTED', `${step} transaction reverted`);
+    return recorded.txHash;
   }
 
   #result(
@@ -857,10 +1418,9 @@ export class ArbitrumSepoliaExecutor {
     });
   }
 
-  async #plan(attemptId: string): Promise<ArbitrumSepoliaExecutionPlan> {
+  async #plan(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExecutionPlan> {
     const { config, chain } = this.#options;
-    const attempt = await this.#options.attempts.resolve(attemptId);
-    if (attempt === undefined || attempt.attemptId !== attemptId) fail('ATTEMPT_NOT_FOUND', 'selected attempt was not found');
+    const attempt = resolved ?? await this.#resolve(attemptId);
     const { order, route, quote } = attempt;
     if (order.domain.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
       || order.domain.domainManifestVersion !== config.domain.domainManifestVersion
@@ -1145,7 +1705,7 @@ function requestBody(body: unknown, keys: string): Record<string, string> {
 }
 
 export function createArbitrumSepoliaExecutorServer(
-  executor: Pick<ArbitrumSepoliaExecutor, 'advance' | 'prepare' | 'authorize'>,
+  executor: Pick<ArbitrumSepoliaExecutor, 'advance' | 'prepare' | 'authorize' | 'prepareExit' | 'authorizeExit'>,
 ): Server {
   return createServer((request, response) => {
     void (async () => {
@@ -1156,7 +1716,9 @@ export function createArbitrumSepoliaExecutorServer(
       const route = request.method !== 'POST' ? undefined
         : request.url === SOLVER_ARBITRUM_SEPOLIA_EXECUTE_PATH ? 'execute'
           : request.url === SOLVER_ARBITRUM_SEPOLIA_PREPARE_PATH ? 'prepare'
-            : request.url === SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_PATH ? 'authorize' : undefined;
+            : request.url === SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_PATH ? 'authorize'
+              : request.url === SOLVER_ARBITRUM_SEPOLIA_PREPARE_EXIT_PATH ? 'prepare-exit'
+                : request.url === SOLVER_ARBITRUM_SEPOLIA_AUTHORIZE_EXIT_PATH ? 'authorize-exit' : undefined;
       if (route === undefined) {
         send(response, 404, { error: { code: 'NOT_FOUND', message: 'Unknown executor route.' } });
         return;
@@ -1167,6 +1729,11 @@ export function createArbitrumSepoliaExecutorServer(
           send(response, 200, await executor.advance(requestBody(body, 'attemptId').attemptId!));
         } else if (route === 'prepare') {
           send(response, 200, await executor.prepare(requestBody(body, 'attemptId').attemptId!), true);
+        } else if (route === 'prepare-exit') {
+          send(response, 200, await executor.prepareExit(requestBody(body, 'attemptId').attemptId!), true);
+        } else if (route === 'authorize-exit') {
+          const fields = requestBody(body, 'attemptId,ownerSignature');
+          send(response, 200, await executor.authorizeExit(fields.attemptId!, fields.ownerSignature!), true);
         } else {
           const fields = requestBody(body, 'attemptId,ownerSignature');
           send(response, 200, await executor.authorize(fields.attemptId!, fields.ownerSignature!), true);
@@ -1174,7 +1741,8 @@ export function createArbitrumSepoliaExecutorServer(
       } catch (error) {
         const code = error instanceof ArbitrumSepoliaExecutorError ? error.code : 'EXECUTION_FAILED';
         const status = code === 'INVALID_REQUEST' || code === 'INVALID_ATTEMPT' || code === 'INVALID_SIGNATURE' ? 400
-          : code === 'ATTEMPT_NOT_FOUND' || code === 'NOT_PREPARED' ? 404 : code === 'WRONG_CHAIN' ? 503 : 409;
+          : code === 'ATTEMPT_NOT_FOUND' || code === 'NOT_PREPARED' ? 404
+            : code === 'WRONG_CHAIN' || code === 'EXIT_UNAVAILABLE' ? 503 : 409;
         send(response, error instanceof ArbitrumSepoliaExecutorError ? status : 502, {
           error: { code, message: error instanceof ArbitrumSepoliaExecutorError ? error.message : 'Arbitrum execution failed closed.' },
         });

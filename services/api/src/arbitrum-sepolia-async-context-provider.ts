@@ -98,6 +98,10 @@ export interface ArbitrumSepoliaAsyncDeploymentConfiguration {
   /** The factory's account implementation; it fixes every account address and code hash. */
   readonly accountImplementation: EvmContractIdentity;
   readonly entryAdapter: EvmContractIdentity;
+  /** The factory-bound GmxV2ExitController. Without it exits are unavailable and fail closed. */
+  readonly exitController?: EvmContractIdentity;
+  /** The factory-bound UniswapV3SpotPort that buys and sells the spot leg. */
+  readonly spotPort?: EvmContractIdentity;
   readonly orderVerifier: EvmContractIdentity;
   readonly market: EvmContractIdentity;
   readonly collateralToken: EvmContractIdentity;
@@ -129,6 +133,8 @@ export interface ArbitrumSepoliaAsyncAttemptEvidence {
   readonly packageId: Hex;
   readonly entryRequestKey: Hex;
   readonly exitRequestKey?: Hex;
+  /** An EXIT attempt observes the entry package it closes, bound by that package's own hashes. */
+  readonly entryBinding?: Readonly<{ orderHash: Hex; quoteHash: Hex; routeHash: Hex }>;
   readonly minimumStateVersion?: number;
   readonly minimumEntryRevision?: number;
   readonly minimumExitRevision?: number;
@@ -206,6 +212,11 @@ export function validateArbitrumSepoliaAsyncDeploymentConfiguration(
     "protocolConfig", "coordinator", "accountFactory", "accountImplementation", "entryAdapter", "orderVerifier", "market",
     "collateralToken",
   ] as const) contract(configuration[field], field);
+  if ((configuration.exitController === undefined) !== (configuration.spotPort === undefined)) {
+    fail("INVALID_DEPLOYMENT", "The exit controller and spot port are configured together.");
+  }
+  if (configuration.exitController !== undefined) contract(configuration.exitController, "exitController");
+  if (configuration.spotPort !== undefined) contract(configuration.spotPort, "spotPort");
   for (const [name, expectedAddress] of Object.entries(ARBITRUM_SEPOLIA_GMX_DEPENDENCIES)) {
     const identity = configuration.gmx[name as keyof typeof configuration.gmx];
     contract(identity, `gmx.${name}`);
@@ -297,14 +308,19 @@ export function createArbitrumSepoliaAsyncContextProvider(
     if (typeof currentUnixSeconds !== "bigint" || currentUnixSeconds <= 0n) {
       fail("INVALID_CLOCK", "Current Arbitrum Sepolia Unix time must be positive.");
     }
+    const selectedRoute = fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput;
+    // Observation only binds identities and hashes, so it still admits the evidence after expiry.
+    const admissionTime = currentUnixSeconds >= selectedRoute.routeExpiryValue
+      ? selectedRoute.routeExpiryValue - 1n
+      : currentUnixSeconds;
     let admission;
     try {
       admission = validatePackageAdmission({
         ...configuration.admission,
         order,
-        route: fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput,
+        route: selectedRoute,
         quote: fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput,
-        currentTime: { unit: "EVM_UNIX_SECONDS", value: currentUnixSeconds },
+        currentTime: { unit: "EVM_UNIX_SECONDS", value: admissionTime },
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown admission error";
@@ -342,6 +358,14 @@ export function createArbitrumSepoliaAsyncContextProvider(
       fail("BOUNDS_EXCEEDED", "Selected Arbitrum package exceeds reviewed runtime bounds.");
     }
     const keys = checkedKeys(evidence, attemptId);
+    // An exit is observed on its entry package: the coordinator terms carry the entry's hashes, and the
+    // exit controller reports the close. The exit's own hashes are bound by the owner's authorization.
+    const exit = order.action === "EXIT";
+    const entryBinding = evidence.entryBinding;
+    if (exit !== (entryBinding !== undefined) || (exit && (configuration.exitController === undefined
+      || order.entryReceiptHash === undefined || toHex(order.entryReceiptHash) !== keys.packageId.slice(2)))) {
+      fail("ATTEMPT_EVIDENCE_MISMATCH", "Exit evidence is not bound to the order's entry package.");
+    }
     return Object.freeze({
       domainManifest: configuration.domainManifest,
       binding: Object.freeze({
@@ -349,10 +373,11 @@ export function createArbitrumSepoliaAsyncContextProvider(
         coordinator: requiredEvmAddress(configuration.coordinator.address, "coordinator"),
         entryAdapter: requiredEvmAddress(configuration.entryAdapter.address, "entryAdapter"),
         handler: requiredEvmAddress(configuration.entryAdapter.address, "handler"),
+        ...(exit ? { exitController: requiredEvmAddress(configuration.exitController!.address, "exitController") } : {}),
         owner: requiredEvmAddress(order.owner, "order.owner"),
-        orderHash: `0x${attempt.orderHash}` as Hex,
-        quoteHash: `0x${attempt.quoteHash}` as Hex,
-        routeHash: `0x${attempt.routeHash}` as Hex,
+        orderHash: entryBinding === undefined ? `0x${attempt.orderHash}` as Hex : hash32(entryBinding.orderHash, "entry orderHash"),
+        quoteHash: entryBinding === undefined ? `0x${attempt.quoteHash}` as Hex : hash32(entryBinding.quoteHash, "entry quoteHash"),
+        routeHash: entryBinding === undefined ? `0x${attempt.routeHash}` as Hex : hash32(entryBinding.routeHash, "entry routeHash"),
         domainIdHash: keccak256(stringToHex(ARBITRUM_SEPOLIA_DOMAIN_ID)),
         domainManifestVersion: attempt.domainManifestVersion,
         domainManifestHash: `0x${attempt.domainManifestHash}` as Hex,

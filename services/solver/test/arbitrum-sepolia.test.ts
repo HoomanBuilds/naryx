@@ -296,6 +296,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
       return `0x${writes.length.toString(16).padStart(64, '0')}` as Hex;
     },
     receipt: async () => 'success',
+    receiptLogs: async () => [],
   };
   // The owner's own wallet funds the request; the executor never sends that transaction.
   const ownerFunds = () => { state.fundedHash = journal().plan(ATTEMPT_ID)!.terms.requestPayloadHash; };

@@ -167,7 +167,7 @@ function reducedPrice(
   });
 }
 
-function validateConfiguration(input: ArbitrumSepoliaQuoteRuntimeInput): void {
+export function validateArbitrumSepoliaQuoteRuntimeInput(input: ArbitrumSepoliaQuoteRuntimeInput): void {
   try {
     if (input.domain.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
       || input.capacityBaseAtoms <= 0n
@@ -409,7 +409,7 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
 }
 
 export function createArbitrumSepoliaQuoteRuntime(input: ArbitrumSepoliaQuoteRuntimeInput): QuoteProviders {
-  validateConfiguration(input);
+  validateArbitrumSepoliaQuoteRuntimeInput(input);
   // Terms come from the same chain snapshot that produced the selected candidate.
   const prepared = new Map<string, Awaited<ReturnType<typeof build>>>();
   const key = (orderHash: Hash32) => Buffer.from(orderHash).toString('hex');
@@ -440,10 +440,8 @@ export function createArbitrumSepoliaQuoteRuntime(input: ArbitrumSepoliaQuoteRun
   return Object.freeze({ candidates, terms });
 }
 
-export function loadArbitrumSepoliaQuoteRuntime(
-  env: NodeJS.ProcessEnv,
-  dependencies: Readonly<{ nonceSource: AtomicQuoteNonceSource; chain?: ArbitrumSepoliaReadPort }>,
-): QuoteProviders | undefined {
+/** The reviewed quote configuration, or undefined while Arbitrum Sepolia quoting is disabled. */
+export function loadArbitrumSepoliaQuoteMarketConfig(env: NodeJS.ProcessEnv): ArbitrumSepoliaQuoteMarketConfig | undefined {
   const enabled = env[ARBITRUM_SEPOLIA_QUOTE_ENABLED_ENV];
   if (enabled === undefined || enabled === 'false') return undefined;
   if (enabled !== 'true') throw new Error(`${ARBITRUM_SEPOLIA_QUOTE_ENABLED_ENV} must be true or false`);
@@ -457,8 +455,17 @@ export function loadArbitrumSepoliaQuoteRuntime(
     || typeof (decoded as Record<string, unknown>).market !== 'object') {
     throw new Error(`Arbitrum Sepolia quote config must be version ${ARBITRUM_SEPOLIA_QUOTE_CONFIG_VERSION} with market`);
   }
+  return (decoded as Record<string, unknown>).market as ArbitrumSepoliaQuoteMarketConfig;
+}
+
+export function loadArbitrumSepoliaQuoteRuntime(
+  env: NodeJS.ProcessEnv,
+  dependencies: Readonly<{ nonceSource: AtomicQuoteNonceSource; chain?: ArbitrumSepoliaReadPort }>,
+): QuoteProviders | undefined {
+  const market = loadArbitrumSepoliaQuoteMarketConfig(env);
+  if (market === undefined) return undefined;
   return createArbitrumSepoliaQuoteRuntime({
-    ...((decoded as Record<string, unknown>).market as ArbitrumSepoliaQuoteMarketConfig),
+    ...market,
     chain: dependencies.chain ?? createViemArbitrumSepoliaReadPort(env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ''),
     nonceSource: dependencies.nonceSource,
   });

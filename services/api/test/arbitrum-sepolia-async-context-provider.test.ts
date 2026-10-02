@@ -162,6 +162,7 @@ function liveClient(
     transactionReceipt: async () => null,
     chainHead: async () => ({ latestBlock: 1n, finalizedBlock: 1n }),
     attemptEvidence: async () => undefined,
+    exitEvidence: async () => undefined,
     readContract: async (read) => {
       switch (read.functionName) {
         case "config": return deployment.protocolConfig.address;

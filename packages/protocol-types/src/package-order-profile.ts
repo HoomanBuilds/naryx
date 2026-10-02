@@ -288,15 +288,11 @@ function validateAtomicProfile(order: PackageOrder, context: string): void {
 }
 
 /**
- * Asynchronous bonded entry (Arbitrum GMX): the solver opens both legs under a performance bond on
- * the EVM clock. The trader signs no recovery terms; a solver fault is paid from the bond.
+ * Asynchronous bonded entry and full-close exit (Arbitrum GMX) on the EVM clock. Entry opens both
+ * legs under a solver performance bond; exit closes the whole short and then sells the exact spot
+ * inventory under the owner's own exit authorization. The trader signs no recovery terms.
  */
 function validateAsyncBondedProfile(order: PackageOrder, context: string): void {
-  requireCondition(
-    order.action === 'ENTRY',
-    `${context}.action`,
-    'asynchronous bonded profile supports entry only',
-  );
   requireCondition(
     order.expiryUnit === 'EVM_UNIX_SECONDS',
     `${context}.expiryUnit`,

@@ -557,7 +557,7 @@ export function createCanonicalExitOrder(
     maxRecoveryCostAtomsByAsset: [],
     permittedSpotAdapters: [...context.spotAdapters],
     permittedPerpAdapters: [...context.perpAdapters],
-    settlementClass: "ATOMIC_POSTCONDITION",
+    settlementClass: context.settlementClass === "ASYNC_BONDED_SOLVER" ? "ASYNC_BONDED_SOLVER" : "ATOMIC_POSTCONDITION",
     maxAggregateRecoveryLossQuote: { asset: context.quoteAsset, atoms: 0n },
     maxResidualBaseQuantity: { asset: context.baseAsset, atoms: 0n },
     allowedRecoveryActions: [],

@@ -25,6 +25,7 @@ function stringKey(name: string): Hex {
 export const GMX_DATA_STORE_KEYS = Object.freeze({
   positionFeeFactor: stringKey('POSITION_FEE_FACTOR'),
   increaseOrderGasLimit: stringKey('INCREASE_ORDER_GAS_LIMIT'),
+  decreaseOrderGasLimit: stringKey('DECREASE_ORDER_GAS_LIMIT'),
   estimatedGasFeeBaseAmount: stringKey('ESTIMATED_GAS_FEE_BASE_AMOUNT_V2_1'),
   estimatedGasFeePerOraclePrice: stringKey('ESTIMATED_GAS_FEE_PER_ORACLE_PRICE'),
   estimatedGasFeeMultiplierFactor: stringKey('ESTIMATED_GAS_FEE_MULTIPLIER_FACTOR'),
@@ -189,6 +190,32 @@ export function gmxIncreaseExecutionFeeWei(
     + GMX_ORDER_ORACLE_PRICE_COUNT * parameters.perOraclePrice
     + (estimated * parameters.multiplierFactor) / GMX_FLOAT_PRECISION;
   return ceilDiv(gasLimit * gasPriceWei * (BPS_SCALE + bufferBps), BPS_SCALE);
+}
+
+/** Mirrors GMX GasUtils for a swap-free MarketDecrease order, which estimates with its own order gas limit. */
+export function gmxDecreaseExecutionFeeWei(
+  parameters: GmxExecutionFeeParameters,
+  decreaseOrderGasLimit: bigint,
+  callbackGasLimit: bigint,
+  gasPriceWei: bigint,
+  bufferBps: bigint,
+): bigint {
+  if (decreaseOrderGasLimit <= 0n) throw new Error('GMX decrease order gas limit is unavailable');
+  return gmxIncreaseExecutionFeeWei(
+    { ...parameters, increaseOrderGasLimit: decreaseOrderGasLimit },
+    callbackGasLimit,
+    gasPriceWei,
+    bufferBps,
+  );
+}
+
+/** GMX `keccak256(abi.encode(keccak256(abi.encode(account, market, collateral, isLong)), FIELD))`. */
+export function gmxPositionFieldKey(account: Address, market: Address, collateral: Address, isLong: boolean, field: string): Hex {
+  const positionKey = keccak256(encodeAbiParameters(
+    [{ type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'bool' }],
+    [account, market, collateral, isLong],
+  ));
+  return keccak256(encodeAbiParameters([{ type: 'bytes32' }, { type: 'bytes32' }], [positionKey, stringKey(field)]));
 }
 
 export function ceilDiv(numerator: bigint, denominator: bigint): bigint {

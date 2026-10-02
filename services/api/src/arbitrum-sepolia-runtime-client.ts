@@ -31,6 +31,11 @@ import {
   type ArbitrumSepoliaAsyncAttemptEvidence,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
+import {
+  requireArbitrumSepoliaExitBinding,
+  validateArbitrumSepoliaExitAuthorization,
+  type ArbitrumSepoliaExitAuthorization,
+} from "./arbitrum-sepolia-exit.js";
 import { createEvmTestnetAsyncObservationPort, type EvmTestnetAsyncObservationPort } from "./evm-testnet-runtime-ports.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
@@ -41,6 +46,9 @@ const REQUEST_REGISTERED = parseAbiItem(
 );
 const PACKAGE_TRANSITION = parseAbiItem(
   "event PackageTransition(bytes32 indexed packageId, uint8 state, uint64 stateVersion, bytes32 evidenceHash)",
+);
+const EXIT_SUBMITTED = parseAbiItem(
+  "event ExitSubmitted(bytes32 indexed packageId, bytes32 indexed requestKey, bytes32 authorizationHash)",
 );
 const DEPLOYMENT_ABI = parseAbi([
   "function config() view returns (address)",
@@ -56,6 +64,11 @@ const DEPLOYMENT_ABI = parseAbi([
   "function adapterCodeHash() view returns (bytes32)",
   "function implementation() view returns (address)",
   "function accountCodeHash() view returns (bytes32)",
+  "function exitController() view returns (address)",
+  "function exitControllerCodeHash() view returns (bytes32)",
+  "function spotPort() view returns (address)",
+  "function spotPortCodeHash() view returns (bytes32)",
+  "function entryAdapter() view returns (address)",
 ]);
 
 export interface ArbitrumSepoliaRuntimeManifest {
@@ -78,12 +91,31 @@ export interface ArbitrumSepoliaAttemptBinding {
   readonly evidenceSchemaHash: Hex;
 }
 
+/** An EXIT attempt: its entry package and the owner-signed exit authorization digest. */
+export interface ArbitrumSepoliaExitBinding {
+  readonly attemptId: string;
+  readonly coordinator: Address;
+  readonly exitController: Address;
+  readonly owner: Address;
+  readonly packageId: Hex;
+  readonly authorizationDigest: Hex | undefined;
+}
+
 export interface ArbitrumSepoliaLiveReadClient extends EvmReadPort {
   codeHash(address: Address): Promise<Hex | undefined>;
   attemptEvidence(
     binding: ArbitrumSepoliaAttemptBinding,
     observationStartBlock: bigint,
   ): Promise<ArbitrumSepoliaAsyncAttemptEvidence | undefined>;
+  exitEvidence(
+    binding: ArbitrumSepoliaExitBinding,
+    observationStartBlock: bigint,
+  ): Promise<ArbitrumSepoliaAsyncAttemptEvidence | undefined>;
+}
+
+/** The solver's journaled exit authorization for an attempt; the observation verifies it. */
+export interface ArbitrumSepoliaExitAuthorizationSource {
+  prepareExit(attemptId: string): Promise<ArbitrumSepoliaExitAuthorization>;
 }
 
 export interface ArbitrumSepoliaRuntimeOptions {
@@ -92,6 +124,8 @@ export interface ArbitrumSepoliaRuntimeOptions {
   readonly orders: InternalOrderStore;
   readonly client: ArbitrumSepoliaLiveReadClient;
   readonly currentUnixSeconds?: () => bigint;
+  /** Without it EXIT attempts have no evidence and their observation fails closed. */
+  readonly exitAuthorizations?: ArbitrumSepoliaExitAuthorizationSource;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,6 +163,8 @@ function identities(configuration: ArbitrumSepoliaAsyncDeploymentConfiguration):
     configuration.orderVerifier,
     configuration.market,
     configuration.collateralToken,
+    ...(configuration.exitController === undefined ? [] : [configuration.exitController]),
+    ...(configuration.spotPort === undefined ? [] : [configuration.spotPort]),
     ...Object.values(configuration.gmx),
   ];
 }
@@ -219,6 +255,24 @@ async function validateLiveDeployment(
     || !equalHash(hashValue(accountCodeHash, "factory account code"), arbitrumSepoliaAccountCodeHash(configuration))) {
     throw new Error("Arbitrum Sepolia live deployment relationships do not match the runtime manifest.");
   }
+  if (configuration.exitController === undefined || configuration.spotPort === undefined) return;
+  const exitController = requiredEvmAddress(configuration.exitController.address, "exitController");
+  const [boundExit, boundExitHash, boundSpot, boundSpotHash, exitFactory, exitAdapter] = await Promise.all([
+    read(client, factory, "exitController"),
+    read(client, factory, "exitControllerCodeHash"),
+    read(client, factory, "spotPort"),
+    read(client, factory, "spotPortCodeHash"),
+    read(client, exitController, "factory"),
+    read(client, exitController, "entryAdapter"),
+  ]);
+  if (!equalAddress(addressValue(boundExit, "factory exit controller"), exitController)
+    || !equalHash(hashValue(boundExitHash, "factory exit controller code"), configuration.exitController.expectedCodeHash)
+    || !equalAddress(addressValue(boundSpot, "factory spot port"), requiredEvmAddress(configuration.spotPort.address, "spotPort"))
+    || !equalHash(hashValue(boundSpotHash, "factory spot port code"), configuration.spotPort.expectedCodeHash)
+    || !equalAddress(addressValue(exitFactory, "exit controller factory"), factory)
+    || !equalAddress(addressValue(exitAdapter, "exit controller adapter"), adapter)) {
+    throw new Error("Arbitrum Sepolia exit controller or spot port is not the factory's bound route.");
+  }
 }
 
 export async function createArbitrumSepoliaRuntime(
@@ -226,9 +280,42 @@ export async function createArbitrumSepoliaRuntime(
 ): Promise<EvmTestnetAsyncObservationPort> {
   const manifest = requireManifest(options.manifest);
   await validateLiveDeployment(options.client, manifest.deployment);
+  const exitEvidence = async (attemptId: string, attempt: { orderHash: string; quoteHash: string; routeHash: string }) => {
+    const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
+    const exitController = manifest.deployment.exitController;
+    if (order?.entryReceiptHash === undefined || exitController === undefined || options.exitAuthorizations === undefined) {
+      return undefined;
+    }
+    const packageId = `0x${Buffer.from(order.entryReceiptHash).toString("hex")}` as Hex;
+    // The solver's journaled authorization is trusted only after its digest, attempt hashes, and owner
+    // binding check out; the chain then names the request key that digest was submitted under.
+    const authorization = requireArbitrumSepoliaExitBinding(
+      validateArbitrumSepoliaExitAuthorization(await options.exitAuthorizations.prepareExit(attemptId), attemptId),
+      {
+        deployment: manifest.deployment,
+        owner: order.owner,
+        settlementAccount: order.settlementAccount,
+        packageId,
+        orderHash: `0x${attempt.orderHash}`,
+        quoteHash: `0x${attempt.quoteHash}`,
+        routeHash: `0x${attempt.routeHash}`,
+      },
+    );
+    return options.client.exitEvidence({
+      attemptId,
+      coordinator: requiredEvmAddress(manifest.deployment.coordinator.address, "coordinator"),
+      exitController: requiredEvmAddress(exitController.address, "exitController"),
+      owner: requiredEvmAddress(order.owner, "owner"),
+      packageId,
+      authorizationDigest: authorization.signed ? authorization.digest : undefined,
+    }, manifest.observationStartBlock);
+  };
   const evidence = async (attemptId: string) => {
     const attempt = options.intents.getAttempt(attemptId);
     if (attempt === undefined || attempt.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED") return undefined;
+    if (options.orders.getCanonicalOrderByHash(attempt.orderHash)?.action === "EXIT") {
+      return exitEvidence(attemptId, attempt);
+    }
     return options.client.attemptEvidence({
       attemptId,
       coordinator: requiredEvmAddress(manifest.deployment.coordinator.address, "coordinator"),
@@ -369,6 +456,50 @@ export function createViemArbitrumSepoliaReadClient(rpcUrl: string): ArbitrumSep
       }
       if (matches.length > 1) throw new Error("Arbitrum Sepolia attempt resolves to multiple coordinator packages.");
       return matches[0];
+    },
+    exitEvidence: async (
+      binding: ArbitrumSepoliaExitBinding,
+      observationStartBlock: bigint,
+    ): Promise<ArbitrumSepoliaAsyncAttemptEvidence | undefined> => {
+      const record = await client.readContract({
+        address: binding.coordinator,
+        abi: ASYNC_COORDINATOR_OBSERVATION_ABI,
+        functionName: "packageState",
+        args: [binding.packageId],
+      } as never) as Record<string, unknown>;
+      const terms = (record.terms ?? record[0]) as Record<string, unknown>;
+      const entryRequestKey = hashValue(record.requestKey ?? record[1], "package request key");
+      if (!equalAddress(addressValue(terms.owner ?? terms[1], "package owner"), binding.owner)
+        || entryRequestKey === ZERO_HASH) {
+        return undefined;
+      }
+      let exitRequestKey: Hex | undefined;
+      if (binding.authorizationDigest !== undefined) {
+        const logs = await client.getLogs({
+          address: binding.exitController,
+          event: EXIT_SUBMITTED,
+          args: { packageId: binding.packageId },
+          fromBlock: observationStartBlock,
+          toBlock: "latest",
+        });
+        const digest = binding.authorizationDigest;
+        const keys = logs
+          .filter((log) => typeof log.args.authorizationHash === "string" && equalHash(log.args.authorizationHash, digest))
+          .map((log) => hashValue(log.args.requestKey, "exit request key"));
+        if (keys.length > 1) throw new Error("Arbitrum Sepolia exit authorization was submitted more than once.");
+        exitRequestKey = keys[0];
+      }
+      return {
+        attemptId: binding.attemptId,
+        packageId: binding.packageId,
+        entryRequestKey,
+        ...(exitRequestKey === undefined ? {} : { exitRequestKey }),
+        entryBinding: {
+          orderHash: hashValue(terms.orderHash ?? terms[7], "package order hash"),
+          quoteHash: hashValue(terms.quoteHash ?? terms[8], "package quote hash"),
+          routeHash: hashValue(terms.routeHash ?? terms[9], "package route hash"),
+        },
+      };
     },
   });
 }

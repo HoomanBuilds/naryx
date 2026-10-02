@@ -78,6 +78,7 @@ export type ArbitrumSepoliaOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
   feed: ArbitrumSepoliaReferencePriceFeed;
+  config: ArbitrumSepoliaOrderContextConfig;
 }>;
 
 function positive(value: unknown, name: string): bigint {
@@ -278,7 +279,7 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       return port.latestBlockTimestamp();
     },
   });
-  return Object.freeze({ contexts, clock, feed });
+  return Object.freeze({ contexts, clock, feed, config });
 }
 
 export function createViemArbitrumSepoliaPriceReadPort(rpcUrl: string): ArbitrumSepoliaPriceReadPort {

@@ -443,7 +443,7 @@ describe('package order semantic profiles', () => {
     );
   });
 
-  test('accepts asynchronous bonded EVM entry and refuses its other shapes', () => {
+  test('accepts asynchronous bonded EVM entry and full-close exit and refuses their other shapes', () => {
     const asyncEntry = atomicInput({
       settlementClass: 'ASYNC_BONDED_SOLVER',
       expiryUnit: 'EVM_UNIX_SECONDS',
@@ -460,6 +460,23 @@ describe('package order semantic profiles', () => {
     );
     assert.throws(
       () => validatePackageOrderProfile({ ...asyncEntry, hyperliquidQuantityPolicy: 'EXACT_NET' }),
+      MalformedInputError,
+    );
+    const { maxEntrySpread: _spread, maxSpotQuoteIn: spotCap, ...common } = asyncEntry;
+    const asyncExit: PackageOrderInput = {
+      ...common,
+      action: 'EXIT',
+      exitOutcomeSchemaVersion: 1,
+      entryReceiptHash: DOMAIN_HASH,
+      expectedPrePositionSize: assetAmount(asyncEntry.quantity.asset, -asyncEntry.quantity.atoms),
+      expectedPrePositionEntryNotional: assetAmount(spotCap!.asset, 100_000_000n),
+      minExitQuoteOutcome: assetAmount(spotCap!.asset, 90_000_000n),
+      minSpotQuoteOut: assetAmount(spotCap!.asset, 80_000_000n),
+      maxMarginAdded: assetAmount(spotCap!.asset, 0n),
+    };
+    assert.equal(validatePackageOrderProfile(asyncExit).action, 'EXIT');
+    assert.throws(
+      () => validatePackageOrderProfile({ ...asyncExit, allowedRecoveryActions: ['CANCEL_OPEN_ORDERS'] }),
       MalformedInputError,
     );
   });
