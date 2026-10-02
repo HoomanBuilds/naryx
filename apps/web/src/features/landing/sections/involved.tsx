@@ -16,10 +16,10 @@ const LINKS = [
 /** The name in the glyph cipher: each letter is a figure, a ring over a glyph. */
 const FIGURES = [
   { letter: "N", glyph: 13 },
-  { letter: "A", glyph: 0 },
-  { letter: "R", glyph: 9 },
+  { letter: "A", glyph: 5 },
+  { letter: "R", glyph: 8 },
   { letter: "Y", glyph: 3 },
-  { letter: "X", glyph: 4 },
+  { letter: "X", glyph: 9 },
 ];
 
 /** The closing block: link cells, the glyph figures, and the tagline bar. */

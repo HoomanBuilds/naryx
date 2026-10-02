@@ -1,6 +1,6 @@
 .involved {
   padding: clamp(40px, 5vw, 80px) 0 clamp(40px, 5vw, 70px);
-  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  background: var(--dot-grid), var(--yellow);
   color: #000;
 }
 

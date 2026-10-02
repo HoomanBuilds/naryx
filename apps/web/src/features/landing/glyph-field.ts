@@ -1,9 +1,9 @@
 import { BLOCK, buildAtlas, GLYPHS } from "@/features/landing/glyphs";
 
 /**
- * The hero's canvas. A forest painting is re-drawn as a mosaic of
- * glyphs: one glyph per cell, its colour snapped to the Naryx palette
- * and its shape and size chosen by the painting's brightness. It reacts to the
+ * The hero's canvas. A painted scene (see hero-scene.ts) is re-drawn as a
+ * mosaic of glyphs: one glyph per cell, its colour snapped to the Naryx
+ * palette and its shape and size chosen by the scene's brightness. It reacts to the
  * pointer like the footer particles (pushed away, springing back), and
  * as the page scrolls its cells sort themselves into an order book's depth
  * chart: bids on the left, asks on the right, meeting at the midpoint.
@@ -20,7 +20,7 @@ const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, v
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 /** A small deterministic random, so the mosaic is the same on every visit. */
-function random(seed: number) {
+export function random(seed: number) {
   let s = seed >>> 0;
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -56,8 +56,8 @@ function paletteFor(r: number, g: number, b: number) {
 type Options = {
   canvas: HTMLCanvasElement;
   glyphs: HTMLImageElement[];
-  source: HTMLImageElement;
-  /** Horizontal focus of the painting when it is cropped to the canvas (0 to 1). */
+  source: HTMLCanvasElement;
+  /** Horizontal focus of the scene when it is cropped to the canvas (0 to 1). */
   focusX?: number;
 };
 
@@ -65,7 +65,7 @@ export class GlyphField {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private glyphs: HTMLImageElement[];
-  private source: HTMLImageElement;
+  private source: HTMLCanvasElement;
   private focusX: number;
 
   private dpr = 1;
@@ -153,12 +153,12 @@ export class GlyphField {
     this.flickerGlyph = new Uint8Array(count);
     this.flickerLeft = new Uint8Array(count);
 
-    // Sample the painting once, one pixel per cell, cropped to cover the canvas.
+    // Sample the scene once, one pixel per cell, cropped to cover the canvas.
     const sample = document.createElement("canvas");
     sample.width = columns;
     sample.height = rows;
     const sctx = sample.getContext("2d", { willReadFrequently: true })!;
-    const { naturalWidth: iw, naturalHeight: ih } = this.source;
+    const { width: iw, height: ih } = this.source;
     const scale = Math.max(columns / iw, rows / ih);
     const [dw, dh] = [iw * scale, ih * scale];
     sctx.drawImage(this.source, (columns - dw) * this.focusX, (rows - dh) / 2, dw, dh);

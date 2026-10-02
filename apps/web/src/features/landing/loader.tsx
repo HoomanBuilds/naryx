@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useExperience } from "@/features/landing/experience";
-import { GLYPHS, glyphSrc, loadGlyphs, loadImage, BLOCK, buildAtlas } from "@/features/landing/glyphs";
+import { GLYPHS, glyphSrc, loadGlyphs, BLOCK, buildAtlas } from "@/features/landing/glyphs";
 import { gsap, reducedMotion } from "@/features/landing/gsap";
 import styles from "./loader.module.css";
 
@@ -35,7 +35,7 @@ export default function Loader() {
       setSlots([...WORD].map((letter, i) => (frame >= settleAt[i] ? letter : (frame + i * 5) % GLYPHS.length)));
     }, 70);
 
-    const assets = Promise.all([loadGlyphs(), loadImage("/landing/hero-forest.webp"), document.fonts.ready]);
+    const assets = Promise.all([loadGlyphs(), document.fonts.ready]);
 
     assets.then(async ([glyphs]) => {
       const elapsed = (performance.now() - started) / 1000;

@@ -74,10 +74,17 @@
 }
 
 .layers {
-  width: 78%;
+  width: 80%;
   height: auto;
-  border-radius: 8px;
-  mix-blend-mode: lighten;
+  overflow: visible;
+}
+
+.layers [data-plate] {
+  transition: transform 0.8s var(--ease-out);
+}
+
+.card:hover .layers [data-plate] {
+  transform: translateY(calc((var(--i) - 2) * 7px));
 }
 
 .card h3 {

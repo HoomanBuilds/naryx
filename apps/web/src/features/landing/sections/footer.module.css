@@ -19,8 +19,9 @@
   position: absolute;
   inset: -4% 0 0;
   z-index: -1;
-  background: var(--umbra) url(/landing/clouds.avif) center / cover no-repeat;
+  background: var(--umbra) url(/landing/sky.svg) center / cover no-repeat;
   transform-origin: 50% 100%;
+  will-change: transform;
 }
 
 .sky::after {

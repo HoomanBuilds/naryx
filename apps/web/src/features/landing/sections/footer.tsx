@@ -33,7 +33,7 @@ function Crosshair() {
 
 /**
  * The footer: a violet cloud sky, glowing square and crosshair
- * ornaments, the newsletter tag and link columns in Fraktion Mono, and a
+ * ornaments, the newsletter tag and link columns in the mono face, and a
  * particle wordmark that breaks into pixels and scatters from the pointer.
  */
 export default function Footer() {

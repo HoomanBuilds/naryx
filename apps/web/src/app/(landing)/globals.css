@@ -18,6 +18,9 @@
 
   --blue: #0048ff;
 
+  /* A fine dot grid, laid over the yellow sections */
+  --dot-grid: radial-gradient(circle at 2px 2px, rgba(0, 0, 0, 0.5) 1px, transparent 1.6px) 0 0 / 36px 36px;
+
   --gutter: clamp(16px, 2.4vw, 36px);
   --radius: 8px;
   --ease-out: cubic-bezier(0.19, 1, 0.22, 1);
@@ -44,15 +47,34 @@ body {
   overflow-x: clip;
 }
 
-/* Animated film grain, over everything */
+/* Animated film grain, over everything: one noise tile, jumped to a new offset a few times a second */
 body::after {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: -120px;
   z-index: 95;
-  background: url(/landing/noise.gif) 0 0 / 200px 200px;
+  background: url(/landing/grain.svg) 0 0 / 200px 200px;
   opacity: 0.06;
   pointer-events: none;
+  animation: grain 0.5s steps(1) infinite;
+}
+
+@keyframes grain {
+  0% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(-61px, 37px);
+  }
+  40% {
+    transform: translate(43px, -82px);
+  }
+  60% {
+    transform: translate(-27px, -49px);
+  }
+  80% {
+    transform: translate(78px, 64px);
+  }
 }
 
 ::selection {

@@ -5,13 +5,14 @@ import Arrow from "@/features/landing/arrow";
 import { useExperience } from "@/features/landing/experience";
 import Button from "@/features/landing/button";
 import { GlyphField } from "@/features/landing/glyph-field";
-import { loadGlyphs, loadImage } from "@/features/landing/glyphs";
+import { loadGlyphs } from "@/features/landing/glyphs";
 import { gsap, reducedMotion, SCRAMBLE, ScrollTrigger, SplitText, useGSAP } from "@/features/landing/gsap";
+import { paintHeroScene } from "@/features/landing/hero-scene";
 import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./hero.module.css";
 
 /**
- * The market as a forest painting, drawn in the glyph alphabet: single legs
+ * The market as a painted valley, drawn in the glyph alphabet: single legs
  * scattered across venues. Scrolling sorts them into one package order book
  * that meets at a package mark, which is where the next section (the engine)
  * picks up.
@@ -30,9 +31,9 @@ export default function Hero() {
       let disposed = false;
       const cleanups: (() => void)[] = [];
 
-      Promise.all([loadGlyphs(), loadImage("/landing/hero-forest.webp")]).then(([glyphs, source]) => {
+      loadGlyphs().then((glyphs) => {
         if (disposed) return;
-        const mosaic = new GlyphField({ canvas, glyphs, source, focusX: 0.62 });
+        const mosaic = new GlyphField({ canvas, glyphs, source: paintHeroScene(), focusX: 0.62 });
         field.current = mosaic;
         if (reduced) mosaic.intro = 1;
 

@@ -1,7 +1,7 @@
 /* Yellow, with its own dot grid */
 .stats {
   padding: clamp(96px, 11vw, 160px) 0;
-  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  background: var(--dot-grid), var(--yellow);
   color: #000;
 }
 
@@ -39,16 +39,51 @@
   aspect-ratio: 1.12;
   padding: clamp(18px, 2vw, 28px);
   overflow: hidden;
-  background-size: cover;
-  background-position: 50% 100%;
-  transition:
-    background-position 1.6s var(--ease-out),
-    transform 0.6s var(--ease-out);
+  isolation: isolate;
+  background: var(--ground);
+  transition: transform 0.6s var(--ease-out);
 }
 
 .tile:hover {
-  background-position: 50% 70%;
   transform: translateY(-4px);
+}
+
+/* The tile's pattern, in its --pixel colour on its --ground: a sparse pixel sky over hills of tiny glyphs */
+.tile::before,
+.tile::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.tile::before {
+  inset: 0;
+  background:
+    conic-gradient(at 3px 3px, transparent 75%, var(--pixel) 0) 0 0 / 24px 24px,
+    conic-gradient(at 3px 3px, transparent 75%, var(--pixel) 0) 12px 12px / 24px 24px;
+  -webkit-mask: linear-gradient(transparent, #000 70%);
+  mask: linear-gradient(transparent, #000 70%);
+  opacity: 0.6;
+}
+
+/* The hills thin out towards their tops, and reach below the tile so they can rise on hover */
+.tile::after {
+  inset: 38% 0 -14%;
+  background: var(--hills);
+  -webkit-mask:
+    linear-gradient(rgba(0, 0, 0, 0.15), #000 65%) intersect,
+    url(/landing/glyphs/plus.svg) 0 0 / 10px 10px,
+    url(/landing/glyphs/node.svg) 5px 5px / 10px 10px;
+  mask:
+    linear-gradient(rgba(0, 0, 0, 0.15), #000 65%) intersect,
+    url(/landing/glyphs/plus.svg) 0 0 / 10px 10px,
+    url(/landing/glyphs/node.svg) 5px 5px / 10px 10px;
+  transition: transform 1.6s var(--ease-out);
+}
+
+.tile:hover::after {
+  transform: translateY(-10%);
 }
 
 .tile strong {
@@ -89,34 +124,48 @@
 }
 
 .blue {
-  background-image: url(/landing/pattern-blue.webp);
+  --ground: var(--blue);
+  --pixel: rgba(196, 216, 255, 0.75);
+  --hills:
+    radial-gradient(62% 58% at 18% 100%, var(--pixel) 99%, transparent 100%),
+    radial-gradient(70% 92% at 92% 100%, var(--pixel) 99%, transparent 100%);
   color: #fff;
 }
 
 .light {
-  background-image: url(/landing/pattern-light.webp);
-  background-color: #fff;
+  --ground: #fff;
+  --pixel: #9dbdff;
+  --hills:
+    radial-gradient(120% 70% at 100% 100%, var(--pixel) 99%, transparent 100%),
+    radial-gradient(50% 42% at 8% 100%, var(--pixel) 99%, transparent 100%);
   color: var(--blue);
 }
 
 .dark {
-  background-image: url(/landing/pattern-dark.webp);
+  --ground: #060606;
+  --pixel: #444;
+  --hills:
+    radial-gradient(40% 52% at 12% 100%, var(--pixel) 99%, transparent 100%),
+    radial-gradient(46% 74% at 52% 100%, var(--pixel) 99%, transparent 100%),
+    radial-gradient(40% 46% at 94% 100%, var(--pixel) 99%, transparent 100%);
   color: #fff;
 }
 
 .ink {
-  background: #000;
+  --ground: #000;
   color: var(--yellow);
 }
 
-/* The last tile's pattern: a band of glyphs in yellow, masked from the PNGs */
+.ink::before {
+  content: none;
+}
+
+/* The last tile's pattern: a band of glyphs in yellow */
 .ink::after {
-  content: "";
-  position: absolute;
-  inset: 52% 0 0;
+  inset: 52% 0 -12%;
   background: var(--yellow);
-  -webkit-mask: url(/landing/glyphs/glyph-05.png) 0 0 / 20px 20px space, url(/landing/glyphs/glyph-08.png) 14px 14px / 20px 20px space;
-  mask: url(/landing/glyphs/glyph-05.png) 0 0 / 20px 20px space, url(/landing/glyphs/glyph-08.png) 14px 14px / 20px 20px space;
+  -webkit-mask: url(/landing/glyphs/cross.svg) 0 0 / 20px 20px space, url(/landing/glyphs/target.svg) 14px 14px / 20px 20px space;
+  mask: url(/landing/glyphs/cross.svg) 0 0 / 20px 20px space, url(/landing/glyphs/target.svg) 14px 14px / 20px 20px space;
   opacity: 0.16;
 }
 

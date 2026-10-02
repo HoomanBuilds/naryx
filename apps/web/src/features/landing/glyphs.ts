@@ -1,11 +1,26 @@
 /**
- * The glyph alphabet, ordered from the
+ * The glyph alphabet (white SVGs in public/landing/glyphs), ordered from the
  * sparsest shape to the densest by how much of their square they fill.
  */
-export const GLYPHS = ["09", "11", "01", "07", "05", "12", "08", "13", "03", "02", "16", "10", "06", "04"] as const;
+export const GLYPHS = [
+  "node",
+  "plus",
+  "pair",
+  "caret",
+  "rhomb",
+  "beacon",
+  "steps",
+  "target",
+  "arch",
+  "cross",
+  "frame",
+  "quad",
+  "bars",
+  "ledger",
+] as const;
 export type GlyphId = (typeof GLYPHS)[number];
 
-export const glyphSrc = (id: GlyphId) => `/landing/glyphs/glyph-${id}.png`;
+export const glyphSrc = (id: GlyphId) => `/landing/glyphs/${id}.svg`;
 
 /** Index of the extra solid square appended to every atlas row. */
 export const BLOCK = GLYPHS.length;
@@ -19,7 +34,6 @@ const loadImage = (src: string) =>
   });
 
 export const loadGlyphs = () => Promise.all(GLYPHS.map((id) => loadImage(glyphSrc(id))));
-export { loadImage };
 
 /**
  * Pre-tinted glyph sprites: one row per colour, one column per glyph (plus a

@@ -78,7 +78,7 @@ export default function Roadmap() {
             ))}
             <g className={styles.runner} data-runner>
               <rect x="-16" y="-16" width="32" height="32" rx="4" />
-              <image href={glyphSrc(GLYPHS[10])} x="-11" y="-11" width="22" height="22" />
+              <image href={glyphSrc(GLYPHS[5])} x="-11" y="-11" width="22" height="22" />
             </g>
           </svg>
           {STAGES.map(({ x, y, title, when, place }, i) => (

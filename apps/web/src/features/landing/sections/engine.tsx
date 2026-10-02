@@ -2,6 +2,7 @@
 
 import { useRef } from "react";
 import Arrow from "@/features/landing/arrow";
+import { GLYPHS, glyphSrc } from "@/features/landing/glyphs";
 import { gsap, reducedMotion, SCRAMBLE, useGSAP } from "@/features/landing/gsap";
 import { CHAINS as BRAND_CHAINS } from "@/features/brand/chain-icons";
 import styles from "./engine.module.css";
@@ -117,7 +118,7 @@ function Scene() {
               <path d={s.left} fill="url(#side-left)" />
               <path d={s.right} fill="url(#side-right)" />
               <path d={s.top} fill="#262626" stroke="#3a3a3a" />
-              <image href={`/landing/glyphs/glyph-${["03", "08", "12"][i]}.png`} x={x - 11} y={81} width="22" height="22" opacity="0.8" />
+              <image href={glyphSrc(GLYPHS[[11, 7, 4][i]])} x={x - 11} y={81} width="22" height="22" opacity="0.8" />
             </g>
           );
         })}

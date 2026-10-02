@@ -1,6 +1,6 @@
 .roadmap {
   padding: clamp(96px, 11vw, 160px) 0 clamp(60px, 7vw, 100px);
-  background: var(--yellow) url(/landing/dots.svg) 0 0 / 128px 128px;
+  background: var(--dot-grid), var(--yellow);
   color: #000;
 }
 

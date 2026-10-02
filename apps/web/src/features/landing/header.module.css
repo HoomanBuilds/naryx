@@ -53,7 +53,7 @@
 }
 
 .tickerTrack span::after {
-  content: "■";
+  content: "\25A0";
   margin-left: 22px;
   font-size: 7px;
   vertical-align: 2px;
@@ -88,10 +88,10 @@
   border-radius: 6px;
   background: currentColor;
   -webkit-mask:
-    url(/landing/glyphs/glyph-05.png) center / 16px 16px no-repeat exclude,
+    url(/landing/glyphs/cross.svg) center / 14px 14px no-repeat exclude,
     linear-gradient(#000, #000);
   mask:
-    url(/landing/glyphs/glyph-05.png) center / 16px 16px no-repeat exclude,
+    url(/landing/glyphs/cross.svg) center / 14px 14px no-repeat exclude,
     linear-gradient(#000, #000);
 }
 

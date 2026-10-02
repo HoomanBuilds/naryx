@@ -6,8 +6,8 @@ import { CHAINS } from "@/features/brand/chain-icons";
 import styles from "./statement.module.css";
 
 /**
- * An editorial photograph, walking into light, under a line of serif
- * that starts out of focus and sharpens word by word as you scroll.
+ * Sunlight falling through a window grid across a dark floor, under a line
+ * of serif that starts out of focus and sharpens word by word as you scroll.
  */
 export default function Statement() {
   const root = useRef<HTMLElement>(null);
@@ -40,9 +40,8 @@ export default function Statement() {
     <section ref={root} className={styles.statement} data-theme="dark">
       <div className={styles.stage}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className={styles.photo} src="/landing/light-walk.avif" alt="" />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className={styles.glare} src="/landing/glare.avif" alt="" />
+        <img className={styles.photo} src="/landing/light.svg" alt="" />
+        <div className={styles.glare} aria-hidden="true" />
         <div className={styles.shade} aria-hidden="true" />
 
         <div className={`container ${styles.content}`}>
