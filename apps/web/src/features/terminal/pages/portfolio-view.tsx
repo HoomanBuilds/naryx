@@ -42,7 +42,7 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
   hyperliquid: [
     ["Account mode", "Standard only; unified, default, and portfolio-margin accounts are refused"],
     ["Ledgers", "Spot and perpetual USDC are funded separately"],
-    ["Executor", "Trade-only API wallet on a dedicated testnet account; not trustless"],
+    ["Executor", "Trade-only API wallet on Naryx's shared testnet account, executing for your wallet; not trustless"],
     ["Recovery", "Bounded by the signed price, deadline, loss, fee, and residual policy"],
     ["Venue", "Hyperliquid testnet spot and perpetuals (HyperCore)"],
     ["Quote asset", "Hyperliquid testnet USDC held by the service's testnet account"],

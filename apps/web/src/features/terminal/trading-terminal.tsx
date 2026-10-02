@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
@@ -24,6 +24,8 @@ import type {
   BaseOrderRecord,
   BaseSelectedAttempt,
   BaseSolverQuote,
+  HyperliquidAccountStatus,
+  HyperliquidAttemptProgress,
   HyperliquidOrderCreateResponse,
   HyperliquidSelectedAttempt,
   HyperliquidSolverQuote,
@@ -128,14 +130,34 @@ type LocalFlowState = {
 
 type HyperliquidFlowState = {
   ticketKey: string;
+  /** The connected wallet that owns and signs the package; Naryx's testnet account executes it. */
+  owner: string | null;
   context: HyperliquidTestnetContext | null;
+  /** The wallet's packages in the shared account, from the service ledger (any device). */
+  account: HyperliquidAccountStatus | null;
   order: HyperliquidOrderCreateResponse | null;
   quote: HyperliquidSolverQuote | null;
   attempt: HyperliquidSelectedAttempt | null;
+  /** One key per handoff, so a retry or a status check never starts a second execution. */
+  executeKey: string;
+  signed: boolean;
+  progress: HyperliquidAttemptProgress | null;
   execution: HyperliquidTerminalExecutionResult | null;
   busy: string | null;
   error: string | null;
 };
+
+const HYPERLIQUID_ACTIVE_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "UNRESOLVED"]);
+
+function hyperliquidProgressLabel(progress: HyperliquidAttemptProgress | null): string | null {
+  if (progress === null) return null;
+  if (progress.state === "QUEUED") {
+    return progress.queuePosition === 0 ? "Queued, next in line" : `Queued, ${progress.queuePosition} ahead`;
+  }
+  if (progress.state === "EXECUTING") return "Executing";
+  if (progress.state === "UNCERTAIN") return "Awaiting the executor record";
+  return null;
+}
 
 type BaseFlowState = {
   ticketKey: string;
@@ -467,6 +489,8 @@ function HyperliquidTestnetPanel({
   const quote = flow?.quote ?? null;
   const attempt = flow?.attempt ?? null;
   const execution = flow?.execution ?? null;
+  const progress = hyperliquidProgressLabel(flow?.progress ?? null);
+  const packages = flow?.account?.packages ?? [];
   const commitments = execution
     ? [
       execution.actionCommitment,
@@ -479,21 +503,34 @@ function HyperliquidTestnetPanel({
     <section className={styles.executionReview} aria-labelledby="hyperliquid-execution-title">
       <div className={styles.evidenceHeading}>
         <h3 id="hyperliquid-execution-title">Hyperliquid Testnet action flow</h3>
-        <span>{execution?.status ?? (attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : order ? "ORDER CREATED" : context ? "GATE READY" : "DISCOVERING")}</span>
+        <span>{execution?.status ?? progress?.toUpperCase() ?? (attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : order ? "ORDER CREATED" : context ? "READY" : "DISCOVERING")}</span>
       </div>
       <p className={styles.reviewNotice}>
-        The configured dedicated Testnet account gate authorizes this flow. No user-wallet authorization or signer is present in the browser.
+        Executed in Naryx&apos;s Hyperliquid testnet account on your behalf. Your wallet owns the package and signs its
+        authorization; the shared trading account below holds and settles it, one package at a time.
       </p>
       {context ? (
         <div className={styles.reviewGrid}>
-          <span>Account gate</span><strong title={context.tradingAccount}>{compact(context.tradingAccount, 10, 8)}</strong>
+          <span>Owner (your wallet)</span><strong title={flow?.owner ?? undefined}>{flow?.owner ? compact(flow.owner, 10, 8) : "Not connected"}</strong>
+          <span>Trading account</span><strong title={context.tradingAccount}>{compact(context.tradingAccount, 10, 8)}</strong>
           <span>Context</span><strong title={context.contextId}>{context.contextId}</strong>
           <span>Domain</span><strong>{context.domain.domainId}</strong>
           <span>Manifest</span><strong title={context.domain.domainManifestHash}>v{context.domain.domainManifestVersion} / {compact(context.domain.domainManifestHash)}</strong>
           <span>Environment</span><strong>{context.environment}</strong>
-          <span>Authorization</span><strong>Dedicated Testnet account gate</strong>
+          <span>Authorization</span><strong>Owner wallet signature</strong>
+          <span>Open packages</span><strong>{packages.filter((entry) => HYPERLIQUID_ACTIVE_PACKAGE_STATES.has(entry.state)).length}{context.maxOpenPackagesPerOwner === null ? "" : ` of ${context.maxOpenPackagesPerOwner}`}</strong>
           <span>Requested size</span><strong>{size} {baseSymbol}</strong>
           <span>Slippage limit</span><strong>{slippage} bps</strong>
+        </div>
+      ) : null}
+      {packages.length > 0 ? (
+        <div className={styles.reviewGrid}>
+          {packages.slice(0, 4).map((entry) => (
+            <Fragment key={entry.entryAttemptId}>
+              <span title={entry.entryAttemptId}>Package {compact(entry.entryAttemptId, 20, 6)}</span>
+              <strong>{entry.state}{entry.perpQuantityAtoms === null ? "" : ` / short ${entry.perpQuantityAtoms} atoms`}</strong>
+            </Fragment>
+          ))}
         </div>
       ) : null}
       {order ? (
@@ -502,7 +539,7 @@ function HyperliquidTestnetPanel({
           <span>Canonical bytes</span><strong>{order.orderBytes.length} B</strong>
           <span>Owner</span><strong title={order.owner}>{compact(order.owner, 10, 8)}</strong>
           <span>Settlement account</span><strong title={order.settlementAccount}>{compact(order.settlementAccount, 10, 8)}</strong>
-          <span>Order gate</span><strong>Configured account only</strong>
+          <span>Action</span><strong>{flow?.order?.note.startsWith("Exit") ? "Exit the whole package" : "Enter package"}</strong>
           <span>Solver quote</span><strong>{flow?.order?.solverQuoting}</strong>
         </div>
       ) : null}
@@ -521,7 +558,7 @@ function HyperliquidTestnetPanel({
         <div className={styles.submissionReceipt} role="status">
           <span>Selected Testnet attempt</span>
           <strong title={attempt.attemptId}>{compact(attempt.attemptId, 20, 12)}</strong>
-          <small>Quote selection records the dedicated account gate. It is not a browser wallet signature.</small>
+          <small>{flow?.signed ? "Signed by your wallet." : "Your wallet signs the package authorization before execution."}{progress ? ` ${progress}.` : ""}</small>
         </div>
       ) : null}
       {execution ? (
@@ -997,7 +1034,7 @@ function Ticket({
         <span>Account</span>
         <span className={styles.ticketAccount} title={account ?? undefined}>
           <ChainIcon chain={selectedDomain} size={13} />
-          {selectedDomain === "hyperliquid" ? "Dedicated testnet account" : account ?? "Not connected"}
+          {selectedDomain === "hyperliquid" ? (account ? `${account} via Naryx testnet account` : "Not connected") : account ?? "Not connected"}
         </span>
       </div>
 
@@ -1465,7 +1502,8 @@ export function TradingTerminal({
     : null;
   const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
   const currentLocalFlow = localFlow?.ticketKey === ticketKey ? localFlow : null;
-  const currentHyperliquidFlow = hyperliquidFlow?.ticketKey === ticketKey
+  const hyperliquidOwner = selectedDomain === "hyperliquid" && evmWallet.account ? evmWallet.account.toLowerCase() : null;
+  const currentHyperliquidFlow = hyperliquidFlow?.ticketKey === ticketKey && hyperliquidFlow.owner === hyperliquidOwner
     ? hyperliquidFlow
     : null;
   const currentBaseFlow = baseFlow?.ticketKey === ticketKey && baseFlow.owner === evmWallet.account
@@ -1537,38 +1575,42 @@ export function TradingTerminal({
         providerConnection !== "connected" || !runtimeHealth?.hyperliquidTestnet.available) return;
     const controller = new AbortController();
     let active = true;
+    const fresh = (
+      context: HyperliquidTestnetContext | null,
+      account: HyperliquidAccountStatus | null,
+      error: string | null,
+    ): HyperliquidFlowState => ({
+      ticketKey,
+      owner: hyperliquidOwner,
+      context,
+      account,
+      order: null,
+      quote: null,
+      attempt: null,
+      executeKey: crypto.randomUUID(),
+      signed: false,
+      progress: null,
+      execution: null,
+      busy: null,
+      error,
+    });
     privateProvider.getHyperliquidTestnetContext(controller.signal)
-      .then((context) => {
+      .then(async (context) => {
+        // The ledger lists the wallet's packages, so an open package can be exited from any device.
+        const account = hyperliquidOwner === null ? null
+          : await privateProvider.getHyperliquidAccount(context, hyperliquidOwner, controller.signal).catch(() => null);
         if (!active) return;
-        setHyperliquidFlow({
-          ticketKey,
-          context,
-          order: null,
-          quote: null,
-          attempt: null,
-          execution: null,
-          busy: null,
-          error: null,
-        });
+        setHyperliquidFlow(fresh(context, account, null));
       })
       .catch((cause) => {
         if (!active || controller.signal.aborted) return;
-        setHyperliquidFlow({
-          ticketKey,
-          context: null,
-          order: null,
-          quote: null,
-          attempt: null,
-          execution: null,
-          busy: null,
-          error: cause instanceof Error ? cause.message : "Hyperliquid context discovery failed.",
-        });
+        setHyperliquidFlow(fresh(null, null, cause instanceof Error ? cause.message : "Hyperliquid context discovery failed."));
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [privateProvider, providerConnection, runtimeHealth?.hyperliquidTestnet.available, selectedDomain, ticketKey]);
+  }, [hyperliquidOwner, privateProvider, providerConnection, runtimeHealth?.hyperliquidTestnet.available, selectedDomain, ticketKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1676,10 +1718,15 @@ export function TradingTerminal({
     privateProvider !== null && providerConnection === "connected" &&
     wallet.selectedAccount !== null && preview?.source === "PRIVATE_TERMINAL_BFF" &&
     quoteMode === "coordinated_limits";
-  const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" && mode === "entry" &&
+  // An exit is priced by the service from the live books for the wallet's own open package.
+  const hyperliquidFlowEnabled = selectedDomain === "hyperliquid" &&
     privateProvider !== null && providerConnection === "connected" &&
     runtimeHealth?.hyperliquidTestnet.available === true && executionGateUp &&
-    preview?.source === "PRIVATE_TERMINAL_BFF" && quoteMode === "coordinated_limits";
+    (mode === "exit" || preview?.source === "PRIVATE_TERMINAL_BFF") && quoteMode === "coordinated_limits";
+  const hyperliquidPackages = currentHyperliquidFlow?.account?.packages ?? [];
+  const hyperliquidOpenPackage = hyperliquidPackages.find((entry) => entry.state === "OPEN") ?? null;
+  const hyperliquidActivePackages = hyperliquidPackages.filter((entry) => HYPERLIQUID_ACTIVE_PACKAGE_STATES.has(entry.state)).length;
+  const hyperliquidLimit = currentHyperliquidFlow?.context?.maxOpenPackagesPerOwner ?? null;
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
   const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
   // A Base exit closes the whole open package read from chain, so it needs no ticket preview.
@@ -1877,24 +1924,46 @@ export function TradingTerminal({
               ? "Hyperliquid testnet execution is disabled in the service configuration."
               : !executionGateUp
                 ? "The service's execution safety gate is not configured, so no testnet order can run."
-              : mode !== "entry"
-                ? "Exit runs from an open package."
                 : quoteMode !== "coordinated_limits"
                   ? "Testnet execution uses coordinated limits."
                   : "A current service preview is required.",
         );
       }
+      if (!hyperliquidOwner) {
+        return { kind: "connect", label: "Connect wallet", reason: "Connect an EVM wallet. It owns and signs each package; Naryx's Hyperliquid testnet account executes it, so no Hyperliquid funds are needed.", disabled: false };
+      }
+      const progress = hyperliquidProgressLabel(currentHyperliquidFlow?.progress ?? null);
+      if (currentHyperliquidFlow?.busy === "execute" && progress) {
+        return none(progress, "Executed in Naryx's Hyperliquid testnet account on your behalf; the account runs one package at a time.");
+      }
       if (currentHyperliquidFlow?.execution) {
-        return none(`Executed: ${currentHyperliquidFlow.execution.status.replace(/_/g, " ").toLowerCase()}`, "The result and its evidence are in the testnet order review below and on the Activity page.");
+        const execution = currentHyperliquidFlow.execution;
+        const filled = execution.packageStatus === "COMPLETED_EXACT" || execution.packageStatus === "COMPLETED_BOUNDED";
+        return none(
+          filled ? (mode === "exit" ? "Package exited" : "Package filled") : `Executed: ${execution.status.replace(/_/g, " ").toLowerCase()}`,
+          filled && mode === "entry"
+            ? "Held for your wallet in Naryx's Hyperliquid testnet account. Switch to Exit package to close it from any device."
+            : "The result and its evidence are in the testnet order review below and on the Activity page.",
+        );
       }
       if (!currentHyperliquidFlow?.context) {
         return none("Preparing testnet account", currentHyperliquidFlow?.error ?? "Discovering the active Hyperliquid testnet order context.");
       }
       const reason = currentHyperliquidFlow.error;
-      if (nextHyperliquidStep === "create") return { kind: "hyperliquid", label: "Create order", reason: reason ?? "Creates the canonical package order for the dedicated testnet account.", disabled: false };
+      if (nextHyperliquidStep === "create" && mode === "exit" && !hyperliquidOpenPackage) {
+        return none("No open package", reason ?? "This wallet has no open Hyperliquid testnet package to exit.");
+      }
+      if (nextHyperliquidStep === "create" && mode === "entry" && hyperliquidLimit !== null && hyperliquidActivePackages >= hyperliquidLimit) {
+        return none("Package limit reached", reason ?? "Exit your open Hyperliquid testnet package before entering another.");
+      }
+      if (nextHyperliquidStep === "create") {
+        return mode === "exit"
+          ? { kind: "hyperliquid", label: "Create exit order", reason: reason ?? "Prices the exit of your open package from the live books: its exact spot and its exact short.", disabled: false }
+          : { kind: "hyperliquid", label: "Create order", reason: reason ?? "Creates the canonical package order owned by your wallet.", disabled: false };
+      }
       if (nextHyperliquidStep === "quote") return { kind: "hyperliquid", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote on the whole package.", disabled: false };
       if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the testnet order review before accepting.", disabled: false };
-      return { kind: "hyperliquid", label: "Execute on testnet", reason: reason ?? "Runs the accepted package on Hyperliquid testnet through the dedicated account gate.", disabled: false };
+      return { kind: "hyperliquid", label: currentHyperliquidFlow.signed ? "Execute on testnet" : "Sign and execute", reason: reason ?? "Your wallet signs the package authorization; Naryx's Hyperliquid testnet account executes it on your behalf.", disabled: false };
     }
     if (!privateProvider || providerConnection !== "connected") {
       return { kind: "none", disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
@@ -1989,7 +2058,11 @@ export function TradingTerminal({
     evmWallet.account,
     evmWallet.switching,
     executionGateUp,
+    hyperliquidActivePackages,
     hyperliquidFlowEnabled,
+    hyperliquidLimit,
+    hyperliquidOpenPackage,
+    hyperliquidOwner,
     mode,
     nextArbitrumStep,
     nextBaseStep,
@@ -2328,18 +2401,24 @@ export function TradingTerminal({
   async function handleHyperliquidStep(
     step: "create" | "quote" | "select" | "execute",
   ) {
-    if (!privateProvider || !currentHyperliquidFlow?.context ||
+    if (!privateProvider || !currentHyperliquidFlow?.context || !currentHyperliquidFlow.owner ||
         !runtimeHealth?.hyperliquidTestnet.available) return;
-    const base = currentHyperliquidFlow;
+    let base = currentHyperliquidFlow;
     const context = currentHyperliquidFlow.context;
+    const owner = currentHyperliquidFlow.owner;
     setHyperliquidFlow({ ...base, busy: step, error: null });
     try {
       if (step === "create") {
-        const order = await privateProvider.createHyperliquidOrder(context, {
-          size,
-          slippageBps: slippage,
-          idempotencyKey: crypto.randomUUID(),
-        });
+        const order = mode === "exit"
+          ? await privateProvider.createHyperliquidExitOrder(context, owner, {
+            slippageBps: slippage,
+            idempotencyKey: crypto.randomUUID(),
+          })
+          : await privateProvider.createHyperliquidOrder(context, owner, {
+            size,
+            slippageBps: slippage,
+            idempotencyKey: crypto.randomUUID(),
+          });
         setHyperliquidFlow({ ...base, order, busy: null, error: null });
         return;
       }
@@ -2360,17 +2439,52 @@ export function TradingTerminal({
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");
-      const execution = await privateProvider.executeHyperliquidTestnet(
-        base.attempt,
-        crypto.randomUUID(),
-      );
-      setHyperliquidFlow({ ...base, execution, busy: null, error: null });
+      const attempt = base.attempt;
+      const key = base.executeKey;
+      if (!base.signed) {
+        const authorization = await privateProvider.prepareHyperliquidAuthorization(attempt);
+        const signature = await evmWallet.signChainlessTypedData(authorization.typedData);
+        await privateProvider.authorizeHyperliquid(attempt, signature);
+        base = { ...base, signed: true };
+        setHyperliquidFlow({ ...base, busy: step, error: null });
+      }
+      const showProgress = (progress: HyperliquidAttemptProgress) => setHyperliquidFlow((previous) =>
+        previous?.executeKey === key && previous.busy === "execute" ? { ...previous, progress } : previous);
+      // The shared account runs one package at a time, so the handoff can wait in a queue.
+      const poll = window.setInterval(() => {
+        void privateProvider.getHyperliquidAttemptProgress(attempt, key)
+          .then((progress) => { if (progress.state !== "COMPLETED") showProgress(progress); })
+          .catch(() => undefined);
+      }, 2_000);
+      let execution: HyperliquidTerminalExecutionResult;
+      try {
+        execution = await privateProvider.executeHyperliquidTestnet(attempt, key);
+      } catch (cause) {
+        // A lost, timed-out, or proxy-cut response is resolved from the executor's durable record by
+        // polling; nothing is resubmitted.
+        let progress = await privateProvider.getHyperliquidAttemptProgress(attempt, key).catch(() => null);
+        for (let waited = 0; waited < 180_000 && (progress?.state === "QUEUED" || progress?.state === "EXECUTING"); waited += 2_000) {
+          showProgress(progress);
+          await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+          progress = await privateProvider.getHyperliquidAttemptProgress(attempt, key).catch(() => progress);
+        }
+        if (progress?.state !== "COMPLETED") {
+          throw progress && progress.state !== "NOT_STARTED"
+            ? new Error("The outcome is not recorded yet. Check again shortly; the package is never submitted twice.")
+            : cause;
+        }
+        execution = progress.result;
+      } finally {
+        window.clearInterval(poll);
+      }
+      const account = await privateProvider.getHyperliquidAccount(context, owner).catch(() => base.account);
+      setHyperliquidFlow({ ...base, account, execution, progress: null, busy: null, error: null });
     } catch (cause) {
-      setHyperliquidFlow({
-        ...base,
+      setHyperliquidFlow((previous) => ({
+        ...(previous?.executeKey === base.executeKey ? previous : base),
         busy: null,
         error: cause instanceof Error ? cause.message : "Hyperliquid Testnet action failed.",
-      });
+      }));
     }
   }
 

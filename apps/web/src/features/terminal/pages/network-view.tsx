@@ -22,7 +22,7 @@ function blockerOf(healthState: HealthState, health: RuntimeBoundaryHealth | nul
   if (health.available) {
     if (!gateUp) return "Runtime up, but the execution safety gate is not configured, so trades are refused.";
     if (domain === "solana") return "Live. Every Devnet signature follows an explicit review.";
-    if (domain === "hyperliquid") return "Live. The dedicated testnet account runs each reviewed package.";
+    if (domain === "hyperliquid") return "Live. Naryx's shared testnet account executes each package your wallet signs, one at a time.";
     return "Live. Your wallet signs each reviewed package.";
   }
   if (health.reason === "DISABLED_BY_CONFIGURATION") return "Disabled in service configuration.";

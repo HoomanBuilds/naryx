@@ -439,8 +439,48 @@ export type HyperliquidTestnetContext = Readonly<{
     domainManifestHash: string;
   }>;
   environment: "TESTNET";
-  authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE";
+  /** The user's wallet owns and signs each package; Naryx's one testnet account executes it. */
+  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT";
+  maxOpenPackagesPerOwner: number | null;
 }>;
+
+/** One package the wallet owns inside Naryx's shared Hyperliquid testnet trading account. */
+export type HyperliquidOwnedPackage = Readonly<{
+  entryAttemptId: string;
+  entryOrderHash: string;
+  state: "PENDING_ENTRY" | "OPEN" | "EXITING" | "CLOSED" | "UNRESOLVED";
+  perpQuantityAtoms: string | null;
+  spotQuantityAtoms: string | null;
+  entryNotionalAtoms: string | null;
+  entryReceiptHash: string | null;
+  exitAttemptId: string | null;
+  openedAtMs: number | null;
+  closedAtMs: number | null;
+}>;
+
+export type HyperliquidAccountStatus = Readonly<{
+  owner: string;
+  tradingAccount: string;
+  maxOpenPackagesPerOwner: number | null;
+  packages: readonly HyperliquidOwnedPackage[];
+}>;
+
+export type HyperliquidAuthorizationRequest = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  typedData: Readonly<{
+    domain: Readonly<Record<string, unknown>>;
+    types: Readonly<Record<string, unknown>>;
+    primaryType: string;
+    message: Readonly<Record<string, unknown>>;
+  }>;
+}>;
+
+/** Where an execution handoff stands while the shared account runs one package at a time. */
+export type HyperliquidAttemptProgress =
+  | Readonly<{ state: "QUEUED"; queuePosition: number; lane: string | null }>
+  | Readonly<{ state: "EXECUTING" | "UNCERTAIN" | "NOT_STARTED"; lane: string | null }>
+  | Readonly<{ state: "COMPLETED"; result: HyperliquidTerminalExecutionResult }>;
 
 export type HyperliquidOrderRecord = Readonly<{
   idempotencyKey: string;
@@ -463,7 +503,7 @@ export type HyperliquidOrderCreateResponse = Readonly<{
   status: "UNSIGNED_CREATED";
   created: boolean;
   order: HyperliquidOrderRecord;
-  traderAuthorization: "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED";
+  traderAuthorization: "OWNER_EVM_SIGNATURE_REQUIRED";
   solverQuoting: "REQUIRED";
   note: string;
 }>;
@@ -498,6 +538,9 @@ export type HyperliquidTerminalExecutionResult = Readonly<{
   requestCommitment?: string | null;
   errorCommitment?: string;
   rawEvidenceCommitments?: readonly string[];
+  /** The account-wide deltas over the serialized window: exactly this package's fills. */
+  observedNetSpotDeltaAtoms?: string;
+  observedPerpetualDeltaAtoms?: string;
 }>;
 
 export type BaseAccountSetupStep = Readonly<{
@@ -1393,7 +1436,7 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
   if (!isRecord(value)) throw new Error("Hyperliquid Testnet context is invalid.");
   requireExactKeys(
     value,
-    ["authorizationMode", "contextId", "domain", "environment", "tradingAccount"],
+    ["authorizationMode", "contextId", "domain", "environment", "maxOpenPackagesPerOwner", "tradingAccount"],
     "Hyperliquid Testnet context",
   );
   if (!isRecord(value.domain)) throw new Error("Hyperliquid Testnet domain is invalid.");
@@ -1407,8 +1450,9 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
     "Hyperliquid domain manifest version",
   );
   if (value.environment !== "TESTNET" ||
-      value.authorizationMode !== "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE" ||
-      value.domain.domainId !== HYPERLIQUID_DOMAIN_ID || domainManifestVersion === 0) {
+      value.authorizationMode !== "OWNER_SIGNED_OMNIBUS_ACCOUNT" ||
+      value.domain.domainId !== HYPERLIQUID_DOMAIN_ID || domainManifestVersion === 0 ||
+      (value.maxOpenPackagesPerOwner !== null && !Number.isSafeInteger(value.maxOpenPackagesPerOwner))) {
     throw new Error("Hyperliquid Testnet context binding is invalid.");
   }
   const tradingAccount = requireString(value.tradingAccount, "Hyperliquid trading account");
@@ -1427,13 +1471,50 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
       ),
     }),
     environment: "TESTNET",
-    authorizationMode: "CONFIGURED_DEDICATED_TESTNET_ACCOUNT_GATE",
+    authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+    maxOpenPackagesPerOwner: value.maxOpenPackagesPerOwner as number | null,
+  });
+}
+
+const HYPERLIQUID_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "CLOSED", "UNRESOLVED"]);
+
+function requireHyperliquidAccount(value: unknown, owner: string, context: HyperliquidTestnetContext): HyperliquidAccountStatus {
+  if (!isRecord(value) || value.owner !== owner || value.tradingAccount !== context.tradingAccount ||
+      value.executionModel !== "OMNIBUS_TESTNET_ACCOUNT" || !Array.isArray(value.packages)) {
+    throw new Error("Hyperliquid account response is invalid.");
+  }
+  const atoms = (entry: unknown) => entry === null || (typeof entry === "string" && /^(?:0|[1-9][0-9]{0,77})$/.test(entry));
+  const packages = value.packages.map((entry): HyperliquidOwnedPackage => {
+    if (!isRecord(entry) || typeof entry.entryAttemptId !== "string" || !HYPERLIQUID_ATTEMPT_ID_PATTERN.test(entry.entryAttemptId) ||
+        typeof entry.state !== "string" || !HYPERLIQUID_PACKAGE_STATES.has(entry.state) ||
+        !atoms(entry.perpQuantityAtoms) || !atoms(entry.spotQuantityAtoms) || !atoms(entry.entryNotionalAtoms)) {
+      throw new Error("Hyperliquid owned package is invalid.");
+    }
+    return Object.freeze({
+      entryAttemptId: entry.entryAttemptId,
+      entryOrderHash: requireHex32(entry.entryOrderHash, "Hyperliquid entry order hash"),
+      state: entry.state as HyperliquidOwnedPackage["state"],
+      perpQuantityAtoms: entry.perpQuantityAtoms as string | null,
+      spotQuantityAtoms: entry.spotQuantityAtoms as string | null,
+      entryNotionalAtoms: entry.entryNotionalAtoms as string | null,
+      entryReceiptHash: entry.entryReceiptHash === null ? null : requireHex32(entry.entryReceiptHash, "Hyperliquid entry receipt"),
+      exitAttemptId: typeof entry.exitAttemptId === "string" ? entry.exitAttemptId : null,
+      openedAtMs: typeof entry.openedAtMs === "number" ? entry.openedAtMs : null,
+      closedAtMs: typeof entry.closedAtMs === "number" ? entry.closedAtMs : null,
+    });
+  });
+  return Object.freeze({
+    owner,
+    tradingAccount: context.tradingAccount,
+    maxOpenPackagesPerOwner: context.maxOpenPackagesPerOwner,
+    packages: Object.freeze(packages),
   });
 }
 
 function requireHyperliquidOrderCreateResponse(
   value: unknown,
   context: HyperliquidTestnetContext,
+  owner: string,
   idempotencyKey: string,
 ): HyperliquidOrderCreateResponse {
   if (!isRecord(value)) throw new Error("Hyperliquid canonical order response is invalid.");
@@ -1443,7 +1524,7 @@ function requireHyperliquidOrderCreateResponse(
     "Hyperliquid canonical order response",
   );
   if (value.status !== "UNSIGNED_CREATED" || typeof value.created !== "boolean" ||
-      value.traderAuthorization !== "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED" ||
+      value.traderAuthorization !== "OWNER_EVM_SIGNATURE_REQUIRED" ||
       value.solverQuoting !== "REQUIRED" || !isRecord(value.order)) {
     throw new Error("Hyperliquid canonical order status is invalid.");
   }
@@ -1462,9 +1543,9 @@ function requireHyperliquidOrderCreateResponse(
       order.domainId !== HYPERLIQUID_DOMAIN_ID ||
       domainManifestVersion !== context.domain.domainManifestVersion ||
       order.domainManifestHashHex !== context.domain.domainManifestHash ||
-      order.owner !== context.tradingAccount || order.settlementAccount !== context.tradingAccount ||
+      order.owner !== owner || order.settlementAccount !== context.tradingAccount ||
       order.status !== "UNSIGNED_CREATED" || createdAtMs === 0) {
-    throw new Error("Hyperliquid canonical order does not match the active account gate.");
+    throw new Error("Hyperliquid canonical order does not match the owner and trading account.");
   }
   const orderBytes = decodeCanonicalBase64(order.orderBase64, "Hyperliquid canonical order bytes");
   if (orderBytes.length === 0) throw new Error("Hyperliquid canonical order bytes are empty.");
@@ -1480,14 +1561,14 @@ function requireHyperliquidOrderCreateResponse(
       domainId: HYPERLIQUID_DOMAIN_ID,
       domainManifestVersion,
       domainManifestHashHex: context.domain.domainManifestHash,
-      owner: context.tradingAccount,
+      owner,
       settlementAccount: context.tradingAccount,
       nonceDecimal: requireCanonicalUnsigned(order.nonceDecimal, "Hyperliquid order nonce", true),
       status: "UNSIGNED_CREATED",
       createdAtMs,
       orderBytes,
     }),
-    traderAuthorization: "EXTERNAL_TESTNET_ACCOUNT_GATE_REQUIRED",
+    traderAuthorization: "OWNER_EVM_SIGNATURE_REQUIRED",
     solverQuoting: "REQUIRED",
     note: requireString(value.note, "Hyperliquid canonical order note"),
   });
@@ -1709,6 +1790,7 @@ const HYPERLIQUID_RESULT_KEYS: Record<string, readonly string[]> = {
   RECONCILIATION_DEFERRED: ["actionCommitment", "errorCommitment", "requestCommitment", "submissionStatus"],
   RECONCILIATION_INCOMPLETE: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
   RECONCILED: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
+  RECONCILED_OBSERVED: ["actionCommitment", "observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
   HANDOFF_REJECTED: ["actionCommitment", "reason", "requestCommitment"],
 };
 
@@ -1744,8 +1826,10 @@ function requireHyperliquidExecutionResult(
   if (!isRecord(value) || typeof value.status !== "string") {
     throw new Error("Hyperliquid execution response is invalid.");
   }
-  const variantKeys = HYPERLIQUID_RESULT_KEYS[value.status];
-  if (!variantKeys) throw new Error("Hyperliquid execution status is unsupported.");
+  const variantKeys = HYPERLIQUID_RESULT_KEYS[
+    value.status === "RECONCILED" && "observedNetSpotDeltaAtoms" in value ? "RECONCILED_OBSERVED" : value.status
+  ];
+  if (!variantKeys || value.status === "RECONCILED_OBSERVED") throw new Error("Hyperliquid execution status is unsupported.");
   requireExactKeys(
     value,
     ["attemptId", "domain", "environment", "idempotencyKey", "status", ...variantKeys],
@@ -1800,6 +1884,14 @@ function requireHyperliquidExecutionResult(
   }
   if ("errorCommitment" in value) {
     result.errorCommitment = requireHyperliquidCommitment(value.errorCommitment, "errorCommitment");
+  }
+  for (const key of ["observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms"] as const) {
+    if (key in value) {
+      if (typeof value[key] !== "string" || !/^(?:0|-?[1-9][0-9]{0,77})$/.test(value[key])) {
+        throw new Error("Hyperliquid observed package delta is invalid.");
+      }
+      result[key] = value[key];
+    }
   }
   if ("rawEvidenceCommitments" in value) {
     if (!Array.isArray(value.rawEvidenceCommitments) || value.rawEvidenceCommitments.length > 64) {
@@ -3228,12 +3320,13 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
 
   async createHyperliquidOrder(
     context: HyperliquidTestnetContext,
+    owner: string,
     input: Readonly<{ size: string; slippageBps: number; idempotencyKey: string }>,
     signal?: AbortSignal,
   ): Promise<HyperliquidOrderCreateResponse> {
     const request = {
       contextId: requireProtocolId(context.contextId, "Hyperliquid context id"),
-      owner: context.tradingAccount,
+      owner: requireEvmAddress(owner, "Hyperliquid package owner").toLowerCase(),
       settlementAccount: context.tradingAccount,
       size: requireString(input.size, "Hyperliquid order size"),
       slippageBps: requireInteger(input.slippageBps, "Hyperliquid order slippage"),
@@ -3251,12 +3344,140 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       body: JSON.stringify(request),
       signal,
     });
-    if (!response.ok) throw new Error(`Hyperliquid canonical order creation failed with ${response.status}.`);
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid canonical order creation");
     return requireHyperliquidOrderCreateResponse(
       await response.json() as unknown,
       context,
+      request.owner,
       request.idempotencyKey,
     );
+  }
+
+  /** The wallet's packages in Naryx's shared Hyperliquid testnet account, from the API ledger. */
+  async getHyperliquidAccount(
+    context: HyperliquidTestnetContext,
+    owner: string,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidAccountStatus> {
+    const wallet = requireEvmAddress(owner, "Hyperliquid package owner").toLowerCase();
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/hyperliquid-testnet/account?owner=${wallet}`,
+      { method: "GET", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal },
+    );
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid account read");
+    return requireHyperliquidAccount(await response.json() as unknown, wallet, context);
+  }
+
+  /** Builds the canonical EXIT of the wallet's open package: its exact spot and its exact short. */
+  async createHyperliquidExitOrder(
+    context: HyperliquidTestnetContext,
+    owner: string,
+    input: Readonly<{ slippageBps: number; idempotencyKey: string }>,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidOrderCreateResponse> {
+    const request = {
+      owner: requireEvmAddress(owner, "Hyperliquid package owner").toLowerCase(),
+      slippageBps: requireInteger(input.slippageBps, "Hyperliquid exit slippage"),
+      idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+    };
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/hyperliquid-testnet/exit-order`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid exit order creation");
+    const body = await response.json() as unknown;
+    if (!isRecord(body) || body.executionModel !== "OMNIBUS_TESTNET_ACCOUNT") {
+      throw new Error("Hyperliquid exit order response is invalid.");
+    }
+    return requireHyperliquidOrderCreateResponse({
+      status: body.status,
+      created: body.created,
+      order: body.order,
+      traderAuthorization: "OWNER_EVM_SIGNATURE_REQUIRED",
+      solverQuoting: "REQUIRED",
+      note: "Exit order stored. The owner signs it before the shared testnet account executes it.",
+    }, context, request.owner, request.idempotencyKey);
+  }
+
+  /** The typed data the owner wallet signs for one selected attempt. */
+  async prepareHyperliquidAuthorization(
+    attempt: HyperliquidSelectedAttempt,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidAuthorizationRequest> {
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/hyperliquid-testnet/authorization`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: attempt.attemptId }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid authorization request");
+    const body = await response.json() as unknown;
+    if (!isRecord(body) || body.attemptId !== attempt.attemptId || body.orderHash !== attempt.orderHash ||
+        !isRecord(body.typedData) || !isRecord(body.typedData.domain) || !isRecord(body.typedData.types) ||
+        body.typedData.primaryType !== "PackageAuthorization" || !isRecord(body.typedData.message) ||
+        body.typedData.message.orderHash !== `0x${attempt.orderHash}`) {
+      throw new Error("Hyperliquid authorization request is invalid.");
+    }
+    return body as HyperliquidAuthorizationRequest;
+  }
+
+  async authorizeHyperliquid(
+    attempt: HyperliquidSelectedAttempt,
+    signature: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/hyperliquid-testnet/authorize`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: attempt.attemptId, signature }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid authorization");
+  }
+
+  /** Polls a running handoff; for an uncertain one the service resolves it from the executor record. */
+  async getHyperliquidAttemptProgress(
+    attempt: HyperliquidSelectedAttempt,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<HyperliquidAttemptProgress> {
+    const key = requireObservationIdempotencyKey(idempotencyKey);
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/hyperliquid-testnet/attempt-status`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: attempt.attemptId, idempotencyKey: key }),
+      signal,
+    });
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid attempt status");
+    const body = await response.json() as unknown;
+    if (!isRecord(body) || body.attemptId !== attempt.attemptId || body.idempotencyKey !== key) {
+      throw new Error("Hyperliquid attempt status is invalid.");
+    }
+    const lane = typeof body.lane === "string" ? body.lane : null;
+    if (body.state === "COMPLETED") {
+      return Object.freeze({ state: "COMPLETED", result: requireHyperliquidExecutionResult(body.result, attempt, key) });
+    }
+    if (body.state === "QUEUED" && typeof body.queuePosition === "number" && Number.isSafeInteger(body.queuePosition)) {
+      return Object.freeze({ state: "QUEUED", queuePosition: body.queuePosition, lane });
+    }
+    if (body.state === "EXECUTING" || body.state === "UNCERTAIN" || body.state === "NOT_STARTED") {
+      return Object.freeze({ state: body.state, lane });
+    }
+    throw new Error("Hyperliquid attempt status is invalid.");
   }
 
   async requestHyperliquidQuote(
@@ -3320,7 +3541,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         signal,
       },
     );
-    if (!response.ok) throw new Error(`Hyperliquid Testnet execution failed with ${response.status}.`);
+    if (!response.ok) throw await serviceFailure(response, "Hyperliquid Testnet execution");
     return requireHyperliquidExecutionResult(await response.json() as unknown, attempt, key);
   }
 

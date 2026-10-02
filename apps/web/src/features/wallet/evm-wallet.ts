@@ -21,6 +21,11 @@ export type EvmWalletSession = {
   onChain(domain: EvmDomain): boolean;
   switchNetwork(domain: EvmDomain): Promise<void>;
   signTypedData(domain: EvmDomain, typedData: unknown): Promise<string>;
+  /**
+   * Signs typed data that binds no chain id, such as a Hyperliquid testnet package authorization,
+   * from whatever network the wallet is on.
+   */
+  signChainlessTypedData(typedData: unknown): Promise<string>;
   /** `value` is decimal wei; only a reviewed call (such as a venue execution fee) carries a nonzero value. */
   sendTransaction(domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: string }>): Promise<string>;
   /** Waits for the transaction's receipt on the domain's testnet; true when it succeeded. */
@@ -114,8 +119,7 @@ export function useEvmWallet(): EvmWalletSession {
     return account;
   }, [account, chainId]);
 
-  const signTypedData = useCallback(async (domain: EvmDomain, typedData: unknown) => {
-    requireReady(domain);
+  const signWith = useCallback(async (typedData: unknown) => {
     const data = typedData as { domain: Record<string, unknown>; types: Record<string, unknown>; primaryType: string; message: Record<string, unknown> };
     // viem derives the EIP712Domain type itself, so the explicit entry is dropped.
     const { EIP712Domain: _domainType, ...types } = data.types;
@@ -134,7 +138,19 @@ export function useEvmWallet(): EvmWalletSession {
       setError(message);
       throw new Error(message);
     }
-  }, [requireReady, typedDataMutation]);
+  }, [typedDataMutation]);
+
+  const signTypedData = useCallback(async (domain: EvmDomain, typedData: unknown) => {
+    requireReady(domain);
+    return signWith(typedData);
+  }, [requireReady, signWith]);
+
+  const signChainlessTypedData = useCallback(async (typedData: unknown) => {
+    if (!account) throw new Error("Connect your EVM wallet before continuing.");
+    const data = typedData as { domain?: Record<string, unknown> };
+    if (data.domain === undefined || "chainId" in data.domain) throw new Error("Typed data must not bind a chain.");
+    return signWith(typedData);
+  }, [account, signWith]);
 
   const sendTransaction = useCallback(async (domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: string }>) => {
     requireReady(domain);
@@ -184,6 +200,7 @@ export function useEvmWallet(): EvmWalletSession {
     onChain,
     switchNetwork,
     signTypedData,
+    signChainlessTypedData,
     sendTransaction,
     waitForReceipt,
   };
