@@ -2370,7 +2370,29 @@ export class TerminalMarketUnavailableError extends Error {
   }
 }
 
+/** The service answered and refused the ticket's input, such as a size outside the lane's range. */
+export class TerminalPreviewRejectedError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "TerminalPreviewRejectedError";
+    this.code = code;
+  }
+}
+
 async function terminalReadFailure(response: Response, name: string): Promise<Error> {
+  if (response.status === 400 && name === "preview") {
+    try {
+      const payload = await response.json() as unknown;
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (typeof error?.code === "string" && typeof error.message === "string" && error.message.length <= 160) {
+        return new TerminalPreviewRejectedError(error.code, error.message);
+      }
+    } catch {
+      // An unreadable 400 body is reported as a plain failure below.
+    }
+  }
   if (response.status === 503) {
     try {
       const payload = await response.json() as unknown;

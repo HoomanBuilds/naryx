@@ -12,7 +12,7 @@ import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { useArbitrumSepoliaExit } from "./arbitrum-sepolia-exit";
-import { ArbitrumObservationError, TerminalMarketUnavailableError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
+import { ArbitrumObservationError, TerminalMarketUnavailableError, TerminalPreviewRejectedError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
   ArbitrumAccountStatus,
   ArbitrumAsyncObservation,
@@ -66,7 +66,26 @@ import styles from "./trading-terminal.module.css";
 const REVIEW_TTL_MS = 45_000;
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
-const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
+/** "0.100000000000000000" becomes "0.1"; a whole number is kept as is. */
+function trimSize(value: string) {
+  return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
+}
+
+/**
+ * A tenth, a quarter, a half, and all of the lane's default size, rounded down to its decimals, so
+ * every preset is denominated in the selected lane's own base asset.
+ */
+function sizePresets(defaultSize: string): string[] {
+  const [whole, fraction = ""] = defaultSize.split(".");
+  const scale = BigInt(10) ** BigInt(fraction.length);
+  const atoms = BigInt(`${whole}${fraction}`);
+  const presets = [10, 4, 2, 1].map((divisor) => {
+    const value = atoms / BigInt(divisor);
+    const decimals = (value % scale).toString().padStart(fraction.length, "0");
+    return trimSize(fraction.length === 0 ? value.toString() : `${value / scale}.${decimals}`);
+  });
+  return presets.filter((preset, index) => preset !== "0" && presets.indexOf(preset) === index);
+}
 
 /**
  * Formats an exact decimal string as dollars with grouping. Digits are never rounded; trailing
@@ -931,6 +950,7 @@ function Ticket({
   selectedDomain,
   mode,
   preview,
+  previewRejection,
   size,
   slippage,
   quoteMode,
@@ -963,6 +983,8 @@ function Ticket({
   selectedDomain: DomainId;
   mode: PackageMode;
   preview: TerminalPreview | null;
+  /** The service's reason for refusing the ticket's size or slippage, if it did. */
+  previewRejection: string | null;
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
@@ -1061,14 +1083,14 @@ function Ticket({
           </span>
           <span id="size-context">
             <span key={preview?.bound.value ?? "none"} className={styles.flash}>
-              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
+              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : previewRejection ?? "Bound unavailable"}
             </span>
           </span>
         </div>
       </div>
 
       <div className={styles.presets} role="group" aria-label="Size presets">
-        {SIZE_PRESETS.map((preset) => (
+        {sizePresets(snapshot.ticket.defaultSize).map((preset) => (
           <button
             key={preset}
             type="button"
@@ -1453,6 +1475,7 @@ export function TradingTerminal({
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
+  const [previewRejection, setPreviewRejection] = useState<string | null>(null);
   const [mode, setMode] = useState<PackageMode>("entry");
   // Portfolio's Exit button opens this page with ?mode=exit; the page is static, so read it once here.
   useEffect(() => {
@@ -1572,6 +1595,8 @@ export function TradingTerminal({
         if (active) {
           setSnapshot(serviceSnapshot);
           setSnapshotDomain(selectedDomain);
+          // Each lane sizes in its own base asset, so a newly loaded lane starts from its own default.
+          setSize(trimSize(serviceSnapshot.ticket.defaultSize));
           setProviderConnection("connected");
         }
       } catch (cause) {
@@ -1654,6 +1679,7 @@ export function TradingTerminal({
           : await localConformanceTerminalProvider.getPreview(input);
         if (active) {
           setPreview(nextPreview);
+          setPreviewRejection(null);
           if (privateProvider) {
             setProviderConnection("connected");
           }
@@ -1664,7 +1690,10 @@ export function TradingTerminal({
         }
         if (active) {
           setPreview(null);
-          if (privateProvider && !(cause instanceof TerminalMarketUnavailableError)) {
+          // A refused size or slippage is the service answering, so it stays connected and says why.
+          const rejected = cause instanceof TerminalPreviewRejectedError;
+          setPreviewRejection(rejected ? cause.message : null);
+          if (privateProvider && !rejected && !(cause instanceof TerminalMarketUnavailableError)) {
             setProviderConnection("disconnected");
           }
         }
@@ -3027,6 +3056,7 @@ export function TradingTerminal({
             selectedDomain={selectedDomain}
             mode={mode}
             preview={preview}
+            previewRejection={previewRejection}
             size={size}
             slippage={slippage}
             quoteMode={quoteMode}
