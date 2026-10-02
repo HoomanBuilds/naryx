@@ -12,7 +12,10 @@ import {
 import {
   adapterRef,
   bytesEqual,
+  canonicalBytes,
+  compareBytes,
   domainRefFromManifest,
+  encodeAssetRef,
   exactPrice,
   exactSignedRate,
   manifestHash,
@@ -21,6 +24,7 @@ import {
   versionedManifestRef,
   type ActionCommitmentInput,
   type AdapterRef,
+  type AssetAmount,
   type AssetRef,
   type CashCarrySeriesBindingV1Input,
   type DomainRef,
@@ -159,6 +163,16 @@ export function reducedPrice(
     baseAsset: base, quoteAsset: quote,
     quoteAtoms: quoteAtoms / divisor, baseAtoms: baseAtoms / divisor, roundingDirection,
   });
+}
+
+/**
+ * Per-asset fee entries in canonical asset order. Every Base venue fee is charged in the quote
+ * asset, and a solver quote always lists the base asset's fee as well, here zero.
+ */
+export function baseSepoliaFeesByAsset(base: AssetRef, quote: AssetRef, quoteAtoms: bigint): AssetAmount[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  return [{ asset: base, atoms: 0n }, { asset: quote, atoms: quoteAtoms }]
+    .sort((left, right) => compareBytes(key(left.asset), key(right.asset)));
 }
 
 function ceilDiv(numerator: bigint, denominator: bigint): bigint {
@@ -381,7 +395,7 @@ async function build(order: PackageOrder, orderHash: Hash32, input: BaseSepoliaQ
     spreadNumerator < 0n ? -spreadNumerator : spreadNumerator,
     order.quantity.atoms,
   );
-  const venueFees = [{ asset: quoteAsset, atoms: venueFeeAtoms }];
+  const venueFees = baseSepoliaFeesByAsset(base, quoteAsset, venueFeeAtoms);
   const zeroBase = { asset: base, atoms: 0n };
   const candidate: AtomicRouteCandidate = Object.freeze({
     candidateId: input.candidateId,
@@ -410,7 +424,7 @@ async function build(order: PackageOrder, orderHash: Hash32, input: BaseSepoliaQ
     expectedBaseAssetFee: zeroBase,
     expectedMarginDelta: { asset: quoteAsset, atoms: pricing.marginAtoms },
     expectedRawFillFeesByAsset: venueFees,
-    expectedBuilderFeesByAsset: [{ asset: quoteAsset, atoms: 0n }],
+    expectedBuilderFeesByAsset: baseSepoliaFeesByAsset(base, quoteAsset, 0n),
     expectedNormalizedVenueFeesByAsset: venueFees,
     solverFee: { asset: quoteAsset, atoms: 0n },
     protocolFee: { asset: quoteAsset, atoms: 0n },

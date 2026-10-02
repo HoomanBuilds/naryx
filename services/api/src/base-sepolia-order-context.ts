@@ -15,7 +15,11 @@ import {
 } from "@naryx/adapter-evm";
 import {
   bytesEqual,
+  canonicalBytes,
+  canonicalFeeCaps,
+  compareBytes,
   domainRefFromManifest,
+  encodeAssetRef,
   exactPrice,
   exactSignedRate,
   parseProtocolJson,
@@ -167,6 +171,22 @@ function validateConfig(config: BaseSepoliaOrderContextConfig, deployment?: Base
     || !sameAdapter(config.perpetualAdapter, identity.perpetual.adapter)) {
     throw new Error("Base Sepolia order context assets or adapters do not match the deployment.");
   }
+}
+
+/**
+ * The venue fee caps every Base order signs: the reviewed caps plus a zero base-asset cap when none
+ * is configured, in canonical asset order. A solver quote always lists the base asset's fee, and the
+ * Base route charges every venue fee in the quote asset.
+ */
+export function baseSepoliaVenueFeeCaps(
+  config: Pick<BaseSepoliaOrderContextConfig, "baseAsset" | "maxVenueFeeAtomsByAsset">,
+): readonly FeeCap[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  const caps = [...config.maxVenueFeeAtomsByAsset];
+  if (!caps.some((cap) => bytesEqual(key(cap.asset), key(config.baseAsset)))) {
+    caps.push({ asset: config.baseAsset, maxAtoms: 0n });
+  }
+  return canonicalFeeCaps(caps.sort((left, right) => compareBytes(key(left.asset), key(right.asset))));
 }
 
 export function loadBaseSepoliaOrderContextConfig(path: string): BaseSepoliaOrderContextConfig {
@@ -348,6 +368,7 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
   validateConfig(config, deployment);
   const identity = deployment.deployment;
   const feed = new BaseSepoliaMarketFeed(config, deployment, port);
+  const venueFeeCaps = baseSepoliaVenueFeeCaps(config);
   const initial = await feed.refresh();
   await verifyUniswapV3Quoter(
     port,
@@ -384,7 +405,7 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
       maxEntrySpread: config.maxEntrySpread,
       maximumQuantityAtoms: config.maximumQuantityAtoms,
       maxSlippageBps: config.maxSlippageBps,
-      maxVenueFeeAtomsByAsset: config.maxVenueFeeAtomsByAsset,
+      maxVenueFeeAtomsByAsset: venueFeeCaps,
       maxMarginAddedAtoms: config.maxMarginAddedAtoms,
       maxProtocolFeeAtoms: config.maxProtocolFeeAtoms,
       maxSolverFeeAtoms: config.maxSolverFeeAtoms,

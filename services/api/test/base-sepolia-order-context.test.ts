@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { adapterRef, assetRef, toProtocolJson } from "@naryx/protocol-types";
-import { baseSepoliaSpotAsk, loadBaseSepoliaOrderContextConfig } from "../src/base-sepolia-order-context.js";
+import { adapterRef, assetRef, canonicalFeeCaps, toProtocolJson } from "@naryx/protocol-types";
+import { baseSepoliaSpotAsk, baseSepoliaVenueFeeCaps, loadBaseSepoliaOrderContextConfig } from "../src/base-sepolia-order-context.js";
 
 const base = assetRef("weth", new Uint8Array(32).fill(1), 18);
 const quote = assetRef("usdc", new Uint8Array(32).fill(2), 6);
@@ -28,6 +28,7 @@ test("refuses at load a spread cap that every order would reject as not in lowes
     schemaVersion: 1, contextId: "base-sepolia:weth-usdc", orderVersion: 1, templateId: "cash-and-carry-v1", templateVersion: 1,
     packageTemplateManifestHash: new Uint8Array(32).fill(4), baseAsset: base, quoteAsset: quote,
     spotAdapter: adapter, perpetualAdapter: adapter, maxStalenessSeconds: 60n, pollIntervalMs: 5_000, expiryTtlSeconds: 600n,
+    spotQuoter: { address: `0x${"c5".repeat(20)}`, expectedCodeHash: `0x${"c6".repeat(32)}` },
     maxEntrySpread: { baseAsset: base, quoteAsset: quote, quoteAtoms, baseAtoms, roundingDirection: "CEIL" },
     maximumQuantityAtoms: 10n ** 17n, maxSlippageBps: 100, maxVenueFeeAtomsByAsset: [{ asset: quote, maxAtoms: 10_000_000n }],
     maxMarginAddedAtoms: 10n ** 9n, maxProtocolFeeAtoms: 0n, maxSolverFeeAtoms: 0n, maxPriorityFeeAtoms: 0n, maxAccountFundingAtoms: 10n ** 10n,
@@ -43,5 +44,16 @@ test("refuses at load a spread cap that every order would reject as not in lowes
     assert.equal(loadBaseSepoliaOrderContextConfig(write("reduced.json", config(1n, 20_000_000_000n))).maxEntrySpread.baseAtoms, 20_000_000_000n);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("every Base order caps the base-asset venue fee at zero beside the reviewed cap, in canonical order", () => {
+  // A solver quote always lists the base asset's fee, so an order without a base cap admits no quote.
+  for (const configured of [[{ asset: quote, maxAtoms: 10_000_000n }], [{ asset: base, maxAtoms: 0n }, { asset: quote, maxAtoms: 10_000_000n }]]) {
+    const caps = baseSepoliaVenueFeeCaps({ baseAsset: base, maxVenueFeeAtomsByAsset: configured });
+    assert.equal(caps.length, 2);
+    assert.deepEqual(canonicalFeeCaps(caps), caps);
+    assert.equal(caps.find((cap) => cap.asset.assetId === "weth")?.maxAtoms, 0n);
+    assert.equal(caps.find((cap) => cap.asset.assetId === "usdc")?.maxAtoms, 10_000_000n);
   }
 });

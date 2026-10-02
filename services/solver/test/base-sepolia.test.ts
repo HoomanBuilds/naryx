@@ -3,13 +3,17 @@ import test from 'node:test';
 import {
   adapterRef,
   assetRef,
+  canonicalBytes,
+  compareBytes,
   domainManifest,
+  encodeAssetRef,
   domainRefFromManifest,
   versionedManifestRef,
   type PackageOrder,
 } from '@naryx/protocol-types';
 import type { Address, Hex } from 'viem';
 import {
+  baseSepoliaFeesByAsset,
   createBaseSepoliaQuoteRuntime,
   priceBaseSepoliaEntry,
   type BaseSepoliaReadPort,
@@ -156,4 +160,14 @@ test('accepts only the exact signed-bounds wire shape for co-signing', () => {
   assert.equal(parsed.packageNonce, 4n);
   assert.throws(() => parseBaseSepoliaAuthorizationBounds({ ...wire, extra: 1 }), /malformed/);
   assert.throws(() => parseBaseSepoliaAuthorizationBounds({ ...wire, minimumPostPerpBalanceWad: '1.5' }), /decimal/);
+});
+
+test('lists the base asset fee as zero beside the quote fee, in canonical asset order', () => {
+  // The protocol refuses a quote whose fee lists have no base-asset entry or are out of order.
+  const fees = baseSepoliaFeesByAsset(base, quote, 2_680n);
+  const key = (asset: typeof base) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  assert.equal(fees.length, 2);
+  assert.ok(compareBytes(key(fees[0]!.asset), key(fees[1]!.asset)) < 0);
+  assert.equal(fees.find((fee) => fee.asset.assetId === 'weth')?.atoms, 0n);
+  assert.equal(fees.find((fee) => fee.asset.assetId === 'usdc')?.atoms, 2_680n);
 });

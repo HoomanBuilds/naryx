@@ -32,6 +32,7 @@ import {
 import type { Abi, Address } from 'viem';
 import {
   BASE_SEPOLIA_DOMAIN_ID,
+  baseSepoliaFeesByAsset,
   readBaseSepoliaAccountOf,
   reducedPrice,
   requireBaseSepoliaChain,
@@ -288,7 +289,7 @@ async function buildExitQuote(
   };
   const validatedRoute = routePayload(route, 'baseSepoliaExitRoute');
   const zeroQuote = { asset: quoteAsset, atoms: 0n };
-  const venueFees = [{ asset: quoteAsset, atoms: venueFeeAtoms }];
+  const venueFees = baseSepoliaFeesByAsset(baseAsset, quoteAsset, venueFeeAtoms);
   const quoteNonce = input.nonceSource.next();
   if (quoteNonce <= 0n) fail('quote nonce must be positive');
   const unsigned: SolverQuoteInput = {
@@ -310,7 +311,7 @@ async function buildExitQuote(
     expectedBaseAssetFee: { asset: baseAsset, atoms: 0n },
     expectedMarginDelta: zeroQuote,
     expectedRawFillFeesByAsset: venueFees,
-    expectedBuilderFeesByAsset: [zeroQuote],
+    expectedBuilderFeesByAsset: baseSepoliaFeesByAsset(baseAsset, quoteAsset, 0n),
     expectedNormalizedVenueFeesByAsset: venueFees,
     solverFee: zeroQuote,
     protocolFee: zeroQuote,
