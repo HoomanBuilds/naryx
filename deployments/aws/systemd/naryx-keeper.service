@@ -1,0 +1,22 @@
+[Unit]
+Description=Naryx keeper: Hyperliquid evidence, code-hash monitor, funding mirror (loopback 127.0.0.1:8789)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/keeper
+ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/keeper.env /srv/naryx/app/services/keeper/dist/main.js
+Restart=always
+RestartSec=5
+ReadWritePaths=/srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

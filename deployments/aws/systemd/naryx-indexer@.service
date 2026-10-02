@@ -1,0 +1,22 @@
+[Unit]
+Description=Naryx indexer for %i (one instance per EVM network, for example base-sepolia)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/indexer
+ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/indexer-%i.env /srv/naryx/app/services/indexer/dist/main.js
+Restart=always
+RestartSec=10
+ReadWritePaths=/srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

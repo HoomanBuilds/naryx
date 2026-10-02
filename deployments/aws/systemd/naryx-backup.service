@@ -1,0 +1,17 @@
+[Unit]
+Description=Naryx SQLite online backup to S3
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=naryx
+Group=naryx
+# NARYX_BACKUP_S3_URI, for example s3://naryx-testnet-backups/host-1 (the instance role grants access).
+EnvironmentFile=/srv/naryx/backup.env
+ExecStart=/srv/naryx/app/deployments/aws/backup.sh
+ReadWritePaths=/srv/naryx/backups /srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

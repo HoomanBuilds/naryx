@@ -1,0 +1,23 @@
+[Unit]
+Description=Naryx solver: quotes and testnet executors (loopback 127.0.0.1:8788 and lane ports)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/solver
+ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/solver.env /srv/naryx/app/services/solver/dist/main.js
+Restart=always
+RestartSec=5
+# Signing key files live under /srv/naryx/keys (owner naryx, mode 600); the solver only reads them.
+ReadWritePaths=/srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=Naryx private terminal API (loopback 127.0.0.1:8787)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/api
+ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/api.env /srv/naryx/app/services/api/dist/main.js
+Restart=always
+RestartSec=5
+# The generated env and runtime JSON are read-only inputs; only the data directory is written.
+ReadWritePaths=/srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
