@@ -454,6 +454,9 @@ function exactKeys(body: Record<string, unknown>, keys: readonly string[]): void
 export type HyperliquidTestnetOwnerRoutesOptions = Readonly<{
   tradingAccount: string;
   maxOpenPackagesPerOwner: number | null;
+  /** Atom decimals of the package's base and quote assets, so the terminal can show sizes. */
+  baseDecimals: number;
+  quoteDecimals: number;
   ledger: HyperliquidTestnetOwnerLedger;
   intents: Pick<ExecutionIntentStore, "getAttempt">;
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
@@ -491,6 +494,8 @@ export function createHyperliquidTestnetOwnerRoutes(
         tradingAccount: options.tradingAccount,
         executionModel: "OMNIBUS_TESTNET_ACCOUNT",
         maxOpenPackagesPerOwner: options.maxOpenPackagesPerOwner,
+        baseDecimals: options.baseDecimals,
+        quoteDecimals: options.quoteDecimals,
         packages: options.ledger.packages(owner).map(packageView),
       };
     },

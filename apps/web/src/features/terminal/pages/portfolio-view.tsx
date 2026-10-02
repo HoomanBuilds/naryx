@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { AssetIcon, ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -8,10 +9,11 @@ import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "../shell/terminal-context";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
+import { usePositions } from "./use-positions";
 import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
 import styles from "./pages.module.css";
 
-const POSITION_COLUMNS = ["Package", "Chain", "Mode", "Size", "Cost basis", "Mark", "Exit cost", "PnL", "State"];
+const POSITION_COLUMNS = ["Package", "Chain", "Size", "Entry notional", "State", ""];
 
 /** What each chain's account is and the limits the code enforces on it. Nothing here claims a deployment. */
 const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, string])[]>> = {
@@ -72,6 +74,8 @@ function sumUsdc(amounts: readonly Amount[]): string | null {
 
 export function PortfolioView() {
   const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, attempts } = useTerminal();
+  const router = useRouter();
+  const { positions, loading: positionsLoading, unreadable } = usePositions();
   const solana = useSolanaWallet();
   const evm = useEvmWallet();
   const modal = useWalletModal();
@@ -232,27 +236,68 @@ export function PortfolioView() {
       <section className={styles.card} aria-labelledby="positions-title">
         <div className={styles.cardHead}>
           <h2 id="positions-title">Positions</h2>
-          <p>Open packages with their exit cost and recovery state.</p>
+          <p>Open packages of the connected wallets, read from each chain, so they follow the wallet across devices.</p>
         </div>
+        {unreadable.length > 0 ? (
+          <p className={styles.noticeError} role="status">
+            Could not read open packages on {unreadable.map((domain) => DOMAIN_META[domain].label).join(", ")}. Retrying.
+          </p>
+        ) : null}
         <div className={styles.scroll}>
           <table className={styles.table}>
             <thead>
               <tr>
                 {POSITION_COLUMNS.map((column, index) => (
-                  <th key={column} scope="col" className={index >= 3 && index <= 7 ? styles.num : undefined}>{column}</th>
+                  <th key={column || "action"} scope="col" className={index >= 2 && index <= 3 ? styles.num : undefined}>{column}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td colSpan={POSITION_COLUMNS.length}>
-                  <div className={styles.empty}>
-                    <strong>No open packages</strong>
-                    <p>A package appears here once it is entered and settled, with its cost basis, live exit cost, and recovery state.</p>
-                    <Link href="/trade">Open a package</Link>
-                  </div>
-                </td>
-              </tr>
+              {positions.length === 0 ? (
+                <tr>
+                  <td colSpan={POSITION_COLUMNS.length}>
+                    <div className={styles.empty}>
+                      <strong>{positionsLoading ? "Reading open packages" : "No open packages"}</strong>
+                      <p>A package appears here once it is entered, with its size, entry notional, and state. Connect the wallet that owns it.</p>
+                      <Link href="/trade">Open a package</Link>
+                    </div>
+                  </td>
+                </tr>
+              ) : positions.map((position) => (
+                <tr key={position.key}>
+                  <td className={styles.mono}>{position.packageId}</td>
+                  <td>
+                    <span className={styles.chainCell}>
+                      <ChainIcon chain={position.domain} size={20} />
+                      <span>
+                        <strong>{DOMAIN_META[position.domain].label}</strong>
+                        <small>{DOMAIN_META[position.domain].network}</small>
+                      </span>
+                    </span>
+                  </td>
+                  <td className={styles.num}>{position.size}</td>
+                  <td className={styles.num}>{position.entryNotional ?? <span className={styles.dim}>-</span>}</td>
+                  <td>
+                    <span className={position.state === "Open" ? styles.pillOk : position.state === "Unresolved" ? styles.pillBad : styles.pillWarn}>
+                      {position.state}
+                    </span>
+                  </td>
+                  <td className={styles.num}>
+                    {position.state === "Open" ? (
+                      <button
+                        type="button"
+                        className={styles.ghost}
+                        onClick={() => {
+                          setSelectedDomain(position.domain);
+                          router.push("/trade?mode=exit");
+                        }}
+                      >
+                        Exit
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

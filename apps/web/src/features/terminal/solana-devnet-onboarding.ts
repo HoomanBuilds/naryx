@@ -56,8 +56,32 @@ export type SolanaDevnetAccountStatus = Readonly<{
   requiredCollateralAtoms: bigint;
   /** The test perp faucet authority when the quote mint is its free test USDC; null otherwise. */
   testCollateralFaucet: string | null;
+  /** The wallet's open package, read from chain; null when none (or an older service). */
+  openPackage: SolanaDevnetOpenPackage | null;
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
+
+export type SolanaDevnetOpenPackage = Readonly<{
+  spotQuantityAtoms: bigint;
+  entryNotionalAtoms: bigint;
+  baseDecimals: number;
+  quoteDecimals: number;
+}>;
+
+function openPackageOf(value: unknown): SolanaDevnetOpenPackage | null {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value)) fail("open package is malformed");
+  const places = (entry: unknown, name: string) => {
+    if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0 || entry > 18) fail(`${name} is invalid`);
+    return entry;
+  };
+  return Object.freeze({
+    spotQuantityAtoms: decimal(value.spotQuantityAtoms, "openPackage.spotQuantityAtoms"),
+    entryNotionalAtoms: decimal(value.entryNotionalAtoms, "openPackage.entryNotionalAtoms"),
+    baseDecimals: places(value.baseDecimals, "openPackage.baseDecimals"),
+    quoteDecimals: places(value.quoteDecimals, "openPackage.quoteDecimals"),
+  });
+}
 
 const STEP_ORDER: readonly SolanaDevnetOnboardingStepKind[] = [
   "CREATE_TOKEN_ACCOUNTS",
@@ -293,7 +317,8 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
   });
   if (value.ready !== (steps.length === 0)) fail("readiness does not match the step list");
   return Object.freeze({
-    contextId, owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, testCollateralFaucet: faucet, steps: Object.freeze(steps),
+    contextId, owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, testCollateralFaucet: faucet,
+    openPackage: openPackageOf(value.openPackage), steps: Object.freeze(steps),
   });
 }
 

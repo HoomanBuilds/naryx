@@ -1450,6 +1450,12 @@ export function TradingTerminal({
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
   const [mode, setMode] = useState<PackageMode>("entry");
+  // Portfolio's Exit button opens this page with ?mode=exit; the page is static, so read it once here.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("mode") !== "exit") return;
+    const timer = window.setTimeout(() => setMode("exit"), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
   const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
   const [slippage, setSlippage] = useState<SlippageBps>(
     initialSnapshot.ticket.defaultSlippageBps,

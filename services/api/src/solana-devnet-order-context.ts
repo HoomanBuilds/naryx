@@ -367,6 +367,8 @@ export type SolanaDevnetAccountStatus = Readonly<{
    * that PDA, no freeze authority), read from the chain; null when the quote is any other mint.
    */
   testCollateralFaucet: string | null;
+  /** The owner's open package: its spot quantity and the short's entry notional, in atoms. */
+  openPackage: Readonly<{ spotQuantityAtoms: string; entryNotionalAtoms: string; baseDecimals: number; quoteDecimals: number }> | null;
   ready: boolean;
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
@@ -551,15 +553,28 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     });
     await requireDevnet(port);
     const slot = await port.getFinalizedSlot();
-    const [position, strategy, executor, traderBase, traderQuote, executorBase, executorQuote, quoteMintAccount] = await port.getAccounts([
+    const [position, strategy, executor, traderBase, traderQuote, executorBase, executorQuote, quoteMintAccount, openAccount] = await port.getAccounts([
       derived.position, derived.strategy, derived.executorAuthority, derived.traderBase, derived.traderQuote,
-      derived.executorBase, derived.executorQuote, quoteMint,
+      derived.executorBase, derived.executorQuote, quoteMint, derived.openPackage,
     ], slot);
     const faucet = isFaucetMint(quoteMintAccount, faucetAuthority) ? faucetAuthority : null;
     const positionState = position === null || position === undefined || position.owner !== perpVenue
       ? undefined : decodeTestPerpPosition(position.data);
     const strategyState = strategy === null || strategy === undefined || strategy.owner !== perpAdapter
       ? undefined : decodeTestPerpStrategy(strategy.data);
+    // The owner's open package in the active domain, so Portfolio shows it on any device.
+    let openPackage: SolanaDevnetAccountStatus["openPackage"] = null;
+    if (openAccount !== null && openAccount !== undefined && openAccount.owner === core) {
+      const open = decodeOpenCashCarryPackage(manifest.coreIdl, openAccount.data);
+      if (open.trader === owner && open.domain.domainId === manifest.domain.domainId) {
+        openPackage = Object.freeze({
+          spotQuantityAtoms: open.spotQuantityAtoms.toString(),
+          entryNotionalAtoms: (positionState?.entryNotionalAtoms ?? 0n).toString(),
+          baseDecimals: config.baseAsset.decimals,
+          quoteDecimals: config.quoteAsset.decimals,
+        });
+      }
+    }
     const traderQuoteAtoms = traderQuote === null || traderQuote === undefined || traderQuote.owner !== TOKEN_PROGRAM_ID
       ? 0n : decodeTokenAccount(traderQuote.data).amount;
     const entry = sizeAtoms === 0n ? undefined : priceTestPerpShortEntry(market, snapshot.oraclePricePerLot, sizeAtoms);
@@ -690,6 +705,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       market: Object.freeze({ address: new PublicKey(manifest.testPerp.market).toBase58(), collateralVault: market.collateralVault }),
       mints: Object.freeze({ base: baseMint, quote: quoteMint }),
       testCollateralFaucet: faucet,
+      openPackage,
       ready: steps.length === 0,
       steps: Object.freeze(steps),
     });

@@ -462,6 +462,9 @@ export type HyperliquidAccountStatus = Readonly<{
   owner: string;
   tradingAccount: string;
   maxOpenPackagesPerOwner: number | null;
+  /** Atom decimals of the base and quote assets; null from an older service. */
+  baseDecimals: number | null;
+  quoteDecimals: number | null;
   packages: readonly HyperliquidOwnedPackage[];
 }>;
 
@@ -1638,6 +1641,10 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
 
 const HYPERLIQUID_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "CLOSED", "UNRESOLVED"]);
 
+function decimalPlaces(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 36 ? value : null;
+}
+
 function requireHyperliquidAccount(value: unknown, owner: string, context: HyperliquidTestnetContext): HyperliquidAccountStatus {
   if (!isRecord(value) || value.owner !== owner || value.tradingAccount !== context.tradingAccount ||
       value.executionModel !== "OMNIBUS_TESTNET_ACCOUNT" || !Array.isArray(value.packages)) {
@@ -1667,6 +1674,8 @@ function requireHyperliquidAccount(value: unknown, owner: string, context: Hyper
     owner,
     tradingAccount: context.tradingAccount,
     maxOpenPackagesPerOwner: context.maxOpenPackagesPerOwner,
+    baseDecimals: decimalPlaces(value.baseDecimals),
+    quoteDecimals: decimalPlaces(value.quoteDecimals),
     packages: Object.freeze(packages),
   });
 }

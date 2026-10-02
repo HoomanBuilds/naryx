@@ -502,6 +502,8 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
   : createHyperliquidTestnetOwnerRoutes({
     tradingAccount: hyperliquidOrderContext.tradingAccount,
     maxOpenPackagesPerOwner: hyperliquidConfig?.omnibus?.maxOpenPackagesPerOwner ?? null,
+    baseDecimals: hyperliquidOrderContext.baseAsset.decimals,
+    quoteDecimals: hyperliquidOrderContext.quoteAsset.decimals,
     ledger: hyperliquidOwnerLedger,
     intents: executionIntentStore,
     orders: orderStore,
