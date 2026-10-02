@@ -63,10 +63,15 @@ export type TerminalMarketSources = Readonly<Partial<Record<DomainId, TerminalMa
 
 const SYMBOL = /^[A-Z0-9]{1,12}$/;
 
-function assetSymbol(assetId: string): string {
+/**
+ * The display symbol of an asset id: its last colon-separated segment, upper-cased. An operator-chosen
+ * id without a plain symbol segment shows the fallback; without one it is refused.
+ */
+export function terminalAssetSymbol(assetId: string, fallback?: string): string {
   const symbol = assetId.slice(assetId.lastIndexOf(":") + 1).toUpperCase();
-  if (!SYMBOL.test(symbol)) throw new Error(`Asset ${assetId} has no terminal symbol.`);
-  return symbol;
+  if (SYMBOL.test(symbol)) return symbol;
+  if (fallback !== undefined) return fallback;
+  throw new Error(`Asset ${assetId} has no terminal symbol.`);
 }
 
 export function createHyperliquidTestnetMarketSource(
@@ -75,8 +80,8 @@ export function createHyperliquidTestnetMarketSource(
 ): TerminalMarketSource {
   const order = config.orderContext;
   if (order === undefined) throw new Error("Hyperliquid Testnet order context is missing.");
-  const base = assetSymbol(order.baseAsset.assetId);
-  const quote = assetSymbol(order.quoteAsset.assetId);
+  const base = terminalAssetSymbol(order.baseAsset.assetId);
+  const quote = terminalAssetSymbol(order.quoteAsset.assetId);
   const descriptor: TerminalMarketDescriptor = Object.freeze({
     environment: "TESTNET",
     packageId: order.contextId,
@@ -110,7 +115,8 @@ export function createHyperliquidTestnetMarketSource(
 
 const DISPLAY_DIGITS = 8;
 
-function decimalString(numerator: bigint, denominator: bigint): string {
+/** A nonnegative ratio as a decimal string, truncated to eight fractional digits. */
+export function decimalString(numerator: bigint, denominator: bigint): string {
   const scale = 10n ** BigInt(DISPLAY_DIGITS);
   const scaled = (numerator * scale) / denominator;
   const fraction = (scaled % scale).toString().padStart(DISPLAY_DIGITS, "0").replace(/0+$/, "");
@@ -126,8 +132,8 @@ export function createBaseSepoliaMarketSource(
   runtime: Pick<BaseSepoliaOrderRuntime, "config" | "feed">,
 ): TerminalMarketSource {
   const { config, feed } = runtime;
-  const base = assetSymbol(config.baseAsset.assetId);
-  const quote = assetSymbol(config.quoteAsset.assetId);
+  const base = terminalAssetSymbol(config.baseAsset.assetId, "WETH");
+  const quote = terminalAssetSymbol(config.quoteAsset.assetId, "USDC");
   const descriptor: TerminalMarketDescriptor = Object.freeze({
     environment: "TESTNET",
     packageId: config.contextId,

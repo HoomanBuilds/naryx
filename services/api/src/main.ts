@@ -50,7 +50,8 @@ import {
   type SolanaDevnetOrderRuntime,
 } from "./solana-devnet-order-context.js";
 import { withSolanaDevnetFirmQuoteVerification } from "./solana-devnet-firm-quote.js";
-import { createSolanaDevnetMarketSource } from "./private-terminal-manifest.js";
+import { createSolanaDevnetMarketSource, type TerminalMarketSource } from "./private-terminal-manifest.js";
+import { ArbitrumSepoliaMarketFeed, createArbitrumSepoliaMarketSource } from "./arbitrum-sepolia-market-source.js";
 import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
 import { Connection } from "@solana/web3.js";
 import {
@@ -278,20 +279,29 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
 // observe-async route advance the solver-held coordinator steps first, and the owner routes let the
 // browser wallet sign the reservation itself. All are disabled unless explicitly enabled.
 let arbitrumOrderRuntime: ArbitrumSepoliaOrderRuntime | undefined;
+let arbitrumMarketSource: TerminalMarketSource | undefined;
 if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
   try {
-    arbitrumOrderRuntime = await createArbitrumSepoliaOrderRuntime({
-      config: loadArbitrumSepoliaOrderContextConfig(absolutePath(
-        process.env.NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT ?? "",
-        "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT",
-      )),
-      deployment: loadArbitrumSepoliaRuntimeManifest(absolutePath(
-        process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
-        "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
-      )).deployment,
-      port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
-    });
+    const config = loadArbitrumSepoliaOrderContextConfig(absolutePath(
+      process.env.NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT ?? "",
+      "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT",
+    ));
+    const deployment = loadArbitrumSepoliaRuntimeManifest(absolutePath(
+      process.env.NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST ?? "",
+      "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
+    )).deployment;
+    const port = createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? "");
+    arbitrumOrderRuntime = await createArbitrumSepoliaOrderRuntime({ config, deployment, port });
     arbitrumOrderRuntime.feed.start();
+    // The terminal market reads the factory's spot pool and the GMX fee beside the reference feed;
+    // until its first read lands, snapshot and preview report the market unavailable.
+    try {
+      const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs);
+      marketFeed.start();
+      arbitrumMarketSource = createArbitrumSepoliaMarketSource(config, arbitrumOrderRuntime.feed, marketFeed);
+    } catch (error) {
+      reportRuntimeFailure("arbitrumSepoliaTerminalMarket", error);
+    }
   } catch (error) {
     reportRuntimeFailure("arbitrumSepoliaOrderContext", error);
   }
@@ -521,6 +531,7 @@ const server = createPrivateTerminalServer(
   {
     ...terminalMarkets,
     ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
+    ...(arbitrumMarketSource === undefined ? {} : { arbitrum: arbitrumMarketSource }),
     ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
   },
 );
