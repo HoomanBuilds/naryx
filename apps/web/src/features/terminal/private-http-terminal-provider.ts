@@ -3602,9 +3602,11 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     owner: string,
     sizeAtoms: string,
     signal?: AbortSignal,
+    claimTestCollateral = false,
   ): Promise<SolanaDevnetAccountStatus> {
     if (!/^(?:0|[1-9][0-9]{0,30})$/.test(sizeAtoms)) throw new Error("Devnet package size must be decimal atoms.");
     const query = new URLSearchParams({ owner, sizeAtoms });
+    if (claimTestCollateral) query.set("claimTestCollateral", "1");
     const response = await fetch(`${this.#baseUrl}/internal/terminal/solana-devnet/account?${query.toString()}`, {
       method: "GET",
       cache: "no-store",

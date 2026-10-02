@@ -1762,7 +1762,7 @@ export function TradingTerminal({
         const setup = flow.account.steps[0];
         if (nextBaseStep === "setup" && setup) {
           if (setup.kind === "FUND_ACCOUNT" && !flow.account.fundingCovered) {
-            return none("Insufficient testnet USDC", "Your wallet does not hold enough Base Sepolia USDC to fund the strategy account for this package.");
+            return none("Insufficient testnet USDC", "Your wallet does not hold enough Base Sepolia USDC to fund the strategy account for this package. Claim free test USDC on the Portfolio page.");
           }
           return { kind: "base", label: setup.label, reason: reason ?? "A testnet wallet transaction that sets up your own strategy account. Nothing trades yet.", disabled: false };
         }

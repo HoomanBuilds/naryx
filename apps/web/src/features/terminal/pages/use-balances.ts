@@ -12,15 +12,16 @@ import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
  */
 
 /**
- * The quote asset each deployment settles in. Set these to the exact token the deployed package
- * route uses (its runtime manifest's quote asset); Circle's test USDC is only the fallback.
+ * The quote asset each deployment settles in, from its runtime manifest. The hosted Base deployment
+ * uses Naryx Test USDC; until it is configured, Circle's test USDC is shown. Arbitrum settles in the
+ * GMX market's collateral, GMX's own mintable test USDC (USDC.SG).
  */
 function evmAddress(value: string | undefined, fallback: `0x${string}`): `0x${string}` {
   return value && /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : fallback;
 }
-const EVM_USDC: Readonly<Record<EvmDomain, `0x${string}`>> = {
+export const EVM_QUOTE_TOKEN: Readonly<Record<EvmDomain, `0x${string}`>> = {
   base: evmAddress(process.env.NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN, "0x036CbD53842c5426634e7929541eC2318f3dCF7e"),
-  arbitrum: evmAddress(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN, "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d"),
+  arbitrum: evmAddress(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN, "0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773"),
 };
 const SOLANA_DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_DEVNET_RPC_URL || "https://api.devnet.solana.com";
 const SOLANA_DEVNET_USDC = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT ?? "")
@@ -63,8 +64,8 @@ export function useEvmBalances(account: `0x${string}` | null): Readonly<Record<E
     allowFailure: true,
     contracts: account
       ? (["base", "arbitrum"] as const).flatMap((domain) => [
-        { address: EVM_USDC[domain], abi: erc20Abi, functionName: "balanceOf", args: [account], chainId: EVM_CHAINS[domain].id } as const,
-        { address: EVM_USDC[domain], abi: erc20Abi, functionName: "decimals", chainId: EVM_CHAINS[domain].id } as const,
+        { address: EVM_QUOTE_TOKEN[domain], abi: erc20Abi, functionName: "balanceOf", args: [account], chainId: EVM_CHAINS[domain].id } as const,
+        { address: EVM_QUOTE_TOKEN[domain], abi: erc20Abi, functionName: "decimals", chainId: EVM_CHAINS[domain].id } as const,
       ])
       : [],
     query: { enabled },

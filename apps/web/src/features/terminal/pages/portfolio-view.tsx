@@ -8,6 +8,7 @@ import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "../shell/terminal-context";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
+import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
 import styles from "./pages.module.css";
 
 const POSITION_COLUMNS = ["Package", "Chain", "Mode", "Size", "Cost basis", "Mark", "Exit cost", "PnL", "State"];
@@ -18,7 +19,7 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
     ["Signer", "Your Wallet Standard account signs every package"],
     ["Settlement", "Atomic: every leg settles in one transaction, or none does"],
     ["Review", "The exact transaction is shown before any Devnet signature"],
-    ["Perp venue", "Drift on Solana Devnet"],
+    ["Perp venue", "Naryx test perpetual market on Solana Devnet, priced from Pyth"],
   ],
   base: [
     ["Strategy account", "NaryxStrategyAccount, one per owner"],
@@ -27,7 +28,7 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
     ["Perp venue", "Naryx test perpetual market on Base Sepolia, not a third-party exchange"],
   ],
   arbitrum: [
-    ["Strategy account", "NaryxStrategyAccount, one per owner"],
+    ["Strategy account", "GMX V2 isolated account, one per owner"],
     ["Settlement", "The solver settles within its window or its bond pays the signed fault amount"],
     ["Ownership transfer", "Two-step: the new owner must accept"],
     ["Perp venue", "GMX V2 on Arbitrum Sepolia"],
@@ -83,13 +84,19 @@ export function PortfolioView() {
     balances.hyperliquid.perpEquity ?? null,
   ]);
   const connectedCount = (solanaAddress ? 1 : 0) + (evmAddress ? 1 : 0);
+  const faucets = useTestUsdcFaucets();
+  const faucetNotices = DOMAIN_ORDER.flatMap((domain) => {
+    const faucet = faucets[domain];
+    const text = faucet.busy ?? faucet.error ?? faucet.message;
+    return text ? [{ domain, text, error: faucet.error !== null && faucet.busy === null }] : [];
+  });
 
   return (
     <main className={styles.page}>
       <div className={styles.pageHead}>
         <div>
           <h1>Portfolio</h1>
-          <p>Balances on each test network, open packages, and the accounts that sign for them. Balances are read directly from each network; nothing on this page signs or moves funds.</p>
+          <p>Balances on each test network, open packages, and the accounts that sign for them. Balances are read directly from each network. The only signature this page asks for is a free test USDC claim, from your own wallet.</p>
         </div>
       </div>
 
@@ -119,7 +126,7 @@ export function PortfolioView() {
       <section className={styles.card} aria-labelledby="balances-title">
         <div className={styles.cardHead}>
           <h2 id="balances-title">Balances</h2>
-          <p>One row per execution domain.</p>
+          <p>One row per execution domain. Test USDC is free: each claim adds {TEST_USDC_GRANT}. Gas comes from each network&apos;s faucet.</p>
         </div>
         <div className={styles.scroll}>
           <table className={styles.table}>
@@ -139,6 +146,8 @@ export function PortfolioView() {
                 const account = accountFor(domain);
                 const balance = balances[domain];
                 const live = domainLive(domain, runtimeHealth);
+                const faucet = faucets[domain];
+                const gasFaucet = GAS_FAUCETS[domain];
                 return (
                   <tr key={domain}>
                     <td>
@@ -173,7 +182,23 @@ export function PortfolioView() {
                     </td>
                     <td className={styles.num}>
                       {account ? (
-                        <Link className={styles.ghost} href="/trade" onClick={() => setSelectedDomain(domain)}>Trade</Link>
+                        <span className={styles.rowActions}>
+                          {gasFaucet ? (
+                            <a className={styles.ghost} href={gasFaucet.href} target="_blank" rel="noopener noreferrer" title={`Get ${gasFaucet.label} for gas`}>Gas</a>
+                          ) : null}
+                          {faucet.available ? (
+                            <button
+                              type="button"
+                              className={styles.ghost}
+                              disabled={faucet.busy !== null}
+                              aria-busy={faucet.busy !== null}
+                              onClick={() => void faucet.claim()}
+                            >
+                              {faucet.busy !== null ? "Claiming" : faucet.needsSwitch ? `Switch to ${meta.network}` : "Get test USDC"}
+                            </button>
+                          ) : null}
+                          <Link className={styles.ghost} href="/trade" onClick={() => setSelectedDomain(domain)}>Trade</Link>
+                        </span>
                       ) : (
                         <button type="button" className={styles.ghost} onClick={() => modal.open(meta.wallet)}>Connect</button>
                       )}
@@ -184,6 +209,15 @@ export function PortfolioView() {
             </tbody>
           </table>
         </div>
+        {faucetNotices.length > 0 ? (
+          <div className={styles.cardBody} role="status" aria-live="polite">
+            {faucetNotices.map((notice) => (
+              <p key={notice.domain} className={notice.error ? styles.noticeError : styles.noticeOk}>
+                {DOMAIN_META[notice.domain].label}: {notice.text}
+              </p>
+            ))}
+          </div>
+        ) : null}
       </section>
 
       <section className={styles.card} aria-labelledby="positions-title">

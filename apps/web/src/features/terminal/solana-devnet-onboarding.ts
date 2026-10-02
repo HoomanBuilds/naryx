@@ -24,11 +24,15 @@ const PACKET_LIMIT = 1232;
 const FINALITY_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 2_000;
 const ZERO = BigInt(0);
+/** naryx_test_perp pays at most 10,000 test USDC per claim and a step carries at most eight claims. */
+const MAX_CLAIM_ATOMS = BigInt(10_000_000_000);
+const MAX_CLAIMS_PER_STEP = 8;
 const EIGHT = BigInt(8);
 const TEN = BigInt(10);
 
 export type SolanaDevnetOnboardingStepKind =
   | "CREATE_TOKEN_ACCOUNTS"
+  | "CLAIM_TEST_COLLATERAL"
   | "INITIALIZE_POSITION"
   | "DEPOSIT_COLLATERAL"
   | "SET_POSITION_DELEGATE"
@@ -50,11 +54,14 @@ export type SolanaDevnetAccountStatus = Readonly<{
   owner: string;
   ready: boolean;
   requiredCollateralAtoms: bigint;
+  /** The test perp faucet authority when the quote mint is its free test USDC; null otherwise. */
+  testCollateralFaucet: string | null;
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
 
 const STEP_ORDER: readonly SolanaDevnetOnboardingStepKind[] = [
   "CREATE_TOKEN_ACCOUNTS",
+  "CLAIM_TEST_COLLATERAL",
   "INITIALIZE_POSITION",
   "DEPOSIT_COLLATERAL",
   "SET_POSITION_DELEGATE",
@@ -157,6 +164,8 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
   const baseMint = address(value.mints.base, "mints.base");
   const quoteMint = address(value.mints.quote, "mints.quote");
   const requiredCollateral = decimal(value.requiredCollateralAtoms, "requiredCollateralAtoms");
+  const faucet = value.testCollateralFaucet === null || value.testCollateralFaucet === undefined
+    ? null : address(value.testCollateralFaucet, "testCollateralFaucet");
   const tokenAccounts = new Map([
     [derived("traderBase"), { owner, mint: baseMint }],
     [derived("traderQuote"), { owner, mint: quoteMint }],
@@ -166,7 +175,7 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
   const traderQuote = derived("traderQuote");
   const payer = { key: owner, signer: true, writable: true } as const;
   const discriminators = Object.fromEntries(await Promise.all(
-    ["initialize_position", "deposit", "set_delegate", "initialize_test_perp_strategy", "initialize_cash_carry_strategy"]
+    ["initialize_position", "deposit", "set_delegate", "initialize_test_perp_strategy", "initialize_cash_carry_strategy", "claim_test_collateral"]
       .map(async (name) => [name, await anchorDiscriminator(name)] as const),
   ));
 
@@ -215,6 +224,21 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
             payer, { key: ata, writable: true }, { key: expected.owner }, { key: expected.mint }, { key: SYSTEM_PROGRAM }, { key: TOKEN_PROGRAM },
           ], kind);
           exactData(instruction, Uint8Array.of(1));
+        }
+        break;
+      }
+      case "CLAIM_TEST_COLLATERAL": {
+        if (faucet === null) fail("claim step without a test collateral faucet");
+        if (instructions.length === 0 || instructions.length > MAX_CLAIMS_PER_STEP) fail("claim step has an unexpected size");
+        for (const instruction of instructions) {
+          if (instruction.programId !== programs.perpVenue) fail("claim step targets another program");
+          requireMetas(instruction, [
+            { key: owner, signer: true }, { key: quoteMint, writable: true }, { key: faucet },
+            { key: traderQuote, writable: true }, { key: TOKEN_PROGRAM },
+          ], kind);
+          prefix(instruction, discriminators.claim_test_collateral!, 16);
+          const amount = u64Le(instruction.data, 8);
+          if (amount === ZERO || amount > MAX_CLAIM_ATOMS) fail("claim exceeds the faucet bound");
         }
         break;
       }
@@ -268,7 +292,9 @@ export async function parseSolanaDevnetAccountStatus(value: unknown, expectedOwn
     return Object.freeze({ kind, label: candidate.label, instructions: Object.freeze(instructions) });
   });
   if (value.ready !== (steps.length === 0)) fail("readiness does not match the step list");
-  return Object.freeze({ contextId, owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, steps: Object.freeze(steps) });
+  return Object.freeze({
+    contextId, owner, ready: steps.length === 0, requiredCollateralAtoms: requiredCollateral, testCollateralFaucet: faucet, steps: Object.freeze(steps),
+  });
 }
 
 function compactU16(value: number): number[] {
@@ -370,6 +396,33 @@ async function waitForFinality(signature: string, lastValidBlockHeight: number):
     if (Date.now() > deadline) throw new Error("The setup transaction has not finalized yet. Check it in your wallet, then retry.");
     await new Promise((resolve) => window.setTimeout(resolve, POLL_INTERVAL_MS));
   }
+}
+
+/**
+ * Claims free Devnet test USDC for the wallet: reads the account status with the claim flag, then
+ * signs and finalizes the token account and claim steps only. Returns false when the deployment's
+ * quote mint has no faucet or the wallet already holds the faucet maximum.
+ */
+export async function claimSolanaDevnetTestUsdc(input: Readonly<{
+  owner: string;
+  readStatus(owner: string, sizeAtoms: string, signal?: AbortSignal, claimTestCollateral?: boolean): Promise<SolanaDevnetAccountStatus>;
+  signAndSend(transaction: Uint8Array): Promise<string>;
+  onProgress?(message: string): void;
+}>): Promise<boolean> {
+  const { owner, readStatus, signAndSend, onProgress } = input;
+  for (let round = 0; round < 2; round += 1) {
+    const status = await readStatus(owner, "0", undefined, true);
+    if (status.testCollateralFaucet === null) throw new Error("This deployment's Devnet quote mint has no public faucet.");
+    const step = status.steps[0];
+    if (step === undefined || (step.kind !== "CREATE_TOKEN_ACCOUNTS" && step.kind !== "CLAIM_TEST_COLLATERAL")) return false;
+    onProgress?.(step.kind === "CREATE_TOKEN_ACCOUNTS" ? "Approve the token account setup" : "Approve the test USDC claim");
+    const { blockhash, lastValidBlockHeight } = await devnetBlockhash();
+    const signature = await signAndSend(buildOnboardingTransaction(step, owner, blockhash));
+    onProgress?.("Waiting for Devnet finality");
+    await waitForFinality(signature, lastValidBlockHeight);
+    if (step.kind === "CLAIM_TEST_COLLATERAL") return true;
+  }
+  return false;
 }
 
 export function solanaDevnetSizeAtoms(size: string): string {

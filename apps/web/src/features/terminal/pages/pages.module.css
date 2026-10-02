@@ -282,6 +282,33 @@
   opacity: 0.6;
 }
 
+a.ghost {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.rowActions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.noticeOk,
+.noticeError {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.noticeOk {
+  color: var(--up);
+}
+
+.noticeError {
+  color: var(--down);
+}
+
 .connect:focus-visible,
 .ghost:focus-visible,
 .linkButton:focus-visible,
