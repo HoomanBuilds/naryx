@@ -165,6 +165,7 @@ export async function createBaseSepoliaRuntime(
     atomicReadPort: options.client,
     asyncReadPort: options.client,
     store: options.store,
+    atomicChainTime: () => options.client.latestBlockTimestamp(),
   });
 }
 

@@ -1,4 +1,9 @@
-import { listOwnerPackages, OwnerPackageQueryError, parseOwnerPackageQuery } from "./terminal-packages.js";
+import {
+  listOwnerPackages,
+  OwnerPackageQueryError,
+  parseOwnerPackageQuery,
+  type OwnerPackageOutcomeReader,
+} from "./terminal-packages.js";
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -242,6 +247,7 @@ export function createPrivateTerminalRequestHandler(
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   terminalMarkets: TerminalMarketSources = {},
   currentTimeMs: () => number = Date.now,
+  attemptOutcomes?: OwnerPackageOutcomeReader,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -480,6 +486,7 @@ export function createPrivateTerminalRequestHandler(
             orders: orderPorts.store,
             ...(executionIntentStore === undefined ? {} : { intents: executionIntentStore }),
             ...(lifecycleStore === undefined ? {} : { lifecycle: lifecycleStore }),
+            ...(attemptOutcomes === undefined ? {} : { outcomes: attemptOutcomes }),
           }),
         });
       } catch (error) {
@@ -1201,6 +1208,7 @@ export function createPrivateTerminalServer(
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
   terminalMarkets: TerminalMarketSources = {},
+  attemptOutcomes?: OwnerPackageOutcomeReader,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1220,6 +1228,8 @@ export function createPrivateTerminalServer(
     executionReadinessGate,
     executionReadinessScopes,
     terminalMarkets,
+    Date.now,
+    attemptOutcomes,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

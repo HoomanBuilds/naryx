@@ -362,6 +362,23 @@ export type PreparedEvmTestnetAtomicRecord = Readonly<{
   boundTransactionHash: string | undefined;
 }>;
 
+/**
+ * What the chain proved about one bound atomic transaction. PENDING: no settled receipt yet.
+ * REVERTED and FINALIZED: read from the receipt. EXPIRED: no receipt while chain time is already at
+ * or past the signed package deadline, after which PackageVerifier reverts any inclusion. An
+ * evidence mismatch proves no package outcome and is never recorded.
+ */
+export type EvmTestnetAtomicOutcomeState = "PENDING" | "EXPIRED" | "REVERTED" | "FINALIZED";
+
+export type EvmTestnetAtomicOutcome = Readonly<{
+  attemptId: string;
+  idempotencyKey: string;
+  transactionHash: string;
+  state: EvmTestnetAtomicOutcomeState;
+  blockNumber: string | null;
+  receiptHash: string | null;
+}>;
+
 export interface PreparedEvmTestnetAtomicStore {
   get(idempotencyKey: string): PreparedEvmTestnetAtomicRecord | undefined;
   save(
@@ -371,6 +388,8 @@ export interface PreparedEvmTestnetAtomicStore {
     preparation: EvmTestnetAtomicPreparationDto,
   ): PreparedEvmTestnetAtomicRecord;
   bindTransactionHash(idempotencyKey: string, transactionHash: string): PreparedEvmTestnetAtomicRecord;
+  /** A durable store keeps each observation's outcome beside the transaction it binds. */
+  recordOutcome?(outcome: EvmTestnetAtomicOutcome): void;
 }
 
 export type EvmTestnetRuntimePortsOptions = Readonly<{
@@ -381,6 +400,8 @@ export type EvmTestnetRuntimePortsOptions = Readonly<{
   atomicReadPort: EvmReadPort;
   asyncReadPort: EvmReadPort;
   store: PreparedEvmTestnetAtomicStore;
+  /** Latest block timestamp in unix seconds. Without it an unseen transaction never reads as EXPIRED. */
+  atomicChainTime?: () => Promise<bigint>;
 }>;
 
 export type EvmTestnetAsyncObservationPortOptions = Readonly<{
@@ -1774,6 +1795,34 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
     string,
     { attemptId: string; traderSignature: string; promise: Promise<EvmTestnetAtomicPreparationDto> }
   >();
+  const atomicChainTime = options.atomicChainTime;
+
+  const atomicOutcomeState = async (
+    observation: EvmTestnetAtomicObservationDto,
+    admission: PackageAdmission,
+  ): Promise<EvmTestnetAtomicOutcomeState | undefined> => {
+    switch (observation.lifecycle) {
+      case "FINALIZED":
+      case "REVERTED":
+        return observation.lifecycle;
+      case "SUBMITTED":
+      case "CONFIRMED":
+        return "PENDING";
+      case "NOT_FOUND": {
+        if (atomicChainTime === undefined) return "PENDING";
+        // The same deadline compileEvmAtomicPackage signs into the execution.
+        const { order, quote, route } = admission;
+        const deadline = [order.expiryValue, quote.validUntilValue, route.routeExpiryValue]
+          .reduce((left, right) => left < right ? left : right);
+        // Chain time first, then the receipt again: the missing receipt is read after a head already past the deadline.
+        if (await atomicChainTime() < deadline) return "PENDING";
+        const receipt = await atomicReadPort.transactionReceipt(observation.transactionHash as Hex);
+        return receipt === null ? "EXPIRED" : "PENDING";
+      }
+      default:
+        return undefined;
+    }
+  };
 
   const solverAuthorizer = options.solverAuthorizer;
   return Object.freeze({
@@ -2049,7 +2098,7 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           transactionHash as Hex,
           atomicContext.finality,
         );
-        return sanitizeAtomicObservation(
+        const observation = sanitizeAtomicObservation(
           observed as unknown as {
             lifecycle: string;
             evidenceGrade: string;
@@ -2065,6 +2114,20 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           { attemptId, idempotencyKey, transactionHash },
           domains.order,
         );
+        if (store.recordOutcome !== undefined) {
+          const state = await atomicOutcomeState(observation, atomicContext.admission);
+          if (state !== undefined) {
+            store.recordOutcome({
+              attemptId,
+              idempotencyKey,
+              transactionHash,
+              state,
+              blockNumber: observation.blockNumber,
+              receiptHash: observation.receiptHash,
+            });
+          }
+        }
+        return observation;
       },
     }),
     asyncObservation: createEvmTestnetAsyncObservationPort({

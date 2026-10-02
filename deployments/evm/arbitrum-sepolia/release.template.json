@@ -419,7 +419,8 @@
         "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED": "true",
         "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT": { "$out": "api/arbitrum-sepolia-order-context.json" },
         "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED": "true",
-        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN": "http://127.0.0.1:8793"
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN": "http://127.0.0.1:8793",
+        "NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB": { "$data": "api/arbitrum-sepolia-outcomes.db" }
       }
     },
     "env/solver.env": {

@@ -14,7 +14,15 @@ import {
   stderrRuntimeFailureReporter,
   type PrivateTerminalRuntimeFactories,
 } from "./runtime-composition.js";
-import { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
+import {
+  reconcilePendingEvmTestnetAtomicOutcomes,
+  SqlitePreparedEvmTestnetAtomicStore,
+} from "./evm-testnet-prepared-store.js";
+import {
+  reconcileUnsettledArbitrumSepoliaOutcomes,
+  SqliteArbitrumSepoliaOutcomeStore,
+} from "./arbitrum-sepolia-outcome-store.js";
+import type { OwnerPackageOutcomeReader } from "./terminal-packages.js";
 import {
   DurableAttemptScopeResolver,
   TestnetCapExecutionGate,
@@ -114,6 +122,16 @@ function explicitlyEnabled(name: string): boolean {
   const value = process.env[name] ?? "false";
   if (value !== "true" && value !== "false") throw new Error(`${name} must be true or false.`);
   return value === "true";
+}
+
+/** Runs a reconciliation sweep each minute, never two at once, without holding the process open. */
+function everyMinute(sweep: () => Promise<void>): void {
+  let running = false;
+  setInterval(() => {
+    if (running) return;
+    running = true;
+    void sweep().catch(() => undefined).finally(() => { running = false; });
+  }, 60_000).unref();
 }
 
 // Where each lane's reference history legs come from, named as each lane composes its market source.
@@ -239,6 +257,13 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
     reportRuntimeFailure("baseTestnetAtomic", error);
   }
 }
+// Server-side reconciliation: bound Base transactions without a settled outcome are observed again,
+// so a package finalizes, reverts, or expires in its owner's list after the sending browser is gone.
+if (baseRuntime?.atomicObservation !== undefined && basePreparationStore !== undefined) {
+  const store = basePreparationStore;
+  const observation = baseRuntime.atomicObservation;
+  everyMinute(() => reconcilePendingEvmTestnetAtomicOutcomes(store, observation));
+}
 let solanaDevnetRuntime: Awaited<ReturnType<typeof createSolanaDevnetRuntime>> | undefined;
 let solanaDevnetRuntimeError: unknown;
 if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
@@ -363,9 +388,16 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
   }
 }
 let arbitrumOwnerRoutes: ReturnType<typeof createArbitrumSepoliaOwnerRoutes> | undefined;
+let arbitrumOutcomeStore: SqliteArbitrumSepoliaOutcomeStore | undefined;
 if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
   try {
-    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, arbitrumExecutor);
+    // Each handoff keeps what it proved on chain, durably, for the owner's package list.
+    arbitrumOutcomeStore = new SqliteArbitrumSepoliaOutcomeStore(absolutePath(
+      process.env.NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB ?? "",
+      "NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB",
+    ), { intents: executionIntentStore, orders: orderStore });
+    const observation = arbitrumRuntime;
+    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(observation, arbitrumExecutor, arbitrumOutcomeStore);
     arbitrumOwnerRoutes = createArbitrumSepoliaOwnerRoutes({
       terminalOrigin: config.terminalOrigin,
       deployment: loadArbitrumSepoliaRuntimeManifest(absolutePath(
@@ -378,7 +410,12 @@ if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
       orders: orderStore,
       ...(arbitrumOrderRuntime === undefined ? {} : { exit: { runtime: arbitrumOrderRuntime, orders: orderStore } }),
     });
+    // The sweep reads chain state only; the solver still advances an attempt only through the gated handoff.
+    const outcomes = arbitrumOutcomeStore;
+    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, observation));
   } catch (error) {
+    arbitrumOutcomeStore?.close();
+    arbitrumOutcomeStore = undefined;
     arbitrumOwnerRoutes = undefined;
     arbitrumRuntime = undefined;
     arbitrumRuntimeError = error;
@@ -652,6 +689,10 @@ const referenceRecorder = referenceHistory === undefined ? undefined : new Refer
 );
 referenceRecorder?.start();
 
+// Each lane's store answers only for its own attempt IDs.
+const ownerPackageOutcomes: OwnerPackageOutcomeReader = (attemptId) =>
+  basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId);
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -685,6 +726,7 @@ const server = createPrivateTerminalServer(
       : createReferenceCandleRoutes({ store: referenceHistory, markets: terminalMarketSources }),
   ),
   terminalMarketSources,
+  ownerPackageOutcomes,
 );
 
 const publicServer = publicMarket?.listener === undefined
@@ -720,6 +762,7 @@ function shutdown(): void {
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
     basePreparationStore?.close();
+    arbitrumOutcomeStore?.close();
     hyperliquidExecutionRuntime?.close();
     hyperliquidOwnerLedger?.close();
     referenceHistory?.close();

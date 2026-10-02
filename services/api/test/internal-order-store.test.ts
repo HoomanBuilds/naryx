@@ -208,3 +208,53 @@ test("owner package listing finds a wallet's orders from any device, EVM owners 
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("owner package listing carries an attempt's observed outcome on its owner's packages only", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-api-orders-"));
+  const context = activeContext();
+  const provider: ActiveOrderContextProvider = (contextId) => (contextId === context.contextId ? context : undefined);
+  const owners = ["0x00000000000000000000000000000000000000Ab", "0x00000000000000000000000000000000000000cd"];
+  const store = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  try {
+    const attempts = new Map(owners.map((who, index) => {
+      const request = Object.freeze({
+        contextId: "test-context-1",
+        owner: who,
+        settlementAccount: "strategy-account-1",
+        sizeAtoms: 1_000_000_000n,
+        slippageBps: 10,
+        idempotencyKey: `test-outcome-key-000${index}`,
+        currentClock: 1_000_500n + BigInt(index),
+      });
+      const { record } = store.createOrGet({ order: createCanonicalEntryOrder(provider, request), request });
+      return [record.orderHashHex, `base-atomic-${String(index).repeat(52)}`] as const;
+    }));
+    const finalized = {
+      state: "FINALIZED",
+      transactionHash: `0x${"61".repeat(32)}`,
+      blockNumber: "130",
+      receiptHash: `0x${"60".repeat(32)}`,
+    };
+    const stores = {
+      orders: store,
+      intents: {
+        getAttemptForOrder: (orderHash: string) => {
+          const attemptId = attempts.get(orderHash);
+          return attemptId === undefined ? undefined : { attemptId };
+        },
+      } as unknown as NonNullable<Parameters<typeof listOwnerPackages>[1]["intents"]>,
+      outcomes: (attemptId: string) => (attemptId === `base-atomic-${"0".repeat(52)}` ? finalized : undefined),
+    };
+    const mine = listOwnerPackages(owners[0]!.toLowerCase(), stores);
+    assert.equal(mine.length, 1);
+    const { state, transactionHash, blockNumber, receiptHash } = mine[0]!;
+    assert.deepEqual({ state, transactionHash, blockNumber, receiptHash }, finalized);
+    const theirs = listOwnerPackages(owners[1]!, stores);
+    assert.equal(theirs.length, 1);
+    assert.equal(theirs[0]!.attemptId, `base-atomic-${"1".repeat(52)}`);
+    assert.deepEqual([theirs[0]!.state, theirs[0]!.transactionHash, theirs[0]!.receiptHash], [null, null, null]);
+  } finally {
+    store.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

@@ -4,6 +4,7 @@ import {
   type ArbitrumSepoliaExitAuthorization,
 } from "./arbitrum-sepolia-exit.js";
 import type {
+  EvmTestnetAsyncObservationDto,
   EvmTestnetAsyncObservationPort,
   EvmTestnetObserveAsyncRequest,
 } from "./evm-testnet-runtime-ports.js";
@@ -331,6 +332,20 @@ implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExec
   }
 }
 
+/** Keeps what a handoff observation proved, beside the transaction that last moved the attempt. */
+export interface ArbitrumSepoliaObservationRecorder {
+  record(
+    request: EvmTestnetObserveAsyncRequest,
+    observation: EvmTestnetAsyncObservationDto,
+    transactionHash: string | null,
+  ): void;
+}
+
+/** The last transaction the solver's journal saw confirmed for this attempt, in send order. */
+export function latestConfirmedTransaction(summary: ArbitrumSepoliaExecutionSummary): string | null {
+  return summary.transactions.findLast((entry) => entry.status === "CONFIRMED")?.txHash ?? null;
+}
+
 /**
  * The readiness gate has already approved ARBITRUM_TESTNET_ASYNC_HANDOFF when observe runs, so the
  * solver advances the attempt first (idempotent per attempt), then the signerless observation reports
@@ -339,6 +354,7 @@ implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExec
 export function withArbitrumSepoliaExecutionHandoff(
   observation: EvmTestnetAsyncObservationPort,
   executor: ArbitrumSepoliaAttemptExecutor,
+  recorder?: ArbitrumSepoliaObservationRecorder,
 ): EvmTestnetAsyncObservationPort {
   if (typeof observation?.observe !== "function" || typeof executor?.advance !== "function") {
     throw new Error("Arbitrum handoff requires an observation port and an executor.");
@@ -349,7 +365,9 @@ export function withArbitrumSepoliaExecutionHandoff(
       if (summary.status === "FAILED") {
         throw new ArbitrumSepoliaHandoffError("EXECUTION_FAILED", "Arbitrum Sepolia execution failed closed.");
       }
-      return observation.observe(request);
+      const observed = await observation.observe(request);
+      recorder?.record(request, observed, latestConfirmedTransaction(summary));
+      return observed;
     },
   });
 }

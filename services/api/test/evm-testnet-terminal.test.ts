@@ -1382,3 +1382,127 @@ test("durable Base prepared store keeps replay and observation binding across a 
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("durable Base outcomes keep what the chain proved for each bound transaction across a restart", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-outcome-"));
+  const dbPath = join(scratch, "base-preparations.db");
+  const baseChain = 84_532n;
+  const manifest = baseManifest("eip155:84532", baseChain);
+  const admission = baseAdmission(manifest);
+  const hashes = admission as unknown as { orderHash: Uint8Array; quoteHash: Uint8Array; routeHash: Uint8Array };
+  const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString("hex")}` as Hex;
+  const context = {
+    admission,
+    deployment: baseDeployment(manifest, baseChain),
+    seriesBindingInput: baseSeriesBinding(manifest),
+    bounds: {
+      currentUnixSeconds: 1_000n,
+      strategyAccount,
+      solver,
+      spotFillCommitment: hashBytes(55),
+      packageNonce: 0n,
+      expectedPrePerpEntryNotionalWad: 0n,
+      expectedPrePerpBalanceWad: 10n,
+      minimumPostPerpBalanceWad: 0n,
+      maximumPostPerpBalanceWad: 100n,
+      maximumPostPerpEntryNotionalWad: 7_000_000_000_000_000_000_000n,
+      perpExpiry: 1_900_000_000,
+      perpArgs: [hashBytes(56), hashBytes(57)] as unknown as readonly [Hash32, Hash32],
+    },
+    atomicBinding: {
+      chainReference: baseChain,
+      packageVerifier,
+      strategyAccount,
+      orderHash: hex(hashes.orderHash),
+      quoteHash: hex(hashes.quoteHash),
+      routeHash: hex(hashes.routeHash),
+      executionPlanKind: "EVM_ATOMIC_BATCH" as const,
+    },
+    finality: { requiredConfirmations: 5, requireFinalized: true },
+  };
+  let receipt: Awaited<ReturnType<EvmReadPort["transactionReceipt"]>> = null;
+  // The signed deadline is the earliest of order expiry 3000, quote validity 2500, and route expiry 2000.
+  let chainTime = 1_999n;
+  const readPort: EvmReadPort = {
+    chainId: async () => baseChain,
+    transactionReceipt: async () => receipt,
+    readContract: async () => {
+      throw new Error("unexpected contract read");
+    },
+    chainHead: async () => ({ latestBlock: 130n, finalizedBlock: 125n }),
+  };
+  const portsFor = (store: PreparedEvmTestnetAtomicStore) => createEvmTestnetTerminalPorts({
+    atomicContextProvider: () => context,
+    solverAuthorizer: solverAuthorizerFor(context.admission, context.deployment, context.seriesBindingInput),
+    asyncContextProvider: () => {
+      throw new Error("unused");
+    },
+    atomicReadPort: readPort,
+    asyncReadPort: readPort,
+    store,
+    atomicChainTime: async () => chainTime,
+  });
+  const attemptId = "attempt-base-outcome-01";
+  const traderSignature = await traderSignatureFor(
+    context.admission, context.deployment, context.seriesBindingInput, context.bounds,
+  );
+  const first = { attemptId, idempotencyKey: "idem-base-outcome-0001", transactionHash: hashHex(61) };
+  const second = { attemptId, idempotencyKey: "idem-base-outcome-0002", transactionHash: hashHex(62) };
+  let store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+  try {
+    let ports = portsFor(store);
+    await ports.preparation!.prepare({ attemptId, idempotencyKey: first.idempotencyKey, traderSignature });
+    assert.equal(store.attemptOutcome(attemptId), undefined);
+
+    await ports.atomicObservation!.observe(first);
+    assert.deepEqual(store.attemptOutcome(attemptId), {
+      state: "PENDING", transactionHash: first.transactionHash, blockNumber: null, receiptHash: null,
+    });
+    assert.deepEqual(store.pendingObservations(10), [first]);
+
+    chainTime = 2_000n;
+    await ports.atomicObservation!.observe(first);
+    assert.equal(store.attemptOutcome(attemptId)?.state, "EXPIRED");
+    assert.deepEqual(store.pendingObservations(10), []);
+
+    store.close();
+    store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+    ports = portsFor(store);
+    assert.equal(store.attemptOutcome(attemptId)?.state, "EXPIRED");
+    // A receipt outranks its absence, and once read it never changes.
+    receipt = { status: "reverted", blockNumber: 120n, logs: [] };
+    await ports.atomicObservation!.observe(first);
+    receipt = null;
+    await ports.atomicObservation!.observe(first);
+    assert.deepEqual(store.attemptOutcome(attemptId), {
+      state: "REVERTED", transactionHash: first.transactionHash, blockNumber: "120", receiptHash: null,
+    });
+
+    // The same attempt sent again under another key: its finalized transaction is the attempt's outcome.
+    await ports.preparation!.prepare({ attemptId, idempotencyKey: second.idempotencyKey, traderSignature });
+    await ports.atomicObservation!.observe(second);
+    assert.throws(
+      () => store.recordOutcome({ ...second, transactionHash: hashHex(63), state: "PENDING", blockNumber: null, receiptHash: null }),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "OUTCOME_UNBOUND",
+    );
+    store.recordOutcome({ ...second, state: "FINALIZED", blockNumber: "130", receiptHash: hashHex(60) });
+    store.close();
+    store = new SqlitePreparedEvmTestnetAtomicStore(dbPath);
+    assert.deepEqual(store.attemptOutcome(attemptId), {
+      state: "FINALIZED", transactionHash: second.transactionHash, blockNumber: "130", receiptHash: hashHex(60),
+    });
+    const raw = new Database(dbPath);
+    try {
+      assert.throws(
+        () => raw.prepare("UPDATE evm_atomic_attempt_outcomes SET state = 'PENDING' WHERE idempotency_key = ?")
+          .run(second.idempotencyKey),
+        /never changes/,
+      );
+    } finally {
+      raw.close();
+    }
+  } finally {
+    store.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
