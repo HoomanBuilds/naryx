@@ -115,3 +115,14 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   start the services.
 - Fund the solver, keeper, and Hyperliquid accounts before they run dry; their balances bound how
   many users can trade at once.
+- A Hyperliquid package whose outcome is not final blocks the shared lane (new Hyperliquid
+  executions wait, then time out). After resolving it, release the lane on the host itself:
+
+  ```bash
+  curl -sS -X POST http://127.0.0.1:8792/internal/solver/hyperliquid-testnet/release-lane \
+    -H 'Content-Type: application/json' \
+    -d '{"attemptId":"<blocked attempt id>","disposition":"FINAL","reason":"reconciled after fill"}'
+  ```
+
+  `FINAL` succeeds only while a fresh keeper reconciliation shows nothing pending; for an attempt
+  resolved out of band use `ABANDONED` with a reason (`deployments/hyperliquid/testnet/README.md`).
