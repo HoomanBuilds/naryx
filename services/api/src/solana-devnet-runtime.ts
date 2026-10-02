@@ -277,6 +277,9 @@ export class HttpSolanaDevnetBindingSource implements SolanaDevnetLiveBindingSou
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ attemptId: input.attempt.attemptId }),
+      // Binding funds the reservation and locks the quote: two Devnet writes that each wait for
+      // finality. Bounded so a stalled solver fails the request instead of holding it open.
+      signal: AbortSignal.timeout(90_000),
     });
     if (!response.ok) throw new Error(`Solana Devnet binding source failed with status ${response.status}.`);
     const payload = await response.json() as unknown;
