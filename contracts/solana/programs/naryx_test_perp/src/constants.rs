@@ -5,6 +5,12 @@ pub const POSITION_SEED: &[u8] = b"test-perp-position";
 pub const COLLATERAL_VAULT_SEED: &[u8] = b"test-perp-collateral-vault";
 pub const FEE_VAULT_SEED: &[u8] = b"test-perp-fee-vault";
 pub const INSURANCE_VAULT_SEED: &[u8] = b"test-perp-insurance-vault";
+pub const TEST_COLLATERAL_FAUCET_SEED: &[u8] = b"test-collateral-faucet";
+
+// Test USDC: six decimals, 10,000 per claim, 10,000,000 per token account through the faucet.
+pub const TEST_COLLATERAL_DECIMALS: u8 = 6;
+pub const TEST_COLLATERAL_MAX_CLAIM_ATOMS: u64 = 10_000_000_000;
+pub const TEST_COLLATERAL_MAX_BALANCE_ATOMS: u64 = 10_000_000_000_000;
 
 pub const PYTH_RECEIVER_PROGRAM_ID: Pubkey = pubkey!("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
 pub const PRICE_UPDATE_V2_DISCRIMINATOR: [u8; 8] = [34, 241, 35, 99, 157, 126, 244, 205];

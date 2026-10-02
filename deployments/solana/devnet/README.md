@@ -178,7 +178,7 @@ The Devnet release then contains `naryx_orca_adapter`, `naryx_test_perp`, `naryx
 
 Every step below is a Devnet write. None of it is authorized by this README; each needs the same genesis-hash check and an external Devnet-only signer.
 
-1. `initialize_market` by the market owner with the Devnet USDC mint as `collateral_mint`, the Devnet SOL/USD sponsored price account `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE` as `oracle`, and feed id `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d`. Recommended parameters, close to a real venue:
+1. `initialize_market` by the market owner with the Devnet test USDC mint (operator runbook step 2) as `collateral_mint`, the Devnet SOL/USD sponsored price account `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE` as `oracle`, and feed id `ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d`. Recommended parameters, close to a real venue:
 
    | Parameter | Value |
    |---|---|
@@ -197,7 +197,7 @@ Every step below is a Devnet write. None of it is authorized by this README; eac
    | `max_funding_rate_per_second` | `10000` (1e-8 per second) |
    | `funding_keeper` | a separate Devnet-only keeper key |
 
-2. Fund the insurance vault PDA with Devnet USDC by a plain token transfer. It is the counterparty for trader gains and funding credits.
+2. Fund the insurance vault PDA with Devnet test USDC by a plain token transfer. It is the counterparty for trader gains and funding credits.
 3. Per trader, signed by the trader's own wallet: `initialize_position`, `deposit`, `set_delegate` to the trader's strategy PDA (`["test-perp-strategy", owner, strategy_id]` under the adapter), then `naryx_test_perp_adapter.initialize_test_perp_strategy` with the core executor authority PDA (`["cash-carry-executor", owner, strategy]` under core) as `controller`, then `naryx_core.initialize_cash_carry_strategy`, and the trader and executor associated token accounts for both mints. The delegate must be set first: the adapter rejects a strategy whose position is not already delegated to it. The API serves these exact unsigned instructions, only for the steps still missing, at `GET /internal/terminal/solana-devnet/account?owner=<wallet>&sizeAtoms=<atoms>`; it never signs.
 4. Register the core resources: the perp adapter record subject is the `naryx_test_perp_adapter` program, and both the perp venue and perp market record subjects are the test perp market account under the `naryx_test_perp` program code identity, with the market record lot and tick equal to `base_lot_atoms` and `quote_tick_atoms_per_base_lot`.
 
@@ -227,8 +227,18 @@ The services drive a Devnet entry end to end once the release above is deployed,
 Every script below runs from `contracts/solana`, requires `--cluster devnet`, verifies the Devnet genesis hash from chain data, refuses keypair files inside the repository, the default Solana CLI wallet, or files readable by group or others, and only simulates unless `--send` is given. Each step is idempotent: an existing account is decoded and must match the plan or the run fails.
 
 1. Deploy and verify the release as described above, then write the candidate release manifest for `naryx_core`, `naryx_inventory_reservation`, `naryx_package_book`, `naryx_test_perp`, and `naryx_test_perp_adapter`.
-2. Write the initialization plan outside the repository: domain, governance canceller and pauser, solver id, base and quote mints and decimals, funding keeper, reservation class, package book class, shard reference, spot market units, quote limit, descriptor hashes, series hashes and units, and vault funding targets.
-3. Dry run, review the simulated steps, then send:
+2. Create the test USDC quote mint. Circle's Devnet USDC faucet grants a few tokens per request, so the hosted Devnet deployment settles in a Naryx test USDC mint: six decimals, the `naryx_test_perp` faucet PDA (seed `test-collateral-faucet`) as its only mint authority, and no freeze authority. Any wallet then claims up to 10,000 per `claim_test_collateral` call into its own token account, up to 10,000,000 per account; the terminal's account setup adds the claim step when a wallet cannot cover its deposit, and the Portfolio page claims on request. Fund the vault funder and the solver the same way:
+
+   ```bash
+   node scripts/create-devnet-test-usdc.mjs --cluster devnet --test-perp-program <naryx_test_perp id> \
+     --payer /abs/payer.json --mint-keypair /abs/test-usdc-mint.json [--send]
+   node scripts/create-devnet-test-usdc.mjs --cluster devnet --test-perp-program <naryx_test_perp id> \
+     --payer /abs/payer.json --mint <mint> --claimant /abs/funder.json --claim-atoms 1000000000000 [--send]
+   ```
+
+   An existing `--mint` must already be such a faucet mint, or the script stops. Use the mint as the plan's quote mint, the test perp `collateral_mint`, and the quote asset everywhere below.
+3. Write the initialization plan outside the repository: domain, governance canceller and pauser, solver id, base and quote mints and decimals, funding keeper, reservation class, package book class, shard reference, spot market units, quote limit, descriptor hashes, series hashes and units, and vault funding targets.
+4. Dry run, review the simulated steps, then send:
 
    ```bash
    node scripts/initialize-devnet.mjs --cluster devnet \
@@ -240,11 +250,11 @@ Every script below runs from `contracts/solana`, requires `--cluster devnet`, ve
    ```
 
    The order is: core `initialize`, `propose_solver` and `schedule_unpause`, then their activations after the config delay; test perp `initialize_market` with the recommended parameters; the inventory reservation class; the package book class; asset, venue, market, and adapter registrations, each wave proposed and then activated after the delay; the series binding; the solver shard; the solver's base and quote token accounts; and insurance and fee vault top-ups in exact atoms. With `--send` the script waits for each activation slot; rerun it after `--max-wait-seconds` to resume. The record lists every account, each resource manifest document and its hash, and the `runtimeManifest`, `solverConfig`, and `orderContext` fragments.
-4. Create the address lookup table for the fixed accounts and add its fragment to the runtime manifest `lookupTables`:
+5. Create the address lookup table for the fixed accounts and add its fragment to the runtime manifest `lookupTables`:
 
    ```bash
    node scripts/devnet-lookup-table.mjs --cluster devnet --record /abs/initialize-record.json \
      --payer /abs/payer.json --authority /abs/alt-authority.json [--table <address>] [--freeze] [--send]
    ```
 
-5. Fund the solver's base inventory account, start the solver with writes enabled, and let it post its reference and firm ask levels.
+6. Fund the solver's base inventory account, start the solver with writes enabled, and let it post its reference and firm ask levels.

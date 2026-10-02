@@ -16,6 +16,8 @@ use {
         error::TestPerpError, InitializeMarketArgs, OrderSide, PlaceMarketOrderArgs,
         TestPerpPosition, COLLATERAL_VAULT_SEED, FEE_VAULT_SEED, INSURANCE_VAULT_SEED, MARKET_SEED,
         POSITION_SEED, PRICE_UPDATE_V2_DISCRIMINATOR, PYTH_RECEIVER_PROGRAM_ID,
+        TEST_COLLATERAL_FAUCET_SEED, TEST_COLLATERAL_MAX_BALANCE_ATOMS,
+        TEST_COLLATERAL_MAX_CLAIM_ATOMS,
     },
     solana_account::Account,
     solana_keypair::Keypair,
@@ -595,4 +597,116 @@ fn adapter_strategy_enters_and_closes_exact_short_as_delegate() {
     );
     send(&mut env.svm, &controller, &[], &[close]).unwrap();
     assert_eq!(position(&env).base_lots, 0);
+}
+
+fn faucet_mint(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    authority: Pubkey,
+    freeze: Option<&Pubkey>,
+) -> Pubkey {
+    let mint = Keypair::new();
+    let create = system_instruction::create_account(
+        &payer.pubkey(),
+        &mint.pubkey(),
+        svm.minimum_balance_for_rent_exemption(Mint::LEN),
+        Mint::LEN as u64,
+        &TOKEN_PROGRAM_ID,
+    );
+    let init = spl_token::instruction::initialize_mint2(
+        &TOKEN_PROGRAM_ID,
+        &mint.pubkey(),
+        &authority,
+        freeze,
+        6,
+    )
+    .unwrap();
+    send(svm, payer, &[&mint], &[create, init]).unwrap();
+    mint.pubkey()
+}
+
+fn claim(
+    env: &mut Env,
+    signer: &Keypair,
+    mint: Pubkey,
+    to: Pubkey,
+    amount: u64,
+) -> TransactionResult {
+    let claim = ix(
+        naryx_test_perp::id(),
+        naryx_test_perp::accounts::ClaimTestCollateral {
+            recipient: signer.pubkey(),
+            mint,
+            faucet_authority: pda(&[TEST_COLLATERAL_FAUCET_SEED]),
+            recipient_collateral: to,
+            token_program: TOKEN_PROGRAM_ID,
+        },
+        naryx_test_perp::instruction::ClaimTestCollateral { amount },
+    );
+    send(&mut env.svm, signer, &[], &[claim])
+}
+
+#[test]
+fn faucet_claims_bounded_test_collateral_into_the_signers_own_account() {
+    let mut env = setup();
+    let faucet = pda(&[TEST_COLLATERAL_FAUCET_SEED]);
+    let owner = env.owner.insecure_clone();
+    let trader = env.trader.insecure_clone();
+    let mint = faucet_mint(&mut env.svm, &owner, faucet, None);
+    let account = token_account(&mut env.svm, &trader, mint, trader.pubkey());
+
+    claim(
+        &mut env,
+        &trader,
+        mint,
+        account,
+        TEST_COLLATERAL_MAX_CLAIM_ATOMS,
+    )
+    .unwrap();
+    assert_eq!(balance(&env, account), TEST_COLLATERAL_MAX_CLAIM_ATOMS);
+    assert_error(
+        claim(&mut env, &trader, mint, account, 0),
+        TestPerpError::ZeroAmount,
+    );
+    assert_error(
+        claim(
+            &mut env,
+            &trader,
+            mint,
+            account,
+            TEST_COLLATERAL_MAX_CLAIM_ATOMS + 1,
+        ),
+        TestPerpError::FaucetLimitExceeded,
+    );
+
+    // Another wallet cannot claim into the trader's account, and nobody claims past the balance limit.
+    let keeper = env.keeper.insecure_clone();
+    assert!(claim(&mut env, &keeper, mint, account, 1).is_err());
+    let full = TEST_COLLATERAL_MAX_BALANCE_ATOMS / TEST_COLLATERAL_MAX_CLAIM_ATOMS;
+    for _ in 1..full {
+        claim(
+            &mut env,
+            &trader,
+            mint,
+            account,
+            TEST_COLLATERAL_MAX_CLAIM_ATOMS,
+        )
+        .unwrap();
+    }
+    assert_eq!(balance(&env, account), TEST_COLLATERAL_MAX_BALANCE_ATOMS);
+    assert_error(
+        claim(&mut env, &trader, mint, account, 1),
+        TestPerpError::FaucetLimitExceeded,
+    );
+
+    // A mint the faucet does not own, or one with a freeze authority, is never minted.
+    let foreign = env.mint;
+    let foreign_account = token_account(&mut env.svm, &trader, foreign, trader.pubkey());
+    assert!(claim(&mut env, &trader, foreign, foreign_account, 1).is_err());
+    let frozen = faucet_mint(&mut env.svm, &owner, faucet, Some(&owner.pubkey()));
+    let frozen_account = token_account(&mut env.svm, &trader, frozen, trader.pubkey());
+    assert_error(
+        claim(&mut env, &trader, frozen, frozen_account, 1),
+        TestPerpError::InvalidFaucetMint,
+    );
 }

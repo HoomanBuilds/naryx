@@ -334,8 +334,8 @@ export type SolanaDevnetInstruction = Readonly<{
 }>;
 
 export type SolanaDevnetOnboardingStep = Readonly<{
-  kind: "CREATE_TOKEN_ACCOUNTS" | "INITIALIZE_POSITION" | "DEPOSIT_COLLATERAL" | "SET_POSITION_DELEGATE"
-    | "INITIALIZE_STRATEGY" | "INITIALIZE_EXECUTOR_AUTHORITY";
+  kind: "CREATE_TOKEN_ACCOUNTS" | "CLAIM_TEST_COLLATERAL" | "INITIALIZE_POSITION" | "DEPOSIT_COLLATERAL"
+    | "SET_POSITION_DELEGATE" | "INITIALIZE_STRATEGY" | "INITIALIZE_EXECUTOR_AUTHORITY";
   label: string;
   instructions: readonly SolanaDevnetInstruction[];
 }>;
@@ -362,6 +362,11 @@ export type SolanaDevnetAccountStatus = Readonly<{
   }>;
   market: Readonly<{ address: string; collateralVault: string }>;
   mints: Readonly<{ base: string; quote: string }>;
+  /**
+   * The test perp venue's faucet PDA when the quote mint is its test USDC (six decimals, minted only by
+   * that PDA, no freeze authority), read from the chain; null when the quote is any other mint.
+   */
+  testCollateralFaucet: string | null;
   ready: boolean;
   steps: readonly SolanaDevnetOnboardingStep[];
 }>;
@@ -385,11 +390,12 @@ export type SolanaDevnetOrderRuntime = Readonly<{
   clock: InternalOrderClockPort;
   feed: SolanaDevnetMarketFeed;
   config: SolanaDevnetOrderContextConfig;
-  accountStatus(owner: string, sizeAtoms: bigint): Promise<SolanaDevnetAccountStatus>;
+  /** With `claimTestCollateral`, a faucet claim step is included whenever the faucet can still pay the wallet. */
+  accountStatus(owner: string, sizeAtoms: bigint, claimTestCollateral?: boolean): Promise<SolanaDevnetAccountStatus>;
   /** Builds and stores the canonical EXIT order for the owner's open package. Needs the order store. */
   createExitOrder(request: SolanaDevnetExitOrderRequest): Promise<InternalOrderCreateResult & Readonly<{ quantityAtoms: bigint }>>;
   /**
-   * GET /internal/terminal/solana-devnet/account?owner=<base58>&sizeAtoms=<atoms>. Read-only.
+   * GET /internal/terminal/solana-devnet/account?owner=<base58>&sizeAtoms=<atoms>[&claimTestCollateral=1]. Read-only.
    * POST /internal/terminal/solana-devnet/exit-order {owner, slippageBps, idempotencyKey}.
    */
   handler(request: IncomingMessage, response: ServerResponse): boolean;
@@ -435,6 +441,20 @@ function instruction(programId: string, accounts: ReturnType<typeof meta>[], dat
   return Object.freeze({ programId, accounts: Object.freeze(accounts), dataBase64: Buffer.from(data).toString("base64") });
 }
 
+/** Mirrors naryx_test_perp: 10,000 test USDC per claim, 10,000,000 per token account. */
+const TEST_COLLATERAL_FAUCET_SEED = "test-collateral-faucet";
+const TEST_COLLATERAL_MAX_CLAIM_ATOMS = 10_000_000_000n;
+const TEST_COLLATERAL_MAX_BALANCE_ATOMS = 10_000_000_000_000n;
+const TEST_COLLATERAL_MAX_CLAIMS_PER_STEP = 8n;
+
+/** True when the SPL mint has six decimals, the faucet PDA as its only mint authority, and no freeze authority. */
+function isFaucetMint(account: SolanaDevnetAccount | null | undefined, faucet: string): boolean {
+  if (account === null || account === undefined || account.owner !== TOKEN_PROGRAM_ID || account.data.length !== 82) return false;
+  const data = Buffer.from(account.data);
+  return data.readUInt32LE(0) === 1 && new PublicKey(data.subarray(4, 36)).toBase58() === faucet
+    && data[44] === 6 && data[45] === 1 && data.readUInt32LE(46) === 0;
+}
+
 function u64Le(value: bigint): Buffer {
   const buffer = Buffer.alloc(8);
   buffer.writeBigUInt64LE(value);
@@ -470,6 +490,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
   const perpVenue = program("perp_venue");
   const baseMint = address(config.baseAsset.assetId, "baseAsset");
   const quoteMint = address(config.quoteAsset.assetId, "quoteAsset");
+  const faucetAuthority = PublicKey.findProgramAddressSync([Buffer.from(TEST_COLLATERAL_FAUCET_SEED)], new PublicKey(perpVenue))[0].toBase58();
   let cached: Readonly<{ snapshot: SolanaDevnetMarketSnapshot; context: ActiveOrderContext }> | undefined;
   const contexts: ActiveOrderContextProvider = (contextId) => {
     if (contextId !== config.contextId) return undefined;
@@ -519,7 +540,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     },
   });
 
-  async function accountStatus(ownerInput: string, sizeAtoms: bigint): Promise<SolanaDevnetAccountStatus> {
+  async function accountStatus(ownerInput: string, sizeAtoms: bigint, claimTestCollateral = false): Promise<SolanaDevnetAccountStatus> {
     const owner = address(ownerInput, "owner");
     if (typeof sizeAtoms !== "bigint" || sizeAtoms < 0n || sizeAtoms > config.maximumQuantityAtoms) fail("size is out of bounds");
     const snapshot = feed.latest() ?? await feed.refresh();
@@ -530,10 +551,11 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     });
     await requireDevnet(port);
     const slot = await port.getFinalizedSlot();
-    const [position, strategy, executor, traderBase, traderQuote, executorBase, executorQuote] = await port.getAccounts([
+    const [position, strategy, executor, traderBase, traderQuote, executorBase, executorQuote, quoteMintAccount] = await port.getAccounts([
       derived.position, derived.strategy, derived.executorAuthority, derived.traderBase, derived.traderQuote,
-      derived.executorBase, derived.executorQuote,
+      derived.executorBase, derived.executorQuote, quoteMint,
     ], slot);
+    const faucet = isFaucetMint(quoteMintAccount, faucetAuthority) ? faucetAuthority : null;
     const positionState = position === null || position === undefined || position.owner !== perpVenue
       ? undefined : decodeTestPerpPosition(position.data);
     const strategyState = strategy === null || strategy === undefined || strategy.owner !== perpAdapter
@@ -557,6 +579,29 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       ], Uint8Array.of(1)));
     if (ataCreates.length > 0) {
       steps.push({ kind: "CREATE_TOKEN_ACCOUNTS", label: "Create trader and executor token accounts", instructions: ataCreates });
+    }
+    // Free test USDC when the wallet cannot cover the deposit (or asked for it): at least one full claim,
+    // never past the faucet's per-account balance limit.
+    const walletShortfall = requiredCollateral > collateral && requiredCollateral - collateral > traderQuoteAtoms
+      ? requiredCollateral - collateral - traderQuoteAtoms : 0n;
+    if (faucet !== null && (claimTestCollateral || walletShortfall > 0n) && traderQuoteAtoms < TEST_COLLATERAL_MAX_BALANCE_ATOMS) {
+      const headroom = TEST_COLLATERAL_MAX_BALANCE_ATOMS - traderQuoteAtoms;
+      let remaining = walletShortfall > TEST_COLLATERAL_MAX_CLAIM_ATOMS ? walletShortfall : TEST_COLLATERAL_MAX_CLAIM_ATOMS;
+      if (remaining > headroom) remaining = headroom;
+      if (remaining < walletShortfall || remaining > TEST_COLLATERAL_MAX_CLAIM_ATOMS * TEST_COLLATERAL_MAX_CLAIMS_PER_STEP) {
+        fail("required collateral exceeds what the test USDC faucet can pay this wallet");
+      }
+      const claimTotal = remaining;
+      const claims: SolanaDevnetInstruction[] = [];
+      while (remaining > 0n) {
+        const amount = remaining > TEST_COLLATERAL_MAX_CLAIM_ATOMS ? TEST_COLLATERAL_MAX_CLAIM_ATOMS : remaining;
+        claims.push(instruction(perpVenue, [
+          meta(owner, true, false), meta(quoteMint, false, true), meta(faucet, false, false),
+          meta(derived.traderQuote, false, true), meta(TOKEN_PROGRAM_ID, false, false),
+        ], Buffer.concat([anchorInstructionDiscriminator("claim_test_collateral"), u64Le(amount)])));
+        remaining -= amount;
+      }
+      steps.push({ kind: "CLAIM_TEST_COLLATERAL", label: `Claim ${claimTotal / 1_000_000n} test USDC from the faucet`, instructions: claims });
     }
     if (positionState === undefined) {
       steps.push({
@@ -644,6 +689,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       }),
       market: Object.freeze({ address: new PublicKey(manifest.testPerp.market).toBase58(), collateralVault: market.collateralVault }),
       mints: Object.freeze({ base: baseMint, quote: quoteMint }),
+      testCollateralFaucet: faucet,
       ready: steps.length === 0,
       steps: Object.freeze(steps),
     });
@@ -801,7 +847,12 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       sendJson(response, 400, { error: { code: "INVALID_REQUEST", message: "sizeAtoms must be a decimal integer." } });
       return true;
     }
-    void accountStatus(owner, BigInt(size)).then(
+    const claim = url.searchParams.get("claimTestCollateral");
+    if (claim !== null && claim !== "1") {
+      sendJson(response, 400, { error: { code: "INVALID_REQUEST", message: "claimTestCollateral must be 1 when present." } });
+      return true;
+    }
+    void accountStatus(owner, BigInt(size), claim === "1").then(
       (status) => sendJson(response, 200, status),
       () => sendJson(response, 502, { error: { code: "ACCOUNT_READ_FAILED", message: "Solana Devnet account read failed closed." } }),
     );

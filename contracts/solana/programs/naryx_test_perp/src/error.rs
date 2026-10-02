@@ -54,4 +54,8 @@ pub enum TestPerpError {
     ZeroAmount,
     #[msg("Position account is invalid")]
     InvalidPositionAccount,
+    #[msg("Faucet claim exceeds the per-claim or balance limit")]
+    FaucetLimitExceeded,
+    #[msg("Mint is not a faucet test collateral mint")]
+    InvalidFaucetMint,
 }

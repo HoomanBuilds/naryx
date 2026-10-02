@@ -61,6 +61,10 @@ pub mod naryx_test_perp {
         admin::set_funding_rate_handler(ctx, funding_rate_per_second)
     }
 
+    pub fn claim_test_collateral(ctx: Context<ClaimTestCollateral>, amount: u64) -> Result<()> {
+        faucet::claim_test_collateral_handler(ctx, amount)
+    }
+
     pub fn update_market_controls(
         ctx: Context<UpdateMarketControls>,
         pause_opens: bool,
