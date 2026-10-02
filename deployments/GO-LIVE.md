@@ -182,6 +182,11 @@ passes on every lane being announced.
 These have passed local, fork, and LiteSVM tests but have never run against the live testnets:
 
 - No lane has executed a package on a live testnet yet; step 8 is the first end-to-end run.
+- Base has run the whole user journey on a local anvil fork of Base Sepolia, deployed with these
+  runbooks and driven through the real web app, API, and solver with a fresh wallet: claim test
+  USDC, set up the account, enter, reload, restart the API, wait past staleness, exit, withdraw,
+  enter again, and a second wallet trading at the same time. Arbitrum, Solana, and Hyperliquid
+  have not had a journey run; expect their first live run to surface integration issues.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
   week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. Automated
   recovery of a stuck GMX order is not built, so a failed order is resolved by the bonded recovery
@@ -197,6 +202,10 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
 - Solana: firm entry and exit have no end-to-end LiteSVM test.
-- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet.
+- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
+  are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
+  not failed transactions, and a size the pool cannot fill is refused before signing.
+- The API admits Base packages against server time while orders and the verifier use block time;
+  on Base Sepolia the two agree within seconds.
 - The public v1 market API (package order book, solver metrics) is optional and off unless
   configured; quote-based trading does not need it.
