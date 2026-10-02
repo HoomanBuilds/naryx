@@ -90,6 +90,7 @@ import {
   HttpHyperliquidTestnetAttemptExecutor,
 } from "./hyperliquid-testnet-terminal-execution.js";
 import { HyperliquidTestnetOwnerLedger } from "./hyperliquid-testnet-owner-ledger.js";
+import { createReadCache } from "./read-cache.js";
 import {
   createHyperliquidTestnetExecutionGuard,
   createHyperliquidTestnetExitOrderFactory,
@@ -517,6 +518,16 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
     }),
     attemptStatus: (request) => hyperliquidExecutionRuntime!.status(request),
   });
+/** The public Base account route reads several contracts per request; identical reads within 2s are joined. */
+function cachedBaseAccount(port: BaseSepoliaOrderRuntime["account"]): BaseSepoliaOrderRuntime["account"] {
+  const cache = createReadCache<Awaited<ReturnType<BaseSepoliaOrderRuntime["account"]["status"]>>>({ ttlMs: 2_000 });
+  return Object.freeze({
+    status: (request: Parameters<BaseSepoliaOrderRuntime["account"]["status"]>[0]) => cache(
+      `${request.owner}|${request.orderHash ?? ""}|${request.marginAtoms}`,
+      () => port.status(request),
+    ),
+  });
+}
 type RouteHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
 function privateServerRoutes(...handlers: readonly (RouteHandler | undefined)[]): RouteHandler | undefined {
   const present = handlers.filter((handler): handler is RouteHandler => handler !== undefined);
@@ -573,7 +584,7 @@ const server = createPrivateTerminalServer(
   runtime.hyperliquidTestnet,
   baseOrderRuntime === undefined || runtime.evmTestnet.preparation === undefined
     ? runtime.evmTestnet
-    : { ...runtime.evmTestnet, account: baseOrderRuntime.account },
+    : { ...runtime.evmTestnet, account: cachedBaseAccount(baseOrderRuntime.account) },
   lifecycleStore,
   solanaDevnetOrderRuntime === undefined ? solverClient : withSolanaDevnetFirmQuoteVerification(solverClient),
   executionIntentStore,

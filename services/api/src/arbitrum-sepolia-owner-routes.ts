@@ -25,6 +25,7 @@ import {
 import type { ArbitrumSepoliaOrderRuntime, ArbitrumSepoliaPriceReadPort } from "./arbitrum-sepolia-order-context.js";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
+import { createReadCache } from "./read-cache.js";
 import { isAllowedTerminalOrigin, type TerminalOrigins } from "./terminal-origin.js";
 import { InternalOrderConflictError, type InternalOrderStore } from "./internal-order-store.js";
 
@@ -210,6 +211,34 @@ export function createArbitrumSepoliaOwnerRoutes(
     return authorization;
   };
 
+  /** One wallet's account and open package, read from chain; identical reads within 2s are joined. */
+  const accountReads = createReadCache<unknown>({ ttlMs: 2_000 });
+  const accountStatus = async (owner: Address) => {
+    await requireChain();
+    const account = arbitrumSepoliaAccountOf(deployment, owner);
+    const code = await port.codeHash(account);
+    if (code !== undefined && !equalHash(code, accountCodeHash)) {
+      throw new OwnerRouteError(409, "ACCOUNT_CODE_MISMATCH", "Code at the owner account address is not a factory account.");
+    }
+    // Read from chain on every call, so a package entered on another device can still be exited.
+    const openPackage = code === undefined ? null : await readArbitrumSepoliaOpenPackage(port, deployment, owner);
+    return {
+      version: 1,
+      domainId: ARBITRUM_SEPOLIA_DOMAIN_ID,
+      chainId: Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE),
+      owner,
+      account,
+      accountFactory: factory,
+      deployed: code !== undefined,
+      createAccount: code !== undefined ? null : {
+        to: factory,
+        data: encodeFunctionData({ abi: FACTORY_ABI, functionName: "create", args: [owner] }),
+        value: "0",
+      },
+      openPackage: openPackageBody(openPackage),
+    };
+  };
+
   const handlers: Readonly<Record<string, (request: IncomingMessage, url: URL) => Promise<unknown>>> = {
     [ARBITRUM_SEPOLIA_ACCOUNT_PATH]: async (request, url) => {
       if (request.method !== "GET") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
@@ -217,29 +246,7 @@ export function createArbitrumSepoliaOwnerRoutes(
         throw new OwnerRouteError(400, "INVALID_FIELDS", "Query must contain only owner.");
       }
       const owner = ownerAddress(url.searchParams.get("owner"));
-      await requireChain();
-      const account = arbitrumSepoliaAccountOf(deployment, owner);
-      const code = await port.codeHash(account);
-      if (code !== undefined && !equalHash(code, accountCodeHash)) {
-        throw new OwnerRouteError(409, "ACCOUNT_CODE_MISMATCH", "Code at the owner account address is not a factory account.");
-      }
-      // Read from chain on every call, so a package entered on another device can still be exited.
-      const openPackage = code === undefined ? null : await readArbitrumSepoliaOpenPackage(port, deployment, owner);
-      return {
-        version: 1,
-        domainId: ARBITRUM_SEPOLIA_DOMAIN_ID,
-        chainId: Number(ARBITRUM_SEPOLIA_CHAIN_REFERENCE),
-        owner,
-        account,
-        accountFactory: factory,
-        deployed: code !== undefined,
-        createAccount: code !== undefined ? null : {
-          to: factory,
-          data: encodeFunctionData({ abi: FACTORY_ABI, functionName: "create", args: [owner] }),
-          value: "0",
-        },
-        openPackage: openPackageBody(openPackage),
-      };
+      return accountReads(owner, () => accountStatus(owner));
     },
     [ARBITRUM_SEPOLIA_EXIT_ORDER_PATH]: async (request) => {
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");

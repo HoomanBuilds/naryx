@@ -293,6 +293,7 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
     this.#db = new Database(path);
     this.#db.pragma("journal_mode = WAL");
     this.#db.pragma("synchronous = FULL");
+    this.#db.pragma("busy_timeout = 5000");
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS testnet_execution_approvals (
         attempt_id TEXT PRIMARY KEY,
