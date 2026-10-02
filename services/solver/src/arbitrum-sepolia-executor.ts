@@ -771,6 +771,9 @@ export class ArbitrumSepoliaExecutor {
   readonly #options: ArbitrumSepoliaExecutorOptions;
   // The adapter funds one package at a time, so attempts advance strictly one after another.
   #queue: Promise<unknown> = Promise.resolve();
+  // Every terminal poll asks to advance its attempt; a call while that attempt's advance is queued
+  // or running joins it, so polling many attempts never grows the queue beyond one entry each.
+  readonly #advancing = new Map<string, Promise<ArbitrumSepoliaExecutionResult>>();
 
   constructor(options: ArbitrumSepoliaExecutorOptions) {
     validateConfig(options.config);
@@ -781,11 +784,19 @@ export class ArbitrumSepoliaExecutor {
   }
 
   advance(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
-    return this.#enqueue(attemptId, async () => {
+    const inFlight = this.#advancing.get(attemptId);
+    if (inFlight !== undefined) return inFlight;
+    const next = this.#enqueue(attemptId, async () => {
       await this.#requireChain();
       const route = await this.#route(attemptId);
       return route.exit ? this.#advanceExit(attemptId, route.attempt) : this.#advance(attemptId, route.attempt);
     });
+    this.#advancing.set(attemptId, next);
+    const settle = () => {
+      if (this.#advancing.get(attemptId) === next) this.#advancing.delete(attemptId);
+    };
+    next.then(settle, settle);
+    return next;
   }
 
   /** Builds and journals the unsigned full close, then returns what the owner's wallet must sign. */

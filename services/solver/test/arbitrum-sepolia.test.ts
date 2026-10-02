@@ -330,6 +330,28 @@ test('Arbitrum executor refuses to plan or write when eth_chainId is not 421614'
   }
 });
 
+test('Arbitrum executor joins concurrent advances of one attempt instead of queueing each poll', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+  const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+  try {
+    const { port, writes } = fakeChain(() => journal);
+    const { instance } = executor(port, journal);
+    const polls = await Promise.all([instance.advance(ATTEMPT_ID), instance.advance(ATTEMPT_ID), instance.advance(ATTEMPT_ID)]);
+    assert.deepEqual(polls.map((poll) => poll.status), Array(3).fill('AWAITING_OWNER_SIGNATURE'));
+    // The joined polls share the one advance's result object.
+    assert.equal(polls[1], polls[0]);
+    assert.equal(polls[2], polls[0]);
+    assert.deepEqual(writes, []);
+    // Once settled, the next poll runs afresh.
+    const later = await instance.advance(ATTEMPT_ID);
+    assert.notEqual(later, polls[0]);
+    assert.equal(later.status, 'AWAITING_OWNER_SIGNATURE');
+  } finally {
+    journal.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('Arbitrum executor reserves only with the owner wallet signature and owner funding, once, across restarts', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
   const path = join(directory, 'journal.db');
