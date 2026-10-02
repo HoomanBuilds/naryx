@@ -9,7 +9,7 @@ Nothing here signs, broadcasts, funds, or approves. It reads chains only over re
 | Network | Release template | Deployment input | Read-only RPC (environment) |
 |---|---|---|---|
 | shared | `deployments/tools/release-common.template.json` | none | none |
-| Base Sepolia | `deployments/evm/base-sepolia/release.template.json` | `broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json` and `broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/run-latest.json` | `NARYX_BASE_SEPOLIA_RPC_URL` |
+| Base Sepolia | `deployments/evm/base-sepolia/release.template.json` | `broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json` and `broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/runWith-latest.json` (`runWith`, the test USDC pairing; `run-latest.json` after `run`) | `NARYX_BASE_SEPOLIA_RPC_URL` |
 | Arbitrum Sepolia | `deployments/evm/arbitrum-sepolia/release.template.json` | `broadcast/DeployArbitrumSepoliaAsyncGmx.s.sol/421614/run-latest.json` | `NARYX_ARBITRUM_SEPOLIA_RPC_URL` |
 | Solana Devnet | `deployments/solana/devnet/release.template.json` | program ids, reviewed artifact hashes (or `artifactPath`), the `initialize-devnet.mjs` and `devnet-lookup-table.mjs` records, optional `programShowJson` (`solana program show --output json`) per program | `NARYX_SOLANA_DEVNET_RPC_URL` |
 | Hyperliquid Testnet | `deployments/hyperliquid/testnet/release.template.json` | operator configuration only | none (reads the public testnet info API) |

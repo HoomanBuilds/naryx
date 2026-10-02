@@ -4,7 +4,7 @@
   "rpcUrlEnv": "NARYX_BASE_SEPOLIA_RPC_URL",
   "inputs": {
     "deploy": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json" },
-    "firm": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/run-latest.json" }
+    "firm": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/runWith-latest.json (runWith-latest.json: the test USDC deployment runs runWith)" }
   },
   "contracts": {
     "protocolConfig": { "return": "deploy", "index": 0, "name": "ProtocolConfig" },
