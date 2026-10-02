@@ -21,7 +21,7 @@ Each step links to the runbook that holds the exact commands. Env examples:
 
 ## 1. Wallets and tools
 
-- Foundry, the Solana CLI and Anchor toolchain, Node 22, and `jq`.
+- Foundry, the Solana CLI and Anchor toolchain, Node 22 with npm 11 (the lockfiles need it for `npm ci`), and `jq`.
 - Separate testnet wallets, each in a Foundry keystore or an external Solana keypair file (never in
   the repository): EVM deployer, proposer, canceller, executor, pauser, solver, test perp owner,
   funding keeper; Solana payer, upgrade authority, proposer, executor, market owner, solver, funder,

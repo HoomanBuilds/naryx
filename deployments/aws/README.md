@@ -44,6 +44,7 @@ sudo apt-get update
 sudo apt-get install -y git build-essential python3 nginx certbot python3-certbot-nginx
 sudo snap install aws-cli --classic
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs   # Node 22
+sudo npm install -g npm@11.21.0   # the lockfiles are npm 11; Node 22's bundled npm 10 refuses them in npm ci
 
 sudo useradd --system --home-dir /srv/naryx --create-home --shell /usr/sbin/nologin naryx
 sudo -u naryx mkdir -p /srv/naryx/data /srv/naryx/release /srv/naryx/keys /srv/naryx/backups
