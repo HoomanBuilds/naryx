@@ -829,6 +829,24 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     })();
   };
 
+  // Account status reads several accounts per request and the route is public, so identical requests
+  // within two seconds share one chain read (and requests in flight are joined), per wallet and size.
+  const statusCache = new Map<string, Readonly<{ atMs: number; value: Promise<SolanaDevnetAccountStatus> }>>();
+  const cachedAccountStatus = (owner: string, sizeAtoms: bigint, claim: boolean): Promise<SolanaDevnetAccountStatus> => {
+    const key = `${owner}|${sizeAtoms}|${claim}`;
+    const now = Date.now();
+    const hit = statusCache.get(key);
+    if (hit !== undefined && now - hit.atMs < 2_000) return hit.value;
+    if (statusCache.size >= 5_000) {
+      for (const [entryKey, entry] of statusCache) if (now - entry.atMs >= 2_000) statusCache.delete(entryKey);
+      if (statusCache.size >= 5_000) statusCache.clear();
+    }
+    const value = accountStatus(owner, sizeAtoms, claim);
+    statusCache.set(key, { atMs: now, value });
+    value.catch(() => { if (statusCache.get(key)?.value === value) statusCache.delete(key); });
+    return value;
+  };
+
   const handler = (request: IncomingMessage, response: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://api.internal");
     if (url.pathname === "/internal/terminal/solana-devnet/exit-order" && url.search === "") {
@@ -852,7 +870,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       sendJson(response, 400, { error: { code: "INVALID_REQUEST", message: "claimTestCollateral must be 1 when present." } });
       return true;
     }
-    void accountStatus(owner, BigInt(size), claim === "1").then(
+    void cachedAccountStatus(owner, BigInt(size), claim === "1").then(
       (status) => sendJson(response, 200, status),
       () => sendJson(response, 502, { error: { code: "ACCOUNT_READ_FAILED", message: "Solana Devnet account read failed closed." } }),
     );
