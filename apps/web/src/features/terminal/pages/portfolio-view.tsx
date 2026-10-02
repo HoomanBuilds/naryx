@@ -19,30 +19,39 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
     ["Signer", "Your Wallet Standard account signs every package"],
     ["Settlement", "Atomic: every leg settles in one transaction, or none does"],
     ["Review", "The exact transaction is shown before any Devnet signature"],
+    ["Spot venue", "Firm solver inventory reservation on Solana Devnet"],
     ["Perp venue", "Naryx test perpetual market on Solana Devnet, priced from Pyth"],
+    ["Quote asset", "Naryx test USDC (free claim on this page)"],
   ],
   base: [
     ["Strategy account", "NaryxStrategyAccount, one per owner"],
     ["Authority", "Owner signs every package; a delegate may only submit an owner-signed recovery exit"],
     ["Ownership transfer", "Two-step: the new owner must accept"],
-    ["Perp venue", "Naryx test perpetual market on Base Sepolia, not a third-party exchange"],
+    ["Spot venue", "Uniswap V3 on Base Sepolia (WETH / test USDC pool)"],
+    ["Perp venue", "Naryx test perpetual market on Base Sepolia, priced from Chainlink; not a third-party exchange"],
+    ["Quote asset", "Naryx Test USDC (free claim on this page)"],
   ],
   arbitrum: [
     ["Strategy account", "GMX V2 isolated account, one per owner"],
     ["Settlement", "The solver settles within its window or its bond pays the signed fault amount"],
     ["Ownership transfer", "Two-step: the new owner must accept"],
+    ["Spot venue", "Uniswap V3 on Arbitrum Sepolia (WETH / USDC.SG pool)"],
     ["Perp venue", "GMX V2 on Arbitrum Sepolia"],
+    ["Quote asset", "GMX test USDC (USDC.SG), the GMX market's collateral; free claim on this page"],
   ],
   hyperliquid: [
     ["Account mode", "Standard only; unified, default, and portfolio-margin accounts are refused"],
     ["Ledgers", "Spot and perpetual USDC are funded separately"],
     ["Executor", "Trade-only API wallet on a dedicated testnet account; not trustless"],
     ["Recovery", "Bounded by the signed price, deadline, loss, fee, and residual policy"],
+    ["Venue", "Hyperliquid testnet spot and perpetuals (HyperCore)"],
+    ["Quote asset", "Hyperliquid testnet USDC held by the service's testnet account"],
   ],
 };
 
-function amountText(amount: Amount, balance: ChainBalance, connected: boolean) {
+function amountText(amount: Amount, balance: ChainBalance, connected: boolean, quote = false) {
   if (!connected) return <span className={styles.dim}>-</span>;
+  if (quote && balance.quoteUnconfigured) return <span className={styles.dim} title="This deployment has not set its quote token">Not configured</span>;
   if (balance.loading) return <span className={styles.dim}>Loading</span>;
   if (!amount) return <span className={styles.dim}>{balance.failed ? "Unavailable" : "-"}</span>;
   return <>{amount.value} <span className={styles.dim}>{amount.symbol}</span></>;
@@ -172,7 +181,7 @@ export function PortfolioView() {
                         {account && balance.usdc ? <AssetIcon symbol="USDC" size={14} /> : null}
                         {domain === "hyperliquid" && account && balance.perpEquity
                           ? <span title="Spot balance / perpetual account equity">{balance.usdc?.value ?? "0"} <span className={styles.dim}>spot</span> / {balance.perpEquity.value} <span className={styles.dim}>perp</span></span>
-                          : amountText(balance.usdc, balance, account !== null)}
+                          : amountText(balance.usdc, balance, account !== null, true)}
                       </span>
                     </td>
                     <td>

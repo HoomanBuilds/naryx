@@ -12,21 +12,23 @@ import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
  */
 
 /**
- * The quote asset each deployment settles in, from its runtime manifest. The hosted Base deployment
- * uses Naryx Test USDC; until it is configured, Circle's test USDC is shown. Arbitrum settles in the
- * GMX market's collateral, GMX's own mintable test USDC (USDC.SG).
+ * The quote asset each deployment settles in, from its runtime manifest: Naryx Test USDC on Base
+ * Sepolia and the test perp faucet mint on Solana Devnet, both set per deployment, so an
+ * unconfigured deployment shows no balance rather than some other token's. Arbitrum always settles
+ * in the GMX market's collateral, GMX's own mintable test USDC (USDC.SG), the short token of every
+ * GMX Arbitrum Sepolia market.
  */
-function evmAddress(value: string | undefined, fallback: `0x${string}`): `0x${string}` {
-  return value && /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : fallback;
+function evmAddress(value: string | undefined): `0x${string}` | null {
+  return value && /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : null;
 }
-export const EVM_QUOTE_TOKEN: Readonly<Record<EvmDomain, `0x${string}`>> = {
-  base: evmAddress(process.env.NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN, "0x036CbD53842c5426634e7929541eC2318f3dCF7e"),
-  arbitrum: evmAddress(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN, "0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773"),
+export const EVM_QUOTE_TOKEN: Readonly<Record<EvmDomain, `0x${string}` | null>> = {
+  base: evmAddress(process.env.NEXT_PUBLIC_BASE_SEPOLIA_QUOTE_TOKEN),
+  arbitrum: evmAddress(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_QUOTE_TOKEN) ?? "0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773",
 };
 const SOLANA_DEVNET_RPC = process.env.NEXT_PUBLIC_SOLANA_DEVNET_RPC_URL || "https://api.devnet.solana.com";
-const SOLANA_DEVNET_USDC = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT ?? "")
+const SOLANA_DEVNET_QUOTE_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT ?? "")
   ? process.env.NEXT_PUBLIC_SOLANA_DEVNET_QUOTE_MINT as string
-  : "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+  : null;
 const HYPERLIQUID_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info";
 
 export type Amount = Readonly<{ value: string; symbol: string }> | null;
@@ -38,6 +40,8 @@ export type ChainBalance = Readonly<{
   usdc: Amount;
   /** Hyperliquid only: perpetual account equity in USDC. */
   perpEquity?: Amount;
+  /** The deployment names no quote token for this chain, so no USDC balance is read. */
+  quoteUnconfigured?: boolean;
 }>;
 
 const IDLE: ChainBalance = { loading: false, failed: false, gas: null, usdc: null };
@@ -60,18 +64,21 @@ export function useEvmBalances(account: `0x${string}` | null): Readonly<Record<E
   const enabled = account !== null;
   const base = useBalance({ address: account ?? undefined, chainId: EVM_CHAINS.base.id, query: { enabled } });
   const arbitrum = useBalance({ address: account ?? undefined, chainId: EVM_CHAINS.arbitrum.id, query: { enabled } });
+  const configured = (["base", "arbitrum"] as const).filter((domain) => EVM_QUOTE_TOKEN[domain] !== null);
   const usdc = useReadContracts({
     allowFailure: true,
     contracts: account
-      ? (["base", "arbitrum"] as const).flatMap((domain) => [
-        { address: EVM_QUOTE_TOKEN[domain], abi: erc20Abi, functionName: "balanceOf", args: [account], chainId: EVM_CHAINS[domain].id } as const,
-        { address: EVM_QUOTE_TOKEN[domain], abi: erc20Abi, functionName: "decimals", chainId: EVM_CHAINS[domain].id } as const,
+      ? configured.flatMap((domain) => [
+        { address: EVM_QUOTE_TOKEN[domain]!, abi: erc20Abi, functionName: "balanceOf", args: [account], chainId: EVM_CHAINS[domain].id } as const,
+        { address: EVM_QUOTE_TOKEN[domain]!, abi: erc20Abi, functionName: "decimals", chainId: EVM_CHAINS[domain].id } as const,
       ])
       : [],
     query: { enabled },
   });
 
-  function usdcFor(index: number): Amount {
+  function usdcFor(domain: EvmDomain): Amount {
+    const index = configured.indexOf(domain) * 2;
+    if (index < 0) return null;
     const balance = usdc.data?.[index];
     const decimals = usdc.data?.[index + 1];
     if (balance?.status !== "success" || decimals?.status !== "success") return null;
@@ -84,13 +91,14 @@ export function useEvmBalances(account: `0x${string}` | null): Readonly<Record<E
       loading: base.isLoading || usdc.isLoading,
       failed: base.isError,
       gas: base.data ? { value: decimal(base.data.value, base.data.decimals), symbol: "ETH" } : null,
-      usdc: usdcFor(0),
+      usdc: usdcFor("base"),
+      quoteUnconfigured: EVM_QUOTE_TOKEN.base === null,
     },
     arbitrum: {
       loading: arbitrum.isLoading || usdc.isLoading,
       failed: arbitrum.isError,
       gas: arbitrum.data ? { value: decimal(arbitrum.data.value, arbitrum.data.decimals), symbol: "ETH" } : null,
-      usdc: usdcFor(2),
+      usdc: usdcFor("arbitrum"),
     },
   };
 }
@@ -118,7 +126,9 @@ export function useSolanaBalance(address: string | null): ChainBalance {
       if (!address || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) throw new Error("Invalid Solana address.");
       const [lamports, tokens] = await Promise.all([
         solanaRpc("getBalance", [address, { commitment: "confirmed" }], signal),
-        solanaRpc("getTokenAccountsByOwner", [address, { mint: SOLANA_DEVNET_USDC }, { encoding: "jsonParsed", commitment: "confirmed" }], signal),
+        SOLANA_DEVNET_QUOTE_MINT === null
+          ? Promise.resolve({ value: null })
+          : solanaRpc("getTokenAccountsByOwner", [address, { mint: SOLANA_DEVNET_QUOTE_MINT }, { encoding: "jsonParsed", commitment: "confirmed" }], signal),
       ]);
       const lamportValue = (lamports as { value?: unknown }).value;
       if (typeof lamportValue !== "number" || !Number.isSafeInteger(lamportValue)) throw new Error("Invalid balance.");
@@ -134,12 +144,18 @@ export function useSolanaBalance(address: string | null): ChainBalance {
       }
       return {
         gas: { value: decimal(BigInt(lamportValue), 9), symbol: "SOL" },
-        usdc: { value: decimal(usdcAtoms, usdcDecimals), symbol: "USDC" },
+        usdc: SOLANA_DEVNET_QUOTE_MINT === null ? null : { value: decimal(usdcAtoms, usdcDecimals), symbol: "USDC" },
       };
     },
   });
   if (address === null) return IDLE;
-  return { loading: query.isLoading, failed: query.isError, gas: query.data?.gas ?? null, usdc: query.data?.usdc ?? null };
+  return {
+    loading: query.isLoading,
+    failed: query.isError,
+    gas: query.data?.gas ?? null,
+    usdc: query.data?.usdc ?? null,
+    quoteUnconfigured: SOLANA_DEVNET_QUOTE_MINT === null,
+  };
 }
 
 async function hyperliquidInfo(body: Record<string, string>, signal: AbortSignal): Promise<unknown> {

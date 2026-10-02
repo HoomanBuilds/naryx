@@ -117,7 +117,18 @@ console.log("0x" + toHex(domainManifestHash({
 Circle's faucet grants a few test USDC per request, which cannot fund a demo. The hosted test deployment therefore settles in test USDC anyone can mint:
 
 - Base Sepolia: `NaryxTestUSDC` (`tUSDC`, 6 decimals). `mint(recipient, amount)` is public while the recipient holds at most 10,000,000 tUSDC; it has no owner, and its constructor refuses every chain except `84532`, `421614`, and the local `31337`. The web terminal's Get test USDC button calls it from the trader's own wallet.
-- Arbitrum Sepolia: the GMX ETH/USD market's short token, `USDC.SG` `0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773`, which is GMX's own public `mint(address,uint256)` test token. GMX collateral must be that token, so no Naryx token is deployed there; the same button calls the same function.
+- Arbitrum Sepolia: the GMX ETH/USD market's short token, `USDC.SG` `0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773`, which is GMX's own public `mint(address,uint256)` test token. GMX collateral must be that token, so no Naryx token is deployed there; the same button calls the same function. Read from GMX's `Reader.getMarkets` on 2026-10-02, every GMX Arbitrum Sepolia market uses it as the short token, and the ETH/USD market `0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` (index and long token WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`) held about 5.5 WETH and 50 million USDC.SG, with GMX keepers executing orders.
+
+Which venues are real and which are Naryx test venues, per lane:
+
+| Lane | Spot leg | Perpetual leg | Quote asset |
+|---|---|---|---|
+| Base Sepolia | Uniswap V3 (canonical contracts), WETH / tUSDC pool seeded below | `NaryxTestPerpMarket`, Chainlink-priced, house counterparty | Naryx Test USDC |
+| Arbitrum Sepolia | Uniswap V3 (canonical contracts), WETH / USDC.SG pool seeded below | GMX V2 ETH/USD market (real testnet venue) | GMX USDC.SG |
+| Solana Devnet | solver inventory reservation (`naryx_inventory_reservation`) | `naryx_test_perp`, Pyth-priced, house counterparty | Naryx test USDC mint (see `deployments/solana/devnet/README.md`) |
+| Hyperliquid testnet | HyperCore spot (real testnet venue) | HyperCore perpetuals (real testnet venue) | Hyperliquid testnet USDC in the service's testnet account |
+
+Every wallet that holds quote in a lane uses that lane's token: traders, the Base test perp's insurance (`fundInsurance`), the Arbitrum solver's bond and recovery reserve, and the pool seeder. Each gets it from the same public `mint(address,uint256)`, for example `cast send "$QUOTE" "mint(address,uint256)" "$WALLET" 1000000000000 --account <wallet> --rpc-url "$RPC_URL"` (one million at six decimals; tUSDC stops a wallet at ten million).
 
 Deploy the Base token (it prints its address; record `cast codehash` of it as the reviewed quote code hash):
 
@@ -138,7 +149,7 @@ forge script script/SeedUniswapV3TestPool.s.sol:SeedUniswapV3TestPool \
 # Arbitrum Sepolia: fee 100 (tick spacing 1) has no pool yet; Chainlink ETH/USD 0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165.
 forge script script/SeedUniswapV3TestPool.s.sol:SeedUniswapV3TestPool \
   --sig "run((address,uint24,address,uint32,uint16,int24,uint256,uint256,address))" \
-  "(0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773,100,0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165,86400,100,2000,1000000000000000000,3000000000000,$LIQUIDITY_OWNER)" \
+  "(0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773,100,0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165,3600,100,2000,1000000000000000000,3000000000000,$LIQUIDITY_OWNER)" \
   --rpc-url "$ARBITRUM_SEPOLIA_RPC_URL" --account naryx-arbitrum-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
 
@@ -207,7 +218,7 @@ Trade shapes (`trade(bytes32[2])`, `args[0] = deadline << 56 | expiry`, `args[1]
 - Open from flat: `sizeDelta != 0`, `balanceDelta > 0` and a whole number of USDC atoms in WAD (a multiple of `1e12`), drawn from the caller's reserve. The fee is taken from it, so the position balance is `balanceDelta - fee`. `previewOpen(sizeDelta, balanceWad)` returns the fill price, entry notional, fee, and resulting margin at the current oracle; the executed values use the oracle at execution, so an execution bounds the post balance and entry notional with a range.
 - Close: `sizeDelta == -size` and `balanceDelta == 0`. The payout (margin, realized PnL, funding, less the close fee, floored at zero) lands in the caller's reserve, not its wallet, and the position is deleted, so the verifier observes balance, size, and entry notional zero.
 
-Funding keeper duty: the keeper mirrors a real venue's funding. Each venue funding interval (hourly for the reference venue), it reads that venue's ETH funding rate as a fraction per interval (positive when longs pay shorts) and calls `setFundingRatePerSecond(fraction * oraclePriceWad / intervalSeconds)` as a signed WAD (quote per base per second). The rate accrues into `fundingIndex` until the next update, so a lapsed keeper leaves the last rate in force; the owner replaces a lapsed keeper with `setFundingKeeper`. The owner also funds counterparty capital with `fundInsurance(amount)` (approve USDC first) sized to the largest profit open positions can realize; insurance has no withdrawal path. Anyone may `liquidate(trader)` once `health(trader)` shows equity below the maintenance requirement.
+Funding keeper duty: the keeper mirrors a real venue's funding. Each venue funding interval (hourly for the reference venue), it reads that venue's ETH funding rate as a fraction per interval (positive when longs pay shorts) and calls `setFundingRatePerSecond(fraction * oraclePriceWad / intervalSeconds)` as a signed WAD (quote per base per second). The rate accrues into `fundingIndex` until the next update, so a lapsed keeper leaves the last rate in force; the owner replaces a lapsed keeper with `setFundingKeeper`. The owner also funds counterparty capital with `fundInsurance(amount)` (mint tUSDC to the owner and approve the market first) sized to the largest profit open positions can realize; insurance has no withdrawal path. Anyone may `liquidate(trader)` once `health(trader)` shows equity below the maintenance requirement.
 
 #### Strategy accounts
 
@@ -309,7 +320,7 @@ The GMX Arbitrum Sepolia addresses are pinned constants in `DeployArbitrumSepoli
 
 One stage deploys everything and binds it into the account factory. There is no per-user account here: any wallet later creates its own account with `GmxV2IsolatedAccountFactory.create(owner)`, an ERC-1167 clone of the reviewed implementation at a CREATE2 address salted by `keccak256(abi.encode(owner))`. One coordinator admission of the shared adapter covers every factory account.
 
-`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The spot quote token must be the collateral token (`USDC.SG`). Use the fee 100 WETH/USDC.SG pool seeded above: factory `0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e`, WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`, and the code hashes read with `cast codehash`.
+`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. `market` is the GMX ETH/USD market `0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` and `collateralToken` is `USDC.SG`; confirm both with `cast call 0x4750376b9378294138Cf7B7D69a2d243f4940f71 "getMarket(address,address)((address,address,address,address))" 0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201 0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` (Reader, DataStore) before deploying. The spot quote token must be the collateral token. Use the fee 100 WETH/USDC.SG pool seeded above: factory `0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e`, WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`, and the code hashes read with `cast codehash`.
 
 ```bash
 forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsyncGmx \
@@ -346,7 +357,7 @@ Steps, in order:
 | `runScheduleUnpause` (requires the active admission and the exact factory binding) | proposer |
 | `runActivateEntry` (after `configDelaySeconds`) | executor |
 
-No owner step exists. A trader's own wallet creates its account (`create(owner)` on the factory, permissionless and idempotent), signs each reservation, and funds each request with `fundRequest` on the adapter; the solver only bonds and submits.
+No owner step exists. A trader's own wallet creates its account (`create(owner)` on the factory, permissionless and idempotent), signs each reservation, and funds each request with `fundRequest` on the adapter; the solver only bonds and submits. The solver's bond and recovery reserve are USDC.SG atoms, minted to the solver wallet as above.
 
 Then confirm the final state without a signer:
 

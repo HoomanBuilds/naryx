@@ -50,20 +50,21 @@ function useEvmFaucet(domain: EvmDomain): FaucetState {
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState<Progress>(IDLE);
   const account = evm.account;
+  const token = EVM_QUOTE_TOKEN[domain];
   const simulation = useSimulateContract({
-    address: EVM_QUOTE_TOKEN[domain],
+    address: token ?? undefined,
     abi: FAUCET_ABI,
     functionName: "mint",
     args: account ? [account, GRANT_ATOMS] : undefined,
     account: account ?? undefined,
     chainId: EVM_CHAINS[domain].id,
-    query: { enabled: account !== null, retry: false, staleTime: 60_000 },
+    query: { enabled: account !== null && token !== null, retry: false, staleTime: 60_000 },
   });
-  const available = account !== null && simulation.isSuccess;
+  const available = account !== null && token !== null && simulation.isSuccess;
   const needsSwitch = available && !evm.onChain(domain);
 
   const claim = useCallback(async () => {
-    if (!account || !available || progress.busy) return;
+    if (!account || !token || !available || progress.busy) return;
     if (!evm.onChain(domain)) {
       await evm.switchNetwork(domain);
       return;
@@ -71,7 +72,7 @@ function useEvmFaucet(domain: EvmDomain): FaucetState {
     setProgress({ busy: "Approve in your wallet", message: null, error: null });
     try {
       const hash = await evm.sendTransaction(domain, {
-        to: EVM_QUOTE_TOKEN[domain],
+        to: token,
         data: encodeFunctionData({ abi: FAUCET_ABI, functionName: "mint", args: [account, GRANT_ATOMS] }),
         value: "0",
       });
@@ -82,7 +83,7 @@ function useEvmFaucet(domain: EvmDomain): FaucetState {
     } catch (cause) {
       setProgress({ busy: null, message: null, error: cause instanceof Error ? cause.message : "The faucet request failed." });
     }
-  }, [account, available, domain, evm, progress.busy, queryClient]);
+  }, [account, available, domain, evm, progress.busy, queryClient, token]);
 
   return { available, needsSwitch, ...progress, claim };
 }
