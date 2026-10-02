@@ -180,6 +180,18 @@
     gap: 8px;
   }
 
+  /* Smaller discs, so the four logos clear the tile's numeral on a phone-width tile */
+  .logos > span {
+    width: 26px;
+    height: 26px;
+    margin-left: -6px;
+  }
+
+  .logos svg {
+    width: 15px;
+    height: 15px;
+  }
+
   .label {
     font-size: 10px;
   }
