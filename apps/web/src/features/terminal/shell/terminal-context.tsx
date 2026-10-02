@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { usePersistedSetting } from "../persisted-setting";
+import { hasPersistedSetting, usePersistedSetting } from "../persisted-setting";
 import {
   PrivateHttpTerminalProvider,
   type PrivateTerminalRuntimeHealth,
@@ -92,6 +92,14 @@ export function TerminalProvider({ config, children }: { config: TerminalService
       });
     return () => controller.abort();
   }, [healthRequest, privateProvider]);
+
+  // A first visit opens on a lane that executes: when the default lane is not live but another is,
+  // and the viewer has never picked one, the first live lane is selected instead.
+  useEffect(() => {
+    if (health.value === null || hasPersistedSetting("domain") || domainLive(selectedDomain, health.value)) return;
+    const live = DOMAIN_ORDER.find((domain) => domainLive(domain, health.value));
+    if (live !== undefined) setSelectedDomain(live);
+  }, [health.value, selectedDomain, setSelectedDomain]);
 
   const refreshHealth = useCallback(() => {
     if (!privateProvider) return;
