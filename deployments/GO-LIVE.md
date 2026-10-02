@@ -5,6 +5,10 @@ activated through delayed governance, its operator wallets are funded, the gener
 loads against the live chain, all four services run, and `/internal/healthz` reports the lane live.
 Mainnet stays out of scope: every script, token, and service refuses mainnet chain ids and genesis.
 
+Hosting: the web app on Vercel, and the API, solver, keeper, and indexers on one AWS instance behind
+nginx, with SQLite state backed up to S3. `deployments/aws/README.md` has the host setup, systemd
+units, nginx site, and Vercel settings; steps 5 to 7 below summarize them.
+
 Each step links to the runbook that holds the exact commands. Env examples:
 
 | Where | File | Used by |
@@ -74,10 +78,21 @@ hashes, domain and template hashes, oracle reads, Hyperliquid metadata).
 Set the Hyperliquid template's `executionEnabled` to `true` only once the agent wallet is approved
 and funded; `false` serves quotes without executing.
 
+Limits every lane template asks for, sized for many users sharing the operator's inventory:
+
+- The per-operation and per-day principal caps: per package and per network per UTC day.
+- `maxPrincipalAtomsPerOwnerPerDay`: per wallet per UTC day, so one wallet cannot spend the whole
+  day's cap. Exits count as zero principal, so a user can always close.
+- Hyperliquid `omnibus`: open packages per wallet in the shared trading account, and the total
+  entry notional the account carries. Without it the API refuses Hyperliquid entries.
+- Arbitrum `exitCallbackGasLimit`: the GMX callback of a full close also sells the spot leg, so it
+  needs far more gas than the entry callback.
+
 ## 5. Run the services
 
-Build once per reviewed commit (`deployments/tools/README.md`, build loop), then run each service with
-its generated env file on one host:
+On AWS, `deployments/aws/build.sh` builds and the systemd units in `deployments/aws/systemd` run
+each service with its generated env file. By hand, build once per reviewed commit
+(`deployments/tools/README.md`, build loop), then run each service on one host:
 
 ```bash
 node --env-file=/srv/naryx/release/env/api.env services/api/dist/main.js
@@ -99,16 +114,18 @@ The browser calls the API directly. Put an HTTPS reverse proxy on the same host 
 - `/internal/terminal/` (prefix)
 - `/internal/healthz`
 
-Never forward `/internal/solver/` or any other path. The API admits solver, keeper, and executor
-routes only from loopback peers, and every request a same-host proxy forwards arrives from loopback.
-Set the API's `NARYX_TERMINAL_ORIGIN` to the exact web origin (CORS), and the web's
+Never forward `/internal/solver/` or any other path. `deployments/aws/nginx/naryx-api.conf` does
+exactly this, with per-IP read and write limits. The API also refuses any request that carries
+proxy forwarding headers on its solver, keeper, and executor routes, so a proxy mistake cannot
+expose them. Set the API's `NARYX_TERMINAL_ORIGIN` to the exact web origins, comma-separated (for
+example the Vercel production domain and a custom domain; no wildcards), and the web's
 `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` to the proxy's public HTTPS URL.
 
 ## 7. Deploy the web app
 
-Copy the generated `web/.env.production` into `apps/web/.env.production` (or the hosting provider's
-environment settings), then `npm run build` in `apps/web` and deploy. `NEXT_PUBLIC_*` values are
-compiled into the bundle, so rebuild after any change.
+On Vercel: Root Directory `apps/web`, Node.js 22, and the values of the generated
+`web/.env.production` as Production environment variables. `NEXT_PUBLIC_*` values are compiled into
+the bundle, so redeploy after any change. Leave the API URL unset for Preview deployments.
 
 ## 8. Smoke test each lane
 
@@ -116,8 +133,25 @@ compiled into the bundle, so rebuild after any change.
 2. Portfolio: connect a fresh wallet, claim test USDC on Base, Arbitrum, and Solana, and see the
    balances update.
 3. Trade: one minimum-size package per lane, entry and exit, and its receipts on the Activity page.
-4. Keeper: the code watchlist reports every target `MATCH`; the funding mirror stays `disabled`
+4. Many users: repeat step 3 with a second wallet at the same time, then open the Activity page
+   from another browser with the first wallet and exit from there.
+5. Keeper: the code watchlist reports every target `MATCH`; the funding mirror stays `disabled`
    until its keeper key is funded and reviewed.
+
+## What any user can do
+
+Nothing in a lane is tied to the operator's wallet. Any visitor connects their own wallets and:
+
+| Lane | Funding | Entry | Exit |
+|---|---|---|---|
+| Base Sepolia | Claim tUSDC in Portfolio; ETH gas from a public faucet | The wallet signs and sends the atomic package | Wallet-signed, from any device |
+| Arbitrum Sepolia | Mint USDC.SG in Portfolio; ETH gas from a public faucet | The wallet creates its own Naryx account and signs; the solver submits to GMX and pays GMX fees | Wallet-signed exit authorization; the solver submits the full close |
+| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the service-built steps | Wallet-signed, from any device |
+| Hyperliquid testnet | None | The EVM wallet signs the package authorization; the shared trading account executes, one package at a time | The owner wallet signs; only its own packages |
+
+The Activity page lists each wallet's packages from the API, so they follow the wallet across
+devices. How many users can trade at once is bounded by the funded operator inventory (the solver's
+bonds and inventory, the Hyperliquid account) and by the caps above, so keep them funded.
 
 ## 9. Public copy
 
@@ -133,9 +167,14 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. Automated
   recovery of a stuck GMX order is not built, so a failed order is resolved by the bonded recovery
   path and the operator.
-- Hyperliquid: execution runs on the service's own testnet account, not the user's.
-- Solana: firm entry and exit have no end-to-end LiteSVM test; concurrent package book writes may
-  need a retry.
+- Arbitrum exit: GMX's accrued borrowing and funding fees are not read exactly, so the close carries
+  a slippage allowance; if it is too small, GMX cancels the close and the package stays open. The
+  close callback gas (`exitCallbackGasLimit`) is untested on the live network, and GMX refunds the
+  unused execution fee to the owner, not the solver.
+- Hyperliquid: every user's package runs in the service's shared testnet account (Hyperliquid's
+  faucet does not fund new users), one package at a time; an outcome that is not final blocks the
+  lane until an operator releases it.
+- Solana: firm entry and exit have no end-to-end LiteSVM test.
 - Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet.
 - The public v1 market API (package order book, solver metrics) is optional and off unless
   configured; quote-based trading does not need it.
