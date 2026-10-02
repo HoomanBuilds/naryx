@@ -4,9 +4,21 @@ import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types"
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const MAX_INTERNAL_BODY_BYTES = 262_144;
 
-/** Internal routes answer loopback callers only; a browser request always carries an Origin and is refused. */
+/**
+ * A request a reverse proxy forwarded carries its forwarding headers. Behind a same-host proxy every
+ * peer is loopback, so such a request is never an internal caller, whatever path it names.
+ */
+export function forwardedByProxy(request: IncomingMessage): boolean {
+  const headers = request.headers;
+  return headers["x-forwarded-for"] !== undefined || headers.forwarded !== undefined || headers["x-real-ip"] !== undefined;
+}
+
+/**
+ * Internal routes answer direct loopback callers only: a browser request always carries an Origin
+ * and a proxied one carries forwarding headers, and both are refused.
+ */
 export function internalCaller(request: IncomingMessage): boolean {
-  return LOOPBACK.has(request.socket.remoteAddress ?? "") && request.headers.origin === undefined;
+  return LOOPBACK.has(request.socket.remoteAddress ?? "") && request.headers.origin === undefined && !forwardedByProxy(request);
 }
 
 export function sendJson(response: ServerResponse, status: number, body: unknown): true {

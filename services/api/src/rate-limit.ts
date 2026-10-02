@@ -40,6 +40,22 @@ export function createRateLimiter(options: {
  * The rate-limit identity of a peer address. IPv6 clients are grouped by their /64 prefix, since a
  * single host commonly controls a whole /64; IPv4 and IPv4-mapped addresses are used as is.
  */
+/**
+ * The rate-limit key of a request. Behind the same-host reverse proxy every peer is loopback, so the
+ * client is the last X-Forwarded-For entry, the address the proxy itself saw (deployments/aws/nginx);
+ * entries a client sent earlier in that header are ignored. A direct peer is keyed by its address.
+ */
+export function requestClientKey(request: Readonly<{ socket: { remoteAddress?: string | undefined }; headers: Readonly<Record<string, string | string[] | undefined>> }>): string {
+  const peer = request.socket.remoteAddress;
+  const forwarded = request.headers["x-forwarded-for"];
+  const loopbackPeer = peer === "::1" || peer === "127.0.0.1" || peer === "::ffff:127.0.0.1";
+  if (loopbackPeer && typeof forwarded === "string" && forwarded.trim() !== "") {
+    const last = forwarded.split(",").pop()?.trim() ?? "";
+    if (/^[0-9a-fA-F.:]{2,45}$/.test(last)) return clientKey(last);
+  }
+  return clientKey(peer);
+}
+
 export function clientKey(address: string | undefined): string {
   if (address === undefined || address === "") return "unknown";
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);

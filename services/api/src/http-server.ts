@@ -1,3 +1,5 @@
+import { forwardedByProxy } from "./internal-http.js";
+import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { toProtocolJson } from "@naryx/protocol-types";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
@@ -83,7 +85,7 @@ const MAX_BODY_BYTES = 4_096;
 export type PrivateTerminalServerConfig = {
   host: string;
   port: number;
-  terminalOrigin: string | null;
+  terminalOrigin: TerminalOrigins;
 };
 
 export function isLoopbackHost(host: string): boolean {
@@ -102,22 +104,17 @@ function isLoopbackPeer(address: string | undefined): boolean {
   return host !== undefined && isLoopbackHost(host);
 }
 
+/** A direct loopback caller: a loopback peer whose request no reverse proxy forwarded. */
+function isDirectLoopbackRequest(request: IncomingMessage): boolean {
+  return isLoopbackPeer(request.socket.remoteAddress) && !forwardedByProxy(request);
+}
+
 function parsePort(value: string | undefined): number {
   if (value === undefined) return 8_787;
   if (!/^\d{1,5}$/.test(value)) throw new Error("NARYX_API_PORT must be a valid TCP port.");
   const port = Number(value);
   if (port < 1 || port > 65_535) throw new Error("NARYX_API_PORT must be a valid TCP port.");
   return port;
-}
-
-function parseOrigin(value: string | undefined): string | null {
-  if (value === undefined || value === "") return null;
-  const origin = new URL(value);
-  if ((origin.protocol !== "http:" && origin.protocol !== "https:") ||
-      origin.origin !== value || origin.username !== "" || origin.password !== "") {
-    throw new Error("NARYX_TERMINAL_ORIGIN must be an exact HTTP or HTTPS origin.");
-  }
-  return origin.origin;
 }
 
 export function loadPrivateTerminalServerConfig(
@@ -132,7 +129,7 @@ export function loadPrivateTerminalServerConfig(
   return {
     host,
     port: parsePort(environment.NARYX_API_PORT),
-    terminalOrigin: parseOrigin(environment.NARYX_TERMINAL_ORIGIN),
+    terminalOrigin: parseTerminalOrigins(environment.NARYX_TERMINAL_ORIGIN),
   };
 }
 
@@ -151,15 +148,15 @@ function reject(response: ServerResponse, status: number, code: string, message:
 function applyCors(
   request: IncomingMessage,
   response: ServerResponse,
-  configuredOrigin: string | null,
+  configuredOrigin: TerminalOrigins,
 ): boolean {
   const origin = request.headers.origin;
   if (origin === undefined) return true;
-  if (configuredOrigin === null || origin !== configuredOrigin) {
+  if (!isAllowedTerminalOrigin(configuredOrigin, origin)) {
     reject(response, 403, "ORIGIN_NOT_ALLOWED", "Browser origin is not allowed.");
     return false;
   }
-  response.setHeader("Access-Control-Allow-Origin", configuredOrigin);
+  response.setHeader("Access-Control-Allow-Origin", origin);
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
   response.setHeader("Vary", "Origin");
@@ -304,7 +301,7 @@ export function createPrivateTerminalRequestHandler(
       ? /^\/internal\/solver\/orders\/([0-9a-f]{64})$/.exec(url.pathname)
       : null;
     if (solverOrderMatch !== null) {
-      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+      if (!isDirectLoopbackRequest(request)) {
         reject(response, 403, "LOOPBACK_REQUIRED", "Internal solver order access is loopback-only.");
         return;
       }
@@ -339,7 +336,7 @@ export function createPrivateTerminalRequestHandler(
       ? /^\/internal\/solver\/attempts\/((?:local-atomic-[0-9a-f]{64})|(?:base-atomic-[0-9a-f]{52})|(?:arbitrum-async-[0-9a-f]{48}))$/.exec(url.pathname)
       : null;
     if (solverAttemptMatch !== null) {
-      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+      if (!isDirectLoopbackRequest(request)) {
         reject(response, 403, "LOOPBACK_REQUIRED", "Internal solver attempt access is loopback-only.");
         return;
       }
@@ -383,7 +380,7 @@ export function createPrivateTerminalRequestHandler(
       ? /^\/internal\/solver\/hyperliquid-testnet\/attempts\/([A-Za-z0-9_-]{16,64})$/.exec(url.pathname)
       : null;
     if (hyperliquidAttemptMatch !== null) {
-      if (!isLoopbackPeer(request.socket.remoteAddress)) {
+      if (!isDirectLoopbackRequest(request)) {
         reject(response, 403, "LOOPBACK_REQUIRED", "Hyperliquid attempt access is loopback-only.");
         return;
       }
@@ -1172,6 +1169,12 @@ export function createPrivateTerminalServer(
     terminalMarkets,
   );
   return createServer((request, response) => {
+    // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as
+    // one route could resolve to another here. No route uses one; refuse it before any routing.
+    if ((request.url ?? "").includes("\\")) {
+      reject(response, 400, "INVALID_PATH", "Request path is invalid.");
+      return;
+    }
     // Public read-only routes answer before the private terminal's origin policy; every other
     // path falls through to the private handler unchanged.
     let handledPublicly = false;

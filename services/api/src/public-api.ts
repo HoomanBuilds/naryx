@@ -54,7 +54,7 @@ import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeSto
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
-import { clientKey, createRateLimiter } from "./rate-limit.js";
+import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
@@ -275,7 +275,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   const limiter = createRateLimiter({ windowMs, maxRequests, clockMs });
 
   function limited(request: IncomingMessage): boolean {
-    return limiter(clientKey(request.socket.remoteAddress));
+    return limiter(requestClientKey(request));
   }
 
   function requireEvidence(): NonNullable<PublicApiOptions["evidence"]> {

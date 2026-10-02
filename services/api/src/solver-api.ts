@@ -40,7 +40,7 @@ import { verifyEd25519 } from "./ed25519.js";
 import { MAX_IMPLIED_BATCH, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import { shardIdOf, SolverApiStoreError, type SqliteSolverApiStore } from "./solver-api-store.js";
-import { clientKey, createRateLimiter } from "./rate-limit.js";
+import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { acceptWebSocket, type WebSocketConnection } from "./websocket.js";
@@ -609,7 +609,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   return (request: IncomingMessage, response: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://solver-api.local");
     if (!url.pathname.startsWith("/v1/solver/")) return false;
-    if (limited(clientKey(request.socket.remoteAddress))) {
+    if (limited(requestClientKey(request))) {
       send(response, 429, { error: { code: "RATE_LIMITED", message: "Too many requests." } });
       return true;
     }
@@ -785,7 +785,7 @@ export function createSolverStream(options: SolverStreamOptions): {
       const url = new URL(request.url ?? "/", "http://solver-api.local");
       if (url.pathname !== SOLVER_STREAM_PATH) return false;
       // Unauthenticated sockets are capped like the market stream, before any solver has signed in.
-      const key = clientKey(request.socket.remoteAddress);
+      const key = requestClientKey(request);
       const fromClient = [...clients].filter((client) => client.key === key).length;
       if (clients.size >= 512 || fromClient >= 8) {
         socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");

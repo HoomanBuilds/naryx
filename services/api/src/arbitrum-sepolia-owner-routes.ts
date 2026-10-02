@@ -14,6 +14,7 @@ import {
   type ArbitrumSepoliaOwnerAuthorizationExecutor,
 } from "./arbitrum-sepolia-executor-client.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
+import { isAllowedTerminalOrigin, type TerminalOrigins } from "./terminal-origin.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 
 export const ARBITRUM_SEPOLIA_ACCOUNT_PATH = "/internal/terminal/arbitrum-sepolia/account";
@@ -37,7 +38,7 @@ export interface ArbitrumSepoliaAccountReadPort {
 }
 
 export interface ArbitrumSepoliaOwnerRoutesOptions {
-  readonly terminalOrigin: string | null;
+  readonly terminalOrigin: TerminalOrigins;
   readonly deployment: ArbitrumSepoliaAsyncDeploymentConfiguration;
   readonly executor: ArbitrumSepoliaOwnerAuthorizationExecutor;
   readonly port: ArbitrumSepoliaAccountReadPort;
@@ -210,11 +211,11 @@ export function createArbitrumSepoliaOwnerRoutes(
     // The same exact-origin browser policy as the private terminal routes.
     const origin = request.headers.origin;
     if (origin !== undefined) {
-      if (options.terminalOrigin === null || origin !== options.terminalOrigin) {
+      if (!isAllowedTerminalOrigin(options.terminalOrigin, origin)) {
         reject(response, 403, "ORIGIN_NOT_ALLOWED", "Browser origin is not allowed.");
         return true;
       }
-      response.setHeader("Access-Control-Allow-Origin", options.terminalOrigin);
+      response.setHeader("Access-Control-Allow-Origin", origin);
       response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       response.setHeader("Access-Control-Allow-Headers", "Content-Type");
       response.setHeader("Vary", "Origin");

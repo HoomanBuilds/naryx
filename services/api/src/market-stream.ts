@@ -3,7 +3,7 @@ import type { Duplex } from "node:stream";
 import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import type { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { packageDepthView, packageTapeView } from "./public-api.js";
-import { clientKey } from "./rate-limit.js";
+import { requestClientKey } from "./rate-limit.js";
 import { acceptWebSocket, type WebSocketConnection } from "./websocket.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -152,7 +152,7 @@ export function createMarketStream(options: MarketStreamOptions): {
     upgrade(request, socket) {
       const url = new URL(request.url ?? "/", "http://public-api.local");
       if (url.pathname !== "/v1/stream") return false;
-      const key = clientKey(request.socket.remoteAddress);
+      const key = requestClientKey(request);
       const fromClient = [...clients].filter((client) => client.key === key).length;
       if (clients.size >= maximumConnections || fromClient >= perClient) {
         socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
