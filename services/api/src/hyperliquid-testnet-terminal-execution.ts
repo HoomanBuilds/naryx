@@ -67,6 +67,17 @@ export type HyperliquidTestnetExecutorHttpOptions = Readonly<{
   fetchImplementation?: typeof fetch;
 }>;
 
+/**
+ * A result that can no longer change: never submitted, or reconciled as completed or as having no
+ * effect. Anything else (recovery pending, evidence incomplete) may still be resolved by the
+ * executor, for example after its lane is released on fresh authoritative evidence.
+ */
+export function hyperliquidTerminalResultIsFinal(result: HyperliquidTestnetTerminalExecutionResult): boolean {
+  return result.status === "NOT_SUBMITTED" || result.status === "CHECKPOINT_INCOMPLETE" || result.status === "CHECKPOINT_FAILED"
+    || (result.status === "RECONCILED" && (result.packageStatus === "NO_EFFECT"
+      || result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED"));
+}
+
 export class HyperliquidTestnetTerminalExecutionStateError extends Error {
   readonly code: "IDEMPOTENCY_CONFLICT" | "EXECUTION_OUTCOME_UNCERTAIN" | "STORE_CORRUPT";
 
@@ -277,6 +288,8 @@ implements HyperliquidTestnetTerminalExecutionPort {
   readonly #complete: Database.Statement;
   readonly #markUncertain: Database.Statement;
   readonly #resolveUncertain: Database.Statement;
+  readonly #replaceUnresolved: Database.Statement;
+  readonly #selectUnresolved: Database.Statement;
   readonly #guard: HyperliquidTestnetExecutionGuard | undefined;
 
   constructor(
@@ -336,6 +349,20 @@ implements HyperliquidTestnetTerminalExecutionPort {
       UPDATE hyperliquid_terminal_executions
       SET status = 'UNCERTAIN', result_json = NULL
       WHERE idempotency_key = ? AND attempt_id = ? AND status = 'PENDING'
+    `);
+    // A stored non-final result is replaced only by the executor's later final one, compared and
+    // swapped in one statement so a concurrent replacement cannot be overwritten.
+    this.#replaceUnresolved = this.#db.prepare(`
+      UPDATE hyperliquid_terminal_executions SET result_json = ?
+      WHERE idempotency_key = ? AND attempt_id = ? AND status = 'COMPLETED' AND result_json = ?
+    `);
+    this.#selectUnresolved = this.#db.prepare(`
+      SELECT idempotency_key, attempt_id, result_json FROM hyperliquid_terminal_executions
+      WHERE status = 'COMPLETED' AND NOT (
+        json_extract(result_json, '$.status') IN ('NOT_SUBMITTED', 'CHECKPOINT_INCOMPLETE', 'CHECKPOINT_FAILED')
+        OR (json_extract(result_json, '$.status') = 'RECONCILED'
+          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED_EXACT', 'COMPLETED_BOUNDED')))
+      ORDER BY rowid LIMIT ?
     `);
     this.#resolveUncertain = this.#db.prepare(`
       UPDATE hyperliquid_terminal_executions
@@ -418,6 +445,55 @@ implements HyperliquidTestnetTerminalExecutionPort {
     }
   }
 
+  /** The stored result, or the executor's later final result for a stored non-final one. */
+  async #latest(
+    request: HyperliquidTestnetTerminalExecutionRequest,
+    stored: HyperliquidTestnetTerminalExecutionResult,
+    storedJson: string,
+  ): Promise<HyperliquidTestnetTerminalExecutionResult> {
+    if (hyperliquidTerminalResultIsFinal(stored) || this.#executor.attemptStatus === undefined) return stored;
+    let status: ExecutorAttemptStatus;
+    try {
+      status = await this.#executor.attemptStatus({ ...request, resolve: false });
+    } catch {
+      return stored;
+    }
+    if (status.state !== "COMPLETED" || status.result === null || status.result === undefined) return stored;
+    let fresh: HyperliquidTestnetTerminalExecutionResult;
+    try {
+      fresh = validateHyperliquidTestnetTerminalExecutionResult(status.result, request);
+    } catch {
+      return stored;
+    }
+    if (!hyperliquidTerminalResultIsFinal(fresh)) return stored;
+    const update = this.#replaceUnresolved.run(JSON.stringify(fresh), request.idempotencyKey, request.attemptId, storedJson);
+    return update.changes === 1 ? fresh : this.#stored(request)!;
+  }
+
+  /**
+   * Server-side reconciliation: re-reads up to `limit` stored non-final attempts from the executor
+   * and records any that became final, so owners' packages leave UNRESOLVED without anyone polling.
+   * Returns how many were resolved.
+   */
+  async reconcileUnresolved(limit = 20): Promise<number> {
+    const rows = this.#selectUnresolved.all(limit) as { idempotency_key: string; attempt_id: string; result_json: string }[];
+    let resolved = 0;
+    for (const row of rows) {
+      const request = { attemptId: row.attempt_id, idempotencyKey: row.idempotency_key } as HyperliquidTestnetTerminalExecutionRequest;
+      try {
+        const stored = this.#stored(request)!;
+        const result = await this.#latest(request, stored, row.result_json);
+        if (result !== stored) {
+          this.#guard?.settle(request, result);
+          resolved += 1;
+        }
+      } catch {
+        // One unreadable attempt never stops the sweep.
+      }
+    }
+    return resolved;
+  }
+
   execute(
     request: HyperliquidTestnetTerminalExecutionRequest,
   ): Promise<HyperliquidTestnetTerminalExecutionResult> {
@@ -458,7 +534,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
       );
     }
     if (row.status === "COMPLETED") {
-      const result = this.#stored(request)!;
+      const result = await this.#latest(request, this.#stored(request)!, row.result_json as string);
       this.#guard?.settle(request, result);
       return Object.freeze({ state: "COMPLETED" as const, result });
     }

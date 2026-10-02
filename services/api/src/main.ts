@@ -448,6 +448,14 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
       }),
     );
+    // Server-side reconciliation: attempts stored with a non-final outcome are re-read from the
+    // executor each minute, so a package resolved later (for example after its lane is released)
+    // leaves UNRESOLVED without its owner having to poll.
+    const executionPort = hyperliquidExecutionRuntime;
+    const sweep = setInterval(() => {
+      void executionPort.reconcileUnresolved().catch(() => undefined);
+    }, 60_000);
+    sweep.unref();
   } catch (error) {
     hyperliquidExecutionRuntimeError = error;
     reportRuntimeFailure("hyperliquidTestnetExecutor", error);

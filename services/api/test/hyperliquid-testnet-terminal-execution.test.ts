@@ -272,3 +272,44 @@ test("durable Hyperliquid terminal execution resolves a timed-out handoff from t
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("a stored non-final outcome is replaced by the executor's later final one, on read and by the sweep", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-later-"));
+  const unresolved = (request: HyperliquidTestnetTerminalExecutionRequest) =>
+    Object.freeze({ ...result(request), packageStatus: "MANUAL_INTERVENTION", reasons: Object.freeze(["EVIDENCE_INCONSISTENT"]) }) as HyperliquidTestnetTerminalExecutionResult;
+  const second = { attemptId: "attempt-second-000001", idempotencyKey: "idem-second-0000001" };
+  let released = false;
+  const settled: string[] = [];
+  const executor: TrustedHyperliquidTestnetAttemptExecutor = {
+    executeAttempt: async (request) => unresolved(request),
+    // Before its lane is released the executor still reports the unresolved outcome.
+    attemptStatus: async (request) => ({
+      state: "COMPLETED", queuePosition: null, lane: released ? "FREE" : "BLOCKED",
+      result: released ? result(request) : unresolved(request),
+    }),
+  };
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(join(scratch, "execution.db"), executor, {
+    requireOwnerAuthorization: () => {},
+    admit: () => {},
+    settle: (request, outcome) => {
+      settled.push(`${request.attemptId}:${outcome.status === "RECONCILED" ? outcome.packageStatus : outcome.status}`);
+    },
+  });
+  try {
+    await port.execute(REQUEST);
+    await port.execute(second);
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: unresolved(REQUEST) });
+    assert.equal(await port.reconcileUnresolved(), 0);
+    released = true;
+    // A read picks up the final outcome and stores it; the sweep resolves the other attempt.
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
+    assert.equal(await port.reconcileUnresolved(), 1);
+    assert.equal(await port.reconcileUnresolved(), 0);
+    assert.deepEqual(await port.execute(second), result(second));
+    assert.ok(settled.includes(`${REQUEST.attemptId}:COMPLETED_EXACT`));
+    assert.ok(settled.includes(`${second.attemptId}:COMPLETED_EXACT`));
+  } finally {
+    port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
