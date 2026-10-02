@@ -220,7 +220,8 @@ export function mergeValues(left, right, path) {
 }
 
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
-const SECRET_ENV_NAME = /(PRIVATE|SECRET|MNEMONIC|SEED|PASSWORD|_KEY$|_KEYPAIR$|_TOKEN$)/;
+// PRIVATE_TERMINAL names the private terminal API URL the web bundle needs, not key material.
+const SECRET_ENV_NAME = /(PRIVATE(?!_TERMINAL_)|SECRET|MNEMONIC|SEED|PASSWORD|_KEY$|_KEYPAIR$|_TOKEN$)/;
 
 export function envValues(content, file) {
   const values = {};
