@@ -243,9 +243,9 @@
         "quoteAsset": { "$def": "quoteAssetRef" },
         "spotAdapter": { "$def": "spotAdapterRef" },
         "perpetualAdapter": { "$def": "perpetualAdapterRef" },
-        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds" } },
-        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 1000" } },
-        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds" } },
+        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds (recommended 60: several poll intervals plus RPC hiccups)" } },
+        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 1000 (recommended 5000)" } },
+        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds (recommended 600: a first-time user reads two wallet prompts)" } },
         "maxEntrySpread": {
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
@@ -275,7 +275,7 @@
           "solverCapabilityManifestHash": { "$bytes": { "$operator": "solver capability manifest hash" } },
           "feePolicyVersion": 1,
           "feePolicyManifestHash": { "$protocol": "feePolicyManifestHash", "args": [{ "$def": "feePolicyManifest" }] },
-          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds" } },
+          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds (recommended 180: covers the authorization signature, preparation, and the wallet transaction; slippage bounds bound the price risk)" } },
           "marginBps": { "$number": { "$operator": "perp margin as bps of entry notional" } },
           "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
           "spot": {

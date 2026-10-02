@@ -78,6 +78,10 @@ hashes, domain and template hashes, oracle reads, Hyperliquid metadata).
 Set the Hyperliquid template's `executionEnabled` to `true` only once the agent wallet is approved
 and funded; `false` serves quotes without executing.
 
+Timing values (quote, route, and order lifetimes, staleness bounds, poll intervals): each template
+prompt carries a recommended value sized for a first-time user reading two wallet prompts and for
+how often that chain's oracle updates. Shorter values pass every test and then fail real users.
+
 Limits, modelled on how large venues bound risk rather than ration trading:
 
 - `maxPrincipalAtomsPerOperation` and `maxRecoveryLossAtomsPerOperation`: every package, every lane.

@@ -628,12 +628,12 @@
         },
         "maxStalenessSlots": {
           "$bigint": {
-            "$operator": "max order context staleness, finalized slots"
+            "$operator": "max order context staleness, finalized slots (recommended 150, about 60 s at 400 ms slots; finalized slots already lag about 32)"
           }
         },
         "expiryTtlSlots": {
           "$bigint": {
-            "$operator": "order expiry TTL, slots"
+            "$operator": "order expiry TTL, slots (recommended 1500, about 10 minutes)"
           }
         },
         "pollIntervalMs": {
@@ -795,7 +795,7 @@
         },
         "quoteTtlSlots": {
           "$bigint": {
-            "$operator": "quote TTL, slots"
+            "$operator": "quote TTL, slots (recommended 450, about 3 minutes, so a first-time user can approve in the wallet)"
           }
         },
         "maxQuantityAtoms": {
@@ -810,7 +810,7 @@
         },
         "levelTtlSlots": {
           "$bigint": {
-            "$operator": "package book level TTL, slots"
+            "$operator": "package book level TTL, slots (recommended 1500, at least the quote TTL; each level write costs solver SOL)"
           }
         },
         "levelCapacityUnits": {

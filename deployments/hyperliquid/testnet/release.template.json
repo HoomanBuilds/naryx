@@ -98,7 +98,7 @@
           "spotAdapter": { "$def": "spotAdapterRef" },
           "perpetualAdapter": { "$def": "perpetualAdapterRef" },
           "maxStalenessMs": { "$bigint": { "$operator": "max staleness, ms, above refreshIntervalMs and at most 120000" } },
-          "expiryTtlMs": { "$bigint": { "$operator": "order expiry TTL, ms" } },
+          "expiryTtlMs": { "$bigint": { "$operator": "order expiry TTL, ms (recommended 300000: the owner signs the authorization, then the shared account may queue behind another package)" } },
           "recoveryActionExpiryTtlMs": { "$bigint": { "$operator": "recovery action expiry TTL, ms" } },
           "recoveryDeadlineTtlMs": { "$bigint": { "$operator": "recovery deadline TTL, ms" } },
           "minRecoveryWindowMs": { "$bigint": { "$operator": "minimum recovery window, ms" } },
