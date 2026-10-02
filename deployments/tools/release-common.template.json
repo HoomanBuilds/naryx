@@ -13,7 +13,8 @@
         "NARYX_API_EXECUTION_INTENT_DB": { "$data": "api/execution-intents.db" },
         "NARYX_SOLVER_INTERNAL_ORIGIN": "http://127.0.0.1:8788",
         "NARYX_EXECUTION_POLICY_FILE": { "$out": "api/testnet-execution-policy.json" },
-        "NARYX_EXECUTION_POLICY_DB": { "$data": "api/execution-policy.db" }
+        "NARYX_EXECUTION_POLICY_DB": { "$data": "api/execution-policy.db" },
+        "NARYX_REFERENCE_HISTORY_DB": { "$data": "api/reference-history.db" }
       }
     },
     "api/testnet-execution-policy.json": {

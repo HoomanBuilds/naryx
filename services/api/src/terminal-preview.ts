@@ -105,7 +105,7 @@ export function parsePreviewRequest(value: unknown): PreviewRequest {
   };
 }
 
-function observedDecimal(value: unknown): Decimal | undefined {
+export function observedDecimal(value: unknown): Decimal | undefined {
   if (typeof value !== "string") return undefined;
   const match = OBSERVED_DECIMAL.exec(value);
   if (match === null) return undefined;

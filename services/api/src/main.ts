@@ -96,6 +96,13 @@ import {
   createHyperliquidTestnetExitOrderFactory,
   createHyperliquidTestnetOwnerRoutes,
 } from "./hyperliquid-testnet-owner-routes.js";
+import {
+  createReferenceCandleRoutes,
+  ReferenceHistoryRecorder,
+  SqliteReferenceHistoryStore,
+  type ReferenceLane,
+} from "./reference-history.js";
+import type { DomainId } from "./terminal-types.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -108,6 +115,8 @@ function explicitlyEnabled(name: string): boolean {
   return value === "true";
 }
 
+// Where each lane's reference history legs come from, named as each lane composes its market source.
+const referenceSources: Partial<Record<DomainId, Readonly<{ spot: string; perp: string }>>> = {};
 const config = loadPrivateTerminalServerConfig();
 const startup = loadPrivateTerminalStartupConfig(process.env, config);
 const reportRuntimeFailure = stderrRuntimeFailureReporter();
@@ -206,6 +215,11 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
       orders: orderStore,
     });
     baseOrderRuntime.feed.start();
+    const baseIdentity = baseManifest.deployment.deployment;
+    referenceSources.base = {
+      spot: `Uniswap V3 pool ${baseIdentity.spot.market.address} slot0 mid, Base Sepolia`,
+      perp: `Chainlink round read by Naryx test perp ${baseIdentity.perpetual.market.address} (oracle mid), Base Sepolia`,
+    };
     // Base Sepolia exit path: the canonical EXIT order for the owner's open package, read from chain.
     baseExitRoutes = createBaseSepoliaExitOrderRoutes({
       terminalOrigin: config.terminalOrigin,
@@ -257,11 +271,12 @@ if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
 let solanaDevnetOrderRuntime: SolanaDevnetOrderRuntime | undefined;
 if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
   try {
+    const solanaManifest = loadSolanaDevnetRuntimeManifest(absolutePath(
+      process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
+      "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
+    ));
     solanaDevnetOrderRuntime = await createSolanaDevnetOrderRuntime({
-      manifest: loadSolanaDevnetRuntimeManifest(absolutePath(
-        process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
-        "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
-      )),
+      manifest: solanaManifest,
       config: loadSolanaDevnetOrderContextConfig(absolutePath(
         process.env.NARYX_SOLANA_DEVNET_ORDER_CONTEXT ?? "",
         "NARYX_SOLANA_DEVNET_ORDER_CONTEXT",
@@ -270,6 +285,12 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
       orders: orderStore,
     });
     solanaDevnetOrderRuntime.feed.start();
+    // Spot is the solver's inventory quoted around the same oracle, so both mids are the Pyth price.
+    const pyth = `Pyth SOL/USD PriceUpdateV2 account ${solanaManifest.testPerp.oracle}`;
+    referenceSources.solana = {
+      spot: `${pyth} (solver inventory mid), Solana Devnet`,
+      perp: `${pyth} (test perp oracle mid), Solana Devnet`,
+    };
   } catch (error) {
     solanaDevnetOrderRuntime = undefined;
     reportRuntimeFailure("solanaDevnetOrderContext", error);
@@ -329,6 +350,10 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
       const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs);
       marketFeed.start();
       arbitrumMarketSource = createArbitrumSepoliaMarketSource(config, arbitrumOrderRuntime.feed, marketFeed);
+      referenceSources.arbitrum = {
+        spot: `Uniswap V3 pool slot0 mid behind the spot port of factory ${deployment.accountFactory.address}, Arbitrum Sepolia`,
+        perp: `Chainlink-compatible feed ${config.priceFeed.address} latestRoundData, Arbitrum Sepolia`,
+      };
     } catch (error) {
       reportRuntimeFailure("arbitrumSepoliaTerminalMarket", error);
     }
@@ -390,6 +415,10 @@ if (hyperliquidConfig !== undefined) {
     const priceFeed = new HyperliquidTestnetPriceFeed(hyperliquidConfig);
     hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed);
     terminalMarkets = { hyperliquid: createHyperliquidTestnetMarketSource(hyperliquidConfig, priceFeed) };
+    referenceSources.hyperliquid = {
+      spot: `Hyperliquid testnet l2Book mid, spot universe index ${hyperliquidConfig.market.spot.universeIndex}`,
+      perp: `Hyperliquid testnet l2Book mid, perpetual asset index ${hyperliquidConfig.market.perpetual.assetIndex}`,
+    };
     hyperliquidPriceFeed = priceFeed;
     // Not awaited: until a valid snapshot arrives the order context reports itself unknown.
     void priceFeed.start();
@@ -587,6 +616,29 @@ if (executionPolicyFile !== undefined || executionPolicyDb !== undefined) {
   executionScopes = new DurableAttemptScopeResolver(orderStore, executionIntentStore);
 }
 
+const terminalMarketSources: TerminalMarketSources = {
+  ...terminalMarkets,
+  ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
+  ...(arbitrumMarketSource === undefined ? {} : { arbitrum: arbitrumMarketSource }),
+  ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
+};
+// Reference history: every configured lane's live market source, sampled into a durable store the
+// terminal chart reads. On only when its database path is set.
+const referenceHistoryPath = process.env.NARYX_REFERENCE_HISTORY_DB;
+const referenceHistory = referenceHistoryPath === undefined || referenceHistoryPath === ""
+  ? undefined
+  : new SqliteReferenceHistoryStore(absolutePath(referenceHistoryPath, "NARYX_REFERENCE_HISTORY_DB"));
+const referenceRecorder = referenceHistory === undefined ? undefined : new ReferenceHistoryRecorder(
+  referenceHistory,
+  Object.entries(terminalMarketSources).flatMap(([domain, source]): ReferenceLane[] => {
+    const legs = referenceSources[domain as DomainId];
+    return source === undefined || legs === undefined
+      ? []
+      : [{ domain: domain as DomainId, source, spotSource: legs.spot, perpSource: legs.perp }];
+  }),
+);
+referenceRecorder?.start();
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -615,13 +667,11 @@ const server = createPrivateTerminalServer(
     solanaDevnetOrderRuntime?.handler,
     baseExitRoutes,
     hyperliquidOwnerRoutes,
+    referenceHistory === undefined
+      ? undefined
+      : createReferenceCandleRoutes({ store: referenceHistory, markets: terminalMarketSources }),
   ),
-  {
-    ...terminalMarkets,
-    ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
-    ...(arbitrumMarketSource === undefined ? {} : { arbitrum: arbitrumMarketSource }),
-    ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
-  },
+  terminalMarketSources,
 );
 
 const publicServer = publicMarket?.listener === undefined
@@ -649,6 +699,7 @@ function shutdown(): void {
   hyperliquidPriceFeed?.stop();
   baseOrderRuntime?.feed.stop();
   solanaDevnetOrderRuntime?.feed.stop();
+  referenceRecorder?.stop();
   publicServer?.close();
   server.close(() => {
     orderStore.close();
@@ -658,6 +709,7 @@ function shutdown(): void {
     basePreparationStore?.close();
     hyperliquidExecutionRuntime?.close();
     hyperliquidOwnerLedger?.close();
+    referenceHistory?.close();
     publicMarket?.close();
     process.exitCode = 0;
   });
