@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TerminalShell } from "@/features/terminal/shell/terminal-shell";
+import { siteUrl } from "../site-url";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,6 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: siteUrl(),
   title: { default: "Naryx Terminal", template: "%s | Naryx Terminal" },
   description: "Trade complete onchain strategy packages across Solana, Base, Arbitrum, and Hyperliquid.",
 };
