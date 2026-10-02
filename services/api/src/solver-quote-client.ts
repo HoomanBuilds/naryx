@@ -1,6 +1,7 @@
 const HASH_HEX = /^[0-9a-f]{64}$/;
 const BYTE_HEX = /^(?:[0-9a-f]{2})+$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+const SOLVER_QUOTE_TIMEOUT_MS = 30_000;
 
 export interface SolverAtomicQuoteRequest {
   readonly orderHash: string;
@@ -213,7 +214,9 @@ export class HttpInternalSolverQuoteClient implements SolverAtomicQuotePort {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(request),
       redirect: "error",
-      signal: AbortSignal.timeout(5_000),
+      // A Solana Devnet quote may write a package book level and wait for it to finalize (about
+      // 15 s) when no standing level is usable; a shorter bound would fail exactly those users.
+      signal: AbortSignal.timeout(SOLVER_QUOTE_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new SolverQuoteClientError(

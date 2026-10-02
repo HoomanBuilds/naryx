@@ -7,7 +7,11 @@ import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import { HttpInternalOrderProvider } from './http-internal-order-provider.js';
 import type { InternalAtomicQuotePort } from './internal-atomic-quote-server.js';
 import { createSolanaDevnetBindingServer, createSolanaDevnetBindingService } from './solana-devnet-binding.js';
-import { SqliteSolanaDevnetFirmQuoteJournal, createSolanaDevnetFirmQuotePort } from './solana-devnet-firm-quote.js';
+import {
+  SqliteSolanaDevnetFirmQuoteJournal,
+  createSolanaDevnetFirmQuotePort,
+  refreshSolanaDevnetStandingLevels,
+} from './solana-devnet-firm-quote.js';
 import { createSolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
 import { HttpSolanaDevnetSolverRpc, requireSolanaDevnet, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
@@ -20,6 +24,9 @@ import { explicitBoolean, tcpPort } from './solver-process-config.js';
 
 export const SOLANA_DEVNET_SOLVER_ENABLED_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_ENABLED';
 export const SOLANA_DEVNET_SOLVER_WRITES_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED';
+/** How often standing levels are checked, and how far ahead (about 40 s) a level must stay usable. */
+const STANDING_LEVEL_REFRESH_MS = 10_000;
+const STANDING_LEVEL_LEAD_SLOTS = 100n;
 
 export type LoadedSolanaDevnetSolverRuntime = Readonly<{
   /** Devnet orders get a FIRM_ONCHAIN quote; every other order goes to the existing coordinator. */
@@ -74,6 +81,22 @@ export async function loadSolanaDevnetSolverRuntime(
   });
   const server: Server = createSolanaDevnetBindingServer(service, releaser);
   const orders = new HttpInternalOrderProvider(options.apiOrigin).get;
+  // With writes on, keep standing firm levels fresh so user quotes never wait on a Devnet write.
+  let refreshTimer: NodeJS.Timeout | undefined;
+  let stopped = false;
+  const refreshLevels = async () => {
+    try {
+      await refreshSolanaDevnetStandingLevels(shared, STANDING_LEVEL_LEAD_SLOTS);
+    } catch (error) {
+      process.stderr.write(`Solana Devnet standing levels not refreshed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
+    } finally {
+      if (!stopped) {
+        refreshTimer = setTimeout(() => void refreshLevels(), STANDING_LEVEL_REFRESH_MS);
+        refreshTimer.unref();
+      }
+    }
+  };
+  if (writer !== undefined) void refreshLevels();
   return Object.freeze({
     wrap: (fallback: InternalAtomicQuotePort) => createSolanaDevnetFirmQuotePort({ ...shared, orders, nonceSource: options.nonceSource }, fallback),
     listen: (host: string) => new Promise<void>((resolveListen, reject) => {
@@ -84,6 +107,8 @@ export async function loadSolanaDevnetSolverRuntime(
       });
     }),
     close: () => new Promise<void>((resolveClose) => {
+      stopped = true;
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
       journal.close();
       if (!server.listening) { resolveClose(); return; }
       server.close(() => resolveClose());

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { firmReservationId } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
-import { priceSolanaDevnetEntry, priceSolanaDevnetExit, selectFirmLevel } from '../src/solana-devnet-firm-quote.js';
+import { priceSolanaDevnetEntry, priceSolanaDevnetExit, selectFirmLevel, standingLevelExpiry } from '../src/solana-devnet-firm-quote.js';
 import {
   BorshWriter,
   accountDiscriminator,
@@ -76,6 +76,34 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, quoteMode: 1 }] }, config, 2n, 450n, 550n), undefined);
   assert.equal(selectFirmLevel(state, config, 2n, 450n, 550n, 1), undefined);
   assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, side: 1 }] }, config, 2n, 450n, 550n, 1)?.levelId, 77n);
+});
+
+test('keeps a standing level per side that a quote made a lead time from now can still use', () => {
+  const policy = new Uint8Array(32).fill(4);
+  const settlement = new Uint8Array(32).fill(5);
+  const config = {
+    series: { settlementClassIdentityHash: settlement, spotBaseAtomsPerPackageUnit: 1_000n },
+    maxQuantityAtoms: 10_000n, levelCapacityUnits: 10n, quoteTtlSlots: 450n,
+  } as never;
+  const ask: QuoteLevelState = {
+    slotIndex: 0, settlementClassIdentityHash: settlement, reservationPolicyHash: policy, referenceOffset: 0n, levelId: 1n,
+    epoch: 2n, levelSequence: 1n, minPackageSizeUnits: 1n, maxPackageSizeUnits: 10n, maxFeeAtoms: 0n, expirySlot: 1_450n,
+    remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
+  };
+  const at = (slot: bigint, levels: QuoteLevelState[]) => ({
+    slot, market, oraclePricePerLot: 150_000n,
+    reservationClass: { policyHash: policy } as never,
+    shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
+    levels,
+  });
+  // Written at slot 1000 with expiry 1450: still usable by a quote 100 slots out, so no write.
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 100n, 2), undefined);
+  // The bid side has no level, so it is written with a full quote TTL.
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 100n, 1), 1_450n);
+  // 250 slots later a quote 100 slots out would need expiry beyond 1350 + 150 = 1500: refresh.
+  assert.equal(standingLevelExpiry(at(1_250n, [ask]), config, 100n, 2), 1_700n);
+  // A partly filled level that can no longer take a full-size package is refreshed too.
+  assert.equal(standingLevelExpiry(at(1_000n, [{ ...ask, remainingCapacity: 4n }]), config, 100n, 2), 1_450n);
 });
 
 test('decodes the inventory reservation account layout', () => {

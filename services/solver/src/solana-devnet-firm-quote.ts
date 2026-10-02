@@ -487,6 +487,54 @@ export function packageBookLevelInstructions(input: Readonly<{
   });
 }
 
+/**
+ * Standing liquidity, as an exchange market maker keeps it: one firm level per side (the ask that
+ * entries fill, the bid that exits fill) that a quote made `leadSlots` from now can still use, at
+ * full capacity. Without it the first quote after a level ages out waits for a Devnet write to
+ * finalize, which outlasts the API's quote request. A level written now (expiry now + quote TTL)
+ * serves quotes for two thirds of the TTL, so this writes about once per side per that window.
+ * Returns how many levels it wrote.
+ */
+export async function refreshSolanaDevnetStandingLevels(
+  dependencies: Pick<SolanaDevnetFirmQuoteDependencies, 'manifest' | 'config' | 'rpc' | 'writer' | 'key'>,
+  leadSlots: bigint,
+): Promise<number> {
+  const { manifest, config, rpc, writer, key } = dependencies;
+  if (writer === undefined) return 0;
+  let written = 0;
+  for (const side of [QUOTE_SIDE_ASK, QUOTE_SIDE_BID]) {
+    await withShardWriteLock(config.accounts.packageBookShard, async () => {
+      const state = await readSolanaDevnetQuoteState(rpc, manifest, config);
+      const expirySlot = standingLevelExpiry(state, config, leadSlots, side);
+      if (expirySlot === undefined) return;
+      const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot, side });
+      await writer.sendAndFinalize(plan.instructions, key.keypair);
+      written += 1;
+    });
+  }
+  return written;
+}
+
+/**
+ * The expiry of the standing level to write on `side`, or undefined when a level a quote made
+ * `leadSlots` from now could still use already exists, at full size.
+ */
+export function standingLevelExpiry(
+  state: SolanaDevnetLiveQuoteState,
+  config: Pick<SolanaDevnetSolverConfig, 'maxQuantityAtoms' | 'levelCapacityUnits' | 'quoteTtlSlots' | 'series'>,
+  leadSlots: bigint,
+  side: number,
+): bigint | undefined {
+  const maxUnits = config.maxQuantityAtoms / config.series.spotBaseAtomsPerPackageUnit;
+  const units = maxUnits < config.levelCapacityUnits ? maxUnits : config.levelCapacityUnits;
+  if (units <= 0n) return undefined;
+  const quotedAt = state.slot + leadSlots;
+  // The window a quote at that slot applies: expiry beyond a third of the TTL, within the TTL.
+  const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + config.quoteTtlSlots / 3n,
+    quotedAt + config.quoteTtlSlots, side);
+  return usable === undefined ? state.slot + config.quoteTtlSlots : undefined;
+}
+
 export type SolanaDevnetEntryPricing = Readonly<{
   spotLots: bigint;
   spotLimitPerLot: bigint;
