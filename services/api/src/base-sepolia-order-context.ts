@@ -158,8 +158,10 @@ function gcd(left: bigint, right: bigint): bigint {
 }
 
 /**
- * The Uniswap V3 pool's executable ask in quote atoms per base atom: the slot0 mid plus the pool fee,
- * rounded up. Exact-output buys pay the fee on the quote input, so the fee scales the price.
+ * The Uniswap V3 pool's executable ask: the slot0 mid plus the pool fee, as quote atoms per whole
+ * base token, rounded up. Exact-output buys pay the fee on the quote input, so the fee scales the
+ * price. The pool's exact ratio has a 2^192 denominator, far beyond an exact price's u128 terms
+ * for any real pool, so it is expressed per whole token: one quote atom of precision per token.
  */
 export function baseSepoliaSpotAsk(
   baseAsset: AssetRef,
@@ -168,8 +170,12 @@ export function baseSepoliaSpotAsk(
 ): ExactPrice {
   const squared = snapshot.sqrtPriceX96 * snapshot.sqrtPriceX96;
   if (squared <= 0n) throw new Error("Uniswap pool price must be positive.");
-  const quoteAtoms = (snapshot.baseIsToken0 ? squared : Q192) * (FEE_SCALE + snapshot.poolFee);
-  const baseAtoms = (snapshot.baseIsToken0 ? Q192 : squared) * FEE_SCALE;
+  const [midNumerator, midDenominator] = snapshot.baseIsToken0 ? [squared, Q192] : [Q192, squared];
+  const wholeToken = 10n ** BigInt(baseAsset.decimals);
+  const numerator = midNumerator * (FEE_SCALE + snapshot.poolFee) * wholeToken;
+  const denominator = midDenominator * FEE_SCALE;
+  const quoteAtoms = (numerator + denominator - 1n) / denominator;
+  const baseAtoms = wholeToken;
   const divisor = gcd(quoteAtoms, baseAtoms);
   return exactPrice({
     baseAsset,
