@@ -158,6 +158,38 @@ export function hyperliquidTestnetEntryReceiptHash(
   ])).digest("hex");
 }
 
+/** An unresolved entry has no receipt yet; an unresolved exit keeps its entry receipt and exit attempt. */
+const UNRESOLVED_RULE = "state = 'UNRESOLVED' AND (entry_receipt_hash IS NULL) = (exit_attempt_id IS NULL)";
+const PACKAGE_COLUMNS = [
+  "entry_attempt_id", "owner", "entry_order_hash", "state", "reserved_notional_atoms", "perp_quantity_atoms",
+  "spot_quantity_atoms", "entry_notional_atoms", "entry_receipt_hash", "exit_order_hash", "exit_attempt_id",
+  "opened_at_ms", "closed_at_ms", "updated_at_ms", "exit_spot_quantity_atoms",
+].join(", ");
+
+function packagesTable(name: string): string {
+  return `
+    CREATE TABLE IF NOT EXISTS ${name} (
+      entry_attempt_id TEXT PRIMARY KEY,
+      owner TEXT NOT NULL,
+      entry_order_hash TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL CHECK (state IN ('PENDING_ENTRY', 'OPEN', 'EXITING', 'CLOSED', 'UNRESOLVED')),
+      reserved_notional_atoms TEXT NOT NULL,
+      perp_quantity_atoms TEXT,
+      spot_quantity_atoms TEXT,
+      entry_notional_atoms TEXT,
+      entry_receipt_hash TEXT UNIQUE,
+      exit_order_hash TEXT UNIQUE,
+      exit_attempt_id TEXT UNIQUE,
+      opened_at_ms INTEGER,
+      closed_at_ms INTEGER,
+      updated_at_ms INTEGER NOT NULL,
+      exit_spot_quantity_atoms TEXT,
+      CHECK ((state = 'PENDING_ENTRY' AND entry_receipt_hash IS NULL)
+        OR (state IN ('OPEN', 'EXITING', 'CLOSED') AND entry_receipt_hash IS NOT NULL)
+        OR (${UNRESOLVED_RULE}))
+    ) STRICT;`;
+}
+
 export class HyperliquidTestnetOwnerLedger {
   readonly #db: Database.Database;
   readonly #now: () => number;
@@ -176,28 +208,26 @@ export class HyperliquidTestnetOwnerLedger {
         signature TEXT NOT NULL,
         authorized_at_ms INTEGER NOT NULL
       ) STRICT;
-      CREATE TABLE IF NOT EXISTS hyperliquid_owner_packages (
-        entry_attempt_id TEXT PRIMARY KEY,
-        owner TEXT NOT NULL,
-        entry_order_hash TEXT NOT NULL UNIQUE,
-        state TEXT NOT NULL CHECK (state IN ('PENDING_ENTRY', 'OPEN', 'EXITING', 'CLOSED', 'UNRESOLVED')),
-        reserved_notional_atoms TEXT NOT NULL,
-        perp_quantity_atoms TEXT,
-        spot_quantity_atoms TEXT,
-        entry_notional_atoms TEXT,
-        entry_receipt_hash TEXT UNIQUE,
-        exit_order_hash TEXT UNIQUE,
-        exit_attempt_id TEXT UNIQUE,
-        opened_at_ms INTEGER,
-        closed_at_ms INTEGER,
-        updated_at_ms INTEGER NOT NULL,
-        CHECK ((state IN ('OPEN', 'EXITING', 'CLOSED')) = (entry_receipt_hash IS NOT NULL))
-      ) STRICT;
+      ${packagesTable("hyperliquid_owner_packages")}
       CREATE INDEX IF NOT EXISTS hyperliquid_owner_packages_owner ON hyperliquid_owner_packages(owner, state);
     `);
     const columns = this.#db.prepare("PRAGMA table_info(hyperliquid_owner_packages)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "exit_spot_quantity_atoms")) {
       this.#db.exec("ALTER TABLE hyperliquid_owner_packages ADD COLUMN exit_spot_quantity_atoms TEXT");
+    }
+    // The first table version forbade an entry receipt on an UNRESOLVED row, so an exit that ended
+    // unresolved could not be recorded. Rebuild such a table once under the current rule.
+    const sql = this.#db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hyperliquid_owner_packages'").pluck().get();
+    if (typeof sql === "string" && !sql.includes(UNRESOLVED_RULE)) {
+      this.#db.transaction(() => {
+        this.#db.exec(`
+          ${packagesTable("hyperliquid_owner_packages_v2")}
+          INSERT INTO hyperliquid_owner_packages_v2 (${PACKAGE_COLUMNS}) SELECT ${PACKAGE_COLUMNS} FROM hyperliquid_owner_packages;
+          DROP TABLE hyperliquid_owner_packages;
+          ALTER TABLE hyperliquid_owner_packages_v2 RENAME TO hyperliquid_owner_packages;
+          CREATE INDEX IF NOT EXISTS hyperliquid_owner_packages_owner ON hyperliquid_owner_packages(owner, state);
+        `);
+      }).immediate();
     }
   }
 
@@ -265,11 +295,16 @@ export class HyperliquidTestnetOwnerLedger {
     }).immediate();
   }
 
-  /** Records an entry outcome once. Only authoritative completed evidence opens a package. */
+  /**
+   * Records an entry outcome. Only authoritative completed evidence opens a package; an entry left
+   * UNRESOLVED takes a later final outcome (after its recovery or lane release reconciles).
+   */
   settleEntry(attemptId: string, result: HyperliquidTestnetTerminalExecutionResult, entryNotionalAtoms: bigint): void {
     this.#db.transaction(() => {
       const row = this.#row(attemptId);
-      if (row === undefined || row.state !== "PENDING_ENTRY") return;
+      const unresolvedEntry = row?.state === "UNRESOLVED" && row.exit_attempt_id === null;
+      if (row === undefined || (row.state !== "PENDING_ENTRY" && !unresolvedEntry)) return;
+      if (unresolvedEntry && completed(result) === undefined && !noEffect(result)) return;
       if (noEffect(result)) {
         this.#db.prepare("DELETE FROM hyperliquid_owner_packages WHERE entry_attempt_id = ?").run(attemptId);
         return;
@@ -287,7 +322,7 @@ export class HyperliquidTestnetOwnerLedger {
         UPDATE hyperliquid_owner_packages
         SET state = 'OPEN', perp_quantity_atoms = ?, spot_quantity_atoms = ?, entry_notional_atoms = ?,
           entry_receipt_hash = ?, opened_at_ms = ?, updated_at_ms = ?
-        WHERE entry_attempt_id = ? AND state = 'PENDING_ENTRY'
+        WHERE entry_attempt_id = ? AND state IN ('PENDING_ENTRY', 'UNRESOLVED') AND exit_attempt_id IS NULL
       `).run(
         perp.toString(), spot.toString(), entryNotionalAtoms.toString(),
         hyperliquidTestnetEntryReceiptHash(attemptId, row.entry_order_hash, done),
@@ -344,6 +379,7 @@ export class HyperliquidTestnetOwnerLedger {
     }).immediate();
   }
 
+  /** Records an exit outcome; an exit left UNRESOLVED takes a later final outcome. */
   settleExit(attemptId: string, result: HyperliquidTestnetTerminalExecutionResult): void {
     const next = completed(result) !== undefined ? "CLOSED" : noEffect(result) ? "OPEN" : "UNRESOLVED";
     this.#db.prepare(`
@@ -351,8 +387,8 @@ export class HyperliquidTestnetOwnerLedger {
       SET state = ?, exit_attempt_id = CASE WHEN ? = 'OPEN' THEN NULL ELSE exit_attempt_id END,
         exit_spot_quantity_atoms = CASE WHEN ? = 'OPEN' THEN NULL ELSE exit_spot_quantity_atoms END,
         closed_at_ms = CASE WHEN ? = 'CLOSED' THEN ? ELSE closed_at_ms END, updated_at_ms = ?
-      WHERE exit_attempt_id = ? AND state = 'EXITING'
-    `).run(next, next, next, next, this.#now(), this.#now(), attemptId);
+      WHERE exit_attempt_id = ? AND (state = 'EXITING' OR (state = 'UNRESOLVED' AND ? <> 'UNRESOLVED'))
+    `).run(next, next, next, next, this.#now(), this.#now(), attemptId, next);
   }
 
   close(): void {

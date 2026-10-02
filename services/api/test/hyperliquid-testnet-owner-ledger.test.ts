@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { PackageOrder } from "@naryx/protocol-types";
 import {
@@ -25,7 +26,7 @@ const KEY = "idem-0123456789ABCD";
 
 function reconciled(
   attemptId: string,
-  packageStatus: "COMPLETED_EXACT" | "NO_EFFECT",
+  packageStatus: "COMPLETED_EXACT" | "NO_EFFECT" | "MANUAL_INTERVENTION",
   netSpot: string,
   perpetual: string,
 ): HyperliquidTestnetTerminalExecutionResult {
@@ -143,3 +144,57 @@ test("only the owner wallet's typed-data signature authorizes its package", with
   guard.admit(request);
   assert.equal(ledger.packages(input.owner)[0]?.state, "PENDING_ENTRY");
 }));
+
+test("an UNRESOLVED entry or exit takes its later final outcome, and a later unresolved one changes nothing", withLedger((ledger) => {
+  ledger.reserveEntry({ attemptId: "entry-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1_000n, limits: LIMITS });
+  ledger.settleEntry("entry-1", reconciled("entry-1", "MANUAL_INTERVENTION", "0", "0"), 600n);
+  assert.equal(ledger.packages(ALICE)[0]?.state, "UNRESOLVED");
+  // Still not final: stays UNRESOLVED.
+  ledger.settleEntry("entry-1", reconciled("entry-1", "MANUAL_INTERVENTION", "0", "0"), 600n);
+  assert.equal(ledger.packages(ALICE)[0]?.state, "UNRESOLVED");
+  // The lane release reconciled it as completed: the package opens with its observed legs.
+  ledger.settleEntry("entry-1", reconciled("entry-1", "COMPLETED_EXACT", "100", "-100"), 600n);
+  assert.equal(ledger.packages(ALICE)[0]?.state, "OPEN");
+  assert.equal(ledger.packages(ALICE)[0]?.spotQuantityAtoms, 100n);
+
+  ledger.bindExitOrder("entry-1", ALICE, "09".repeat(32));
+  ledger.beginExit("exit-1", {
+    owner: ALICE, orderHash: "09".repeat(32), perpQuantityAtoms: 100n, grossSpotQuantityAtoms: 100n, spotLotAtoms: 1n,
+    entryReceiptHash: ledger.packages(ALICE)[0]!.entryReceiptHash!,
+  });
+  ledger.settleExit("exit-1", reconciled("exit-1", "MANUAL_INTERVENTION", "0", "0"));
+  assert.equal(ledger.packages(ALICE)[0]?.state, "UNRESOLVED");
+  ledger.settleExit("exit-1", reconciled("exit-1", "COMPLETED_EXACT", "-100", "100"));
+  assert.equal(ledger.packages(ALICE)[0]?.state, "CLOSED");
+}));
+
+test("a ledger created under the first table rule is rebuilt once, keeping its rows", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-ledger-"));
+  const path = join(scratch, "execution.db");
+  try {
+    const old = new Database(path);
+    old.exec(`
+      CREATE TABLE hyperliquid_owner_packages (
+        entry_attempt_id TEXT PRIMARY KEY, owner TEXT NOT NULL, entry_order_hash TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('PENDING_ENTRY', 'OPEN', 'EXITING', 'CLOSED', 'UNRESOLVED')),
+        reserved_notional_atoms TEXT NOT NULL, perp_quantity_atoms TEXT, spot_quantity_atoms TEXT,
+        entry_notional_atoms TEXT, entry_receipt_hash TEXT UNIQUE, exit_order_hash TEXT UNIQUE,
+        exit_attempt_id TEXT UNIQUE, opened_at_ms INTEGER, closed_at_ms INTEGER, updated_at_ms INTEGER NOT NULL,
+        CHECK ((state IN ('OPEN', 'EXITING', 'CLOSED')) = (entry_receipt_hash IS NOT NULL))
+      ) STRICT;
+      INSERT INTO hyperliquid_owner_packages (entry_attempt_id, owner, entry_order_hash, state, reserved_notional_atoms, updated_at_ms)
+      VALUES ('entry-old', '${ALICE}', '${"01".repeat(32)}', 'PENDING_ENTRY', '1000', 1);
+    `);
+    old.close();
+    const ledger = new HyperliquidTestnetOwnerLedger(path);
+    try {
+      assert.equal(ledger.packages(ALICE)[0]?.state, "PENDING_ENTRY");
+      ledger.settleEntry("entry-old", reconciled("entry-old", "COMPLETED_EXACT", "100", "-100"), 600n);
+      assert.equal(ledger.packages(ALICE)[0]?.state, "OPEN");
+    } finally {
+      ledger.close();
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
