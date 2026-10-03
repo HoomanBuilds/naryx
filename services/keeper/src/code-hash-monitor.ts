@@ -259,7 +259,15 @@ export async function runCodeHashPass(input: {
 }): Promise<readonly CodeObservation[]> {
   const observations = await observeCode(input.targets, input.readers, input.nowMs);
   for (const entry of input.journals) {
-    const journal = await entry.store.load();
+    let journal: DependencyIncidentJournal;
+    try {
+      journal = await entry.store.load();
+    } catch (error) {
+      // A scope whose incident journal was never created (no READY qualification yet) still gets its drift
+      // reported through the returned observations; it has nothing to quarantine.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+      throw error;
+    }
     const next = codeDriftTransition(journal, observations, entry.readinessDecision, input.nowMs, input.evidenceTtlMs);
     if (next !== journal) await entry.store.save(next);
   }

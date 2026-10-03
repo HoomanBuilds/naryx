@@ -151,6 +151,22 @@ test('a monitoring pass persists the quarantine to the scope journal', async () 
   }
 });
 
+test('a pass without a created scope journal still reports drift instead of failing the whole pass', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'naryx-code-monitor-'));
+  try {
+    const observations = await runCodeHashPass({
+      targets: [verifier],
+      readers: { [BASE_SEPOLIA]: reader(`0x${'ef'.repeat(32)}`) },
+      journals: [{ store: new DependencyIncidentFileStore(join(dir, 'never-created.json')), readinessDecision: readyDecision }],
+      nowMs,
+      evidenceTtlMs: 60_000n,
+    });
+    assert.equal(observations[0]?.status, 'DRIFT');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('the monitor stays off unless configured, and needs a per-chain RPC URL for every target chain', () => {
   assert.equal(loadCodeHashMonitorConfig({}, () => '', JSON.parse), undefined);
   const arbitrumVerifier = { ...verifier, targetId: 'arbitrum-coordinator', chainRef: ARBITRUM_SEPOLIA };
