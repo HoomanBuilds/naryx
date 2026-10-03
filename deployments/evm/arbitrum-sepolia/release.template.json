@@ -259,13 +259,13 @@
         "priceFeed": { "$contract": "priceFeed" },
         "priceFeedDecimals": { "$def": "priceFeedDecimals" },
         "spotQuoter": { "$contract": "uniswapQuoter" },
-        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds (recommended 60)" } },
+        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds (recommended 600: the Arbitrum Sepolia ETH/USD feed updates about every 120 s and most gaps exceed 60 s; equal to the solver maxPriceAgeSeconds)" } },
         "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 250 (recommended 5000)" } },
         "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds (recommended 900: account creation, the reservation signature, and the funding transaction)" } },
         "maxEntrySpread": {
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
-          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms" } },
+          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms (the fraction must be in lowest terms: 50 quote per WETH is 1 / 20000000000)" } },
           "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
           "roundingDirection": "CEIL"
         },
