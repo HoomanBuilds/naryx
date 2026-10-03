@@ -10,6 +10,7 @@ import { createSolanaDevnetBindingServer, createSolanaDevnetBindingService } fro
 import {
   SqliteSolanaDevnetFirmQuoteJournal,
   createSolanaDevnetFirmQuotePort,
+  holdShardSequences,
   refreshSolanaDevnetStandingLevels,
 } from './solana-devnet-firm-quote.js';
 import { createSolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
@@ -96,7 +97,11 @@ export async function loadSolanaDevnetSolverRuntime(
       }
     }
   };
-  if (writer !== undefined) void refreshLevels();
+  if (writer !== undefined) {
+    // Bindings made before a restart are not in memory; each expires within one quote TTL of now.
+    holdShardSequences(config.accounts.packageBookShard, (await rpc.getFinalizedSlot()) + config.quoteTtlSlots);
+    void refreshLevels();
+  }
   return Object.freeze({
     wrap: (fallback: InternalAtomicQuotePort) => createSolanaDevnetFirmQuotePort({ ...shared, orders, nonceSource: options.nonceSource }, fallback),
     listen: (host: string) => new Promise<void>((resolveListen, reject) => {

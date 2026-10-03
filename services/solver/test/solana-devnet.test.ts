@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { firmReservationId } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
-import { priceSolanaDevnetEntry, priceSolanaDevnetExit, selectFirmLevel, standingLevelExpiry } from '../src/solana-devnet-firm-quote.js';
+import {
+  holdShardSequences,
+  priceSolanaDevnetEntry,
+  priceSolanaDevnetExit,
+  selectFirmLevel,
+  shardSequencesHeld,
+  standingLevelExpiry,
+} from '../src/solana-devnet-firm-quote.js';
 import {
   BorshWriter,
   accountDiscriminator,
@@ -119,4 +126,16 @@ test('decodes the inventory reservation account layout', () => {
   assert.equal(reservation.solverId, 'solver-a');
   assert.equal(reservation.baseAtoms, 2_000n);
   assert.equal(reservation.expirySlot, 900n);
+});
+
+test('a binding holds the shard sequences until it expires, so standing-level writes wait', () => {
+  const shard = 'held-shard-for-test';
+  assert.equal(shardSequencesHeld(shard, 1_000n), false);
+  holdShardSequences(shard, 1_450n);
+  // A later, shorter binding never shortens the hold.
+  holdShardSequences(shard, 1_200n);
+  assert.equal(shardSequencesHeld(shard, 1_000n), true);
+  assert.equal(shardSequencesHeld(shard, 1_449n), true);
+  assert.equal(shardSequencesHeld(shard, 1_450n), false);
+  assert.equal(shardSequencesHeld('another-shard', 1_000n), false);
 });

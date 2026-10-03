@@ -72,6 +72,24 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const shardWriteTails = new Map<string, Promise<unknown>>();
 
 /** Runs package book writes for one shard one at a time within this solver process. */
+/**
+ * A binding's quote lock pins the shard's reference and shard sequences, and the user's execution
+ * requires them unchanged until the binding expires. Bindings hold the shard until their expiry slot;
+ * the standing-level refresher never writes a held shard.
+ */
+const shardHolds = new Map<string, bigint>();
+
+export function holdShardSequences(shard: string, untilSlot: bigint): void {
+  const current = shardHolds.get(shard);
+  if (current === undefined || untilSlot > current) shardHolds.set(shard, untilSlot);
+}
+
+/** Whether a standing-level write at `slot` could invalidate a binding still in flight. */
+export function shardSequencesHeld(shard: string, slot: bigint): boolean {
+  const until = shardHolds.get(shard);
+  return until !== undefined && slot < until;
+}
+
 export async function withShardWriteLock<T>(shard: string, task: () => Promise<T>): Promise<T> {
   const previous = shardWriteTails.get(shard) ?? Promise.resolve();
   const run = previous.then(task, task);
@@ -505,6 +523,8 @@ export async function refreshSolanaDevnetStandingLevels(
   for (const side of [QUOTE_SIDE_ASK, QUOTE_SIDE_BID]) {
     await withShardWriteLock(config.accounts.packageBookShard, async () => {
       const state = await readSolanaDevnetQuoteState(rpc, manifest, config);
+      // A user between binding and execution needs the shard sequences unchanged.
+      if (shardSequencesHeld(config.accounts.packageBookShard, state.slot)) return;
       const expirySlot = standingLevelExpiry(state, config, leadSlots, side);
       if (expirySlot === undefined) return;
       const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot, side });
