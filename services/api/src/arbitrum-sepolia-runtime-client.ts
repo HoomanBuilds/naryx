@@ -26,6 +26,7 @@ import {
   ARBITRUM_SEPOLIA_CHAIN_REFERENCE,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   arbitrumSepoliaAccountCodeHash,
+  createArbitrumSepoliaAsyncAdmission,
   createArbitrumSepoliaAsyncContextProvider,
   validateArbitrumSepoliaAsyncDeploymentConfiguration,
   type ArbitrumSepoliaAsyncAttemptEvidence,
@@ -276,9 +277,14 @@ async function validateLiveDeployment(
   }
 }
 
+/** The async observation port plus the evidence-free admission check that gates every handoff. */
+export type ArbitrumSepoliaAsyncRuntime = EvmTestnetAsyncObservationPort & Readonly<{
+  admit(attemptId: string): Promise<void>;
+}>;
+
 export async function createArbitrumSepoliaRuntime(
   options: ArbitrumSepoliaRuntimeOptions,
-): Promise<EvmTestnetAsyncObservationPort> {
+): Promise<ArbitrumSepoliaAsyncRuntime> {
   const manifest = requireManifest(options.manifest);
   await validateLiveDeployment(options.client, manifest.deployment);
   const exitEvidence = async (attemptId: string, attempt: { orderHash: string; quoteHash: string; routeHash: string }) => {
@@ -330,20 +336,28 @@ export async function createArbitrumSepoliaRuntime(
       evidenceSchemaHash: `0x${Buffer.from(manifest.deployment.route.coordinatorEvidenceSchemaHash).toString("hex")}`,
     }, manifest.observationStartBlock);
   };
-  const context = createArbitrumSepoliaAsyncContextProvider({
+  const admissionOptions = {
     intents: options.intents,
     orders: options.orders,
     deployments: [manifest.deployment],
-    evidence,
     // The coordinator checks every deadline against block.timestamp, so admission uses chain time.
     currentUnixSeconds: options.currentUnixSeconds ?? (() => options.client.latestBlockTimestamp()),
-  });
-  return createEvmTestnetAsyncObservationPort({
+  };
+  const context = createArbitrumSepoliaAsyncContextProvider({ ...admissionOptions, evidence });
+  const admission = createArbitrumSepoliaAsyncAdmission(admissionOptions);
+  const port = createEvmTestnetAsyncObservationPort({
     contextProvider: async (attemptId) => {
       await validateLiveDeployment(options.client, manifest.deployment);
       return context(attemptId);
     },
     readPort: options.client,
+  });
+  return Object.freeze({
+    observe: port.observe,
+    admit: async (attemptId: string) => {
+      await validateLiveDeployment(options.client, manifest.deployment);
+      await admission(attemptId);
+    },
   });
 }
 

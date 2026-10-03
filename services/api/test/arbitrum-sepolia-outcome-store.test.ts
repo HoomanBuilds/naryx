@@ -53,7 +53,7 @@ test("Arbitrum outcomes keep what each handoff proved across a restart and never
       attemptId, status: "IN_FLIGHT" as const, packageId: hash(2), coordinatorState: "RESERVED", requestKey: null, transactions,
     }),
   };
-  const chain = { observe: async () => scripted };
+  const chain = { observe: async () => scripted, admit: async () => undefined };
   const entry = { attemptId: entryId, idempotencyKey: "idem-arb-outcome-0001" };
   const exit = { attemptId: exitId, idempotencyKey: "idem-arb-outcome-0002" };
   let store = new SqliteArbitrumSepoliaOutcomeStore(dbPath, stores);

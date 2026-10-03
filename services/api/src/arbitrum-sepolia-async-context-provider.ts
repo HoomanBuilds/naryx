@@ -265,98 +265,132 @@ function checkedKeys(evidence: ArbitrumSepoliaAsyncAttemptEvidence, attemptId: s
   return Object.freeze(keys);
 }
 
+type ArbitrumSepoliaAsyncAdmissionOptions = Omit<ArbitrumSepoliaAsyncContextProviderOptions, "evidence">;
+
+/**
+ * Admits a selected Arbitrum attempt from its stored order, signed quote, and route alone, with no
+ * chain evidence: the package admission, the reviewed route binding, and the runtime bounds.
+ */
+async function admitAttempt(options: ArbitrumSepoliaAsyncAdmissionOptions, attemptId: string) {
+  let attempt;
+  try {
+    attempt = options.intents.getAttempt(attemptId);
+  } catch {
+    fail("ATTEMPT_NOT_FOUND", "Arbitrum Sepolia async attempt was not found.");
+  }
+  if (attempt === undefined || attempt.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED"
+    || attempt.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID) {
+    fail("ATTEMPT_NOT_FOUND", "Arbitrum Sepolia async attempt was not found.");
+  }
+  const record = options.orders.getByOrderHash(attempt.orderHash);
+  const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
+  const selected = options.intents.getSelectedQuote(attemptId);
+  if (record === undefined || order === undefined || selected === undefined) {
+    fail("ATTEMPT_EVIDENCE_MISSING", "Selected attempt order, signed quote, or async evidence is missing.");
+  }
+  if (record.domainId !== attempt.domainId
+    || record.domainManifestVersion !== attempt.domainManifestVersion
+    || record.domainManifestHashHex !== attempt.domainManifestHash
+    || order.domain.domainId !== attempt.domainId
+    || order.domain.domainManifestVersion !== attempt.domainManifestVersion
+    || toHex(order.domain.domainManifestHash) !== attempt.domainManifestHash
+    || selected.orderHash !== attempt.orderHash || selected.quoteHash !== attempt.quoteHash
+    || selected.routeHash !== attempt.routeHash) {
+    fail("ATTEMPT_EVIDENCE_MISMATCH", "Selected Arbitrum attempt evidence is inconsistent.");
+  }
+  const configuration = deploymentFor(order.domain, options.deployments);
+  validateArbitrumSepoliaAsyncDeploymentConfiguration(configuration);
+  const currentUnixSeconds = await options.currentUnixSeconds();
+  if (typeof currentUnixSeconds !== "bigint" || currentUnixSeconds <= 0n) {
+    fail("INVALID_CLOCK", "Current Arbitrum Sepolia Unix time must be positive.");
+  }
+  const selectedRoute = fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput;
+  // Observation only binds identities and hashes, so it still admits the evidence after expiry.
+  const admissionTime = currentUnixSeconds >= selectedRoute.routeExpiryValue
+    ? selectedRoute.routeExpiryValue - 1n
+    : currentUnixSeconds;
+  let admission;
+  try {
+    admission = validatePackageAdmission({
+      ...configuration.admission,
+      order,
+      route: selectedRoute,
+      quote: fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput,
+      currentTime: { unit: "EVM_UNIX_SECONDS", value: admissionTime },
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown admission error";
+    fail("PACKAGE_ADMISSION_FAILED", `Selected Arbitrum package failed admission: ${reason}`);
+  }
+  if (toHex(admission.orderHash) !== attempt.orderHash || toHex(admission.quoteHash) !== attempt.quoteHash
+    || toHex(admission.routeHash) !== attempt.routeHash
+    || toHex(routePayloadBytes(admission.route)) !== selected.routeBytes
+    || toHex(solverQuoteBytes(admission.quote)) !== selected.solverQuoteBytes
+    || toHex(solverSignatureDigest(admission.quote)) !== selected.solverSignatureDigest) {
+    fail("SIGNED_EVIDENCE_MISMATCH", "Stored solver bytes and hashes do not match admitted evidence.");
+  }
+  const route = admission.route;
+  const perpetual = route.legs.find((leg) => leg.legRole === "PERPETUAL");
+  if (route.settlementClass !== ARBITRUM_ASYNC_SETTLEMENT_CLASS
+    || route.executionPlanKind !== "EVM_ASYNC_REQUEST" || route.recoveryPlan === undefined
+    || route.owner.toLowerCase() !== order.owner.toLowerCase()
+    || route.settlementAccount.toLowerCase() !== order.settlementAccount.toLowerCase()
+    || !equalAddress(
+      requiredEvmAddress(route.settlementAccount, "route.settlementAccount"),
+      arbitrumSepoliaAccountOf(configuration, order.owner),
+    )
+    || perpetual?.adapter.adapterId !== configuration.route.perpetualAdapterId
+    || perpetual.market.subjectId !== configuration.route.perpetualMarketId
+    || perpetual.venue.subjectId !== configuration.route.perpetualVenueId
+    || route.evidenceRequirements.profileId !== configuration.route.evidenceProfileId
+    || !bytesEqual(route.evidenceRequirements.stateReferenceSchemaHash, configuration.route.stateReferenceSchemaHash)
+    || !bytesEqual(route.evidenceRequirements.receiptSchemaHash, configuration.route.receiptSchemaHash)
+    || !bytesEqual(route.evidenceRequirements.outcomeSchemaHash, configuration.route.outcomeSchemaHash)) {
+    fail("ROUTE_BINDING_MISMATCH", "Selected route does not match the reviewed Arbitrum async route.");
+  }
+  if (route.routeExpiryValue > configuration.bounds.maximumRouteExpiryValue
+    || route.recoveryPlan.deadlineValue > configuration.bounds.maximumRecoveryDeadlineValue
+    || order.quantity.atoms > configuration.bounds.maximumPackageQuantityAtoms) {
+    fail("BOUNDS_EXCEEDED", "Selected Arbitrum package exceeds reviewed runtime bounds.");
+  }
+  return { attempt, order, configuration, route };
+}
+
+function requireAdmissionPorts(options: ArbitrumSepoliaAsyncAdmissionOptions): void {
+  if (typeof options.currentUnixSeconds !== "function") {
+    throw new Error("Arbitrum Sepolia async admission requires a trusted clock port.");
+  }
+  if (!Array.isArray(options.deployments) || options.deployments.length === 0) {
+    throw new Error("Arbitrum Sepolia async admission requires reviewed deployment configuration.");
+  }
+  for (const deployment of options.deployments) validateArbitrumSepoliaAsyncDeploymentConfiguration(deployment);
+}
+
+/**
+ * The admission check alone, for gating work before anything is signed or sent: the owner's
+ * reservation preparation and every solver advance call it before the package touches the chain.
+ */
+export function createArbitrumSepoliaAsyncAdmission(
+  options: ArbitrumSepoliaAsyncAdmissionOptions,
+): (attemptId: string) => Promise<void> {
+  requireAdmissionPorts(options);
+  return async (attemptId: string) => {
+    await admitAttempt(options, attemptId);
+  };
+}
+
 export function createArbitrumSepoliaAsyncContextProvider(
   options: ArbitrumSepoliaAsyncContextProviderOptions,
 ): (attemptId: string) => Promise<EvmTestnetAsyncAttemptContext> {
-  if (typeof options.evidence !== "function" || typeof options.currentUnixSeconds !== "function") {
+  if (typeof options.evidence !== "function") {
     throw new Error("Arbitrum Sepolia async context provider requires trusted evidence and clock ports.");
   }
-  if (!Array.isArray(options.deployments) || options.deployments.length === 0) {
-    throw new Error("Arbitrum Sepolia async context provider requires reviewed deployment configuration.");
-  }
-  for (const deployment of options.deployments) validateArbitrumSepoliaAsyncDeploymentConfiguration(deployment);
+  requireAdmissionPorts(options);
   return async (attemptId: string): Promise<EvmTestnetAsyncAttemptContext> => {
-    let attempt;
-    try {
-      attempt = options.intents.getAttempt(attemptId);
-    } catch {
-      fail("ATTEMPT_NOT_FOUND", "Arbitrum Sepolia async attempt was not found.");
-    }
-    if (attempt === undefined || attempt.status !== "ARBITRUM_ASYNC_QUOTE_SELECTED"
-      || attempt.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID) {
-      fail("ATTEMPT_NOT_FOUND", "Arbitrum Sepolia async attempt was not found.");
-    }
-    const record = options.orders.getByOrderHash(attempt.orderHash);
-    const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
-    const selected = options.intents.getSelectedQuote(attemptId);
+    const { attempt, order, configuration, route } = await admitAttempt(options, attemptId);
     const evidence = await options.evidence(attemptId);
-    if (record === undefined || order === undefined || selected === undefined || evidence === undefined) {
+    if (evidence === undefined) {
       fail("ATTEMPT_EVIDENCE_MISSING", "Selected attempt order, signed quote, or async evidence is missing.");
-    }
-    if (record.domainId !== attempt.domainId
-      || record.domainManifestVersion !== attempt.domainManifestVersion
-      || record.domainManifestHashHex !== attempt.domainManifestHash
-      || order.domain.domainId !== attempt.domainId
-      || order.domain.domainManifestVersion !== attempt.domainManifestVersion
-      || toHex(order.domain.domainManifestHash) !== attempt.domainManifestHash
-      || selected.orderHash !== attempt.orderHash || selected.quoteHash !== attempt.quoteHash
-      || selected.routeHash !== attempt.routeHash) {
-      fail("ATTEMPT_EVIDENCE_MISMATCH", "Selected Arbitrum attempt evidence is inconsistent.");
-    }
-    const configuration = deploymentFor(order.domain, options.deployments);
-    validateArbitrumSepoliaAsyncDeploymentConfiguration(configuration);
-    const currentUnixSeconds = await options.currentUnixSeconds();
-    if (typeof currentUnixSeconds !== "bigint" || currentUnixSeconds <= 0n) {
-      fail("INVALID_CLOCK", "Current Arbitrum Sepolia Unix time must be positive.");
-    }
-    const selectedRoute = fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput;
-    // Observation only binds identities and hashes, so it still admits the evidence after expiry.
-    const admissionTime = currentUnixSeconds >= selectedRoute.routeExpiryValue
-      ? selectedRoute.routeExpiryValue - 1n
-      : currentUnixSeconds;
-    let admission;
-    try {
-      admission = validatePackageAdmission({
-        ...configuration.admission,
-        order,
-        route: selectedRoute,
-        quote: fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput,
-        currentTime: { unit: "EVM_UNIX_SECONDS", value: admissionTime },
-      });
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "unknown admission error";
-      fail("PACKAGE_ADMISSION_FAILED", `Selected Arbitrum package failed admission: ${reason}`);
-    }
-    if (toHex(admission.orderHash) !== attempt.orderHash || toHex(admission.quoteHash) !== attempt.quoteHash
-      || toHex(admission.routeHash) !== attempt.routeHash
-      || toHex(routePayloadBytes(admission.route)) !== selected.routeBytes
-      || toHex(solverQuoteBytes(admission.quote)) !== selected.solverQuoteBytes
-      || toHex(solverSignatureDigest(admission.quote)) !== selected.solverSignatureDigest) {
-      fail("SIGNED_EVIDENCE_MISMATCH", "Stored solver bytes and hashes do not match admitted evidence.");
-    }
-    const route = admission.route;
-    const perpetual = route.legs.find((leg) => leg.legRole === "PERPETUAL");
-    if (route.settlementClass !== ARBITRUM_ASYNC_SETTLEMENT_CLASS
-      || route.executionPlanKind !== "EVM_ASYNC_REQUEST" || route.recoveryPlan === undefined
-      || route.owner.toLowerCase() !== order.owner.toLowerCase()
-      || route.settlementAccount.toLowerCase() !== order.settlementAccount.toLowerCase()
-      || !equalAddress(
-        requiredEvmAddress(route.settlementAccount, "route.settlementAccount"),
-        arbitrumSepoliaAccountOf(configuration, order.owner),
-      )
-      || perpetual?.adapter.adapterId !== configuration.route.perpetualAdapterId
-    || perpetual.market.subjectId !== configuration.route.perpetualMarketId
-    || perpetual.venue.subjectId !== configuration.route.perpetualVenueId
-      || route.evidenceRequirements.profileId !== configuration.route.evidenceProfileId
-      || !bytesEqual(route.evidenceRequirements.stateReferenceSchemaHash, configuration.route.stateReferenceSchemaHash)
-      || !bytesEqual(route.evidenceRequirements.receiptSchemaHash, configuration.route.receiptSchemaHash)
-      || !bytesEqual(route.evidenceRequirements.outcomeSchemaHash, configuration.route.outcomeSchemaHash)) {
-      fail("ROUTE_BINDING_MISMATCH", "Selected route does not match the reviewed Arbitrum async route.");
-    }
-    if (route.routeExpiryValue > configuration.bounds.maximumRouteExpiryValue
-      || route.recoveryPlan.deadlineValue > configuration.bounds.maximumRecoveryDeadlineValue
-      || order.quantity.atoms > configuration.bounds.maximumPackageQuantityAtoms) {
-      fail("BOUNDS_EXCEEDED", "Selected Arbitrum package exceeds reviewed runtime bounds.");
     }
     const keys = checkedKeys(evidence, attemptId);
     // An exit is observed on its entry package: the coordinator terms carry the entry's hashes, and the

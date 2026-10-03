@@ -322,7 +322,9 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
     reportRuntimeFailure("solanaDevnetOrderContext", error);
   }
 }
-let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
+// The async observation port the terminal serves; after the executor handoff below, it advances the solver too.
+let arbitrumRuntime: Pick<Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>>, "observe"> | undefined;
+let arbitrumAdmittingRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
 let arbitrumRuntimeError: unknown;
 // The executor client exists before the observation runtime, which reads the solver's exit authorizations.
 let arbitrumExecutor: HttpArbitrumSepoliaAttemptExecutor | undefined;
@@ -338,7 +340,7 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
       "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
     );
     const arbitrumRpcUrl = process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? "";
-    arbitrumRuntime = await createArbitrumSepoliaRuntime({
+    arbitrumRuntime = arbitrumAdmittingRuntime = await createArbitrumSepoliaRuntime({
       manifest: loadArbitrumSepoliaRuntimeManifest(arbitrumManifestPath),
       intents: executionIntentStore,
       orders: orderStore,
@@ -389,14 +391,14 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
 }
 let arbitrumOwnerRoutes: ReturnType<typeof createArbitrumSepoliaOwnerRoutes> | undefined;
 let arbitrumOutcomeStore: SqliteArbitrumSepoliaOutcomeStore | undefined;
-if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
+if (arbitrumAdmittingRuntime !== undefined && arbitrumExecutor !== undefined) {
   try {
     // Each handoff keeps what it proved on chain, durably, for the owner's package list.
     arbitrumOutcomeStore = new SqliteArbitrumSepoliaOutcomeStore(absolutePath(
       process.env.NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB ?? "",
       "NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB",
     ), { intents: executionIntentStore, orders: orderStore });
-    const observation = arbitrumRuntime;
+    const observation = arbitrumAdmittingRuntime;
     arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(observation, arbitrumExecutor, arbitrumOutcomeStore);
     arbitrumOwnerRoutes = createArbitrumSepoliaOwnerRoutes({
       terminalOrigin: config.terminalOrigin,
@@ -405,6 +407,7 @@ if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
         "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
       )).deployment,
       executor: arbitrumExecutor,
+      admit: observation.admit,
       port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
       intents: executionIntentStore,
       orders: orderStore,

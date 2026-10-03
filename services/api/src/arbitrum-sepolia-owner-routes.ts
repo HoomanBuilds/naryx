@@ -6,6 +6,7 @@ import {
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
+  ArbitrumSepoliaAsyncContextError,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
 import {
@@ -51,6 +52,8 @@ export interface ArbitrumSepoliaOwnerRoutesOptions {
   readonly terminalOrigin: TerminalOrigins;
   readonly deployment: ArbitrumSepoliaAsyncDeploymentConfiguration;
   readonly executor: ArbitrumSepoliaOwnerAuthorizationExecutor & ArbitrumSepoliaExitAuthorizationExecutor;
+  /** Package admission of a selected attempt; the owner is asked to sign and fund only an admitted package. */
+  readonly admit: (attemptId: string) => Promise<void>;
   /** Signerless chain reads. Chain identity always comes from eth_chainId. */
   readonly port: ArbitrumSepoliaPriceReadPort;
   readonly intents: Pick<ExecutionIntentStore, "getAttempt">;
@@ -163,6 +166,18 @@ export function createArbitrumSepoliaOwnerRoutes(
       throw new OwnerRouteError(404, "ATTEMPT_NOT_FOUND", "Arbitrum Sepolia attempt was not found.");
     }
     return { attempt, order };
+  };
+
+  /** Refuses, before the wallet signs or funds anything, a package the service would not admit. */
+  const admitted = async (attemptId: string) => {
+    try {
+      await options.admit(attemptId);
+    } catch (error) {
+      if (error instanceof ArbitrumSepoliaAsyncContextError) {
+        throw new OwnerRouteError(409, "PACKAGE_NOT_ADMITTED", "This package does not pass the service's admission checks, so nothing was signed or sent. Start a new order.");
+      }
+      throw error;
+    }
   };
 
   /** The stored order owner of a selected Arbitrum attempt; the prepared work must be for exactly it. */
@@ -302,6 +317,7 @@ export function createArbitrumSepoliaOwnerRoutes(
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
       const { attemptId } = exactStrings(await readJson(request), ["attemptId"]);
       const owner = attemptOwner(attemptId!);
+      await admitted(attemptId!);
       return checked(await executor.prepare(attemptId!), owner);
     },
     [ARBITRUM_SEPOLIA_AUTHORIZE_OWNER_PATH]: async (request) => {

@@ -8,6 +8,7 @@ import { encodeFunctionData, hashTypedData, parseAbi, type Address, type Hex } f
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   ARBITRUM_SEPOLIA_GMX_DEPENDENCIES,
+  ArbitrumSepoliaAsyncContextError,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
@@ -213,7 +214,7 @@ test("Arbitrum order context prices from the live feed, enforces chain-time stal
   );
 });
 
-test("Arbitrum handoff advances the solver executor before observing and fails closed on a failed attempt", async () => {
+test("Arbitrum handoff admits the package, advances the solver executor before observing, and fails closed on a failed attempt", async () => {
   const attemptId = `arbitrum-async-${"a".repeat(48)}`;
   const calls: string[] = [];
   let status = "VENUE_PENDING";
@@ -230,7 +231,12 @@ test("Arbitrum handoff advances the solver executor before observing and fails c
     }), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   const observed = { attemptId } as unknown as EvmTestnetAsyncObservationDto;
+  let admitted = true;
   const port = withArbitrumSepoliaExecutionHandoff({
+    admit: async () => {
+      calls.push("admit");
+      if (!admitted) throw new ArbitrumSepoliaAsyncContextError("PACKAGE_ADMISSION_FAILED", "refused");
+    },
     observe: async () => {
       calls.push("observe");
       return observed;
@@ -239,12 +245,19 @@ test("Arbitrum handoff advances the solver executor before observing and fails c
 
   assert.equal(await port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0001" }), observed);
   assert.deepEqual(calls, [
+    "admit",
     `http://127.0.0.1:8793/internal/solver/arbitrum-sepolia/execute {"attemptId":"${attemptId}"}`,
     "observe",
   ]);
+  // A package that fails admission never reaches the solver, so nothing is reserved or submitted.
+  admitted = false;
+  calls.length = 0;
+  await assert.rejects(port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0003" }), /refused/);
+  assert.deepEqual(calls, ["admit"]);
+  admitted = true;
   status = "FAILED";
   await assert.rejects(port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0002" }), /failed closed/);
-  assert.equal(calls.filter((call) => call === "observe").length, 1);
+  assert.equal(calls.filter((call) => call === "observe").length, 0);
   assert.throws(() => new HttpArbitrumSepoliaAttemptExecutor({ executorOrigin: "http://10.0.0.1:8793" }), /loopback/);
 });
 
@@ -302,10 +315,14 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
     const body = JSON.parse(String(init.body)) as { ownerSignature?: string };
     return new Response(JSON.stringify(authorization(body.ownerSignature !== undefined)), { status: 200 });
   }) as typeof fetch;
+  let admissible = true;
   const routes = createArbitrumSepoliaOwnerRoutes({
     terminalOrigin: "http://localhost:3000",
     deployment: configuration,
     executor: new HttpArbitrumSepoliaAttemptExecutor({ executorOrigin: "http://127.0.0.1:8793", fetchImplementation }),
+    admit: async () => {
+      if (!admissible) throw new ArbitrumSepoliaAsyncContextError("PACKAGE_ADMISSION_FAILED", "target account adapter mismatch");
+    },
     port: {
       chainId: async () => 421_614n,
       codeHash: async () => arbitrumSepoliaAccountCodeHash(configuration),
@@ -339,6 +356,13 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
   assert.equal(status.body.deployed, true);
   assert.equal((await call("GET", `/internal/terminal/arbitrum-sepolia/account?owner=${walletOwner}`, undefined, "https://evil.example")).status, 403);
 
+  // A package the service would not admit is refused before the solver prepares anything to sign.
+  admissible = false;
+  const refused = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(refused.status, 409);
+  assert.equal((refused.body.error as { code: string }).code, "PACKAGE_NOT_ADMITTED");
+  assert.deepEqual(relayed, []);
+  admissible = true;
   const prepared = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
   assert.equal(prepared.status, 200);
   assert.equal(prepared.body.account, account);

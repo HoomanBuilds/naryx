@@ -347,20 +347,24 @@ export function latestConfirmedTransaction(summary: ArbitrumSepoliaExecutionSumm
 }
 
 /**
- * The readiness gate has already approved ARBITRUM_TESTNET_ASYNC_HANDOFF when observe runs, so the
- * solver advances the attempt first (idempotent per attempt), then the signerless observation reports
- * chain status. A failed attempt fails the handoff closed.
+ * The readiness gate has already approved ARBITRUM_TESTNET_ASYNC_HANDOFF when observe runs. The
+ * attempt must pass package admission before the solver may advance it, so a package the service
+ * would refuse to observe is never reserved or submitted; then the solver advances the attempt
+ * (idempotent per attempt) and the signerless observation reports chain status. A failed attempt
+ * fails the handoff closed.
  */
 export function withArbitrumSepoliaExecutionHandoff(
-  observation: EvmTestnetAsyncObservationPort,
+  observation: EvmTestnetAsyncObservationPort & Readonly<{ admit(attemptId: string): Promise<void> }>,
   executor: ArbitrumSepoliaAttemptExecutor,
   recorder?: ArbitrumSepoliaObservationRecorder,
 ): EvmTestnetAsyncObservationPort {
-  if (typeof observation?.observe !== "function" || typeof executor?.advance !== "function") {
-    throw new Error("Arbitrum handoff requires an observation port and an executor.");
+  if (typeof observation?.observe !== "function" || typeof observation.admit !== "function"
+    || typeof executor?.advance !== "function") {
+    throw new Error("Arbitrum handoff requires an admitting observation port and an executor.");
   }
   return Object.freeze({
     observe: async (request: EvmTestnetObserveAsyncRequest) => {
+      await observation.admit(request.attemptId);
       const summary = await executor.advance(request.attemptId);
       if (summary.status === "FAILED") {
         throw new ArbitrumSepoliaHandoffError("EXECUTION_FAILED", "Arbitrum Sepolia execution failed closed.");
