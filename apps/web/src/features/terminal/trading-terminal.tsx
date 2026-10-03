@@ -250,25 +250,46 @@ type ArbitrumFlowState = {
   funded: boolean;
   reclaimHash: string | null;
   reclaimed: boolean;
+  /** The owner's in-kind transaction for the spot leg of an unfilled entry. */
+  spotInKindHash: string | null;
+  spotTakenInKind: boolean;
   observation: ArbitrumAsyncObservation | null;
   observationNote: string | null;
   busy: string | null;
   error: string | null;
 };
 
-type ArbitrumStep = "account" | "create" | "quote" | "select" | "prepare" | "sign" | "approve" | "fund" | "reclaim" | "restart";
+type ArbitrumStep =
+  | "account" | "create" | "quote" | "select" | "prepare" | "sign" | "approve" | "fund" | "reclaim" | "takeSpot" | "restart";
 
 /** The Arbitrum Sepolia order context; a live service snapshot names it, otherwise this configured id. */
 const ARBITRUM_CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/.test(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_CONTEXT_ID ?? "")
   ? process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_CONTEXT_ID as string
   : "arbitrum-sepolia:eth-usdc:gmx";
 const ARBITRUM_RECLAIM_ABI = parseAbi(["function reclaimExpiredFunding(bytes32 packageId)"]);
+const ARBITRUM_TAKE_UNFILLED_SPOT_ABI = parseAbi(["function takeUnfilledSpotInKind(bytes32 requestKey)"]);
 const ARBITRUM_TERMINAL_LIFECYCLES: ReadonlySet<string> = new Set([
   "EXECUTED", "CANCELLED", "FROZEN", "RECOVERED", "MANUAL_INTERVENTION", "CLOSED", "CONFLICT", "EVIDENCE_MISMATCH",
 ]);
 
 function isArbitrumObservationTerminal(observation: ArbitrumAsyncObservation | null): boolean {
   return observation !== null && ARBITRUM_TERMINAL_LIFECYCLES.has(observation.lifecycle);
+}
+
+/**
+ * GMX left the entry unfilled and the floor-protected spot sale has not returned the spot leg by the recovery
+ * deadline. From then on the adapter lets only the owner take the spot base token in kind.
+ */
+function isArbitrumSpotInKindAvailable(flow: ArbitrumFlowState, nowMs: number): boolean {
+  const observation = flow.observation;
+  const status = observation?.entry?.status;
+  if (!flow.authorization || flow.spotTakenInKind || !observation?.coordinator || /^0x0{64}$/.test(observation.coordinator.requestKey)) {
+    return false;
+  }
+  if ((status !== "CANCELLED" && status !== "RECOVERED") || observation.lifecycle === "RECOVERED" || observation.lifecycle === "CLOSED") {
+    return false;
+  }
+  return Math.floor(nowMs / 1000) >= Number(flow.authorization.summary.recoveryDeadline);
 }
 
 /** No coordinator reservation exists yet, so funded collateral is still reclaimable after the deadline. */
@@ -1872,6 +1893,13 @@ export function TradingTerminal({
   const recordArbitrumExit = useCallback((attemptId: string, exitSize: string, owner: string) => {
     recordAttempt({ attemptId, owner, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
   }, [recordAttempt]);
+  const evmSendTransaction = evmWallet.sendTransaction;
+  const evmWaitForReceipt = evmWallet.waitForReceipt;
+  const sendArbitrumExitTransaction = useCallback(
+    (call: Readonly<{ to: string; data: string; value: string }>) => evmSendTransaction("arbitrum", call),
+    [evmSendTransaction],
+  );
+  const waitArbitrumExitReceipt = useCallback((hash: string) => evmWaitForReceipt("arbitrum", hash), [evmWaitForReceipt]);
   const arbitrumExit = useArbitrumSepoliaExit({
     enabled: arbitrumExitEnabled && evmOnTarget,
     owner: evmWallet.account,
@@ -1879,6 +1907,8 @@ export function TradingTerminal({
     contextId: arbitrumContextId,
     slippageBps: slippage,
     signTypedData: signArbitrumExit,
+    sendTransaction: sendArbitrumExitTransaction,
+    waitForReceipt: waitArbitrumExitReceipt,
     onSelected: recordArbitrumExit,
   });
   const arbitrumFunding = currentArbitrumFlow?.authorization?.funding ?? null;
@@ -1900,7 +1930,8 @@ export function TradingTerminal({
     }
     if (flow.reclaimed) return null;
     if (flow.reclaimHash) return "reclaim";
-    return arbitrumWindowClosed && isArbitrumUnreserved(flow.observation) ? "reclaim" : null;
+    if (arbitrumWindowClosed && isArbitrumUnreserved(flow.observation)) return "reclaim";
+    return flow.spotInKindHash || isArbitrumSpotInKindAvailable(flow, nowMs) ? "takeSpot" : null;
   })();
   const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
     ? null
@@ -2006,6 +2037,8 @@ export function TradingTerminal({
             return { kind: "arbitrum", label: flow.fundHash ? "Confirm funding" : "Fund request (testnet tx)", reason: reason ?? `Testnet transaction: the adapter pulls the approved collateral and your wallet pays the ${funding ? formatEther(BigInt(funding.executionFeeWei)) : "-"} ETH GMX execution fee. ${deadline}`, disabled: false };
           case "reclaim":
             return { kind: "arbitrum", label: flow.reclaimHash ? "Confirm reclaim" : "Reclaim funding (testnet tx)", reason: reason ?? "The funding deadline passed without a reservation. This testnet transaction returns your collateral and execution fee from the adapter.", disabled: false };
+          case "takeSpot":
+            return { kind: "arbitrum", label: flow.spotInKindHash ? "Confirm in-kind spot" : "Take WETH in kind (testnet tx)", reason: reason ?? `GMX did not open the short, and the spot leg has not sold back for your signed minimum of ${quoteAtomsText(flow.authorization?.summary.rollbackMinQuoteAtoms ?? "", 6)} by the recovery deadline. This testnet transaction from your wallet takes the WETH itself instead; the bonded solver then closes the package. Only the package owner can do this.`, disabled: false };
           case "restart":
             return { kind: "arbitrum", label: "Start a fresh order", reason: reason ?? "The funding window closed before funding, so nothing was pulled from your wallet. Create a fresh order to re-quote.", disabled: false };
           default:
@@ -2018,6 +2051,9 @@ export function TradingTerminal({
         const entryStatus = flow.observation?.entry?.status;
         if (lifecycle === "EXECUTED" || (lifecycle === "CLOSED" && entryStatus === "EXECUTED")) {
           return none("Entry executed", "GMX opened the short and the spot leg is in your strategy account: the package is open. Evidence is in the package review and on the Activity page; exit it from this ticket or Portfolio.");
+        }
+        if ((lifecycle === "CLOSED" || lifecycle === "RECOVERED") && (entryStatus === "CANCELLED" || entryStatus === "RECOVERED") && flow.spotTakenInKind) {
+          return none("Entry cancelled, spot taken in kind", "GMX did not open the short. Your wallet took the spot leg in kind as WETH instead of a sale below your signed minimum, and GMX returned the collateral. No package is open; start a new order to trade again.");
         }
         if ((lifecycle === "CLOSED" || lifecycle === "RECOVERED") && (entryStatus === "CANCELLED" || entryStatus === "RECOVERED")) {
           return none("Entry cancelled by GMX", "GMX did not open the short, so the bonded recovery sold the spot leg back and returned the USDC to your wallet. No package is open; start a new order to trade again.");
@@ -2849,6 +2885,8 @@ export function TradingTerminal({
       funded: false,
       reclaimHash: null,
       reclaimed: false,
+      spotInKindHash: null,
+      spotTakenInKind: false,
       observation: null,
       observationNote: null,
       busy: null,
@@ -2901,8 +2939,10 @@ export function TradingTerminal({
 
   const arbitrumAttemptId = currentArbitrumFlow?.attempt?.attemptId ?? null;
   const arbitrumIdempotencyKey = currentArbitrumFlow?.idempotencyKey ?? null;
+  // Taking the spot in kind lets the solver relay and close a package that had stopped short of CLOSED.
   const arbitrumObserve = currentArbitrumFlow?.funded === true && !currentArbitrumFlow.reclaimed &&
-    !isArbitrumObservationTerminal(currentArbitrumFlow.observation);
+    (!isArbitrumObservationTerminal(currentArbitrumFlow.observation) ||
+      (currentArbitrumFlow.spotTakenInKind && currentArbitrumFlow.observation?.lifecycle !== "CLOSED"));
   useEffect(() => {
     if (!privateProvider || !arbitrumObserve || !arbitrumAttemptId || !arbitrumIdempotencyKey) return;
     const controller = new AbortController();
@@ -3037,6 +3077,37 @@ export function TradingTerminal({
           throw new Error("The funding transaction reverted, so nothing was pulled. Fund again before the deadline.");
         }
         done({ fundHash: hash, funded: true });
+        return;
+      }
+      if (step === "takeSpot") {
+        let hash = flow.spotInKindHash;
+        if (!hash) {
+          const requestKey = flow.observation?.coordinator?.requestKey;
+          if (!requestKey || !isArbitrumSpotInKindAvailable(flow, Date.now())) {
+            throw new Error("The spot leg can be taken in kind only after the recovery deadline of an unfilled entry.");
+          }
+          // The account must still hold this entry's spot leg; a completed floor sale already returned it.
+          const open = (await privateProvider.getArbitrumAccountStatus(flow.owner)).openPackage;
+          if (open?.packageId.toLowerCase() !== authorization.packageId.toLowerCase() ||
+              open.entryRequestKey?.toLowerCase() !== requestKey.toLowerCase() || open.spotBaseAtoms === "0") {
+            throw new Error("Your strategy account no longer holds this entry's spot leg.");
+          }
+          hash = await evmWallet.sendTransaction("arbitrum", {
+            to: authorization.adapter,
+            data: encodeFunctionData({
+              abi: ARBITRUM_TAKE_UNFILLED_SPOT_ABI,
+              functionName: "takeUnfilledSpotInKind",
+              args: [requestKey as `0x${string}`],
+            }),
+            value: "0",
+          });
+          setArbitrumFlow((previous) => previous ? { ...previous, spotInKindHash: hash } : previous);
+        }
+        if (!await evmWallet.waitForReceipt("arbitrum", hash)) {
+          done({ spotInKindHash: null });
+          throw new Error("The in-kind transaction reverted. The spot sale may have completed; check the observation.");
+        }
+        done({ spotInKindHash: null, spotTakenInKind: true });
         return;
       }
       // step === "reclaim": only for funded collateral the solver never reserved.

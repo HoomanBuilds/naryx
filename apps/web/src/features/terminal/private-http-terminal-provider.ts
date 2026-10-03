@@ -3208,6 +3208,13 @@ function requireBaseObservation(
   });
 }
 
+/** Exit controller receipt states: 1 sold the spot leg for proceeds; 2 the owner took it in kind for none. */
+export const ARBITRUM_EXIT_SPOT_IN_KIND = 2;
+
+function isArbitrumExitTerminalState(terminalState: number, spotQuoteAtoms: string): boolean {
+  return terminalState === 1 ? spotQuoteAtoms !== "0" : terminalState === ARBITRUM_EXIT_SPOT_IN_KIND && spotQuoteAtoms === "0";
+}
+
 function requireArbitrumAsyncObservation(
   value: unknown,
   request: EvmRequestIdentity,
@@ -3340,7 +3347,7 @@ function requireArbitrumAsyncObservation(
   }
   if (exitCompleted && (entry?.status !== "EXECUTED" || exit?.status !== "EXECUTED" || !exit.released ||
       /^0x0{64}$/.test(exit.evidenceHash) || !finalReceipt || finalReceipt.packageId !== packageId ||
-      finalReceipt.perpStatus !== 2 || finalReceipt.terminalState !== 1 ||
+      finalReceipt.perpStatus !== 2 || !isArbitrumExitTerminalState(finalReceipt.terminalState, finalReceipt.spotQuoteAtoms) ||
       evidenceGrade !== "finalized-contract-receipt")) {
     throw new Error("Arbitrum completed exit carries incomplete evidence.");
   }

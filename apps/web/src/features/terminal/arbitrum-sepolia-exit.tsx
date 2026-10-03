@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { formatEther } from "viem";
+import { encodeFunctionData, formatEther, parseAbi } from "viem";
 import {
+  ARBITRUM_EXIT_SPOT_IN_KIND,
   ArbitrumObservationError,
   arbitrumExitWalletTypedData,
   type ArbitrumAccountStatus,
@@ -29,7 +30,9 @@ const USD_DECIMALS = 30;
 /** The Arbitrum Sepolia base asset is WETH, fixed at 18 decimals by the release template. */
 const BASE_DECIMALS = 18;
 
-export type ArbitrumExitStep = "account" | "create" | "quote" | "select" | "prepare" | "sign" | "restart";
+export type ArbitrumExitStep = "account" | "create" | "quote" | "select" | "prepare" | "sign" | "takeSpot" | "restart";
+
+const TAKE_SPOT_IN_KIND_ABI = parseAbi(["function takeSpotInKind(bytes32 requestKey) returns (bool)"]);
 
 type ExitFlow = {
   owner: string;
@@ -42,6 +45,8 @@ type ExitFlow = {
   idempotencyKey: string;
   observation: ArbitrumAsyncObservation | null;
   observationNote: string | null;
+  /** The owner's in-kind spot transaction, sent and awaiting its receipt. */
+  takeSpotHash: string | null;
   busy: ArbitrumExitStep | null;
   error: string | null;
 };
@@ -95,8 +100,24 @@ function finished(observation: ArbitrumAsyncObservation | null): boolean {
 function freshFlow(owner: string, account: ArbitrumAccountStatus | null, error: string | null): ExitFlow {
   return {
     owner, account, exitOrder: null, quote: null, attempt: null, authorization: null,
-    idempotencyKey: crypto.randomUUID(), observation: null, observationNote: null, busy: null, error,
+    idempotencyKey: crypto.randomUUID(), observation: null, observationNote: null, takeSpotHash: null, busy: null, error,
   };
+}
+
+/**
+ * GMX closed the short but the spot sale has not met the signed minimum. From `cancelAfter` on the exit
+ * controller lets only the owner take the spot base token in kind instead.
+ */
+export function arbitrumExitSpotInKindAvailable(
+  observation: ArbitrumAsyncObservation | null,
+  cancelAfterSeconds: unknown,
+  nowSeconds: number,
+): boolean {
+  const cancelAfter = typeof cancelAfterSeconds === "string" && /^[1-9][0-9]{0,11}$/.test(cancelAfterSeconds)
+    ? Number(cancelAfterSeconds)
+    : null;
+  return cancelAfter !== null && nowSeconds >= cancelAfter && observation?.exit?.status === "EXECUTED" &&
+    !observation.exit.released && observation.finalReceipt === null;
 }
 
 export function useArbitrumSepoliaExit(input: Readonly<{
@@ -107,10 +128,13 @@ export function useArbitrumSepoliaExit(input: Readonly<{
   contextId: string;
   slippageBps: number;
   signTypedData: (typedData: unknown) => Promise<string>;
+  /** Sends an owner transaction on Arbitrum Sepolia and waits for its receipt. */
+  sendTransaction: (call: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
+  waitForReceipt: (hash: string) => Promise<boolean>;
   /** The selected exit attempt, the package size it closes as a base-asset decimal, and its owner. */
   onSelected: (attemptId: string, size: string, owner: string) => void;
 }>) {
-  const { enabled, owner, provider, contextId, slippageBps, signTypedData, onSelected } = input;
+  const { enabled, owner, provider, contextId, slippageBps, signTypedData, sendTransaction, waitForReceipt, onSelected } = input;
   const [flow, setFlow] = useState<ExitFlow | null>(null);
   const current = flow !== null && flow.owner === owner ? flow : null;
 
@@ -164,7 +188,12 @@ export function useArbitrumSepoliaExit(input: Readonly<{
   const nextStep: ArbitrumExitStep | null = (() => {
     if (!current || current.busy) return null;
     if (!current.account) return "account";
-    if (current.authorization?.signed) return cancelled(current.observation) ? "restart" : null;
+    if (current.authorization?.signed) {
+      if (current.takeSpotHash) return "takeSpot";
+      if (arbitrumExitSpotInKindAvailable(current.observation, current.authorization.typedData.message.cancelAfter,
+        Math.floor(Date.now() / 1000))) return "takeSpot";
+      return cancelled(current.observation) ? "restart" : null;
+    }
     if (!current.account.openPackage?.exitable) return null;
     if (!current.exitOrder) return "create";
     if (!current.quote) return "quote";
@@ -184,7 +213,14 @@ export function useArbitrumSepoliaExit(input: Readonly<{
     const observation = current.observation;
     if (current.authorization?.signed) {
       if (observation?.exitCompleted && observation.finalReceipt) {
+        if (observation.finalReceipt.terminalState === ARBITRUM_EXIT_SPOT_IN_KIND) {
+          return none("Package closed in kind", `GMX closed the short and your wallet took the spot leg in kind: ${decimalText(observation.finalReceipt.spotBaseAtoms, BASE_DECIMALS, "WETH")}, no USDC sale. The final package receipt is in the exit review.`);
+        }
         return none("Package closed", `GMX closed the short and the spot leg sold for ${decimalText(observation.finalReceipt.spotQuoteAtoms, QUOTE_DECIMALS, "USDC")} to your wallet. The final package receipt is in the exit review.`);
+      }
+      if (nextStep === "takeSpot") {
+        return step(current.takeSpotHash ? "Confirm in-kind spot" : "Take WETH in kind (testnet tx)",
+          `GMX closed the short, but the spot leg has not sold for your signed minimum of ${decimalText(String(current.authorization.typedData.message.spotMinQuoteAtoms), QUOTE_DECIMALS, "USDC")}. The cancel window has passed, so this testnet transaction from your wallet sends the ${decimalText(String(current.authorization.typedData.message.spotBaseAtoms), BASE_DECIMALS, "WETH")} itself to you and closes the package. Only the package owner can do this.`);
       }
       if (cancelled(observation)) {
         return step("Start a new exit", "GMX did not execute the close, so the package is still open and nothing left the account. Create a fresh exit order.");
@@ -193,7 +229,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
         return none("Exit needs recovery", observation?.reason ?? "The exit evidence conflicts; the package is held for manual recovery.");
       }
       if (observation?.exit?.status === "EXECUTED") {
-        return none("Closed on GMX, selling spot", current.error ?? "The short is closed; the exit controller is selling the spot leg and recording the final receipt.");
+        return none("Closed on GMX, selling spot", current.error ?? `The short is closed; the exit controller is selling the spot leg and recording the final receipt. If the sale cannot meet your signed minimum, you can take the WETH in kind after ${unixTimeText(current.authorization.typedData.message.cancelAfter)}.`);
       }
       return none(observation?.exit ? `Exit ${observation.exit.status.toLowerCase()}` : "Exit signed, submitting",
         current.error ?? current.observationNote ?? "The solver submits your signed full close and pays the GMX execution fee; GMX keepers execute it asynchronously.");
@@ -257,6 +293,27 @@ export function useArbitrumSepoliaExit(input: Readonly<{
         return;
       }
       const authorization = flowAtStart.authorization!;
+      if (nextStep === "takeSpot") {
+        let hash = flowAtStart.takeSpotHash;
+        if (!hash) {
+          // The exit controller keeps the executed exit active until it is released.
+          const exitRequestKey = (await provider.getArbitrumAccountStatus(flowAtStart.owner)).openPackage?.activeExitRequestKey;
+          if (!exitRequestKey) throw new Error("No executed exit is waiting for its spot leg.");
+          hash = await sendTransaction({
+            to: authorization.exitController,
+            data: encodeFunctionData({ abi: TAKE_SPOT_IN_KIND_ABI, functionName: "takeSpotInKind", args: [exitRequestKey as `0x${string}`] }),
+            value: "0",
+          });
+          setFlow((previous) => previous ? { ...previous, takeSpotHash: hash } : previous);
+        }
+        if (!await waitForReceipt(hash)) {
+          setFlow((previous) => ({ ...(previous ?? flowAtStart), takeSpotHash: null, busy: null,
+            error: "The in-kind transaction reverted. The spot sale may have completed; check the exit review." }));
+          return;
+        }
+        done({ takeSpotHash: null, observationNote: "Your wallet took the spot leg in kind; waiting for the final receipt." });
+        return;
+      }
       if (Math.floor(Date.now() / 1000) >= Number(authorization.typedData.message.authorizationExpiry)) {
         throw new Error("The exit authorization expired before signing.");
       }
@@ -273,7 +330,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
         error: restart ? `${message} Create a fresh exit order.` : message,
       }));
     }
-  }, [contextId, current, nextStep, onSelected, provider, signTypedData, slippageBps]);
+  }, [contextId, current, nextStep, onSelected, provider, sendTransaction, signTypedData, slippageBps, waitForReceipt]);
 
   const panel: ReactNode = enabled && current ? <ArbitrumSepoliaExitPanel flow={current} /> : null;
   return { action, advance, busy: current?.busy != null, panel };
@@ -354,9 +411,15 @@ function ArbitrumSepoliaExitPanel({ flow }: { flow: ExitFlow }) {
         {receipt ? (
           <div className={styles.reviewGrid} aria-label="Final package receipt">
             <span>Final receipt</span><strong title={receipt.commitment}>{compact(receipt.commitment, 12, 10)}</strong>
-            <span>Spot proceeds</span><strong>{decimalText(receipt.spotQuoteAtoms, QUOTE_DECIMALS, "USDC")} to {compact(receipt.recipient, 8, 6)}</strong>
+            {receipt.terminalState === ARBITRUM_EXIT_SPOT_IN_KIND ? (
+              <><span>Spot returned in kind</span><strong>{decimalText(receipt.spotBaseAtoms, BASE_DECIMALS, "WETH")} to {compact(receipt.recipient, 8, 6)}, no sale</strong></>
+            ) : (
+              <><span>Spot proceeds</span><strong>{decimalText(receipt.spotQuoteAtoms, QUOTE_DECIMALS, "USDC")} to {compact(receipt.recipient, 8, 6)}</strong></>
+            )}
             <span>Closed short</span><strong>{usd(receipt.fullCloseSizeUsd)}</strong>
-            <span>Spot sold</span><strong>{decimalText(receipt.spotBaseAtoms, BASE_DECIMALS, "WETH")}</strong>
+            {receipt.terminalState === ARBITRUM_EXIT_SPOT_IN_KIND ? null : (
+              <><span>Spot sold</span><strong>{decimalText(receipt.spotBaseAtoms, BASE_DECIMALS, "WETH")}</strong></>
+            )}
             <span>Exit request</span><strong title={receipt.exitRequestKey}>{compact(receipt.exitRequestKey, 12, 10)}</strong>
           </div>
         ) : null}
