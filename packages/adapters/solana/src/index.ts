@@ -29,6 +29,7 @@ export * from './materializer.js';
 export * from './public-exit-plan.js';
 export * from './perp-venue.js';
 export * from './cash-carry-accounts.js';
+export * from './bounded-connection.js';
 export * from './deployment-identity.js';
 export * from './mainnet-shadow.js';
 export * from './authority-qualification.js';

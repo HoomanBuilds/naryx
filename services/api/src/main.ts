@@ -62,8 +62,7 @@ import {
 import { withSolanaDevnetFirmQuoteVerification } from "./solana-devnet-firm-quote.js";
 import { createSolanaDevnetMarketSource, type TerminalMarketSource } from "./private-terminal-manifest.js";
 import { ArbitrumSepoliaMarketFeed, createArbitrumSepoliaMarketSource } from "./arbitrum-sepolia-market-source.js";
-import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
-import { Connection } from "@solana/web3.js";
+import { SolanaConformanceAdapter, createBoundedSolanaConnection } from "@naryx/adapter-solana";
 import {
   ConnectionSolanaLocalExecutionRpc,
   HttpSolanaLocalExecutionAuthorizationClient,
@@ -172,7 +171,7 @@ const solanaLocalPreparationStore = startup.solanaLocalPreparationDbPath === und
   : new SqliteSolanaLocalPreparedExecutionStore(startup.solanaLocalPreparationDbPath);
 const solanaConnection = manifestRuntime === undefined
   ? undefined
-  : new Connection(manifestRuntime.manifest.rpc.url, "confirmed");
+  : createBoundedSolanaConnection(manifestRuntime.manifest.rpc.url, "confirmed");
 const solanaLocalExecution = manifestRuntime === undefined
     || solanaLocalPreparationStore === undefined
     || solanaConnection === undefined

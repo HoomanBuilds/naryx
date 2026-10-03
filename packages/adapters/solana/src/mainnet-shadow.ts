@@ -7,6 +7,7 @@ import {
 } from '@solana/web3.js';
 import { SOLANA_MAINNET_BETA_GENESIS_HASH } from './materializer.js';
 import { SOLANA_UPGRADEABLE_LOADER_ID } from './deployment-identity.js';
+import { createBoundedSolanaConnection } from './bounded-connection.js';
 
 const PROGRAM_STATE = 2;
 const PROGRAM_DATA_STATE = 3;
@@ -117,7 +118,7 @@ export class ConnectionSolanaMainnetShadowReadPort implements SolanaMainnetShado
 
   constructor(endpoint: string) {
     this.endpoint = validatedEndpoint(endpoint);
-    this.#connection = new Connection(this.endpoint, this.#commitment);
+    this.#connection = createBoundedSolanaConnection(this.endpoint, this.#commitment);
   }
 
   getGenesisHash(): Promise<string> {
