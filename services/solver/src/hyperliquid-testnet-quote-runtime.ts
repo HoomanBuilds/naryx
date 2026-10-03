@@ -143,11 +143,13 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
       || input.accountBindings.length === 0
       || input.spot.action.sequence !== 0
       || input.perpetual.action.sequence !== 1
-      || !sameAdapter(input.spot.action.adapter!, input.spot.adapter)
-      || !sameAdapter(input.perpetual.action.adapter!, input.perpetual.adapter)
       || input.recovery.controllerId.length === 0
       || input.recovery.authorityModeId.length === 0) {
       throw new Error('missing required configuration');
+    }
+    if (!sameAdapter(input.spot.action.adapter!, input.spot.adapter)
+      || !sameAdapter(input.perpetual.action.adapter!, input.perpetual.adapter)) {
+      throw new Error('each leg action must name exactly that leg adapter');
     }
     domainRef(
       input.domain.domainId,
@@ -190,8 +192,9 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
     requirePositive(input.quoteTtlMs, 'quoteTtlMs');
     requireBps(input.marginBps, 'marginBps');
     requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
-  } catch {
-    throw new Error('Hyperliquid Testnet quote runtime configuration is incomplete or invalid');
+  } catch (error) {
+    throw new Error(`Hyperliquid Testnet quote runtime configuration is incomplete or invalid: ${
+      error instanceof Error ? error.message : 'invalid value'}`);
   }
 }
 

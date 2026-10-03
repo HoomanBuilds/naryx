@@ -15,8 +15,10 @@ import {
   fromProtocolJson,
   hash32,
   packageOrderHash,
+  routeHash,
   routePayload,
   solverQuote,
+  stringifyProtocolJson,
   type PackageAdmission,
   type RoutePayloadInput,
   type SolverQuoteInput,
@@ -414,6 +416,52 @@ test('loads only a version 2 config without prices for the configured trading ac
       { ...env, NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT: undefined }, dependencies,
     ), /NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT/);
     assert.equal(loadHyperliquidTestnetQuoteRuntime({}, dependencies), undefined);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('loads a reviewed config whose identity hashes are hex strings and quotes the same route from it', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-quote-config-'));
+  const configPath = join(directory, 'quote.json');
+  const {
+    enabled: _enabled, tradingAccount: _account, market: _market, currentTimeMs: _clock, nonceSource: _nonce,
+    ...reviewed
+  } = runtimeInput({ next: () => 41n });
+  // The release generator writes leg and asset hashes as plain hex; an operator may 0x-prefix one.
+  const plain = (value: Uint8Array) => Buffer.from(value).toString('hex');
+  const hexLeg = (leg: typeof reviewed.spot) => ({
+    ...leg,
+    adapter: { ...leg.adapter, adapterManifestHash: plain(leg.adapter.adapterManifestHash) },
+    venue: { ...leg.venue, manifestHash: plain(leg.venue.manifestHash) },
+    market: { ...leg.market, manifestHash: plain(leg.market.manifestHash) },
+    action: { ...leg.action, adapter: { ...leg.adapter, adapterManifestHash: `0x${plain(leg.adapter.adapterManifestHash)}` } },
+  });
+  const market = {
+    ...reviewed,
+    baseAsset: { ...base, assetManifestHash: plain(base.assetManifestHash) },
+    quoteAsset: { ...quote, assetManifestHash: plain(quote.assetManifestHash) },
+    spot: hexLeg(reviewed.spot),
+    perpetual: hexLeg(reviewed.perpetual),
+  };
+  const env = {
+    NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED: 'true',
+    NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG: configPath,
+    NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT: tradingAccount,
+  };
+  const dependencies = { nonceSource: { next: () => 41n }, market: fakeMarket(), currentTimeMs: () => 1_000n };
+  try {
+    writeFileSync(configPath, stringifyProtocolJson({ version: 2, market }, 'quote'));
+    const runtime = loadHyperliquidTestnetQuoteRuntime(env, dependencies)!;
+    const order = validatePackageOrderProfile(orderInput());
+    const orderHash = packageOrderHash(order);
+    const [candidate] = await runtime.providers.candidates({ order, orderHash });
+    const { decision } = await quoteFor(orderInput());
+    assert.deepEqual(routeHash(candidate!.route), decision.routeHash);
+
+    const { baseAsset: _base, ...withoutBase } = market;
+    writeFileSync(configPath, stringifyProtocolJson({ version: 2, market: withoutBase }, 'quote'));
+    assert.throws(() => loadHyperliquidTestnetQuoteRuntime(env, dependencies), /market\.baseAsset is missing or malformed/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
