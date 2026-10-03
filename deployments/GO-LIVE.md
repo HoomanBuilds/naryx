@@ -151,7 +151,8 @@ the bundle, so redeploy after any change. Leave the API URL unset for Preview de
 1. `curl https://<api>/internal/healthz`: every deployed lane reports live.
 2. Portfolio: connect a fresh wallet, claim test USDC on Base, Arbitrum, and Solana, and see the
    balances update.
-3. Trade: one minimum-size package per lane, entry and exit, and its receipts on the Activity page.
+3. Trade: one minimum-size package per lane, entry and exit (entry only on Solana), and its
+   receipts on the Activity page.
 4. Many users: repeat step 3 with a second wallet at the same time, then open the Activity page
    from another browser with the first wallet and exit from there.
 5. Keeper: the code watchlist reports every target `MATCH`; the funding mirror stays `disabled`
@@ -165,7 +166,7 @@ Nothing in a lane is tied to the operator's wallet. Any visitor connects their o
 |---|---|---|---|
 | Base Sepolia | Claim tUSDC in Portfolio; ETH gas from a public faucet | The wallet signs and sends the atomic package | Wallet-signed, from any device |
 | Arbitrum Sepolia | Mint USDC.SG in Portfolio; ETH gas from a public faucet | The wallet creates its own Naryx account and signs; the solver submits to GMX and pays GMX fees | Wallet-signed exit authorization; the solver submits the full close |
-| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the service-built steps | Wallet-signed, from any device |
+| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the service-built steps | Not available yet: the terminal and Portfolio show why instead of an exit |
 | Hyperliquid testnet | None | The EVM wallet signs the package authorization; the shared trading account executes, one package at a time | The owner wallet signs; only its own packages |
 
 The Activity page lists each wallet's packages from the API, so they follow the wallet across
@@ -201,9 +202,20 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   (`deployments/aws/README.md`, Operating). A spot buy's fee is
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
-- Solana: firm entry and exit have no end-to-end LiteSVM test.
+- Solana: firm entry has no end-to-end LiteSVM test.
 - Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
   are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
   not failed transactions, and a size the pool cannot fill is refused before signing.
 - The public v1 market API (package order book, solver metrics) is optional and off unless
   configured; quote-based trading does not need it.
+
+## Not available yet
+
+- Solana Devnet exits. The only Devnet exit route is the solver's firm buy-back
+  (`execute_firm_cash_and_carry` with action `EXIT` on the `devnet-test-perp` core build), and the
+  protocol admits firm quotes only for atomic entries (`solverQuote` and `validatePackageAdmission`
+  in `packages/protocol-types`, mirrored by `WireFirmQuoteShape` in the core program), so the
+  solver's exit bid is refused before any transaction is built. The public Orca exit stays
+  fail-closed until a Devnet Orca spot venue, market, and adapter are registered. A Solana package
+  entered on Devnet stays open until one of these changes ships; announce Solana as entry-only
+  until then.
