@@ -6,6 +6,28 @@ import { waitForTransactionReceipt } from "wagmi/actions";
 import type { Connector } from "wagmi";
 import { EVM_CHAINS, type EvmDomain } from "./evm-config";
 
+const SECP256K1_ORDER = BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+
+/**
+ * The one ECDSA form the contracts accept: s in the lower half of the curve order and v of 27 or 28.
+ * Some wallets return v as 0 or 1, or a high s; both convert to it without changing what the
+ * signature proves, so a valid signature is never refused on chain after the owner has paid.
+ */
+export function canonicalEvmSignature(signature: string): string {
+  const r = signature.slice(2, 66);
+  let s = BigInt(`0x${signature.slice(66, 130)}`);
+  let v = Number.parseInt(signature.slice(130, 132), 16);
+  if (v === 0 || v === 1) v += 27;
+  if ((v !== 27 && v !== 28) || s === BigInt(0) || s >= SECP256K1_ORDER) {
+    throw new Error("Wallet returned an invalid package signature.");
+  }
+  if (s > SECP256K1_ORDER / BigInt(2)) {
+    s = SECP256K1_ORDER - s;
+    v = v === 27 ? 28 : 27;
+  }
+  return `0x${r}${s.toString(16).padStart(64, "0")}${v.toString(16)}`.toLowerCase();
+}
+
 export type EvmWalletSession = {
   /** Installed EVM wallets, one entry per wallet. */
   connectors: readonly Connector[];
@@ -138,7 +160,7 @@ export function useEvmWallet(): EvmWalletSession {
         message: data.message,
       } as unknown as Parameters<typeof typedDataMutation.mutateAsync>[0]);
       if (!/^0x[0-9a-f]{130}$/i.test(signature)) throw new Error("Wallet returned an invalid package signature.");
-      return signature.toLowerCase();
+      return canonicalEvmSignature(signature);
     } catch (cause) {
       const message = cause instanceof Error && cause.message.startsWith("Wallet returned") ? cause.message : walletError(cause, "sign");
       setError(message);

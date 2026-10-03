@@ -689,6 +689,20 @@ function packageAuthorizationMessage(
   return { domain, message };
 }
 
+const SECP256K1_HALF_ORDER = 0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
+/**
+ * The one ECDSA form the contracts accept (OpenZeppelin ECDSA): 65 bytes, s in the lower half of
+ * the curve order, and v of 27 or 28. Off-chain checks require it so a signature they accept is never
+ * one the verifier, coordinator, or exit controller then rejects after the owner has paid.
+ */
+export function isCanonicalEvmSignature(signature: string): boolean {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return false;
+  const s = BigInt(`0x${signature.slice(66, 130)}`);
+  const v = Number.parseInt(signature.slice(130, 132), 16);
+  return (v === 27 || v === 28) && s > 0n && s <= SECP256K1_HALF_ORDER;
+}
+
 export function prepareEvmTraderPermitAuthorization(
   admission: PackageAdmission,
   deployment: EvmDeploymentIdentity,

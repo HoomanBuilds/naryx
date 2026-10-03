@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import Database from 'better-sqlite3';
+import { isCanonicalEvmSignature } from '@naryx/adapter-evm';
 import {
   bytesEqual,
   fromProtocolJson,
@@ -815,6 +816,9 @@ export class ArbitrumSepoliaExecutor {
       if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
         fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
       }
+      if (!isCanonicalEvmSignature(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must use v 27 or 28 and a low s, the form the contracts accept');
+      }
       const { journal } = this.#options;
       const plan = journal.exitPlan(attemptId);
       if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared exit authorization');
@@ -851,6 +855,9 @@ export class ArbitrumSepoliaExecutor {
     return this.#enqueue(attemptId, async () => {
       if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
         fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
+      }
+      if (!isCanonicalEvmSignature(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must use v 27 or 28 and a low s, the form the contracts accept');
       }
       const { journal } = this.#options;
       const plan = journal.plan(attemptId);

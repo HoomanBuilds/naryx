@@ -4,6 +4,7 @@ import {
   VENUE_STATUS_LABELS,
   chainReference as assertEvmChainReference,
   compileEvmAtomicPackage,
+  isCanonicalEvmSignature,
   equalAddress as equalEvmAddress,
   equalHash as equalEvmHash,
   hash32 as assertEvmHash32,
@@ -1934,6 +1935,12 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           // The owner's EOA signature is checked here so a stale or foreign signature fails before
           // the solver co-signs or the wallet pays gas; the verifier checks it again on chain.
           const permit = prepareEvmTraderPermitAuthorization(admission, deployment, seriesBindingInput, boundsBase);
+          if (!isCanonicalEvmSignature(traderSignature)) {
+            throw new EvmTestnetTerminalValidationError(
+              "TRADER_SIGNATURE_NONCANONICAL",
+              "Trader signature must use v 27 or 28 and a low s, the form the verifier accepts.",
+            );
+          }
           const trader = await recoverAddress({ hash: permit.digest, signature: traderSignature as Hex });
           if (!equalEvmAddress(trader, assertEvmAddress(admission.order.owner, "order.owner"))) {
             throw new EvmTestnetTerminalValidationError(
