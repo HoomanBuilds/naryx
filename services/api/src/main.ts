@@ -262,7 +262,8 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
 if (baseRuntime?.atomicObservation !== undefined && basePreparationStore !== undefined) {
   const store = basePreparationStore;
   const observation = baseRuntime.atomicObservation;
-  everyMinute(() => reconcilePendingEvmTestnetAtomicOutcomes(store, observation));
+  const cursor = { offset: 0 };
+  everyMinute(() => reconcilePendingEvmTestnetAtomicOutcomes(store, observation, 10, cursor));
 }
 let solanaDevnetRuntime: Awaited<ReturnType<typeof createSolanaDevnetRuntime>> | undefined;
 let solanaDevnetRuntimeError: unknown;
@@ -412,7 +413,8 @@ if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
     });
     // The sweep reads chain state only; the solver still advances an attempt only through the gated handoff.
     const outcomes = arbitrumOutcomeStore;
-    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, observation));
+    const cursor = { offset: 0 };
+    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, observation, 10, cursor));
   } catch (error) {
     arbitrumOutcomeStore?.close();
     arbitrumOutcomeStore = undefined;

@@ -10,6 +10,7 @@ import {
   SqliteArbitrumSepoliaOutcomeStore,
 } from "../src/arbitrum-sepolia-outcome-store.js";
 import type { EvmTestnetAsyncObservationDto } from "../src/evm-testnet-runtime-ports.js";
+import { reconcilePendingEvmTestnetAtomicOutcomes } from "../src/evm-testnet-prepared-store.js";
 
 const hash = (byte: number) => `0x${byte.toString(16).padStart(2, "0").repeat(32)}`;
 const ZERO = `0x${"0".repeat(64)}`;
@@ -124,4 +125,43 @@ test("Arbitrum outcomes keep what each handoff proved across a restart and never
     store.close();
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test("background sweeps page through every unsettled attempt, so ones that keep failing cannot starve the rest", async () => {
+  // 25 attempts whose observation always fails, sorted first because they are never observed.
+  const ids = Array.from({ length: 30 }, (_, index) => `attempt-${String(index).padStart(16, "0")}`);
+  const failing = new Set(ids.slice(0, 25));
+  const visited = new Set<string>();
+  const page = (limit: number, offset: number) => ids.slice(offset, offset + limit);
+  const arbitrumStore = {
+    unsettled: (limit: number, offset = 0) => page(limit, offset).map((attemptId) => ({ attemptId, idempotencyKey: attemptId })),
+    record: () => undefined,
+  };
+  const arbitrumObservation = {
+    observe: async (request: { attemptId: string }) => {
+      visited.add(request.attemptId);
+      if (failing.has(request.attemptId)) throw new Error("observation failed");
+      return {} as never;
+    },
+  };
+  const arbitrumCursor = { offset: 0 };
+  for (let sweep = 0; sweep < 3; sweep += 1) {
+    await reconcileUnsettledArbitrumSepoliaOutcomes(arbitrumStore as never, arbitrumObservation as never, 10, arbitrumCursor);
+  }
+  assert.equal(visited.size, 30);
+  // The next sweep finds the end and starts over at once instead of idling for a minute.
+  visited.clear();
+  await reconcileUnsettledArbitrumSepoliaOutcomes(arbitrumStore as never, arbitrumObservation as never, 10, arbitrumCursor);
+  assert.ok(visited.has(ids[0]!));
+
+  visited.clear();
+  const baseStore = {
+    pendingObservations: (limit: number, offset = 0) =>
+      page(limit, offset).map((attemptId) => ({ attemptId, idempotencyKey: attemptId, transactionHash: "0x" })),
+  };
+  const baseCursor = { offset: 0 };
+  for (let sweep = 0; sweep < 3; sweep += 1) {
+    await reconcilePendingEvmTestnetAtomicOutcomes(baseStore as never, arbitrumObservation as never, 10, baseCursor);
+  }
+  assert.equal(visited.size, 30);
 });

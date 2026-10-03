@@ -9,6 +9,7 @@ import type {
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import type { OwnerPackageOutcome } from "./terminal-packages.js";
+import type { SweepCursor } from "./evm-testnet-prepared-store.js";
 
 const ATTEMPT_ID = /^arbitrum-async-[0-9a-f]{48}$/;
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
@@ -160,7 +161,7 @@ export class SqliteArbitrumSepoliaOutcomeStore implements ArbitrumSepoliaObserva
         observed_at_ms = excluded.observed_at_ms
     `);
     this.#unsettled = this.#db.prepare(
-      "SELECT * FROM arbitrum_attempt_outcomes WHERE settled = 0 ORDER BY observed_at_ms, rowid LIMIT ?",
+      "SELECT * FROM arbitrum_attempt_outcomes WHERE settled = 0 ORDER BY observed_at_ms, rowid LIMIT ? OFFSET ?",
     );
   }
 
@@ -209,11 +210,12 @@ export class SqliteArbitrumSepoliaOutcomeStore implements ArbitrumSepoliaObserva
   }
 
   /** Observed attempts whose chain state can still move, least recently observed first. */
-  unsettled(limit: number): readonly EvmTestnetObserveAsyncRequest[] {
+  unsettled(limit: number, offset = 0): readonly EvmTestnetObserveAsyncRequest[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error("Unsettled outcome limit must be 1 to 100.");
     }
-    return Object.freeze((this.#unsettled.all(limit) as Row[]).map((row) => {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Unsettled outcome offset must be a non-negative integer.");
+    return Object.freeze((this.#unsettled.all(limit, offset) as Row[]).map((row) => {
       const outcome = decode(row);
       return Object.freeze({ attemptId: outcome.attemptId, idempotencyKey: outcome.idempotencyKey });
     }));
@@ -239,8 +241,16 @@ export async function reconcileUnsettledArbitrumSepoliaOutcomes(
   store: Pick<SqliteArbitrumSepoliaOutcomeStore, "unsettled" | "record">,
   observation: EvmTestnetAsyncObservationPort,
   limit = 10,
+  cursor: SweepCursor = { offset: 0 },
 ): Promise<void> {
-  for (const request of store.unsettled(limit)) {
+  // Pages through every unsettled attempt across sweeps, so failing ones cannot starve the rest.
+  let page = store.unsettled(limit, cursor.offset);
+  if (page.length === 0 && cursor.offset > 0) {
+    cursor.offset = 0;
+    page = store.unsettled(limit, 0);
+  }
+  cursor.offset = page.length < limit ? 0 : cursor.offset + limit;
+  for (const request of page) {
     try {
       store.record(request, await observation.observe(request), null);
     } catch {

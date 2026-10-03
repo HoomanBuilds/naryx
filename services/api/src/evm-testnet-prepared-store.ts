@@ -215,7 +215,7 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
       FROM evm_prepared_atomic_attempts p
       LEFT JOIN evm_atomic_attempt_outcomes o ON o.idempotency_key = p.idempotency_key
       WHERE p.bound_transaction_hash IS NOT NULL AND (o.state IS NULL OR o.state = 'PENDING')
-      ORDER BY COALESCE(o.observed_at_ms, 0), p.rowid LIMIT ?
+      ORDER BY COALESCE(o.observed_at_ms, 0), p.rowid LIMIT ? OFFSET ?
     `);
   }
 
@@ -328,11 +328,12 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
   }
 
   /** Bound transactions without a settled outcome, least recently observed first. */
-  pendingObservations(limit: number): readonly PendingEvmTestnetAtomicObservation[] {
+  pendingObservations(limit: number, offset = 0): readonly PendingEvmTestnetAtomicObservation[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error("Pending observation limit must be 1 to 100.");
     }
-    const rows = this.#pending.all(limit) as { idempotency_key: string; attempt_id: string; bound_transaction_hash: string }[];
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Pending observation offset must be a non-negative integer.");
+    const rows = this.#pending.all(limit, offset) as { idempotency_key: string; attempt_id: string; bound_transaction_hash: string }[];
     return Object.freeze(rows.map((row) => Object.freeze({
       attemptId: row.attempt_id,
       idempotencyKey: row.idempotency_key,
@@ -349,12 +350,24 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
  * Observes bound Base transactions without a settled outcome again, one at a time, so a package
  * finalizes, reverts, or expires in its owner's list after the browser that sent it is gone.
  */
+/** Where a background sweep resumes; it wraps to the start after a short page. */
+export type SweepCursor = { offset: number };
+
 export async function reconcilePendingEvmTestnetAtomicOutcomes(
   store: Pick<SqlitePreparedEvmTestnetAtomicStore, "pendingObservations">,
   observation: EvmTestnetAtomicObservationPort,
   limit = 10,
+  cursor: SweepCursor = { offset: 0 },
 ): Promise<void> {
-  for (const pending of store.pendingObservations(limit)) {
+  // Pages through every pending attempt across sweeps, so attempts whose observation keeps
+  // failing (they stay least recently observed) cannot starve the rest.
+  let page = store.pendingObservations(limit, cursor.offset);
+  if (page.length === 0 && cursor.offset > 0) {
+    cursor.offset = 0;
+    page = store.pendingObservations(limit, 0);
+  }
+  cursor.offset = page.length < limit ? 0 : cursor.offset + limit;
+  for (const pending of page) {
     try {
       await observation.observe(pending);
     } catch {
