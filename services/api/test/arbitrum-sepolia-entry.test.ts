@@ -310,7 +310,11 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
       bondAtoms: "1", solver: evmAddress(11), submissionDeadline: "1", venueDeadline: "2", recoveryDeadline: "3",
     },
   });
+  let expired = false;
   const fetchImplementation = (async (url: string, init: RequestInit) => {
+    if (expired) {
+      return new Response(JSON.stringify({ error: { code: "DEADLINE", message: "route deadlines no longer leave a valid GMX submission window" } }), { status: 409 });
+    }
     relayed.push(`${String(url).replace("http://127.0.0.1:8793", "")} ${String(init.body)}`);
     const body = JSON.parse(String(init.body)) as { ownerSignature?: string };
     return new Response(JSON.stringify(authorization(body.ownerSignature !== undefined)), { status: 200 });
@@ -357,6 +361,12 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
   assert.equal(status.body.deployed, true);
   assert.equal((await call("GET", `/internal/terminal/arbitrum-sepolia/account?owner=${walletOwner}`, undefined, "https://evil.example")).status, 403);
 
+  // The solver's reason reaches the owner, so an expired route reads as one that needs a fresh order.
+  expired = true;
+  const stale = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(stale.status, 409);
+  assert.match((stale.body.error as { message: string }).message, /quote expired before the reservation: route deadlines/);
+  expired = false;
   // A package the service would not admit is refused before the solver prepares anything to sign.
   admissible = false;
   const refused = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });

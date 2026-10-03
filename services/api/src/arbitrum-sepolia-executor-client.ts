@@ -321,12 +321,18 @@ implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExec
       throw new ArbitrumSepoliaHandoffError("INVALID_EXECUTOR_RESPONSE", "Arbitrum executor response is malformed.");
     }
     if (!response.ok) {
-      const code = (parsed as { error?: { code?: unknown } })?.error?.code;
+      const error = (parsed as { error?: { code?: unknown; message?: unknown } })?.error;
+      const refused = response.status >= 400 && response.status < 500 && typeof error?.code === "string"
+        && /^[A-Z_]{1,48}$/.test(error.code);
+      // The solver's own short reason tells the owner what to redo; an expired route needs a fresh order.
+      const reason = refused && typeof error?.message === "string" && /^[\x20-\x7e]{1,200}$/.test(error.message)
+        ? error.message
+        : undefined;
       throw new ArbitrumSepoliaHandoffError(
-        response.status >= 400 && response.status < 500 && typeof code === "string" && /^[A-Z_]{1,48}$/.test(code)
-          ? code
-          : "EXECUTOR_REJECTED",
-        `Arbitrum executor failed with HTTP ${response.status}.`,
+        refused ? error!.code as string : "EXECUTOR_REJECTED",
+        reason === undefined ? `Arbitrum executor failed with HTTP ${response.status}.`
+          : error!.code === "DEADLINE" ? `The quote expired before the reservation: ${reason}.`
+            : `The solver refused this package: ${reason}.`,
       );
     }
     return parsed;
