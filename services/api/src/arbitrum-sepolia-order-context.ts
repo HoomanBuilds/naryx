@@ -4,6 +4,7 @@ import { equalHash, requiredEvmAddress, type EvmContractIdentity } from "@naryx/
 import {
   domainRefFromManifest,
   exactPrice,
+  exactSignedRate,
   parseProtocolJson,
   type AdapterRef,
   type AssetRef,
@@ -120,6 +121,13 @@ function validateConfig(config: ArbitrumSepoliaOrderContextConfig): void {
     ["maxPriorityFeeAtoms", config.maxPriorityFeeAtoms],
   ] as const) {
     if (typeof value !== "bigint" || value < 0n) throw new Error(`Arbitrum order context ${name} must be nonnegative.`);
+  }
+  // Every order signs the spread cap, so a non-canonical rate (for example not in lowest terms) is
+  // refused here, at load, instead of failing each order.
+  try {
+    exactSignedRate(config.maxEntrySpread, "maxEntrySpread");
+  } catch (error) {
+    throw new Error(`Arbitrum Sepolia order context maxEntrySpread is invalid: ${error instanceof Error ? error.message : "malformed"}`);
   }
 }
 
