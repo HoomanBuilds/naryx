@@ -322,9 +322,11 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   const reserveArgs: Hex[] = [];
   const allowances = new Map<string, bigint>();
   const state = { fundedHash: hex('0') };
-  let packageRecord: { terms: unknown; state: number; stateVersion: bigint; requestKey: Hex } = {
+  let packageRecord: { terms: unknown; state: number; stateVersion: bigint; requestKey: Hex; recoveryActionSubmitted?: boolean } = {
     terms: undefined, state: 0, stateVersion: 0n, requestKey: hex('0'),
   };
+  // The GMX request's adapter status, whether the account still holds the spot leg, and chain time.
+  const venue = { status: 1, holdsSpot: true, now: NOW };
   const advanceState = (state: number, requestKey = packageRecord.requestKey) => {
     packageRecord = { ...packageRecord, state, stateVersion: packageRecord.stateVersion + 1n, requestKey };
   };
@@ -332,7 +334,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
     account: solverAccount,
     chainId: async () => chainId,
     codeHash: async (target) => codes.get(target),
-    latestBlockTimestamp: async () => NOW,
+    latestBlockTimestamp: async () => venue.now,
     gasPrice: async () => 100_000_000n,
     readContract: async ({ functionName, args }) => {
       const terms = args?.[0] as Record<string, Hex>;
@@ -359,7 +361,8 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
         case 'allowance': return allowances.get(String(args?.[1])) ?? 0n;
         case 'funding': return [executorAccount, state.fundedHash, 0n, 0n, 0n, 0n, false];
         case 'packageState': return packageRecord;
-        case 'requestEvidence': return [1, hex('0'), 0n, 0n, 1n];
+        case 'requestEvidence': return [venue.status, hex('0'), 0n, 0n, 1n];
+        case 'activePackageOf': return venue.holdsSpot ? journal().plan(ATTEMPT_ID)!.packageId : hex('0');
         default: throw new Error(`unexpected read ${functionName}`);
       }
     },
@@ -373,6 +376,23 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
       }
       if (functionName === 'submitRequest') advanceState(2, hex('e'));
       if (functionName === 'markVenuePending') advanceState(3);
+      if (functionName === 'finalizeUnfilledRequest') {
+        assert.ok(venue.status === 3 || venue.status === 5, 'the spot is rolled back only for an unfilled request');
+        venue.holdsSpot = false;
+      }
+      // The adapter relays a cancellation only once the spot is sold back, like assertSpotCleared.
+      if (functionName === 'relayEvidence') {
+        if ((venue.status === 3 || venue.status === 5) && venue.holdsSpot) throw new Error('spot not cleared');
+        advanceState(venue.status === 3 ? 5 : venue.status === 5 ? 8 : 4);
+      }
+      if (functionName === 'beginRecovery') advanceState(7);
+      if (functionName === 'submitRecovery') {
+        // The adapter cancels a still-pending GMX request; either way it records the request RECOVERED.
+        packageRecord = { ...packageRecord, recoveryActionSubmitted: true };
+        advanceState(7);
+        venue.status = 5;
+      }
+      if (functionName === 'close') advanceState(10);
       return `0x${writes.length.toString(16).padStart(64, '0')}` as Hex;
     },
     receipt: async () => 'success',
@@ -380,7 +400,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   };
   // The owner's own wallet funds the request; the executor never sends that transaction.
   const ownerFunds = () => { state.fundedHash = journal().plan(ATTEMPT_ID)!.terms.requestPayloadHash; };
-  return { port, writes, reserveArgs, ownerFunds };
+  return { port, writes, reserveArgs, ownerFunds, venue };
 }
 
 function executor(port: ArbitrumSepoliaWritePort, journal: SqliteArbitrumSepoliaExecutionJournal) {
@@ -485,5 +505,42 @@ test('Arbitrum executor reserves only with the owner wallet signature and owner 
   } finally {
     journal.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Arbitrum executor recovers a GMX-cancelled or overdue entry through the bonded coordinator path, once', async () => {
+  for (const scenario of ['cancelled', 'overdue'] as const) {
+    const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+    const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+    try {
+      const { port, writes, ownerFunds, venue } = fakeChain(() => journal);
+      const prepared = await executor(port, journal).instance.prepare(ATTEMPT_ID);
+      await executor(port, journal).instance.authorize(ATTEMPT_ID, await ownerAccount.signTypedData(prepared.typedData as never));
+      ownerFunds();
+      assert.equal((await executor(port, journal).instance.advance(ATTEMPT_ID)).status, 'VENUE_PENDING');
+      const before = writes.length;
+      const sent = () => writes.slice(before);
+      if (scenario === 'cancelled') {
+        venue.status = 3;
+      } else {
+        // Still pending on GMX: nothing happens until the venue deadline passes.
+        assert.equal((await executor(port, journal).instance.advance(ATTEMPT_ID)).status, 'VENUE_PENDING');
+        assert.deepEqual(sent(), []);
+        venue.now = journal.plan(ATTEMPT_ID)!.terms.venueDeadline + 1n;
+      }
+      const recovered = await executor(port, journal).instance.advance(ATTEMPT_ID);
+      assert.equal(recovered.status, 'SETTLED');
+      assert.equal(recovered.coordinatorState, 'CLOSED');
+      assert.deepEqual(sent(), scenario === 'cancelled'
+        ? ['finalizeUnfilledRequest', 'relayEvidence', 'beginRecovery', 'submitRecovery', 'relayEvidence', 'close']
+        : ['beginRecovery', 'submitRecovery', 'finalizeUnfilledRequest', 'relayEvidence', 'close']);
+      assert.equal(venue.holdsSpot, false);
+      const again = await executor(port, journal).instance.advance(ATTEMPT_ID);
+      assert.equal(again.status, 'SETTLED');
+      assert.equal(sent().length, scenario === 'cancelled' ? 6 : 5);
+    } finally {
+      journal.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   }
 });

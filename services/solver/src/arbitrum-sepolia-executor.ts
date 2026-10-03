@@ -116,6 +116,8 @@ export const ARBITRUM_ASYNC_COORDINATOR_ABI = parseAbi([
   'function reserve(Terms terms, bytes ownerSignature) returns (bytes32)',
   'function submitRequest(bytes32 id, uint64 expectedVersion, VenueRequest request) returns (bytes32)',
   'function markVenuePending(bytes32 id, uint64 expectedVersion)',
+  'function beginRecovery(bytes32 id, uint64 expectedVersion)',
+  'function submitRecovery(bytes32 id, uint64 expectedVersion)',
   'function close(bytes32 id, uint64 expectedVersion)',
 ]);
 export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
@@ -124,6 +126,8 @@ export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
   'function requestEvidence(bytes32 requestKey) view returns (uint8 status, bytes32 evidenceHash, uint256 positionSizeBefore, uint256 positionSizeAfter, uint64 revision)',
   'function fundRequest(bytes32 packageId, VenueRequest venueRequest) payable',
   'function relayEvidence(bytes32 requestKey, uint64 expectedVersion)',
+  'function finalizeUnfilledRequest(bytes32 requestKey)',
+  'function activePackageOf(address account) view returns (bytes32)',
 ]);
 export const ARBITRUM_ISOLATED_ACCOUNT_ABI = parseAbi([
   'function owner() view returns (address)',
@@ -151,6 +155,8 @@ const STATE = Object.freeze({
 const STATE_NAMES = Object.freeze(Object.keys(STATE)) as readonly (keyof typeof STATE)[];
 // Adapter request outcomes that relayEvidence forwards to the coordinator.
 const RELAYABLE_REQUEST_STATUS = new Set([2, 3, 4, 5]);
+// Adapter outcomes that leave the spot leg in the account: CANCELLED and RECOVERED.
+const UNFILLED_REQUEST_STATUS = new Set([3, 5]);
 const EXIT_STATUS = Object.freeze({ NONE: 0, PENDING: 1, EXECUTED: 2, CANCELLED: 3, FROZEN: 4, RECOVERED: 5, CONFLICT: 6 });
 const EXIT_STATUS_NAMES = Object.freeze(Object.keys(EXIT_STATUS)) as readonly (keyof typeof EXIT_STATUS)[];
 
@@ -220,6 +226,7 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
 
 export type ArbitrumSepoliaExecutionStep =
   | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE'
+  | 'ROLLBACK_SPOT' | 'BEGIN_RECOVERY' | 'SUBMIT_RECOVERY' | 'RELAY_RECOVERY'
   | 'SUBMIT_EXIT' | 'RECONCILE_EXIT' | 'PROCESS_RECONCILIATION' | 'FINALIZE_EXIT';
 
 export interface ArbitrumSepoliaExecutionResult {
@@ -999,15 +1006,57 @@ export class ArbitrumSepoliaExecutor {
         state = await this.#state(plan);
       }
       if (state.state === STATE.VENUE_PENDING) {
-        const evidence = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'requestEvidence', [state.requestKey]) as readonly unknown[];
-        if (!RELAYABLE_REQUEST_STATUS.has(Number(evidence[0]))) {
-          return this.#result(attemptId, plan, 'VENUE_PENDING', state);
+        const status = await this.#requestStatus(plan, state.requestKey);
+        if (!RELAYABLE_REQUEST_STATUS.has(status)) {
+          // GMX neither executed nor cancelled the request within its venue window: the coordinator's
+          // recovery cancels it on GMX, so the owner is not left waiting on a request that never runs.
+          if (status !== 1) return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
+          if (await chain.latestBlockTimestamp() <= plan.terms.venueDeadline) {
+            return this.#result(attemptId, plan, 'VENUE_PENDING', state);
+          }
+          await this.#send(plan, 'BEGIN_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'beginRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+        } else {
+          // A cancelled request leaves the bought spot in the account, and the adapter relays it only
+          // once that spot is sold back to the owner.
+          if (UNFILLED_REQUEST_STATUS.has(status)) await this.#rollbackSpot(plan, state.requestKey);
+          await this.#send(plan, 'RELAY', {
+            address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
+            args: [state.requestKey, state.stateVersion],
+          });
         }
-        await this.#send(plan, 'RELAY', {
-          address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
-          args: [state.requestKey, state.stateVersion],
+        state = await this.#state(plan);
+      }
+      // The coordinator's bonded recovery of a cancelled request: open recovery, ask the adapter to
+      // reconcile (it proves the request is gone and the position unchanged), relay that proof, and close,
+      // which returns the solver bond and reserve. Every call is permissionless except the rollback.
+      if (state.state === STATE.CANCELLED) {
+        await this.#send(plan, 'BEGIN_RECOVERY', {
+          address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'beginRecovery',
+          args: [plan.packageId, state.stateVersion],
         });
         state = await this.#state(plan);
+      }
+      if (state.state === STATE.RECOVERY_PENDING && !state.recoveryActionSubmitted
+        && await chain.latestBlockTimestamp() < plan.terms.recoveryDeadline) {
+        await this.#send(plan, 'SUBMIT_RECOVERY', {
+          address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitRecovery',
+          args: [plan.packageId, state.stateVersion],
+        });
+        state = await this.#state(plan);
+      }
+      if (state.state === STATE.RECOVERY_PENDING && state.recoveryActionSubmitted) {
+        const status = await this.#requestStatus(plan, state.requestKey);
+        if (status === 2 || status === 5) {
+          if (status === 5) await this.#rollbackSpot(plan, state.requestKey);
+          await this.#send(plan, 'RELAY_RECOVERY', {
+            address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
+            args: [state.requestKey, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
       }
       if (state.state === STATE.EXECUTED || state.state === STATE.RECOVERED) {
         await this.#send(plan, 'CLOSE', {
@@ -1017,7 +1066,7 @@ export class ArbitrumSepoliaExecutor {
         state = await this.#state(plan);
       }
       if (state.state === STATE.CLOSED) return this.#result(attemptId, plan, 'SETTLED', state);
-      // Cancelled, frozen, or overdue packages need the coordinator recovery path, which the keeper drives.
+      // Frozen, conflicting, or late packages that the steps above cannot settle need the operator.
       return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
     } catch (error) {
       if (error instanceof InFlight) return this.#result(attemptId, plan, 'IN_FLIGHT', undefined);
@@ -1384,6 +1433,23 @@ export class ArbitrumSepoliaExecutor {
       state,
       stateVersion: BigInt(record.stateVersion as bigint),
       requestKey: hashValue(record.requestKey, 'package request key'),
+      recoveryActionSubmitted: record.recoveryActionSubmitted === true,
+    });
+  }
+
+  async #requestStatus(plan: ArbitrumSepoliaExecutionPlan, requestKey: Hex): Promise<number> {
+    const evidence = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'requestEvidence', [requestKey]) as readonly unknown[];
+    return Number(evidence[0]);
+  }
+
+  /** Sells the spot leg of an unfilled request back to the owner (once) while the account still holds it. */
+  async #rollbackSpot(plan: ArbitrumSepoliaExecutionPlan, requestKey: Hex): Promise<void> {
+    if (this.#options.journal.transaction(plan.attemptId, 'ROLLBACK_SPOT') === undefined) {
+      const active = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'activePackageOf', [plan.account]);
+      if (hashValue(active, 'active package') !== plan.packageId) return;
+    }
+    await this.#send(plan, 'ROLLBACK_SPOT', {
+      address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'finalizeUnfilledRequest', args: [requestKey],
     });
   }
 
