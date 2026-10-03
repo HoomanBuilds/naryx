@@ -24,7 +24,11 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
     address private pauser;
 
     function testComposesExactPausedRouteAndRejectsWrongDependencyAndEarlyActivation() public {
-        vm.createSelectFork("https://sepolia-rollup.arbitrum.io/rpc", FORK_BLOCK);
+        string memory rpcUrl = vm.envOr("ARBITRUM_SEPOLIA_RPC_URL", string(""));
+        if (bytes(rpcUrl).length == 0) {
+            vm.skip(true, "ARBITRUM_SEPOLIA_RPC_URL absent: skipping pinned Arbitrum Sepolia fork test");
+        }
+        vm.createSelectFork(rpcUrl, FORK_BLOCK);
         vm.warp(1_000);
         proposer = makeAddr("proposer");
         canceller = makeAddr("canceller");

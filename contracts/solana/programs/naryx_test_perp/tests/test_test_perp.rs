@@ -176,16 +176,20 @@ fn pda(seeds: &[&[u8]]) -> Pubkey {
 
 fn setup() -> Env {
     let mut svm = LiteSVM::new();
-    svm.add_program(
-        naryx_test_perp::id(),
-        include_bytes!("../../../target/deploy/naryx_test_perp.so"),
-    )
+    let test_perp_binary = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/deploy/naryx_test_perp.so"
+    ))
     .unwrap();
-    svm.add_program(
-        naryx_test_perp_adapter::id(),
-        include_bytes!("../../../target/deploy/naryx_test_perp_adapter.so"),
-    )
+    svm.add_program(naryx_test_perp::id(), &test_perp_binary)
+        .unwrap();
+    let test_perp_adapter_binary = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../target/deploy/naryx_test_perp_adapter.so"
+    ))
     .unwrap();
+    svm.add_program(naryx_test_perp_adapter::id(), &test_perp_adapter_binary)
+        .unwrap();
     let mut clock = svm.get_sysvar::<Clock>();
     clock.unix_timestamp = START_TS;
     svm.set_sysvar(&clock);
