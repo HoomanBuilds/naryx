@@ -322,11 +322,16 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   const reserveArgs: Hex[] = [];
   const allowances = new Map<string, bigint>();
   const state = { fundedHash: hex('0') };
-  let packageRecord: { terms: unknown; state: number; stateVersion: bigint; requestKey: Hex; recoveryActionSubmitted?: boolean } = {
+  let packageRecord: {
+    terms: unknown; state: number; stateVersion: bigint; requestKey: Hex; recoveryActionSubmitted?: boolean;
+    recoveryDutyActive?: boolean; bondSlashed?: boolean;
+  } = {
     terms: undefined, state: 0, stateVersion: 0n, requestKey: hex('0'),
   };
-  // The GMX request's adapter status, whether the account still holds the spot leg, and chain time.
-  const venue = { status: 1, holdsSpot: true, now: NOW };
+  // The GMX request's adapter status, whether the account still holds the spot leg, chain time, and
+  // whether the RPC drops the next submitRecovery (the service missing its recovery window).
+  const venue = { status: 1, holdsSpot: true, now: NOW, dropSubmitRecovery: false };
+  const recoveryDeadline = () => journal().plan(ATTEMPT_ID)!.terms.recoveryDeadline;
   const advanceState = (state: number, requestKey = packageRecord.requestKey) => {
     packageRecord = { ...packageRecord, state, stateVersion: packageRecord.stateVersion + 1n, requestKey };
   };
@@ -367,6 +372,10 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
       }
     },
     writeContract: async ({ functionName, args }) => {
+      if (functionName === 'submitRecovery' && venue.dropSubmitRecovery) {
+        venue.dropSubmitRecovery = false;
+        throw new Error('RPC unavailable');
+      }
       writes.push(functionName);
       if (functionName === 'approve') allowances.set(String(args?.[0]), args?.[1] as bigint);
       if (functionName === 'reserve') reserveArgs.push(args?.[1] as Hex);
@@ -385,8 +394,30 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
         if ((venue.status === 3 || venue.status === 5) && venue.holdsSpot) throw new Error('spot not cleared');
         advanceState(venue.status === 3 ? 5 : venue.status === 5 ? 8 : 4);
       }
-      if (functionName === 'beginRecovery') advanceState(7);
-      if (functionName === 'submitRecovery') {
+      // The coordinator's recovery deadline rules: a late beginRecovery parks the package in
+      // MANUAL_INTERVENTION, a begun recovery of a cancelled request is a slashable duty, and the overdue
+      // recovery runs only after the deadline and after a missed duty was slashed.
+      if (functionName === 'beginRecovery') {
+        if (venue.now >= recoveryDeadline()) {
+          advanceState(9);
+        } else {
+          packageRecord = { ...packageRecord, recoveryDutyActive: packageRecord.state === 5 };
+          advanceState(7);
+        }
+      }
+      if (functionName === 'slashMissedRecovery') {
+        assert.ok(packageRecord.state === 7 && packageRecord.recoveryDutyActive === true
+          && packageRecord.recoveryActionSubmitted !== true && venue.now > recoveryDeadline());
+        packageRecord = { ...packageRecord, bondSlashed: true };
+        advanceState(9);
+      }
+      if (functionName === 'submitRecovery' || functionName === 'submitOverdueRecovery') {
+        assert.ok(packageRecord.recoveryActionSubmitted !== true);
+        if (functionName === 'submitRecovery') assert.ok(venue.now < recoveryDeadline());
+        else {
+          assert.ok(venue.now >= recoveryDeadline());
+          assert.ok(packageRecord.state === 9 || (packageRecord.state === 7 && packageRecord.recoveryDutyActive !== true));
+        }
         // The adapter cancels a still-pending GMX request; either way it records the request RECOVERED.
         packageRecord = { ...packageRecord, recoveryActionSubmitted: true };
         advanceState(7);
@@ -400,7 +431,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   };
   // The owner's own wallet funds the request; the executor never sends that transaction.
   const ownerFunds = () => { state.fundedHash = journal().plan(ATTEMPT_ID)!.terms.requestPayloadHash; };
-  return { port, writes, reserveArgs, ownerFunds, venue };
+  return { port, writes, reserveArgs, ownerFunds, venue, slashed: () => packageRecord.bondSlashed === true };
 }
 
 function executor(port: ArbitrumSepoliaWritePort, journal: SqliteArbitrumSepoliaExecutionJournal) {
@@ -538,6 +569,47 @@ test('Arbitrum executor recovers a GMX-cancelled or overdue entry through the bo
       const again = await executor(port, journal).instance.advance(ATTEMPT_ID);
       assert.equal(again.status, 'SETTLED');
       assert.equal(sent().length, scenario === 'cancelled' ? 6 : 5);
+    } finally {
+      journal.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test('Arbitrum executor recovers an entry GMX still holds after the recovery deadline, slashing a missed duty first', async () => {
+  for (const scenario of ['expired', 'missed duty'] as const) {
+    const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+    const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+    try {
+      const { port, writes, ownerFunds, venue, slashed } = fakeChain(() => journal);
+      const prepared = await executor(port, journal).instance.prepare(ATTEMPT_ID);
+      await executor(port, journal).instance.authorize(ATTEMPT_ID, await ownerAccount.signTypedData(prepared.typedData as never));
+      ownerFunds();
+      assert.equal((await executor(port, journal).instance.advance(ATTEMPT_ID)).status, 'VENUE_PENDING');
+      const before = writes.length;
+      const sent = () => writes.slice(before);
+      if (scenario === 'expired') {
+        // The service polled nothing between the venue window and the recovery deadline.
+        venue.now = journal.plan(ATTEMPT_ID)!.terms.recoveryDeadline;
+      } else {
+        // GMX cancels, the service rolls back and begins recovery, then misses the recovery window.
+        venue.status = 3;
+        venue.dropSubmitRecovery = true;
+        await assert.rejects(executor(port, journal).instance.advance(ATTEMPT_ID), /RPC unavailable/);
+        venue.now = journal.plan(ATTEMPT_ID)!.terms.recoveryDeadline + 1n;
+      }
+      const recovered = await executor(port, journal).instance.advance(ATTEMPT_ID);
+      assert.equal(recovered.status, 'SETTLED');
+      assert.equal(recovered.coordinatorState, 'CLOSED');
+      assert.deepEqual(sent(), scenario === 'expired'
+        ? ['beginRecovery', 'submitOverdueRecovery', 'finalizeUnfilledRequest', 'relayEvidence', 'close']
+        : ['finalizeUnfilledRequest', 'relayEvidence', 'beginRecovery', 'slashMissedRecovery', 'submitOverdueRecovery',
+          'relayEvidence', 'close']);
+      assert.equal(slashed(), scenario === 'missed duty');
+      assert.equal(venue.holdsSpot, false);
+      const again = await executor(port, journal).instance.advance(ATTEMPT_ID);
+      assert.equal(again.status, 'SETTLED');
+      assert.equal(sent().length, scenario === 'expired' ? 5 : 7);
     } finally {
       journal.close();
       rmSync(directory, { recursive: true, force: true });

@@ -118,6 +118,8 @@ export const ARBITRUM_ASYNC_COORDINATOR_ABI = parseAbi([
   'function markVenuePending(bytes32 id, uint64 expectedVersion)',
   'function beginRecovery(bytes32 id, uint64 expectedVersion)',
   'function submitRecovery(bytes32 id, uint64 expectedVersion)',
+  'function slashMissedRecovery(bytes32 id, uint64 expectedVersion)',
+  'function submitOverdueRecovery(bytes32 id, uint64 expectedVersion)',
   'function close(bytes32 id, uint64 expectedVersion)',
 ]);
 export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
@@ -227,6 +229,7 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
 export type ArbitrumSepoliaExecutionStep =
   | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE'
   | 'ROLLBACK_SPOT' | 'BEGIN_RECOVERY' | 'SUBMIT_RECOVERY' | 'RELAY_RECOVERY'
+  | 'SLASH_MISSED_RECOVERY' | 'SUBMIT_OVERDUE_RECOVERY'
   | 'SUBMIT_EXIT' | 'RECONCILE_EXIT' | 'PROCESS_RECONCILIATION' | 'FINALIZE_EXIT';
 
 export interface ArbitrumSepoliaExecutionResult {
@@ -1039,13 +1042,35 @@ export class ArbitrumSepoliaExecutor {
         });
         state = await this.#state(plan);
       }
-      if (state.state === STATE.RECOVERY_PENDING && !state.recoveryActionSubmitted
-        && await chain.latestBlockTimestamp() < plan.terms.recoveryDeadline) {
+      const now = await chain.latestBlockTimestamp();
+      if (state.state === STATE.RECOVERY_PENDING && !state.recoveryActionSubmitted && now < plan.terms.recoveryDeadline) {
         await this.#send(plan, 'SUBMIT_RECOVERY', {
           address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitRecovery',
           args: [plan.packageId, state.stateVersion],
         });
         state = await this.#state(plan);
+      }
+      // Past the recovery deadline (the service was down through the recovery window) the request may still
+      // sit on GMX with the owner's collateral and spot. The coordinator first slashes a missed recovery
+      // duty, then takes the same cancel-or-reconcile recovery late, so the steps below can still relay it
+      // and close. Conflicting evidence never takes this path.
+      if (now >= plan.terms.recoveryDeadline && state.requestKey !== ZERO_HASH && !state.recoveryActionSubmitted
+        && !state.evidenceConflict) {
+        if (state.state === STATE.RECOVERY_PENDING && state.recoveryDutyActive && now > plan.terms.recoveryDeadline) {
+          await this.#send(plan, 'SLASH_MISSED_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'slashMissedRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
+        if (state.state === STATE.MANUAL_INTERVENTION
+          || (state.state === STATE.RECOVERY_PENDING && !state.recoveryDutyActive)) {
+          await this.#send(plan, 'SUBMIT_OVERDUE_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitOverdueRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
       }
       if (state.state === STATE.RECOVERY_PENDING && state.recoveryActionSubmitted) {
         const status = await this.#requestStatus(plan, state.requestKey);
@@ -1066,7 +1091,8 @@ export class ArbitrumSepoliaExecutor {
         state = await this.#state(plan);
       }
       if (state.state === STATE.CLOSED) return this.#result(attemptId, plan, 'SETTLED', state);
-      // Frozen, conflicting, or late packages that the steps above cannot settle need the operator.
+      // Conflicting evidence, a changed adapter, or a request GMX has not yet released needs the operator
+      // or a later poll.
       return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
     } catch (error) {
       if (error instanceof InFlight) return this.#result(attemptId, plan, 'IN_FLIGHT', undefined);
@@ -1434,6 +1460,8 @@ export class ArbitrumSepoliaExecutor {
       stateVersion: BigInt(record.stateVersion as bigint),
       requestKey: hashValue(record.requestKey, 'package request key'),
       recoveryActionSubmitted: record.recoveryActionSubmitted === true,
+      recoveryDutyActive: record.recoveryDutyActive === true,
+      evidenceConflict: record.evidenceConflict === true,
     });
   }
 
