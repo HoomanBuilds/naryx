@@ -91,8 +91,14 @@ function outcomeOf(
       receiptHash: observation.finalReceipt?.commitment ?? nonzero(observation.exit.evidenceHash),
     };
   }
+  // The solver usually relays and closes in one handoff, so an entry is first seen CLOSED. A closed entry
+  // either opened the position (the request EXECUTED) or GMX cancelled it and the bonded recovery returned
+  // the funds (RECOVERED); the owner's list records which.
+  const entryStatus = observation.entry?.status;
   return {
-    state: observation.lifecycle,
+    state: observation.lifecycle === "CLOSED" && (entryStatus === "EXECUTED" || entryStatus === "RECOVERED")
+      ? entryStatus
+      : observation.lifecycle,
     receiptHash: nonzero(observation.coordinator?.outcomeEvidenceHash) ?? nonzero(observation.entry?.evidenceHash),
   };
 }

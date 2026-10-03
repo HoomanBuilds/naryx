@@ -87,6 +87,15 @@ test("Arbitrum outcomes keep what each handoff proved across a restart and never
     });
     assert.deepEqual(store.unsettled(10), []);
 
+    // A closed entry records whether it opened the position or GMX cancelled it and the recovery refunded it.
+    const entryRequest = (status: "EXECUTED" | "RECOVERED") => ({ status, evidenceHash: hash(24), positionSizeBefore: "0", positionSizeAfter: "0", revision: 2 });
+    for (const [attemptId, status] of [[`arbitrum-async-${"c3".repeat(24)}`, "EXECUTED"], [`arbitrum-async-${"d4".repeat(24)}`, "RECOVERED"]] as const) {
+      actions.set(attemptId, "ENTRY");
+      scripted = observed(attemptId, { lifecycle: "CLOSED", evidenceGrade: "contract-state", coordinator: coordinator(hash(21)), entry: entryRequest(status) });
+      await handoff.observe({ attemptId, idempotencyKey: "idem-arb-outcome-0003" });
+      assert.equal(store.attemptOutcome(attemptId)?.state, status);
+    }
+
     // An exit is observed on its entry package: the entry's coordinator state is not the exit's outcome.
     transactions = [{ step: "SUBMIT_EXIT", txHash: hash(13), status: "CONFIRMED" }];
     scripted = observed(exitId, { lifecycle: "EXECUTED", evidenceGrade: "authenticated-callback-record", coordinator: coordinator(hash(20)) });
