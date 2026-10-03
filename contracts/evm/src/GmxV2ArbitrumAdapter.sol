@@ -130,10 +130,9 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
                 || address(collateralToken_).codehash != collateralTokenCodeHash_ || coordinatorCodeHash_ == bytes32(0)
                 || address(orderVerifier_).codehash != orderVerifierCodeHash_ || marketCodeHash_ == bytes32(0)
                 || collateralTokenCodeHash_ == bytes32(0) || orderVerifierCodeHash_ == bytes32(0)
-                || address(coordinator_.bondToken()) != address(collateralToken_)
-                || address(factory_).code.length == 0 || factoryCodeHash_ == bytes32(0)
-                || address(factory_).codehash != factoryCodeHash_ || factory_.market() != market_
-                || address(factory_.collateralToken()) != address(collateralToken_)
+                || address(coordinator_.bondToken()) != address(collateralToken_) || address(factory_).code.length == 0
+                || factoryCodeHash_ == bytes32(0) || address(factory_).codehash != factoryCodeHash_
+                || factory_.market() != market_ || address(factory_.collateralToken()) != address(collateralToken_)
                 || factory_.deploymentHash() != keccak256(abi.encode(deployment))
         ) revert InvalidConfiguration();
         _validateDeployment(deployment);
@@ -184,8 +183,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         address account = _accountOf(msg.sender);
         _validateRequest(venueRequest);
         if (packageId == bytes32(0) || venueRequest.spot.fundingOwner != msg.sender) revert InvalidRequest();
-        if (activePackageOf[account] != bytes32(0) || funding[packageId][msg.sender].requestPayloadHash != bytes32(0))
-        {
+        if (activePackageOf[account] != bytes32(0) || funding[packageId][msg.sender].requestPayloadHash != bytes32(0)) {
             revert AlreadyFunded();
         }
         if (msg.value != venueRequest.executionFeeWei) revert FundingMismatch();
@@ -407,9 +405,9 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
 
     function finalizeExitedPosition(bytes32 packageId, bytes32 entryRequestKey) external nonReentrant {
         _assertDeployment();
-        if (
-            msg.sender != factory.exitController() || msg.sender.codehash != factory.exitControllerCodeHash()
-        ) revert UnauthorizedCaller();
+        if (msg.sender != factory.exitController() || msg.sender.codehash != factory.exitControllerCodeHash()) {
+            revert UnauthorizedCaller();
+        }
         RequestRecord storage stored = _request(entryRequestKey);
         GmxV2IsolatedAccount account = _requireAccount(stored.account);
         if (
@@ -579,8 +577,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
                 || venueRequest.acceptablePrice == 0 || venueRequest.executionFeeWei == 0
                 || venueRequest.callbackGasLimit == 0 || venueRequest.orderHash == bytes32(0)
                 || venueRequest.quoteHash == bytes32(0) || venueRequest.routeHash == bytes32(0)
-                || venueRequest.spot.maxQuoteAtoms == 0
-                || block.timestamp >= venueRequest.submissionDeadline
+                || venueRequest.spot.maxQuoteAtoms == 0 || block.timestamp >= venueRequest.submissionDeadline
                 || venueRequest.submissionDeadline >= venueRequest.venueDeadline
                 || venueRequest.venueDeadline >= venueRequest.recoveryDeadline
                 || cancellationDelay > type(uint64).max - block.timestamp
@@ -597,12 +594,11 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         AsyncBondedPackageCoordinator.Terms memory terms = packageData.terms;
         if (
             terms.adapter != address(this) || terms.handler != address(this) || terms.owner == address(0)
-                || terms.adapterCodeHash != address(this).codehash
-                || terms.handlerCodeHash != address(this).codehash || terms.requestPayloadHash != requestPayloadHash
-                || terms.orderHash != venueRequest.orderHash || terms.quoteHash != venueRequest.quoteHash
-                || terms.routeHash != venueRequest.routeHash || terms.nonce != venueRequest.packageNonce
-                || venueRequest.spot.fundingOwner != terms.owner || terms.lossAsset != address(collateralToken)
-                || terms.residualAsset != address(collateralToken)
+                || terms.adapterCodeHash != address(this).codehash || terms.handlerCodeHash != address(this).codehash
+                || terms.requestPayloadHash != requestPayloadHash || terms.orderHash != venueRequest.orderHash
+                || terms.quoteHash != venueRequest.quoteHash || terms.routeHash != venueRequest.routeHash
+                || terms.nonce != venueRequest.packageNonce || venueRequest.spot.fundingOwner != terms.owner
+                || terms.lossAsset != address(collateralToken) || terms.residualAsset != address(collateralToken)
                 || terms.submissionDeadline != venueRequest.submissionDeadline
                 || terms.venueDeadline != venueRequest.venueDeadline
                 || terms.recoveryDeadline != venueRequest.recoveryDeadline
