@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { firmReservationId } from '@naryx/protocol-types';
+import { firmReservationId, toProtocolJson } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
 import {
   holdShardSequences,
@@ -9,7 +12,9 @@ import {
   selectFirmLevel,
   shardSequencesHeld,
   standingLevelExpiry,
+  standingLevelLeadSlots,
 } from '../src/solana-devnet-firm-quote.js';
+import { SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, loadSolanaDevnetSolverConfig } from '../src/solana-devnet-solver-config.js';
 import {
   BorshWriter,
   accountDiscriminator,
@@ -127,14 +132,42 @@ test('keeps a standing level per side that a quote made a lead time from now can
     shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
     levels,
   });
-  // Written at slot 1000 with expiry 1450: still usable by a quote 100 slots out, so no write.
-  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 100n, 2), undefined);
+  // Written at slot 1000 with expiry 1450: still usable by a quote a quarter TTL (112 slots) out.
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 2), undefined);
   // The bid side has no level, so it is written with a full quote TTL.
-  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 100n, 1), 1_450n);
-  // 250 slots later a quote 100 slots out would need expiry beyond 1350 + 150 = 1500: refresh.
-  assert.equal(standingLevelExpiry(at(1_250n, [ask]), config, 100n, 2), 1_700n);
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 1), 1_450n);
+  // 250 slots later a quote 112 slots out would need expiry beyond 1362 + 150 = 1512: refresh.
+  assert.equal(standingLevelExpiry(at(1_250n, [ask]), config, 2), 1_700n);
   // A partly filled level that can no longer take a full-size package is refreshed too.
-  assert.equal(standingLevelExpiry(at(1_000n, [{ ...ask, remainingCapacity: 4n }]), config, 100n, 2), 1_450n);
+  assert.equal(standingLevelExpiry(at(1_000n, [{ ...ask, remainingCapacity: 4n }]), config, 2), 1_450n);
+
+  // For every allowed TTL a freshly written level satisfies the refresher for at least 5/12 of the
+  // TTL, never fewer than 125 slots, so it is not rewritten on the next cycles.
+  for (const quoteTtlSlots of [SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, 451n, 1_499n]) {
+    const ttlConfig = { ...(config as object), quoteTtlSlots } as never;
+    const fresh = { ...ask, expirySlot: standingLevelExpiry(at(1_000n, []), ttlConfig, 2)! };
+    const keeps = quoteTtlSlots - standingLevelLeadSlots(quoteTtlSlots) - quoteTtlSlots / 3n;
+    assert.ok(keeps >= (5n * quoteTtlSlots) / 12n && keeps >= 125n);
+    assert.equal(standingLevelExpiry(at(1_000n + keeps - 1n, [fresh]), ttlConfig, 2), undefined);
+    assert.equal(standingLevelExpiry(at(1_000n + keeps, [fresh]), ttlConfig, 2), 1_000n + keeps + quoteTtlSlots);
+  }
+});
+
+test('refuses a quote TTL below the minimum with a clear error', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-solana-config-'));
+  try {
+    const path = join(directory, 'solver.json');
+    const write = (quoteTtlSlots: bigint) => writeFileSync(path, JSON.stringify(toProtocolJson({
+      schemaVersion: 1, runtimeManifestPath: '/unused', accounts: {}, resources: {}, series: {}, route: {}, inventorySpreadBps: 0,
+      perpLimitToleranceBps: 0, computeUnitLimit: 1, solverId: '11111111111111111111111111111112', quoteTtlSlots,
+    })));
+    write(SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS - 1n);
+    assert.throws(() => loadSolanaDevnetSolverConfig(path), /quoteTtlSlots must be at least 300 slots/);
+    write(SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS);
+    assert.throws(() => loadSolanaDevnetSolverConfig(path), /maxQuantityAtoms must be positive/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('decodes the inventory reservation account layout', () => {

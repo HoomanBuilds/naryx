@@ -540,16 +540,25 @@ export function packageBookLevelInstructions(input: Readonly<{
 }
 
 /**
+ * How far ahead a standing level must stay usable: a quarter of the quote TTL. A quote needs a level
+ * expiring beyond a third of the TTL from its own slot, so a level written with a full TTL keeps
+ * satisfying this lead for at least 5/12 of the TTL after it is written. The configured minimum TTL
+ * makes that several refresh cycles, so a fresh level is not rewritten on the next one.
+ */
+export function standingLevelLeadSlots(quoteTtlSlots: bigint): bigint {
+  return quoteTtlSlots / 4n;
+}
+
+/**
  * Standing liquidity, as an exchange market maker keeps it: one firm level per side (the ask that
- * entries fill, the bid that exits fill) that a quote made `leadSlots` from now can still use, at
- * full capacity. Without it the first quote after a level ages out waits for a Devnet write to
- * finalize, which outlasts the API's quote request. A level written now (expiry now + quote TTL)
- * serves quotes for two thirds of the TTL, so this writes about once per side per that window.
- * Returns how many levels it wrote.
+ * entries fill, the bid that exits fill) that a quote made `standingLevelLeadSlots` from now can
+ * still use, at full capacity. Without it the first quote after a level ages out waits for a Devnet
+ * write to finalize, which outlasts the API's quote request. A level written now (expiry now + quote
+ * TTL) stops satisfying the lead 5/12 of the TTL later, so this writes about once per side per that
+ * window. Returns how many levels it wrote.
  */
 export async function refreshSolanaDevnetStandingLevels(
   dependencies: Pick<SolanaDevnetFirmQuoteDependencies, 'manifest' | 'config' | 'rpc' | 'writer' | 'key'>,
-  leadSlots: bigint,
 ): Promise<number> {
   const { manifest, config, rpc, writer, key } = dependencies;
   if (writer === undefined) return 0;
@@ -559,7 +568,7 @@ export async function refreshSolanaDevnetStandingLevels(
       const state = await readSolanaDevnetQuoteState(rpc, manifest, config);
       // A user between binding and execution needs the shard sequences unchanged.
       if (shardSequencesHeld(config.accounts.packageBookShard, state.slot)) return;
-      const expirySlot = standingLevelExpiry(state, config, leadSlots, side);
+      const expirySlot = standingLevelExpiry(state, config, side);
       if (expirySlot === undefined) return;
       const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot, side });
       await writer.sendAndFinalize(plan.instructions, key.keypair);
@@ -571,18 +580,17 @@ export async function refreshSolanaDevnetStandingLevels(
 
 /**
  * The expiry of the standing level to write on `side`, or undefined when a level a quote made
- * `leadSlots` from now could still use already exists, at full size.
+ * `standingLevelLeadSlots` from now could still use already exists, at full size.
  */
 export function standingLevelExpiry(
   state: SolanaDevnetLiveQuoteState,
   config: Pick<SolanaDevnetSolverConfig, 'maxQuantityAtoms' | 'levelCapacityUnits' | 'quoteTtlSlots' | 'series'>,
-  leadSlots: bigint,
   side: number,
 ): bigint | undefined {
   const maxUnits = config.maxQuantityAtoms / config.series.spotBaseAtomsPerPackageUnit;
   const units = maxUnits < config.levelCapacityUnits ? maxUnits : config.levelCapacityUnits;
   if (units <= 0n) return undefined;
-  const quotedAt = state.slot + leadSlots;
+  const quotedAt = state.slot + standingLevelLeadSlots(config.quoteTtlSlots);
   // The window a quote at that slot applies: expiry beyond a third of the TTL, within the TTL.
   const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + config.quoteTtlSlots / 3n,
     quotedAt + config.quoteTtlSlots, side);

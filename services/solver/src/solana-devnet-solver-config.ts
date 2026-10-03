@@ -69,6 +69,14 @@ export type SolanaDevnetResourceEvidenceConfig = Readonly<{
   adapterClassId?: string;
 }>;
 
+/**
+ * The shortest quote TTL the solver runs with, about 2 minutes of 400 ms slots. A quote needs a level
+ * expiring beyond a third of the TTL, which leaves at least 100 slots to fund, lock, and sign, and a
+ * fresh standing level keeps satisfying the refresher's lead for 5/12 of the TTL, at least 125 slots,
+ * several 10 s refresh cycles plus a write's finalization.
+ */
+export const SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS = 300n;
+
 export const SOLANA_DEVNET_RESOURCE_NAMES = [
   'spotAdapter', 'perpAdapter', 'spotMarket', 'perpMarket', 'spotVenue', 'perpVenue', 'baseAsset', 'quoteAsset',
 ] as const;
@@ -163,7 +171,9 @@ export function loadSolanaDevnetSolverConfig(path: string): SolanaDevnetSolverCo
     fail('configuration is invalid');
   }
   address(value.solverId, 'solverId');
-  positive(value.quoteTtlSlots, 'quoteTtlSlots');
+  if (positive(value.quoteTtlSlots, 'quoteTtlSlots') < SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS) {
+    fail(`quoteTtlSlots must be at least ${SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS} slots (recommended 450): a shorter TTL leaves under 100 slots to fund, lock, and sign, and a fresh standing level would not outlast a refresh cycle with margin`);
+  }
   positive(value.maxQuantityAtoms, 'maxQuantityAtoms');
   positive(value.levelTtlSlots, 'levelTtlSlots');
   positive(value.levelCapacityUnits, 'levelCapacityUnits');

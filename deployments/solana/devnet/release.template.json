@@ -820,7 +820,7 @@
         },
         "quoteTtlSlots": {
           "$bigint": {
-            "$operator": "quote TTL, slots (recommended 450, about 3 minutes, so a first-time user can approve in the wallet)"
+            "$operator": "quote TTL, slots (at least 300; recommended 450, about 3 minutes, so a first-time user can approve in the wallet)"
           }
         },
         "maxQuantityAtoms": {

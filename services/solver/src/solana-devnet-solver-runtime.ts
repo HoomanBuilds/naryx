@@ -25,9 +25,8 @@ import { explicitBoolean, tcpPort } from './solver-process-config.js';
 
 export const SOLANA_DEVNET_SOLVER_ENABLED_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_ENABLED';
 export const SOLANA_DEVNET_SOLVER_WRITES_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED';
-/** How often standing levels are checked, and how far ahead (about 40 s) a level must stay usable. */
+/** How often standing levels are checked; how far ahead one must stay usable follows the quote TTL. */
 const STANDING_LEVEL_REFRESH_MS = 10_000;
-const STANDING_LEVEL_LEAD_SLOTS = 100n;
 
 export type LoadedSolanaDevnetSolverRuntime = Readonly<{
   /** Devnet orders get a FIRM_ONCHAIN quote; every other order goes to the existing coordinator. */
@@ -87,7 +86,7 @@ export async function loadSolanaDevnetSolverRuntime(
   let stopped = false;
   const refreshLevels = async () => {
     try {
-      await refreshSolanaDevnetStandingLevels(shared, STANDING_LEVEL_LEAD_SLOTS);
+      await refreshSolanaDevnetStandingLevels(shared);
     } catch (error) {
       process.stderr.write(`Solana Devnet standing levels not refreshed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
     } finally {
