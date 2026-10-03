@@ -1642,8 +1642,12 @@ export function TradingTerminal({
         if (active) {
           setSnapshot((previous) => unavailableTerminalSnapshot(previous, selectedDomain));
           setSnapshotDomain(selectedDomain);
-          // A size typed for another lane is in that lane's base asset, so it is not carried over.
-          if (sizedLane.current !== selectedDomain) setSize("");
+          // A size typed for another lane is in that lane's base asset, so it is not carried over, and
+          // the next lane that loads takes its own default again.
+          if (sizedLane.current !== selectedDomain) {
+            sizedLane.current = null;
+            setSize("");
+          }
           setProviderConnection(cause instanceof TerminalMarketUnavailableError ? "connected" : "disconnected");
         }
       }
