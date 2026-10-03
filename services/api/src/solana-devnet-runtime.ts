@@ -5,6 +5,7 @@ import {
   ConnectionSolanaReadOnlyRpc,
   SOLANA_DEVNET_GENESIS_HASH,
   SolanaUnsignedTransactionMaterializer,
+  createBoundedSolanaConnection,
   solanaIdlContentHash,
   verifySolanaDevnetDeploymentIdentity,
   type AnyFirmCashCarryBinding,
@@ -15,7 +16,7 @@ import {
   type SolanaReadOnlyRpc,
 } from "@naryx/adapter-solana";
 import { bytesEqual, fromProtocolJson, parseProtocolJson, type DomainRef, type PackageAdmissionInput } from "@naryx/protocol-types";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
@@ -236,7 +237,8 @@ export async function createSolanaDevnetRuntime(options: SolanaDevnetRuntimeOpti
   if (await observationRpc.getGenesisHash() !== SOLANA_DEVNET_GENESIS_HASH) {
     throw new Error("Solana observation RPC is not Devnet.");
   }
-  const currentSlot = options.currentSlot ?? (() => new Connection(options.rpcUrl, "finalized").getSlot("finalized").then(BigInt));
+  const currentSlot = options.currentSlot
+    ?? (() => createBoundedSolanaConnection(options.rpcUrl, "finalized").getSlot("finalized").then(BigInt));
   const contextProvider = createSolanaDevnetContextProvider({
     intents: options.intents,
     orders: options.orders,
@@ -277,6 +279,9 @@ export class HttpSolanaDevnetBindingSource implements SolanaDevnetLiveBindingSou
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ attemptId: input.attempt.attemptId }),
+      // Binding funds the reservation and locks the quote: two Devnet writes that each wait for
+      // finality. Bounded so a stalled solver fails the request instead of holding it open.
+      signal: AbortSignal.timeout(90_000),
     });
     if (!response.ok) throw new Error(`Solana Devnet binding source failed with status ${response.status}.`);
     const payload = await response.json() as unknown;

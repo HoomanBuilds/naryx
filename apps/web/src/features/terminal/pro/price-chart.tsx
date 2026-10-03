@@ -11,8 +11,17 @@ import type {
   SeriesType,
   Time,
   UTCTimestamp,
+  WhitespaceData,
 } from "lightweight-charts";
-import { CHART_INTERVALS, type Candle, type ChartInterval, type ChartSeriesKey, type MarketFeed } from "../market-feed";
+import {
+  CHART_INTERVAL_SETTING,
+  CHART_INTERVALS,
+  CHART_SERIES_SETTING,
+  type Candle,
+  type ChartInterval,
+  type ChartSeriesKey,
+  type MarketFeed,
+} from "../market-feed";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
 import { CHART_COLORS } from "./chart-colors";
 import styles from "./pro.module.css";
@@ -98,19 +107,45 @@ interface ChartSeries {
   byTime: Map<number, Candle>;
 }
 
-function applyCandles(target: ChartSeries, candles: readonly Candle[]): void {
-  const time = (candle: Candle) => candle.time as UTCTimestamp;
+/** Whitespace slots filled into gaps, beyond which each further gap gets a single slot. */
+const MAX_GAP_SLOTS = 2_000;
+
+/**
+ * The candles with an empty slot for every missing bucket between them, so a gap in the data
+ * reads as a gap on the time axis instead of adjacent bars, and a line or area breaks across it.
+ */
+function withGaps(candles: readonly Candle[], seconds: number): (Candle | WhitespaceData<Time>)[] {
+  const slots: (Candle | WhitespaceData<Time>)[] = [];
+  let budget = MAX_GAP_SLOTS;
+  let previous: number | undefined;
+  for (const candle of candles) {
+    if (previous !== undefined && candle.time - previous > seconds) {
+      slots.push({ time: (previous + seconds) as UTCTimestamp });
+      for (let time = previous + 2 * seconds; time < candle.time && budget > 0; time += seconds, budget -= 1) {
+        slots.push({ time: time as UTCTimestamp });
+      }
+    }
+    slots.push(candle);
+    previous = candle.time;
+  }
+  return slots;
+}
+
+function applyCandles(target: ChartSeries, candles: readonly Candle[], seconds: number): void {
+  const slots = withGaps(candles, seconds);
+  const time = (slot: Candle | WhitespaceData<Time>) => slot.time as UTCTimestamp;
+  const isCandle = (slot: Candle | WhitespaceData<Time>): slot is Candle => "close" in slot;
   if (target.ohlc) {
-    target.price.setData(candles.map((candle): CandlestickData<Time> => ({ time: time(candle), open: candle.open, high: candle.high, low: candle.low, close: candle.close })));
+    target.price.setData(slots.map((slot): CandlestickData<Time> | WhitespaceData<Time> => isCandle(slot)
+      ? { time: time(slot), open: slot.open, high: slot.high, low: slot.low, close: slot.close }
+      : { time: time(slot) }));
   } else {
-    target.price.setData(candles.map((candle) => ({ time: time(candle), value: candle.close })));
+    target.price.setData(slots.map((slot) => isCandle(slot) ? { time: time(slot), value: slot.close } : { time: time(slot) }));
   }
   target.volume?.setData(
-    candles.map((candle): HistogramData<Time> => ({
-      time: time(candle),
-      value: candle.volume,
-      color: candle.close >= candle.open ? CHART_COLORS.upVolume : CHART_COLORS.downVolume,
-    })),
+    slots.map((slot): HistogramData<Time> | WhitespaceData<Time> => isCandle(slot)
+      ? { time: time(slot), value: slot.volume, color: slot.close >= slot.open ? CHART_COLORS.upVolume : CHART_COLORS.downVolume }
+      : { time: time(slot) }),
   );
   for (const average of target.averages) average.series.setData(movingAverage(candles, average.length));
   target.byTime = new Map(candles.map((candle) => [candle.time, candle]));
@@ -131,9 +166,9 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ChartSeries | null>(null);
-  const [interval, setChartInterval] = usePersistedSetting<ChartInterval>("chart.interval", "15m", CHART_INTERVALS.map((entry) => entry.id));
+  const [interval, setChartInterval] = usePersistedSetting<ChartInterval>(CHART_INTERVAL_SETTING.key, CHART_INTERVAL_SETTING.fallback, CHART_INTERVALS.map((entry) => entry.id));
   const [style, setStyle] = usePersistedSetting<ChartStyle>("chart.style", "candles", CHART_STYLES.map((entry) => entry.id));
-  const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>("chart.series", "basis", SERIES.map((entry) => entry.id));
+  const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>(CHART_SERIES_SETTING.key, CHART_SERIES_SETTING.fallback, SERIES.map((entry) => entry.id));
   const [showVolume, setShowVolume] = usePersistedFlag("chart.volume", true);
   const [showMa20, setShowMa20] = usePersistedFlag("chart.ma20", true);
   const [showMa50, setShowMa50] = usePersistedFlag("chart.ma50", false);
@@ -143,6 +178,8 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   const candles = useMemo(() => feed.candles(seriesKey, interval), [feed, seriesKey, interval]);
   const candlesRef = useRef<readonly Candle[]>(candles);
   const meta = feed.seriesMeta(seriesKey);
+  const hasVolume = meta.volume !== false;
+  const seconds = CHART_INTERVALS.find((entry) => entry.id === interval)?.seconds ?? 60;
   const lastLegend = useMemo<Legend | null>(() => {
     const last = candles[candles.length - 1];
     if (last === undefined) return null;
@@ -174,7 +211,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
           attributionLogo: true,
         },
         grid: { vertLines: { color: CHART_COLORS.grid }, horzLines: { color: CHART_COLORS.grid } },
-        rightPriceScale: { borderColor: CHART_COLORS.border, scaleMargins: { top: 0.1, bottom: showVolume ? 0.22 : 0.08 } },
+        rightPriceScale: { borderColor: CHART_COLORS.border, scaleMargins: { top: 0.1, bottom: showVolume && hasVolume ? 0.22 : 0.08 } },
         timeScale: { borderColor: CHART_COLORS.border, timeVisible: interval !== "1d", secondsVisible: false, rightOffset: 6, barSpacing: 6 },
         crosshair: {
           mode: CrosshairMode.Normal,
@@ -209,7 +246,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         });
       }
       let volume: ISeriesApi<"Histogram"> | undefined;
-      if (showVolume) {
+      if (showVolume && hasVolume) {
         volume = chart.addSeries(HistogramSeries, { priceScaleId: "volume", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
         volume.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
       }
@@ -239,7 +276,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
       });
       price.applyOptions({ priceLineColor: CHART_COLORS.priceLine, priceLineStyle: LineStyle.Dotted });
       seriesRef.current = { chart, price, ohlc: style === "candles" || style === "bars", volume, averages, byTime: new Map() };
-      applyCandles(seriesRef.current, candlesRef.current);
+      applyCandles(seriesRef.current, candlesRef.current, seconds);
       chart.timeScale().scrollToRealTime();
       setReady(true);
     });
@@ -249,13 +286,13 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
       chartRef.current = null;
       seriesRef.current = null;
     };
-  }, [style, showVolume, showMa20, showMa50, feed.label, interval, meta.precision]);
+  }, [style, showVolume, hasVolume, showMa20, showMa50, feed.label, interval, seconds, meta.precision]);
 
   // New candles update the series in place, so zoom, scroll, and the crosshair survive live data.
   useEffect(() => {
     const target = seriesRef.current;
-    if (target !== null) applyCandles(target, candles);
-  }, [candles]);
+    if (target !== null) applyCandles(target, candles, seconds);
+  }, [candles, seconds]);
 
   const shown = legend ?? lastLegend;
   const tone = shown === null ? undefined : shown.change >= 0 ? styles.up : styles.down;
@@ -311,6 +348,9 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
       <div className={styles.chartBody}>
         <div className={styles.chartLegend} aria-live="off">
           <span className={styles.legendTitle}>{meta.title} <span>{meta.unit}</span> <span>{intervalLabel}</span></span>
+          {meta.label === undefined || meta.label === feed.label ? null : (
+            <span className={meta.label === "FIXTURE" ? styles.labelFixture : styles.labelObserved} title={meta.note}>{meta.label}</span>
+          )}
           {shown === null ? null : (
             <span className={styles.legendValues}>
               <span>O<b className={tone}>{formatValue(shown.candle.open, meta.precision)}</b></span>
@@ -322,7 +362,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
               </b>
             </span>
           )}
-          {showVolume && shown !== null ? <span className={styles.legendValues}><span>Vol<b>{formatVolume(shown.candle.volume)}</b></span></span> : null}
+          {showVolume && hasVolume && shown !== null ? <span className={styles.legendValues}><span>Vol<b>{formatVolume(shown.candle.volume)}</b></span></span> : null}
           {showMa20 || showMa50 ? (
             <span className={styles.legendValues}>
               {showMa20 ? <span className={styles.legendMa20}>MA 20</span> : null}
@@ -333,12 +373,8 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         <div ref={containerRef} className={styles.chartCanvas} />
         {ready && candles.length === 0 ? (
           <div className={styles.chartEmpty} role="status">
-            <strong>{seriesKey === "basis" ? "No trades in this window" : "Leg prices are not published"}</strong>
-            <span>
-              {seriesKey === "basis"
-                ? feed.label === "FIXTURE" ? "The fixture has no candles for this interval." : "Candles appear as soon as the package book records a trade."
-                : "The public market API publishes the package price only."}
-            </span>
+            <strong>{meta.empty?.title ?? "No candles in this window"}</strong>
+            {meta.empty === undefined ? null : <span>{meta.empty.detail}</span>}
           </div>
         ) : null}
         {ready ? null : (

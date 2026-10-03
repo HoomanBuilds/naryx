@@ -26,6 +26,8 @@
     "gmxOrderVault": { "address": "0x1b8AC606de71686fd2a1AEDEcb6E0EFba28909a2" },
     "gmxOrderHandler": { "address": "0xC881c2391611829d7bc81c12a285cB0201F08f8c" },
     "gmxRoleStore": { "address": "0x433E3C47885b929aEcE4149E3c835E565a20D95c" },
+    "gmxReader": { "address": "0x4750376b9378294138Cf7B7D69a2d243f4940f71", "expectCodeHash": "0xb0843df7e769e7c8016867899eb1362fce76a9de556f794e7bcae5ef5c5aa2ef" },
+    "uniswapQuoter": { "address": "0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0B", "expectCodeHash": "0xb906edfeaf29492e10fc571af73ce1baa5ae85accc925f8c5037808d6202ba0e" },
     "priceFeed": { "address": { "$operator": "reviewed Arbitrum Sepolia ETH/USD reference feed address" } }
   },
   "domainManifest": {
@@ -60,6 +62,7 @@
     "baseAssetRef": { "assetId": { "$def": "res.baseAsset.subjectId" }, "assetManifestHash": { "$def": "res.baseAsset.manifestHash" }, "decimals": 18 },
     "quoteAssetRef": { "assetId": { "$def": "res.quoteAsset.subjectId" }, "assetManifestHash": { "$def": "res.quoteAsset.manifestHash" }, "decimals": { "$def": "quoteDecimals" } },
     "spotAdapterRef": { "adapterId": { "$def": "res.spotAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.spotAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.spotAdapter.manifestHash" } },
+    "maxVenueFeeAtoms": { "$bigint": { "$operator": "max venue fees per package (GMX position fee at the maximum order size, with headroom), quote atoms; the order cap and the fee policy pass-through limit" } },
     "perpetualAdapterRef": { "adapterId": { "$def": "res.perpetualAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.perpetualAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.perpetualAdapter.manifestHash" } },
     "activation": {
       "activationUnit": "EVM_UNIX_SECONDS",
@@ -107,11 +110,22 @@
       "environment": "testnet",
       "domain": { "$def": "domain" },
       "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "scopeQuantityPolicyClass": "EXACT_NET",
+      "scopeSettlementClass": "ASYNC_BONDED_SOLVER",
+      "scopeAccountModeClass": "user-owned-v1",
       "feePolicyVersion": 1,
       "activationUnit": "EVM_UNIX_SECONDS",
       "activationValue": { "$def": "activation.activationValue" },
       "serviceFeeRules": [],
-      "passThroughCostRules": [],
+      "passThroughCostRules": [{
+        "costCategory": "VENUE",
+        "costAssetId": { "$def": "res.quoteAsset.subjectId" },
+        "costAssetManifestHash": { "$def": "res.quoteAsset.manifestHash" },
+        "costAssetDecimals": { "$def": "quoteDecimals" },
+        "maxAtoms": { "$def": "maxVenueFeeAtoms" },
+        "roundingDirection": "TOWARD_ZERO",
+        "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+      }],
       "refundPolicyVersion": 1,
       "expiryUnit": "EVM_UNIX_SECONDS",
       "expiryValue": { "$bigint": { "$operator": "fee policy expiry, unix seconds" } }
@@ -130,6 +144,7 @@
         { "$def": "activation" }
       ]
     },
+    "executionClassManifestHash": { "$bytes": { "$operator": "executionClassManifestHash deploy parameter (the coordinator's executionClassManifestHash())" } },
     "seriesBinding": {
       "schemaVersion": 1,
       "bindingVersion": { "$number": { "$operator": "series binding version solvers put in reserved terms" } },
@@ -148,7 +163,6 @@
       "spotBaseAtomsPerPackageUnit": { "$bigint": { "$operator": "spot base atoms per package unit" } },
       "perpQuantityAtomsPerPackageUnit": { "$bigint": { "$operator": "perp quantity atoms per package unit" } }
     },
-    "executionClassManifestHash": { "$bytes": { "$operator": "executionClassManifestHash deploy parameter (the coordinator's executionClassManifestHash())" } },
     "seriesIdentityKey": { "$protocol": "cashCarrySeriesIdentityKey", "args": [{ "$def": "seriesBinding" }] },
     "seriesBindingHash": { "$protocol": "cashCarrySeriesBindingV1Hash", "args": [{ "$def": "seriesBinding" }] },
     "contextId": { "$operator": "order context id; the web terminal default is arbitrum-sepolia:eth-usdc:gmx" },
@@ -169,6 +183,7 @@
             "templateManifest": { "$def": "templateManifest" },
             "templateRegistryRecord": { "$def": "templateRegistryRecord" },
             "feePolicyManifest": { "$def": "feePolicyManifest" },
+            "accountModeClass": "user-owned-v1",
             "activeRegistryRecords": [
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.baseAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.baseAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.baseAsset.manifestHash" } }] },
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.quoteAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.quoteAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.quoteAsset.manifestHash" } }] },
@@ -198,7 +213,8 @@
             "router": { "$contract": "gmxRouter" },
             "orderVault": { "$contract": "gmxOrderVault" },
             "orderHandler": { "$contract": "gmxOrderHandler" },
-            "roleStore": { "$contract": "gmxRoleStore" }
+            "roleStore": { "$contract": "gmxRoleStore" },
+            "reader": { "$contract": "gmxReader" }
           },
           "executionClassManifestHash": { "$def": "executionClassManifestHash" },
           "route": {
@@ -244,19 +260,20 @@
         "perpetualAdapter": { "$def": "perpetualAdapterRef" },
         "priceFeed": { "$contract": "priceFeed" },
         "priceFeedDecimals": { "$def": "priceFeedDecimals" },
-        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds" } },
-        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 250" } },
-        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds" } },
+        "spotQuoter": { "$contract": "uniswapQuoter" },
+        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds (recommended 600: the Arbitrum Sepolia ETH/USD feed updates about every 120 s and most gaps exceed 60 s; equal to the solver maxPriceAgeSeconds)" } },
+        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 250 (recommended 5000)" } },
+        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds (recommended 900: account creation, the reservation signature, and the funding transaction)" } },
         "maxEntrySpread": {
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
-          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms" } },
+          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms (the fraction must be in lowest terms: 50 quote per WETH is 1 / 20000000000)" } },
           "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
           "roundingDirection": "CEIL"
         },
-        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms" } },
-        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps" } },
-        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, quote atoms" } } }],
+        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, base atoms (recommended at most 1% of the WETH seeded in the spot pool: every entry buys WETH from that pool, so its depth bounds all users' open positions together)" } },
+        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps (recommended 100; bounds and refusals already include each order's price impact from the pinned quoter, so this covers pool movement between order creation and execution)" } },
+        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$def": "maxVenueFeeAtoms" } }],
         "maxMarginAddedAtoms": { "$bigint": { "$operator": "max margin added, quote atoms" } },
         "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee, quote atoms" } },
         "maxSolverFeeAtoms": { "$bigint": { "$operator": "max solver fee, quote atoms" } },
@@ -279,11 +296,11 @@
           "solverCapabilityManifestHash": { "$bytes": { "$operator": "solver capability manifest hash" } },
           "feePolicyVersion": 1,
           "feePolicyManifestHash": { "$protocol": "feePolicyManifestHash", "args": [{ "$def": "feePolicyManifest" }] },
-          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds" } },
+          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds (recommended 300: the owner signs and funds before the solver submits to GMX)" } },
           "venueWindowSeconds": { "$bigint": { "$operator": "GMX venue window, seconds" } },
           "recoveryWindowSeconds": { "$bigint": { "$operator": "recovery window, seconds" } },
           "marginBps": { "$number": { "$operator": "margin bps of perp notional" } },
-          "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
+          "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps (applied to GMX's own execution price for the exact size, price impact included; covers oracle and open interest movement until GMX executes)" } },
           "rollbackSlippageBps": { "$number": { "$operator": "rollback slippage, bps" } },
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
@@ -291,22 +308,24 @@
           "accountImplementation": { "$release": "contracts.accountImplementation.addressLower" },
           "priceFeed": { "$contract": "priceFeed" },
           "priceFeedDecimals": { "$def": "priceFeedDecimals" },
-          "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age, seconds" } },
+          "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age, seconds (recommended 600; the Arbitrum Sepolia ETH/USD feed updated every 30 to 135 s when measured on 2026-10-02)" } },
           "gmxDataStore": { "$contract": "gmxDataStore" },
+          "gmxReader": { "$contract": "gmxReader" },
           "gmxMarket": { "$release": "contracts.market.addressLower" },
+          "spotQuoter": { "$contract": "uniswapQuoter" },
           "spot": {
             "adapter": { "$def": "spotAdapterRef" },
             "venue": { "$def": "res.spotVenue" },
             "market": { "$def": "res.spotMarket" },
-            "action": { "$operator": "reviewed spot ActionCommitmentInput (sequence 0)" }
+            "action": { "$operator": "reviewed spot ActionCommitmentInput (sequence 0, legIndex 0, the spot adapter, targetBindingId naming the account binding that carries the spot adapter)" }
           },
           "perpetual": {
             "adapter": { "$def": "perpetualAdapterRef" },
             "venue": { "$def": "res.perpetualVenue" },
             "market": { "$def": "res.perpetualMarket" },
-            "action": { "$operator": "reviewed perpetual ActionCommitmentInput (sequence 1)" }
+            "action": { "$operator": "reviewed perpetual ActionCommitmentInput (sequence 1, legIndex 1, the GMX adapter, targetBindingId naming the account binding that carries the GMX adapter)" }
           },
-          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]" },
+          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]: package admission requires each action's target binding to carry that leg's adapter, so bind the spot port with the spot adapter and the GMX adapter contract with the GMX adapter, plus the authority binding the actions name" },
           "preconditions": { "$operator": "reviewed route preconditions" },
           "postconditions": { "$operator": "reviewed route postconditions" },
           "evidenceRequirements": { "$operator": "reviewed EvidenceRequirementsInput" },
@@ -334,7 +353,11 @@
         "spotPort": { "$contract": "spotPort" },
         "spotBaseToken": { "$contract": "spotBaseToken" },
         "gmxDataStore": { "$contract": "gmxDataStore" },
+        "gmxReader": { "$contract": "gmxReader" },
         "gmxMarket": { "$release": "contracts.market.addressLower" },
+        "priceFeed": { "$contract": "priceFeed" },
+        "priceFeedDecimals": { "$def": "priceFeedDecimals" },
+        "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age when sizing the GMX short, seconds (recommended 600, equal to the quote maxPriceAgeSeconds)" } },
         "quoteAssetDecimals": { "$def": "quoteDecimals" },
         "executionClassManifestHash": { "$0x": { "$def": "executionClassManifestHash" } },
         "seriesIdentityKey": { "$0x": { "$def": "seriesIdentityKey" } },
@@ -349,8 +372,8 @@
         "callbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit" } },
         "executionFeeBufferBps": { "$number": { "$operator": "GMX execution fee buffer, bps" } },
         "maxExecutionFeeWei": { "$bigint": { "$operator": "max GMX execution fee, wei" } },
-        "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms" } },
-        "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms" } },
+        "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms (at least the order context maxMarginAddedAtoms; the collateral is the quoted margin)" } },
+        "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms (at least the order context maximumQuantityAtoms priced at twice the current ETH price, times 1 + maxSlippageBps: each order's spot bound is the pinned quoter's executable cost for its size, which in a thin or drifted pool sits well above the mid, and a smaller cap refuses those orders at reservation review)" } },
         "receiptWaitMs": { "$number": { "$operator": "receipt wait, ms, 1 to 20000" } },
         "exitController": { "$contract": "exitController" },
         "exitCallbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit for a full close, whose callback also sells the spot leg and releases the package" } }
@@ -363,8 +386,6 @@
           "domainId": "eip155:421614",
           "quoteAssetId": { "$def": "res.quoteAsset.subjectId" },
           "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerOwnerPerDay": { "$operator": "per-wallet per-UTC-day principal cap, quote atoms, decimal string (at least per-operation, at most per-day)" },
           "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, quote atoms, decimal string" }
         }]
       }
@@ -392,7 +413,9 @@
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-data-store", "address": { "$release": "contracts.gmxDataStore.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxDataStore.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-exchange-router", "address": { "$release": "contracts.gmxExchangeRouter.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxExchangeRouter.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-order-handler", "address": { "$release": "contracts.gmxOrderHandler.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxOrderHandler.codeHash" } }] },
-          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-price-feed", "address": { "$release": "contracts.priceFeed.addressLower" }, "expectedCodeHash": { "$release": "contracts.priceFeed.codeHash" } }] }
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-reader", "address": { "$release": "contracts.gmxReader.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxReader.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-price-feed", "address": { "$release": "contracts.priceFeed.addressLower" }, "expectedCodeHash": { "$release": "contracts.priceFeed.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-uniswap-quoter", "address": { "$release": "contracts.uniswapQuoter.addressLower" }, "expectedCodeHash": { "$release": "contracts.uniswapQuoter.codeHash" } }] }
         ]
       }
     },
@@ -405,7 +428,8 @@
         "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED": "true",
         "NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT": { "$out": "api/arbitrum-sepolia-order-context.json" },
         "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CLIENT_ENABLED": "true",
-        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN": "http://127.0.0.1:8793"
+        "NARYX_ARBITRUM_SEPOLIA_EXECUTOR_ORIGIN": "http://127.0.0.1:8793",
+        "NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB": { "$data": "api/arbitrum-sepolia-outcomes.db" }
       }
     },
     "env/solver.env": {

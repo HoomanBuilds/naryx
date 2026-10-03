@@ -105,7 +105,7 @@ export function parsePreviewRequest(value: unknown): PreviewRequest {
   };
 }
 
-function observedDecimal(value: unknown): Decimal | undefined {
+export function observedDecimal(value: unknown): Decimal | undefined {
   if (typeof value !== "string") return undefined;
   const match = OBSERVED_DECIMAL.exec(value);
   if (match === null) return undefined;
@@ -127,7 +127,9 @@ function book(bidText: string, askText: string): [Decimal, Decimal] | undefined 
   const ask = observedDecimal(askText);
   if (bid === undefined || ask === undefined || bid.digits === 0n) return undefined;
   const [low, high] = aligned(bid, ask);
-  return low < high ? [bid, ask] : undefined;
+  // An AMM or oracle leg quotes one marginal price for both sides, with its fee carried separately
+  // as the taker rate, so an equal bid and ask is a valid book; only a crossed one is refused.
+  return low <= high ? [bid, ask] : undefined;
 }
 
 function takerRate(text: string): Decimal | undefined {
@@ -154,7 +156,11 @@ export function resolveTerminalMarket(
   }
   const market = observedMarket(source.descriptor, source.latest(), context.nowMs);
   if (market === undefined) {
-    throw new TerminalMarketUnavailableError(staleCode, "No fresh market observation is available.");
+    const reason = source.unavailableReason?.();
+    throw new TerminalMarketUnavailableError(
+      staleCode,
+      reason === undefined ? "No fresh market observation is available." : `No fresh market observation is available: ${reason}.`,
+    );
   }
   return { descriptor: source.descriptor, market };
 }

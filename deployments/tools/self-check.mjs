@@ -78,6 +78,8 @@ check('refuses repository paths, mainnet identities, and key material', () => {
   assert.throws(() => scanForSecretsAndMainnet({ domainId: 'eip155:8453' }, 'f'), /mainnet/);
   assert.throws(() => scanForSecretsAndMainnet({ k: Array.from({ length: 64 }, (_, i) => i) }, 'f'), /keypair/);
   assert.throws(() => envValues({ NARYX_SOLVER_PRIVATE_KEY: '0x1' }, 'f'), /key material/);
+  assert.throws(() => envValues({ NEXT_PUBLIC_PRIVATE_KEY: '0x1' }, 'f'), /key material/);
+  assert.equal(envValues({ NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL: 'https://api.example' }, 'f').NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL, 'https://api.example');
   assert.throws(() => envValues({ NARYX_BASE_SEPOLIA_SOLVER_KEY_PATH: join(REPO, 'k.json') }, 'f'), /outside the repository/);
   assert.equal(envValues({ NARYX_BASE_SEPOLIA_SOLVER_KEY_PATH: '/secure/k.json' }, 'f').NARYX_BASE_SEPOLIA_SOLVER_KEY_PATH, '/secure/k.json');
 });
@@ -112,6 +114,20 @@ check('every template uses known directives, declared definitions, and release v
       }
     };
     walk(template, file);
+    // The generator resolves definitions in order, so a definition can only name one declared before it.
+    const declared = new Set();
+    const before = (node, path) => {
+      if (Array.isArray(node)) return node.forEach((entry, index) => before(entry, `${path}[${index}]`));
+      if (node === null || typeof node !== 'object') return;
+      for (const [key, value] of Object.entries(node)) {
+        if (key === '$def') assert.ok(declared.has(value.split('.')[0]), `${file}: ${path} names definition ${value} before it is declared`);
+        before(value, `${path}.${key}`);
+      }
+    };
+    for (const [name, value] of Object.entries(template.definitions ?? {})) {
+      before(value, `definitions.${name}`);
+      declared.add(name);
+    }
   }
 });
 

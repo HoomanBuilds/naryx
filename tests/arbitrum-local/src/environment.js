@@ -12,6 +12,7 @@ import {
   keccak256,
   stringToHex,
   toHex,
+  zeroAddress,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
@@ -46,6 +47,7 @@ export const arbitrumLocalArtifacts = Object.freeze({
   config: artifact("ProtocolConfig.sol/ProtocolConfig.json"),
   coordinator: artifact("AsyncBondedPackageCoordinator.sol/AsyncBondedPackageCoordinator.json"),
   account: artifact("GmxV2IsolatedAccount.sol/GmxV2IsolatedAccount.json"),
+  accountFactory: artifact("GmxV2IsolatedAccountFactory.sol/GmxV2IsolatedAccountFactory.json"),
   adapter: artifact("GmxV2ArbitrumAdapter.sol/GmxV2ArbitrumAdapter.json"),
   orderVerifier: artifact("GmxV2OrderVerifier.sol/GmxV2OrderVerifier.json"),
   exitVerifier: artifact("GmxV2ExitOrderVerifier.sol/GmxV2ExitOrderVerifier.json"),
@@ -117,6 +119,10 @@ async function deploymentIdentity(client, addresses) {
   return result;
 }
 
+function sameHex(left, right) {
+  return typeof left === "string" && typeof right === "string" && left.toLowerCase() === right.toLowerCase();
+}
+
 async function fundNative(client, address) {
   await client.request({ method: "anvil_setBalance", params: [address, toHex(10n ** 20n)] });
 }
@@ -130,28 +136,61 @@ export async function validateArbitrumLocalEnvironment(environment) {
   for (const [name, contract] of Object.entries(manifest.contracts)) {
     if (await codeIdentity(client, contract.address) !== contract.codeHash) throw new Error(`${name} code hash mismatch`);
   }
-  const configuredDomain = await client.readContract({
-    address: manifest.contracts.config.address,
-    abi: arbitrumLocalArtifacts.config.abi,
-    functionName: "domain",
+  const { contracts } = manifest;
+  const read = (name, functionName, args = [], abi = arbitrumLocalArtifacts[name].abi) => client.readContract({
+    address: contracts[name].address,
+    abi,
+    functionName,
+    args,
   });
+  const configuredDomain = await read("config", "domain");
   if (configuredDomain[0] !== domainId || Number(configuredDomain[1]) !== 1 || configuredDomain[2] !== domainManifestHash) {
     throw new Error("Arbitrum local domain mismatch");
   }
-  const configuredEntry = await client.readContract({
-    address: manifest.contracts.account.address,
-    abi: arbitrumLocalArtifacts.account.abi,
-    functionName: "entryController",
-  });
-  const configuredExit = await client.readContract({
-    address: manifest.contracts.account.address,
-    abi: arbitrumLocalArtifacts.account.abi,
-    functionName: "exitController",
-  });
-  if (configuredEntry.toLowerCase() !== manifest.contracts.adapter.address.toLowerCase()
-      || configuredExit.toLowerCase() !== manifest.contracts.exitController.address.toLowerCase()) {
-    throw new Error("Arbitrum local isolated account controller mismatch");
+  if (await read("config", "entryPaused")) throw new Error("Arbitrum local entry is paused");
+  const [handler, adapterCodeHash, handlerCodeHash, active] = await read("coordinator", "admissions", [contracts.adapter.address]);
+  if (!active || !sameHex(handler, contracts.adapter.address)
+      || adapterCodeHash !== contracts.adapter.codeHash || handlerCodeHash !== contracts.adapter.codeHash) {
+    throw new Error("Arbitrum local adapter admission mismatch");
   }
+  // The same route and factory binding that ConfigureArbitrumSepoliaAsyncGmx verifies before entry opens.
+  const route = [
+    [await read("coordinator", "bondToken"), contracts.collateral.address],
+    [await read("accountFactory", "market"), contracts.market.address],
+    [await read("accountFactory", "collateralToken"), contracts.collateral.address],
+    [await read("accountFactory", "adapter"), contracts.adapter.address],
+    [await read("accountFactory", "adapterCodeHash"), contracts.adapter.codeHash],
+    [await read("accountFactory", "exitController"), contracts.exitController.address],
+    [await read("accountFactory", "exitControllerCodeHash"), contracts.exitController.codeHash],
+    [await read("accountFactory", "spotPort"), contracts.spotPort.address],
+    [await read("accountFactory", "spotPortCodeHash"), contracts.spotPort.codeHash],
+    [await read("accountFactory", "implementation"), contracts.accountImplementation.address],
+    [await read("accountFactory", "accountCodeHash"), contracts.account.codeHash],
+    [await read("adapter", "factory"), contracts.accountFactory.address],
+    [await read("exitController", "factory"), contracts.accountFactory.address],
+    [await read("exitController", "entryAdapter"), contracts.adapter.address],
+    [await read("spotPort", "verifier"), contracts.accountFactory.address],
+  ];
+  if (!route.every(([observed, expected]) => sameHex(observed, expected))) {
+    throw new Error("Arbitrum local factory route mismatch");
+  }
+  const owner = manifest.identities.trader;
+  const account = [
+    [await read("accountFactory", "accountOf", [owner]), contracts.account.address],
+    [await read("accountFactory", "ownerOf", [contracts.account.address]), owner],
+    [await read("account", "owner"), owner],
+    [await read("account", "factory"), contracts.accountFactory.address],
+    [await read("account", "entryController"), contracts.adapter.address],
+    [await read("account", "exitController"), contracts.exitController.address],
+    [await read("account", "spotPort"), contracts.spotPort.address],
+    [await read("accountImplementation", "owner", [], arbitrumLocalArtifacts.account.abi), zeroAddress],
+  ];
+  if (!account.every(([observed, expected]) => sameHex(observed, expected))
+      || !await read("accountFactory", "isAccount", [contracts.account.address])) {
+    throw new Error("Arbitrum local isolated account binding mismatch");
+  }
+  await read("accountImplementation", "assertDeployment", [], arbitrumLocalArtifacts.account.abi);
+  await read("spotPort", "assertDeployment");
   return true;
 }
 
@@ -209,37 +248,30 @@ export async function withLocalArbitrumEnvironment(callback) {
     const gmxDeployment = await deploymentIdentity(client, {
       dataStore, eventEmitter, exchangeRouter, router, orderVault, orderHandler, roleStore,
     });
-    const isolatedAccount = await deploy(wallets.deployer, client, a.account, [
-      accounts.trader.address, accounts.solver.address, market, collateral, gmxDeployment,
-    ]);
+    // The shared route is deployed and bound in the order DeployArbitrumSepoliaAsyncGmx uses; no per-user
+    // account exists until a wallet asks the factory for its own.
+    const accountFactory = await deploy(wallets.deployer, client, a.accountFactory, [market, collateral, gmxDeployment]);
     const adapter = await deploy(wallets.deployer, client, a.adapter, [
       coordinator,
       await codeIdentity(client, coordinator),
-      accounts.solver.address,
-      accounts.trader.address,
       market,
       await codeIdentity(client, market),
       collateral,
       await codeIdentity(client, collateral),
-      isolatedAccount,
+      accountFactory,
+      await codeIdentity(client, accountFactory),
       entryVerifier,
       await codeIdentity(client, entryVerifier),
       gmxDeployment,
     ]);
-    await write(wallets.trader, client, isolatedAccount, a.account.abi, "configureEntryController", [
-      adapter, await codeIdentity(client, adapter),
-    ]);
     const exitController = await deploy(wallets.deployer, client, a.exitController, [
       adapter,
       await codeIdentity(client, adapter),
-      isolatedAccount,
-      await codeIdentity(client, isolatedAccount),
+      accountFactory,
+      await codeIdentity(client, accountFactory),
       exitVerifier,
       await codeIdentity(client, exitVerifier),
       gmxDeployment,
-    ]);
-    await write(wallets.trader, client, isolatedAccount, a.account.abi, "configureExitController", [
-      exitController, await codeIdentity(client, exitController),
     ]);
     const spotFactory = await deploy(wallets.deployer, client, a.spotFactory);
     const spotPool = await deploy(wallets.deployer, client, a.spotPool, [spotFactory, base, collateral, 3_000]);
@@ -258,29 +290,61 @@ export async function withLocalArbitrumEnvironment(callback) {
       baseTokenCodeHash: await codeIdentity(client, base),
       quoteTokenCodeHash: await codeIdentity(client, collateral),
     };
-    const spotPort = await deploy(wallets.deployer, client, a.spotPort, [isolatedAccount, spotPortDeployment]);
-    await write(wallets.trader, client, isolatedAccount, a.account.abi, "configureSpotPort", [
-      spotPort, await codeIdentity(client, spotPort),
+    const spotPort = await deploy(wallets.deployer, client, a.spotPort, [accountFactory, spotPortDeployment]);
+    const accountImplementation = await deploy(wallets.deployer, client, a.account, [{
+      factory: accountFactory,
+      market,
+      collateralToken: collateral,
+      deployment: gmxDeployment,
+      entryController: adapter,
+      entryControllerCodeHash: await codeIdentity(client, adapter),
+      exitController,
+      exitControllerCodeHash: await codeIdentity(client, exitController),
+      spotPort,
+      spotPortCodeHash: await codeIdentity(client, spotPort),
+    }]);
+    await write(wallets.deployer, client, accountFactory, a.accountFactory.abi, "configure", [
+      adapter,
+      await codeIdentity(client, adapter),
+      exitController,
+      await codeIdentity(client, exitController),
+      spotPort,
+      await codeIdentity(client, spotPort),
+      accountImplementation,
     ]);
     await write(wallets.proposer, client, coordinator, a.coordinator.abi, "proposeAdmission", [
       adapter, adapter, await codeIdentity(client, adapter), await codeIdentity(client, adapter),
     ]);
-    await write(wallets.proposer, client, config, a.config.abi, "scheduleUnpause");
     await client.request({ method: "evm_increaseTime", params: [Number(delaySeconds + 1n)] });
     await client.request({ method: "evm_mine", params: [] });
     await write(wallets.governanceExecutor, client, coordinator, a.coordinator.abi, "activateAdmission", [adapter]);
+    await write(wallets.proposer, client, config, a.config.abi, "scheduleUnpause");
+    await client.request({ method: "evm_increaseTime", params: [Number(delaySeconds + 1n)] });
+    await client.request({ method: "evm_mine", params: [] });
     await write(wallets.governanceExecutor, client, config, a.config.abi, "activateUnpause");
+
+    // The trader's own wallet creates its deterministic factory account, funds its entries, and receives
+    // every refund and exit proceed; the solver only posts the bond.
+    const predictedAccount = await client.readContract({
+      address: accountFactory,
+      abi: a.accountFactory.abi,
+      functionName: "accountOf",
+      args: [accounts.trader.address],
+    });
+    if (await client.getCode({ address: predictedAccount }) !== undefined) throw new Error("Trader account exists before creation");
+    await write(wallets.trader, client, accountFactory, a.accountFactory.abi, "create", [accounts.trader.address]);
     const seed = 10n ** 24n;
     await write(wallets.deployer, client, base, a.token.abi, "mint", [spotPool, seed]);
     await write(wallets.deployer, client, collateral, a.token.abi, "mint", [spotPool, seed]);
+    await write(wallets.deployer, client, collateral, a.token.abi, "mint", [accounts.trader.address, seed]);
     await write(wallets.deployer, client, collateral, a.token.abi, "mint", [accounts.solver.address, seed]);
-    await write(wallets.solver, client, collateral, a.token.abi, "approve", [adapter, seed]);
+    await write(wallets.trader, client, collateral, a.token.abi, "approve", [adapter, seed]);
     await write(wallets.solver, client, collateral, a.token.abi, "approve", [coordinator, seed]);
 
     const contractAddresses = {
       config, coordinator, collateral, base, dataStore, roleStore, router, orderHandler, eventEmitter,
-      orderVault, market, exchangeRouter, entryVerifier, exitVerifier, account: isolatedAccount,
-      adapter, exitController, spotFactory, spotPool, spotPort,
+      orderVault, market, exchangeRouter, entryVerifier, exitVerifier, accountFactory, accountImplementation,
+      account: predictedAccount, adapter, exitController, spotFactory, spotPool, spotPort,
     };
     const contracts = Object.fromEntries(await Promise.all(Object.entries(contractAddresses).map(async ([name, address]) => [
       name, { address, codeHash: await codeIdentity(client, address) },
@@ -297,6 +361,7 @@ export async function withLocalArbitrumEnvironment(callback) {
       identities: Object.fromEntries(Object.entries(accounts).map(([name, account]) => [name, account.address])),
       limitations: [
         "GMX dependencies are deterministic local conformance contracts, not a public GMX deployment.",
+        "The spot factory and pool are deterministic local conformance contracts, not a public Uniswap V3 deployment.",
         "Local assets have no value and cannot leave this private Anvil chain.",
       ],
     });

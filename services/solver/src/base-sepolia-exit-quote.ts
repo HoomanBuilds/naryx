@@ -32,6 +32,8 @@ import {
 import type { Abi, Address } from 'viem';
 import {
   BASE_SEPOLIA_DOMAIN_ID,
+  baseSepoliaFeesByAsset,
+  baseSepoliaSpotQuoteTarget,
   readBaseSepoliaAccountOf,
   reducedPrice,
   requireBaseSepoliaChain,
@@ -49,6 +51,7 @@ import {
   type InternalAtomicQuoteStore,
 } from './internal-atomic-quote-server.js';
 import type { Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
+import { quoteUniswapV3Sell } from './uniswap-v3-quoter.js';
 
 const BPS = 10_000n;
 const FEE_SCALE = 1_000_000n;
@@ -56,7 +59,10 @@ const Q192 = 1n << 192n;
 const HASH_HEX = /^[0-9a-f]{64}$/;
 
 export type BaseSepoliaExitQuoteMath = Readonly<{
-  /** Exact-input sale of the package base at the pool mid less the pool fee, rounded down. */
+  /**
+   * Exact-input sale of the package base: the lower of the pool mid less the pool fee, rounded down,
+   * and the quoter's proceeds for exactly that sale (price impact included).
+   */
   spotProceedsAtoms: bigint;
   spotFeeAtoms: bigint;
   /** The market's own buy-back notional, rounded up to quote atoms. */
@@ -87,6 +93,8 @@ export function baseSepoliaExitQuoteMath(input: Readonly<{
   sqrtPriceX96: bigint;
   baseIsToken0: boolean;
   poolFee: bigint;
+  /** The pinned quoter's exact-input proceeds for selling exactly `quantityAtoms`. */
+  spotQuoteOutAtoms: bigint;
   position: TestPerpPositionState;
   previewCloseNotionalWad: bigint;
   previewCloseFeeWad: bigint;
@@ -100,7 +108,8 @@ export function baseSepoliaExitQuoteMath(input: Readonly<{
   const squared = input.sqrtPriceX96 * input.sqrtPriceX96;
   const [midNumerator, midDenominator] = input.baseIsToken0 ? [squared, Q192] : [Q192, squared];
   const spotMidAtoms = (quantityAtoms * midNumerator) / midDenominator;
-  const spotProceedsAtoms = (quantityAtoms * midNumerator * (FEE_SCALE - input.poolFee)) / (midDenominator * FEE_SCALE);
+  const midProceedsAtoms = (quantityAtoms * midNumerator * (FEE_SCALE - input.poolFee)) / (midDenominator * FEE_SCALE);
+  const spotProceedsAtoms = input.spotQuoteOutAtoms < midProceedsAtoms ? input.spotQuoteOutAtoms : midProceedsAtoms;
   if (spotProceedsAtoms <= 0n) fail('spot proceeds round to zero');
   const close = testPerpCloseSettlement({
     position,
@@ -111,7 +120,7 @@ export function baseSepoliaExitQuoteMath(input: Readonly<{
   });
   return Object.freeze({
     spotProceedsAtoms,
-    spotFeeAtoms: spotMidAtoms - spotProceedsAtoms,
+    spotFeeAtoms: spotMidAtoms - midProceedsAtoms,
     closeNotionalAtoms: (input.previewCloseNotionalWad + collateralScale - 1n) / collateralScale,
     closeFeeAtoms: close.chargedWad / collateralScale,
     payoutAtoms: close.payoutWad / collateralScale,
@@ -189,9 +198,10 @@ async function buildExitQuote(
     chain.latestBlockTimestamp(),
   ]);
   const feed = requiredEvmAddress(String(oracle), 'market.oracle');
-  const [oracleDecimals, round] = await Promise.all([
+  const [oracleDecimals, round, spotQuoteOutAtoms] = await Promise.all([
     read(feed, CHAINLINK_AGGREGATOR_ABI as Abi, 'decimals'),
     read(feed, CHAINLINK_AGGREGATOR_ABI as Abi, 'latestRoundData'),
+    quoteUniswapV3Sell(chain, baseSepoliaSpotQuoteTarget(input.spotQuoter, deployment, BigInt(Number(poolFee))), quantity),
   ]);
   const position = rawPosition as Record<string, unknown> | undefined;
   const [, closeNotionalWad, closeFeeWad] = (preview ?? []) as readonly unknown[];
@@ -210,6 +220,7 @@ async function buildExitQuote(
     sqrtPriceX96,
     baseIsToken0: equalAddress(requiredEvmAddress(String(token0), 'pool.token0'), requiredEvmAddress(deployment.baseAsset.address, 'baseAsset')),
     poolFee: BigInt(Number(poolFee)),
+    spotQuoteOutAtoms,
     position: {
       balanceWad: position.balance,
       sizeWad: position.size,
@@ -288,7 +299,7 @@ async function buildExitQuote(
   };
   const validatedRoute = routePayload(route, 'baseSepoliaExitRoute');
   const zeroQuote = { asset: quoteAsset, atoms: 0n };
-  const venueFees = [{ asset: quoteAsset, atoms: venueFeeAtoms }];
+  const venueFees = baseSepoliaFeesByAsset(baseAsset, quoteAsset, venueFeeAtoms);
   const quoteNonce = input.nonceSource.next();
   if (quoteNonce <= 0n) fail('quote nonce must be positive');
   const unsigned: SolverQuoteInput = {
@@ -310,7 +321,7 @@ async function buildExitQuote(
     expectedBaseAssetFee: { asset: baseAsset, atoms: 0n },
     expectedMarginDelta: zeroQuote,
     expectedRawFillFeesByAsset: venueFees,
-    expectedBuilderFeesByAsset: [zeroQuote],
+    expectedBuilderFeesByAsset: baseSepoliaFeesByAsset(baseAsset, quoteAsset, 0n),
     expectedNormalizedVenueFeesByAsset: venueFees,
     solverFee: zeroQuote,
     protocolFee: zeroQuote,

@@ -1,9 +1,10 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
+import { useReferenceMarketFeed } from "./reference-market-feed";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
@@ -11,7 +12,7 @@ import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { useArbitrumSepoliaExit } from "./arbitrum-sepolia-exit";
-import { ArbitrumObservationError, TerminalMarketUnavailableError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
+import { ArbitrumObservationError, TerminalMarketUnavailableError, TerminalPreviewRejectedError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
   ArbitrumAccountStatus,
   ArbitrumAsyncObservation,
@@ -52,20 +53,40 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
-import { DOMAIN_META, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
+import { DOMAIN_META, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
+import { usePositions } from "./pages/use-positions";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 
-const SIZE_PRESETS: readonly string[] = ["10", "50", "100", "250"];
+/** "0.100000000000000000" becomes "0.1"; a whole number is kept as is. */
+function trimSize(value: string) {
+  return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
+}
+
+/**
+ * A tenth, a quarter, a half, and all of the lane's default size, rounded down to its decimals, so
+ * every preset is denominated in the selected lane's own base asset.
+ */
+function sizePresets(defaultSize: string): string[] {
+  const [whole, fraction = ""] = defaultSize.split(".");
+  const scale = BigInt(10) ** BigInt(fraction.length);
+  const atoms = BigInt(`${whole}${fraction}`);
+  const presets = [10, 4, 2, 1].map((divisor) => {
+    const value = atoms / BigInt(divisor);
+    const decimals = (value % scale).toString().padStart(fraction.length, "0");
+    return trimSize(fraction.length === 0 ? value.toString() : `${value / scale}.${decimals}`);
+  });
+  return presets.filter((preset, index) => preset !== "0" && presets.indexOf(preset) === index);
+}
 
 /**
  * Formats an exact decimal string as dollars with grouping. Digits are never rounded; trailing
@@ -229,25 +250,46 @@ type ArbitrumFlowState = {
   funded: boolean;
   reclaimHash: string | null;
   reclaimed: boolean;
+  /** The owner's in-kind transaction for the spot leg of an unfilled entry. */
+  spotInKindHash: string | null;
+  spotTakenInKind: boolean;
   observation: ArbitrumAsyncObservation | null;
   observationNote: string | null;
   busy: string | null;
   error: string | null;
 };
 
-type ArbitrumStep = "account" | "create" | "quote" | "select" | "prepare" | "sign" | "approve" | "fund" | "reclaim" | "restart";
+type ArbitrumStep =
+  | "account" | "create" | "quote" | "select" | "prepare" | "sign" | "approve" | "fund" | "reclaim" | "takeSpot" | "restart";
 
 /** The Arbitrum Sepolia order context; a live service snapshot names it, otherwise this configured id. */
 const ARBITRUM_CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/.test(process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_CONTEXT_ID ?? "")
   ? process.env.NEXT_PUBLIC_ARBITRUM_SEPOLIA_CONTEXT_ID as string
   : "arbitrum-sepolia:eth-usdc:gmx";
 const ARBITRUM_RECLAIM_ABI = parseAbi(["function reclaimExpiredFunding(bytes32 packageId)"]);
+const ARBITRUM_TAKE_UNFILLED_SPOT_ABI = parseAbi(["function takeUnfilledSpotInKind(bytes32 requestKey)"]);
 const ARBITRUM_TERMINAL_LIFECYCLES: ReadonlySet<string> = new Set([
   "EXECUTED", "CANCELLED", "FROZEN", "RECOVERED", "MANUAL_INTERVENTION", "CLOSED", "CONFLICT", "EVIDENCE_MISMATCH",
 ]);
 
 function isArbitrumObservationTerminal(observation: ArbitrumAsyncObservation | null): boolean {
   return observation !== null && ARBITRUM_TERMINAL_LIFECYCLES.has(observation.lifecycle);
+}
+
+/**
+ * GMX left the entry unfilled and the floor-protected spot sale has not returned the spot leg by the recovery
+ * deadline. From then on the adapter lets only the owner take the spot base token in kind.
+ */
+function isArbitrumSpotInKindAvailable(flow: ArbitrumFlowState, nowMs: number): boolean {
+  const observation = flow.observation;
+  const status = observation?.entry?.status;
+  if (!flow.authorization || flow.spotTakenInKind || !observation?.coordinator || /^0x0{64}$/.test(observation.coordinator.requestKey)) {
+    return false;
+  }
+  if ((status !== "CANCELLED" && status !== "RECOVERED") || observation.lifecycle === "RECOVERED" || observation.lifecycle === "CLOSED") {
+    return false;
+  }
+  return Math.floor(nowMs / 1000) >= Number(flow.authorization.summary.recoveryDeadline);
 }
 
 /** No coordinator reservation exists yet, so funded collateral is still reclaimable after the deadline. */
@@ -270,6 +312,8 @@ function remainingText(deadlineSeconds: string, nowMs: number): string {
 }
 
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
+// Live books move, so the service snapshot and the ticket preview are re-read on this cadence.
+const MARKET_REFRESH_MS = 10_000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
 
 function isObservationTerminal(observation: SolanaExecutionObservation | null): boolean {
@@ -832,6 +876,40 @@ function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
 }
 
 /** The owner's factory account, the signed quote, the reviewed bonded reservation, and its funding. */
+/** A signed per-unit rate in quote atoms over base atoms, as quote units per one base unit, two decimals. */
+function perUnitText(quoteAtoms: string, baseAtoms: string, baseDecimals: number, quoteDecimals: number): string {
+  if (!/^-?(0|[1-9][0-9]*)$/.test(quoteAtoms) || !/^[1-9][0-9]*$/.test(baseAtoms)) return "-";
+  const ten = BigInt(10);
+  const negative = quoteAtoms.startsWith("-");
+  const cents = (BigInt(negative ? quoteAtoms.slice(1) : quoteAtoms) * ten ** BigInt(baseDecimals) * BigInt(100))
+    / (BigInt(baseAtoms) * ten ** BigInt(quoteDecimals));
+  return `${negative && cents > BigInt(0) ? "-" : ""}${cents / BigInt(100)}.${(cents % BigInt(100)).toString().padStart(2, "0")}`;
+}
+
+/**
+ * The Arbitrum entry prices the solver signed: the spot pool's cost for the exact size, the short's
+ * proceeds at GMX's own execution price (its price impact included), and the resulting spread the
+ * signed maximum bounds.
+ */
+function ArbitrumEntryPrices({ quote }: { quote: LocalSolverQuote }) {
+  const terms = quote.quote;
+  const outcome = terms.quotedOutcome as Record<string, unknown> | undefined;
+  if (outcome?.kind !== "ENTRY_SPREAD") return null;
+  const spread = outcome.entrySpread as Record<string, unknown> | undefined;
+  const spot = terms.expectedSpotNotional as Record<string, unknown> | undefined;
+  const perp = terms.expectedPerpNotional as Record<string, unknown> | undefined;
+  const quoteDecimals = Number((spot?.asset as Record<string, unknown> | undefined)?.decimals);
+  const baseDecimals = Number((spread?.baseAsset as Record<string, unknown> | undefined)?.decimals);
+  if (!Number.isSafeInteger(quoteDecimals) || !Number.isSafeInteger(baseDecimals)) return null;
+  return (
+    <div className={styles.reviewGrid} aria-label="Entry prices">
+      <span>Spot cost</span><strong>{quoteAtomsText(protocolScalar(spot?.atoms), quoteDecimals)}</strong>
+      <span>Short proceeds at GMX fill</span><strong>{quoteAtomsText(protocolScalar(perp?.atoms), quoteDecimals)} (GMX price impact included)</strong>
+      <span>Entry spread</span><strong>{perUnitText(protocolScalar(spread?.quoteAtoms), protocolScalar(spread?.baseAtoms), baseDecimals, quoteDecimals)} USDC per unit</strong>
+    </div>
+  );
+}
+
 function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs: number }) {
   const account = flow.account;
   const quote = flow.quote;
@@ -867,6 +945,7 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
           <span>Settlement account</span><strong title={flow.order.settlementAccount}>{compact(flow.order.settlementAccount, 10, 8)}</strong>
         </div>
       ) : null}
+      {quote ? <ArbitrumEntryPrices quote={quote} /> : null}
       {quote ? <QuoteTerms quote={quote} /> : null}
       {quote ? <QuoteFees quote={quote} /> : null}
       {flow.attempt ? (
@@ -930,6 +1009,7 @@ function Ticket({
   selectedDomain,
   mode,
   preview,
+  previewRejection,
   size,
   slippage,
   quoteMode,
@@ -962,6 +1042,8 @@ function Ticket({
   selectedDomain: DomainId;
   mode: PackageMode;
   preview: TerminalPreview | null;
+  /** The service's reason for refusing the ticket's size or slippage, if it did. */
+  previewRejection: string | null;
   size: string;
   slippage: SlippageBps;
   quoteMode: QuoteMode;
@@ -1060,14 +1142,14 @@ function Ticket({
           </span>
           <span id="size-context">
             <span key={preview?.bound.value ?? "none"} className={styles.flash}>
-              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : "Bound unavailable"}
+              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : previewRejection ?? "Bound unavailable"}
             </span>
           </span>
         </div>
       </div>
 
       <div className={styles.presets} role="group" aria-label="Size presets">
-        {SIZE_PRESETS.map((preset) => (
+        {sizePresets(snapshot.ticket.defaultSize).map((preset) => (
           <button
             key={preset}
             type="button"
@@ -1152,7 +1234,9 @@ function Ticket({
       <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
         <div className={styles.summaryRow}>
-          <span>{mode === "entry" ? "Maximum quote" : "Minimum output"}</span>
+          <span title="Estimated from the current mid price and your slippage. The binding limit is set from the pool's executable quote for this exact size when the order is created.">
+            {mode === "entry" ? "Maximum quote (est.)" : "Minimum output (est.)"}
+          </span>
           <strong key={preview?.bound.value ?? "none"} className={styles.flash}>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
         </div>
         <details className={styles.feeDetails}>
@@ -1441,14 +1525,32 @@ export function TradingTerminal({
     selectedDomain,
     privateProvider,
     runtimeHealth,
+    privateApiBaseUrl,
     publicApiBaseUrl,
     packageMarketId,
     recordAttempt,
   } = useTerminal();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
+  // The lane whose default size the ticket took; a refresh of the same lane keeps the trader's size.
+  const sizedLane = useRef<DomainId | null>(null);
+  const [marketTick, setMarketTick] = useState(0);
+  useEffect(() => {
+    if (!privateProvider) return;
+    const timer = window.setInterval(() => setMarketTick((tick) => tick + 1), MARKET_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [privateProvider]);
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
+  const [previewRejection, setPreviewRejection] = useState<string | null>(null);
+  // A preview belongs to the lane it was fetched for: switching lanes clears it at once instead of
+  // showing the previous lane's bound and fees until the new lane's preview arrives.
+  const [previewDomain, setPreviewDomain] = useState(selectedDomain);
+  if (previewDomain !== selectedDomain) {
+    setPreviewDomain(selectedDomain);
+    setPreview(null);
+    setPreviewRejection(null);
+  }
   const [mode, setMode] = useState<PackageMode>("entry");
   // Portfolio's Exit button opens this page with ?mode=exit; the page is static, so read it once here.
   useEffect(() => {
@@ -1466,8 +1568,17 @@ export function TradingTerminal({
     "positions",
     ["positions", "orders", "history", "receipts"],
   );
+  // With a private API the chart shows its recorded reference history; the fixture is only for the
+  // local terminal without one.
+  const reference = useReferenceMarketFeed(privateApiBaseUrl, selectedDomain, snapshot.market);
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
-  const { feed, status: feedStatus } = usePublicMarketFeed(publicApiBaseUrl, packageMarketId, fixtureFeed);
+  const { feed, status: publicFeedStatus } = usePublicMarketFeed(
+    publicApiBaseUrl,
+    packageMarketId,
+    reference.feed ?? fixtureFeed,
+    reference.feed,
+  );
+  const feedStatus = publicFeedStatus ?? reference.status;
   const wallet = useSolanaWallet();
   const evmWallet = useEvmWallet();
   const walletModal = useWalletModal();
@@ -1521,6 +1632,18 @@ export function TradingTerminal({
   const currentBaseFlow = baseFlow?.ticketKey === ticketKey && baseFlow.owner === evmWallet.account
     ? baseFlow
     : null;
+  // An exit closes the whole open package, so on every lane the ticket shows that package's size:
+  // Base from its flow's chain read, every lane from the same open-package reads Portfolio shows.
+  const baseOpenPackage = currentBaseFlow?.account?.openPackage ?? null;
+  const { positions: openPositions } = usePositions();
+  const laneOpenPosition = openPositions.find((position) => position.domain === selectedDomain
+    && (position.state === "Open" || position.state === "Exiting") && position.exactSize !== null);
+  const openPackageExitSize = mode !== "exit" ? null
+    : selectedDomain === "base" && baseOpenPackage !== null ? atomsDecimal(baseOpenPackage.baseQuantityAtoms, 18)
+      : laneOpenPosition?.exactSize ?? null;
+  useEffect(() => {
+    if (openPackageExitSize !== null && openPackageExitSize !== size) setSize(openPackageExitSize);
+  }, [openPackageExitSize, size]);
   // Once funding is sent the flow outlives ticket edits, so the reclaim path is never lost.
   const currentArbitrumFlow = arbitrumFlow !== null && arbitrumFlow.owner === evmWallet.account &&
     (arbitrumFlow.ticketKey === ticketKey || (selectedDomain === "arbitrum" && arbitrumFlow.fundHash !== null))
@@ -1559,6 +1682,11 @@ export function TradingTerminal({
         if (active) {
           setSnapshot(serviceSnapshot);
           setSnapshotDomain(selectedDomain);
+          // Each lane sizes in its own base asset, so a newly loaded lane starts from its own default.
+          if (sizedLane.current !== selectedDomain) {
+            sizedLane.current = selectedDomain;
+            setSize(trimSize(serviceSnapshot.ticket.defaultSize));
+          }
           setProviderConnection("connected");
         }
       } catch (cause) {
@@ -1568,8 +1696,18 @@ export function TradingTerminal({
         // A configured service that fails shows the domain's market as unavailable; neither fixture
         // data nor another domain's numbers are kept. A 503 market answer keeps the service connected.
         if (active) {
-          setSnapshot((previous) => unavailableTerminalSnapshot(previous, selectedDomain));
+          setSnapshot((previous) => unavailableTerminalSnapshot(
+            previous,
+            selectedDomain,
+            cause instanceof TerminalMarketUnavailableError ? cause.reason : undefined,
+          ));
           setSnapshotDomain(selectedDomain);
+          // A size typed for another lane is in that lane's base asset, so it is not carried over, and
+          // the next lane that loads takes its own default again.
+          if (sizedLane.current !== selectedDomain) {
+            sizedLane.current = null;
+            setSize("");
+          }
           setProviderConnection(cause instanceof TerminalMarketUnavailableError ? "connected" : "disconnected");
         }
       }
@@ -1580,7 +1718,7 @@ export function TradingTerminal({
       active = false;
       controller.abort();
     };
-  }, [privateProvider, selectedDomain]);
+  }, [marketTick, privateProvider, selectedDomain]);
 
   useEffect(() => {
     if (!privateProvider || selectedDomain !== "hyperliquid" ||
@@ -1628,6 +1766,14 @@ export function TradingTerminal({
     const controller = new AbortController();
     let active = true;
     const timeout = window.setTimeout(async () => {
+      // An empty size, such as on a lane whose market never loaded, has nothing to preview.
+      if (size === "") {
+        if (active) {
+          setPreview(null);
+          setPreviewRejection(null);
+        }
+        return;
+      }
       const input = {
         domain: selectedDomain,
         mode,
@@ -1641,6 +1787,7 @@ export function TradingTerminal({
           : await localConformanceTerminalProvider.getPreview(input);
         if (active) {
           setPreview(nextPreview);
+          setPreviewRejection(null);
           if (privateProvider) {
             setProviderConnection("connected");
           }
@@ -1651,7 +1798,10 @@ export function TradingTerminal({
         }
         if (active) {
           setPreview(null);
-          if (privateProvider && !(cause instanceof TerminalMarketUnavailableError)) {
+          // A refused size or slippage is the service answering, so it stays connected and says why.
+          const rejected = cause instanceof TerminalPreviewRejectedError;
+          setPreviewRejection(rejected ? cause.message : null);
+          if (privateProvider && !rejected && !(cause instanceof TerminalMarketUnavailableError)) {
             setProviderConnection("disconnected");
           }
         }
@@ -1663,7 +1813,7 @@ export function TradingTerminal({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
+  }, [marketTick, mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
 
   const lifecycleAttemptId = currentExecutionReview?.preparation.lifecycleAttemptId ?? null;
   const lifecycleTicketKey = currentExecutionReview?.ticketKey ?? null;
@@ -1775,9 +1925,16 @@ export function TradingTerminal({
     domainLive("arbitrum", runtimeHealth) && quoteMode === "coordinated_limits";
   const evmSignTypedData = evmWallet.signTypedData;
   const signArbitrumExit = useCallback((typedData: unknown) => evmSignTypedData("arbitrum", typedData), [evmSignTypedData]);
-  const recordArbitrumExit = useCallback((attemptId: string, exitSize: string) => {
-    recordAttempt({ attemptId, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
+  const recordArbitrumExit = useCallback((attemptId: string, exitSize: string, owner: string) => {
+    recordAttempt({ attemptId, owner, domain: "arbitrum", mode: "exit", size: exitSize, flow: "arbitrum", createdAt: Date.now() });
   }, [recordAttempt]);
+  const evmSendTransaction = evmWallet.sendTransaction;
+  const evmWaitForReceipt = evmWallet.waitForReceipt;
+  const sendArbitrumExitTransaction = useCallback(
+    (call: Readonly<{ to: string; data: string; value: string }>) => evmSendTransaction("arbitrum", call),
+    [evmSendTransaction],
+  );
+  const waitArbitrumExitReceipt = useCallback((hash: string) => evmWaitForReceipt("arbitrum", hash), [evmWaitForReceipt]);
   const arbitrumExit = useArbitrumSepoliaExit({
     enabled: arbitrumExitEnabled && evmOnTarget,
     owner: evmWallet.account,
@@ -1785,6 +1942,8 @@ export function TradingTerminal({
     contextId: arbitrumContextId,
     slippageBps: slippage,
     signTypedData: signArbitrumExit,
+    sendTransaction: sendArbitrumExitTransaction,
+    waitForReceipt: waitArbitrumExitReceipt,
     onSelected: recordArbitrumExit,
   });
   const arbitrumFunding = currentArbitrumFlow?.authorization?.funding ?? null;
@@ -1806,7 +1965,8 @@ export function TradingTerminal({
     }
     if (flow.reclaimed) return null;
     if (flow.reclaimHash) return "reclaim";
-    return arbitrumWindowClosed && isArbitrumUnreserved(flow.observation) ? "reclaim" : null;
+    if (arbitrumWindowClosed && isArbitrumUnreserved(flow.observation)) return "reclaim";
+    return flow.spotInKindHash || isArbitrumSpotInKindAvailable(flow, nowMs) ? "takeSpot" : null;
   })();
   const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
     ? null
@@ -1912,6 +2072,8 @@ export function TradingTerminal({
             return { kind: "arbitrum", label: flow.fundHash ? "Confirm funding" : "Fund request (testnet tx)", reason: reason ?? `Testnet transaction: the adapter pulls the approved collateral and your wallet pays the ${funding ? formatEther(BigInt(funding.executionFeeWei)) : "-"} ETH GMX execution fee. ${deadline}`, disabled: false };
           case "reclaim":
             return { kind: "arbitrum", label: flow.reclaimHash ? "Confirm reclaim" : "Reclaim funding (testnet tx)", reason: reason ?? "The funding deadline passed without a reservation. This testnet transaction returns your collateral and execution fee from the adapter.", disabled: false };
+          case "takeSpot":
+            return { kind: "arbitrum", label: flow.spotInKindHash ? "Confirm in-kind spot" : "Take WETH in kind (testnet tx)", reason: reason ?? `GMX did not open the short, and the spot leg has not sold back for your signed minimum of ${quoteAtomsText(flow.authorization?.summary.rollbackMinQuoteAtoms ?? "", 6)} by the recovery deadline. This testnet transaction from your wallet takes the WETH itself instead; the bonded solver then closes the package. Only the package owner can do this.`, disabled: false };
           case "restart":
             return { kind: "arbitrum", label: "Start a fresh order", reason: reason ?? "The funding window closed before funding, so nothing was pulled from your wallet. Create a fresh order to re-quote.", disabled: false };
           default:
@@ -1919,7 +2081,18 @@ export function TradingTerminal({
         }
         if (flow.reclaimed) return none("Funding reclaimed", "The unreserved funding returned to your wallet. Start a new order to trade again.");
         const lifecycle = flow.observation?.lifecycle;
-        if (lifecycle === "EXECUTED") return none("Entry executed", "The bonded solver executed the package entry on Arbitrum Sepolia. Evidence is in the package review and on the Activity page.");
+        // The solver releases its bond (coordinator CLOSED) right after GMX settles the request, so a closed
+        // package says only that the entry finished; the GMX request status says how.
+        const entryStatus = flow.observation?.entry?.status;
+        if (lifecycle === "EXECUTED" || (lifecycle === "CLOSED" && entryStatus === "EXECUTED")) {
+          return none("Entry executed", "GMX opened the short and the spot leg is in your strategy account: the package is open. Evidence is in the package review and on the Activity page; exit it from this ticket or Portfolio.");
+        }
+        if ((lifecycle === "CLOSED" || lifecycle === "RECOVERED") && (entryStatus === "CANCELLED" || entryStatus === "RECOVERED") && flow.spotTakenInKind) {
+          return none("Entry cancelled, spot taken in kind", "GMX did not open the short. Your wallet took the spot leg in kind as WETH instead of a sale below your signed minimum, and GMX returned the collateral. No package is open; start a new order to trade again.");
+        }
+        if ((lifecycle === "CLOSED" || lifecycle === "RECOVERED") && (entryStatus === "CANCELLED" || entryStatus === "RECOVERED")) {
+          return none("Entry cancelled by GMX", "GMX did not open the short, so the bonded recovery sold the spot leg back and returned the USDC to your wallet. No package is open; start a new order to trade again.");
+        }
         if (lifecycle && isArbitrumObservationTerminal(flow.observation)) {
           return none(`Package ${lifecycle.replace(/_/g, " ").toLowerCase()}`, flow.observation?.reason ?? "The asynchronous package reached a terminal state. Evidence is in the package review.");
         }
@@ -1992,6 +2165,12 @@ export function TradingTerminal({
       if (nextHyperliquidStep === "quote") return { kind: "hyperliquid", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote on the whole package.", disabled: false };
       if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the testnet order review before accepting.", disabled: false };
       return { kind: "hyperliquid", label: currentHyperliquidFlow.signed ? "Execute on testnet" : "Sign and execute", reason: reason ?? "Your wallet signs the package authorization; Naryx's Hyperliquid testnet account executes it on your behalf.", disabled: false };
+    }
+    const exitUnavailable = EXIT_UNAVAILABLE[selectedDomain];
+    if (mode === "exit" && exitUnavailable !== undefined) return none("Exit not available yet", exitUnavailable);
+    // Nobody is let into a package they could not close: entries pause for as long as exits do.
+    if (mode === "entry" && exitUnavailable !== undefined) {
+      return none("Entries paused", `Entries are paused until exits are available on this lane. ${exitUnavailable}`);
     }
     if (!privateProvider || providerConnection !== "connected") {
       return { kind: "none", disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
@@ -2194,7 +2373,7 @@ export function TradingTerminal({
 
   async function handlePrepareExecution() {
     if (!privateProvider || providerConnection !== "connected" ||
-        selectedDomain !== "solana" || !wallet.selectedAccount ||
+        selectedDomain !== "solana" || EXIT_UNAVAILABLE.solana !== undefined || !wallet.selectedAccount ||
         !wallet.canSignAndSendV0 || !wallet.canSignMessage || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
         quoteMode !== "coordinated_limits" ||
         currentSubmission || executionBusy) return;
@@ -2236,7 +2415,8 @@ export function TradingTerminal({
       }
       const preparation = await prepareExecution(key, exitSize);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
-      recordAttempt({ attemptId: preparation.lifecycleAttemptId, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
+      // An exit records the size of the package it closes, read from the attempt itself.
+      recordAttempt({ attemptId: preparation.lifecycleAttemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size: exitSize ?? size, flow: "devnet", createdAt: Date.now() });
       setLifecycleView({
         ticketKey,
         attemptId: preparation.lifecycleAttemptId,
@@ -2413,7 +2593,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectLocalQuote(base.quote);
         setLocalFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "solana", mode, size, flow: "conformance", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size, flow: "conformance", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed quote first.");
@@ -2465,7 +2645,10 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectHyperliquidQuote(context, base.quote);
         setHyperliquidFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "hyperliquid", mode, size, flow: "hyperliquid", createdAt: Date.now() });
+        recordAttempt({
+          attemptId: attempt.attemptId, owner, domain: "hyperliquid", mode,
+          size: mode === "exit" ? openPackageExitSize ?? size : size, flow: "hyperliquid", createdAt: Date.now(),
+        });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");
@@ -2677,7 +2860,7 @@ export function TradingTerminal({
         const attempt = await privateProvider.selectBaseQuote(base.quote);
         setBaseFlow({ ...base, attempt, busy: null, error: null });
         const recordedSize = mode === "exit" && account.openPackage ? atomsDecimal(account.openPackage.baseQuantityAtoms, 18) : size;
-        recordAttempt({ attemptId: attempt.attemptId, domain: "base", mode, size: recordedSize, flow: "base", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: base.owner, domain: "base", mode, size: recordedSize, flow: "base", createdAt: Date.now() });
         return;
       }
       if (!base.attempt) throw new Error("Accept the reviewed quote first.");
@@ -2703,8 +2886,9 @@ export function TradingTerminal({
       setBaseFlow({ ...base, preparation, transactionHash, busy: null, error: null });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Base Sepolia action failed.";
-      // An expired quote cannot be re-selected for the same order: start a fresh order instead.
-      const restart = step === "execute" && /expired|admission/i.test(message);
+      // An expired quote cannot be re-selected for the same order, and a prepared call the network
+      // refuses would only revert again if re-sent: start a fresh order instead.
+      const restart = step === "execute" && /expired|admission|would revert/i.test(message);
       setBaseFlow((previous) => ({
         ...(previous ?? base),
         ...(restart ? { order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID() } : {}),
@@ -2736,6 +2920,8 @@ export function TradingTerminal({
       funded: false,
       reclaimHash: null,
       reclaimed: false,
+      spotInKindHash: null,
+      spotTakenInKind: false,
       observation: null,
       observationNote: null,
       busy: null,
@@ -2788,8 +2974,10 @@ export function TradingTerminal({
 
   const arbitrumAttemptId = currentArbitrumFlow?.attempt?.attemptId ?? null;
   const arbitrumIdempotencyKey = currentArbitrumFlow?.idempotencyKey ?? null;
+  // Taking the spot in kind lets the solver relay and close a package that had stopped short of CLOSED.
   const arbitrumObserve = currentArbitrumFlow?.funded === true && !currentArbitrumFlow.reclaimed &&
-    !isArbitrumObservationTerminal(currentArbitrumFlow.observation);
+    (!isArbitrumObservationTerminal(currentArbitrumFlow.observation) ||
+      (currentArbitrumFlow.spotTakenInKind && currentArbitrumFlow.observation?.lifecycle !== "CLOSED"));
   useEffect(() => {
     if (!privateProvider || !arbitrumObserve || !arbitrumAttemptId || !arbitrumIdempotencyKey) return;
     const controller = new AbortController();
@@ -2865,7 +3053,7 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectArbitrumQuote(flow.quote);
         done({ attempt });
-        recordAttempt({ attemptId: attempt.attemptId, domain: "arbitrum", mode, size, flow: "arbitrum", createdAt: Date.now() });
+        recordAttempt({ attemptId: attempt.attemptId, owner: flow.owner, domain: "arbitrum", mode, size, flow: "arbitrum", createdAt: Date.now() });
         return;
       }
       if (!flow.attempt) throw new Error("Accept the reviewed quote first.");
@@ -2924,6 +3112,37 @@ export function TradingTerminal({
           throw new Error("The funding transaction reverted, so nothing was pulled. Fund again before the deadline.");
         }
         done({ fundHash: hash, funded: true });
+        return;
+      }
+      if (step === "takeSpot") {
+        let hash = flow.spotInKindHash;
+        if (!hash) {
+          const requestKey = flow.observation?.coordinator?.requestKey;
+          if (!requestKey || !isArbitrumSpotInKindAvailable(flow, Date.now())) {
+            throw new Error("The spot leg can be taken in kind only after the recovery deadline of an unfilled entry.");
+          }
+          // The account must still hold this entry's spot leg; a completed floor sale already returned it.
+          const open = (await privateProvider.getArbitrumAccountStatus(flow.owner)).openPackage;
+          if (open?.packageId.toLowerCase() !== authorization.packageId.toLowerCase() ||
+              open.entryRequestKey?.toLowerCase() !== requestKey.toLowerCase() || open.spotBaseAtoms === "0") {
+            throw new Error("Your strategy account no longer holds this entry's spot leg.");
+          }
+          hash = await evmWallet.sendTransaction("arbitrum", {
+            to: authorization.adapter,
+            data: encodeFunctionData({
+              abi: ARBITRUM_TAKE_UNFILLED_SPOT_ABI,
+              functionName: "takeUnfilledSpotInKind",
+              args: [requestKey as `0x${string}`],
+            }),
+            value: "0",
+          });
+          setArbitrumFlow((previous) => previous ? { ...previous, spotInKindHash: hash } : previous);
+        }
+        if (!await evmWallet.waitForReceipt("arbitrum", hash)) {
+          done({ spotInKindHash: null });
+          throw new Error("The in-kind transaction reverted. The spot sale may have completed; check the observation.");
+        }
+        done({ spotInKindHash: null, spotTakenInKind: true });
         return;
       }
       // step === "reclaim": only for funded collateral the solver never reserved.
@@ -3014,6 +3233,7 @@ export function TradingTerminal({
             selectedDomain={selectedDomain}
             mode={mode}
             preview={preview}
+            previewRejection={previewRejection}
             size={size}
             slippage={slippage}
             quoteMode={quoteMode}

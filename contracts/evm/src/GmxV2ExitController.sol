@@ -2,7 +2,6 @@
 pragma solidity 0.8.37;
 
 import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
-import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {GmxV2ArbitrumAdapter} from "./GmxV2ArbitrumAdapter.sol";
 import {GmxV2IsolatedAccount} from "./GmxV2IsolatedAccount.sol";
@@ -14,12 +13,14 @@ import {
     IGmxV2OrderCallbackReceiver,
     IGmxV2RoleStore
 } from "./interfaces/IGmxV2.sol";
+import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 /// @notice The shared full-close controller for every account of one `GmxV2IsolatedAccountFactory`. Each
 /// exit is authorized by the EIP-712 signature of the account's factory-recorded owner, and nonces and the
 /// single active exit are tracked per account.
 contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyGuard {
     uint8 public constant TERMINAL_COMPLETE = 1;
+    uint8 public constant TERMINAL_SPOT_IN_KIND = 2;
     bytes32 public constant EXIT_AUTHORIZATION_TYPEHASH = keccak256(
         "ExitAuthorization(bytes32 packageId,bytes32 entryRequestKey,bytes32 spotRegistrationHash,address account,address owner,address receiver,address spotProceedsRecipient,address feePayer,address executionFeeRefundRecipient,address market,address collateralToken,bool isLong,uint256 fullCloseSizeUsd,uint256 spotBaseAtoms,uint256 spotMinQuoteAtoms,uint256 packageNonce,bytes32 exitOrderHash,bytes32 exitQuoteHash,bytes32 exitRouteHash,bytes32 exitFillCommitment,uint256 acceptablePrice,uint256 minOutputAmount,uint256 executionFeeWei,uint256 callbackGasLimit,uint64 authorizationExpiry,uint64 cancelAfter,uint256 nonce)"
     );
@@ -211,7 +212,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         address owner = factory.ownerOf(address(account));
         _validateAuthorization(authorization, account, owner);
         bytes32 authorizationHash = _hashTypedDataV4(_authorizationHash(authorization));
-        if (!SignatureChecker.isValidSignatureNow(owner, authorizationHash, ownerSignature)) {
+        if (!OwnerSignature.isValidNow(owner, authorizationHash, ownerSignature)) {
             revert InvalidSignature();
         }
         GmxV2.ExitRegistration memory registration = _registration(authorization, authorizationHash);
@@ -266,6 +267,26 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         if (stored.status != Status.EXECUTED || account.positionSize(false) != 0 || account.positionSize(true) != 0) {
             revert InvalidOutcome();
         }
+        released = _release(stored, requestKey);
+    }
+
+    /// @notice From `cancelAfter` on, the owner of an executed full close whose spot sale has not completed may
+    /// take the spot base token in kind instead of the floor-protected sale. The receipt records
+    /// TERMINAL_SPOT_IN_KIND with zero quote proceeds, and the package is released as for a completed sale.
+    function takeSpotInKind(bytes32 requestKey) external nonReentrant returns (bool released) {
+        _assertDeployment();
+        ExitRecord storage stored = _exit(requestKey);
+        if (msg.sender != stored.registration.owner) revert UnauthorizedCaller();
+        if (
+            block.timestamp < stored.registration.cancelAfter || stored.status != Status.EXECUTED
+                || _finalReceipts[requestKey].commitment != bytes32(0)
+        ) revert InvalidOutcome();
+        _storeFinalReceipt(
+            stored,
+            requestKey,
+            _account(stored.registration.account).completeSuccessfulExit(stored.registration, requestKey, true),
+            TERMINAL_SPOT_IN_KIND
+        );
         released = _release(stored, requestKey);
     }
 
@@ -477,10 +498,11 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         if (stored.released) return true;
         FinalPackageReceipt storage receipt = _finalReceipts[requestKey];
         if (receipt.commitment == bytes32(0)) {
-            try _account(stored.registration.account).completeSuccessfulExit(stored.registration, requestKey) returns (
+            try _account(stored.registration.account)
+                .completeSuccessfulExit(stored.registration, requestKey, false) returns (
                 GmxV2.SpotExitResult memory spotResult
             ) {
-                _storeFinalReceipt(stored, requestKey, spotResult);
+                _storeFinalReceipt(stored, requestKey, spotResult, TERMINAL_COMPLETE);
             } catch {
                 return false;
             }
@@ -495,9 +517,12 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
         }
     }
 
-    function _storeFinalReceipt(ExitRecord storage stored, bytes32 requestKey, GmxV2.SpotExitResult memory spotResult)
-        private
-    {
+    function _storeFinalReceipt(
+        ExitRecord storage stored,
+        bytes32 requestKey,
+        GmxV2.SpotExitResult memory spotResult,
+        uint8 terminalState
+    ) private {
         bytes32 exitCommitmentsHash = keccak256(
             abi.encode(
                 stored.registration.packageNonce,
@@ -508,7 +533,6 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
             )
         );
         uint8 perpStatus = uint8(stored.status);
-        uint8 terminalState = TERMINAL_COMPLETE;
         bytes32 commitment =
             _receiptCommitment(stored, requestKey, spotResult, exitCommitmentsHash, perpStatus, terminalState);
         FinalPackageReceipt storage receipt = _finalReceipts[requestKey];

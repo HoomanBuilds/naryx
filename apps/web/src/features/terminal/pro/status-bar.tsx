@@ -30,7 +30,7 @@ export function StatusBar({
   snapshot: TerminalViewModel;
   providerConnection: ProviderConnection;
   feedLabel: string;
-  /** Present when a public market API is configured. */
+  /** Present when a public market API or the private API's reference history is configured. */
   feedStatus?: PublicFeedStatus | null;
   domainLabel: string;
   domainNote: string;
@@ -54,7 +54,7 @@ export function StatusBar({
         {feedStatus === null ? null : (
           <i
             className={feedStatus.state === "live" ? styles.dotOk : feedStatus.state === "unavailable" ? styles.dotOff : styles.dotWarn}
-            aria-label={`Public market feed ${feedStatus.state}`}
+            aria-label={`Market data feed ${feedStatus.state}`}
             role="img"
           />
         )}

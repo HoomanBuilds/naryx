@@ -9,6 +9,7 @@ import {
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_MAINNET_BETA_GENESIS_HASH,
 } from './materializer.js';
+import { createBoundedSolanaConnection } from './bounded-connection.js';
 
 const PROGRAM_STATE = 2;
 const PROGRAM_DATA_STATE = 3;
@@ -76,7 +77,7 @@ export class ConnectionSolanaDeploymentIdentityReadPort implements SolanaDeploym
   readonly #commitment: Commitment;
 
   constructor(rpcUrl: string, commitment: Commitment = 'finalized') {
-    this.#connection = new Connection(rpcUrl, commitment);
+    this.#connection = createBoundedSolanaConnection(rpcUrl, commitment);
     this.#commitment = commitment;
   }
 

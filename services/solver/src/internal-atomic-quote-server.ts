@@ -77,7 +77,8 @@ export interface InternalAtomicQuotePort {
 }
 
 export class InternalAtomicQuoteError extends Error {
-  readonly code: 'INVALID_REQUEST' | 'ORDER_NOT_FOUND' | 'ORDER_HASH_MISMATCH' | 'IDEMPOTENCY_CONFLICT';
+  readonly code: 'INVALID_REQUEST' | 'ORDER_NOT_FOUND' | 'ORDER_HASH_MISMATCH' | 'IDEMPOTENCY_CONFLICT'
+    | 'QUOTE_DECLINED';
 
   constructor(code: InternalAtomicQuoteError['code'], message: string) {
     super(`${code}: ${message}`);
@@ -329,7 +330,7 @@ export function createInternalAtomicQuoteRequestHandler(
       if (error instanceof InternalAtomicQuoteError) {
         const status = error.code === 'ORDER_NOT_FOUND'
           ? 404
-          : error.code === 'IDEMPOTENCY_CONFLICT' ? 409 : 400;
+          : error.code === 'IDEMPOTENCY_CONFLICT' || error.code === 'QUOTE_DECLINED' ? 409 : 400;
         reject(response, status, error.code, error.message);
         return;
       }

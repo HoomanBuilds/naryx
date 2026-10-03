@@ -30,9 +30,13 @@ import {
   arbitrumSepoliaAccountOf,
   ceilDiv,
   createViemArbitrumSepoliaReadPort,
+  gmxIndexPrice,
   gmxPositionFieldKey,
   readArbitrumSepoliaReferencePrice,
+  readArbitrumSepoliaSpotQuoteTarget,
+  readGmxInt,
   readGmxPositionFeeFactor,
+  readGmxShortExecutionPrice,
   readGmxUint,
   requireArbitrumSepoliaCode,
   type ArbitrumSepoliaReadPort,
@@ -53,6 +57,7 @@ import {
   type InternalAtomicQuoteStore,
 } from './internal-atomic-quote-server.js';
 import type { Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
+import { quoteUniswapV3Sell } from './uniswap-v3-quoter.js';
 
 const BPS = 10_000n;
 const POOL_FEE_SCALE = 1_000_000n;
@@ -171,6 +176,8 @@ export type ArbitrumSepoliaOpenPosition = Readonly<{
   sizeInUsd: bigint;
   sizeInTokens: bigint;
   collateralAtoms: bigint;
+  /** GMX V2.2 keeps an increase's price impact on the position, in base atoms, and realizes it on close. */
+  pendingImpactAmount: bigint;
   spotRegistration: ArbitrumSepoliaSpotRegistration;
   spotRegistrationHash: Hex;
   activeExitRequestKey: Hex;
@@ -208,8 +215,8 @@ export async function readArbitrumSepoliaOpenPosition(
   if (packageId === ZERO_HASH || entryRequestKey === ZERO_HASH) throw new Error('owner has no submitted open package');
   const field = (name: string) => readGmxUint(chain as ArbitrumSepoliaReadPort, refs.dataStore,
     gmxPositionFieldKey(account, refs.market, refs.collateralToken, false, name));
-  const [evidence, shortSize, longSize, hasSpot, spotRequestKey, registrationValue, activeExit, nonce, sizeInTokens, collateralAtoms] =
-    await Promise.all([
+  const [evidence, shortSize, longSize, hasSpot, spotRequestKey, registrationValue, activeExit, nonce, sizeInTokens, collateralAtoms,
+    pendingImpactAmount] = await Promise.all([
       view(refs.adapter, 'requestEvidence', [entryRequestKey]),
       view(account, 'positionSize', [false]),
       view(account, 'positionSize', [true]),
@@ -220,6 +227,8 @@ export async function readArbitrumSepoliaOpenPosition(
       control('nextNonce'),
       field('SIZE_IN_TOKENS'),
       field('COLLATERAL_AMOUNT'),
+      readGmxInt(chain as ArbitrumSepoliaReadPort, refs.dataStore,
+        gmxPositionFieldKey(account, refs.market, refs.collateralToken, false, 'PENDING_IMPACT_AMOUNT')),
     ]);
   const record = evidence as readonly unknown[];
   const raw = registrationValue as Record<string, unknown>;
@@ -255,6 +264,7 @@ export async function readArbitrumSepoliaOpenPosition(
     sizeInUsd,
     sizeInTokens,
     collateralAtoms: unsigned(collateralAtoms, 'position collateral'),
+    pendingImpactAmount,
     spotRegistration,
     spotRegistrationHash: keccak256(encodeAbiParameters([SPOT_REGISTRATION_TUPLE], [spotRegistration as never])),
     activeExitRequestKey: lowerHash(activeExit, 'active exit request key'),
@@ -296,8 +306,11 @@ export type ArbitrumExitPricing = Readonly<{
 
 /**
  * Prices a full close at the live reference: the spot sale at the lower of the pool mid and the
- * reference less the pool fee (rounded down), the short bought back at the reference (rounded up)
- * with the larger GMX position fee (rounded up), and the decrease paying collateral plus PnL.
+ * reference less the pool fee (rounded down) and of the quoter's proceeds for exactly that sale
+ * (price impact included), the short bought back at the reference (rounded up) with the larger GMX
+ * position fee (rounded up), and the decrease paying collateral plus PnL plus GMX's price impact (the
+ * close's own and the entry's pending impact, everything GMX takes from the position, rounded down).
+ * The quoted buy-back notional is at GMX's execution price for the close.
  */
 export function priceArbitrumExit(input: Readonly<{
   quantityAtoms: bigint;
@@ -305,13 +318,18 @@ export function priceArbitrumExit(input: Readonly<{
   quoteDecimals: number;
   reference: Pick<ArbitrumSepoliaReferencePrice, 'answer' | 'decimals'>;
   pool: ArbitrumSepoliaSpotPool;
+  /** The pinned quoter's exact-input proceeds for selling exactly `quantityAtoms`. */
+  spotQuoteOutAtoms: bigint;
   positionFeeFactor: bigint;
   position: Pick<ArbitrumSepoliaOpenPosition, 'sizeInUsd' | 'sizeInTokens' | 'collateralAtoms'>;
+  /** GMX's own full close at the reference: execution price per base atom and the impact it pays, 30-decimal USD. */
+  gmx: Readonly<{ executionPrice: bigint; closeImpactUsd: bigint }>;
 }>): ArbitrumExitPricing {
   const { reference, pool, position } = input;
-  if (input.quantityAtoms <= 0n || reference.answer <= 0n || pool.sqrtPriceX96 <= 0n
+  if (input.quantityAtoms <= 0n || reference.answer <= 0n || pool.sqrtPriceX96 <= 0n || input.spotQuoteOutAtoms <= 0n
     || input.positionFeeFactor < 0n || input.positionFeeFactor >= GMX_FLOAT_PRECISION
-    || input.quoteDecimals < 0 || input.quoteDecimals > GMX_USD_DECIMALS || position.sizeInUsd <= 0n) {
+    || input.quoteDecimals < 0 || input.quoteDecimals > GMX_USD_DECIMALS || position.sizeInUsd <= 0n
+    || input.gmx.executionPrice <= 0n) {
     throw new Error('exit pricing inputs are invalid');
   }
   const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - input.quoteDecimals);
@@ -323,12 +341,17 @@ export function priceArbitrumExit(input: Readonly<{
   const [numerator, denominator] = poolNumerator * referenceDenominator < referenceNumerator * poolDenominator
     ? [poolNumerator, poolDenominator]
     : [referenceNumerator, referenceDenominator];
-  const expectedSpotNotionalAtoms = (input.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee))
+  const priceProceedsAtoms = (input.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee))
     / (denominator * POOL_FEE_SCALE);
+  const expectedSpotNotionalAtoms = input.spotQuoteOutAtoms < priceProceedsAtoms ? input.spotQuoteOutAtoms : priceProceedsAtoms;
   const entryNotionalAtoms = position.sizeInUsd / usdScale;
-  const closeNotionalAtoms = ceilDiv(position.sizeInTokens * referenceNumerator, referenceDenominator);
+  const referenceCloseAtoms = ceilDiv(position.sizeInTokens * referenceNumerator, referenceDenominator);
+  const closeNotionalAtoms = ceilDiv(position.sizeInTokens * input.gmx.executionPrice, usdScale);
   const positionFeeAtoms = ceilDiv(position.sizeInUsd * input.positionFeeFactor, GMX_FLOAT_PRECISION * usdScale);
-  const expectedPerpOutputAtoms = position.collateralAtoms + entryNotionalAtoms - closeNotionalAtoms - positionFeeAtoms;
+  const impact = input.gmx.closeImpactUsd;
+  const impactAtoms = impact >= 0n ? impact / usdScale : -ceilDiv(-impact, usdScale);
+  const expectedPerpOutputAtoms = position.collateralAtoms + entryNotionalAtoms - referenceCloseAtoms - positionFeeAtoms
+    + impactAtoms;
   if (expectedSpotNotionalAtoms <= 0n || expectedPerpOutputAtoms <= 0n) throw new Error('exit proceeds are not positive');
   return Object.freeze({
     entryNotionalAtoms,
@@ -426,13 +449,19 @@ async function signExit(order: PackageOrder, request: InternalAtomicQuoteRequest
     || position.spotRegistration.baseAtoms !== order.quantity.atoms) {
     throw new Error('exit order does not match the open package on chain');
   }
-  const [pool, positionFeeFactor] = await Promise.all([
+  const [pool, positionFeeFactor, spotTarget] = await Promise.all([
     readArbitrumSepoliaSpotPool(input.chain, spotPort),
     readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket),
+    readArbitrumSepoliaSpotQuoteTarget(input.chain, input.accountFactory, input.spotQuoter),
   ]);
+  const gmx = await readGmxShortExecutionPrice(input.chain, input.gmxReader, input.gmxDataStore.address, input.gmxMarket, {
+    indexPrice: gmxIndexPrice(reference, base.decimals), quoteDecimals: quoteAsset.decimals,
+    sizeDeltaUsd: -position.sizeInUsd, position,
+  });
   const pricing = priceArbitrumExit({
     quantityAtoms: order.quantity.atoms, baseDecimals: base.decimals, quoteDecimals: quoteAsset.decimals,
-    reference, pool, positionFeeFactor, position,
+    reference, pool, spotQuoteOutAtoms: await quoteUniswapV3Sell(input.chain, spotTarget, order.quantity.atoms),
+    positionFeeFactor, position, gmx,
   });
   if (pricing.expectedSpotNotionalAtoms < order.minSpotQuoteOut!.atoms) throw new Error('spot proceeds are below the order minimum');
   if (pricing.exitOutcomeAtoms < order.minExitQuoteOutcome!.atoms) throw new Error('exit outcome is below the order minimum');
@@ -444,8 +473,6 @@ async function signExit(order: PackageOrder, request: InternalAtomicQuoteRequest
   const maxActionExpiryValue = routeExpiryValue + input.venueWindowSeconds;
   const deadlineValue = maxActionExpiryValue + input.recoveryWindowSeconds;
   if (routeExpiryValue <= now) throw new Error('configured freshness window is empty');
-  const referenceQuoteAtoms = reference.answer * 10n ** BigInt(quoteAsset.decimals);
-  const referenceBaseAtoms = 10n ** BigInt(reference.decimals + base.decimals);
   const orderHash = packageOrderHash(order);
   const route: RoutePayloadInput = {
     version: 1,
@@ -484,8 +511,9 @@ async function signExit(order: PackageOrder, request: InternalAtomicQuoteRequest
         legIndex: 1, legRole: 'PERPETUAL', actionSequence: input.perpetual.action.sequence,
         adapter: input.perpetual.adapter, venue: input.perpetual.venue, market: input.perpetual.market,
         baseAsset: base, quoteAsset, side: 'BUY', quantity: order.quantity,
+        // GMX fills a short decrease at or below the acceptable price: its execution price plus slippage.
         limitPrice: reducedPrice(base, quoteAsset,
-          referenceQuoteAtoms * (BPS + BigInt(input.perpSlippageBps)), referenceBaseAtoms * BPS, 'CEIL'),
+          gmx.executionPrice * (BPS + BigInt(input.perpSlippageBps)), usdScale * BPS, 'CEIL'),
         timeInForce: 'FOK', reduceOnly: true,
       },
     ],

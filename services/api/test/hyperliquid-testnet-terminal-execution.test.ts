@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import {
   DurableHyperliquidTestnetTerminalExecutionPort,
@@ -267,6 +268,102 @@ test("durable Hyperliquid terminal execution resolves a timed-out handoff from t
     assert.deepEqual(await pending, result(queued));
     assert.deepEqual(await port.status({ attemptId: "attempt-never-0000001", idempotencyKey: "idem-never-00000001" }),
       { state: "NOT_STARTED", lane: null });
+  } finally {
+    port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a stored non-final outcome is replaced by the executor's later final one, on read and by the sweep", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-later-"));
+  const unresolved = (request: HyperliquidTestnetTerminalExecutionRequest) =>
+    Object.freeze({ ...result(request), packageStatus: "MANUAL_INTERVENTION", reasons: Object.freeze(["EVIDENCE_INCONSISTENT"]) }) as HyperliquidTestnetTerminalExecutionResult;
+  const second = { attemptId: "attempt-second-000001", idempotencyKey: "idem-second-0000001" };
+  let released = false;
+  const settled: string[] = [];
+  const executor: TrustedHyperliquidTestnetAttemptExecutor = {
+    executeAttempt: async (request) => unresolved(request),
+    // Before its lane is released the executor still reports the unresolved outcome.
+    attemptStatus: async (request) => ({
+      state: "COMPLETED", queuePosition: null, lane: released ? "FREE" : "BLOCKED",
+      result: released ? result(request) : unresolved(request),
+    }),
+  };
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(join(scratch, "execution.db"), executor, {
+    requireOwnerAuthorization: () => {},
+    admit: () => {},
+    settle: (request, outcome) => {
+      settled.push(`${request.attemptId}:${outcome.status === "RECONCILED" ? outcome.packageStatus : outcome.status}`);
+    },
+  });
+  try {
+    await port.execute(REQUEST);
+    await port.execute(second);
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: unresolved(REQUEST) });
+    assert.equal(await port.reconcileUnresolved(), 0);
+    released = true;
+    // A read picks up the final outcome and stores it; the sweep resolves the other attempt.
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
+    assert.equal(await port.reconcileUnresolved(), 1);
+    assert.equal(await port.reconcileUnresolved(), 0);
+    assert.deepEqual(await port.execute(second), result(second));
+    assert.ok(settled.includes(`${REQUEST.attemptId}:COMPLETED_EXACT`));
+    assert.ok(settled.includes(`${second.attemptId}:COMPLETED_EXACT`));
+  } finally {
+    port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("the reconcile sweep pages past attempts that never finalize, survives a corrupt row, and never loses a settle", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-sweep-"));
+  const path = join(scratch, "execution.db");
+  const unresolved = (request: HyperliquidTestnetTerminalExecutionRequest) =>
+    Object.freeze({ ...result(request), packageStatus: "MANUAL_INTERVENTION", reasons: Object.freeze(["EVIDENCE_INCONSISTENT"]) }) as HyperliquidTestnetTerminalExecutionResult;
+  const requests = Array.from({ length: 22 }, (_, index) => ({
+    attemptId: `attempt-sweep-${String(index).padStart(6, "0")}`,
+    idempotencyKey: `idem-sweep-${String(index).padStart(8, "0")}`,
+  }));
+  const finalAttempt = requests[21]!.attemptId;
+  let settleFailures = 1;
+  const settled: string[] = [];
+  const executor: TrustedHyperliquidTestnetAttemptExecutor = {
+    executeAttempt: async (request) => unresolved(request),
+    // Only the newest attempt ever becomes final; the 21 before it never do.
+    attemptStatus: async (request) => ({
+      state: "COMPLETED", queuePosition: null, lane: "FREE",
+      result: request.attemptId === finalAttempt ? result(request) : unresolved(request),
+    }),
+  };
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(path, executor, {
+    requireOwnerAuthorization: () => {},
+    admit: () => {},
+    settle: (request, outcome) => {
+      if (request.attemptId === finalAttempt && outcome.status === "RECONCILED" && outcome.packageStatus === "COMPLETED_EXACT") {
+        if (settleFailures > 0) {
+          settleFailures -= 1;
+          throw new Error("ledger busy");
+        }
+        settled.push(request.attemptId);
+      }
+    },
+  });
+  try {
+    for (const request of requests) await port.execute(request);
+    // A row whose stored result is not valid JSON must not stop every sweep.
+    const raw = new Database(path);
+    raw.prepare("UPDATE hyperliquid_terminal_executions SET result_json = '{' WHERE attempt_id = ?").run(requests[0]!.attemptId);
+    raw.close();
+    const cursor = { offset: 0 };
+    // First pass: rows 1-20. Second pass: row 21, whose settle fails once, so nothing is recorded.
+    assert.equal(await port.reconcileUnresolved(20, cursor), 0);
+    assert.equal(await port.reconcileUnresolved(20, cursor), 0);
+    assert.deepEqual(settled, []);
+    // The failed settle left the attempt non-final, so a later pass settles and records it.
+    let resolved = 0;
+    for (let pass = 0; pass < 3 && resolved === 0; pass += 1) resolved = await port.reconcileUnresolved(20, cursor);
+    assert.equal(resolved, 1);
+    assert.deepEqual(settled, [finalAttempt]);
   } finally {
     port.close();
     rmSync(scratch, { recursive: true, force: true });

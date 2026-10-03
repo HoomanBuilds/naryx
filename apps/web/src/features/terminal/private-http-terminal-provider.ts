@@ -54,6 +54,8 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   baseTestnetAtomic: RuntimeBoundaryHealth;
   arbitrumTestnetAsync: RuntimeBoundaryHealth;
   hyperliquidTestnet: RuntimeBoundaryHealth;
+  /** Each configured lane's market as the service reports it; LIVE serves previews and quotes. */
+  markets: Readonly<Partial<Record<DomainId, "LIVE" | "UNAVAILABLE">>>;
   controls: Readonly<{
     /** DISABLED: no local runtime is composed, the default for a real testnet deployment. */
     localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" | "DISABLED";
@@ -344,7 +346,11 @@ export type PackageLifecycleReceipt = Readonly<{
   receiptHashHex: string;
 }>;
 
-/** One package from GET /internal/terminal/packages. */
+/**
+ * One package from GET /internal/terminal/packages. For Base and Arbitrum, `state` is the outcome
+ * the service last observed on chain, with the transaction and receipt reference that proved it;
+ * null when the service never observed one.
+ */
 export type OwnerPackageEntry = Readonly<{
   orderHash: string;
   domainId: string;
@@ -354,6 +360,9 @@ export type OwnerPackageEntry = Readonly<{
   createdAtMs: number;
   attemptId: string | null;
   state: string | null;
+  transactionHash: string | null;
+  blockNumber: string | null;
+  receiptHash: string | null;
 }>;
 
 export type PackageLifecycleResponse = Readonly<{
@@ -1332,9 +1341,19 @@ function requireRuntimeBoundaryHealth(value: unknown, name: string): RuntimeBoun
   });
 }
 
+/** A service without the markets report (older releases) reports none. */
+function requireMarketStates(value: unknown): PrivateTerminalRuntimeHealth["markets"] {
+  if (value === undefined) return Object.freeze({});
+  if (!isRecord(value) || Object.entries(value).some(([domain, state]) =>
+    !TERMINAL_DOMAINS.has(domain) || (state !== "LIVE" && state !== "UNAVAILABLE"))) {
+    throw new Error("Private terminal market health is invalid.");
+  }
+  return Object.freeze({ ...value }) as PrivateTerminalRuntimeHealth["markets"];
+}
+
 function requireRuntimeHealth(
   value: unknown,
-): Omit<PrivateTerminalRuntimeHealth, "controls"> {
+): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets"> {
   if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
   requireExactKeys(
     value,
@@ -2350,7 +2369,8 @@ const TERMINAL_SYMBOL_PATTERN = /^[A-Z0-9]{1,12}$/;
 const TERMINAL_DECIMAL_PATTERN = /^(0|[1-9][0-9]*)\.[0-9]+$/;
 const TERMINAL_ATOMS_PATTERN = /^(0|[1-9][0-9]*)$/;
 const TERMINAL_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const TERMINAL_PRICE_PATTERN = /^\$(0|[1-9][0-9]*)\.[0-9]+$/;
+// The service prints USD-quoted prices as "$2679.99" and any other quote asset as "2679.99 TUSDC".
+const TERMINAL_PRICE_PATTERN = /^(\$(0|[1-9][0-9]*)\.[0-9]+|(0|[1-9][0-9]*)\.[0-9]+ [A-Z0-9]{1,12})$/;
 const TERMINAL_BASIS_PATTERN = /^[+-](0|[1-9][0-9]*)\.[0-9]{2} bps$/;
 const TERMINAL_MARKET_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   "DOMAIN_MARKET_UNAVAILABLE",
@@ -2361,21 +2381,47 @@ const TERMINAL_MARKET_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
 /** The service is reachable but has no fresh live market for the requested domain. */
 export class TerminalMarketUnavailableError extends Error {
   readonly code: string;
+  /** The service's own printable reason, such as a venue book check, when it gave one. */
+  readonly reason: string | undefined;
 
-  constructor(code: string) {
+  constructor(code: string, reason?: string) {
     super("Live market data is unavailable for this domain.");
     this.name = "TerminalMarketUnavailableError";
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
+/** The service answered and refused the ticket's input, such as a size outside the lane's range. */
+export class TerminalPreviewRejectedError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "TerminalPreviewRejectedError";
     this.code = code;
   }
 }
 
 async function terminalReadFailure(response: Response, name: string): Promise<Error> {
+  if (response.status === 400 && name === "preview") {
+    try {
+      const payload = await response.json() as unknown;
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (typeof error?.code === "string" && typeof error.message === "string" && error.message.length <= 160) {
+        return new TerminalPreviewRejectedError(error.code, error.message);
+      }
+    } catch {
+      // An unreadable 400 body is reported as a plain failure below.
+    }
+  }
   if (response.status === 503) {
     try {
       const payload = await response.json() as unknown;
-      const code = isRecord(payload) && isRecord(payload.error) ? payload.error.code : undefined;
-      if (typeof code === "string" && TERMINAL_MARKET_UNAVAILABLE_CODES.has(code)) {
-        return new TerminalMarketUnavailableError(code);
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (typeof error?.code === "string" && TERMINAL_MARKET_UNAVAILABLE_CODES.has(error.code)) {
+        const reason = typeof error.message === "string" && /^[ -~]{1,240}$/.test(error.message) ? error.message : undefined;
+        return new TerminalMarketUnavailableError(error.code, reason);
       }
     } catch {
       // An unreadable 503 body is reported as a plain failure below.
@@ -2384,17 +2430,23 @@ async function terminalReadFailure(response: Response, name: string): Promise<Er
   return new Error(`Private terminal ${name} failed with ${response.status}.`);
 }
 
-/** Replaces every market number with an unavailable state; nothing from another domain is shown. */
+/**
+ * Replaces every market number with an unavailable state; nothing from another domain is shown. Only
+ * this lane's own last service identity is kept: another lane's or the local fixture's pair, size
+ * symbol, and size presets are cleared.
+ */
 export function unavailableTerminalSnapshot(
   previous: TerminalViewModel,
   domain: DomainId,
+  reason?: string,
 ): TerminalViewModel {
+  const ownLane = previous.selectedDomain === domain && previous.environment.source === "PRIVATE_TERMINAL_BFF";
   return {
     ...previous,
     environment: {
       label: "UNAVAILABLE",
       title: "Market data unavailable",
-      detail: "The service has no fresh live market for this domain.",
+      detail: reason ?? "The service has no fresh live market for this domain.",
       capturedAt: "",
       source: "PRIVATE_TERMINAL_BFF",
       evidenceGrade: "UNAVAILABLE",
@@ -2404,11 +2456,13 @@ export function unavailableTerminalSnapshot(
     domains: previous.domains.map((entry) => entry.id === domain ? { ...entry, state: "Unavailable" } : entry),
     market: {
       ...previous.market,
+      ...(ownLane ? {} : { base: "-", quote: "-" }),
       packageId: "Market unavailable",
-      metrics: [{ label: "Market data", value: "Unavailable", detail: "No fresh live observation" }],
+      metrics: [{ label: "Market data", value: "Unavailable", detail: reason ?? "No fresh live observation" }],
     },
     chart: { ...previous.chart, points: [] },
     plans: previous.plans.map((plan) => ({ ...plan, legs: [] })),
+    ...(ownLane ? {} : { ticket: { ...previous.ticket, defaultSize: "0", sizeSymbol: "-" } }),
   };
 }
 
@@ -3154,6 +3208,13 @@ function requireBaseObservation(
   });
 }
 
+/** Exit controller receipt states: 1 sold the spot leg for proceeds; 2 the owner took it in kind for none. */
+export const ARBITRUM_EXIT_SPOT_IN_KIND = 2;
+
+function isArbitrumExitTerminalState(terminalState: number, spotQuoteAtoms: string): boolean {
+  return terminalState === 1 ? spotQuoteAtoms !== "0" : terminalState === ARBITRUM_EXIT_SPOT_IN_KIND && spotQuoteAtoms === "0";
+}
+
 function requireArbitrumAsyncObservation(
   value: unknown,
   request: EvmRequestIdentity,
@@ -3286,7 +3347,7 @@ function requireArbitrumAsyncObservation(
   }
   if (exitCompleted && (entry?.status !== "EXECUTED" || exit?.status !== "EXECUTED" || !exit.released ||
       /^0x0{64}$/.test(exit.evidenceHash) || !finalReceipt || finalReceipt.packageId !== packageId ||
-      finalReceipt.perpStatus !== 2 || finalReceipt.terminalState !== 1 ||
+      finalReceipt.perpStatus !== 2 || !isArbitrumExitTerminalState(finalReceipt.terminalState, finalReceipt.spotQuoteAtoms) ||
       evidenceGrade !== "finalized-contract-receipt")) {
     throw new Error("Arbitrum completed exit carries incomplete evidence.");
   }
@@ -3355,6 +3416,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const runtime = requireRuntimeHealth(payload.runtime);
     return Object.freeze({
       ...runtime,
+      markets: requireMarketStates(payload.markets),
       controls: requireRuntimeControls(payload),
     });
   }
@@ -4318,9 +4380,15 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const payload = await response.json() as unknown;
     const packages = typeof payload === "object" && payload !== null && Array.isArray((payload as { packages?: unknown }).packages)
       ? (payload as { packages: unknown[] }).packages : [];
+    // Absent evidence fields (an older service) read as unobserved; a malformed one drops the entry.
+    const optional = (value: unknown, pattern: RegExp): string | null | false =>
+      value === undefined || value === null ? null : typeof value === "string" && pattern.test(value) ? value : false;
     return Object.freeze(packages.flatMap((entry): OwnerPackageEntry[] => {
       if (typeof entry !== "object" || entry === null) return [];
       const value = entry as Record<string, unknown>;
+      const transactionHash = optional(value.transactionHash, /^0x[0-9a-f]{64}$/);
+      const blockNumber = optional(value.blockNumber, /^(0|[1-9][0-9]{0,19})$/);
+      const receiptHash = optional(value.receiptHash, /^0x[0-9a-f]{64}$/);
       if (typeof value.orderHash !== "string" || !/^[0-9a-f]{64}$/.test(value.orderHash)
           || typeof value.domainId !== "string" || typeof value.action !== "string"
           || typeof value.quantityAtoms !== "string" || !/^\d{1,40}$/.test(value.quantityAtoms)
@@ -4328,7 +4396,8 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
           || value.quantityDecimals < 0 || value.quantityDecimals > 36
           || typeof value.createdAtMs !== "number" || !Number.isSafeInteger(value.createdAtMs)
           || (value.attemptId !== null && (typeof value.attemptId !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(value.attemptId)))
-          || (value.state !== null && typeof value.state !== "string")) {
+          || (value.state !== null && (typeof value.state !== "string" || !/^[A-Z_]{1,40}$/.test(value.state)))
+          || transactionHash === false || blockNumber === false || receiptHash === false) {
         return [];
       }
       return [Object.freeze({
@@ -4340,6 +4409,9 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         createdAtMs: value.createdAtMs,
         attemptId: value.attemptId as string | null,
         state: value.state as string | null,
+        transactionHash,
+        blockNumber,
+        receiptHash,
       })];
     }));
   }

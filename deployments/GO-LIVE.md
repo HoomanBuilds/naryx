@@ -21,7 +21,7 @@ Each step links to the runbook that holds the exact commands. Env examples:
 
 ## 1. Wallets and tools
 
-- Foundry, the Solana CLI and Anchor toolchain, Node 22, and `jq`.
+- Foundry, the Solana CLI and Anchor toolchain, Node 22 with npm 11 (the lockfiles need it for `npm ci`), and `jq`.
 - Separate testnet wallets, each in a Foundry keystore or an external Solana keypair file (never in
   the repository): EVM deployer, proposer, canceller, executor, pauser, solver, test perp owner,
   funding keeper; Solana payer, upgrade authority, proposer, executor, market owner, solver, funder,
@@ -38,6 +38,13 @@ operator step 2.
 
 - Base: deploy `NaryxTestUSDC`; seed the WETH / tUSDC Uniswap V3 pool at the Chainlink price.
 - Arbitrum: seed the WETH / USDC.SG pool (fee 100) at the Chainlink price. USDC.SG is GMX's token.
+- Size the pools before the packages. Every Base and Arbitrum entry buys WETH from its pool and
+  every exit sells it back, so the WETH seeded in a pool bounds all users' open positions on that
+  lane together, and testnet ETH is the scarce input (faucets pay little per day). Seed as much
+  WETH as you can collect, then set the lane's maximum order size to about 1% of it (for example
+  2 WETH seeded allows 0.02 WETH packages). Order bounds include each size's price impact from the
+  pinned Uniswap quoter, and a size the pool cannot fill is refused before signing. The
+  runbook examples seed 1 WETH, which suits a private test, not a public launch.
 - Solana: create the faucet test USDC mint; claim for the funder and the solver.
 
 ## 3. Deploy and activate each lane
@@ -78,13 +85,25 @@ hashes, domain and template hashes, oracle reads, Hyperliquid metadata).
 Set the Hyperliquid template's `executionEnabled` to `true` only once the agent wallet is approved
 and funded; `false` serves quotes without executing.
 
-Limits every lane template asks for, sized for many users sharing the operator's inventory:
+Timing values (quote, route, and order lifetimes, staleness bounds, poll intervals): each template
+prompt carries a recommended value sized for a first-time user reading two wallet prompts and for
+how often that chain's oracle updates. Shorter values pass every test and then fail real users.
 
-- The per-operation and per-day principal caps: per package and per network per UTC day.
-- `maxPrincipalAtomsPerOwnerPerDay`: per wallet per UTC day, so one wallet cannot spend the whole
-  day's cap. Exits count as zero principal, so a user can always close.
+Limits, modelled on how large venues bound risk rather than ration trading:
+
+- `maxPrincipalAtomsPerOperation` and `maxRecoveryLossAtomsPerOperation`: every package, every lane.
+- Capacity comes from the solver's own funds: a trade the solver cannot fill fails cleanly before
+  anything moves (Base reverts atomically, an Arbitrum reservation fails without the bond).
 - Hyperliquid `omnibus`: open packages per wallet in the shared trading account, and the total
-  entry notional the account carries. Without it the API refuses Hyperliquid entries.
+  entry notional the account carries (an open-interest limit). Without it the API refuses
+  Hyperliquid entries.
+- Each lane's entry in the generated `api/testnet-execution-policy.json` is its on/off switch:
+  remove a domain to stop new trades on it at once (exits on a removed domain are refused too, so
+  prefer this only for emergencies).
+- Optional daily brakes, off by default: add `maxPrincipalAtomsPerDay` (per network per UTC day)
+  and `maxPrincipalAtomsPerOwnerPerDay` (per wallet) to the lane's entry under the
+  `api/testnet-execution-policy.json` output in your template copy. Exits count as zero principal
+  against them.
 - Arbitrum `exitCallbackGasLimit`: the GMX callback of a full close also sells the spot leg, so it
   needs far more gas than the entry callback.
 
@@ -133,6 +152,7 @@ the bundle, so redeploy after any change. Leave the API URL unset for Preview de
 2. Portfolio: connect a fresh wallet, claim test USDC on Base, Arbitrum, and Solana, and see the
    balances update.
 3. Trade: one minimum-size package per lane, entry and exit, and its receipts on the Activity page.
+   Skip Solana while its exits are unavailable (see "Not available yet").
 4. Many users: repeat step 3 with a second wallet at the same time, then open the Activity page
    from another browser with the first wallet and exit from there.
 5. Keeper: the code watchlist reports every target `MATCH`; the funding mirror stays `disabled`
@@ -146,7 +166,7 @@ Nothing in a lane is tied to the operator's wallet. Any visitor connects their o
 |---|---|---|---|
 | Base Sepolia | Claim tUSDC in Portfolio; ETH gas from a public faucet | The wallet signs and sends the atomic package | Wallet-signed, from any device |
 | Arbitrum Sepolia | Mint USDC.SG in Portfolio; ETH gas from a public faucet | The wallet creates its own Naryx account and signs; the solver submits to GMX and pays GMX fees | Wallet-signed exit authorization; the solver submits the full close |
-| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the service-built steps | Wallet-signed, from any device |
+| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | Paused while exits are unavailable, so nobody opens a package they cannot close | Not available yet: the terminal and Portfolio show why instead of an exit |
 | Hyperliquid testnet | None | The EVM wallet signs the package authorization; the shared trading account executes, one package at a time | The owner wallet signs; only its own packages |
 
 The Activity page lists each wallet's packages from the API, so they follow the wallet across
@@ -163,20 +183,59 @@ passes on every lane being announced.
 These have passed local, fork, and LiteSVM tests but have never run against the live testnets:
 
 - No lane has executed a package on a live testnet yet; step 8 is the first end-to-end run.
+- Base has run the whole user journey on a local anvil fork of Base Sepolia, deployed with these
+  runbooks and driven through the real web app, API, and solver with a fresh wallet: claim test
+  USDC, set up the account, enter, reload, restart the API, wait past staleness, exit, withdraw,
+  enter again, and a second wallet trading at the same time. Arbitrum has run the same journey on
+  a local anvil fork of Arbitrum Sepolia, with GMX orders executed and cancelled through the pinned
+  OrderHandler by an impersonated order keeper using GMX's on-chain Chainlink price feed provider
+  (the live keepers use Data Streams reports, which a fork cannot produce): entry, reload, API
+  restart, an hour of accrued fees, full close, a close GMX cancelled and its retry, a second
+  wallet, an oversized order refused before signing, and GMX-cancelled entries refunded by the
+  bonded recovery. Solana and Hyperliquid have not had a journey run; expect their first live run
+  to surface integration issues.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
-  week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. Automated
-  recovery of a stuck GMX order is not built, so a failed order is resolved by the bonded recovery
-  path and the operator.
+  week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. A request GMX
+  cancels, or one still pending after its venue deadline, is recovered by the solver through the
+  coordinator's bonded recovery (the spot leg is sold back to the owner and the package closes);
+  the API sweep drives it even when the owner has left the page. A request still pending when its
+  recovery deadline passes goes to manual intervention, which has no on-chain path out while GMX
+  still holds the order; keep the solver and API running.
+- Arbitrum entry pricing: entries and exits are priced at GMX's own Reader execution price for the
+  exact size, so the quoted spread includes GMX's price impact. On 2026-10-03 the GMX ETH/USD testnet
+  market was about 29:1 short-heavy and a new short paid about 15% negative price impact, so entries
+  are declined before signing: the spread exceeds any usual `maxEntrySpread`, and the impact, which
+  GMX V2.2 charges when the short closes, exceeds a 15% margin. A short whose collateral after fees
+  is under GMX's `MIN_COLLATERAL_USD` (1 USD, for example 0.001 WETH at 15% margin) is declined too.
+  Of a close's negative impact GMX pays out at most `MAX_POSITION_IMPACT_FACTOR` (0.5%) and keeps
+  the rest as claimable collateral for the account; the Naryx account has no path to claim it, so
+  the quotes count it as a cost. The open-interest multiplier on GMX's minimum collateral factor is
+  not modeled (about 0.001% on testnet).
 - Arbitrum exit: GMX's accrued borrowing and funding fees are not read exactly, so the close carries
   a slippage allowance; if it is too small, GMX cancels the close and the package stays open. The
   close callback gas (`exitCallbackGasLimit`) is untested on the live network, and GMX refunds the
   unused execution fee to the owner, not the solver.
 - Hyperliquid: every user's package runs in the service's shared testnet account (Hyperliquid's
   faucet does not fund new users), one package at a time; an outcome that is not final blocks the
-  lane until an operator releases it (`deployments/aws/README.md`, Operating). A spot buy's fee is
+  lane until fresh evidence shows it final (released automatically) or an operator releases it
+  (`deployments/aws/README.md`, Operating). A spot buy's fee is
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
-- Solana: firm entry and exit have no end-to-end LiteSVM test.
-- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet.
+- Solana: firm entry has no end-to-end LiteSVM test.
+- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
+  are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
+  not failed transactions, and a size the pool cannot fill is refused before signing.
 - The public v1 market API (package order book, solver metrics) is optional and off unless
   configured; quote-based trading does not need it.
+
+## Not available yet
+
+- Solana Devnet exits. The only Devnet exit route is the solver's firm buy-back
+  (`execute_firm_cash_and_carry` with action `EXIT` on the `devnet-test-perp` core build), and the
+  protocol admits firm quotes only for atomic entries (`solverQuote` and `validatePackageAdmission`
+  in `packages/protocol-types`, mirrored by `WireFirmQuoteShape` in the core program), so the
+  solver's exit bid is refused before any transaction is built. The public Orca exit stays
+  fail-closed until a Devnet Orca spot venue, market, and adapter are registered. The terminal therefore
+  pauses Solana entries too, so nobody opens a package they cannot close; removing the Solana entry
+  from `EXIT_UNAVAILABLE` (`apps/web/src/features/terminal/shell/terminal-context.tsx`) re-enables
+  both once exits ship. Do not announce the Solana lane until then.

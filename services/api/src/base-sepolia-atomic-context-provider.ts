@@ -99,7 +99,8 @@ export interface BaseSepoliaAtomicContextProviderOptions {
   readonly intents: ExecutionIntentStore;
   readonly orders: InternalOrderStore;
   readonly deployments: readonly BaseSepoliaAtomicDeploymentConfiguration[];
-  readonly currentUnixSeconds: () => bigint;
+  /** Chain time: admission and the adapter's bounds must agree with the contracts' block.timestamp. */
+  readonly currentUnixSeconds: () => bigint | Promise<bigint>;
   readonly reads: BaseSepoliaAtomicLiveReads;
 }
 
@@ -442,7 +443,7 @@ export function createBaseSepoliaAtomicContextProvider(
     const orderDomain = order.domain;
     const configuration = deploymentFor(orderDomain, options.deployments);
     validateBaseSepoliaAtomicDeploymentConfiguration(configuration);
-    const currentUnixSeconds = requireClock(options.currentUnixSeconds());
+    const currentUnixSeconds = requireClock(await options.currentUnixSeconds());
     const route = fromProtocolJson(selected.route, "selected.route") as RoutePayloadInput;
     const quote = fromProtocolJson(selected.quote, "selected.quote") as SolverQuoteInput;
     // Observation only binds identities and hashes, so it still admits the evidence after expiry.

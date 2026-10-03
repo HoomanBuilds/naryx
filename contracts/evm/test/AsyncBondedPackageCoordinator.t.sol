@@ -8,6 +8,7 @@ import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {AsyncBondedPackageCoordinator} from "../src/AsyncBondedPackageCoordinator.sol";
 import {IAsyncVenueAdapter} from "../src/interfaces/IAsyncVenueAdapter.sol";
+import {Eip7702Delegate, RevertingSignatureOwner, WrongMagicSignatureOwner} from "./OwnerSignature.t.sol";
 
 contract AsyncBondToken is ERC20 {
     constructor() ERC20("Bond", "BOND") {}
@@ -166,6 +167,28 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         assertEq(token.balanceOf(RESERVE_RECIPIENT), terms.recoveryReserveAtoms);
     }
 
+    function testDelegatedEoaOwnerReservesWithItsOwnSignature() public {
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, _request());
+        bytes memory signature = _sign(terms);
+        vm.signAndAttachDelegation(address(new Eip7702Delegate()), OWNER_KEY);
+        vm.prank(SOLVER);
+        bytes32 id = coordinator.reserve(terms, signature);
+        assertGt(owner.code.length, 0);
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.RESERVED));
+        assertEq(coordinator.nextNonce(owner), 1);
+    }
+
+    function testContractOwnerWithWrongMagicOrRevertIsRejected() public {
+        address[2] memory rejecting = [address(new WrongMagicSignatureOwner()), address(new RevertingSignatureOwner())];
+        for (uint256 i; i < rejecting.length; ++i) {
+            AsyncBondedPackageCoordinator.Terms memory terms = _terms(rejecting[i], _request());
+            bytes memory signature = _sign(terms);
+            vm.prank(SOLVER);
+            vm.expectRevert(AsyncBondedPackageCoordinator.InvalidSignature.selector);
+            coordinator.reserve(terms, signature);
+        }
+    }
+
     function testAdmissionAndCodeIdentityFailClosed() public {
         IAsyncVenueAdapter.VenueRequest memory request = _request();
         AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, request);
@@ -302,6 +325,68 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         );
         vm.expectRevert(AsyncBondedPackageCoordinator.ReleaseLocked.selector);
         coordinator.close(id, 3);
+        vm.warp(request.recoveryDeadline);
+        vm.prank(owner);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.submitOverdueRecovery(id, 3);
+    }
+
+    function testOverdueRecoveryOpensOnlyAtRecoveryDeadlineForOwnerOrSolver() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, request);
+        bytes32 id = _reserve(terms);
+        _submit(id, request);
+        coordinator.markVenuePending(id, 2);
+        vm.warp(terms.venueDeadline + 1);
+        coordinator.beginRecovery(id, 3);
+        vm.warp(terms.recoveryDeadline - 1);
+        vm.prank(owner);
+        vm.expectRevert(AsyncBondedPackageCoordinator.DeadlineNotReached.selector);
+        coordinator.submitOverdueRecovery(id, 4);
+        vm.warp(terms.recoveryDeadline);
+        vm.expectRevert(AsyncBondedPackageCoordinator.DeadlinePassed.selector);
+        coordinator.submitRecovery(id, 4);
+        vm.prank(BOND_RECIPIENT);
+        vm.expectRevert(AsyncBondedPackageCoordinator.UnauthorizedActor.selector);
+        coordinator.submitOverdueRecovery(id, 4);
+        vm.prank(SOLVER);
+        coordinator.submitOverdueRecovery(id, 4);
+        assertEq(adapter.recoveryCount(), 1);
+        vm.prank(owner);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.submitOverdueRecovery(id, 5);
+        _report(id, 5, AsyncBondedPackageCoordinator.Outcome.RECOVERED, keccak256("late-recovered"));
+        coordinator.close(id, 6);
+        assertEq(token.balanceOf(BOND_RECIPIENT), terms.bondAtoms);
+        assertEq(token.balanceOf(RESERVE_RECIPIENT), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(SLASH_RECIPIENT), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
+    }
+
+    function testOverdueRecoveryAfterMissedDutyPaysTheSlash() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, request);
+        bytes32 id = _reserve(terms);
+        _submit(id, request);
+        _report(id, 2, AsyncBondedPackageCoordinator.Outcome.CANCELLED, keccak256("cancelled"));
+        coordinator.beginRecovery(id, 3);
+        vm.warp(terms.recoveryDeadline + 1);
+        vm.prank(SOLVER);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.submitOverdueRecovery(id, 4);
+        coordinator.slashMissedRecovery(id, 4);
+        vm.expectRevert(AsyncBondedPackageCoordinator.ReleaseLocked.selector);
+        coordinator.close(id, 5);
+        vm.prank(owner);
+        coordinator.submitOverdueRecovery(id, 5);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.slashMissedRecovery(id, 6);
+        _report(id, 6, AsyncBondedPackageCoordinator.Outcome.RECOVERED, keccak256("late-recovered"));
+        coordinator.close(id, 7);
+        assertEq(token.balanceOf(SLASH_RECIPIENT), terms.bondAtoms);
+        assertEq(token.balanceOf(RESERVE_RECIPIENT), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(BOND_RECIPIENT), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
     }
 
     function testRecoveryDeadlineMissDoesNotCreateSlashDuty() public {

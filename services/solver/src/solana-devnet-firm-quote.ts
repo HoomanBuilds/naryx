@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import {
   bytesEqual,
+  canonicalBytes,
+  compareBytes,
+  encodeAssetRef,
   exactPrice,
   packageOrderHash,
   quoteHash,
@@ -17,6 +20,8 @@ import {
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
+  type AdapterRef,
+  type AssetAmount,
   type AssetRef,
   type Hash32,
   type PackageOrder,
@@ -72,6 +77,24 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const shardWriteTails = new Map<string, Promise<unknown>>();
 
 /** Runs package book writes for one shard one at a time within this solver process. */
+/**
+ * A binding's quote lock pins the shard's reference and shard sequences, and the user's execution
+ * requires them unchanged until the binding expires. Bindings hold the shard until their expiry slot;
+ * the standing-level refresher never writes a held shard.
+ */
+const shardHolds = new Map<string, bigint>();
+
+export function holdShardSequences(shard: string, untilSlot: bigint): void {
+  const current = shardHolds.get(shard);
+  if (current === undefined || untilSlot > current) shardHolds.set(shard, untilSlot);
+}
+
+/** Whether a standing-level write at `slot` could invalidate a binding still in flight. */
+export function shardSequencesHeld(shard: string, slot: bigint): boolean {
+  const until = shardHolds.get(shard);
+  return until !== undefined && slot < until;
+}
+
 export async function withShardWriteLock<T>(shard: string, task: () => Promise<T>): Promise<T> {
   const previous = shardWriteTails.get(shard) ?? Promise.resolve();
   const run = previous.then(task, task);
@@ -91,6 +114,16 @@ function fail(message: string): never {
 function sameAsset(left: AssetRef, right: AssetRef): boolean {
   return left.assetId === right.assetId && left.decimals === right.decimals
     && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+/**
+ * Per-asset fee entries in canonical asset order. The test perp charges its taker fee in the quote
+ * asset, and a solver quote always lists the base asset's fee as well, here zero.
+ */
+function feesByAsset(base: AssetRef, quote: AssetRef, quoteAtoms: bigint): AssetAmount[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  return [{ asset: base, atoms: 0n }, { asset: quote, atoms: quoteAtoms }]
+    .sort((left, right) => compareBytes(key(left.asset), key(right.asset)));
 }
 
 function gcd(left: bigint, right: bigint): bigint {
@@ -224,11 +257,16 @@ export function firmRouteBindingId(name: string): string {
 
 function accountBindings(
   manifest: SolanaDevnetSharedManifest,
+  config: SolanaDevnetSolverConfig,
   accounts: SolanaDevnetFirmAccounts,
 ): RouteAccountBindingInput[] {
   const programCode: Record<string, string> = {
     coreProgram: 'core', reservationProgram: 'reservation', packageBookProgram: 'package_book',
     perpAdapterProgram: 'perp_adapter', perpVenueProgram: 'perp_venue',
+  };
+  // Each leg's action targets its adapter's program; admission binds the leg to the target's adapter.
+  const legAdapter: Record<string, AdapterRef> = {
+    reservationProgram: config.spot.adapter, perpAdapterProgram: config.perpetual.adapter,
   };
   const tokenAuthority: Record<string, string> = {
     reservationVault: accounts.reservation!, solverQuote: accounts.solver!, traderBase: accounts.trader!,
@@ -236,9 +274,11 @@ function accountBindings(
   };
   return Object.entries(accounts).map(([name, identity]) => {
     const program = programCode[name];
+    const adapter = legAdapter[name];
     const authority = tokenAuthority[name];
     return {
       routeBindingId: firmRouteBindingId(name),
+      ...(adapter === undefined ? {} : { adapter, adapterBindingId: 'program' }),
       accountIdentity: identity,
       ...(program === undefined ? {} : { codeIdentity: toHex(programAddress(manifest, program).codeIdentity) }),
       ...(authority === undefined ? {} : { ownerIdentity: TOKEN_PROGRAM_ID.toBase58(), authorityIdentity: authority }),
@@ -402,7 +442,11 @@ export async function readSolanaDevnetQuoteState(
   return Object.freeze({ slot, market, oraclePricePerLot, reservationClass, shard, levels: page.levels });
 }
 
-/** A usable firm level: active this epoch, the reviewed policy and settlement class, enough capacity. */
+/**
+ * The usable firm level with the latest expiry (ties to the lower slot index): active this epoch,
+ * the reviewed policy and settlement class, enough capacity. The latest expiry gives the quote the
+ * longest time to fund, lock, and execute.
+ */
 export function selectFirmLevel(
   state: SolanaDevnetLiveQuoteState,
   config: SolanaDevnetSolverConfig,
@@ -411,13 +455,21 @@ export function selectFirmLevel(
   maximumExpiry: bigint,
   side: number = QUOTE_SIDE_ASK,
 ): QuoteLevelState | undefined {
-  return state.levels.find((level) => level.active && level.epoch === state.shard.epoch
-    && level.side === side && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
-    && bytesEqual(level.reservationPolicyHash, state.reservationClass.policyHash)
-    && bytesEqual(level.settlementClassIdentityHash, config.series.settlementClassIdentityHash)
-    && units >= level.minPackageSizeUnits && units <= level.maxPackageSizeUnits && units <= level.remainingCapacity
-    && level.expirySlot > minimumExpiry && level.expirySlot <= maximumExpiry
-    && level.expirySlot <= state.shard.heartbeatExpirySlot);
+  let selected: QuoteLevelState | undefined;
+  for (const level of state.levels) {
+    const usable = level.active && level.epoch === state.shard.epoch
+      && level.side === side && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
+      && bytesEqual(level.reservationPolicyHash, state.reservationClass.policyHash)
+      && bytesEqual(level.settlementClassIdentityHash, config.series.settlementClassIdentityHash)
+      && units >= level.minPackageSizeUnits && units <= level.maxPackageSizeUnits && units <= level.remainingCapacity
+      && level.expirySlot > minimumExpiry && level.expirySlot <= maximumExpiry
+      && level.expirySlot <= state.shard.heartbeatExpirySlot;
+    if (usable && (selected === undefined || level.expirySlot > selected.expirySlot
+      || (level.expirySlot === selected.expirySlot && level.slotIndex < selected.slotIndex))) {
+      selected = level;
+    }
+  }
+  return selected;
 }
 
 /**
@@ -485,6 +537,64 @@ export function packageBookLevelInstructions(input: Readonly<{
       { programId: program, keys: keys(true), data: upsert },
     ],
   });
+}
+
+/**
+ * How far ahead a standing level must stay usable: a quarter of the quote TTL. A quote needs a level
+ * expiring beyond a third of the TTL from its own slot, so a level written with a full TTL keeps
+ * satisfying this lead for at least 5/12 of the TTL after it is written. The configured minimum TTL
+ * makes that several refresh cycles, so a fresh level is not rewritten on the next one.
+ */
+export function standingLevelLeadSlots(quoteTtlSlots: bigint): bigint {
+  return quoteTtlSlots / 4n;
+}
+
+/**
+ * Standing liquidity, as an exchange market maker keeps it: one firm level per side (the ask that
+ * entries fill, the bid that exits fill) that a quote made `standingLevelLeadSlots` from now can
+ * still use, at full capacity. Without it the first quote after a level ages out waits for a Devnet
+ * write to finalize, which outlasts the API's quote request. A level written now (expiry now + quote
+ * TTL) stops satisfying the lead 5/12 of the TTL later, so this writes about once per side per that
+ * window. Returns how many levels it wrote.
+ */
+export async function refreshSolanaDevnetStandingLevels(
+  dependencies: Pick<SolanaDevnetFirmQuoteDependencies, 'manifest' | 'config' | 'rpc' | 'writer' | 'key'>,
+): Promise<number> {
+  const { manifest, config, rpc, writer, key } = dependencies;
+  if (writer === undefined) return 0;
+  let written = 0;
+  for (const side of [QUOTE_SIDE_ASK, QUOTE_SIDE_BID]) {
+    await withShardWriteLock(config.accounts.packageBookShard, async () => {
+      const state = await readSolanaDevnetQuoteState(rpc, manifest, config);
+      // A user between binding and execution needs the shard sequences unchanged.
+      if (shardSequencesHeld(config.accounts.packageBookShard, state.slot)) return;
+      const expirySlot = standingLevelExpiry(state, config, side);
+      if (expirySlot === undefined) return;
+      const plan = packageBookLevelInstructions({ manifest, config, state, expirySlot, side });
+      await writer.sendAndFinalize(plan.instructions, key.keypair);
+      written += 1;
+    });
+  }
+  return written;
+}
+
+/**
+ * The expiry of the standing level to write on `side`, or undefined when a level a quote made
+ * `standingLevelLeadSlots` from now could still use already exists, at full size.
+ */
+export function standingLevelExpiry(
+  state: SolanaDevnetLiveQuoteState,
+  config: Pick<SolanaDevnetSolverConfig, 'maxQuantityAtoms' | 'levelCapacityUnits' | 'quoteTtlSlots' | 'series'>,
+  side: number,
+): bigint | undefined {
+  const maxUnits = config.maxQuantityAtoms / config.series.spotBaseAtomsPerPackageUnit;
+  const units = maxUnits < config.levelCapacityUnits ? maxUnits : config.levelCapacityUnits;
+  if (units <= 0n) return undefined;
+  const quotedAt = state.slot + standingLevelLeadSlots(config.quoteTtlSlots);
+  // The window a quote at that slot applies: expiry beyond a third of the TTL, within the TTL.
+  const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + config.quoteTtlSlots / 3n,
+    quotedAt + config.quoteTtlSlots, side);
+  return usable === undefined ? state.slot + config.quoteTtlSlots : undefined;
 }
 
 export type SolanaDevnetEntryPricing = Readonly<{
@@ -704,9 +814,13 @@ export function createSolanaDevnetFirmQuotePort(
         fail('entry spread is worse than the order maximum');
       }
       leg = pricing;
+      // The protocol takes a signed rate only in lowest terms; dividing both sides keeps it exact.
+      const divisor = gcd(spreadQuoteAtoms < 0n ? -spreadQuoteAtoms : spreadQuoteAtoms, order.quantity.atoms);
       quotedOutcome = {
         kind: 'ENTRY_SPREAD',
-        entrySpread: { baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms, baseAtoms: order.quantity.atoms, roundingDirection: 'CEIL' },
+        entrySpread: {
+          baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms / divisor, baseAtoms: order.quantity.atoms / divisor, roundingDirection: 'CEIL',
+        },
       };
     }
     const side = exit ? QUOTE_SIDE_BID : QUOTE_SIDE_ASK;
@@ -772,7 +886,7 @@ export function createSolanaDevnetFirmQuotePort(
       routeExpiryValue,
       feePolicyVersion: config.feePolicyVersion,
       feePolicyManifestHash: config.feePolicyManifestHash,
-      accountBindings: accountBindings(manifest, accounts),
+      accountBindings: accountBindings(manifest, config, accounts),
       serviceCharges: [],
       preconditions: config.route.preconditions,
       legs: [
@@ -793,6 +907,7 @@ export function createSolanaDevnetFirmQuotePort(
     };
     const validatedRoute = routePayload(route, 'solanaDevnetRoute');
     const zeroQuote = { asset: quoteAsset, atoms: 0n };
+    const venueFees = feesByAsset(baseAsset, quoteAsset, leg.perpFeeAtoms);
     const unsigned: SolverQuoteInput = {
       version: 1,
       environment: order.environment,
@@ -811,9 +926,9 @@ export function createSolanaDevnetFirmQuotePort(
       expectedNetSpotQuantity: exit ? { asset: baseAsset, atoms: -order.quantity.atoms } : order.quantity,
       expectedBaseAssetFee: { asset: baseAsset, atoms: 0n },
       expectedMarginDelta: zeroQuote,
-      expectedRawFillFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
-      expectedBuilderFeesByAsset: [zeroQuote],
-      expectedNormalizedVenueFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
+      expectedRawFillFeesByAsset: venueFees,
+      expectedBuilderFeesByAsset: feesByAsset(baseAsset, quoteAsset, 0n),
+      expectedNormalizedVenueFeesByAsset: venueFees,
       solverFee: zeroQuote,
       protocolFee: zeroQuote,
       expectedPriorityFee: zeroQuote,

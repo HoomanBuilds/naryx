@@ -20,6 +20,12 @@ import {IExactSpotPort} from "../src/interfaces/IExactSpotPort.sol";
 import {ISpotFillRecorder} from "../src/interfaces/ISpotFillRecorder.sol";
 import {ISynFuturesInstrument} from "../src/interfaces/ISynFuturesInstrument.sol";
 import {ISynFuturesPositionObserver} from "../src/interfaces/ISynFuturesPositionObserver.sol";
+import {
+    Eip7702Delegate,
+    Erc1271SignerOwner,
+    RevertingSignatureOwner,
+    WrongMagicSignatureOwner
+} from "./OwnerSignature.t.sol";
 
 contract StrategyAccountToken is ERC20 {
     constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
@@ -475,6 +481,36 @@ contract NaryxStrategyAccountTest is Test {
         vm.prank(owner);
         vm.expectRevert(NaryxStrategyAccount.TransferExpired.selector);
         account.acceptOwnerTransfer();
+    }
+
+    function testDelegatedEoaOwnerExecutesPackageWithItsOwnSignature() public {
+        (PackageVerifier.Execution memory execution, ResourceRegistry.CashCarryAdmission memory admission) = _entry();
+        _admit(admission);
+        (bytes memory traderSignature, bytes memory solverSignature) = _sign(execution, admission);
+        vm.signAndAttachDelegation(address(new Eip7702Delegate()), ownerKey);
+
+        bytes32 receiptHash = account.executePackage(
+            execution, admission, traderSignature, solverSignature, _tradeArgs(-int128(int256(QUANTITY)), 4 ether)
+        );
+
+        assertGt(owner.code.length, 0);
+        assertEq(verifier.receipt(receiptHash).strategyAccount, address(account));
+        assertEq(base.balanceOf(address(account)), QUANTITY);
+    }
+
+    function testContractOwnerSignatureFollowsErc1271() public {
+        uint256 walletSignerKey = 0x1271;
+        bytes32 digest = keccak256("strategy-intent");
+        NaryxStrategyAccount walletAccount =
+            new NaryxStrategyAccount(address(new Erc1271SignerOwner(vm.addr(walletSignerKey))), verifier);
+        assertEq(walletAccount.isValidSignature(digest, _signature(walletSignerKey, digest)), bytes4(0x1626ba7e));
+        assertEq(walletAccount.isValidSignature(digest, _signature(ownerKey, digest)), bytes4(0xffffffff));
+
+        address[2] memory rejecting = [address(new WrongMagicSignatureOwner()), address(new RevertingSignatureOwner())];
+        for (uint256 i; i < rejecting.length; ++i) {
+            NaryxStrategyAccount rejectingAccount = new NaryxStrategyAccount(rejecting[i], verifier);
+            assertEq(rejectingAccount.isValidSignature(digest, _signature(ownerKey, digest)), bytes4(0xffffffff));
+        }
     }
 
     function testExitRejectsZeroEntryReceipt() public {

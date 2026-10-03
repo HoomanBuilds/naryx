@@ -5,8 +5,9 @@ import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 /**
  * GET /internal/terminal/packages?owner=<wallet>: the packages a wallet created, newest first, from
  * the API's own durable records, so a user sees them on any device. Only public order facts are
- * returned (an order's domain, action, size, and lifecycle state); on-chain open positions are read
- * by each lane's account route.
+ * returned (an order's domain, action, size, and state); on-chain open positions are read by each
+ * lane's account route. State is the lifecycle head where a lane records one, otherwise the outcome
+ * the API last observed on chain for an EVM attempt, with its transaction and receipt reference.
  */
 export type OwnerPackage = Readonly<{
   orderHash: string;
@@ -18,7 +19,21 @@ export type OwnerPackage = Readonly<{
   createdAtMs: number;
   attemptId: string | null;
   state: string | null;
+  transactionHash: string | null;
+  blockNumber: string | null;
+  receiptHash: string | null;
 }>;
+
+/** What the chain proved about an attempt, as the API last observed it. */
+export type OwnerPackageOutcome = Readonly<{
+  state: string;
+  transactionHash: string | null;
+  blockNumber: string | null;
+  receiptHash: string | null;
+}>;
+
+/** Undefined for an attempt the API never observed on chain; no state is guessed for it. */
+export type OwnerPackageOutcomeReader = (attemptId: string) => OwnerPackageOutcome | undefined;
 
 const OWNER = /^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 const LIMIT = 50;
@@ -42,6 +57,7 @@ export function listOwnerPackages(
     orders: Pick<InternalOrderStore, "listByOwner" | "getCanonicalOrderByHash">;
     intents?: Pick<ExecutionIntentStore, "getAttemptForOrder">;
     lifecycle?: Pick<PackageLifecycleStore, "getAttempt">;
+    outcomes?: OwnerPackageOutcomeReader;
   }>,
 ): readonly OwnerPackage[] {
   const records = stores.orders.listByOwner?.(owner, LIMIT) ?? [];
@@ -50,6 +66,7 @@ export function listOwnerPackages(
     if (order === undefined) return [];
     const attempt = stores.intents?.getAttemptForOrder(record.orderHashHex);
     const lifecycle = attempt === undefined ? undefined : stores.lifecycle?.getAttempt(attempt.attemptId);
+    const outcome = attempt === undefined || lifecycle !== undefined ? undefined : stores.outcomes?.(attempt.attemptId);
     return [Object.freeze({
       orderHash: record.orderHashHex,
       domainId: record.domainId,
@@ -59,7 +76,10 @@ export function listOwnerPackages(
       quantityDecimals: order.quantity.asset.decimals,
       createdAtMs: record.createdAtMs,
       attemptId: attempt?.attemptId ?? null,
-      state: lifecycle === undefined ? null : String(lifecycle.state),
+      state: lifecycle !== undefined ? String(lifecycle.state) : outcome?.state ?? null,
+      transactionHash: outcome?.transactionHash ?? null,
+      blockNumber: outcome?.blockNumber ?? null,
+      receiptHash: outcome?.receiptHash ?? null,
     })];
   }));
 }

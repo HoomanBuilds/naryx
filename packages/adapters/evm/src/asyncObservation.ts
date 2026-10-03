@@ -41,6 +41,8 @@ export const VENUE_STATUS_LABELS = [
 ] as const;
 
 const TERMINAL_COMPLETE = 1;
+/** After the exit's `cancelAfter` the owner took the spot base token in kind; the receipt carries no quote proceeds. */
+const TERMINAL_SPOT_IN_KIND = 2;
 const ASYNC_BONDED_EXECUTION_CLASS_ID = keccak256(stringToHex('ASYNC_BONDED_SOLVER'));
 
 export type EvmAsyncLifecycle =
@@ -536,7 +538,9 @@ export async function observeAsyncBondedPackage(
     if (parsed !== null) {
       if (
         !equalHash(parsed.packageId, packageId) || !equalHash(parsed.entryRequestKey, entryRequestKey)
-        || !equalHash(parsed.exitRequestKey, exitRequestKey) || parsed.terminalState !== TERMINAL_COMPLETE
+        || !equalHash(parsed.exitRequestKey, exitRequestKey)
+        || !(parsed.terminalState === TERMINAL_COMPLETE ? parsed.spotQuoteAtoms > 0n
+          : parsed.terminalState === TERMINAL_SPOT_IN_KIND && parsed.spotQuoteAtoms === 0n)
         || parsed.perpStatus !== VENUE_STATUS_LABELS.indexOf(exit.status)
       ) {
         return fail(expectedChain, packageId, view, entry, 'final package receipt does not match the bound package and exit');

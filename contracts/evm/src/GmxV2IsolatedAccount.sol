@@ -33,6 +33,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
     bytes32 public constant SIZE_IN_USD = keccak256(abi.encode("SIZE_IN_USD"));
     bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
     bytes32 public constant SPOT_EXIT_EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_SPOT_EXIT_EVIDENCE_V1");
+    bytes32 public constant SPOT_IN_KIND_EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_SPOT_IN_KIND_EVIDENCE_V1");
 
     error InvalidConfiguration();
     error DeploymentChanged();
@@ -53,6 +54,9 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         address indexed fundingOwner,
         uint256 baseAtoms,
         uint256 quoteAtoms
+    );
+    event SpotInventoryReturnedInKind(
+        bytes32 indexed packageId, bytes32 indexed requestKey, address indexed recipient, uint256 baseAtoms
     );
 
     struct SpotFillContext {
@@ -266,7 +270,13 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         emit SpotInventoryOpened(packageId, requestKey, spotEntry.fundingOwner, spotEntry.baseAtoms, quoteIn);
     }
 
-    function rollbackSpot(bytes32 packageId, bytes32 requestKey) external nonReentrant returns (uint256 quoteOut) {
+    /// @notice Sells the spot back for at least the signed rollback floor, or, when `inKind`, returns the spot
+    /// base token itself to the funding owner. The entry controller decides who may choose `inKind` and when.
+    function rollbackSpot(bytes32 packageId, bytes32 requestKey, bool inKind)
+        external
+        nonReentrant
+        returns (uint256 quoteOut)
+    {
         _assertEntryController();
         _assertSpotDeployment();
         GmxV2.SpotEntryRegistration memory registration = _spotRegistration;
@@ -280,32 +290,30 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
                 || collateralToken.allowance(address(this), address(spotPort)) != 0
         ) revert InvalidRequest();
 
-        quoteOut = _sellSpot(
-            SpotSale({
-                packageNonce: registration.packageNonce,
-                fillCommitment: registration.rollbackFillCommitment,
-                orderHash: registration.orderHash,
-                quoteHash: registration.quoteHash,
-                routeHash: registration.routeHash,
-                baseAtoms: registration.baseAtoms,
-                minQuoteAtoms: registration.rollbackMinQuoteAtoms
-            })
-        );
-
-        address fundingOwner = registration.fundingOwner;
-        uint256 baseAtoms = registration.baseAtoms;
-        delete _spotRegistration;
-        activeSpotRequestKey = bytes32(0);
-        activeSpotQuoteAtoms = 0;
-        hasActiveSpotInventory = false;
-        _transferExactToken(collateralToken, fundingOwner, quoteOut);
-        if (spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != 0) {
-            revert FundingMismatch();
+        if (!inKind) {
+            quoteOut = _sellSpot(
+                SpotSale({
+                    packageNonce: registration.packageNonce,
+                    fillCommitment: registration.rollbackFillCommitment,
+                    orderHash: registration.orderHash,
+                    quoteHash: registration.quoteHash,
+                    routeHash: registration.routeHash,
+                    baseAtoms: registration.baseAtoms,
+                    minQuoteAtoms: registration.rollbackMinQuoteAtoms
+                })
+            );
         }
-        emit SpotInventoryRolledBack(packageId, requestKey, fundingOwner, baseAtoms, quoteOut);
+        _releaseSpot(packageId, requestKey, registration.fundingOwner, registration.baseAtoms, quoteOut, inKind);
+        if (!inKind) {
+            emit SpotInventoryRolledBack(
+                packageId, requestKey, registration.fundingOwner, registration.baseAtoms, quoteOut
+            );
+        }
     }
 
-    function completeSuccessfulExit(GmxV2.ExitRegistration calldata registration, bytes32 exitRequestKey)
+    /// @notice Sells the spot for at least the signed exit floor, or, when `inKind`, returns the spot base token
+    /// itself to the owner. The exit controller decides who may choose `inKind` and when.
+    function completeSuccessfulExit(GmxV2.ExitRegistration calldata registration, bytes32 exitRequestKey, bool inKind)
         external
         nonReentrant
         returns (GmxV2.SpotExitResult memory result)
@@ -335,17 +343,19 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
                 || collateralToken.allowance(address(this), address(spotPort)) != 0
         ) revert InvalidRequest();
 
-        result.quoteAtoms = _sellSpot(
-            SpotSale({
-                packageNonce: registration.packageNonce,
-                fillCommitment: registration.exitFillCommitment,
-                orderHash: registration.exitOrderHash,
-                quoteHash: registration.exitQuoteHash,
-                routeHash: registration.exitRouteHash,
-                baseAtoms: registration.spotBaseAtoms,
-                minQuoteAtoms: registration.spotMinQuoteAtoms
-            })
-        );
+        if (!inKind) {
+            result.quoteAtoms = _sellSpot(
+                SpotSale({
+                    packageNonce: registration.packageNonce,
+                    fillCommitment: registration.exitFillCommitment,
+                    orderHash: registration.exitOrderHash,
+                    quoteHash: registration.exitQuoteHash,
+                    routeHash: registration.exitRouteHash,
+                    baseAtoms: registration.spotBaseAtoms,
+                    minQuoteAtoms: registration.spotMinQuoteAtoms
+                })
+            );
+        }
         result.entryRequestPayloadHash = spotRegistration.requestPayloadHash;
         result.entryCommitmentsHash = keccak256(
             abi.encode(
@@ -378,7 +388,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         );
         result.evidenceHash = keccak256(
             abi.encode(
-                SPOT_EXIT_EVIDENCE_DOMAIN,
+                inKind ? SPOT_IN_KIND_EVIDENCE_DOMAIN : SPOT_EXIT_EVIDENCE_DOMAIN,
                 block.chainid,
                 address(this),
                 exitIdentityHash,
@@ -388,16 +398,14 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
             )
         );
 
-        delete _spotRegistration;
-        activeSpotRequestKey = bytes32(0);
-        activeSpotQuoteAtoms = 0;
-        hasActiveSpotInventory = false;
-        _transferExactToken(collateralToken, registration.spotProceedsRecipient, result.quoteAtoms);
-        if (
-            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != 0
-                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
-                || collateralToken.allowance(address(this), address(spotPort)) != 0
-        ) revert FundingMismatch();
+        _releaseSpot(
+            registration.packageId,
+            registration.entryRequestKey,
+            registration.spotProceedsRecipient,
+            registration.spotBaseAtoms,
+            result.quoteAtoms,
+            inKind
+        );
     }
 
     function activeSpotRegistration() external view returns (GmxV2.SpotEntryRegistration memory) {
@@ -591,6 +599,32 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
         if (
             spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != quoteOut
                 || address(this).balance != 0 || spotBaseToken.allowance(address(this), address(spotPort)) != 0
+                || collateralToken.allowance(address(this), address(spotPort)) != 0
+        ) revert FundingMismatch();
+    }
+
+    /// @dev Clears the active spot inventory, then pays the recipient either the sale proceeds or the base token.
+    function _releaseSpot(
+        bytes32 packageId,
+        bytes32 requestKey,
+        address recipient,
+        uint256 baseAtoms,
+        uint256 quoteAtoms,
+        bool inKind
+    ) private {
+        delete _spotRegistration;
+        activeSpotRequestKey = bytes32(0);
+        activeSpotQuoteAtoms = 0;
+        hasActiveSpotInventory = false;
+        if (inKind) {
+            _transferExactToken(spotBaseToken, recipient, baseAtoms);
+            emit SpotInventoryReturnedInKind(packageId, requestKey, recipient, baseAtoms);
+        } else {
+            _transferExactToken(collateralToken, recipient, quoteAtoms);
+        }
+        if (
+            spotBaseToken.balanceOf(address(this)) != 0 || collateralToken.balanceOf(address(this)) != 0
+                || spotBaseToken.allowance(address(this), address(spotPort)) != 0
                 || collateralToken.allowance(address(this), address(spotPort)) != 0
         ) revert FundingMismatch();
     }

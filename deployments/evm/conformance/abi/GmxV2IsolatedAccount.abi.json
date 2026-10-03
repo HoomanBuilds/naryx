@@ -175,6 +175,19 @@
   },
   {
     "type": "function",
+    "name": "SPOT_IN_KIND_EVIDENCE_DOMAIN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "activeSpotQuoteAtoms",
     "inputs": [],
     "outputs": [
@@ -502,6 +515,11 @@
         "name": "exitRequestKey",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "inKind",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [
@@ -1092,6 +1110,11 @@
         "name": "requestKey",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "inKind",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "outputs": [
@@ -1185,6 +1208,37 @@
       },
       {
         "name": "quoteAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SpotInventoryReturnedInKind",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "baseAtoms",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"

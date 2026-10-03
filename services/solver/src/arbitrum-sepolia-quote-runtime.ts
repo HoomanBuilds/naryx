@@ -30,22 +30,31 @@ import type { Address } from 'viem';
 import type { AtomicRouteCandidate, AtomicRouteDecision } from './atomic-route-decision.js';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import type { QuoteProviders } from './hyperliquid-testnet-quote-runtime.js';
-import type {
-  InternalAtomicQuoteCandidateProvider,
-  InternalAtomicQuoteTermsProvider,
+import {
+  InternalAtomicQuoteError,
+  type InternalAtomicQuoteCandidateProvider,
+  type InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
 import {
   ARBITRUM_SEPOLIA_DOMAIN_ID,
+  arbitrumHedgeSizeAtoms,
   arbitrumSepoliaAccountOf,
   createViemArbitrumSepoliaReadPort,
+  decimalText,
+  gmxEntryCollateralRefusal,
+  gmxIndexPrice,
   priceArbitrumEntry,
   readArbitrumSepoliaReferencePrice,
+  readArbitrumSepoliaSpotQuoteTarget,
+  readGmxEntryCollateralLimits,
   readGmxPositionFeeFactor,
+  readGmxShortExecutionPrice,
   requireArbitrumSepoliaCode,
   type ArbitrumSepoliaContractIdentity,
   type ArbitrumSepoliaReadPort,
 } from './arbitrum-sepolia-gmx.js';
+import { quoteUniswapV3Buy } from './uniswap-v3-quoter.js';
 
 export const ARBITRUM_SEPOLIA_QUOTE_ENABLED_ENV = 'NARYX_ARBITRUM_SEPOLIA_QUOTE_ENABLED';
 export const ARBITRUM_SEPOLIA_QUOTE_CONFIG_VERSION = 1;
@@ -99,7 +108,11 @@ export interface ArbitrumSepoliaQuoteMarketConfig {
   readonly priceFeedDecimals: number;
   readonly maxPriceAgeSeconds: bigint;
   readonly gmxDataStore: ArbitrumSepoliaContractIdentity;
+  /** The pinned GMX V2.2 Reader; entries and exits are priced at its execution price for the exact size. */
+  readonly gmxReader: ArbitrumSepoliaContractIdentity;
   readonly gmxMarket: Address;
+  /** The canonical Uniswap V3 QuoterV2; the spot leg is priced at its cost for the exact size. */
+  readonly spotQuoter: ArbitrumSepoliaContractIdentity;
   readonly spot: ArbitrumSepoliaQuoteLeg;
   readonly perpetual: ArbitrumSepoliaQuoteLeg;
   readonly accountBindings: readonly RouteAccountBindingInput[];
@@ -175,6 +188,9 @@ export function validateArbitrumSepoliaQuoteRuntimeInput(input: ArbitrumSepoliaQ
       || typeof input.chain?.chainId !== 'function'
       || !ADDRESS.test(input.accountFactory) || !ADDRESS.test(input.accountImplementation)
       || !ADDRESS.test(input.gmxMarket.toLowerCase())
+      || [input.spotQuoter, input.gmxReader].some((identity) => !ADDRESS.test(identity?.address?.toLowerCase() ?? '')
+        || !/^0x[0-9a-f]{64}$/.test(identity.expectedCodeHash.toLowerCase())
+        || /^0x0+$/.test(identity.expectedCodeHash))
       || !Number.isSafeInteger(input.priceFeedDecimals) || input.priceFeedDecimals < 0
       || input.priceFeedDecimals > 36
       || input.accountBindings.length === 0
@@ -253,14 +269,27 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
     maxAgeSeconds: input.maxPriceAgeSeconds,
   });
   await requireArbitrumSepoliaCode(input.chain, input.gmxDataStore, 'GMX data store');
-  const positionFeeFactor = await readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket);
+  const usdScale = 10n ** BigInt(30 - quoteAsset.decimals);
+  const sizeUsd = arbitrumHedgeSizeAtoms(order.quantity.atoms, base.decimals, quoteAsset.decimals, reference) * usdScale;
+  const [positionFeeFactor, spotTarget, gmx, collateralLimits] = await Promise.all([
+    readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket),
+    readArbitrumSepoliaSpotQuoteTarget(input.chain, input.accountFactory, input.spotQuoter),
+    readGmxShortExecutionPrice(input.chain, input.gmxReader, input.gmxDataStore.address, input.gmxMarket, {
+      indexPrice: gmxIndexPrice(reference, base.decimals), quoteDecimals: quoteAsset.decimals, sizeDeltaUsd: sizeUsd,
+    }),
+    readGmxEntryCollateralLimits(input.chain, input.gmxDataStore.address, input.gmxMarket),
+  ]);
   const now = reference.observedAt;
   if (now >= order.expiryValue) throw new Error('order is expired');
+  // The spot port buys exactly this quantity from the pool and GMX fills the short at its execution
+  // price for this size, so the quoted spread and the spread cap check use both, not the reference.
   const pricing = priceArbitrumEntry({
     quantityAtoms: order.quantity.atoms,
     baseDecimals: base.decimals,
     quoteDecimals: quoteAsset.decimals,
     reference,
+    spotQuoteAtoms: await quoteUniswapV3Buy(input.chain, spotTarget, order.quantity.atoms),
+    gmxExecutionPrice: gmx.executionPrice,
     positionFeeFactor,
     marginBps: BigInt(input.marginBps),
   });
@@ -270,6 +299,22 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
   if (feeCap === undefined || pricing.positionFeeAtoms > feeCap.maxAtoms) {
     throw new Error('GMX position fee exceeds the signed venue fee cap');
   }
+  // signAtomicEntryQuote enforces the signed spread cap; this names the cause before it refuses.
+  const maxSpread = order.maxEntrySpread;
+  if (maxSpread !== undefined && (pricing.spotNotionalAtoms - pricing.perpNotionalAtoms) * maxSpread.baseAtoms
+    > maxSpread.quoteAtoms * order.quantity.atoms) {
+    const unit = 10n ** BigInt(base.decimals);
+    const perUnit = (quoteAtoms: bigint, baseAtoms: bigint) => decimalText(quoteAtoms * unit, baseAtoms * 10n ** BigInt(quoteAsset.decimals));
+    throw new InternalAtomicQuoteError('QUOTE_DECLINED', `Arbitrum Sepolia quote declined: the entry spread is ${perUnit(pricing.spotNotionalAtoms - pricing.perpNotionalAtoms, order.quantity.atoms)} per unit`
+      + ` (spot cost ${perUnit(pricing.spotNotionalAtoms, order.quantity.atoms)}, GMX short fill ${perUnit(gmx.executionPrice, usdScale)}`
+      + ` impact included, reference ${perUnit(gmxIndexPrice(reference, base.decimals), usdScale)}),`
+      + ` above your signed maximum of ${perUnit(maxSpread.quoteAtoms, maxSpread.baseAtoms)}; nothing was signed.`);
+  }
+  const collateralRefusal = gmxEntryCollateralRefusal({
+    sizeAtoms: pricing.positionSizeAtoms, marginAtoms: pricing.marginAtoms, positionFeeAtoms: pricing.positionFeeAtoms,
+    priceImpactUsd: gmx.priceImpactUsd, quoteDecimals: quoteAsset.decimals, limits: collateralLimits,
+  });
+  if (collateralRefusal !== undefined) throw new InternalAtomicQuoteError('QUOTE_DECLINED', `Arbitrum Sepolia quote declined: ${collateralRefusal}.`);
 
   // Quote validity equals the route expiry; the GMX request must be submitted before it.
   const routeExpiryValue = order.expiryValue < now + input.routeTtlSeconds
@@ -323,7 +368,11 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
         legIndex: 1, legRole: 'PERPETUAL', actionSequence: input.perpetual.action.sequence,
         adapter: input.perpetual.adapter, venue: input.perpetual.venue, market: input.perpetual.market,
         baseAsset: base, quoteAsset, side: 'SELL', quantity: order.quantity,
-        limitPrice: floorAt(input.perpSlippageBps), timeInForce: 'FOK', reduceOnly: false,
+        // GMX fills a short increase at or above the acceptable price: its execution price less slippage.
+        limitPrice: reducedPrice(
+          base, quoteAsset, gmx.executionPrice * (BPS_SCALE - BigInt(input.perpSlippageBps)), usdScale * BPS_SCALE, 'CEIL',
+        ),
+        timeInForce: 'FOK', reduceOnly: false,
       },
     ],
     actions: [input.spot.action, input.perpetual.action],
@@ -355,7 +404,7 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
       ],
     },
   };
-  // entrySpread = spot notional / quantity - perpetual notional / quantity.
+  // entrySpread = spot notional / quantity - perpetual notional (at GMX's execution price) / quantity.
   const spreadNumerator = pricing.spotNotionalAtoms - pricing.perpNotionalAtoms;
   const spreadDivisor = spreadNumerator === 0n ? order.quantity.atoms : gcd(
     spreadNumerator < 0n ? -spreadNumerator : spreadNumerator,

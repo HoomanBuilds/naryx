@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { firmReservationId } from '@naryx/protocol-types';
+import { firmReservationId, toProtocolJson } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
-import { priceSolanaDevnetEntry, priceSolanaDevnetExit, selectFirmLevel } from '../src/solana-devnet-firm-quote.js';
+import {
+  holdShardSequences,
+  priceSolanaDevnetEntry,
+  priceSolanaDevnetExit,
+  selectFirmLevel,
+  shardSequencesHeld,
+  standingLevelExpiry,
+  standingLevelLeadSlots,
+} from '../src/solana-devnet-firm-quote.js';
+import { SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, loadSolanaDevnetSolverConfig } from '../src/solana-devnet-solver-config.js';
 import {
   BorshWriter,
   accountDiscriminator,
@@ -78,6 +90,86 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, side: 1 }] }, config, 2n, 450n, 550n, 1)?.levelId, 77n);
 });
 
+test('binds a quote to the usable level with the latest expiry, ties to the lower slot index', () => {
+  const policy = new Uint8Array(32).fill(4);
+  const settlement = new Uint8Array(32).fill(5);
+  const level: QuoteLevelState = {
+    slotIndex: 0, settlementClassIdentityHash: settlement, reservationPolicyHash: policy, referenceOffset: 0n, levelId: 1n,
+    epoch: 2n, levelSequence: 1n, minPackageSizeUnits: 1n, maxPackageSizeUnits: 10n, maxFeeAtoms: 0n, expirySlot: 460n,
+    remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
+  };
+  const state = (levels: QuoteLevelState[]) => ({
+    slot: 400n, market, oraclePricePerLot: 150_000n,
+    reservationClass: { policyHash: policy } as never,
+    shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
+    levels,
+  });
+  const config = { series: { settlementClassIdentityHash: settlement } } as never;
+  // An older level with little time left sits in the first slot; the fresh one wins.
+  const fresh = { ...level, slotIndex: 7, levelId: 2n, expirySlot: 540n };
+  const tie = { ...level, slotIndex: 9, levelId: 3n, expirySlot: 540n };
+  assert.equal(selectFirmLevel(state([level, tie, fresh]), config, 2n, 450n, 550n)?.levelId, 2n);
+  // A later level outside the window, or without the capacity, does not count.
+  const late = { ...level, slotIndex: 3, levelId: 4n, expirySlot: 551n };
+  assert.equal(selectFirmLevel(state([level, late, { ...fresh, remainingCapacity: 1n }]), config, 2n, 450n, 550n)?.levelId, 1n);
+});
+
+test('keeps a standing level per side that a quote made a lead time from now can still use', () => {
+  const policy = new Uint8Array(32).fill(4);
+  const settlement = new Uint8Array(32).fill(5);
+  const config = {
+    series: { settlementClassIdentityHash: settlement, spotBaseAtomsPerPackageUnit: 1_000n },
+    maxQuantityAtoms: 10_000n, levelCapacityUnits: 10n, quoteTtlSlots: 450n,
+  } as never;
+  const ask: QuoteLevelState = {
+    slotIndex: 0, settlementClassIdentityHash: settlement, reservationPolicyHash: policy, referenceOffset: 0n, levelId: 1n,
+    epoch: 2n, levelSequence: 1n, minPackageSizeUnits: 1n, maxPackageSizeUnits: 10n, maxFeeAtoms: 0n, expirySlot: 1_450n,
+    remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
+  };
+  const at = (slot: bigint, levels: QuoteLevelState[]) => ({
+    slot, market, oraclePricePerLot: 150_000n,
+    reservationClass: { policyHash: policy } as never,
+    shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
+    levels,
+  });
+  // Written at slot 1000 with expiry 1450: still usable by a quote a quarter TTL (112 slots) out.
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 2), undefined);
+  // The bid side has no level, so it is written with a full quote TTL.
+  assert.equal(standingLevelExpiry(at(1_000n, [ask]), config, 1), 1_450n);
+  // 250 slots later a quote 112 slots out would need expiry beyond 1362 + 150 = 1512: refresh.
+  assert.equal(standingLevelExpiry(at(1_250n, [ask]), config, 2), 1_700n);
+  // A partly filled level that can no longer take a full-size package is refreshed too.
+  assert.equal(standingLevelExpiry(at(1_000n, [{ ...ask, remainingCapacity: 4n }]), config, 2), 1_450n);
+
+  // For every allowed TTL a freshly written level satisfies the refresher for at least 5/12 of the
+  // TTL, never fewer than 125 slots, so it is not rewritten on the next cycles.
+  for (const quoteTtlSlots of [SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, 451n, 1_499n]) {
+    const ttlConfig = { ...(config as object), quoteTtlSlots } as never;
+    const fresh = { ...ask, expirySlot: standingLevelExpiry(at(1_000n, []), ttlConfig, 2)! };
+    const keeps = quoteTtlSlots - standingLevelLeadSlots(quoteTtlSlots) - quoteTtlSlots / 3n;
+    assert.ok(keeps >= (5n * quoteTtlSlots) / 12n && keeps >= 125n);
+    assert.equal(standingLevelExpiry(at(1_000n + keeps - 1n, [fresh]), ttlConfig, 2), undefined);
+    assert.equal(standingLevelExpiry(at(1_000n + keeps, [fresh]), ttlConfig, 2), 1_000n + keeps + quoteTtlSlots);
+  }
+});
+
+test('refuses a quote TTL below the minimum with a clear error', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-solana-config-'));
+  try {
+    const path = join(directory, 'solver.json');
+    const write = (quoteTtlSlots: bigint) => writeFileSync(path, JSON.stringify(toProtocolJson({
+      schemaVersion: 1, runtimeManifestPath: '/unused', accounts: {}, resources: {}, series: {}, route: {}, inventorySpreadBps: 0,
+      perpLimitToleranceBps: 0, computeUnitLimit: 1, solverId: '11111111111111111111111111111112', quoteTtlSlots,
+    })));
+    write(SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS - 1n);
+    assert.throws(() => loadSolanaDevnetSolverConfig(path), /quoteTtlSlots must be at least 300 slots/);
+    write(SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS);
+    assert.throws(() => loadSolanaDevnetSolverConfig(path), /maxQuantityAtoms must be positive/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('decodes the inventory reservation account layout', () => {
   const key = (byte: number) => new Uint8Array(32).fill(byte);
   const data = new BorshWriter()
@@ -91,4 +183,16 @@ test('decodes the inventory reservation account layout', () => {
   assert.equal(reservation.solverId, 'solver-a');
   assert.equal(reservation.baseAtoms, 2_000n);
   assert.equal(reservation.expirySlot, 900n);
+});
+
+test('a binding holds the shard sequences until it expires, so standing-level writes wait', () => {
+  const shard = 'held-shard-for-test';
+  assert.equal(shardSequencesHeld(shard, 1_000n), false);
+  holdShardSequences(shard, 1_450n);
+  // A later, shorter binding never shortens the hold.
+  holdShardSequences(shard, 1_200n);
+  assert.equal(shardSequencesHeld(shard, 1_000n), true);
+  assert.equal(shardSequencesHeld(shard, 1_449n), true);
+  assert.equal(shardSequencesHeld(shard, 1_450n), false);
+  assert.equal(shardSequencesHeld('another-shard', 1_000n), false);
 });

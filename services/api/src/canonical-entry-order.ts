@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import {
   bytesEqual,
   canonicalBytes,
+  canonicalFeeCaps,
+  compareBytes,
+  encodeAssetRef,
   hash32,
   packageOrderBytes,
   packageOrderHash,
@@ -348,6 +351,25 @@ function loadContext(
   return context;
 }
 
+/**
+ * The venue fee caps an order signs: the reviewed caps plus a base-asset cap of `baseCapAtoms`
+ * (zero by default) when none is configured, in canonical asset order. A solver quote always lists
+ * the base asset's venue fee (zero on routes that charge every venue fee in the quote asset), and
+ * admission requires an order cap for every asset a quote lists.
+ */
+export function venueFeeCapsWithBase(
+  baseAsset: AssetRef,
+  configured: readonly FeeCap[],
+  baseCapAtoms = 0n,
+): readonly FeeCap[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  const caps = [...configured];
+  if (!caps.some((cap) => bytesEqual(key(cap.asset), key(baseAsset)))) {
+    caps.push({ asset: baseAsset, maxAtoms: baseCapAtoms });
+  }
+  return canonicalFeeCaps(caps.sort((left, right) => compareBytes(key(left.asset), key(right.asset))));
+}
+
 export function createCanonicalEntryOrder(
   provider: ActiveOrderContextProvider,
   request: unknown,
@@ -392,8 +414,8 @@ export function createCanonicalEntryOrder(
       || typeof absoluteShortfall !== "bigint" || absoluteShortfall < 0n) {
     throw new EntryOrderValidationError("INVALID_CONTEXT", "Hyperliquid net spot shortfall bound is invalid.");
   }
-  const maxNetSpotShortfall = (parsed.sizeAtoms * BigInt(shortfallBps) + BPS_SCALE - 1n) / BPS_SCALE
-    + absoluteShortfall;
+  const feeShortfall = (parsed.sizeAtoms * BigInt(shortfallBps) + BPS_SCALE - 1n) / BPS_SCALE;
+  const maxNetSpotShortfall = feeShortfall + absoluteShortfall;
   if (maxNetSpotShortfall > parsed.sizeAtoms) {
     throw new EntryOrderValidationError(
       "INVALID_CONTEXT",
@@ -463,7 +485,11 @@ export function createCanonicalEntryOrder(
       asset: context.quoteAsset,
       atoms: context.minWalletQuoteBalanceDeltaAtoms,
     },
-    maxVenueFeeAtomsByAsset: [...context.maxVenueFeeAtomsByAsset],
+    // HyperCore takes a spot buy's taker fee from the received base token, so a Hyperliquid order's
+    // base-asset venue fee cap is the fee part of its signed net spot shortfall, rounded up.
+    maxVenueFeeAtomsByAsset: hyperliquid
+      ? [...venueFeeCapsWithBase(context.baseAsset, context.maxVenueFeeAtomsByAsset, feeShortfall)]
+      : [...context.maxVenueFeeAtomsByAsset],
     maxProtocolFee: { asset: context.quoteAsset, atoms: context.maxProtocolFeeAtoms },
     maxSolverFee: { asset: context.quoteAsset, atoms: context.maxSolverFeeAtoms },
     maxPriorityFee: { asset: context.quoteAsset, atoms: context.maxPriorityFeeAtoms },

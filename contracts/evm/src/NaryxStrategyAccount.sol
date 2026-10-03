@@ -4,13 +4,13 @@ pragma solidity 0.8.37;
 import {IERC1271} from "openzeppelin-contracts/interfaces/IERC1271.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
-import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {PackageVerifier} from "./PackageVerifier.sol";
 import {ResourceRegistry} from "./ResourceRegistry.sol";
 import {IExactSpotPort} from "./interfaces/IExactSpotPort.sol";
 import {IPerpMarginGate} from "./interfaces/IPerpMarginGate.sol";
 import {ISynFuturesInstrument} from "./interfaces/ISynFuturesInstrument.sol";
+import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 interface IFirmInventorySpotPort {
     function reservationBook() external view returns (address);
@@ -146,9 +146,8 @@ contract NaryxStrategyAccount is IERC1271, ReentrancyGuard {
     }
 
     function isValidSignature(bytes32 hash, bytes memory signature) external view returns (bytes4) {
-        return SignatureChecker.isValidSignatureNow(owner, hash, signature)
-            ? IERC1271.isValidSignature.selector
-            : bytes4(0xffffffff);
+        return
+            OwnerSignature.isValidNow(owner, hash, signature) ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
     }
 
     function executePackage(

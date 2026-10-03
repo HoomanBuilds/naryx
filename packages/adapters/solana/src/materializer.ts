@@ -18,6 +18,7 @@ import {
   type UnsignedSolanaTransactionPlan,
 } from './firm-plan.js';
 import type { PublicCashCarryExitPlan } from './public-exit-plan.js';
+import { createBoundedSolanaConnection } from './bounded-connection.js';
 
 export const SOLANA_DEVNET_GENESIS_HASH = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 export const SOLANA_MAINNET_BETA_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
@@ -82,7 +83,7 @@ export class ConnectionSolanaReadOnlyRpc implements SolanaReadOnlyRpc {
     validateRpcUrl(rpcUrl);
     this.rpcUrl = rpcUrl;
     this.#commitment = commitment;
-    this.#connection = new Connection(rpcUrl, commitment);
+    this.#connection = createBoundedSolanaConnection(rpcUrl, commitment);
   }
 
   getGenesisHash(): Promise<string> {

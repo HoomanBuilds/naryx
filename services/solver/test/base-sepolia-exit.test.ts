@@ -13,6 +13,7 @@ import type { Address, Hex } from 'viem';
 import { baseSepoliaExitQuoteMath, createBaseSepoliaExitQuotePort } from '../src/base-sepolia-exit-quote.js';
 import type { BaseSepoliaQuoteRuntimeInput, BaseSepoliaSolverDeployment } from '../src/base-sepolia-quote-runtime.js';
 import { InMemoryInternalAtomicQuoteStore } from '../src/internal-atomic-quote-server.js';
+import { quoteUniswapV3Sell } from '../src/uniswap-v3-quoter.js';
 
 const Q96 = 1n << 96n;
 const SCALE = 1_000_000_000_000n;
@@ -25,6 +26,7 @@ const mathInput = {
   sqrtPriceX96: Q96,
   baseIsToken0: true,
   poolFee: 3_000n,
+  spotQuoteOutAtoms: 998n,
   position,
   previewCloseNotionalWad: 2_000_000n * SCALE + 123n,
   previewCloseFeeWad: SCALE,
@@ -42,6 +44,24 @@ test('prices the exit from the pool bid and the market close of the exact short'
   // Equity 400,000 atoms less 118 wei floors to 399,999; less the 1-atom fee it pays out 399,998.
   assert.equal(math.payoutAtoms, 399_998n);
   assert.equal(math.outcomeAtoms, 997n + 399_998n - 300_000n);
+  // A thin pool returns less than the mid less its fee: the quote takes the quoter's proceeds.
+  const thin = baseSepoliaExitQuoteMath({ ...mathInput, spotQuoteOutAtoms: 950n });
+  assert.deepEqual([thin.spotProceedsAtoms, thin.spotFeeAtoms, thin.outcomeAtoms], [950n, 4n, 950n + 399_998n - 300_000n]);
+});
+
+test('prices an exit sale with the quoter and refuses one the pool cannot absorb whole', async () => {
+  // Base sorts below quote, so the sale is zeroForOne and its price limit is MIN_SQRT_RATIO + 1.
+  const target = {
+    chainId: 84_532n, quoter: { address: address('6'), expectedCodeHash: `0x${hash('6')}` as Hex },
+    pool: address('c'), baseToken: address('1'), quoteToken: address('9'), poolFee: 3_000n,
+  };
+  const port = (result: readonly unknown[]) => ({
+    chainId: async () => 84_532n,
+    codeHash: async () => target.quoter.expectedCodeHash,
+    readContract: async ({ functionName }: { functionName: string }) => functionName === 'factory' ? address('7') : result,
+  });
+  assert.equal(await quoteUniswapV3Sell(port([998n, Q96, 1, 0n]), target, 1_001n), 998n);
+  await assert.rejects(quoteUniswapV3Sell(port([500n, 4_295_128_740n, 3, 0n]), target, 1_001n), /cannot absorb this spot sale/);
 });
 
 test('refuses to price a position that is not the exact package short', () => {

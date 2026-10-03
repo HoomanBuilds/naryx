@@ -4,10 +4,10 @@ pragma solidity 0.8.37;
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
-import {SignatureChecker} from "openzeppelin-contracts/utils/cryptography/SignatureChecker.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {IAsyncVenueAdapter} from "./interfaces/IAsyncVenueAdapter.sol";
+import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -317,7 +317,7 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
                 || terms.handler.codehash != terms.handlerCodeHash
         ) revert InvalidAdmission();
         bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(RESERVE_TYPEHASH, keccak256(abi.encode(terms)))));
-        if (!SignatureChecker.isValidSignatureNow(terms.owner, digest, ownerSignature)) revert InvalidSignature();
+        if (!OwnerSignature.isValidNow(terms.owner, digest, ownerSignature)) revert InvalidSignature();
         id = packageId(terms);
         if (_packages[id].state != State.NONE) revert PackageExists();
         nextNonce[terms.owner]++;
@@ -467,6 +467,28 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         Package storage p = _package(id, expectedVersion, State.RECOVERY_PENDING);
         if (block.timestamp >= p.terms.recoveryDeadline) revert DeadlinePassed();
         if (p.recoveryActionSubmitted) revert WrongState();
+        _requestRecovery(p, id);
+    }
+
+    /// @notice Once the recovery deadline has passed without a submitted recovery, the package owner or
+    /// solver submits the signed CANCEL_OR_RECONCILE action, so a request the venue still holds, or already
+    /// cancelled, reaches an authenticated terminal outcome and the package can close. A missed recovery duty
+    /// must be slashed first, and conflicting evidence stays locked.
+    function submitOverdueRecovery(bytes32 id, uint64 expectedVersion) external nonReentrant {
+        _assertDeployment();
+        Package storage p = _packages[id];
+        if (p.state == State.NONE) revert PackageMissing();
+        if (p.stateVersion != expectedVersion) revert WrongVersion();
+        if (msg.sender != p.terms.owner && msg.sender != p.terms.solver) revert UnauthorizedActor();
+        if (block.timestamp < p.terms.recoveryDeadline) revert DeadlineNotReached();
+        if (
+            p.requestKey == bytes32(0) || p.evidenceConflict || p.recoveryActionSubmitted
+                || (p.state != State.MANUAL_INTERVENTION && (p.state != State.RECOVERY_PENDING || p.recoveryDutyActive))
+        ) revert WrongState();
+        _requestRecovery(p, id);
+    }
+
+    function _requestRecovery(Package storage p, bytes32 id) private {
         _assertAdapter(p.terms, false);
         p.recoveryActionSubmitted = true;
         bool accepted = IAsyncVenueAdapter(p.terms.adapter)

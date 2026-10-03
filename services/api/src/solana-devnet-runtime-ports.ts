@@ -1142,6 +1142,8 @@ export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+        // A stalled RPC endpoint fails the read instead of hanging a user's request.
+        signal: AbortSignal.timeout(20_000),
       });
     } catch {
       throw new Error(`Solana RPC ${method} request failed.`);

@@ -57,6 +57,8 @@ export type TerminalMarketDescriptor = Readonly<{
 export interface TerminalMarketSource {
   readonly descriptor: TerminalMarketDescriptor;
   latest(): TerminalMarketObservation | undefined;
+  /** Why the source has no fresh observation, when it knows: a short venue check message. */
+  unavailableReason?(): string | undefined;
 }
 
 export type TerminalMarketSources = Readonly<Partial<Record<DomainId, TerminalMarketSource>>>;
@@ -96,8 +98,19 @@ export function createHyperliquidTestnetMarketSource(
     spot: Object.freeze({ instrument: `${base} / ${quote}`, venue: "Hyperliquid testnet spot" }),
     perp: Object.freeze({ instrument: `${base}-PERP`, venue: "Hyperliquid testnet perpetual" }),
   });
+  // The hedge is the configured perpetual, whose venue name can differ from the spot token's (the ETH
+  // perpetual hedges Unit ETH spot), so it is labelled with the name read from live metadata.
+  let named: TerminalMarketDescriptor | undefined;
   return Object.freeze({
-    descriptor,
+    get descriptor(): TerminalMarketDescriptor {
+      const perp = priceFeed.coins?.()?.perp;
+      if (perp === undefined) return descriptor;
+      named ??= Object.freeze({
+        ...descriptor,
+        perp: Object.freeze({ instrument: `${perp}-PERP`, venue: descriptor.perp.venue }),
+      });
+      return named;
+    },
     latest(): TerminalMarketObservation | undefined {
       const snapshot = priceFeed.latest();
       return snapshot === undefined ? undefined : Object.freeze({
@@ -109,6 +122,10 @@ export function createHyperliquidTestnetMarketSource(
         perpTakerRate: snapshot.perpTakerRate,
         capturedAtMs: snapshot.capturedAtMs,
       });
+    },
+    unavailableReason(): string | undefined {
+      const failure = priceFeed.failure?.();
+      return failure === undefined ? undefined : `Hyperliquid testnet ${failure}`;
     },
   });
 }

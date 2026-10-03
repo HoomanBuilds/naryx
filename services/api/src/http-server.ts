@@ -1,4 +1,9 @@
-import { listOwnerPackages, OwnerPackageQueryError, parseOwnerPackageQuery } from "./terminal-packages.js";
+import {
+  listOwnerPackages,
+  OwnerPackageQueryError,
+  parseOwnerPackageQuery,
+  type OwnerPackageOutcomeReader,
+} from "./terminal-packages.js";
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -53,6 +58,7 @@ import {
 import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 import {
   createTerminalPreview,
+  observedMarket,
   parsePreviewRequest,
   PreviewValidationError,
   TerminalMarketUnavailableError,
@@ -192,12 +198,14 @@ export type PrivateTerminalHealthStatus = "ready" | "degraded" | "unconfigured";
 
 /**
  * Derives the reported environment from what the process actually composed: any enabled public
- * testnet boundary makes it TESTNET, and LOCAL_CONFORMANCE is reported only for the fixture opt-in.
- * Any enabled boundary that failed to compose makes the service degraded.
+ * testnet boundary or configured live testnet market makes it TESTNET, and LOCAL_CONFORMANCE is
+ * reported only for the fixture opt-in. Any enabled boundary that failed to compose, or any
+ * configured market without a fresh observation, makes the service degraded.
  */
 export function privateTerminalHealthSummary(
   runtimeHealth: PrivateTerminalRuntimeHealth | undefined,
   localAtomicRuntimeMode: LocalAtomicRuntimeMode,
+  marketsLive: readonly boolean[] = [],
 ): Readonly<{ status: PrivateTerminalHealthStatus; environment: PrivateTerminalHealthEnvironment }> {
   const boundaries = runtimeHealth === undefined ? [] : [
     runtimeHealth.solanaDevnet,
@@ -206,13 +214,14 @@ export function privateTerminalHealthSummary(
     runtimeHealth.hyperliquidTestnet,
   ];
   const enabled = boundaries.filter((boundary) => boundary.reason !== "DISABLED_BY_CONFIGURATION");
-  const environment: PrivateTerminalHealthEnvironment = enabled.length > 0 ? "TESTNET"
+  const environment: PrivateTerminalHealthEnvironment = enabled.length > 0 || marketsLive.length > 0 ? "TESTNET"
     : localAtomicRuntimeMode === "PHASE4_FIXTURE" ? "LOCAL_CONFORMANCE"
       : localAtomicRuntimeMode === "MANIFEST_VALIDATED" ? "LOCAL_VALIDATOR"
         : "UNCONFIGURED";
-  const status: PrivateTerminalHealthStatus = enabled.some((boundary) => !boundary.available) ? "degraded"
-    : environment === "UNCONFIGURED" ? "unconfigured"
-      : "ready";
+  const status: PrivateTerminalHealthStatus =
+    enabled.some((boundary) => !boundary.available) || marketsLive.includes(false) ? "degraded"
+      : environment === "UNCONFIGURED" ? "unconfigured"
+        : "ready";
   return Object.freeze({ status, environment });
 }
 
@@ -242,6 +251,7 @@ export function createPrivateTerminalRequestHandler(
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   terminalMarkets: TerminalMarketSources = {},
   currentTimeMs: () => number = Date.now,
+  attemptOutcomes?: OwnerPackageOutcomeReader,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -424,11 +434,21 @@ export function createPrivateTerminalRequestHandler(
     }
 
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
-      const summary = privateTerminalHealthSummary(runtimeHealth, localAtomicRuntimeMode);
+      // Each configured lane's market answers quotes and previews only while its observation is fresh.
+      const nowMs = currentTimeMs();
+      const markets = Object.fromEntries(Object.entries(terminalMarkets).flatMap(([domain, source]) =>
+        source === undefined ? [] : [[domain, observedMarket(source.descriptor, source.latest(), nowMs) === undefined
+          ? "UNAVAILABLE" : "LIVE"]]));
+      const summary = privateTerminalHealthSummary(
+        runtimeHealth,
+        localAtomicRuntimeMode,
+        Object.values(markets).map((state) => state === "LIVE"),
+      );
       sendJson(response, 200, {
         status: summary.status,
         scope: "private_terminal",
         environment: summary.environment,
+        markets,
         localAtomicRuntimeMode,
         executionPreparationAvailable: executionPorts.preparation !== undefined && executionReadinessAvailable,
         executionObservationAvailable: executionPorts.observation !== undefined,
@@ -480,6 +500,7 @@ export function createPrivateTerminalRequestHandler(
             orders: orderPorts.store,
             ...(executionIntentStore === undefined ? {} : { intents: executionIntentStore }),
             ...(lifecycleStore === undefined ? {} : { lifecycle: lifecycleStore }),
+            ...(attemptOutcomes === undefined ? {} : { outcomes: attemptOutcomes }),
           }),
         });
       } catch (error) {
@@ -872,7 +893,7 @@ export function createPrivateTerminalRequestHandler(
         });
       } catch (error) {
         if (error instanceof TerminalOrderValidationError || error instanceof EntryOrderValidationError) {
-          reject(response, 400, error.code, error.message);
+          reject(response, error.code === "INSUFFICIENT_LIQUIDITY" ? 409 : 400, error.code, error.message);
           return;
         }
         if (error instanceof InternalOrderConflictError) {
@@ -990,6 +1011,10 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         if (error instanceof SolverQuoteClientError) {
+          if (error.code === "QUOTE_DECLINED") {
+            reject(response, 409, error.code, `${error.detail ?? "The solver declined this quote."} Nothing was signed; try again or a smaller size.`);
+            return;
+          }
           reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);
           return;
         }
@@ -1201,6 +1226,7 @@ export function createPrivateTerminalServer(
   executionReadinessScopes?: ExecutionReadinessScopeResolver<ExecutionReadinessScopeIdentity>,
   publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
   terminalMarkets: TerminalMarketSources = {},
+  attemptOutcomes?: OwnerPackageOutcomeReader,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1220,6 +1246,8 @@ export function createPrivateTerminalServer(
     executionReadinessGate,
     executionReadinessScopes,
     terminalMarkets,
+    Date.now,
+    attemptOutcomes,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

@@ -82,9 +82,9 @@
           "quoteTokenIndex": { "$def": "quoteTokenIndex" }
         },
         "bounds": {
-          "maxEvidenceAgeMs": { "$number": { "$operator": "max evidence age, ms" } },
-          "maxFillPages": { "$number": { "$operator": "max fill pages" } },
-          "maxSnapshotSkewMs": { "$number": { "$operator": "max snapshot skew, ms" } }
+          "maxEvidenceAgeMs": { "$number": { "$operator": "max evidence age, ms (recommended 600000: a stuck package can be proven final and its lane released automatically only while now minus its checkpoint is within this bound; after that only an ABANDONED release by the operator frees the lane)" } },
+          "maxFillPages": { "$number": { "$operator": "max fill pages (recommended 16, the collector default)" } },
+          "maxSnapshotSkewMs": { "$number": { "$operator": "max snapshot skew, ms (recommended 10000: it spans every account snapshot read in one reconciliation, several sequential info requests from the host)" } }
         },
         "orderContext": {
           "contextId": { "$operator": "order context id" },
@@ -98,7 +98,7 @@
           "spotAdapter": { "$def": "spotAdapterRef" },
           "perpetualAdapter": { "$def": "perpetualAdapterRef" },
           "maxStalenessMs": { "$bigint": { "$operator": "max staleness, ms, above refreshIntervalMs and at most 120000" } },
-          "expiryTtlMs": { "$bigint": { "$operator": "order expiry TTL, ms" } },
+          "expiryTtlMs": { "$bigint": { "$operator": "order expiry TTL, ms (recommended 300000: the owner signs the authorization, then the shared account may queue behind another package)" } },
           "recoveryActionExpiryTtlMs": { "$bigint": { "$operator": "recovery action expiry TTL, ms" } },
           "recoveryDeadlineTtlMs": { "$bigint": { "$operator": "recovery deadline TTL, ms" } },
           "minRecoveryWindowMs": { "$bigint": { "$operator": "minimum recovery window, ms" } },
@@ -200,8 +200,6 @@
           "domainId": "hypercore:testnet",
           "quoteAssetId": { "$def": "quoteAsset.assetId" },
           "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, quote atoms, decimal string" },
-          "maxPrincipalAtomsPerOwnerPerDay": { "$operator": "per-wallet per-UTC-day principal cap, quote atoms, decimal string (at least per-operation, at most per-day)" },
           "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, quote atoms, decimal string" }
         }]
       }

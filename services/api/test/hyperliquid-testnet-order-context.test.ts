@@ -26,6 +26,7 @@ import {
 } from "../src/index.js";
 import { HyperliquidTestnetOwnerLedger } from "../src/hyperliquid-testnet-owner-ledger.js";
 import { createHyperliquidTestnetExitOrderFactory } from "../src/hyperliquid-testnet-owner-routes.js";
+import { hyperliquidTestnetBookFills } from "../src/hyperliquid-testnet-order-context.js";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const CONTEXT_ID = "hyperliquid:testnet:btc-carry-v1";
@@ -250,6 +251,12 @@ test("Hyperliquid Testnet context prices orders from the live snapshot for any o
     assert.equal(order.hyperliquidMaxNetSpotDelta?.atoms, 100_001n);
     const feeAtoms = (100_001n * 35n + 99_999n) / 100_000n;
     assert.ok(100_001n - order.hyperliquidMinNetSpotDelta!.atoms >= feeAtoms);
+    // A solver quote lists that base-asset fee, so the order signs a base-asset venue fee cap too: the
+    // fee part of the shortfall, ceil(100001 * 5 / 10000) = 51 atoms, beside the configured quote cap.
+    assert.deepEqual(order.maxVenueFeeAtomsByAsset.map((cap) => [cap.asset.assetId, cap.maxAtoms]), [
+      ["hypercore:testnet:btc", 51n], ["hypercore:testnet:usdc", 10_000n],
+    ]);
+    assert.ok(51n >= feeAtoms);
     assert.deepEqual(order.allowedRecoveryActions, [
       "CANCEL_OPEN_ORDERS", "COMPLETE_SPOT", "COMPLETE_PERP", "ROLLBACK_SPOT", "ROLLBACK_PERP",
     ]);
@@ -277,6 +284,31 @@ test("Hyperliquid Testnet context prices orders from the live snapshot for any o
       /not a valid wallet/,
     );
   });
+});
+
+test("an entry size the live books cannot fill within its limits is refused before anything is signed", async () => {
+  const market = fakeMarket();
+  const feed = priceFeed(market);
+  assert.equal(await feed.refresh(), true);
+  const runtime = createHyperliquidTestnetOrderRuntime(config(), feed, () => market.now);
+  const insufficient = (error: unknown) => error instanceof Error
+    && (error as { code?: string }).code === "INSUFFICIENT_LIQUIDITY" && /Nothing was signed/.test(error.message);
+  await withOrders(async (orders) => {
+    const coordinator = new InternalOrderCoordinator({
+      contexts: runtime.contexts, clock: runtime.clock, store: orders, spotPrice: runtime.spotPrice,
+    });
+    // The perpetual bids hold 1.5 at 60010 above the signed floor (60010 less 50 bps); the next bid is below it.
+    assert.equal((await coordinator.createOrder(orderRequest("1.5", "hyper-depth-key-0001"))).created, true);
+    await assert.rejects(coordinator.createOrder(orderRequest("1.50001", "hyper-depth-key-0002")), insufficient);
+  });
+  // The spot asks hold 2 at 60001 within the ask plus 25 bps; the 99999 level is outside the cap.
+  const { spot } = feed.latest()!;
+  const cap = (price: { numerator: bigint; denominator: bigint }) => price.numerator * 10_000n <= 60_001n * 10_025n * price.denominator;
+  assert.equal(hyperliquidTestnetBookFills(spot.asks, 200_000n, 5, cap), true);
+  assert.equal(hyperliquidTestnetBookFills(spot.asks, 200_001n, 5, cap), false);
+  // Book size finer than one base atom is not counted.
+  assert.equal(hyperliquidTestnetBookFills([{ px: "1", sz: "0.000019" }], 2n, 5, () => true), false);
+  assert.equal(hyperliquidTestnetBookFills([{ px: "1", sz: "0.000019" }], 1n, 5, () => true), true);
 });
 
 test("Hyperliquid Testnet context is unknown until a valid snapshot arrives", async () => {

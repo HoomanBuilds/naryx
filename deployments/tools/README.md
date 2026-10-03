@@ -9,7 +9,7 @@ Nothing here signs, broadcasts, funds, or approves. It reads chains only over re
 | Network | Release template | Deployment input | Read-only RPC (environment) |
 |---|---|---|---|
 | shared | `deployments/tools/release-common.template.json` | none | none |
-| Base Sepolia | `deployments/evm/base-sepolia/release.template.json` | `broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json` and `broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/run-latest.json` | `NARYX_BASE_SEPOLIA_RPC_URL` |
+| Base Sepolia | `deployments/evm/base-sepolia/release.template.json` | `broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json` and `broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/runWith-latest.json` (`runWith`, the test USDC pairing; `run-latest.json` after `run`) | `NARYX_BASE_SEPOLIA_RPC_URL` |
 | Arbitrum Sepolia | `deployments/evm/arbitrum-sepolia/release.template.json` | `broadcast/DeployArbitrumSepoliaAsyncGmx.s.sol/421614/run-latest.json` | `NARYX_ARBITRUM_SEPOLIA_RPC_URL` |
 | Solana Devnet | `deployments/solana/devnet/release.template.json` | program ids, reviewed artifact hashes (or `artifactPath`), the `initialize-devnet.mjs` and `devnet-lookup-table.mjs` records, optional `programShowJson` (`solana program show --output json`) per program | `NARYX_SOLANA_DEVNET_RPC_URL` |
 | Hyperliquid Testnet | `deployments/hyperliquid/testnet/release.template.json` | operator configuration only | none (reads the public testnet info API) |
@@ -109,8 +109,8 @@ Env files carry RPC URLs, which can hold a provider key; keep the output directo
 
 Before it finishes, the generator loads every output through the services' own code, with the generated env files as each process environment:
 
-- API: `loadPrivateTerminalServerConfig` and `loadPrivateTerminalStartupConfig`; `createBaseSepoliaRuntime` and `createArbitrumSepoliaRuntime` with live read clients (chain id, every code hash, factory and coordinator bindings); `createBaseSepoliaOrderRuntime`, `createArbitrumSepoliaOrderRuntime`, and `createSolanaDevnetOrderRuntime` with one live price read and no timer started; `verifySolanaDevnetDeploymentIdentity`; `loadHyperliquidTestnetRuntimeConfig` plus a check of asset indexes and size decimals against the testnet `meta` and `spotMeta`; `loadTestnetExecutionPolicy`.
-- Solver: `loadSolverProcessConfig`, `loadBaseSepoliaQuoteRuntime`, `loadArbitrumSepoliaQuoteRuntime`, `loadArbitrumSepoliaExecutorConfig`, `loadSolanaDevnetSolverConfig` with `loadSolanaDevnetSharedManifest`, `loadHyperliquidTestnetQuoteRuntime`.
+- API: `loadPrivateTerminalServerConfig` and `loadPrivateTerminalStartupConfig`; `createBaseSepoliaRuntime` and `createArbitrumSepoliaRuntime` with live read clients (chain id, every code hash, factory and coordinator bindings); `createBaseSepoliaOrderRuntime`, `createArbitrumSepoliaOrderRuntime`, and `createSolanaDevnetOrderRuntime` with one live price read and no timer started; `verifySolanaDevnetDeploymentIdentity`; `loadHyperliquidTestnetRuntimeConfig` plus a check of asset indexes, order asset ids, and size decimals against the testnet `meta` and `spotMeta`; `loadTestnetExecutionPolicy`.
+- Solver: `loadSolverProcessConfig`, `loadBaseSepoliaQuoteRuntime`, `loadArbitrumSepoliaQuoteRuntime`, `loadArbitrumSepoliaExecutorConfig`, `loadSolanaDevnetSolverConfig` with `loadSolanaDevnetSharedManifest`, `loadHyperliquidTestnetQuoteRuntime` and a check that its spot and perpetual books are the API's configured markets.
 - Keeper: `loadKeeperRpcUrls`, `loadCodeHashMonitorConfig` followed by one `observeCode` pass that must report every target `MATCH`, and `loadFundingMirrorConfig`.
 - Indexer: `loadEvmIndexerConfig` for each `indexer-<network>.env`.
 - Web: every `NEXT_PUBLIC_` value is well formed.

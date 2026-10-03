@@ -764,6 +764,28 @@ test("fails closed unless the settlement account is the owner's funded factory a
   }
 });
 
+test("admission reads the chain's clock, which the verifier also uses, not the server's", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-clock-"));
+  const { orders, intents, fixture, attempt } = selectedAttempt(scratch);
+  try {
+    const invoke = (clock: () => Promise<bigint>) => createBaseSepoliaAtomicContextProvider({
+      intents,
+      orders,
+      deployments: [fixture.configuration],
+      currentUnixSeconds: clock,
+      reads: liveReads(fakeChain(), fixture.configuration),
+    })(attempt.attemptId, "authorize");
+    const context = await invoke(async () => 1_500n);
+    assert.equal(context.bounds?.currentUnixSeconds, 1_500n);
+    // The chain is past the route's expiry even though no server clock was consulted.
+    await assert.rejects(invoke(async () => 2_500n), rejectsWith("PACKAGE_ADMISSION_FAILED"));
+  } finally {
+    intents.close();
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("fails closed on deployment code and evidence mismatches", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-mismatch-"));
   const { orders, intents, fixture, attempt } = selectedAttempt(scratch);

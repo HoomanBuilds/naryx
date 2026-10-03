@@ -9,7 +9,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
-import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "./terminal-context";
+import { DOMAIN_META, DOMAIN_ORDER, domainLive, domainQuoting, useTerminal } from "./terminal-context";
 import styles from "./shell.module.css";
 
 const NAV: readonly { href: "/trade" | "/portfolio" | "/activity" | "/network"; label: string }[] = [
@@ -91,7 +91,8 @@ function NetworkMenu() {
             const item = DOMAIN_META[domain];
             const status = healthState === "unconfigured"
               ? "Preview"
-              : domainLive(domain, runtimeHealth) ? "Live" : healthState === "checking" ? "Checking" : "Off";
+              : domainLive(domain, runtimeHealth) ? "Live"
+                : domainQuoting(domain, runtimeHealth) ? "Quotes" : healthState === "checking" ? "Checking" : "Off";
             return (
               <li key={domain} role="option" aria-selected={domain === selectedDomain}>
                 <button type="button" onClick={() => choose(domain)} className={domain === selectedDomain ? styles.networkOptionOn : undefined}>

@@ -4,6 +4,7 @@ import {
   type ArbitrumSepoliaExitAuthorization,
 } from "./arbitrum-sepolia-exit.js";
 import type {
+  EvmTestnetAsyncObservationDto,
   EvmTestnetAsyncObservationPort,
   EvmTestnetObserveAsyncRequest,
 } from "./evm-testnet-runtime-ports.js";
@@ -27,6 +28,8 @@ const STATUSES = new Set([
 ]);
 const STEPS = new Set([
   "APPROVE_COORDINATOR", "RESERVE", "SUBMIT", "MARK_PENDING", "RELAY", "CLOSE",
+  "ROLLBACK_SPOT", "BEGIN_RECOVERY", "SUBMIT_RECOVERY", "RELAY_RECOVERY",
+  "SLASH_MISSED_RECOVERY", "SUBMIT_OVERDUE_RECOVERY",
   "SUBMIT_EXIT", "RECONCILE_EXIT", "PROCESS_RECONCILIATION", "FINALIZE_EXIT",
 ]);
 
@@ -319,37 +322,64 @@ implements ArbitrumSepoliaAttemptExecutor, ArbitrumSepoliaOwnerAuthorizationExec
       throw new ArbitrumSepoliaHandoffError("INVALID_EXECUTOR_RESPONSE", "Arbitrum executor response is malformed.");
     }
     if (!response.ok) {
-      const code = (parsed as { error?: { code?: unknown } })?.error?.code;
+      const error = (parsed as { error?: { code?: unknown; message?: unknown } })?.error;
+      const refused = response.status >= 400 && response.status < 500 && typeof error?.code === "string"
+        && /^[A-Z_]{1,48}$/.test(error.code);
+      // The solver's own short reason tells the owner what to redo; an expired route needs a fresh order.
+      const reason = refused && typeof error?.message === "string" && /^[\x20-\x7e]{1,200}$/.test(error.message)
+        ? error.message
+        : undefined;
       throw new ArbitrumSepoliaHandoffError(
-        response.status >= 400 && response.status < 500 && typeof code === "string" && /^[A-Z_]{1,48}$/.test(code)
-          ? code
-          : "EXECUTOR_REJECTED",
-        `Arbitrum executor failed with HTTP ${response.status}.`,
+        refused ? error!.code as string : "EXECUTOR_REJECTED",
+        reason === undefined ? `Arbitrum executor failed with HTTP ${response.status}.`
+          : error!.code === "DEADLINE" ? `The quote expired before the reservation: ${reason}.`
+            : `The solver refused this package: ${reason}.`,
       );
     }
     return parsed;
   }
 }
 
+/** Keeps what a handoff observation proved, beside the transaction that last moved the attempt. */
+export interface ArbitrumSepoliaObservationRecorder {
+  record(
+    request: EvmTestnetObserveAsyncRequest,
+    observation: EvmTestnetAsyncObservationDto,
+    transactionHash: string | null,
+  ): void;
+}
+
+/** The last transaction the solver's journal saw confirmed for this attempt, in send order. */
+export function latestConfirmedTransaction(summary: ArbitrumSepoliaExecutionSummary): string | null {
+  return summary.transactions.findLast((entry) => entry.status === "CONFIRMED")?.txHash ?? null;
+}
+
 /**
- * The readiness gate has already approved ARBITRUM_TESTNET_ASYNC_HANDOFF when observe runs, so the
- * solver advances the attempt first (idempotent per attempt), then the signerless observation reports
- * chain status. A failed attempt fails the handoff closed.
+ * The readiness gate has already approved ARBITRUM_TESTNET_ASYNC_HANDOFF when observe runs. The
+ * attempt must pass package admission before the solver may advance it, so a package the service
+ * would refuse to observe is never reserved or submitted; then the solver advances the attempt
+ * (idempotent per attempt) and the signerless observation reports chain status. A failed attempt
+ * fails the handoff closed.
  */
 export function withArbitrumSepoliaExecutionHandoff(
-  observation: EvmTestnetAsyncObservationPort,
+  observation: EvmTestnetAsyncObservationPort & Readonly<{ admit(attemptId: string): Promise<void> }>,
   executor: ArbitrumSepoliaAttemptExecutor,
+  recorder?: ArbitrumSepoliaObservationRecorder,
 ): EvmTestnetAsyncObservationPort {
-  if (typeof observation?.observe !== "function" || typeof executor?.advance !== "function") {
-    throw new Error("Arbitrum handoff requires an observation port and an executor.");
+  if (typeof observation?.observe !== "function" || typeof observation.admit !== "function"
+    || typeof executor?.advance !== "function") {
+    throw new Error("Arbitrum handoff requires an admitting observation port and an executor.");
   }
   return Object.freeze({
     observe: async (request: EvmTestnetObserveAsyncRequest) => {
+      await observation.admit(request.attemptId);
       const summary = await executor.advance(request.attemptId);
       if (summary.status === "FAILED") {
         throw new ArbitrumSepoliaHandoffError("EXECUTION_FAILED", "Arbitrum Sepolia execution failed closed.");
       }
-      return observation.observe(request);
+      const observed = await observation.observe(request);
+      recorder?.record(request, observed, latestConfirmedTransaction(summary));
+      return observed;
     },
   });
 }

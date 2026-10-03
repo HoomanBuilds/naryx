@@ -69,6 +69,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     error FundingMissing();
     error FundingMismatch();
     error DeadlinePassed();
+    error DeadlineNotReached();
     error InvalidOutcome();
     error UnknownAccount();
 
@@ -370,20 +371,32 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     /// @notice Sells the rolled-back spot inventory to the owner and frees the owner's account. Callable by
     /// the package owner or the package solver; every amount goes to the owner.
     function finalizeUnfilledRequest(bytes32 requestKey) external nonReentrant {
+        _finalizeUnfilled(requestKey, false);
+    }
+
+    /// @notice From the recovery deadline on, the package owner alone may take the rolled-back spot base token
+    /// in kind instead of the floor-protected sale, so a spot price below the signed rollback floor cannot
+    /// keep the package from reaching RECOVERED and closing.
+    function takeUnfilledSpotInKind(bytes32 requestKey) external nonReentrant {
+        _finalizeUnfilled(requestKey, true);
+    }
+
+    function _finalizeUnfilled(bytes32 requestKey, bool inKind) private {
         _assertDeployment();
         RequestRecord storage stored = _request(requestKey);
         bytes32 packageId = stored.registration.packageId;
         if (
             msg.sender != stored.registration.beneficiary
-                && msg.sender != coordinator.packageState(packageId).terms.solver
+                && (inKind || msg.sender != coordinator.packageState(packageId).terms.solver)
         ) revert UnauthorizedCaller();
+        if (inKind && block.timestamp < stored.registration.recoveryDeadline) revert DeadlineNotReached();
         if (stored.status != Status.CANCELLED && stored.status != Status.RECOVERED) revert InvalidOutcome();
         if (
             IGmxV2DataStore(dataStore).containsBytes32(ORDER_LIST, requestKey)
                 || _positionSize(stored.account, stored.registration.isLong) != stored.positionSizeBefore
         ) revert InvalidOutcome();
         GmxV2IsolatedAccount account = _requireAccount(stored.account);
-        account.rollbackSpot(packageId, requestKey);
+        account.rollbackSpot(packageId, requestKey, inKind);
         account.assertSpotCleared();
         delete funding[packageId][stored.registration.beneficiary];
         if (activePackageOf[address(account)] == packageId) activePackageOf[address(account)] = bytes32(0);

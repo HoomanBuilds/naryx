@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { usePersistedSetting } from "../persisted-setting";
+import { hasPersistedSetting, usePersistedSetting } from "../persisted-setting";
 import {
   PrivateHttpTerminalProvider,
   type PrivateTerminalRuntimeHealth,
@@ -27,7 +27,8 @@ type TerminalContextValue = TerminalServiceConfig & {
   refreshHealth(): void;
   attempts: readonly RecordedAttempt[];
   recordAttempt(attempt: RecordedAttempt): void;
-  clearAttempts(): void;
+  /** Removes the given wallets' local attempts from this browser's list. */
+  clearAttempts(owners: readonly string[]): void;
 };
 
 export const DOMAIN_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
@@ -48,6 +49,15 @@ export const DOMAIN_META: Readonly<Record<DomainId, {
   hyperliquid: { label: "Hyperliquid", network: "Hyperliquid testnet", runtime: "HyperCore", wallet: "evm", settlementClass: "BATCHED_IOC_WITH_RECOVERY", settlement: "IOC with recovery", executionMode: "Hyperliquid coordinated testnet" },
 };
 
+/**
+ * Lanes whose open packages the product cannot exit yet, with the reason shown in place of an exit.
+ * The only Solana Devnet exit route is the solver's firm buy-back, and the protocol admits firm
+ * quotes for entries only, so that exit quote is refused before any transaction is built.
+ */
+export const EXIT_UNAVAILABLE: Readonly<Partial<Record<DomainId, string>>> = {
+  solana: "Solana Devnet exits are not available yet. The Devnet exit route needs a firm solver buy-back quote, and the protocol admits firm quotes only for entries, so an open Solana package cannot be exited through Naryx today.",
+};
+
 export function domainHealth(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): RuntimeBoundaryHealth | null {
   if (!health) return null;
   if (domain === "solana") return health.solanaDevnet;
@@ -64,10 +74,15 @@ export function domainLive(domain: DomainId, health: PrivateTerminalRuntimeHealt
   return health !== null && health.controls.executionReadinessAvailable && domainHealth(domain, health)?.available === true;
 }
 
+/** A lane whose live market the service serves, for previews and quotes, whether or not it executes. */
+export function domainQuoting(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): boolean {
+  return health?.markets[domain] === "LIVE";
+}
+
 const TerminalContext = createContext<TerminalContextValue | null>(null);
 
 export function TerminalProvider({ config, children }: { config: TerminalServiceConfig; children: ReactNode }) {
-  const [selectedDomain, setSelectedDomain] = usePersistedSetting<DomainId>("domain", "solana", DOMAIN_ORDER);
+  const [storedDomain, setSelectedDomain] = usePersistedSetting<DomainId>("domain", "solana", DOMAIN_ORDER);
   const privateProvider = useMemo(() => {
     if (!config.privateApiBaseUrl) return null;
     try {
@@ -92,6 +107,19 @@ export function TerminalProvider({ config, children }: { config: TerminalService
       });
     return () => controller.abort();
   }, [healthRequest, privateProvider]);
+
+  // A first visit opens on a lane that executes: when the viewer has never picked a lane and the
+  // default is not live, the first live lane is shown; with none, the first lane with a live market.
+  // That pick is derived, never saved, so a viewer who never chose moves on to another live lane if it
+  // goes down; a saved choice always wins. Health is unknown during the server render and the first
+  // client render, so both use the default.
+  const healthValue = health.value;
+  const firstLive = DOMAIN_ORDER.find((domain) => domainLive(domain, healthValue));
+  const selectedDomain = healthValue === null || hasPersistedSetting("domain") || domainLive(storedDomain, healthValue)
+    ? storedDomain
+    : firstLive ?? (domainQuoting(storedDomain, healthValue)
+      ? storedDomain
+      : DOMAIN_ORDER.find((domain) => domainQuoting(domain, healthValue)) ?? storedDomain);
 
   const refreshHealth = useCallback(() => {
     if (!privateProvider) return;

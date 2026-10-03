@@ -19,15 +19,20 @@ const DOMAINS = [
   { id: "hyperliquid", label: "Hyperliquid", runtime: "HyperCore" },
 ] as const;
 
+/** Basis of the perpetual mid over the spot mid in hundredths of a basis point, truncated toward zero. */
+export function basisHundredthsBps(spotMid: ObservedDecimal, perpMid: ObservedDecimal): bigint {
+  const scale = Math.max(spotMid.scale, perpMid.scale);
+  const spot = spotMid.digits * 10n ** BigInt(scale - spotMid.scale);
+  const perp = perpMid.digits * 10n ** BigInt(scale - perpMid.scale);
+  return (perp - spot) * 1_000_000n / spot;
+}
+
 /**
  * Basis of the perpetual mid over the spot mid in basis points, truncated toward zero to 0.01 bps
  * and signed, for example "+56.00 bps".
  */
 export function formatBasisBps(spotMid: ObservedDecimal, perpMid: ObservedDecimal): string {
-  const scale = Math.max(spotMid.scale, perpMid.scale);
-  const spot = spotMid.digits * 10n ** BigInt(scale - spotMid.scale);
-  const perp = perpMid.digits * 10n ** BigInt(scale - perpMid.scale);
-  const hundredths = (perp - spot) * 1_000_000n / spot;
+  const hundredths = basisHundredthsBps(spotMid, perpMid);
   const magnitude = hundredths < 0n ? -hundredths : hundredths;
   return `${hundredths < 0n ? "-" : "+"}${formatDecimalAtoms(magnitude, 2)} bps`;
 }

@@ -17,9 +17,11 @@ import type { SelectedSolanaAdmissionProvider } from './solana-execution-authori
 import {
   deriveSolanaDevnetFirmAccounts,
   firmRouteBindingId,
+  holdShardSequences,
   priceSolanaDevnetEntry,
   programAddress,
   readSolanaDevnetQuoteState,
+  withShardWriteLock,
   type SolanaDevnetFirmQuoteJournal,
   type SolanaDevnetLiveQuoteState,
 } from './solana-devnet-firm-quote.js';
@@ -223,6 +225,11 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     const expiry = [order.expiryValue, quote.validUntilValue, route.routeExpiryValue].reduce((left, right) => (left < right ? left : right));
     const firmQuoteAtoms = quote.expectedSpotNotional.atoms;
 
+    // Hold the shard sequences for this binding's lifetime. Taking the shard lock first waits out a
+    // standing-level write already in flight, so the state read below is the one the lock pins.
+    await withShardWriteLock(config.accounts.packageBookShard, async () => {
+      holdShardSequences(config.accounts.packageBookShard, expiry);
+    });
     let state = await readSolanaDevnetQuoteState(rpc, manifest, config);
     if (state.slot >= expiry) notReady('the firm quote has expired; request a new quote');
     const accounts = deriveSolanaDevnetFirmAccounts({

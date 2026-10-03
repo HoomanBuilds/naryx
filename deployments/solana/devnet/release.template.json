@@ -127,6 +127,11 @@
       "$input": "init",
       "pointer": "/fragments/orderContext/quoteAsset"
     },
+    "maxVenueFeeAtoms": {
+      "$bigint": {
+        "$operator": "max venue fees per package (test perp taker fee at the maximum order size, with headroom), quote atoms; the order cap and the fee policy pass-through limit"
+      }
+    },
     "res": {
       "baseAsset": {
         "subjectId": {
@@ -299,13 +304,34 @@
         "$def": "domain"
       },
       "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "scopeQuantityPolicyClass": "EXACT_ATOMIC",
+      "scopeSettlementClass": "ATOMIC_POSTCONDITION",
+      "scopeAccountModeClass": "user-owned-v1",
       "feePolicyVersion": 1,
       "activationUnit": "SOLANA_SLOT",
       "activationValue": {
         "$def": "activation.activationValue"
       },
       "serviceFeeRules": [],
-      "passThroughCostRules": [],
+      "passThroughCostRules": [
+        {
+          "costCategory": "VENUE",
+          "costAssetId": {
+            "$def": "res.quoteAsset.subjectId"
+          },
+          "costAssetManifestHash": {
+            "$def": "res.quoteAsset.manifestHash"
+          },
+          "costAssetDecimals": {
+            "$def": "quoteAssetRef.decimals"
+          },
+          "maxAtoms": {
+            "$def": "maxVenueFeeAtoms"
+          },
+          "roundingDirection": "TOWARD_ZERO",
+          "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+        }
+      ],
       "refundPolicyVersion": 1,
       "expiryUnit": "SOLANA_SLOT",
       "expiryValue": {
@@ -435,6 +461,7 @@
           "feePolicyManifest": {
             "$def": "feePolicyManifest"
           },
+          "accountModeClass": "user-owned-v1",
           "activeRegistryRecords": [
             {
               "$merge": [
@@ -628,12 +655,12 @@
         },
         "maxStalenessSlots": {
           "$bigint": {
-            "$operator": "max order context staleness, finalized slots"
+            "$operator": "max order context staleness, finalized slots (recommended 150, about 60 s at 400 ms slots; finalized slots already lag about 32)"
           }
         },
         "expiryTtlSlots": {
           "$bigint": {
-            "$operator": "order expiry TTL, slots"
+            "$operator": "order expiry TTL, slots (recommended 1500, about 10 minutes)"
           }
         },
         "pollIntervalMs": {
@@ -681,9 +708,7 @@
               "$def": "quoteAssetRef"
             },
             "maxAtoms": {
-              "$bigint": {
-                "$operator": "max venue fee, quote atoms"
-              }
+              "$def": "maxVenueFeeAtoms"
             }
           }
         ],
@@ -795,7 +820,7 @@
         },
         "quoteTtlSlots": {
           "$bigint": {
-            "$operator": "quote TTL, slots"
+            "$operator": "quote TTL, slots (at least 300; recommended 450, about 3 minutes, so a first-time user can approve in the wallet)"
           }
         },
         "maxQuantityAtoms": {
@@ -810,7 +835,7 @@
         },
         "levelTtlSlots": {
           "$bigint": {
-            "$operator": "package book level TTL, slots"
+            "$operator": "package book level TTL, slots (recommended 1500, at least the quote TTL; each level write costs solver SOL)"
           }
         },
         "levelCapacityUnits": {
@@ -840,7 +865,7 @@
         },
         "route": {
           "actions": {
-            "$operator": "reviewed ActionCommitmentInput[]"
+            "$operator": "reviewed ActionCommitmentInput[]: the spot action targets firm-reservationProgram and the perp action firm-perpAdapterProgram, the bindings that carry the leg adapters"
           },
           "preconditions": {
             "$operator": "reviewed StateConstraintInput[]"
@@ -866,10 +891,6 @@
             "maxPrincipalAtomsPerOperation": {
               "$operator": "per-operation principal cap, quote atoms, decimal string"
             },
-            "maxPrincipalAtomsPerDay": {
-              "$operator": "per-UTC-day principal cap, quote atoms, decimal string"
-            },
-            "maxPrincipalAtomsPerOwnerPerDay": { "$operator": "per-wallet per-UTC-day principal cap, quote atoms, decimal string (at least per-operation, at most per-day)" },
             "maxRecoveryLossAtomsPerOperation": {
               "$operator": "per-operation recovery loss cap, quote atoms, decimal string"
             }

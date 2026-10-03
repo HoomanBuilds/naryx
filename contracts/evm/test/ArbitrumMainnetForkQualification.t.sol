@@ -50,9 +50,10 @@ contract ArbitrumMainnetForkQualificationTest is Test {
 
         uint256 forkBlock = vm.envUint("ARBITRUM_MAINNET_FORK_BLOCK");
         require(forkBlock != 0, "ARBITRUM_MAINNET_FORK_BLOCK is zero");
+        // createSelectFork pins the fork to forkBlock. On Arbitrum, block.number is the L1 block
+        // estimate, not the L2 block, so it cannot be compared with forkBlock.
         vm.createSelectFork(rpcUrl, forkBlock);
         assertEq(block.chainid, ARBITRUM_CHAIN_ID);
-        assertEq(block.number, forkBlock);
 
         GmxV2.Deployment memory gmx = _deployment();
         address market = _requiredAddress("ARBITRUM_GMX_MARKET");

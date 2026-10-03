@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import Database from 'better-sqlite3';
+import { isCanonicalEvmSignature } from '@naryx/adapter-evm';
 import {
   bytesEqual,
   fromProtocolJson,
@@ -52,13 +53,22 @@ import {
   ARBITRUM_SEPOLIA_CHAIN_ID,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   GMX_DATA_STORE_KEYS,
+  GMX_FLOAT_PRECISION,
+  arbitrumHedgeSizeAtoms,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
   ceilDiv,
   createViemArbitrumSepoliaReadPort,
+  decimalText,
   gmxDecreaseExecutionFeeWei,
+  gmxEntryCollateralRefusal,
   gmxIncreaseExecutionFeeWei,
+  gmxIndexPrice,
+  readArbitrumSepoliaReferencePrice,
+  readGmxEntryCollateralLimits,
   readGmxExecutionFeeParameters,
+  readGmxPositionFeeFactor,
+  readGmxShortExecutionPrice,
   readGmxUint,
   requireArbitrumSepoliaChain,
   requireArbitrumSepoliaCode,
@@ -115,6 +125,10 @@ export const ARBITRUM_ASYNC_COORDINATOR_ABI = parseAbi([
   'function reserve(Terms terms, bytes ownerSignature) returns (bytes32)',
   'function submitRequest(bytes32 id, uint64 expectedVersion, VenueRequest request) returns (bytes32)',
   'function markVenuePending(bytes32 id, uint64 expectedVersion)',
+  'function beginRecovery(bytes32 id, uint64 expectedVersion)',
+  'function submitRecovery(bytes32 id, uint64 expectedVersion)',
+  'function slashMissedRecovery(bytes32 id, uint64 expectedVersion)',
+  'function submitOverdueRecovery(bytes32 id, uint64 expectedVersion)',
   'function close(bytes32 id, uint64 expectedVersion)',
 ]);
 export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
@@ -123,6 +137,8 @@ export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
   'function requestEvidence(bytes32 requestKey) view returns (uint8 status, bytes32 evidenceHash, uint256 positionSizeBefore, uint256 positionSizeAfter, uint64 revision)',
   'function fundRequest(bytes32 packageId, VenueRequest venueRequest) payable',
   'function relayEvidence(bytes32 requestKey, uint64 expectedVersion)',
+  'function finalizeUnfilledRequest(bytes32 requestKey)',
+  'function activePackageOf(address account) view returns (bytes32)',
 ]);
 export const ARBITRUM_ISOLATED_ACCOUNT_ABI = parseAbi([
   'function owner() view returns (address)',
@@ -150,6 +166,8 @@ const STATE = Object.freeze({
 const STATE_NAMES = Object.freeze(Object.keys(STATE)) as readonly (keyof typeof STATE)[];
 // Adapter request outcomes that relayEvidence forwards to the coordinator.
 const RELAYABLE_REQUEST_STATUS = new Set([2, 3, 4, 5]);
+// Adapter outcomes that leave the spot leg in the account: CANCELLED and RECOVERED.
+const UNFILLED_REQUEST_STATUS = new Set([3, 5]);
 const EXIT_STATUS = Object.freeze({ NONE: 0, PENDING: 1, EXECUTED: 2, CANCELLED: 3, FROZEN: 4, RECOVERED: 5, CONFLICT: 6 });
 const EXIT_STATUS_NAMES = Object.freeze(Object.keys(EXIT_STATUS)) as readonly (keyof typeof EXIT_STATUS)[];
 
@@ -165,7 +183,13 @@ export interface ArbitrumSepoliaExecutorConfig {
   readonly spotPort: ArbitrumSepoliaContractIdentity;
   readonly spotBaseToken: ArbitrumSepoliaContractIdentity;
   readonly gmxDataStore: ArbitrumSepoliaContractIdentity;
+  /** The pinned GMX V2.2 Reader; the short is checked against its execution price before the owner signs. */
+  readonly gmxReader: ArbitrumSepoliaContractIdentity;
   readonly gmxMarket: Address;
+  /** The reference feed the quote priced from; the short is sized at its live answer. */
+  readonly priceFeed: ArbitrumSepoliaContractIdentity;
+  readonly priceFeedDecimals: number;
+  readonly maxPriceAgeSeconds: bigint;
   readonly quoteAssetDecimals: number;
   readonly executionClassManifestHash: Hex;
   readonly seriesIdentityKey: Hex;
@@ -219,6 +243,8 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
 
 export type ArbitrumSepoliaExecutionStep =
   | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE'
+  | 'ROLLBACK_SPOT' | 'BEGIN_RECOVERY' | 'SUBMIT_RECOVERY' | 'RELAY_RECOVERY'
+  | 'SLASH_MISSED_RECOVERY' | 'SUBMIT_OVERDUE_RECOVERY'
   | 'SUBMIT_EXIT' | 'RECONCILE_EXIT' | 'PROCESS_RECONCILIATION' | 'FINALIZE_EXIT';
 
 export interface ArbitrumSepoliaExecutionResult {
@@ -501,7 +527,7 @@ function requirePositive(value: bigint, cap: bigint, name: string): bigint {
 function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
   const identities = [
     config.coordinator, config.adapter, config.accountFactory, config.accountImplementation, config.collateralToken,
-    config.spotPort, config.spotBaseToken, config.gmxDataStore,
+    config.spotPort, config.spotBaseToken, config.gmxDataStore, config.gmxReader, config.priceFeed,
   ];
   if (config.domain?.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
     || identities.some((identity) => !ADDRESS.test(identity?.address ?? '')
@@ -512,6 +538,8 @@ function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
     || !Number.isSafeInteger(config.seriesBindingVersion) || config.seriesBindingVersion < 1
     || !Number.isSafeInteger(config.quoteAssetDecimals) || config.quoteAssetDecimals < 0
     || config.quoteAssetDecimals > GMX_USD_DECIMALS
+    || !Number.isSafeInteger(config.priceFeedDecimals) || config.priceFeedDecimals < 0 || config.priceFeedDecimals > 36
+    || typeof config.maxPriceAgeSeconds !== 'bigint' || config.maxPriceAgeSeconds <= 0n
     || !Number.isSafeInteger(config.executionFeeBufferBps) || config.executionFeeBufferBps < 0
     || config.executionFeeBufferBps > 10_000
     || !Number.isSafeInteger(config.receiptWaitMs) || config.receiptWaitMs < 1 || config.receiptWaitMs > 20_000
@@ -815,6 +843,9 @@ export class ArbitrumSepoliaExecutor {
       if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
         fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
       }
+      if (!isCanonicalEvmSignature(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must use v 27 or 28 and a low s, the form the contracts accept');
+      }
       const { journal } = this.#options;
       const plan = journal.exitPlan(attemptId);
       if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared exit authorization');
@@ -851,6 +882,9 @@ export class ArbitrumSepoliaExecutor {
     return this.#enqueue(attemptId, async () => {
       if (typeof ownerSignature !== 'string' || !SIGNATURE.test(ownerSignature)) {
         fail('INVALID_SIGNATURE', 'owner signature must be a lowercase 65-byte hex string');
+      }
+      if (!isCanonicalEvmSignature(ownerSignature)) {
+        fail('INVALID_SIGNATURE', 'owner signature must use v 27 or 28 and a low s, the form the contracts accept');
       }
       const { journal } = this.#options;
       const plan = journal.plan(attemptId);
@@ -992,15 +1026,79 @@ export class ArbitrumSepoliaExecutor {
         state = await this.#state(plan);
       }
       if (state.state === STATE.VENUE_PENDING) {
-        const evidence = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'requestEvidence', [state.requestKey]) as readonly unknown[];
-        if (!RELAYABLE_REQUEST_STATUS.has(Number(evidence[0]))) {
-          return this.#result(attemptId, plan, 'VENUE_PENDING', state);
+        const status = await this.#requestStatus(plan, state.requestKey);
+        if (!RELAYABLE_REQUEST_STATUS.has(status)) {
+          // GMX neither executed nor cancelled the request within its venue window: the coordinator's
+          // recovery cancels it on GMX, so the owner is not left waiting on a request that never runs.
+          if (status !== 1) return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
+          if (await chain.latestBlockTimestamp() <= plan.terms.venueDeadline) {
+            return this.#result(attemptId, plan, 'VENUE_PENDING', state);
+          }
+          await this.#send(plan, 'BEGIN_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'beginRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+        } else {
+          // A cancelled request leaves the bought spot in the account, and the adapter relays it only
+          // once that spot is sold back to the owner.
+          if (UNFILLED_REQUEST_STATUS.has(status)) await this.#rollbackSpot(plan, state.requestKey);
+          await this.#send(plan, 'RELAY', {
+            address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
+            args: [state.requestKey, state.stateVersion],
+          });
         }
-        await this.#send(plan, 'RELAY', {
-          address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
-          args: [state.requestKey, state.stateVersion],
+        state = await this.#state(plan);
+      }
+      // The coordinator's bonded recovery of a cancelled request: open recovery, ask the adapter to
+      // reconcile (it proves the request is gone and the position unchanged), relay that proof, and close,
+      // which returns the solver bond and reserve. Every call is permissionless except the rollback.
+      if (state.state === STATE.CANCELLED) {
+        await this.#send(plan, 'BEGIN_RECOVERY', {
+          address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'beginRecovery',
+          args: [plan.packageId, state.stateVersion],
         });
         state = await this.#state(plan);
+      }
+      const now = await chain.latestBlockTimestamp();
+      if (state.state === STATE.RECOVERY_PENDING && !state.recoveryActionSubmitted && now < plan.terms.recoveryDeadline) {
+        await this.#send(plan, 'SUBMIT_RECOVERY', {
+          address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitRecovery',
+          args: [plan.packageId, state.stateVersion],
+        });
+        state = await this.#state(plan);
+      }
+      // Past the recovery deadline (the service was down through the recovery window) the request may still
+      // sit on GMX with the owner's collateral and spot. The coordinator first slashes a missed recovery
+      // duty, then takes the same cancel-or-reconcile recovery late, so the steps below can still relay it
+      // and close. Conflicting evidence never takes this path.
+      if (now >= plan.terms.recoveryDeadline && state.requestKey !== ZERO_HASH && !state.recoveryActionSubmitted
+        && !state.evidenceConflict) {
+        if (state.state === STATE.RECOVERY_PENDING && state.recoveryDutyActive && now > plan.terms.recoveryDeadline) {
+          await this.#send(plan, 'SLASH_MISSED_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'slashMissedRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
+        if (state.state === STATE.MANUAL_INTERVENTION
+          || (state.state === STATE.RECOVERY_PENDING && !state.recoveryDutyActive)) {
+          await this.#send(plan, 'SUBMIT_OVERDUE_RECOVERY', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitOverdueRecovery',
+            args: [plan.packageId, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
+      }
+      if (state.state === STATE.RECOVERY_PENDING && state.recoveryActionSubmitted) {
+        const status = await this.#requestStatus(plan, state.requestKey);
+        if (status === 2 || status === 5) {
+          if (status === 5) await this.#rollbackSpot(plan, state.requestKey);
+          await this.#send(plan, 'RELAY_RECOVERY', {
+            address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'relayEvidence',
+            args: [state.requestKey, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
       }
       if (state.state === STATE.EXECUTED || state.state === STATE.RECOVERED) {
         await this.#send(plan, 'CLOSE', {
@@ -1010,7 +1108,8 @@ export class ArbitrumSepoliaExecutor {
         state = await this.#state(plan);
       }
       if (state.state === STATE.CLOSED) return this.#result(attemptId, plan, 'SETTLED', state);
-      // Cancelled, frozen, or overdue packages need the coordinator recovery path, which the keeper drives.
+      // Conflicting evidence, a changed adapter, or a request GMX has not yet released needs the operator
+      // or a later poll.
       return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
     } catch (error) {
       if (error instanceof InFlight) return this.#result(attemptId, plan, 'IN_FLIGHT', undefined);
@@ -1354,6 +1453,47 @@ export class ArbitrumSepoliaExecutor {
     return lower(this.#options.config.coordinator.address);
   }
 
+  /**
+   * GMX V2.2 opens a short of `sizeDeltaUsd / price` tokens and keeps its price impact as pending
+   * impact, so the short is sized at the live reference to hedge exactly the spot quantity. Before
+   * the owner signs, GMX's own execution price for that size must still meet the signed acceptable
+   * price, and the position must pass GMX's minimum collateral validation.
+   */
+  async #gmxShortSize(quantity: bigint, baseDecimals: number, acceptablePrice: bigint, collateralAtoms: bigint): Promise<bigint> {
+    const { chain, config } = this.#options;
+    let reference;
+    try {
+      reference = await readArbitrumSepoliaReferencePrice(chain, {
+        feed: config.priceFeed, decimals: config.priceFeedDecimals, maxAgeSeconds: config.maxPriceAgeSeconds,
+      });
+    } catch {
+      fail('PRICE_UNAVAILABLE', 'the reference price is stale or unavailable, so nothing was signed; try again shortly');
+    }
+    const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - config.quoteAssetDecimals);
+    const sizeAtoms = arbitrumHedgeSizeAtoms(quantity, baseDecimals, config.quoteAssetDecimals, reference);
+    const dataStore = lower(config.gmxDataStore.address);
+    const market = lower(config.gmxMarket);
+    const [gmx, limits, feeFactor] = await Promise.all([
+      readGmxShortExecutionPrice(chain, config.gmxReader, dataStore, market, {
+        indexPrice: gmxIndexPrice(reference, baseDecimals), quoteDecimals: config.quoteAssetDecimals, sizeDeltaUsd: sizeAtoms * usdScale,
+      }),
+      readGmxEntryCollateralLimits(chain, dataStore, market),
+      readGmxPositionFeeFactor(chain, dataStore, market),
+    ]);
+    if (gmx.executionPrice < acceptablePrice) {
+      const unit = 10n ** BigInt(baseDecimals);
+      fail('PRICE_MOVED', `GMX would now fill this short at ${decimalText(gmx.executionPrice * unit, GMX_FLOAT_PRECISION)}, `
+        + `under the signed acceptable price of ${decimalText(acceptablePrice * unit, GMX_FLOAT_PRECISION)}; nothing was signed. `
+        + 'Create a fresh order to re-quote');
+    }
+    const refusal = gmxEntryCollateralRefusal({
+      sizeAtoms, marginAtoms: collateralAtoms, positionFeeAtoms: ceilDiv(sizeAtoms * feeFactor, GMX_FLOAT_PRECISION),
+      priceImpactUsd: gmx.priceImpactUsd, quoteDecimals: config.quoteAssetDecimals, limits,
+    });
+    if (refusal !== undefined) fail('COLLATERAL_BELOW_MINIMUM', refusal);
+    return sizeAtoms * usdScale;
+  }
+
   async #requireChain(): Promise<void> {
     try {
       await requireArbitrumSepoliaChain(this.#options.chain);
@@ -1377,6 +1517,25 @@ export class ArbitrumSepoliaExecutor {
       state,
       stateVersion: BigInt(record.stateVersion as bigint),
       requestKey: hashValue(record.requestKey, 'package request key'),
+      recoveryActionSubmitted: record.recoveryActionSubmitted === true,
+      recoveryDutyActive: record.recoveryDutyActive === true,
+      evidenceConflict: record.evidenceConflict === true,
+    });
+  }
+
+  async #requestStatus(plan: ArbitrumSepoliaExecutionPlan, requestKey: Hex): Promise<number> {
+    const evidence = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'requestEvidence', [requestKey]) as readonly unknown[];
+    return Number(evidence[0]);
+  }
+
+  /** Sells the spot leg of an unfilled request back to the owner (once) while the account still holds it. */
+  async #rollbackSpot(plan: ArbitrumSepoliaExecutionPlan, requestKey: Hex): Promise<void> {
+    if (this.#options.journal.transaction(plan.attemptId, 'ROLLBACK_SPOT') === undefined) {
+      const active = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'activePackageOf', [plan.account]);
+      if (hashValue(active, 'active package') !== plan.packageId) return;
+    }
+    await this.#send(plan, 'ROLLBACK_SPOT', {
+      address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI, functionName: 'finalizeUnfilledRequest', args: [requestKey],
     });
   }
 
@@ -1506,10 +1665,10 @@ export class ArbitrumSepoliaExecutor {
     }
     // The quote asset is the GMX USD unit at par, so quote atoms scale to GMX 30-decimal USD exactly.
     const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - config.quoteAssetDecimals);
-    const sizeDeltaUsd = quote.expectedPerpNotional.atoms * usdScale;
     // A short increase accepts any fill at or above this price, so the bound rounds up.
     const acceptablePrice = ceilDiv(perpetual.limitPrice.quoteAtoms * usdScale, perpetual.limitPrice.baseAtoms);
     const quantity = order.quantity.atoms;
+    const sizeDeltaUsd = await this.#gmxShortSize(quantity, order.quantity.asset.decimals, acceptablePrice, quote.expectedMarginDelta.atoms);
     const rollbackMinQuoteAtoms = ceilDiv(quantity * rollback.limitPrice.quoteAtoms, rollback.limitPrice.baseAtoms);
     const nonce = await this.#read(coordinator, ARBITRUM_ASYNC_COORDINATOR_ABI, 'nextNonce', [ownerAddress]);
     if (typeof nonce !== 'bigint') fail('CHAIN_MISMATCH', 'owner nonce is invalid');

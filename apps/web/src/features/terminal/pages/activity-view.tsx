@@ -8,7 +8,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import type { OwnerPackageEntry, PackageLifecycleResponse } from "../private-http-terminal-provider";
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
-import type { RecordedAttempt } from "../shell/attempt-index";
+import { attemptsOf, type RecordedAttempt } from "../shell/attempt-index";
 import styles from "./pages.module.css";
 
 const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
@@ -17,6 +17,12 @@ const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
   hyperliquid: "Hyperliquid testnet",
   base: "Base Sepolia",
   arbitrum: "Arbitrum Sepolia",
+};
+
+/** Public block explorers for the EVM test networks whose outcomes the service records. */
+const EXPLORER_TX: Readonly<Partial<Record<RecordedAttempt["domain"], string>>> = {
+  base: "https://sepolia.basescan.org/tx/",
+  arbitrum: "https://sepolia.arbiscan.io/tx/",
 };
 
 function compact(value: string, leading = 10, trailing = 6) {
@@ -32,14 +38,19 @@ function stateText(state: string) {
 }
 
 function statePill(state: string) {
-  if (/COMPLETE|FINAL|SETTLED/.test(state)) return styles.pillOk;
-  if (/FAIL|REJECT|ABORT|EXPIRED|RECOVERY/.test(state)) return styles.pillBad;
+  if (/COMPLETE|FINAL|SETTLED|EXECUTED|CLOSED|^OPEN/.test(state)) return styles.pillOk;
+  if (/FAIL|REJECT|ABORT|EXPIRED|RECOVERY|REVERT|CANCEL|CONFLICT|MISMATCH|FROZEN|MANUAL|UNRESOLVED/.test(state)) return styles.pillBad;
   return styles.pill;
 }
 
-/** Lifecycle reads cover Solana Devnet and local conformance attempts; Hyperliquid, Base, and Arbitrum attempts report in the ticket. */
+/** Lifecycle reads cover Solana Devnet and local conformance attempts. */
 function readable(attempt: RecordedAttempt) {
-  return attempt.flow !== "hyperliquid" && attempt.flow !== "base" && attempt.flow !== "arbitrum";
+  return attempt.flow === "devnet" || attempt.flow === "conformance";
+}
+
+/** Base and Arbitrum attempts carry the outcome the service observed on chain. */
+function observed(attempt: RecordedAttempt) {
+  return attempt.flow === "base" || attempt.flow === "arbitrum";
 }
 
 const DOMAIN_OF: Readonly<Record<string, Readonly<{ domain: RecordedAttempt["domain"]; flow: RecordedAttempt["flow"] }>>> = {
@@ -56,20 +67,31 @@ function decimalSize(atoms: string, decimals: number): string {
   return fraction ? `${whole}.${fraction}` : whole;
 }
 
-/** A package the service recorded for a connected wallet, as an Activity row with its service state. */
-type Row = RecordedAttempt & Readonly<{ serviceState?: string | null }>;
+/** A package the service recorded for a connected wallet, as an Activity row with its service state and evidence. */
+type Row = RecordedAttempt & Readonly<{
+  listed?: true;
+  serviceState?: string | null;
+  transactionHash?: string | null;
+  blockNumber?: string | null;
+  receiptHash?: string | null;
+}>;
 
-function fromService(entry: OwnerPackageEntry): Row | null {
+function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
   const lane = DOMAIN_OF[entry.domainId];
   if (lane === undefined || entry.attemptId === null) return null;
   return {
     attemptId: entry.attemptId,
+    owner,
     domain: lane.domain,
     flow: lane.flow,
     mode: entry.action === "EXIT" ? "exit" : "entry",
     size: decimalSize(entry.quantityAtoms, entry.quantityDecimals),
     createdAt: entry.createdAtMs,
+    listed: true,
     serviceState: entry.state,
+    transactionHash: entry.transactionHash,
+    blockNumber: entry.blockNumber,
+    receiptHash: entry.receiptHash,
   };
 }
 
@@ -79,8 +101,8 @@ export function ActivityView() {
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
   const owners = [solanaOwner, evmOwner].filter((owner): owner is string => owner !== null);
-  // The service's record follows the wallet across devices; this browser's list adds attempts made
-  // before a wallet was connected. One row per attempt, newest first.
+  // The service's record follows the wallet across devices; this browser's list adds the connected
+  // wallets' attempts the service did not list. One row per attempt, newest first.
   const ownerQueries = useQueries({
     queries: owners.map((owner) => ({
       queryKey: ["owner-packages", owner],
@@ -92,16 +114,24 @@ export function ActivityView() {
       },
     })),
   });
-  const serviceRows = ownerQueries.flatMap((query) => query.data ?? []).map(fromService);
-  const serviceKey = serviceRows.map((row) => row?.attemptId ?? "").join(",");
+  const serviceRows = ownerQueries.flatMap((query, index) => {
+    const owner = owners[index];
+    return owner === undefined ? [] : (query.data ?? []).flatMap((entry) => fromService(entry, owner) ?? []);
+  });
+  const serviceKey = JSON.stringify(serviceRows);
+  const ownersKey = owners.join(",");
   const attempts: readonly Row[] = useMemo(() => {
     const byId = new Map<string, Row>();
-    for (const row of serviceRows) if (row !== null) byId.set(row.attemptId, row);
-    for (const attempt of localAttempts) if (!byId.has(attempt.attemptId)) byId.set(attempt.attemptId, attempt);
+    for (const row of serviceRows) byId.set(row.attemptId, row);
+    for (const attempt of attemptsOf(localAttempts, owners)) if (!byId.has(attempt.attemptId)) byId.set(attempt.attemptId, attempt);
     return [...byId.values()].sort((left, right) => right.createdAt - left.createdAt);
-    // serviceRows is rebuilt each render; its identity is captured by serviceKey.
+    // serviceRows and owners are rebuilt each render; their content is captured by serviceKey and ownersKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localAttempts, serviceKey]);
+  }, [localAttempts, serviceKey, ownersKey]);
+  // What a Base or Arbitrum row the service did not list can say about its state.
+  const unlisted = privateProvider === null || ownerQueries.some((query) => query.isError) ? "Unavailable"
+    : ownerQueries.some((query) => query.isPending) ? "Loading"
+      : "Not observed";
   const lifecycles = useQueries({
     queries: attempts.map((attempt) => ({
       queryKey: ["lifecycle", attempt.attemptId],
@@ -114,18 +144,20 @@ export function ActivityView() {
     })),
   });
   const openIndex = attempts.findIndex((attempt) => attempt.attemptId === openId);
+  const openAttempt = openIndex >= 0 ? attempts[openIndex] : undefined;
   const openLifecycle = openIndex >= 0 ? lifecycles[openIndex]?.data ?? null : null;
+  const explorer = openAttempt === undefined ? undefined : EXPLORER_TX[openAttempt.domain];
 
   return (
     <main className={styles.page}>
       <div className={styles.pageHead}>
         <div>
           <h1>Activity</h1>
-          <p>Every package your connected wallets started, on any device, with its durable lifecycle state and the receipt chain the service recorded for it.</p>
+          <p>Every package your connected wallets started, on any device, with its durable state and the receipts the service recorded for it.</p>
         </div>
         {attempts.length > 0 ? (
           <div className={styles.headActions}>
-            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); clearAttempts(); }}>
+            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); clearAttempts(owners); }}>
               Clear list
             </button>
           </div>
@@ -170,11 +202,12 @@ export function ActivityView() {
                 const query = lifecycles[index];
                 const lifecycle = query?.data ?? null;
                 const open = attempt.attemptId === openId;
-                const state = !readable(attempt)
-                  ? (attempt.serviceState ? stateText(attempt.serviceState) : "See ticket")
-                  : lifecycle ? stateText(lifecycle.attempt.state)
-                  : privateProvider === null ? "Unavailable"
-                  : query?.isError ? "Unavailable" : "Loading";
+                const recorded = readable(attempt) ? lifecycle?.attempt.state ?? null : attempt.serviceState ?? null;
+                const state = recorded !== null ? stateText(recorded)
+                  : readable(attempt)
+                    ? privateProvider === null || query?.isError ? "Unavailable" : "Loading"
+                    : observed(attempt) ? (attempt.listed ? "Not observed" : unlisted)
+                      : "See ticket";
                 return (
                   <tr
                     key={attempt.attemptId}
@@ -200,8 +233,8 @@ export function ActivityView() {
                     <td className={styles.num}>{attempt.size}</td>
                     <td className={styles.dim}>{FLOW_LABEL[attempt.flow]}</td>
                     <td>
-                      {readable(attempt) ? (
-                        <span className={lifecycle ? statePill(lifecycle.attempt.state) : styles.pill}>{state}</span>
+                      {readable(attempt) || observed(attempt) || recorded !== null ? (
+                        <span className={recorded !== null ? statePill(recorded) : styles.pill}>{state}</span>
                       ) : (
                         <Link href="/trade" className={styles.pill} onClick={(event) => event.stopPropagation()}>{state}</Link>
                       )}
@@ -223,7 +256,34 @@ export function ActivityView() {
             <p className={styles.mono} title={openId}>{compact(openId, 18, 8)}</p>
           </div>
           <div className={styles.cardBody}>
-            {openLifecycle && openLifecycle.receipts.length > 0 ? (
+            {openAttempt !== undefined && observed(openAttempt) ? (
+              openAttempt.serviceState ? (
+                <dl className={styles.facts}>
+                  <dt>State</dt>
+                  <dd>{stateText(openAttempt.serviceState)}</dd>
+                  <dt>Transaction</dt>
+                  <dd className={styles.mono}>
+                    {openAttempt.transactionHash && explorer ? (
+                      <a href={`${explorer}${openAttempt.transactionHash}`} target="_blank" rel="noopener noreferrer" title={openAttempt.transactionHash}>
+                        {compact(openAttempt.transactionHash, 12, 8)}
+                      </a>
+                    ) : "-"}
+                  </dd>
+                  <dt>Block</dt>
+                  <dd className={styles.mono}>{openAttempt.blockNumber ?? "-"}</dd>
+                  <dt>Package receipt</dt>
+                  <dd className={styles.mono} title={openAttempt.receiptHash ?? undefined}>
+                    {openAttempt.receiptHash ? compact(openAttempt.receiptHash, 12, 8) : "-"}
+                  </dd>
+                </dl>
+              ) : (
+                <p className={styles.dim} style={{ fontSize: 12.5 }}>
+                  {openAttempt.listed
+                    ? "The service has not observed a transaction for this package on chain, so it has no state or receipt."
+                    : "The service did not list this package, so its on-chain state cannot be shown here."}
+                </p>
+              )
+            ) : openLifecycle && openLifecycle.receipts.length > 0 ? (
               <ol className={styles.timeline}>
                 {openLifecycle.receipts.map((receipt) => (
                   <li key={receipt.receiptHashHex}>
@@ -238,8 +298,8 @@ export function ActivityView() {
               </ol>
             ) : (
               <p className={styles.dim} style={{ fontSize: 12.5 }}>
-                {openIndex >= 0 && !readable(attempts[openIndex])
-                  ? `${FLOW_LABEL[attempts[openIndex].flow]} attempts report their execution in the Trade ticket; the lifecycle read covers Solana and local conformance attempts.`
+                {openAttempt !== undefined && !readable(openAttempt)
+                  ? `${FLOW_LABEL[openAttempt.flow]} attempts report their execution in the Trade ticket; the lifecycle read covers Solana and local conformance attempts.`
                   : privateProvider === null
                     ? "Receipts need the private terminal service."
                     : "No receipts recorded yet."}

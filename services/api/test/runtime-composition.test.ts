@@ -18,6 +18,8 @@ const ENABLED = {
   NARYX_BASE_TESTNET_RUNTIME_ENABLED: "true",
   NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED: "true",
   NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED: "true",
+  NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED: "true",
+  NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED: "true",
 };
 
 const solanaPorts = {
@@ -145,6 +147,18 @@ test("runtime composition fails closed when external prerequisites are absent or
     () => composePrivateTerminalRuntime({ NARYX_SOLANA_DEVNET_RUNTIME_ENABLED: "yes" }),
     /must be true or false/,
   );
+});
+
+test("a quotes-only Hyperliquid lane reports execution disabled by configuration and its market freshness", () => {
+  const quotesOnly = composePrivateTerminalRuntime({
+    NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED: "true",
+    NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED: "false",
+    NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED: "false",
+  });
+  assert.deepEqual(quotesOnly.health.hyperliquidTestnet, { available: false, reason: "DISABLED_BY_CONFIGURATION" });
+  assert.deepEqual(privateTerminalHealthSummary(quotesOnly.health, "DISABLED", [true]), { status: "ready", environment: "TESTNET" });
+  assert.deepEqual(privateTerminalHealthSummary(quotesOnly.health, "DISABLED", [false]), { status: "degraded", environment: "TESTNET" });
+  assert.deepEqual(privateTerminalHealthSummary(quotesOnly.health, "DISABLED"), { status: "unconfigured", environment: "UNCONFIGURED" });
 });
 
 test("private service health reports runtime composition reasons", async () => {

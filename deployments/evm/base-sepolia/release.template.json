@@ -4,7 +4,7 @@
   "rpcUrlEnv": "NARYX_BASE_SEPOLIA_RPC_URL",
   "inputs": {
     "deploy": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaAtomicPackage.s.sol/84532/run-latest.json" },
-    "firm": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/run-latest.json" }
+    "firm": { "$operator": "absolute path of contracts/evm/broadcast/DeployBaseSepoliaFirmLiquidity.s.sol/84532/runWith-latest.json (runWith-latest.json: the test USDC deployment runs runWith)" }
   },
   "contracts": {
     "protocolConfig": { "return": "deploy", "index": 0, "name": "ProtocolConfig" },
@@ -20,6 +20,7 @@
     "referenceAccount": { "call": "strategyAccountFactory", "fn": "referenceAccount" },
     "uniswapPool": { "call": "spotPort", "fn": "pool" },
     "uniswapFactory": { "call": "spotPort", "fn": "factory", "expect": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24", "expectCodeHash": "0x02ee6e36873eea6fbb674a23d53b735646f12dc84efa08eac17872fe2fad9d06" },
+    "uniswapQuoter": { "address": "0xC5290058841028F1614F3A6F0F5816cAd0df5E27", "expectCodeHash": "0x156c129c09f1c7abd7be44016fc679cd622ca2018484cee6806c213c1f8236b3" },
     "weth": { "call": "spotPort", "fn": "baseToken", "expect": "0x4200000000000000000000000000000000000006", "expectCodeHash": "0x83f731a17e6c0cdd04bc6f60b15d3e789e215b71403087b84b48650a1e5cbb21" },
     "quoteToken": { "call": "spotPort", "fn": "quoteToken" },
     "oracle": { "call": "testPerpMarket", "fn": "oracle", "expect": "0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1" },
@@ -61,6 +62,7 @@
     "quoteAssetRef": { "assetId": { "$def": "res.quoteAsset.subjectId" }, "assetManifestHash": { "$def": "res.quoteAsset.manifestHash" }, "decimals": 6 },
     "spotAdapterRef": { "adapterId": { "$def": "res.spotAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.spotAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.spotAdapter.manifestHash" } },
     "perpetualAdapterRef": { "adapterId": { "$def": "res.perpetualAdapter.subjectId" }, "adapterManifestVersion": { "$def": "res.perpetualAdapter.manifestVersion" }, "adapterManifestHash": { "$def": "res.perpetualAdapter.manifestHash" } },
+    "maxVenueFeeAtoms": { "$bigint": { "$operator": "max venue fees per package (Uniswap pool fee plus test perp taker fee), quote atoms; the order cap and the fee policy pass-through limit" } },
     "activation": {
       "activationUnit": "EVM_UNIX_SECONDS",
       "activationValue": { "$bigint": { "$operator": "unix time at which the registered records became active" } },
@@ -107,11 +109,22 @@
       "environment": "testnet",
       "domain": { "$def": "domain" },
       "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "scopeQuantityPolicyClass": "EXACT_ATOMIC",
+      "scopeSettlementClass": "ATOMIC_POSTCONDITION",
+      "scopeAccountModeClass": "user-owned-v1",
       "feePolicyVersion": 1,
       "activationUnit": "EVM_UNIX_SECONDS",
       "activationValue": { "$def": "activation.activationValue" },
       "serviceFeeRules": [],
-      "passThroughCostRules": [],
+      "passThroughCostRules": [{
+        "costCategory": "VENUE",
+        "costAssetId": { "$def": "res.quoteAsset.subjectId" },
+        "costAssetManifestHash": { "$def": "res.quoteAsset.manifestHash" },
+        "costAssetDecimals": 6,
+        "maxAtoms": { "$def": "maxVenueFeeAtoms" },
+        "roundingDirection": "TOWARD_ZERO",
+        "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+      }],
       "refundPolicyVersion": 1,
       "expiryUnit": "EVM_UNIX_SECONDS",
       "expiryValue": { "$bigint": { "$operator": "fee policy expiry, unix seconds" } }
@@ -192,6 +205,7 @@
             "templateManifest": { "$def": "templateManifest" },
             "templateRegistryRecord": { "$def": "templateRegistryRecord" },
             "feePolicyManifest": { "$def": "feePolicyManifest" },
+            "accountModeClass": "user-owned-v1",
             "activeRegistryRecords": [
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.baseAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.baseAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.baseAsset.manifestHash" } }] },
               { "$merge": [{ "$def": "recordCommon" }, { "recordKind": "ASSET", "subjectId": { "$def": "res.quoteAsset.subjectId" }, "subjectManifestVersion": { "$def": "res.quoteAsset.manifestVersion" }, "subjectManifestHash": { "$def": "res.quoteAsset.manifestHash" } }] },
@@ -243,19 +257,20 @@
         "quoteAsset": { "$def": "quoteAssetRef" },
         "spotAdapter": { "$def": "spotAdapterRef" },
         "perpetualAdapter": { "$def": "perpetualAdapterRef" },
-        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds" } },
-        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 1000" } },
-        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds" } },
+        "spotQuoter": { "$contract": "uniswapQuoter" },
+        "maxStalenessSeconds": { "$bigint": { "$operator": "max order context staleness, seconds (recommended 60: several poll intervals plus RPC hiccups)" } },
+        "pollIntervalMs": { "$number": { "$operator": "price poll interval, ms, at least 1000 (recommended 5000)" } },
+        "expiryTtlSeconds": { "$bigint": { "$operator": "order expiry TTL, seconds (recommended 600: a first-time user reads two wallet prompts)" } },
         "maxEntrySpread": {
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
-          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms" } },
+          "quoteAtoms": { "$bigint": { "$operator": "max entry spread numerator, quote atoms (the fraction must be in lowest terms: 50 quote per WETH is 1 / 20000000000)" } },
           "baseAtoms": { "$bigint": { "$operator": "max entry spread denominator, base atoms" } },
           "roundingDirection": "CEIL"
         },
-        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, WETH atoms" } },
-        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps" } },
-        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$bigint": { "$operator": "max venue fee, USDC atoms" } } }],
+        "maximumQuantityAtoms": { "$bigint": { "$operator": "max order size, WETH atoms (recommended at most 1% of the WETH seeded in the spot pool: every entry buys WETH from that pool, so its depth bounds all users' open positions together)" } },
+        "maxSlippageBps": { "$number": { "$operator": "max slippage, bps (recommended 100; bounds and refusals already include each order's price impact from the pinned quoter, so this covers pool movement between order creation and execution)" } },
+        "maxVenueFeeAtomsByAsset": [{ "asset": { "$def": "quoteAssetRef" }, "maxAtoms": { "$def": "maxVenueFeeAtoms" } }],
         "maxMarginAddedAtoms": { "$bigint": { "$operator": "max perp margin added, USDC atoms" } },
         "maxProtocolFeeAtoms": { "$bigint": { "$operator": "max protocol fee, USDC atoms" } },
         "maxSolverFeeAtoms": { "$bigint": { "$operator": "max solver fee, USDC atoms" } },
@@ -275,9 +290,10 @@
           "solverCapabilityManifestHash": { "$bytes": { "$operator": "solver capability manifest hash" } },
           "feePolicyVersion": 1,
           "feePolicyManifestHash": { "$protocol": "feePolicyManifestHash", "args": [{ "$def": "feePolicyManifest" }] },
-          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds" } },
+          "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds (recommended 180: covers the authorization signature, preparation, and the wallet transaction; slippage bounds bound the price risk)" } },
           "marginBps": { "$number": { "$operator": "perp margin as bps of entry notional" } },
           "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
+          "spotQuoter": { "$contract": "uniswapQuoter" },
           "spot": {
             "adapter": { "$def": "spotAdapterRef" },
             "venue": { "$def": "res.spotVenue" },
@@ -305,8 +321,6 @@
           "domainId": "eip155:84532",
           "quoteAssetId": { "$def": "res.quoteAsset.subjectId" },
           "maxPrincipalAtomsPerOperation": { "$operator": "per-operation principal cap, USDC atoms, decimal string" },
-          "maxPrincipalAtomsPerDay": { "$operator": "per-UTC-day principal cap, USDC atoms, decimal string" },
-          "maxPrincipalAtomsPerOwnerPerDay": { "$operator": "per-wallet per-UTC-day principal cap, quote atoms, decimal string (at least per-operation, at most per-day)" },
           "maxRecoveryLossAtomsPerOperation": { "$operator": "per-operation recovery loss cap, USDC atoms, decimal string" }
         }]
       }
@@ -338,7 +352,8 @@
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-uniswap-pool", "address": { "$release": "contracts.uniswapPool.addressLower" }, "expectedCodeHash": { "$release": "contracts.uniswapPool.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-weth", "address": { "$release": "contracts.weth.addressLower" }, "expectedCodeHash": { "$release": "contracts.weth.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-usdc", "address": { "$release": "contracts.quoteToken.addressLower" }, "expectedCodeHash": { "$release": "contracts.quoteToken.codeHash" } }] },
-          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-eth-usd-oracle", "address": { "$release": "contracts.oracle.addressLower" }, "expectedCodeHash": { "$release": "contracts.oracle.codeHash" } }] }
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-eth-usd-oracle", "address": { "$release": "contracts.oracle.addressLower" }, "expectedCodeHash": { "$release": "contracts.oracle.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "base-sepolia-uniswap-quoter", "address": { "$release": "contracts.uniswapQuoter.addressLower" }, "expectedCodeHash": { "$release": "contracts.uniswapQuoter.codeHash" } }] }
         ]
       }
     },

@@ -28,6 +28,11 @@ function subscribe(callback: () => void) {
   };
 }
 
+/** Whether this viewer has chosen a value for the setting, as opposed to seeing its default. */
+export function hasPersistedSetting(key: string): boolean {
+  return read(key) !== null;
+}
+
 /**
  * A per-viewer display preference such as a chart interval or the open workspace tab. Only values
  * in `allowed` are honored, so a stale or edited stored value falls back to the default. The

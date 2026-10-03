@@ -4,6 +4,7 @@ import { equalHash, requiredEvmAddress, type EvmContractIdentity } from "@naryx/
 import {
   domainRefFromManifest,
   exactPrice,
+  exactSignedRate,
   parseProtocolJson,
   type AdapterRef,
   type AssetRef,
@@ -17,8 +18,15 @@ import {
   validateArbitrumSepoliaAsyncDeploymentConfiguration,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
-import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
-import type { InternalOrderClockPort } from "./terminal-orders.js";
+import { ArbitrumSepoliaMarketFeed, type ArbitrumSepoliaMarketRead } from "./arbitrum-sepolia-market-source.js";
+import { venueFeeCapsWithBase, type ActiveOrderContext, type ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import type { InternalOrderClockPort, InternalOrderSpotPricePort } from "./terminal-orders.js";
+import {
+  executableSpotPrice,
+  quoteUniswapV3Buy,
+  verifyUniswapV3Quoter,
+  type UniswapV3SpotQuoteTarget,
+} from "./uniswap-v3-quoter.js";
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/;
@@ -41,6 +49,8 @@ export interface ArbitrumSepoliaOrderContextConfig {
   readonly perpetualAdapter: AdapterRef;
   readonly priceFeed: EvmContractIdentity;
   readonly priceFeedDecimals: number;
+  /** The canonical Uniswap V3 QuoterV2; entry and exit bounds come from its quote for the exact size. */
+  readonly spotQuoter: EvmContractIdentity;
   readonly maxStalenessSeconds: bigint;
   readonly pollIntervalMs: number;
   readonly expiryTtlSeconds: bigint;
@@ -77,6 +87,7 @@ export type ArbitrumSepoliaReferencePriceSnapshot = Readonly<{
 export type ArbitrumSepoliaOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
+  spotPrice: InternalOrderSpotPricePort;
   feed: ArbitrumSepoliaReferencePriceFeed;
   config: ArbitrumSepoliaOrderContextConfig;
 }>;
@@ -94,9 +105,11 @@ function validateConfig(config: ArbitrumSepoliaOrderContextConfig): void {
     || !Array.isArray(config.maxVenueFeeAtomsByAsset) || config.maxVenueFeeAtomsByAsset.length === 0) {
     throw new Error("Arbitrum Sepolia order context configuration is invalid.");
   }
-  requiredEvmAddress(config.priceFeed?.address, "priceFeed.address");
-  if (!/^0x[0-9a-f]{64}$/.test(config.priceFeed.expectedCodeHash) || /^0x0+$/.test(config.priceFeed.expectedCodeHash)) {
-    throw new Error("Arbitrum order context price feed code hash is invalid.");
+  for (const [name, identity] of [["priceFeed", config.priceFeed], ["spotQuoter", config.spotQuoter]] as const) {
+    requiredEvmAddress(identity?.address, `${name}.address`);
+    if (!/^0x[0-9a-f]{64}$/.test(identity.expectedCodeHash) || /^0x0+$/.test(identity.expectedCodeHash)) {
+      throw new Error(`Arbitrum order context ${name} code hash is invalid.`);
+    }
   }
   positive(config.maxStalenessSeconds, "maxStalenessSeconds");
   positive(config.expiryTtlSeconds, "expiryTtlSeconds");
@@ -108,6 +121,13 @@ function validateConfig(config: ArbitrumSepoliaOrderContextConfig): void {
     ["maxPriorityFeeAtoms", config.maxPriorityFeeAtoms],
   ] as const) {
     if (typeof value !== "bigint" || value < 0n) throw new Error(`Arbitrum order context ${name} must be nonnegative.`);
+  }
+  // Every order signs the spread cap, so a non-canonical rate (for example not in lowest terms) is
+  // refused here, at load, instead of failing each order.
+  try {
+    exactSignedRate(config.maxEntrySpread, "maxEntrySpread");
+  } catch (error) {
+    throw new Error(`Arbitrum Sepolia order context maxEntrySpread is invalid: ${error instanceof Error ? error.message : "malformed"}`);
   }
 }
 
@@ -202,6 +222,20 @@ export class ArbitrumSepoliaReferencePriceFeed {
   }
 }
 
+/** The pinned quoter and the factory spot port's pool tokens and fee, as the market feed read them. */
+export function arbitrumSepoliaSpotQuoteTarget(
+  config: Pick<ArbitrumSepoliaOrderContextConfig, "spotQuoter">,
+  pool: Pick<ArbitrumSepoliaMarketRead, "baseToken" | "quoteToken" | "poolFee">,
+): UniswapV3SpotQuoteTarget {
+  return Object.freeze({
+    chainId: BigInt(ARBITRUM_SEPOLIA_CHAIN_REFERENCE),
+    quoter: config.spotQuoter,
+    baseToken: pool.baseToken,
+    quoteToken: pool.quoteToken,
+    poolFee: pool.poolFee,
+  });
+}
+
 /**
  * Builds the Arbitrum Sepolia entry context. Any wallet may trade through its own factory account;
  * the settlement account is enforced against `accountOf(owner)` by the solver quote and executor,
@@ -225,6 +259,9 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
   }
   const feed = new ArbitrumSepoliaReferencePriceFeed(config, port);
   await feed.refresh();
+  const readSpotPool = () => new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs).refresh();
+  const initialPool = await readSpotPool();
+  await verifyUniswapV3Quoter(port, arbitrumSepoliaSpotQuoteTarget(config, initialPool), initialPool.pool);
   const domain = domainRefFromManifest(deployment.domainManifest);
   const maximumQuantityAtoms = config.maximumQuantityAtoms < deployment.bounds.maximumPackageQuantityAtoms
     ? config.maximumQuantityAtoms
@@ -258,7 +295,8 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       maxEntrySpread: config.maxEntrySpread,
       maximumQuantityAtoms,
       maxSlippageBps: config.maxSlippageBps,
-      maxVenueFeeAtomsByAsset: config.maxVenueFeeAtomsByAsset,
+      // GMX charges the position fee in the quote asset; every quote also lists a zero base fee.
+      maxVenueFeeAtomsByAsset: venueFeeCapsWithBase(config.baseAsset, config.maxVenueFeeAtomsByAsset),
       maxMarginAddedAtoms: config.maxMarginAddedAtoms,
       maxProtocolFeeAtoms: config.maxProtocolFeeAtoms,
       maxSolverFeeAtoms: config.maxSolverFeeAtoms,
@@ -279,7 +317,20 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       return port.latestBlockTimestamp();
     },
   });
-  return Object.freeze({ contexts, clock, feed, config });
+  // The solver quotes the spot leg at the pool's exact-output cost for this size but the GMX hedge
+  // and the rollback floor at the reference, so the entry bound covers the larger of the two costs
+  // and the rollback floor stays within it while the pool trades below the reference.
+  const spotPrice: InternalOrderSpotPricePort = Object.freeze({
+    entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint) => {
+      if (context.contextId !== config.contextId) throw new Error("Arbitrum Sepolia order context is unknown.");
+      const amountIn = await quoteUniswapV3Buy(port, arbitrumSepoliaSpotQuoteTarget(config, await readSpotPool()), sizeAtoms);
+      const reference = context.spotReferencePrice;
+      return amountIn * reference.baseAtoms <= sizeAtoms * reference.quoteAtoms
+        ? reference
+        : executableSpotPrice(config.baseAsset, config.quoteAsset, amountIn, sizeAtoms);
+    },
+  });
+  return Object.freeze({ contexts, clock, spotPrice, feed, config });
 }
 
 export function createViemArbitrumSepoliaPriceReadPort(rpcUrl: string): ArbitrumSepoliaPriceReadPort {

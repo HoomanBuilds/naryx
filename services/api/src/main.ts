@@ -14,13 +14,22 @@ import {
   stderrRuntimeFailureReporter,
   type PrivateTerminalRuntimeFactories,
 } from "./runtime-composition.js";
-import { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
+import {
+  reconcilePendingEvmTestnetAtomicOutcomes,
+  SqlitePreparedEvmTestnetAtomicStore,
+} from "./evm-testnet-prepared-store.js";
+import {
+  reconcileUnsettledArbitrumSepoliaOutcomes,
+  SqliteArbitrumSepoliaOutcomeStore,
+} from "./arbitrum-sepolia-outcome-store.js";
+import type { OwnerPackageOutcomeReader } from "./terminal-packages.js";
 import {
   DurableAttemptScopeResolver,
   TestnetCapExecutionGate,
   loadTestnetExecutionPolicy,
 } from "./testnet-execution-policy.js";
 import type { ActiveOrderContext } from "./canonical-entry-order.js";
+import type { InternalOrderSpotPricePort } from "./terminal-orders.js";
 import {
   createBaseSepoliaRuntime,
   createViemBaseSepoliaReadClient,
@@ -53,8 +62,7 @@ import {
 import { withSolanaDevnetFirmQuoteVerification } from "./solana-devnet-firm-quote.js";
 import { createSolanaDevnetMarketSource, type TerminalMarketSource } from "./private-terminal-manifest.js";
 import { ArbitrumSepoliaMarketFeed, createArbitrumSepoliaMarketSource } from "./arbitrum-sepolia-market-source.js";
-import { SolanaConformanceAdapter } from "@naryx/adapter-solana";
-import { Connection } from "@solana/web3.js";
+import { SolanaConformanceAdapter, createBoundedSolanaConnection } from "@naryx/adapter-solana";
 import {
   ConnectionSolanaLocalExecutionRpc,
   HttpSolanaLocalExecutionAuthorizationClient,
@@ -96,6 +104,13 @@ import {
   createHyperliquidTestnetExitOrderFactory,
   createHyperliquidTestnetOwnerRoutes,
 } from "./hyperliquid-testnet-owner-routes.js";
+import {
+  createReferenceCandleRoutes,
+  ReferenceHistoryRecorder,
+  SqliteReferenceHistoryStore,
+  type ReferenceLane,
+} from "./reference-history.js";
+import type { DomainId } from "./terminal-types.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -108,6 +123,18 @@ function explicitlyEnabled(name: string): boolean {
   return value === "true";
 }
 
+/** Runs a reconciliation sweep each minute, never two at once, without holding the process open. */
+function everyMinute(sweep: () => Promise<void>): void {
+  let running = false;
+  setInterval(() => {
+    if (running) return;
+    running = true;
+    void sweep().catch(() => undefined).finally(() => { running = false; });
+  }, 60_000).unref();
+}
+
+// Where each lane's reference history legs come from, named as each lane composes its market source.
+const referenceSources: Partial<Record<DomainId, Readonly<{ spot: string; perp: string }>>> = {};
 const config = loadPrivateTerminalServerConfig();
 const startup = loadPrivateTerminalStartupConfig(process.env, config);
 const reportRuntimeFailure = stderrRuntimeFailureReporter();
@@ -144,7 +171,7 @@ const solanaLocalPreparationStore = startup.solanaLocalPreparationDbPath === und
   : new SqliteSolanaLocalPreparedExecutionStore(startup.solanaLocalPreparationDbPath);
 const solanaConnection = manifestRuntime === undefined
   ? undefined
-  : new Connection(manifestRuntime.manifest.rpc.url, "confirmed");
+  : createBoundedSolanaConnection(manifestRuntime.manifest.rpc.url, "confirmed");
 const solanaLocalExecution = manifestRuntime === undefined
     || solanaLocalPreparationStore === undefined
     || solanaConnection === undefined
@@ -206,6 +233,11 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
       orders: orderStore,
     });
     baseOrderRuntime.feed.start();
+    const baseIdentity = baseManifest.deployment.deployment;
+    referenceSources.base = {
+      spot: `Uniswap V3 pool ${baseIdentity.spot.market.address} slot0 mid, Base Sepolia`,
+      perp: `Chainlink round read by Naryx test perp ${baseIdentity.perpetual.market.address} (oracle mid), Base Sepolia`,
+    };
     // Base Sepolia exit path: the canonical EXIT order for the owner's open package, read from chain.
     baseExitRoutes = createBaseSepoliaExitOrderRoutes({
       terminalOrigin: config.terminalOrigin,
@@ -223,6 +255,14 @@ if (process.env.NARYX_BASE_TESTNET_RUNTIME_ENABLED === "true") {
     baseRuntimeError = error;
     reportRuntimeFailure("baseTestnetAtomic", error);
   }
+}
+// Server-side reconciliation: bound Base transactions without a settled outcome are observed again,
+// so a package finalizes, reverts, or expires in its owner's list after the sending browser is gone.
+if (baseRuntime?.atomicObservation !== undefined && basePreparationStore !== undefined) {
+  const store = basePreparationStore;
+  const observation = baseRuntime.atomicObservation;
+  const cursor = { offset: 0 };
+  everyMinute(() => reconcilePendingEvmTestnetAtomicOutcomes(store, observation, 10, cursor));
 }
 let solanaDevnetRuntime: Awaited<ReturnType<typeof createSolanaDevnetRuntime>> | undefined;
 let solanaDevnetRuntimeError: unknown;
@@ -257,11 +297,12 @@ if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
 let solanaDevnetOrderRuntime: SolanaDevnetOrderRuntime | undefined;
 if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
   try {
+    const solanaManifest = loadSolanaDevnetRuntimeManifest(absolutePath(
+      process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
+      "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
+    ));
     solanaDevnetOrderRuntime = await createSolanaDevnetOrderRuntime({
-      manifest: loadSolanaDevnetRuntimeManifest(absolutePath(
-        process.env.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST ?? "",
-        "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
-      )),
+      manifest: solanaManifest,
       config: loadSolanaDevnetOrderContextConfig(absolutePath(
         process.env.NARYX_SOLANA_DEVNET_ORDER_CONTEXT ?? "",
         "NARYX_SOLANA_DEVNET_ORDER_CONTEXT",
@@ -270,12 +311,20 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
       orders: orderStore,
     });
     solanaDevnetOrderRuntime.feed.start();
+    // Spot is the solver's inventory quoted around the same oracle, so both mids are the Pyth price.
+    const pyth = `Pyth SOL/USD PriceUpdateV2 account ${solanaManifest.testPerp.oracle}`;
+    referenceSources.solana = {
+      spot: `${pyth} (solver inventory mid), Solana Devnet`,
+      perp: `${pyth} (test perp oracle mid), Solana Devnet`,
+    };
   } catch (error) {
     solanaDevnetOrderRuntime = undefined;
     reportRuntimeFailure("solanaDevnetOrderContext", error);
   }
 }
-let arbitrumRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
+// The async observation port the terminal serves; after the executor handoff below, it advances the solver too.
+let arbitrumRuntime: Pick<Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>>, "observe"> | undefined;
+let arbitrumAdmittingRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;
 let arbitrumRuntimeError: unknown;
 // The executor client exists before the observation runtime, which reads the solver's exit authorizations.
 let arbitrumExecutor: HttpArbitrumSepoliaAttemptExecutor | undefined;
@@ -291,7 +340,7 @@ if (process.env.NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED === "true") {
       "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
     );
     const arbitrumRpcUrl = process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? "";
-    arbitrumRuntime = await createArbitrumSepoliaRuntime({
+    arbitrumRuntime = arbitrumAdmittingRuntime = await createArbitrumSepoliaRuntime({
       manifest: loadArbitrumSepoliaRuntimeManifest(arbitrumManifestPath),
       intents: executionIntentStore,
       orders: orderStore,
@@ -326,9 +375,18 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
     // The terminal market reads the factory's spot pool and the GMX fee beside the reference feed;
     // until its first read lands, snapshot and preview report the market unavailable.
     try {
-      const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs);
+      const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs, {
+        reference: arbitrumOrderRuntime.feed,
+        sizeAtoms: config.maximumQuantityAtoms,
+        baseDecimals: config.baseAsset.decimals,
+        quoteDecimals: config.quoteAsset.decimals,
+      });
       marketFeed.start();
       arbitrumMarketSource = createArbitrumSepoliaMarketSource(config, arbitrumOrderRuntime.feed, marketFeed);
+      referenceSources.arbitrum = {
+        spot: `Uniswap V3 pool slot0 mid behind the spot port of factory ${deployment.accountFactory.address}, Arbitrum Sepolia`,
+        perp: `GMX Reader ${deployment.gmx.reader.address} getExecutionPrice for the largest order at the Chainlink-compatible feed ${config.priceFeed.address}, Arbitrum Sepolia`,
+      };
     } catch (error) {
       reportRuntimeFailure("arbitrumSepoliaTerminalMarket", error);
     }
@@ -337,9 +395,16 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
   }
 }
 let arbitrumOwnerRoutes: ReturnType<typeof createArbitrumSepoliaOwnerRoutes> | undefined;
-if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
+let arbitrumOutcomeStore: SqliteArbitrumSepoliaOutcomeStore | undefined;
+if (arbitrumAdmittingRuntime !== undefined && arbitrumExecutor !== undefined) {
   try {
-    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(arbitrumRuntime, arbitrumExecutor);
+    // Each handoff keeps what it proved on chain, durably, for the owner's package list.
+    arbitrumOutcomeStore = new SqliteArbitrumSepoliaOutcomeStore(absolutePath(
+      process.env.NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB ?? "",
+      "NARYX_ARBITRUM_SEPOLIA_OUTCOME_DB",
+    ), { intents: executionIntentStore, orders: orderStore });
+    const observation = arbitrumAdmittingRuntime;
+    arbitrumRuntime = withArbitrumSepoliaExecutionHandoff(observation, arbitrumExecutor, arbitrumOutcomeStore);
     arbitrumOwnerRoutes = createArbitrumSepoliaOwnerRoutes({
       terminalOrigin: config.terminalOrigin,
       deployment: loadArbitrumSepoliaRuntimeManifest(absolutePath(
@@ -347,12 +412,22 @@ if (arbitrumRuntime !== undefined && arbitrumExecutor !== undefined) {
         "NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST",
       )).deployment,
       executor: arbitrumExecutor,
+      admit: observation.admit,
       port: createViemArbitrumSepoliaPriceReadPort(process.env.NARYX_ARBITRUM_SEPOLIA_RPC_URL ?? ""),
       intents: executionIntentStore,
       orders: orderStore,
       ...(arbitrumOrderRuntime === undefined ? {} : { exit: { runtime: arbitrumOrderRuntime, orders: orderStore } }),
     });
+    // The sweep finishes every reserved attempt through the same admitting handoff the browser polls, so a
+    // package whose owner closed the page still gets its evidence relayed, its bond released, or its
+    // cancelled GMX request recovered. Only attempts already observed after reservation are swept.
+    const outcomes = arbitrumOutcomeStore;
+    const handoff = arbitrumRuntime;
+    const cursor = { offset: 0 };
+    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, handoff, 10, cursor));
   } catch (error) {
+    arbitrumOutcomeStore?.close();
+    arbitrumOutcomeStore = undefined;
     arbitrumOwnerRoutes = undefined;
     arbitrumRuntime = undefined;
     arbitrumRuntimeError = error;
@@ -390,6 +465,10 @@ if (hyperliquidConfig !== undefined) {
     const priceFeed = new HyperliquidTestnetPriceFeed(hyperliquidConfig);
     hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed);
     terminalMarkets = { hyperliquid: createHyperliquidTestnetMarketSource(hyperliquidConfig, priceFeed) };
+    referenceSources.hyperliquid = {
+      spot: `Hyperliquid testnet l2Book mid, spot universe index ${hyperliquidConfig.market.spot.universeIndex}`,
+      perp: `Hyperliquid testnet l2Book mid, perpetual asset index ${hyperliquidConfig.market.perpetual.assetIndex}`,
+    };
     hyperliquidPriceFeed = priceFeed;
     // Not awaited: until a valid snapshot arrives the order context reports itself unknown.
     void priceFeed.start();
@@ -448,6 +527,12 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
       }),
     );
+    // Server-side reconciliation: attempts stored with a non-final outcome are re-read from the
+    // executor each minute, so a package resolved later (for example after its lane is released)
+    // leaves UNRESOLVED without its owner having to poll.
+    const executionPort = hyperliquidExecutionRuntime;
+    const cursor = { offset: 0 };
+    everyMinute(async () => { await executionPort.reconcileUnresolved(20, cursor); });
   } catch (error) {
     hyperliquidExecutionRuntimeError = error;
     reportRuntimeFailure("hyperliquidTestnetExecutor", error);
@@ -557,6 +642,22 @@ const orderClock = Object.freeze({
     return orderRuntime.clock.currentClock(context);
   },
 });
+// Lanes that buy spot from a pool price each entry from the pool's executable cost for its size;
+// Hyperliquid refuses a size its live books cannot fill within the order's limits.
+const orderSpotPrice: InternalOrderSpotPricePort = Object.freeze({
+  entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint, slippageBps?: number) => {
+    if (baseOrderRuntime !== undefined && context.contextId === baseOrderRuntime.config.contextId) {
+      return baseOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
+    }
+    if (arbitrumOrderRuntime !== undefined && context.contextId === arbitrumOrderRuntime.config.contextId) {
+      return arbitrumOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
+    }
+    if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
+      return hyperliquidOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms, slippageBps);
+    }
+    return undefined;
+  },
+});
 // Testnet execution approval: automatic within the operator's per-domain caps. Without both the
 // policy file and its decision database, every execution handoff stays refused (fail closed).
 const executionPolicyFile = process.env.NARYX_EXECUTION_POLICY_FILE;
@@ -579,10 +680,44 @@ if (executionPolicyFile !== undefined || executionPolicyDb !== undefined) {
   executionScopes = new DurableAttemptScopeResolver(orderStore, executionIntentStore);
 }
 
+const terminalMarketSources: TerminalMarketSources = {
+  ...terminalMarkets,
+  ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
+  ...(arbitrumMarketSource === undefined ? {} : { arbitrum: arbitrumMarketSource }),
+  ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
+};
+// Reference history: every configured lane's live market source, sampled into a durable store the
+// terminal chart reads. On only when its database path is set.
+// History only feeds the chart, so a store that cannot open turns the chart off, never trading.
+const referenceHistoryPath = process.env.NARYX_REFERENCE_HISTORY_DB;
+let referenceHistory: SqliteReferenceHistoryStore | undefined;
+if (referenceHistoryPath !== undefined && referenceHistoryPath !== "") {
+  try {
+    referenceHistory = new SqliteReferenceHistoryStore(absolutePath(referenceHistoryPath, "NARYX_REFERENCE_HISTORY_DB"));
+  } catch (error) {
+    process.stderr.write(`Reference history is off: ${error instanceof Error ? error.message : "store did not open"}\n`);
+  }
+}
+const referenceRecorder = referenceHistory === undefined ? undefined : new ReferenceHistoryRecorder(
+  referenceHistory,
+  Object.entries(terminalMarketSources).flatMap(([domain, source]): ReferenceLane[] => {
+    const legs = referenceSources[domain as DomainId];
+    return source === undefined || legs === undefined
+      ? []
+      : [{ domain: domain as DomainId, source, spotSource: legs.spot, perpSource: legs.perp }];
+  }),
+);
+referenceRecorder?.start();
+
+// Each lane's store answers only for its own attempt IDs.
+const ownerPackageOutcomes: OwnerPackageOutcomeReader = (attemptId) =>
+  basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId)
+  ?? hyperliquidOwnerLedger?.attemptOutcome(attemptId);
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
-  { contexts: orderContexts, store: orderStore, clock: orderClock },
+  { contexts: orderContexts, store: orderStore, clock: orderClock, spotPrice: orderSpotPrice },
   runtime.hyperliquidTestnet,
   baseOrderRuntime === undefined || runtime.evmTestnet.preparation === undefined
     ? runtime.evmTestnet
@@ -607,13 +742,12 @@ const server = createPrivateTerminalServer(
     solanaDevnetOrderRuntime?.handler,
     baseExitRoutes,
     hyperliquidOwnerRoutes,
+    referenceHistory === undefined
+      ? undefined
+      : createReferenceCandleRoutes({ store: referenceHistory, markets: terminalMarketSources }),
   ),
-  {
-    ...terminalMarkets,
-    ...(baseOrderRuntime === undefined ? {} : { base: createBaseSepoliaMarketSource(baseOrderRuntime) }),
-    ...(arbitrumMarketSource === undefined ? {} : { arbitrum: arbitrumMarketSource }),
-    ...(solanaDevnetOrderRuntime === undefined ? {} : { solana: createSolanaDevnetMarketSource(solanaDevnetOrderRuntime) }),
-  },
+  terminalMarketSources,
+  ownerPackageOutcomes,
 );
 
 const publicServer = publicMarket?.listener === undefined
@@ -641,6 +775,7 @@ function shutdown(): void {
   hyperliquidPriceFeed?.stop();
   baseOrderRuntime?.feed.stop();
   solanaDevnetOrderRuntime?.feed.stop();
+  referenceRecorder?.stop();
   publicServer?.close();
   server.close(() => {
     orderStore.close();
@@ -648,8 +783,10 @@ function shutdown(): void {
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
     basePreparationStore?.close();
+    arbitrumOutcomeStore?.close();
     hyperliquidExecutionRuntime?.close();
     hyperliquidOwnerLedger?.close();
+    referenceHistory?.close();
     publicMarket?.close();
     process.exitCode = 0;
   });

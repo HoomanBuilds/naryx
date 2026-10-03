@@ -30,7 +30,15 @@ export type HyperliquidTestnetInfoHttpOptions = Readonly<{
   fetchImplementation?: typeof fetch;
 }>;
 
-export type HyperliquidTestnetBookTop = Readonly<{ bid: string; ask: string }>;
+export type HyperliquidTestnetBookLevel = Readonly<{ px: string; sz: string }>;
+
+/** Best bid and ask, plus every validated level of each side in book order (bids descending). */
+export type HyperliquidTestnetBookTop = Readonly<{
+  bid: string;
+  ask: string;
+  bids: readonly HyperliquidTestnetBookLevel[];
+  asks: readonly HyperliquidTestnetBookLevel[];
+}>;
 
 export type HyperliquidTestnetPriceSnapshot = Readonly<{
   capturedAtMs: number;
@@ -42,6 +50,10 @@ export type HyperliquidTestnetPriceSnapshot = Readonly<{
 
 export interface HyperliquidTestnetPriceSource {
   latest(): HyperliquidTestnetPriceSnapshot | undefined;
+  /** The live metadata names of the configured spot pair and perpetual, once read. */
+  coins?(): Readonly<{ spot: string; perp: string }> | undefined;
+  /** Why the last refresh failed, until one succeeds. */
+  failure?(): string | undefined;
 }
 
 export type HyperliquidTestnetPriceFeedOptions = Readonly<{
@@ -189,6 +201,7 @@ function bookTop(
   if (!Array.isArray(levels) || levels.length !== 2) fail(`${name} levels are invalid`);
   const best: HyperliquidDecimal[] = [];
   const bestText: string[] = [];
+  const sides: HyperliquidTestnetBookLevel[][] = [[], []];
   for (const [sideIndex, side] of (levels as unknown[]).entries()) {
     if (!Array.isArray(side) || side.length === 0 || side.length > MAX_BOOK_LEVELS) {
       fail(`${name} must have bounded bids and asks`);
@@ -210,6 +223,7 @@ function bookTop(
         best.push(price);
         bestText.push(level.px as string);
       }
+      sides[sideIndex]?.push(Object.freeze({ px: level.px as string, sz: level.sz as string }));
       previous = price;
     }
   }
@@ -222,7 +236,12 @@ function bookTop(
   if ((askAtoms - bidAtoms) * BPS_SCALE > bidAtoms * BigInt(pricing.maxBookSpreadBps)) {
     fail(`${name} bid-ask spread exceeds the configured cap`);
   }
-  return Object.freeze({ bid: bestText[0] as string, ask: bestText[1] as string });
+  return Object.freeze({
+    bid: bestText[0] as string,
+    ask: bestText[1] as string,
+    bids: Object.freeze(sides[0] as HyperliquidTestnetBookLevel[]),
+    asks: Object.freeze(sides[1] as HyperliquidTestnetBookLevel[]),
+  });
 }
 
 // A taker rate at or above 1% is outside every Hyperliquid fee tier and is treated as malformed.
@@ -251,6 +270,7 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
   #timer: ReturnType<typeof setTimeout> | undefined;
   #started = false;
   #failing = false;
+  #failure: string | undefined;
 
   constructor(config: HyperliquidTestnetRuntimeConfig, options: HyperliquidTestnetPriceFeedOptions = {}) {
     const order = config.orderContext;
@@ -268,6 +288,15 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
 
   latest(): HyperliquidTestnetPriceSnapshot | undefined {
     return this.#snapshot;
+  }
+
+  coins(): Readonly<{ spot: string; perp: string }> | undefined {
+    return this.#coins;
+  }
+
+  /** Why the last refresh failed, until one succeeds; a book or fee check message, never a URL. */
+  failure(): string | undefined {
+    return this.#failure;
   }
 
   // Resolves after the first refresh attempt and never rejects; a failed attempt leaves no snapshot.
@@ -291,11 +320,13 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
       () => {
         if (this.#failing) this.#report("refresh recovered");
         this.#failing = false;
+        this.#failure = undefined;
         return true;
       },
       (error: unknown) => {
         if (!this.#failing) this.#report(`refresh failed, keeping the previous snapshot: ${failureMessage(error)}`);
         this.#failing = true;
+        this.#failure = failureMessage(error);
         return false;
       },
     ).finally(() => {

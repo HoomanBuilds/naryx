@@ -195,12 +195,22 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     if (!selectedWallet || !selectedAccount || !canSignAndSendV0 || !sender) {
       throw new Error("A Wallet Standard account with Devnet v0 signing is required.");
     }
-    const [output] = await sender.signAndSendTransaction({
-      transaction,
-      account: selectedAccount,
-      chain: SOLANA_DEVNET_CHAIN,
-      options: { skipPreflight: false, maxRetries: 3 },
-    });
+    let output;
+    try {
+      [output] = await sender.signAndSendTransaction({
+        transaction,
+        account: selectedAccount,
+        chain: SOLANA_DEVNET_CHAIN,
+        options: { skipPreflight: false, maxRetries: 3 },
+      });
+    } catch (cause) {
+      // A new wallet has no Devnet SOL for fees and rent; say so instead of the raw simulation error.
+      const message = cause instanceof Error ? cause.message : "";
+      if (/no record of a prior credit|insufficient (funds|lamports)|insufficient.*fee/i.test(message)) {
+        throw new Error("Not enough Devnet SOL for fees. Get some from the Gas link on the Portfolio page, then retry.");
+      }
+      throw cause;
+    }
     if (!output || output.signature.length !== 64) throw new Error("Wallet submission returned an invalid signature.");
     return bs58.encode(output.signature);
   }, [canSignAndSendV0, selectedAccount, selectedWallet]);

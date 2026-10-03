@@ -3,8 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { Server } from 'node:http';
 import { LOCAL_ATOMIC_MARKET_CATALOG_V1, localConformanceSlot } from '@naryx/adapter-core';
-import { SolanaConformanceAdapter } from '@naryx/adapter-solana';
-import { Connection } from '@solana/web3.js';
+import { SolanaConformanceAdapter, createBoundedSolanaConnection } from '@naryx/adapter-solana';
 import {
   HttpSelectedSolanaAdmissionProvider,
   HttpHyperliquidTestnetTrustedAttemptProvider,
@@ -145,7 +144,7 @@ const authorization = manifestRuntime === undefined || authorizationStore === un
     manifest: manifestRuntime.manifest,
     selectedAdmission: new HttpSelectedSolanaAdmissionProvider(apiOrigin).get,
     compiler: new SolanaConformanceAdapter({
-      connection: new Connection(manifestRuntime.manifest.rpc.url, 'confirmed'),
+      connection: createBoundedSolanaConnection(manifestRuntime.manifest.rpc.url, 'confirmed'),
       domain: manifestRuntime.manifest.runtime.catalog.domain,
       environment: 'local',
       expectedGenesisHash: manifestRuntime.manifest.rpc.genesisHash,

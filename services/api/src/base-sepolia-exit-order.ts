@@ -16,10 +16,11 @@ import {
   resolveBaseSepoliaStrategyAccount,
   type BaseSepoliaAtomicDeploymentConfiguration,
 } from "./base-sepolia-atomic-context-provider.js";
-import type {
-  BaseSepoliaMarketSnapshot,
-  BaseSepoliaOrderReadPort,
-  BaseSepoliaOrderRuntime,
+import {
+  baseSepoliaSpotQuoteTarget,
+  type BaseSepoliaMarketSnapshot,
+  type BaseSepoliaOrderReadPort,
+  type BaseSepoliaOrderRuntime,
 } from "./base-sepolia-order-context.js";
 import { createCanonicalExitOrder, EntryOrderValidationError } from "./canonical-entry-order.js";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./internal-order-store.js";
 import { BASE_SEPOLIA_CHAIN_REFERENCE, EvmTestnetTerminalValidationError } from "./evm-testnet-runtime-ports.js";
 import { isAllowedTerminalOrigin, type TerminalOrigins } from "./terminal-origin.js";
+import { quoteUniswapV3Sell } from "./uniswap-v3-quoter.js";
 
 export const BASE_SEPOLIA_EXIT_ORDER_PATH = "/internal/terminal/base-sepolia/exit-order";
 
@@ -65,8 +67,9 @@ function floorDiv(numerator: bigint, denominator: bigint): bigint {
 
 /**
  * Exit minimums for the owner's open package. The spot leg sells the exact base through the pinned
- * Uniswap pool, so its floor is the slot0 mid less the pool fee (the pool's reviewed spread) less the
- * trader's slippage, rounded down. The outcome is exitQuoteOutcome v1, the wallet-side quote delta
+ * Uniswap pool, so its floor is the lower of the slot0 mid less the pool fee and the quoter's
+ * executable proceeds for exactly that base (price impact included), less the trader's slippage,
+ * rounded down. The outcome is exitQuoteOutcome v1, the wallet-side quote delta
  * plus the venue-side delta: that spot floor plus what the close credits to the reserve less the
  * position margin, with the market's own buy-back notional moved against the trader by the same
  * slippage and the taker fee at that notional, rounded down and floored at zero.
@@ -75,6 +78,8 @@ export function baseSepoliaExitLimits(input: Readonly<{
   quantityAtoms: bigint;
   quoteDecimals: number;
   pool: Pick<BaseSepoliaMarketSnapshot, "sqrtPriceX96" | "baseIsToken0" | "poolFee">;
+  /** The quoter's proceeds for an exact-input sale of exactly `quantityAtoms`. */
+  spotQuoteOutAtoms: bigint;
   position: TestPerpPositionState;
   entryPerpNotionalWad: bigint;
   previewCloseNotionalWad: bigint;
@@ -92,11 +97,19 @@ export function baseSepoliaExitLimits(input: Readonly<{
   }
   if (pool.sqrtPriceX96 <= 0n || pool.poolFee < 0n || pool.poolFee >= FEE_SCALE) fail("MARKET_INVALID", "Uniswap pool state is invalid.");
   if (input.previewCloseNotionalWad <= 0n) fail("MARKET_INVALID", "Market buy-back preview is invalid.");
+  if (typeof input.spotQuoteOutAtoms !== "bigint" || input.spotQuoteOutAtoms <= 0n) {
+    fail("MARKET_INVALID", "Uniswap quoter proceeds are invalid.");
+  }
   const slippage = BigInt(input.slippageBps);
   const squared = pool.sqrtPriceX96 * pool.sqrtPriceX96;
   const [midNumerator, midDenominator] = pool.baseIsToken0 ? [squared, Q192] : [Q192, squared];
-  const minSpotQuoteOutAtoms = (quantityAtoms * midNumerator * (FEE_SCALE - pool.poolFee) * (BPS - slippage))
-    / (midDenominator * FEE_SCALE * BPS);
+  // The lower of the mid figure and the quoted proceeds, compared as exact fractions.
+  const midNumeratorOut = quantityAtoms * midNumerator * (FEE_SCALE - pool.poolFee);
+  const midDenominatorOut = midDenominator * FEE_SCALE;
+  const [spotNumerator, spotDenominator] = input.spotQuoteOutAtoms * midDenominatorOut < midNumeratorOut
+    ? [input.spotQuoteOutAtoms, 1n]
+    : [midNumeratorOut, midDenominatorOut];
+  const minSpotQuoteOutAtoms = (spotNumerator * (BPS - slippage)) / (spotDenominator * BPS);
   if (minSpotQuoteOutAtoms <= 0n) fail("EXIT_TOO_SMALL", "The exit's spot proceeds round to zero.");
   const entryNotionalAtoms = scaleDecimals(input.entryPerpNotionalWad, 18, input.quoteDecimals, "FLOOR", "entryNotionalAtoms");
   if (entryNotionalAtoms <= 0n) fail("INVALID_EXIT", "Open package entry notional is invalid.");
@@ -166,13 +179,18 @@ export function createBaseSepoliaExitOrderService(input: Readonly<{
       fail("OPEN_PACKAGE_MISMATCH", "The open package is not on the reviewed Base Sepolia market.");
     }
     const snapshot = await runtime.feed.refresh();
-    const [rawPosition, preview, fundingIndex, collateralScale, takerFeeBps, initialMarginBps] = await Promise.all([
+    const [rawPosition, preview, fundingIndex, collateralScale, takerFeeBps, initialMarginBps, spotQuoteOutAtoms] = await Promise.all([
       readMarket("getPosition", [market, expiry, account]),
       readMarket("previewOpen", [open.baseQuantityAtoms, 0n]),
       readMarket("currentFundingIndex"),
       readMarket("collateralScale"),
       readMarket("takerFeeBps"),
       readMarket("initialMarginBps"),
+      quoteUniswapV3Sell(
+        port,
+        baseSepoliaSpotQuoteTarget(config, input.deployment, snapshot.poolFee),
+        open.baseQuantityAtoms,
+      ),
     ]);
     const position = rawPosition as Record<string, unknown> | undefined;
     const previewNotional = (preview as readonly unknown[] | undefined)?.[1];
@@ -186,6 +204,7 @@ export function createBaseSepoliaExitOrderService(input: Readonly<{
       quantityAtoms: open.baseQuantityAtoms,
       quoteDecimals: config.quoteAsset.decimals,
       pool: snapshot,
+      spotQuoteOutAtoms,
       position: {
         balanceWad: position.balance,
         sizeWad: position.size,
@@ -327,7 +346,8 @@ export function createBaseSepoliaExitOrderRoutes(input: Readonly<{
         if (error instanceof InternalOrderConflictError) {
           reject(response, 409, error.code, error.message);
         } else if (error instanceof EvmTestnetTerminalValidationError || error instanceof EntryOrderValidationError) {
-          reject(response, error.code === "NO_OPEN_PACKAGE" ? 409 : 400, error.code, error.message);
+          const conflict = error.code === "NO_OPEN_PACKAGE" || error.code === "INSUFFICIENT_LIQUIDITY";
+          reject(response, conflict ? 409 : 400, error.code, error.message);
         } else {
           reject(response, 502, "EXIT_ORDER_FAILED", "Base Sepolia exit order creation failed closed.");
         }

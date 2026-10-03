@@ -44,6 +44,7 @@ sudo apt-get update
 sudo apt-get install -y git build-essential python3 nginx certbot python3-certbot-nginx
 sudo snap install aws-cli --classic
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs   # Node 22
+sudo npm install -g npm@11.21.0   # the lockfiles are npm 11; Node 22's bundled npm 10 refuses them in npm ci
 
 sudo useradd --system --home-dir /srv/naryx --create-home --shell /usr/sbin/nologin naryx
 sudo -u naryx mkdir -p /srv/naryx/data /srv/naryx/release /srv/naryx/keys /srv/naryx/backups
@@ -58,8 +59,10 @@ those paths (see `deployments/GO-LIVE.md`).
 
 ## 3. Generate the configuration
 
-Run the release generator on the host with `--out /srv/naryx/release --data-dir /srv/naryx/data`
-(`deployments/tools/README.md`, environment from `deployments/.env.example`). Set the API's
+Run the release generator on the host as the `naryx` user (it writes every file readable by its
+owner only, and the services run as `naryx`), with `--out /srv/naryx/release --data-dir
+/srv/naryx/data` (`deployments/tools/README.md`, environment from `deployments/.env.example`):
+`sudo -u naryx node deployments/tools/release-manifests.mjs ...`. Set the API's
 `NARYX_TERMINAL_ORIGIN` in the common release to the web origins, comma-separated, for example
 `https://naryx.vercel.app,https://app.<your domain>` (each exact; no wildcards). A Vercel preview
 deployment gets its own origin and is refused unless listed; leave
@@ -111,12 +114,19 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   Route 53 health check) at it.
 - Deploy a new commit: `git pull`, `deployments/aws/build.sh`, regenerate the release if any
   template or deployment changed, then `sudo systemctl restart naryx-api naryx-solver naryx-keeper`.
+  The generator refuses a non-empty `--out`, so regenerate as `naryx` into a new directory
+  (`--out /srv/naryx/release.next`, same `--data-dir`), then swap it in:
+  `mv /srv/naryx/release /srv/naryx/release.prev && mv /srv/naryx/release.next /srv/naryx/release`,
+  and restart. The data directory is untouched; keep `release.prev` until the restart is healthy.
 - Restore: stop the services, copy a snapshot from S3 into `/srv/naryx/data` (same relative paths),
   start the services.
 - Fund the solver, keeper, and Hyperliquid accounts before they run dry; their balances bound how
   many users can trade at once.
 - A Hyperliquid package whose outcome is not final blocks the shared lane (new Hyperliquid
-  executions wait, then time out). After resolving it, release the lane on the host itself:
+  executions wait, then time out). The solver re-reads fresh evidence for it every 30 s and releases
+  the lane by itself once that evidence shows the outcome is final, and the API then updates the
+  owner's package. If it stays blocked (interrupted before any result, or never reconciling),
+  resolve it and release the lane on the host itself:
 
   ```bash
   curl -sS -X POST http://127.0.0.1:8792/internal/solver/hyperliquid-testnet/release-lane \

@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, type FetchFn } from '@solana/web3.js';
 import { createPublicClient, createWalletClient, getAddress, http, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { baseSepolia } from 'viem/chains';
@@ -373,7 +373,10 @@ export function solanaDevnetFundingPort(rpc: string, marketKey: string, programK
   const identity = chainIdentity(SOLANA_DEVNET_CHAIN_REF);
   const market = new PublicKey(marketKey);
   const programId = new PublicKey(programKey);
-  const connection = new Connection(url, 'confirmed');
+  // Every RPC request is bounded, so a stalled endpoint fails this round instead of stalling the loop.
+  const bounded = ((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) =>
+    globalThis.fetch(input, { ...init, signal: AbortSignal.timeout(20_000) })) as unknown as FetchFn;
+  const connection = new Connection(url, { commitment: 'confirmed', fetch: bounded });
   let oracle: PublicKey | undefined;
   return {
     verifyIdentity: () => verifyRpcIdentity(fetchImpl, url, identity),

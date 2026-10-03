@@ -268,6 +268,8 @@ export {
   type EvmTestnetAtomicAuthorizationPort,
   type EvmTestnetAtomicContextProvider,
   type EvmTestnetAtomicObservationDto,
+  type EvmTestnetAtomicOutcome,
+  type EvmTestnetAtomicOutcomeState,
   type EvmTestnetAtomicPreparationDto,
   type EvmTestnetObserveAsyncRequest,
   type EvmTestnetObserveAtomicRequest,
@@ -280,8 +282,15 @@ export {
 } from "./evm-testnet-runtime-ports.js";
 export {
   PreparedEvmTestnetAtomicStoreError,
+  reconcilePendingEvmTestnetAtomicOutcomes,
   SqlitePreparedEvmTestnetAtomicStore,
+  type PendingEvmTestnetAtomicObservation,
 } from "./evm-testnet-prepared-store.js";
+export {
+  ArbitrumSepoliaOutcomeStoreError,
+  reconcileUnsettledArbitrumSepoliaOutcomes,
+  SqliteArbitrumSepoliaOutcomeStore,
+} from "./arbitrum-sepolia-outcome-store.js";
 export {
   createPrivateTerminalRequestHandler,
   createPrivateTerminalServer,

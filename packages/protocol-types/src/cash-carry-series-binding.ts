@@ -27,6 +27,12 @@ export const CASH_CARRY_TEMPLATE_ID = 'cash-and-carry-v1';
 export const CASH_CARRY_TEMPLATE_VERSION = 1;
 export const CASH_CARRY_SETTLEMENT_CLASS = 'ATOMIC_POSTCONDITION';
 export const CASH_CARRY_SETTLEMENT_CLASS_VERSION = 1;
+/** The implemented settlement classes a cash carry series can bind: atomic (Base) and async bonded (Arbitrum). */
+export const CASH_CARRY_SETTLEMENT_CLASSES = Object.freeze([
+  CASH_CARRY_SETTLEMENT_CLASS,
+  'ASYNC_BONDED_SOLVER',
+] as const);
+export type CashCarrySettlementClass = (typeof CASH_CARRY_SETTLEMENT_CLASSES)[number];
 export const CASH_CARRY_QUOTE_CONVENTION = 'annualized-net-yield-v1';
 export const CASH_CARRY_ENTRY_SIDE = Object.freeze({ ASK: 1 } as const);
 
@@ -75,7 +81,7 @@ export interface CashCarrySeriesBindingV1 {
   readonly templateId: ProtocolId;
   readonly templateVersion: typeof CASH_CARRY_TEMPLATE_VERSION;
   readonly templateManifestHash: ManifestHash;
-  readonly settlementClass: typeof CASH_CARRY_SETTLEMENT_CLASS;
+  readonly settlementClass: CashCarrySettlementClass;
   readonly settlementClassVersion: typeof CASH_CARRY_SETTLEMENT_CLASS_VERSION;
   readonly baseAsset: SeriesManifestRef;
   readonly quoteAsset: SeriesManifestRef;
@@ -302,10 +308,10 @@ export function cashCarrySeriesBindingV1(
   if (bytesEqual(baseAsset.subjectIdentity, quoteAsset.subjectIdentity)) {
     throw new MalformedInputError(context, 'base and quote asset identities are equal');
   }
-  if (input.settlementClass !== CASH_CARRY_SETTLEMENT_CLASS) {
+  if (!(CASH_CARRY_SETTLEMENT_CLASSES as readonly string[]).includes(input.settlementClass)) {
     throw new MalformedInputError(
       `${context}.settlementClass`,
-      `expected ${CASH_CARRY_SETTLEMENT_CLASS}`,
+      `expected ${CASH_CARRY_SETTLEMENT_CLASSES.join(' or ')}`,
     );
   }
   enumDiscriminant(SETTLEMENT_CLASS, input.settlementClass, `${context}.settlementClass`);
@@ -339,7 +345,7 @@ export function cashCarrySeriesBindingV1(
     get templateManifestHash(): ManifestHash {
       return copiedManifestHash(templateManifestHash);
     },
-    settlementClass: CASH_CARRY_SETTLEMENT_CLASS,
+    settlementClass: input.settlementClass as CashCarrySettlementClass,
     settlementClassVersion: exactVersion(
       input.settlementClassVersion,
       CASH_CARRY_SETTLEMENT_CLASS_VERSION,

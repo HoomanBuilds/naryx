@@ -834,10 +834,12 @@ export {
   GMX_DATA_STORE_KEYS,
   createViemArbitrumSepoliaReadPort,
   gmxDecreaseExecutionFeeWei,
+  gmxEntryCollateralRefusal,
   gmxIncreaseExecutionFeeWei,
   gmxPositionFeeFactorKey,
   gmxPositionFieldKey,
   priceArbitrumEntry,
+  readGmxShortExecutionPrice,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
   readArbitrumSepoliaReferencePrice,
@@ -847,7 +849,9 @@ export {
   type ArbitrumSepoliaContractIdentity,
   type ArbitrumSepoliaReadPort,
   type ArbitrumSepoliaReferencePrice,
+  type GmxEntryCollateralLimits,
   type GmxExecutionFeeParameters,
+  type GmxExecutionPriceRead,
 } from './arbitrum-sepolia-gmx.js';
 export {
   ARBITRUM_SEPOLIA_QUOTE_ENABLED_ENV,

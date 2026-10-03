@@ -8,6 +8,7 @@ import { encodeFunctionData, hashTypedData, parseAbi, type Address, type Hex } f
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   ARBITRUM_SEPOLIA_GMX_DEPENDENCIES,
+  ArbitrumSepoliaAsyncContextError,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
@@ -33,6 +34,8 @@ const identity = (address: Address, byte: number) => ({
 });
 const owner = evmAddress(0x33);
 const priceFeed = identity(evmAddress(0x55), 0x55);
+const spotQuoter = identity(evmAddress(0x56), 0x56);
+const spotPort = identity(evmAddress(0x5a), 0x5a);
 const base = assetRef("eip155:421614:weth", hash(2), 18);
 const quote = assetRef("eip155:421614:usdc", hash(3), 6);
 
@@ -106,6 +109,7 @@ function config(): ArbitrumSepoliaOrderContextConfig {
     perpetualAdapter: adapterRef({ adapterId: "gmx-v2-arbitrum", adapterManifestVersion: 1, adapterManifestHash: hash(5) }),
     priceFeed,
     priceFeedDecimals: 8,
+    spotQuoter,
     maxStalenessSeconds: 60n,
     pollIntervalMs: 5_000,
     expiryTtlSeconds: 600n,
@@ -120,23 +124,47 @@ function config(): ArbitrumSepoliaOrderContextConfig {
   };
 }
 
-function pricePort(state: { chainId: bigint; now: bigint; updatedAt: bigint }): ArbitrumSepoliaPriceReadPort {
+/** The reference feed, the factory's spot pool, and the pinned quoter. */
+function pricePort(
+  state: { chainId: bigint; now: bigint; updatedAt: bigint },
+  quotedAmountIn: () => bigint = () => 25_076_000n,
+): ArbitrumSepoliaPriceReadPort {
+  const codes = new Map<string, Hex>([
+    [priceFeed.address, priceFeed.expectedCodeHash],
+    [evmAddress(3), identity(evmAddress(3), 3).expectedCodeHash],
+    [spotQuoter.address, spotQuoter.expectedCodeHash],
+    [spotPort.address, spotPort.expectedCodeHash],
+  ]);
   return {
     chainId: async () => state.chainId,
-    codeHash: async (address) => address === priceFeed.address ? priceFeed.expectedCodeHash
-      : address === evmAddress(3) ? identity(evmAddress(3), 3).expectedCodeHash : undefined,
+    codeHash: async (address) => codes.get(address.toLowerCase()),
     latestBlockTimestamp: async () => state.now,
     readContract: async ({ functionName }) => {
-      if (functionName === "decimals") return 8;
-      if (functionName === "latestRoundData") return [5n, 250_012_345_678n, state.updatedAt, state.updatedAt, 5n];
-      throw new Error(`unexpected read ${functionName}`);
+      switch (functionName) {
+        case "decimals": return 8;
+        case "latestRoundData": return [5n, 250_012_345_678n, state.updatedAt, state.updatedAt, 5n];
+        case "spotPort": return spotPort.address;
+        case "spotPortCodeHash": return spotPort.expectedCodeHash;
+        case "pool": return evmAddress(0x88);
+        case "poolFee": return 100;
+        case "baseToken": case "token0": return evmAddress(0x99);
+        case "quoteToken": return evmAddress(7);
+        case "slot0": return [2n ** 96n, 0, 0, 0, 0, 0, true];
+        case "getUint": return 5n * 10n ** 26n;
+        case "factory": return evmAddress(0x57);
+        case "quoteExactOutputSingle": return [quotedAmountIn(), 2n ** 96n, 1, 0n];
+        default: throw new Error(`unexpected read ${functionName}`);
+      }
     },
   };
 }
 
 test("Arbitrum order context prices from the live feed, enforces chain-time staleness, and admits any owner", async () => {
   const state = { chainId: 421_614n, now: 1_000_000n, updatedAt: 999_990n };
-  const runtime = await createArbitrumSepoliaOrderRuntime({ config: config(), deployment: deployment(), port: pricePort(state) });
+  let quotedAmountIn = 25_076_000n;
+  const runtime = await createArbitrumSepoliaOrderRuntime({
+    config: config(), deployment: deployment(), port: pricePort(state, () => quotedAmountIn),
+  });
   const context = runtime.contexts("arbitrum-sepolia:eth-usdc:gmx");
   assert.equal(context?.settlementClass, "ASYNC_BONDED_SOLVER");
   assert.equal(context?.capturedAtClock, 999_990n);
@@ -160,6 +188,12 @@ test("Arbitrum order context prices from the live feed, enforces chain-time stal
   assert.equal(created.order.expiryValue, 1_000_600n);
   // Ceil of 0.01 ETH at the reference price plus 1% slippage: 25.251246913478 USDC.
   assert.equal(created.order.maxSpotQuoteIn?.atoms, 25_251_247n);
+  // The solver prices the spot leg at the reference, so the entry price is the larger of the reference
+  // and the pool's exact-output cost for the size: 25.076 USDC for 0.01 ETH here, the reference below it.
+  const executable = await runtime.spotPrice.entrySpotPrice(context!, 10n ** 16n);
+  assert.equal(executable!.quoteAtoms * 10n ** 16n, 25_076_000n * executable!.baseAtoms);
+  quotedAmountIn = 25_001_234n;
+  assert.equal(await runtime.spotPrice.entrySpotPrice(context!, 10n ** 16n), context!.spotReferencePrice);
   const rejects = (overrides: Record<string, unknown>, code: string) => assert.throws(
     () => createCanonicalEntryOrder(runtime.contexts, overrides as never),
     (error: unknown) => error instanceof EntryOrderValidationError && error.code === code,
@@ -180,7 +214,7 @@ test("Arbitrum order context prices from the live feed, enforces chain-time stal
   );
 });
 
-test("Arbitrum handoff advances the solver executor before observing and fails closed on a failed attempt", async () => {
+test("Arbitrum handoff admits the package, advances the solver executor before observing, and fails closed on a failed attempt", async () => {
   const attemptId = `arbitrum-async-${"a".repeat(48)}`;
   const calls: string[] = [];
   let status = "VENUE_PENDING";
@@ -197,7 +231,12 @@ test("Arbitrum handoff advances the solver executor before observing and fails c
     }), { status: 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   const observed = { attemptId } as unknown as EvmTestnetAsyncObservationDto;
+  let admitted = true;
   const port = withArbitrumSepoliaExecutionHandoff({
+    admit: async () => {
+      calls.push("admit");
+      if (!admitted) throw new ArbitrumSepoliaAsyncContextError("PACKAGE_ADMISSION_FAILED", "refused");
+    },
     observe: async () => {
       calls.push("observe");
       return observed;
@@ -206,12 +245,19 @@ test("Arbitrum handoff advances the solver executor before observing and fails c
 
   assert.equal(await port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0001" }), observed);
   assert.deepEqual(calls, [
+    "admit",
     `http://127.0.0.1:8793/internal/solver/arbitrum-sepolia/execute {"attemptId":"${attemptId}"}`,
     "observe",
   ]);
+  // A package that fails admission never reaches the solver, so nothing is reserved or submitted.
+  admitted = false;
+  calls.length = 0;
+  await assert.rejects(port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0003" }), /refused/);
+  assert.deepEqual(calls, ["admit"]);
+  admitted = true;
   status = "FAILED";
   await assert.rejects(port.observe({ attemptId, idempotencyKey: "arbitrum-observe-0002" }), /failed closed/);
-  assert.equal(calls.filter((call) => call === "observe").length, 1);
+  assert.equal(calls.filter((call) => call === "observe").length, 0);
   assert.throws(() => new HttpArbitrumSepoliaAttemptExecutor({ executorOrigin: "http://10.0.0.1:8793" }), /loopback/);
 });
 
@@ -264,20 +310,29 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
       bondAtoms: "1", solver: evmAddress(11), submissionDeadline: "1", venueDeadline: "2", recoveryDeadline: "3",
     },
   });
+  let expired = false;
   const fetchImplementation = (async (url: string, init: RequestInit) => {
+    if (expired) {
+      return new Response(JSON.stringify({ error: { code: "DEADLINE", message: "route deadlines no longer leave a valid GMX submission window" } }), { status: 409 });
+    }
     relayed.push(`${String(url).replace("http://127.0.0.1:8793", "")} ${String(init.body)}`);
     const body = JSON.parse(String(init.body)) as { ownerSignature?: string };
     return new Response(JSON.stringify(authorization(body.ownerSignature !== undefined)), { status: 200 });
   }) as typeof fetch;
+  let admissible = true;
+  let openPackage = `0x${"0".repeat(64)}`;
   const routes = createArbitrumSepoliaOwnerRoutes({
     terminalOrigin: "http://localhost:3000",
     deployment: configuration,
     executor: new HttpArbitrumSepoliaAttemptExecutor({ executorOrigin: "http://127.0.0.1:8793", fetchImplementation }),
+    admit: async () => {
+      if (!admissible) throw new ArbitrumSepoliaAsyncContextError("PACKAGE_ADMISSION_FAILED", "target account adapter mismatch");
+    },
     port: {
       chainId: async () => 421_614n,
       codeHash: async () => arbitrumSepoliaAccountCodeHash(configuration),
       latestBlockTimestamp: async () => 1n,
-      readContract: async () => `0x${"0".repeat(64)}`,
+      readContract: async ({ functionName }) => functionName === "activePackageOf" ? openPackage : `0x${"0".repeat(64)}`,
     },
     intents: {
       getAttempt: () => ({ status: "ARBITRUM_ASYNC_QUOTE_SELECTED", domainId: "eip155:421614", orderHash: "1".repeat(64) }),
@@ -306,6 +361,29 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
   assert.equal(status.body.deployed, true);
   assert.equal((await call("GET", `/internal/terminal/arbitrum-sepolia/account?owner=${walletOwner}`, undefined, "https://evil.example")).status, 403);
 
+  // The solver's reason reaches the owner, so an expired route reads as one that needs a fresh order.
+  expired = true;
+  const stale = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(stale.status, 409);
+  assert.match((stale.body.error as { message: string }).message, /quote expired before the reservation: route deadlines/);
+  expired = false;
+  // A package the service would not admit is refused before the solver prepares anything to sign.
+  admissible = false;
+  const refused = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(refused.status, 409);
+  assert.equal((refused.body.error as { code: string }).code, "PACKAGE_NOT_ADMITTED");
+  assert.deepEqual(relayed, []);
+  admissible = true;
+  // While another package is open or entering in the owner's account, funding would revert: refuse first.
+  openPackage = `0x${"7".repeat(64)}`;
+  const busy = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(busy.status, 409);
+  assert.equal((busy.body.error as { code: string }).code, "PACKAGE_ALREADY_OPEN");
+  // The attempt's own package, once funded, is not another package.
+  openPackage = packageId;
+  assert.equal((await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId })).status, 200);
+  openPackage = `0x${"0".repeat(64)}`;
+  relayed.length = 0;
   const prepared = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
   assert.equal(prepared.status, 200);
   assert.equal(prepared.body.account, account);

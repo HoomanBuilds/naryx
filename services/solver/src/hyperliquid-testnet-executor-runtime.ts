@@ -393,6 +393,9 @@ function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidE
   };
 }
 
+/** How often a blocked shared lane is re-reconciled for automatic release. */
+const LANE_RECONCILE_INTERVAL_MS = 30_000;
+
 export async function loadHyperliquidTestnetExecutorRuntime(
   environment: NodeJS.ProcessEnv,
   dependencies: HyperliquidTestnetExecutorRuntimeDependencies = {},
@@ -591,6 +594,39 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       },
       coordinator,
     });
+    // Automatic reconciliation of a blocked lane, as the operator's FINAL release does it: while the
+    // shared account is blocked by a holder with a stored result, fresh authoritative evidence is
+    // re-read every 30 s, and the lane is released only when that evidence shows the holder's
+    // outcome is final with nothing pending. A holder interrupted before any result, or one that
+    // never reconciles, still waits for the operator.
+    let reconcileTimer: NodeJS.Timeout | undefined;
+    let closed = false;
+    const reconcileBlockedLane = async () => {
+      try {
+        const holder = lanePort.blockedHolder();
+        if (holder !== undefined && holder.result !== null) {
+          const result = await freshHolderResult(holder.result);
+          if (result !== undefined && hyperliquidLaneReleases(result)) {
+            lanePort.release({
+              holderAttemptId: holder.attemptId,
+              disposition: 'FINAL',
+              reason: 'automatic: fresh reconciliation shows the outcome is final',
+              result,
+            });
+            process.stdout.write(`Hyperliquid lane released automatically after ${holder.attemptId} reconciled final\n`);
+          }
+        }
+      } catch {
+        // Not final yet, or evidence is unavailable: the lane stays blocked and is retried.
+      } finally {
+        if (!closed) {
+          reconcileTimer = setTimeout(() => void reconcileBlockedLane(), LANE_RECONCILE_INTERVAL_MS);
+          reconcileTimer.unref();
+        }
+      }
+    };
+    reconcileTimer = setTimeout(() => void reconcileBlockedLane(), LANE_RECONCILE_INTERVAL_MS);
+    reconcileTimer.unref();
     return Object.freeze({
       status: Object.freeze({
         enabled: true,
@@ -626,6 +662,8 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         });
       },
       close: () => {
+        closed = true;
+        if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
         lane?.close();
         authorityStore.close();
         journal.close();

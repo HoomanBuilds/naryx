@@ -233,6 +233,27 @@ test('closed exit needs executed entry, executed exit, and a matching final rece
   assert.equal(observed.finalReceipt?.commitment, hash(92));
 });
 
+test('owner in-kind spot exit completes only with zero quote proceeds', async () => {
+  const observe = (receipt: Record<string, unknown>) => observeAsyncBondedPackage(
+    fixturePort({
+      package: packageRecord(10, { outcomeEvidenceHash: hash(90), hasVenueOutcome: true, stateVersion: 5 }),
+      entry: entryRecord(2),
+      exit: exitRecord(2, { released: true }),
+      receipt: finalReceipt(receipt),
+    }),
+    binding,
+    { ...keys, exitRequestKey },
+  );
+  const inKind = await observe({ terminalState: 2, spotQuoteAtoms: 0n });
+  assert.equal(inKind.lifecycle, 'CLOSED');
+  assert.equal(inKind.exitCompleted, true);
+  assert.equal(inKind.finalReceipt?.terminalState, 2);
+  assert.equal(inKind.finalReceipt?.spotQuoteAtoms, 0n);
+  assert.equal((await observe({ terminalState: 2, spotQuoteAtoms: 600n })).lifecycle, 'EVIDENCE_MISMATCH');
+  assert.equal((await observe({ terminalState: 1, spotQuoteAtoms: 0n })).lifecycle, 'EVIDENCE_MISMATCH');
+  assert.equal((await observe({ terminalState: 3, spotQuoteAtoms: 0n })).lifecycle, 'EVIDENCE_MISMATCH');
+});
+
 test('pending exit and recovered entry are not a completed exit', async () => {
   const pendingExit = await observeAsyncBondedPackage(
     fixturePort({

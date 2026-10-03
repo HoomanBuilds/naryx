@@ -41,9 +41,10 @@ import {
   hyperliquidTestnetDecimal,
   type HyperliquidTestnetQuoteMarketReadPort,
 } from './hyperliquid-testnet-market-preflight.js';
-import type {
-  InternalAtomicQuoteCandidateProvider,
-  InternalAtomicQuoteTermsProvider,
+import {
+  InternalAtomicQuoteError,
+  type InternalAtomicQuoteCandidateProvider,
+  type InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms, Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
 import {
@@ -143,11 +144,13 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
       || input.accountBindings.length === 0
       || input.spot.action.sequence !== 0
       || input.perpetual.action.sequence !== 1
-      || !sameAdapter(input.spot.action.adapter!, input.spot.adapter)
-      || !sameAdapter(input.perpetual.action.adapter!, input.perpetual.adapter)
       || input.recovery.controllerId.length === 0
       || input.recovery.authorityModeId.length === 0) {
       throw new Error('missing required configuration');
+    }
+    if (!sameAdapter(input.spot.action.adapter!, input.spot.adapter)
+      || !sameAdapter(input.perpetual.action.adapter!, input.perpetual.adapter)) {
+      throw new Error('each leg action must name exactly that leg adapter');
     }
     domainRef(
       input.domain.domainId,
@@ -190,8 +193,9 @@ function validateConfiguration(input: HyperliquidTestnetQuoteRuntimeInput): void
     requirePositive(input.quoteTtlMs, 'quoteTtlMs');
     requireBps(input.marginBps, 'marginBps');
     requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
-  } catch {
-    throw new Error('Hyperliquid Testnet quote runtime configuration is incomplete or invalid');
+  } catch (error) {
+    throw new Error(`Hyperliquid Testnet quote runtime configuration is incomplete or invalid: ${
+      error instanceof Error ? error.message : 'invalid value'}`);
   }
 }
 
@@ -821,8 +825,18 @@ export function createHyperliquidTestnetQuoteRuntime(
   // or superseded snapshot fails closed instead of re-reading the market.
   const prepared = new Map<string, Awaited<ReturnType<typeof build>>>();
   const key = (orderHash: Hash32) => Buffer.from(orderHash).toString('hex');
+  // A live book that is empty, stale, too wide, or too thin for the order's limits declines the
+  // quote with its reason, so the trader sees why instead of an opaque failure.
+  const declined = async <T>(price: () => Promise<T>): Promise<T> => {
+    try {
+      return await price();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.split('\n', 1)[0]!.slice(0, 200) : 'pricing failed';
+      throw new InternalAtomicQuoteError('QUOTE_DECLINED', `Hyperliquid testnet quote declined: ${reason}`);
+    }
+  };
   const candidates: InternalAtomicQuoteCandidateProvider = async ({ order, orderHash }) => {
-    const created = await build(order, orderHash, input);
+    const created = await declined(() => build(order, orderHash, input));
     prepared.delete(key(orderHash));
     prepared.set(key(orderHash), created);
     while (prepared.size > MAX_PREPARED_QUOTES) prepared.delete(prepared.keys().next().value!);
@@ -847,7 +861,7 @@ export function createHyperliquidTestnetQuoteRuntime(
     return Object.freeze({ ...created.terms, quoteNonce });
   };
   const exit: HyperliquidTestnetExitQuoter = async ({ order, orderHash, signer }) => {
-    const built = await buildHyperliquidTestnetExit(order, orderHash, input);
+    const built = await declined(() => buildHyperliquidTestnetExit(order, orderHash, input));
     const quoteNonce = input.nonceSource.next();
     if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
     return signHyperliquidTestnetExitQuote({

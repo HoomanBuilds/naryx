@@ -7,6 +7,7 @@ import {
   PACKAGE_VERIFIER_ACCOUNT_ABI,
   equalAddress,
   equalHash,
+  isCanonicalEvmSignature,
   packageVerifierOpenPackage,
   prepareEvmSolverAuthorization,
   prepareEvmTraderPermitAuthorization,
@@ -253,6 +254,9 @@ export function createBaseSepoliaSolverAuthorization(options: BaseSepoliaSolverA
       solverDigest = prepareEvmSolverAuthorization(admission, deployment, series, bounds).digest;
     } catch (error) {
       fail('NOT_AUTHORIZED', error instanceof Error ? error.message : 'execution is not admissible');
+    }
+    if (!isCanonicalEvmSignature(traderSignature)) {
+      fail('NOT_AUTHORIZED', 'trader signature must use v 27 or 28 and a low s, the form the verifier accepts');
     }
     const trader = await recoverAddress({ hash: traderDigest, signature: traderSignature });
     if (!equalAddress(trader, requiredEvmAddress(admission.order.owner, 'order.owner'))) {

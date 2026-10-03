@@ -56,7 +56,7 @@ export interface BaseSepoliaRuntimeOptions {
   readonly client: BaseSepoliaLiveReadClient;
   readonly store: PreparedEvmTestnetAtomicStore;
   readonly solverAuthorizer: EvmTestnetSolverAuthorizer;
-  readonly currentUnixSeconds?: () => bigint;
+  readonly currentUnixSeconds?: () => bigint | Promise<bigint>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,8 +149,8 @@ export async function createBaseSepoliaRuntime(
     intents: options.intents,
     orders: options.orders,
     deployments: [manifest.deployment],
-    currentUnixSeconds: options.currentUnixSeconds
-      ?? (() => BigInt(Math.floor(Date.now() / 1_000))),
+    // The verifier checks every deadline against block.timestamp, so admission uses chain time.
+    currentUnixSeconds: options.currentUnixSeconds ?? (() => options.client.latestBlockTimestamp()),
     reads: options.client,
   });
   const atomicContextProvider: Parameters<typeof createEvmTestnetTerminalPorts>[0]["atomicContextProvider"] =
@@ -165,6 +165,7 @@ export async function createBaseSepoliaRuntime(
     atomicReadPort: options.client,
     asyncReadPort: options.client,
     store: options.store,
+    atomicChainTime: () => options.client.latestBlockTimestamp(),
   });
 }
 

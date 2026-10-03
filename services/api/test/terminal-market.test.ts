@@ -3,6 +3,7 @@ import test from "node:test";
 import { assetRef } from "@naryx/protocol-types";
 import { deriveHyperliquidTestnetLivePrices, type HyperliquidTestnetRuntimeConfig } from "../src/index.js";
 import {
+  createBaseSepoliaMarketSource,
   createHyperliquidTestnetMarketSource,
   type TerminalMarketSources,
 } from "../src/private-terminal-manifest.js";
@@ -18,8 +19,8 @@ const MAX_STALENESS_MS = 5_000;
 const BASE = assetRef("hypercore:testnet:btc", "31".repeat(32), 5);
 const QUOTE = assetRef("hypercore:testnet:usdc", "32".repeat(32), 6);
 const BOOKS = {
-  spot: { bid: "99.5", ask: "100.3" },
-  perp: { bid: "100.9", ask: "101.1" },
+  spot: { bid: "99.5", ask: "100.3", bids: [], asks: [] },
+  perp: { bid: "100.9", ask: "101.1", bids: [], asks: [] },
   spotTakerRate: "0.0007",
   perpTakerRate: "0.00035",
 };
@@ -95,4 +96,32 @@ test("stale observations and domains without a live source answer unavailable", 
     code(() => createTerminalPreview({ ...request("entry"), domain: "solana" }, context(NOW_MS))),
     "DOMAIN_MARKET_UNAVAILABLE",
   );
+});
+
+test("an AMM spot leg quoting one marginal price is a live market; only a crossed book is refused", () => {
+  const snapshot = {
+    observedAt: BigInt(NOW_MS / 1_000), observedAtMs: NOW_MS, oracleAnswer: 268_000_000_000n, oracleDecimals: 8,
+    oracleUpdatedAt: BigInt(NOW_MS / 1_000), sqrtPriceX96: 4_101_540_277_851_273_819_802_995n, baseIsToken0: true,
+    poolFee: 500n, takerFeeBps: 5n, halfSpreadBps: 2n,
+  };
+  const runtime = (latest: typeof snapshot) => ({
+    config: {
+      contextId: "base-sepolia:eth-usdc:carry", baseAsset: assetRef("base-sepolia:weth", "41".repeat(32), 18),
+      quoteAsset: assetRef("base-sepolia:usdc", "42".repeat(32), 6), maximumQuantityAtoms: 10n ** 18n,
+      maxSlippageBps: 50, maxStalenessSeconds: 60n,
+    },
+    feed: { latest: () => latest },
+  }) as never;
+  const live: TerminalMarketContext = {
+    sources: { base: createBaseSepoliaMarketSource(runtime(snapshot)) }, nowMs: NOW_MS, executionAvailable: () => false,
+  };
+  // Uniswap reports one marginal price, so spot bid equals spot ask; the pool fee is the taker rate.
+  const snapshotView = createTerminalSnapshot("base", live);
+  assert.equal(snapshotView.environment.evidenceGrade, "OBSERVED_UNATTESTED");
+  createTerminalPreview({ ...request("entry"), domain: "base", size: "0.5" }, live);
+  // A perp book whose bid is above its ask is crossed and still fails closed.
+  const crossed: TerminalMarketContext = {
+    ...live, sources: { base: createBaseSepoliaMarketSource(runtime({ ...snapshot, halfSpreadBps: -2n })) },
+  };
+  assert.throws(() => createTerminalSnapshot("base", crossed), TerminalMarketUnavailableError);
 });
