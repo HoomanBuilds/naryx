@@ -7,6 +7,7 @@ import {
   UNISWAP_V3_POOL_ABI,
   equalAddress,
   requiredEvmAddress,
+  type EvmContractIdentity,
   type EvmDeploymentIdentity,
 } from '@naryx/adapter-evm';
 import {
@@ -46,6 +47,7 @@ import type {
   InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
+import { quoteUniswapV3Buy, type UniswapV3SpotQuoteTarget } from './uniswap-v3-quoter.js';
 
 export const BASE_SEPOLIA_DOMAIN_ID = 'eip155:84532';
 export const BASE_SEPOLIA_CHAIN_ID = 84_532n;
@@ -53,7 +55,6 @@ export const BASE_SEPOLIA_QUOTE_ENABLED_ENV = 'NARYX_BASE_SEPOLIA_QUOTE_ENABLED'
 
 const BPS = 10_000n;
 const FEE_SCALE = 1_000_000n;
-const Q192 = 1n << 192n;
 const U64_MAX = (1n << 64n) - 1n;
 const MAX_PREPARED_QUOTES = 64;
 
@@ -100,6 +101,8 @@ export interface BaseSepoliaQuoteMarketConfig {
   /** Perp margin the quote asks the trader to post, as basis points of the perp entry notional. */
   readonly marginBps: number;
   readonly perpSlippageBps: number;
+  /** The canonical Uniswap V3 QuoterV2; spot legs are priced at its quote for the exact size. */
+  readonly spotQuoter: EvmContractIdentity;
   readonly spot: BaseSepoliaQuoteLeg;
   readonly perpetual: BaseSepoliaQuoteLeg;
   /** The `strategyAccountBindingId` binding is rewritten to each order's own factory account. */
@@ -198,27 +201,42 @@ export async function readBaseSepoliaAccountOf(
   })), 'accountOf(owner)');
 }
 
+/** The pinned quoter and the deployment's spot pool and tokens, at the pool fee read live. */
+export function baseSepoliaSpotQuoteTarget(
+  spotQuoter: EvmContractIdentity,
+  deployment: EvmDeploymentIdentity,
+  poolFee: bigint,
+): UniswapV3SpotQuoteTarget {
+  return Object.freeze({
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    quoter: spotQuoter,
+    pool: requiredEvmAddress(deployment.spot.market.address, 'spot.market'),
+    baseToken: requiredEvmAddress(deployment.baseAsset.address, 'baseAsset'),
+    quoteToken: requiredEvmAddress(deployment.quoteAsset.address, 'quoteAsset'),
+    poolFee,
+  });
+}
+
 /**
- * Prices an entry from live state: the Uniswap pool's slot0 mid plus its fee for the exact-output
- * spot buy (rounded up), and the market's own `previewOpen` for the perp fill and taker fee. The
- * market reverts `previewOpen` on a stale or incomplete Chainlink round, so a stale oracle fails here.
+ * Prices an entry from live state: the pinned Uniswap QuoterV2's exact-output cost of exactly the
+ * quantity (pool fee and price impact included), and the market's own `previewOpen` for the perp
+ * fill and taker fee. The market reverts `previewOpen` on a stale or incomplete Chainlink round, so
+ * a stale oracle fails here.
  */
 export async function priceBaseSepoliaEntry(
   chain: BaseSepoliaReadPort,
   deployment: EvmDeploymentIdentity,
   quantityAtoms: bigint,
   marginBps: bigint,
+  spotQuoter: EvmContractIdentity,
 ): Promise<BaseSepoliaEntryPricing> {
   await requireBaseSepoliaChain(chain);
   const pool = requiredEvmAddress(deployment.spot.market.address, 'spot.market');
   const market = requiredEvmAddress(deployment.perpetual.market.address, 'perpetual.market');
-  const baseToken = requiredEvmAddress(deployment.baseAsset.address, 'baseAsset');
   const read = (address: Address, abi: Abi, functionName: string, args?: readonly unknown[]) =>
     chain.readContract({ address, abi, functionName, ...(args === undefined ? {} : { args }) });
   if (deployment.baseAsset.decimals !== 18) throw new Error('Base Sepolia perp quantity requires an 18-decimal base asset');
-  const [slot0, token0, poolFee, oracle, collateralScale, preview, observedAt] = await Promise.all([
-    read(pool, UNISWAP_V3_POOL_ABI as Abi, 'slot0'),
-    read(pool, UNISWAP_V3_POOL_ABI as Abi, 'token0'),
+  const [poolFee, oracle, collateralScale, preview, observedAt] = await Promise.all([
     read(pool, UNISWAP_V3_POOL_ABI as Abi, 'fee'),
     read(market, NARYX_TEST_PERP_MARKET_ABI as Abi, 'oracle'),
     read(market, NARYX_TEST_PERP_MARKET_ABI as Abi, 'collateralScale'),
@@ -230,29 +248,28 @@ export async function priceBaseSepoliaEntry(
     read(feed, CHAINLINK_AGGREGATOR_ABI as Abi, 'decimals'),
     read(feed, CHAINLINK_AGGREGATOR_ABI as Abi, 'latestRoundData'),
   ]);
-  const sqrtPrice = (slot0 as readonly unknown[])[0];
   const answer = (round as readonly unknown[])[1];
   const [, entryNotionalWad, feeWad] = preview as readonly unknown[];
-  if (typeof sqrtPrice !== 'bigint' || sqrtPrice <= 0n || typeof answer !== 'bigint' || answer <= 0n
+  if (typeof answer !== 'bigint' || answer <= 0n
     || typeof collateralScale !== 'bigint' || collateralScale <= 0n
     || typeof entryNotionalWad !== 'bigint' || entryNotionalWad <= 0n || typeof feeWad !== 'bigint') {
     throw new Error('Base Sepolia market reads are invalid');
   }
-  const squared = sqrtPrice * sqrtPrice;
-  const baseIsToken0 = equalAddress(requiredEvmAddress(String(token0), 'pool.token0'), baseToken);
-  const [midNumerator, midDenominator] = baseIsToken0 ? [squared, Q192] : [Q192, squared];
   const fee = BigInt(Number(poolFee));
-  const spotMidAtoms = ceilDiv(quantityAtoms * midNumerator, midDenominator);
-  const spotNotionalAtoms = ceilDiv(quantityAtoms * midNumerator * (FEE_SCALE + fee), midDenominator * FEE_SCALE);
+  // What the spot port pays the pool for exactly this quantity, which the quote must not understate.
+  const spotNotionalAtoms = await quoteUniswapV3Buy(
+    chain, baseSepoliaSpotQuoteTarget(spotQuoter, deployment, fee), quantityAtoms,
+  );
   const perpNotionalAtoms = entryNotionalWad / collateralScale;
   const perpFeeAtoms = ceilDiv(feeWad, collateralScale);
-  if (spotNotionalAtoms <= 0n || perpNotionalAtoms <= 0n) throw new Error('Base Sepolia entry notional is zero');
+  if (perpNotionalAtoms <= 0n) throw new Error('Base Sepolia entry notional is zero');
   return Object.freeze({
     observedAt,
     oracleAnswer: answer,
     oracleDecimals: Number(decimals),
     spotNotionalAtoms,
-    spotFeeAtoms: spotNotionalAtoms - spotMidAtoms,
+    // Uniswap V3 keeps the fee tier's share of the input it takes, rounded up against the trader.
+    spotFeeAtoms: ceilDiv(spotNotionalAtoms * fee, FEE_SCALE),
     perpNotionalAtoms,
     perpFeeAtoms,
     marginAtoms: ceilDiv(perpNotionalAtoms * marginBps, BPS) + perpFeeAtoms,
@@ -285,6 +302,10 @@ function validateConfiguration(input: BaseSepoliaQuoteRuntimeInput): void {
       versionedManifestRef(leg.market.subjectId, leg.market.manifestVersion, leg.market.manifestHash);
     }
     requiredEvmAddress(input.deployment.executionPolicy.solver, 'executionPolicy.solver');
+    requiredEvmAddress(input.spotQuoter.address, 'spotQuoter.address');
+    if (!/^0x[0-9a-f]{64}$/.test(input.spotQuoter.expectedCodeHash.toLowerCase()) || /^0x0+$/.test(input.spotQuoter.expectedCodeHash)) {
+      throw new Error('spot quoter code hash is invalid');
+    }
   } catch {
     throw new Error('Base Sepolia quote runtime configuration is incomplete or invalid');
   }
@@ -320,7 +341,7 @@ async function build(order: PackageOrder, orderHash: Hash32, input: BaseSepoliaQ
     throw new Error('order settlement account is not the owner factory account');
   }
   const pricing = await priceBaseSepoliaEntry(
-    input.chain, deployment, order.quantity.atoms, BigInt(input.marginBps),
+    input.chain, deployment, order.quantity.atoms, BigInt(input.marginBps), input.spotQuoter,
   );
   const now = pricing.observedAt;
   if (now >= order.expiryValue) throw new Error('order is expired');

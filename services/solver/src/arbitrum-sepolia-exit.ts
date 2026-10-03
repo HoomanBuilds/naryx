@@ -32,6 +32,7 @@ import {
   createViemArbitrumSepoliaReadPort,
   gmxPositionFieldKey,
   readArbitrumSepoliaReferencePrice,
+  readArbitrumSepoliaSpotQuoteTarget,
   readGmxPositionFeeFactor,
   readGmxUint,
   requireArbitrumSepoliaCode,
@@ -53,6 +54,7 @@ import {
   type InternalAtomicQuoteStore,
 } from './internal-atomic-quote-server.js';
 import type { Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
+import { quoteUniswapV3Sell } from './uniswap-v3-quoter.js';
 
 const BPS = 10_000n;
 const POOL_FEE_SCALE = 1_000_000n;
@@ -296,8 +298,9 @@ export type ArbitrumExitPricing = Readonly<{
 
 /**
  * Prices a full close at the live reference: the spot sale at the lower of the pool mid and the
- * reference less the pool fee (rounded down), the short bought back at the reference (rounded up)
- * with the larger GMX position fee (rounded up), and the decrease paying collateral plus PnL.
+ * reference less the pool fee (rounded down) and of the quoter's proceeds for exactly that sale
+ * (price impact included), the short bought back at the reference (rounded up) with the larger GMX
+ * position fee (rounded up), and the decrease paying collateral plus PnL.
  */
 export function priceArbitrumExit(input: Readonly<{
   quantityAtoms: bigint;
@@ -305,11 +308,13 @@ export function priceArbitrumExit(input: Readonly<{
   quoteDecimals: number;
   reference: Pick<ArbitrumSepoliaReferencePrice, 'answer' | 'decimals'>;
   pool: ArbitrumSepoliaSpotPool;
+  /** The pinned quoter's exact-input proceeds for selling exactly `quantityAtoms`. */
+  spotQuoteOutAtoms: bigint;
   positionFeeFactor: bigint;
   position: Pick<ArbitrumSepoliaOpenPosition, 'sizeInUsd' | 'sizeInTokens' | 'collateralAtoms'>;
 }>): ArbitrumExitPricing {
   const { reference, pool, position } = input;
-  if (input.quantityAtoms <= 0n || reference.answer <= 0n || pool.sqrtPriceX96 <= 0n
+  if (input.quantityAtoms <= 0n || reference.answer <= 0n || pool.sqrtPriceX96 <= 0n || input.spotQuoteOutAtoms <= 0n
     || input.positionFeeFactor < 0n || input.positionFeeFactor >= GMX_FLOAT_PRECISION
     || input.quoteDecimals < 0 || input.quoteDecimals > GMX_USD_DECIMALS || position.sizeInUsd <= 0n) {
     throw new Error('exit pricing inputs are invalid');
@@ -323,8 +328,9 @@ export function priceArbitrumExit(input: Readonly<{
   const [numerator, denominator] = poolNumerator * referenceDenominator < referenceNumerator * poolDenominator
     ? [poolNumerator, poolDenominator]
     : [referenceNumerator, referenceDenominator];
-  const expectedSpotNotionalAtoms = (input.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee))
+  const priceProceedsAtoms = (input.quantityAtoms * numerator * (POOL_FEE_SCALE - pool.poolFee))
     / (denominator * POOL_FEE_SCALE);
+  const expectedSpotNotionalAtoms = input.spotQuoteOutAtoms < priceProceedsAtoms ? input.spotQuoteOutAtoms : priceProceedsAtoms;
   const entryNotionalAtoms = position.sizeInUsd / usdScale;
   const closeNotionalAtoms = ceilDiv(position.sizeInTokens * referenceNumerator, referenceDenominator);
   const positionFeeAtoms = ceilDiv(position.sizeInUsd * input.positionFeeFactor, GMX_FLOAT_PRECISION * usdScale);
@@ -426,13 +432,15 @@ async function signExit(order: PackageOrder, request: InternalAtomicQuoteRequest
     || position.spotRegistration.baseAtoms !== order.quantity.atoms) {
     throw new Error('exit order does not match the open package on chain');
   }
-  const [pool, positionFeeFactor] = await Promise.all([
+  const [pool, positionFeeFactor, spotTarget] = await Promise.all([
     readArbitrumSepoliaSpotPool(input.chain, spotPort),
     readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket),
+    readArbitrumSepoliaSpotQuoteTarget(input.chain, input.accountFactory, input.spotQuoter),
   ]);
   const pricing = priceArbitrumExit({
     quantityAtoms: order.quantity.atoms, baseDecimals: base.decimals, quoteDecimals: quoteAsset.decimals,
-    reference, pool, positionFeeFactor, position,
+    reference, pool, spotQuoteOutAtoms: await quoteUniswapV3Sell(input.chain, spotTarget, order.quantity.atoms),
+    positionFeeFactor, position,
   });
   if (pricing.expectedSpotNotionalAtoms < order.minSpotQuoteOut!.atoms) throw new Error('spot proceeds are below the order minimum');
   if (pricing.exitOutcomeAtoms < order.minExitQuoteOutcome!.atoms) throw new Error('exit outcome is below the order minimum');

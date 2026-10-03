@@ -283,26 +283,27 @@ test('Arbitrum exit cancels a close still pending after cancelAfter once and ref
   }
 });
 
-test('Arbitrum exit quote prices the close at the lower of pool and reference, rounding against the trader', () => {
+test('Arbitrum exit quote prices the close at the lower of pool, reference, and quoter, rounding against the trader', () => {
   // ETH at 2500.12345678 USD; the pool mid (10000 USD) is above it, so the reference prices the spot sale.
-  const pricing = priceArbitrumExit({
+  const input = {
     quantityAtoms: QUANTITY, baseDecimals: 18, quoteDecimals: 6,
     reference: { answer: 250_012_345_678n, decimals: 8 },
     pool: { sqrtPriceX96: 2n ** 96n / 10_000n, baseIsToken0: true, poolFee: 3_000n },
+    spotQuoteOutAtoms: 24_926_231n,
     positionFeeFactor: 5n * 10n ** 26n,
     position: { sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY, collateralAtoms: COLLATERAL },
-  });
+  };
+  const pricing = priceArbitrumExit(input);
   // Spot proceeds less the 0.3% pool fee round down; the buy-back and the 0.05% GMX fee round up.
   assert.deepEqual(
     [pricing.expectedSpotNotionalAtoms, pricing.closeNotionalAtoms, pricing.positionFeeAtoms, pricing.expectedPerpOutputAtoms],
     [24_926_230n, 25_001_235n, 12_501n, 2_487_622n],
   );
   assert.equal(pricing.exitOutcomeAtoms, 27_413_852n);
+  // A thin pool's price impact: the quoted proceeds never exceed what the quoter says the sale returns.
+  const thin = priceArbitrumExit({ ...input, spotQuoteOutAtoms: 24_000_000n });
+  assert.deepEqual([thin.expectedSpotNotionalAtoms, thin.exitOutcomeAtoms], [24_000_000n, 26_487_622n]);
   assert.throws(() => priceArbitrumExit({
-    quantityAtoms: QUANTITY, baseDecimals: 18, quoteDecimals: 6,
-    reference: { answer: 250_012_345_678n, decimals: 8 },
-    pool: { sqrtPriceX96: 2n ** 96n / 10_000n, baseIsToken0: true, poolFee: 3_000n },
-    positionFeeFactor: 5n * 10n ** 26n,
-    position: { sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY * 2n, collateralAtoms: COLLATERAL },
+    ...input, position: { sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY * 2n, collateralAtoms: COLLATERAL },
   }), /not positive/);
 });

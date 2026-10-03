@@ -14,8 +14,9 @@ import {
   validatePackageOrderProfile,
   versionedManifestRef,
   type PackageOrderInput,
+  type QuotedOutcomeInput,
 } from '@naryx/protocol-types';
-import { hashTypedData, type Address, type Hex } from 'viem';
+import { ContractFunctionRevertedError, hashTypedData, type Address, type Hex } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import {
   ArbitrumSepoliaExecutor,
@@ -35,6 +36,7 @@ import {
   type ArbitrumSepoliaReadPort,
   type ArbitrumSepoliaWritePort,
 } from '../src/index.js';
+import { UNISWAP_V3_QUOTER_V2_ABI } from '../src/uniswap-v3-quoter.js';
 
 const hash = (byte: string) => byte.repeat(64);
 const hex = (byte: string) => `0x${byte.repeat(64)}` as Hex;
@@ -55,24 +57,67 @@ const NOW = 1_000_000n;
 // ETH at 2500.12345678 USD with 8 feed decimals; 0.01 ETH is 10^16 base atoms.
 const ANSWER = 250_012_345_678n;
 const QUANTITY = 10n ** 16n;
+// The factory's spot port swaps WETH ('f') against USDC ('c') through a 0.05% pool.
+const spotPort = address('e');
+const spotPool = address('9');
+const uniswapFactory = address('1');
+const spotQuoter = { address: address('2'), expectedCodeHash: hex('2') };
 
-function readPort(chainId = 421_614n): ArbitrumSepoliaReadPort {
+type QuoterCall = Readonly<{ address: Address; functionName: string; args?: readonly unknown[] }>;
+
+function readPort(options: Readonly<{
+  quoteIn?: bigint | Error;
+  quoterCodeHash?: Hex;
+  poolFactory?: Address;
+  calls?: QuoterCall[];
+}> = {}): ArbitrumSepoliaReadPort {
+  const codes = new Map<string, Hex>([
+    [priceFeed.address, priceFeed.expectedCodeHash], [dataStore.address, dataStore.expectedCodeHash],
+    [spotPort, hex('e')], [spotQuoter.address, options.quoterCodeHash ?? spotQuoter.expectedCodeHash],
+  ]);
   return {
-    chainId: async () => chainId,
-    codeHash: async (target) => target === priceFeed.address ? priceFeed.expectedCodeHash
-      : target === dataStore.address ? dataStore.expectedCodeHash : undefined,
+    chainId: async () => 421_614n,
+    codeHash: async (target) => codes.get(target),
     latestBlockTimestamp: async () => NOW,
     gasPrice: async () => 100_000_000n,
-    readContract: async ({ functionName, args }) => {
-      if (functionName === 'decimals') return 8;
-      if (functionName === 'latestRoundData') return [7n, ANSWER, NOW - 10n, NOW - 10n, 7n];
-      if (functionName === 'getUint') {
-        const key = args?.[0];
-        if (key === gmxPositionFeeFactorKey(market, true)) return 3n * 10n ** 26n;
-        if (key === gmxPositionFeeFactorKey(market, false)) return 5n * 10n ** 26n;
+    readContract: async ({ address: target, functionName, args }) => {
+      switch (functionName) {
+        case 'decimals': return 8;
+        case 'latestRoundData': return [7n, ANSWER, NOW - 10n, NOW - 10n, 7n];
+        case 'getUint':
+          if (args?.[0] === gmxPositionFeeFactorKey(market, true)) return 3n * 10n ** 26n;
+          if (args?.[0] === gmxPositionFeeFactorKey(market, false)) return 5n * 10n ** 26n;
+          break;
+        case 'spotPort': return spotPort;
+        case 'spotPortCodeHash': return hex('e');
+        case 'pool': return spotPool;
+        case 'poolFee': return 500;
+        case 'baseToken': return address('f');
+        case 'quoteToken': return address('c');
+        case 'factory': return target === spotPool ? options.poolFactory ?? uniswapFactory : uniswapFactory;
+        case 'quoteExactOutputSingle': {
+          options.calls?.push({ address: target, functionName, ...(args === undefined ? {} : { args }) });
+          const quoteIn = options.quoteIn ?? 25_001_300n;
+          if (quoteIn instanceof Error) throw quoteIn;
+          return [quoteIn, 0n, 1, 0n];
+        }
       }
       throw new Error(`unexpected read ${functionName}`);
     },
+  };
+}
+
+function spreadOf(outcome: QuotedOutcomeInput): readonly unknown[] {
+  if (outcome.kind !== 'ENTRY_SPREAD') throw new Error('not an entry spread outcome');
+  return [outcome.entrySpread.quoteAtoms, outcome.entrySpread.baseAtoms];
+}
+
+function ed25519Signer() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const der = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
+  return {
+    verificationKey: Uint8Array.from(der.subarray(der.length - 32)),
+    signDigest: (digest: Uint8Array) => Uint8Array.from(sign(null, Buffer.from(digest), privateKey)),
   };
 }
 
@@ -100,7 +145,7 @@ function orderInput(): PackageOrderInput {
   };
 }
 
-function quoteRuntime() {
+function quoteRuntime(chain: ArbitrumSepoliaReadPort = readPort()) {
   const action = (sequence: number, adapter: typeof spotAdapter) => ({
     sequence, actionClassId: 'evm-async-request-v1', legIndex: sequence, adapter,
     targetBindingId: 'coordinator', authorityBindingId: 'solver', accountMetas: [],
@@ -117,7 +162,7 @@ function quoteRuntime() {
     marginBps: 1_000, perpSlippageBps: 100, rollbackSlippageBps: 200,
     baseAsset: base, quoteAsset: quote, accountFactory, accountImplementation,
     priceFeed, priceFeedDecimals: 8, maxPriceAgeSeconds: 60n,
-    gmxDataStore: dataStore, gmxMarket: market,
+    gmxDataStore: dataStore, gmxMarket: market, spotQuoter,
     spot: { adapter: spotAdapter, venue, market: versionedManifestRef('weth-usdc-spot', 1, hash('7')), action: action(0, spotAdapter) },
     perpetual: { adapter: perpetualAdapter, venue, market: versionedManifestRef('gmx-eth-usd', 1, hash('8')), action: action(1, perpetualAdapter) },
     accountBindings: [
@@ -135,21 +180,29 @@ function quoteRuntime() {
       policyVersion: 1, controllerId: 'arbitrum-async-recovery-v1', controllerCodeHash: hash('1'),
       authorityModeId: 'bonded-solver-v1', reconciledStateSchemaHash: hash('2'), actionBuilderCodeHash: hash('3'),
     },
-    chain: readPort(),
+    chain,
     nonceSource: { next: () => 9n },
   });
 }
 
-test('quotes Arbitrum entry from the live reference price and GMX fee factor, rounding against the trader', async () => {
+test('quotes the Arbitrum spot leg at the pool cost for the exact size and the hedge at the reference', async () => {
   const order = validatePackageOrderProfile(orderInput());
   const orderHash = packageOrderHash(order);
-  const runtime = quoteRuntime();
+  const calls: QuoterCall[] = [];
+  const runtime = quoteRuntime(readPort({ calls }));
   const candidates = await runtime.candidates({ order, orderHash });
   const decision = planAtomicEntryRoute({ order, orderHash }, () => candidates);
   const terms = await runtime.terms({ order, decision });
-  // 0.01 ETH at 2500.12345678 is 25.0012345678 USDC: spot cost rounds up, perpetual proceeds down.
-  assert.equal(terms.expectedSpotNotional.atoms, 25_001_235n);
+  // The pool charges 25.0013 USDC for exactly 0.01 ETH; the hedge at 2500.12345678 rounds down.
+  assert.equal(terms.expectedSpotNotional.atoms, 25_001_300n);
   assert.equal(terms.expectedPerpNotional.atoms, 25_001_234n);
+  // The signed spread is the true one: 66 quote atoms over 10^16 base atoms, in lowest terms.
+  assert.deepEqual(spreadOf(terms.quotedOutcome), [33n, 5_000_000_000_000_000n]);
+  assert.deepEqual(calls, [{
+    address: spotQuoter.address,
+    functionName: 'quoteExactOutputSingle',
+    args: [{ tokenIn: address('c'), tokenOut: address('f'), amount: QUANTITY, fee: 500, sqrtPriceLimitX96: 0n }],
+  }]);
   // The larger GMX position fee factor (0.05%) applies: 12500.617 rounds up.
   assert.deepEqual(
     Object.fromEntries(terms.expectedNormalizedVenueFeesByAsset.map((fee) => [fee.asset.assetId, fee.atoms])),
@@ -168,20 +221,47 @@ test('quotes Arbitrum entry from the live reference price and GMX fee factor, ro
   // A settlement account other than the owner's factory account is never quoted.
   const foreign = validatePackageOrderProfile({ ...orderInput(), settlementAccount: address('9') });
   await assert.rejects(async () => runtime.candidates({ order: foreign, orderHash: packageOrderHash(foreign) }), /factory account/);
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const der = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const signed = await signAtomicEntryQuote({
-    order, decision, terms,
-    signer: {
-      verificationKey: Uint8Array.from(der.subarray(der.length - 32)),
-      signDigest: (digest) => Uint8Array.from(sign(null, Buffer.from(digest), privateKey)),
-    },
-  });
+  const signed = await signAtomicEntryQuote({ order, decision, terms, signer: ed25519Signer() });
   assert.equal(signed.quote.quoteMode, 'EXECUTION_COMMITMENT');
   // GMX GasUtils: 600000 + 3 * 10000 + (1000000 + 800000) * 1.0 gas at 0.1 gwei with a 20% buffer.
   assert.equal(gmxIncreaseExecutionFeeWei({
     baseAmount: 600_000n, perOraclePrice: 10_000n, multiplierFactor: 10n ** 30n, increaseOrderGasLimit: 1_000_000n,
   }, 800_000n, 100_000_000n, 2_000n), 291_600_000_000_000n);
+});
+
+test('refuses to sign an Arbitrum entry whose pool cost puts the real spread above the signed cap', async () => {
+  // The pool 20% above the reference: the API's spot bound (quoter cost plus slippage) admits the
+  // buy, but the trader would pay about 500 USDC per WETH over the hedge against a 1 USDC cap.
+  const order = validatePackageOrderProfile({ ...orderInput(), maxSpotQuoteIn: assetAmount(quote, 30_300_000n) });
+  const orderHash = packageOrderHash(order);
+  const runtime = quoteRuntime(readPort({ quoteIn: 30_001_482n }));
+  const candidates = await runtime.candidates({ order, orderHash });
+  const decision = planAtomicEntryRoute({ order, orderHash }, () => candidates);
+  const terms = await runtime.terms({ order, decision });
+  assert.equal(terms.expectedSpotNotional.atoms, 30_001_482n);
+  // 30001482 - 25001234 = 5000248 quote atoms over 10^16 base atoms: 500.0248 USDC per WETH.
+  assert.deepEqual(spreadOf(terms.quotedOutcome), [625_031n, 1_250_000_000_000_000n]);
+  await assert.rejects(
+    signAtomicEntryQuote({ order, decision, terms, signer: ed25519Signer() }),
+    /quoted spread is worse than the order maximum/,
+  );
+});
+
+test('refuses an Arbitrum entry cleanly when the quoter reverts or is not the pinned quoter of the spot pool', async () => {
+  const order = validatePackageOrderProfile(orderInput());
+  const orderHash = packageOrderHash(order);
+  const reverted = new ContractFunctionRevertedError({
+    abi: UNISWAP_V3_QUOTER_V2_ABI, functionName: 'quoteExactOutputSingle', message: 'Unexpected error',
+  });
+  for (const [chain, refusal] of [
+    [readPort({ quoteIn: reverted }), /spot pool cannot fill this size within its liquidity; nothing was signed/],
+    [readPort({ quoterCodeHash: hex('3') }), /quoter code does not match the reviewed identity/],
+    [readPort({ poolFactory: address('a') }), /quoter does not quote the spot pool factory/],
+  ] as const) {
+    const runtime = quoteRuntime(chain);
+    await assert.rejects(async () => runtime.candidates({ order, orderHash }), refusal);
+    assert.throws(() => runtime.terms({ order, decision: { orderHash } as never }), /no live Arbitrum Sepolia quote/);
+  }
 });
 
 const coordinator = address('a');

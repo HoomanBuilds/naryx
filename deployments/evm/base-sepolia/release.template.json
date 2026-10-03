@@ -293,6 +293,7 @@
           "routeTtlSeconds": { "$bigint": { "$operator": "route TTL, seconds (recommended 180: covers the authorization signature, preparation, and the wallet transaction; slippage bounds bound the price risk)" } },
           "marginBps": { "$number": { "$operator": "perp margin as bps of entry notional" } },
           "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
+          "spotQuoter": { "$contract": "uniswapQuoter" },
           "spot": {
             "adapter": { "$def": "spotAdapterRef" },
             "venue": { "$def": "res.spotVenue" },

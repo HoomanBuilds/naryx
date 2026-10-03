@@ -309,6 +309,7 @@
           "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age, seconds (recommended 600; the Arbitrum Sepolia ETH/USD feed updated every 30 to 135 s when measured on 2026-10-02)" } },
           "gmxDataStore": { "$contract": "gmxDataStore" },
           "gmxMarket": { "$release": "contracts.market.addressLower" },
+          "spotQuoter": { "$contract": "uniswapQuoter" },
           "spot": {
             "adapter": { "$def": "spotAdapterRef" },
             "venue": { "$def": "res.spotVenue" },

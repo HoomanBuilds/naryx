@@ -309,8 +309,9 @@ export async function createArbitrumSepoliaOrderRuntime(input: Readonly<{
       return port.latestBlockTimestamp();
     },
   });
-  // The solver quotes the spot leg, the GMX hedge, and the rollback at the reference, so the entry
-  // bound covers the larger of the reference cost and the pool's exact-output cost for this size.
+  // The solver quotes the spot leg at the pool's exact-output cost for this size but the GMX hedge
+  // and the rollback floor at the reference, so the entry bound covers the larger of the two costs
+  // and the rollback floor stays within it while the pool trades below the reference.
   const spotPrice: InternalOrderSpotPricePort = Object.freeze({
     entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint) => {
       if (context.contextId !== config.contextId) throw new Error("Arbitrum Sepolia order context is unknown.");

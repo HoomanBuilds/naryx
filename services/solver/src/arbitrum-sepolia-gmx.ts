@@ -10,6 +10,7 @@ import {
   type Address,
   type Hex,
 } from 'viem';
+import type { UniswapV3SpotQuoteTarget } from './uniswap-v3-quoter.js';
 
 export const ARBITRUM_SEPOLIA_CHAIN_ID = 421_614n;
 export const ARBITRUM_SEPOLIA_DOMAIN_ID = 'eip155:421614';
@@ -151,6 +152,53 @@ export async function readGmxPositionFeeFactor(
   return factor;
 }
 
+const SPOT_PORT_VIEWS_ABI = parseAbi([
+  'function spotPort() view returns (address)',
+  'function spotPortCodeHash() view returns (bytes32)',
+  'function pool() view returns (address)',
+  'function poolFee() view returns (uint24)',
+  'function baseToken() view returns (address)',
+  'function quoteToken() view returns (address)',
+]);
+
+function addressValue(value: unknown, name: string): Address {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(value) || /^0x0{40}$/.test(value)) {
+    throw new Error(`${name} is not a nonzero address`);
+  }
+  return value.toLowerCase() as Address;
+}
+
+/**
+ * What the pinned quoter must simulate: the factory's spot port, checked against the code hash the
+ * factory pinned, and the pool, token order, and fee that port swaps through.
+ */
+export async function readArbitrumSepoliaSpotQuoteTarget(
+  port: ArbitrumSepoliaReadPort,
+  factory: Address,
+  quoter: ArbitrumSepoliaContractIdentity,
+): Promise<UniswapV3SpotQuoteTarget> {
+  const view = (address: Address, functionName: string) =>
+    port.readContract({ address, abi: SPOT_PORT_VIEWS_ABI, functionName });
+  const [spotPortValue, pinnedHash] = await Promise.all([view(factory, 'spotPort'), view(factory, 'spotPortCodeHash')]);
+  const spotPort = addressValue(spotPortValue, 'factory spotPort');
+  const liveHash = await port.codeHash(spotPort);
+  if (liveHash === undefined || typeof pinnedHash !== 'string' || liveHash.toLowerCase() !== pinnedHash.toLowerCase()) {
+    throw new Error('spot port code does not match the factory pinned hash');
+  }
+  const [pool, poolFee, baseToken, quoteToken] = await Promise.all([
+    view(spotPort, 'pool'), view(spotPort, 'poolFee'), view(spotPort, 'baseToken'), view(spotPort, 'quoteToken'),
+  ]);
+  if (typeof poolFee !== 'number') throw new Error('spot pool fee is invalid');
+  return Object.freeze({
+    chainId: ARBITRUM_SEPOLIA_CHAIN_ID,
+    quoter,
+    pool: addressValue(pool, 'spot pool'),
+    baseToken: addressValue(baseToken, 'spot base token'),
+    quoteToken: addressValue(quoteToken, 'spot quote token'),
+    poolFee: BigInt(poolFee),
+  });
+}
+
 export interface GmxExecutionFeeParameters {
   readonly baseAmount: bigint;
   readonly perOraclePrice: bigint;
@@ -228,6 +276,8 @@ export interface ArbitrumEntryPricingInput {
   readonly baseDecimals: number;
   readonly quoteDecimals: number;
   readonly reference: Pick<ArbitrumSepoliaReferencePrice, 'answer' | 'decimals'>;
+  /** The pinned quoter's exact-output cost of `quantityAtoms` from the spot port's pool. */
+  readonly spotQuoteAtoms: bigint;
   readonly positionFeeFactor: bigint;
   readonly marginBps: bigint;
 }
@@ -240,22 +290,22 @@ export interface ArbitrumEntryPricing {
 }
 
 /**
- * Prices both legs at the live reference price in quote atoms. Amounts round against the trader:
- * spot cost, the GMX position fee, and margin up; perpetual proceeds down.
+ * Prices the spot leg at what the pool charges for exactly this quantity (the quoter's exact-output
+ * cost, pool fee and price impact included) and the GMX short at the live reference price, in quote
+ * atoms. The rest rounds against the trader: the GMX position fee and margin up, perpetual proceeds down.
  */
 export function priceArbitrumEntry(input: ArbitrumEntryPricingInput): ArbitrumEntryPricing {
-  if (input.quantityAtoms <= 0n || input.reference.answer <= 0n
+  if (input.quantityAtoms <= 0n || input.reference.answer <= 0n || input.spotQuoteAtoms <= 0n
     || input.positionFeeFactor < 0n || input.positionFeeFactor >= GMX_FLOAT_PRECISION
     || input.marginBps <= 0n || input.marginBps > BPS_SCALE) {
     throw new Error('entry pricing inputs are invalid');
   }
   const numerator = input.quantityAtoms * input.reference.answer * 10n ** BigInt(input.quoteDecimals);
   const denominator = 10n ** BigInt(input.reference.decimals + input.baseDecimals);
-  const spotNotionalAtoms = ceilDiv(numerator, denominator);
   const perpNotionalAtoms = numerator / denominator;
   if (perpNotionalAtoms <= 0n) throw new Error('entry notional rounds to zero');
   return Object.freeze({
-    spotNotionalAtoms,
+    spotNotionalAtoms: input.spotQuoteAtoms,
     perpNotionalAtoms,
     positionFeeAtoms: ceilDiv(perpNotionalAtoms * input.positionFeeFactor, GMX_FLOAT_PRECISION),
     marginAtoms: ceilDiv(perpNotionalAtoms * input.marginBps, BPS_SCALE),

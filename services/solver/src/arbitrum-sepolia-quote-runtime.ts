@@ -41,11 +41,13 @@ import {
   createViemArbitrumSepoliaReadPort,
   priceArbitrumEntry,
   readArbitrumSepoliaReferencePrice,
+  readArbitrumSepoliaSpotQuoteTarget,
   readGmxPositionFeeFactor,
   requireArbitrumSepoliaCode,
   type ArbitrumSepoliaContractIdentity,
   type ArbitrumSepoliaReadPort,
 } from './arbitrum-sepolia-gmx.js';
+import { quoteUniswapV3Buy } from './uniswap-v3-quoter.js';
 
 export const ARBITRUM_SEPOLIA_QUOTE_ENABLED_ENV = 'NARYX_ARBITRUM_SEPOLIA_QUOTE_ENABLED';
 export const ARBITRUM_SEPOLIA_QUOTE_CONFIG_VERSION = 1;
@@ -100,6 +102,8 @@ export interface ArbitrumSepoliaQuoteMarketConfig {
   readonly maxPriceAgeSeconds: bigint;
   readonly gmxDataStore: ArbitrumSepoliaContractIdentity;
   readonly gmxMarket: Address;
+  /** The canonical Uniswap V3 QuoterV2; the spot leg is priced at its cost for the exact size. */
+  readonly spotQuoter: ArbitrumSepoliaContractIdentity;
   readonly spot: ArbitrumSepoliaQuoteLeg;
   readonly perpetual: ArbitrumSepoliaQuoteLeg;
   readonly accountBindings: readonly RouteAccountBindingInput[];
@@ -175,6 +179,9 @@ export function validateArbitrumSepoliaQuoteRuntimeInput(input: ArbitrumSepoliaQ
       || typeof input.chain?.chainId !== 'function'
       || !ADDRESS.test(input.accountFactory) || !ADDRESS.test(input.accountImplementation)
       || !ADDRESS.test(input.gmxMarket.toLowerCase())
+      || !ADDRESS.test(input.spotQuoter.address.toLowerCase())
+      || !/^0x[0-9a-f]{64}$/.test(input.spotQuoter.expectedCodeHash.toLowerCase())
+      || /^0x0+$/.test(input.spotQuoter.expectedCodeHash)
       || !Number.isSafeInteger(input.priceFeedDecimals) || input.priceFeedDecimals < 0
       || input.priceFeedDecimals > 36
       || input.accountBindings.length === 0
@@ -253,14 +260,20 @@ async function build(order: PackageOrder, orderHash: Hash32, input: ArbitrumSepo
     maxAgeSeconds: input.maxPriceAgeSeconds,
   });
   await requireArbitrumSepoliaCode(input.chain, input.gmxDataStore, 'GMX data store');
-  const positionFeeFactor = await readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket);
+  const [positionFeeFactor, spotTarget] = await Promise.all([
+    readGmxPositionFeeFactor(input.chain, input.gmxDataStore.address, input.gmxMarket),
+    readArbitrumSepoliaSpotQuoteTarget(input.chain, input.accountFactory, input.spotQuoter),
+  ]);
   const now = reference.observedAt;
   if (now >= order.expiryValue) throw new Error('order is expired');
+  // The spot port buys exactly this quantity from the pool, so the spot leg, the quoted spread, and
+  // the spread cap check all use the pool's cost for it, not the reference price.
   const pricing = priceArbitrumEntry({
     quantityAtoms: order.quantity.atoms,
     baseDecimals: base.decimals,
     quoteDecimals: quoteAsset.decimals,
     reference,
+    spotQuoteAtoms: await quoteUniswapV3Buy(input.chain, spotTarget, order.quantity.atoms),
     positionFeeFactor,
     marginBps: BigInt(input.marginBps),
   });
