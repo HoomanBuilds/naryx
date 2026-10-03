@@ -176,7 +176,11 @@ export function composePrivateTerminalRuntime(
   const solanaEnabled = enabled(environment, "NARYX_SOLANA_DEVNET_RUNTIME_ENABLED");
   const baseEnabled = enabled(environment, "NARYX_BASE_TESTNET_RUNTIME_ENABLED");
   const arbitrumEnabled = enabled(environment, "NARYX_ARBITRUM_TESTNET_RUNTIME_ENABLED");
-  const hyperliquidEnabled = enabled(environment, "NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED");
+  // The Hyperliquid runtime alone serves quotes; its execution boundary is the reviewed execution
+  // switch, which turns on the executor client and the evidence runtime together.
+  const hyperliquidEnabled = enabled(environment, "NARYX_HYPERLIQUID_TESTNET_RUNTIME_ENABLED")
+    && (enabled(environment, "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED")
+      || enabled(environment, "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ENABLED"));
 
   let solanaDevnet: PrivateTerminalExecutionPorts = {};
   let solanaHealth = health(false, "DISABLED_BY_CONFIGURATION");

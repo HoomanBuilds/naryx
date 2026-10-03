@@ -58,6 +58,7 @@ import {
 import type { PackageLifecycleStore } from "./package-lifecycle-store.js";
 import {
   createTerminalPreview,
+  observedMarket,
   parsePreviewRequest,
   PreviewValidationError,
   TerminalMarketUnavailableError,
@@ -197,12 +198,14 @@ export type PrivateTerminalHealthStatus = "ready" | "degraded" | "unconfigured";
 
 /**
  * Derives the reported environment from what the process actually composed: any enabled public
- * testnet boundary makes it TESTNET, and LOCAL_CONFORMANCE is reported only for the fixture opt-in.
- * Any enabled boundary that failed to compose makes the service degraded.
+ * testnet boundary or configured live testnet market makes it TESTNET, and LOCAL_CONFORMANCE is
+ * reported only for the fixture opt-in. Any enabled boundary that failed to compose, or any
+ * configured market without a fresh observation, makes the service degraded.
  */
 export function privateTerminalHealthSummary(
   runtimeHealth: PrivateTerminalRuntimeHealth | undefined,
   localAtomicRuntimeMode: LocalAtomicRuntimeMode,
+  marketsLive: readonly boolean[] = [],
 ): Readonly<{ status: PrivateTerminalHealthStatus; environment: PrivateTerminalHealthEnvironment }> {
   const boundaries = runtimeHealth === undefined ? [] : [
     runtimeHealth.solanaDevnet,
@@ -211,13 +214,14 @@ export function privateTerminalHealthSummary(
     runtimeHealth.hyperliquidTestnet,
   ];
   const enabled = boundaries.filter((boundary) => boundary.reason !== "DISABLED_BY_CONFIGURATION");
-  const environment: PrivateTerminalHealthEnvironment = enabled.length > 0 ? "TESTNET"
+  const environment: PrivateTerminalHealthEnvironment = enabled.length > 0 || marketsLive.length > 0 ? "TESTNET"
     : localAtomicRuntimeMode === "PHASE4_FIXTURE" ? "LOCAL_CONFORMANCE"
       : localAtomicRuntimeMode === "MANIFEST_VALIDATED" ? "LOCAL_VALIDATOR"
         : "UNCONFIGURED";
-  const status: PrivateTerminalHealthStatus = enabled.some((boundary) => !boundary.available) ? "degraded"
-    : environment === "UNCONFIGURED" ? "unconfigured"
-      : "ready";
+  const status: PrivateTerminalHealthStatus =
+    enabled.some((boundary) => !boundary.available) || marketsLive.includes(false) ? "degraded"
+      : environment === "UNCONFIGURED" ? "unconfigured"
+        : "ready";
   return Object.freeze({ status, environment });
 }
 
@@ -430,11 +434,21 @@ export function createPrivateTerminalRequestHandler(
     }
 
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
-      const summary = privateTerminalHealthSummary(runtimeHealth, localAtomicRuntimeMode);
+      // Each configured lane's market answers quotes and previews only while its observation is fresh.
+      const nowMs = currentTimeMs();
+      const markets = Object.fromEntries(Object.entries(terminalMarkets).flatMap(([domain, source]) =>
+        source === undefined ? [] : [[domain, observedMarket(source.descriptor, source.latest(), nowMs) === undefined
+          ? "UNAVAILABLE" : "LIVE"]]));
+      const summary = privateTerminalHealthSummary(
+        runtimeHealth,
+        localAtomicRuntimeMode,
+        Object.values(markets).map((state) => state === "LIVE"),
+      );
       sendJson(response, 200, {
         status: summary.status,
         scope: "private_terminal",
         environment: summary.environment,
+        markets,
         localAtomicRuntimeMode,
         executionPreparationAvailable: executionPorts.preparation !== undefined && executionReadinessAvailable,
         executionObservationAvailable: executionPorts.observation !== undefined,
