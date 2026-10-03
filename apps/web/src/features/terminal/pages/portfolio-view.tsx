@@ -7,7 +7,7 @@ import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import type { DomainId } from "../terminal-view-model";
-import { DOMAIN_META, DOMAIN_ORDER, domainLive, useTerminal } from "../shell/terminal-context";
+import { DOMAIN_META, DOMAIN_ORDER, EXIT_UNAVAILABLE, domainLive, useTerminal } from "../shell/terminal-context";
 import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import { usePositions } from "./use-positions";
@@ -244,6 +244,10 @@ export function PortfolioView() {
             Could not read open packages on {unreadable.map((domain) => DOMAIN_META[domain].label).join(", ")}. Retrying.
           </p>
         ) : null}
+        {DOMAIN_ORDER.filter((domain) => EXIT_UNAVAILABLE[domain] !== undefined
+          && positions.some((position) => position.domain === domain && position.state === "Open")).map((domain) => (
+          <p key={domain} className={styles.notice} role="status">{EXIT_UNAVAILABLE[domain]}</p>
+        ))}
         <div className={styles.scroll}>
           <table className={styles.table}>
             <thead>
@@ -286,7 +290,9 @@ export function PortfolioView() {
                     </span>
                   </td>
                   <td className={styles.num}>
-                    {position.state === "Open" ? (
+                    {position.state === "Open" && EXIT_UNAVAILABLE[position.domain] !== undefined ? (
+                      <span className={styles.dim} title={EXIT_UNAVAILABLE[position.domain]}>Exit not available yet</span>
+                    ) : position.state === "Open" ? (
                       <button
                         type="button"
                         className={styles.ghost}

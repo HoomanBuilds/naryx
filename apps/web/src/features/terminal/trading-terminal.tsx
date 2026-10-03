@@ -53,7 +53,7 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
-import { DOMAIN_META, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
+import { DOMAIN_META, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -2056,6 +2056,8 @@ export function TradingTerminal({
       if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the testnet order review before accepting.", disabled: false };
       return { kind: "hyperliquid", label: currentHyperliquidFlow.signed ? "Execute on testnet" : "Sign and execute", reason: reason ?? "Your wallet signs the package authorization; Naryx's Hyperliquid testnet account executes it on your behalf.", disabled: false };
     }
+    const exitUnavailable = EXIT_UNAVAILABLE[selectedDomain];
+    if (mode === "exit" && exitUnavailable !== undefined) return none("Exit not available yet", exitUnavailable);
     if (!privateProvider || providerConnection !== "connected") {
       return { kind: "none", disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
     }
@@ -2257,7 +2259,7 @@ export function TradingTerminal({
 
   async function handlePrepareExecution() {
     if (!privateProvider || providerConnection !== "connected" ||
-        selectedDomain !== "solana" || !wallet.selectedAccount ||
+        selectedDomain !== "solana" || (mode === "exit" && EXIT_UNAVAILABLE.solana !== undefined) || !wallet.selectedAccount ||
         !wallet.canSignAndSendV0 || !wallet.canSignMessage || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
         quoteMode !== "coordinated_limits" ||
         currentSubmission || executionBusy) return;
