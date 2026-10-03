@@ -483,8 +483,7 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         if (block.timestamp < p.terms.recoveryDeadline) revert DeadlineNotReached();
         if (
             p.requestKey == bytes32(0) || p.evidenceConflict || p.recoveryActionSubmitted
-                || (p.state != State.MANUAL_INTERVENTION
-                    && (p.state != State.RECOVERY_PENDING || p.recoveryDutyActive))
+                || (p.state != State.MANUAL_INTERVENTION && (p.state != State.RECOVERY_PENDING || p.recoveryDutyActive))
         ) revert WrongState();
         _requestRecovery(p, id);
     }
