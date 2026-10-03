@@ -28,9 +28,10 @@ export interface InternalOrderClockPort {
 /**
  * A lane's size-aware entry price: what its venue charges now for exactly this size, per base atom.
  * It replaces the context's reference price for that one order. Undefined keeps the reference price.
+ * A size the venue cannot fill within the order's slippage throws INSUFFICIENT_LIQUIDITY.
  */
 export interface InternalOrderSpotPricePort {
-  entrySpotPrice(context: ActiveOrderContext, sizeAtoms: bigint): Promise<ExactPrice | undefined>;
+  entrySpotPrice(context: ActiveOrderContext, sizeAtoms: bigint, slippageBps?: number): Promise<ExactPrice | undefined>;
 }
 
 export type InternalOrderPorts = Readonly<{
@@ -179,7 +180,7 @@ export class InternalOrderCoordinator {
     });
     // Validated against the context first, so an invalid request never reaches a venue read.
     let order = createCanonicalEntryOrder(this.ports.contexts, request);
-    const spotReferencePrice = await this.ports.spotPrice?.entrySpotPrice(context, sizeAtoms);
+    const spotReferencePrice = await this.ports.spotPrice?.entrySpotPrice(context, sizeAtoms, parsed.slippageBps);
     if (spotReferencePrice !== undefined) {
       order = createCanonicalEntryOrder((contextId) => {
         const live = this.ports.contexts(contextId);

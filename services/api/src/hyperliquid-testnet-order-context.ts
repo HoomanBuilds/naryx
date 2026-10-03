@@ -1,15 +1,20 @@
 import { exactPrice, type AssetRef, type ExactPrice, type RoundingDirection } from "@naryx/protocol-types";
-import type { ActiveOrderContext, ActiveOrderContextProvider } from "./canonical-entry-order.js";
+import {
+  EntryOrderValidationError,
+  type ActiveOrderContext,
+  type ActiveOrderContextProvider,
+} from "./canonical-entry-order.js";
 import {
   hyperliquidTestnetLotAtoms,
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import {
   parseHyperliquidDecimal,
+  type HyperliquidTestnetBookLevel,
   type HyperliquidTestnetPriceSnapshot,
   type HyperliquidTestnetPriceSource,
 } from "./hyperliquid-testnet-price-feed.js";
-import type { InternalOrderClockPort } from "./terminal-orders.js";
+import type { InternalOrderClockPort, InternalOrderSpotPricePort } from "./terminal-orders.js";
 
 const BPS_SCALE = 10_000n;
 /** A package owner is the user's own EVM wallet: lowercase, nonzero. */
@@ -18,6 +23,8 @@ export const HYPERLIQUID_TESTNET_OWNER_PATTERN = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 export type HyperliquidTestnetOrderRuntime = Readonly<{
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
+  /** Refuses an entry size the live books cannot fill within its signed limits; keeps the reference price. */
+  spotPrice: InternalOrderSpotPricePort;
   terminalContext: HyperliquidTestnetTerminalContext;
 }>;
 
@@ -137,6 +144,32 @@ export function deriveHyperliquidTestnetLivePrices(
 
 function ceilDivide(numerator: bigint, denominator: bigint): bigint {
   return (numerator + denominator - 1n) / denominator;
+}
+
+function compareFractions(left: Fraction, right: Fraction): number {
+  const difference = left.numerator * right.denominator - right.numerator * left.denominator;
+  return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+}
+
+/**
+ * Whether the levels, in book order, hold `sizeAtoms` base atoms at prices inside `bound` (a level
+ * outside it ends the sweep). Book size finer than one base atom is not counted, like the solver.
+ */
+export function hyperliquidTestnetBookFills(
+  levels: readonly HyperliquidTestnetBookLevel[],
+  sizeAtoms: bigint,
+  baseDecimals: number,
+  inside: (price: Fraction) => boolean,
+): boolean {
+  let remaining = sizeAtoms;
+  for (const level of levels) {
+    if (remaining <= 0n || !inside(decimalFraction(level.px, "book price"))) break;
+    const size = parseHyperliquidDecimal(level.sz, "book size");
+    remaining -= size.scale <= baseDecimals
+      ? size.digits * 10n ** BigInt(baseDecimals - size.scale)
+      : size.digits / 10n ** BigInt(size.scale - baseDecimals);
+  }
+  return remaining <= 0n;
 }
 
 /**
@@ -299,5 +332,29 @@ export function createHyperliquidTestnetOrderRuntime(
     authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
     maxOpenPackagesPerOwner: config.omnibus?.maxOpenPackagesPerOwner ?? null,
   });
-  return Object.freeze({ contexts, clock, terminalContext });
+  // The solver sweeps the spot asks up to the order's spot cap per unit (the ask plus the trader's
+  // slippage) and the perpetual bids down to the signed sell floor (the bid less the context's
+  // maximum slippage). A size those levels cannot fill is refused here, before anything is signed.
+  const spotPrice: InternalOrderSpotPricePort = Object.freeze({
+    entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint, slippageBps?: number) => {
+      const snapshot = priceFeed.latest();
+      if (context.contextId !== order.contextId || snapshot === undefined) return undefined;
+      const slippage = BigInt(slippageBps ?? order.maxSlippageBps);
+      const spotCap = scaled(decimalFraction(snapshot.spot.ask, "spot ask"), BPS_SCALE + slippage);
+      const perpFloor = scaled(
+        decimalFraction(snapshot.perp.bid, "perpetual bid"),
+        BPS_SCALE - BigInt(order.maxSlippageBps),
+      );
+      const decimals = order.baseAsset.decimals;
+      if (!hyperliquidTestnetBookFills(snapshot.spot.asks, sizeAtoms, decimals, (price) => compareFractions(price, spotCap) <= 0)
+        || !hyperliquidTestnetBookFills(snapshot.perp.bids, sizeAtoms, decimals, (price) => compareFractions(price, perpFloor) >= 0)) {
+        throw new EntryOrderValidationError(
+          "INSUFFICIENT_LIQUIDITY",
+          "The Hyperliquid testnet books cannot fill this size within its limits right now. Nothing was signed; try a smaller size.",
+        );
+      }
+      return undefined;
+    },
+  });
+  return Object.freeze({ contexts, clock, spotPrice, terminalContext });
 }

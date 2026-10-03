@@ -19,8 +19,8 @@ const MAX_STALENESS_MS = 5_000;
 const BASE = assetRef("hypercore:testnet:btc", "31".repeat(32), 5);
 const QUOTE = assetRef("hypercore:testnet:usdc", "32".repeat(32), 6);
 const BOOKS = {
-  spot: { bid: "99.5", ask: "100.3" },
-  perp: { bid: "100.9", ask: "101.1" },
+  spot: { bid: "99.5", ask: "100.3", bids: [], asks: [] },
+  perp: { bid: "100.9", ask: "101.1", bids: [], asks: [] },
   spotTakerRate: "0.0007",
   perpTakerRate: "0.00035",
 };

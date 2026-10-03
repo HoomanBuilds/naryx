@@ -631,14 +631,18 @@ const orderClock = Object.freeze({
     return orderRuntime.clock.currentClock(context);
   },
 });
-// Lanes that buy spot from a pool price each entry from the pool's executable cost for its size.
+// Lanes that buy spot from a pool price each entry from the pool's executable cost for its size;
+// Hyperliquid refuses a size its live books cannot fill within the order's limits.
 const orderSpotPrice: InternalOrderSpotPricePort = Object.freeze({
-  entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint) => {
+  entrySpotPrice: async (context: ActiveOrderContext, sizeAtoms: bigint, slippageBps?: number) => {
     if (baseOrderRuntime !== undefined && context.contextId === baseOrderRuntime.config.contextId) {
       return baseOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
     }
     if (arbitrumOrderRuntime !== undefined && context.contextId === arbitrumOrderRuntime.config.contextId) {
       return arbitrumOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms);
+    }
+    if (hyperliquidOrderRuntime?.contexts(context.contextId) !== undefined) {
+      return hyperliquidOrderRuntime.spotPrice.entrySpotPrice(context, sizeAtoms, slippageBps);
     }
     return undefined;
   },

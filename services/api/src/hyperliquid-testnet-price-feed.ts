@@ -30,7 +30,15 @@ export type HyperliquidTestnetInfoHttpOptions = Readonly<{
   fetchImplementation?: typeof fetch;
 }>;
 
-export type HyperliquidTestnetBookTop = Readonly<{ bid: string; ask: string }>;
+export type HyperliquidTestnetBookLevel = Readonly<{ px: string; sz: string }>;
+
+/** Best bid and ask, plus every validated level of each side in book order (bids descending). */
+export type HyperliquidTestnetBookTop = Readonly<{
+  bid: string;
+  ask: string;
+  bids: readonly HyperliquidTestnetBookLevel[];
+  asks: readonly HyperliquidTestnetBookLevel[];
+}>;
 
 export type HyperliquidTestnetPriceSnapshot = Readonly<{
   capturedAtMs: number;
@@ -191,6 +199,7 @@ function bookTop(
   if (!Array.isArray(levels) || levels.length !== 2) fail(`${name} levels are invalid`);
   const best: HyperliquidDecimal[] = [];
   const bestText: string[] = [];
+  const sides: HyperliquidTestnetBookLevel[][] = [[], []];
   for (const [sideIndex, side] of (levels as unknown[]).entries()) {
     if (!Array.isArray(side) || side.length === 0 || side.length > MAX_BOOK_LEVELS) {
       fail(`${name} must have bounded bids and asks`);
@@ -212,6 +221,7 @@ function bookTop(
         best.push(price);
         bestText.push(level.px as string);
       }
+      sides[sideIndex]?.push(Object.freeze({ px: level.px as string, sz: level.sz as string }));
       previous = price;
     }
   }
@@ -224,7 +234,12 @@ function bookTop(
   if ((askAtoms - bidAtoms) * BPS_SCALE > bidAtoms * BigInt(pricing.maxBookSpreadBps)) {
     fail(`${name} bid-ask spread exceeds the configured cap`);
   }
-  return Object.freeze({ bid: bestText[0] as string, ask: bestText[1] as string });
+  return Object.freeze({
+    bid: bestText[0] as string,
+    ask: bestText[1] as string,
+    bids: Object.freeze(sides[0] as HyperliquidTestnetBookLevel[]),
+    asks: Object.freeze(sides[1] as HyperliquidTestnetBookLevel[]),
+  });
 }
 
 // A taker rate at or above 1% is outside every Hyperliquid fee tier and is treated as malformed.
