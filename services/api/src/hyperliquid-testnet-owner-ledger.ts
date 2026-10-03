@@ -408,7 +408,9 @@ export class HyperliquidTestnetOwnerLedger {
     ).get(attemptId, attemptId) as PackageRow | undefined;
     if (row === undefined) return undefined;
     const state = row.exit_attempt_id === attemptId || row.exit_attempt_id === null ? row.state : "OPENED";
-    return Object.freeze({ state, transactionHash: null, blockNumber: null, receiptHash: row.entry_receipt_hash });
+    // Package listings carry receipt hashes 0x-prefixed, as every other lane's are.
+    const receiptHash = row.entry_receipt_hash === null ? null : `0x${row.entry_receipt_hash}`;
+    return Object.freeze({ state, transactionHash: null, blockNumber: null, receiptHash });
   }
 
   #row(attemptId: string): PackageRow | undefined {

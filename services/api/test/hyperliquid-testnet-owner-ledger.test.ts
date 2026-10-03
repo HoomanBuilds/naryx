@@ -204,7 +204,8 @@ test("a package listing shows each Hyperliquid entry and exit attempt's state", 
   assert.equal(ledger.attemptOutcome("entry-1")?.state, "PENDING_ENTRY");
   ledger.settleEntry("entry-1", reconciled("entry-1", "COMPLETED_EXACT", "100", "-100"), 600n);
   assert.equal(ledger.attemptOutcome("entry-1")?.state, "OPEN");
-  assert.ok(ledger.attemptOutcome("entry-1")?.receiptHash);
+  // The listing's receipt reference has the shape every lane's listing uses (the web rejects others).
+  assert.match(ledger.attemptOutcome("entry-1")?.receiptHash ?? "", /^0x[0-9a-f]{64}$/);
   ledger.bindExitOrder("entry-1", ALICE, "09".repeat(32));
   ledger.beginExit("exit-1", {
     owner: ALICE, orderHash: "09".repeat(32), perpQuantityAtoms: 100n, grossSpotQuantityAtoms: 100n, spotLotAtoms: 1n,
