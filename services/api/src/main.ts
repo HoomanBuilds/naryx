@@ -413,10 +413,13 @@ if (arbitrumAdmittingRuntime !== undefined && arbitrumExecutor !== undefined) {
       orders: orderStore,
       ...(arbitrumOrderRuntime === undefined ? {} : { exit: { runtime: arbitrumOrderRuntime, orders: orderStore } }),
     });
-    // The sweep reads chain state only; the solver still advances an attempt only through the gated handoff.
+    // The sweep finishes every reserved attempt through the same admitting handoff the browser polls, so a
+    // package whose owner closed the page still gets its evidence relayed, its bond released, or its
+    // cancelled GMX request recovered. Only attempts already observed after reservation are swept.
     const outcomes = arbitrumOutcomeStore;
+    const handoff = arbitrumRuntime;
     const cursor = { offset: 0 };
-    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, observation, 10, cursor));
+    everyMinute(() => reconcileUnsettledArbitrumSepoliaOutcomes(outcomes, handoff, 10, cursor));
   } catch (error) {
     arbitrumOutcomeStore?.close();
     arbitrumOutcomeStore = undefined;
