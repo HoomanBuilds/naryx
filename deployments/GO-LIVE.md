@@ -205,7 +205,5 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
 - Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
   are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
   not failed transactions, and a size the pool cannot fill is refused before signing.
-- The API admits Base packages against server time while orders and the verifier use block time;
-  on Base Sepolia the two agree within seconds.
 - The public v1 market API (package order book, solver metrics) is optional and off unless
   configured; quote-based trading does not need it.
