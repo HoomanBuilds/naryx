@@ -314,15 +314,15 @@
             "adapter": { "$def": "spotAdapterRef" },
             "venue": { "$def": "res.spotVenue" },
             "market": { "$def": "res.spotMarket" },
-            "action": { "$operator": "reviewed spot ActionCommitmentInput (sequence 0)" }
+            "action": { "$operator": "reviewed spot ActionCommitmentInput (sequence 0, legIndex 0, the spot adapter, targetBindingId naming the account binding that carries the spot adapter)" }
           },
           "perpetual": {
             "adapter": { "$def": "perpetualAdapterRef" },
             "venue": { "$def": "res.perpetualVenue" },
             "market": { "$def": "res.perpetualMarket" },
-            "action": { "$operator": "reviewed perpetual ActionCommitmentInput (sequence 1)" }
+            "action": { "$operator": "reviewed perpetual ActionCommitmentInput (sequence 1, legIndex 1, the GMX adapter, targetBindingId naming the account binding that carries the GMX adapter)" }
           },
-          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]" },
+          "accountBindings": { "$operator": "reviewed RouteAccountBindingInput[]: package admission requires each action's target binding to carry that leg's adapter, so bind the spot port with the spot adapter and the GMX adapter contract with the GMX adapter, plus the authority binding the actions name" },
           "preconditions": { "$operator": "reviewed route preconditions" },
           "postconditions": { "$operator": "reviewed route postconditions" },
           "evidenceRequirements": { "$operator": "reviewed EvidenceRequirementsInput" },
@@ -365,8 +365,8 @@
         "callbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit" } },
         "executionFeeBufferBps": { "$number": { "$operator": "GMX execution fee buffer, bps" } },
         "maxExecutionFeeWei": { "$bigint": { "$operator": "max GMX execution fee, wei" } },
-        "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms" } },
-        "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms" } },
+        "maxCollateralAtoms": { "$bigint": { "$operator": "max collateral per order, quote atoms (at least the order context maxMarginAddedAtoms; the collateral is the quoted margin)" } },
+        "maxSpotQuoteAtoms": { "$bigint": { "$operator": "max spot quote per order, quote atoms (at least the order context maximumQuantityAtoms priced at twice the current ETH price, times 1 + maxSlippageBps: each order's spot bound is the pinned quoter's executable cost for its size, which in a thin or drifted pool sits well above the mid, and a smaller cap refuses those orders at reservation review)" } },
         "receiptWaitMs": { "$number": { "$operator": "receipt wait, ms, 1 to 20000" } },
         "exitController": { "$contract": "exitController" },
         "exitCallbackGasLimit": { "$bigint": { "$operator": "GMX callback gas limit for a full close, whose callback also sells the spot leg and releases the package" } }
