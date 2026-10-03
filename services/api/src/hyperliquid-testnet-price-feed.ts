@@ -42,6 +42,8 @@ export type HyperliquidTestnetPriceSnapshot = Readonly<{
 
 export interface HyperliquidTestnetPriceSource {
   latest(): HyperliquidTestnetPriceSnapshot | undefined;
+  /** The live metadata names of the configured spot pair and perpetual, once read. */
+  coins?(): Readonly<{ spot: string; perp: string }> | undefined;
 }
 
 export type HyperliquidTestnetPriceFeedOptions = Readonly<{
@@ -268,6 +270,10 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
 
   latest(): HyperliquidTestnetPriceSnapshot | undefined {
     return this.#snapshot;
+  }
+
+  coins(): Readonly<{ spot: string; perp: string }> | undefined {
+    return this.#coins;
   }
 
   // Resolves after the first refresh attempt and never rejects; a failed attempt leaves no snapshot.
