@@ -135,6 +135,21 @@ describe('cash carry series binding v1', () => {
     );
   });
 
+  test('binds the async bonded class under its own identity and refuses every other class', () => {
+    const atomic = binding();
+    const async = binding({ settlementClass: 'ASYNC_BONDED_SOLVER' });
+    assert.equal(cashCarrySeriesBindingV1(async).settlementClass, 'ASYNC_BONDED_SOLVER');
+    assert.notEqual(toHex(cashCarrySeriesBindingV1Hash(async)), toHex(cashCarrySeriesBindingV1Hash(atomic)));
+    assert.equal(toHex(cashCarrySeriesIdentityKey(async)), toHex(cashCarrySeriesIdentityKey(atomic)));
+    for (const settlementClass of ['BATCHED_IOC_WITH_RECOVERY', 'CROSS_DOMAIN_PREPOSITIONED', 'MANUAL_CONTROLLED_RECOVERY'] as const) {
+      assert.throws(() => cashCarrySeriesBindingV1(binding({ settlementClass })), MalformedInputError);
+    }
+    assert.throws(
+      () => cashCarrySeriesBindingV1(binding({ settlementClass: 'ASYNC_BONDED_SOLVER', settlementClassVersion: 2 })),
+      MalformedInputError,
+    );
+  });
+
   test('unsupported side or quote convention fails closed', () => {
     assert.throws(
       () => cashCarrySeriesBindingV1(binding({ entrySide: 'BID' as never })),
