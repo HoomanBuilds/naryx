@@ -2089,6 +2089,24 @@
   },
   {
     "type": "function",
+    "name": "submitOverdueRecovery",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "submitRecovery",
     "inputs": [
       {

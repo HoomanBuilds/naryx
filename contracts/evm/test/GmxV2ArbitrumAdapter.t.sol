@@ -980,6 +980,56 @@ contract GmxV2CoordinatedSpotEntryTest is GmxV2FactoryRoute {
         assertEq(account.positionSize(false), 0);
     }
 
+    /// GMX still holds the entry after both the venue and the recovery deadline: the package enters
+    /// MANUAL_INTERVENTION, and the owner's late recovery cancels the order, returns the collateral and the
+    /// spot leg to the owner, and releases the bond and reserve to their recipients.
+    function testPendingEntryPastRecoveryDeadlineIsRecoveredAndReleased() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(request);
+        bytes32 id = coordinator.packageId(terms);
+        _fundOwner(owner, request, id);
+        token.mint(address(this), terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.approve(address(coordinator), terms.bondAtoms + terms.recoveryReserveAtoms);
+        coordinator.reserve(terms, _signature(coordinator.reserveDigest(terms)));
+        bytes32 requestKey = coordinator.submitRequest(id, 1, request);
+        coordinator.markVenuePending(id, 2);
+        assertEq(token.balanceOf(owner), MAX_SPOT_QUOTE - 2 * SPOT_BASE);
+
+        vm.warp(terms.recoveryDeadline);
+        coordinator.beginRecovery(id, 3);
+        assertEq(
+            uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.MANUAL_INTERVENTION)
+        );
+        assertTrue(dataStore.containsBytes32(adapter.ORDER_LIST(), requestKey));
+        vm.expectRevert(AsyncBondedPackageCoordinator.ReleaseLocked.selector);
+        coordinator.close(id, 4);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.submitRecovery(id, 4);
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidOutcome.selector);
+        adapter.processRecovery(requestKey);
+
+        vm.prank(owner);
+        coordinator.submitOverdueRecovery(id, 4);
+        assertFalse(dataStore.containsBytes32(adapter.ORDER_LIST(), requestKey));
+        (GmxV2ArbitrumAdapter.Status status,,,,) = adapter.requestEvidence(requestKey);
+        assertEq(uint8(status), uint8(GmxV2ArbitrumAdapter.Status.RECOVERED));
+        vm.prank(owner);
+        adapter.finalizeUnfilledRequest(requestKey);
+        adapter.relayEvidence(requestKey, 5);
+        coordinator.close(id, 6);
+
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
+        assertEq(token.balanceOf(owner), COLLATERAL + MAX_SPOT_QUOTE);
+        assertEq(baseToken.balanceOf(address(account)), 0);
+        assertFalse(account.hasActiveSpotInventory());
+        assertEq(adapter.activePackageOf(address(account)), bytes32(0));
+        assertEq(token.balanceOf(terms.bondRecipient), terms.bondAtoms);
+        assertEq(token.balanceOf(terms.recoveryReserveRecipient), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(terms.slashRecipient), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
+        assertEq(token.balanceOf(address(adapter)), 0);
+    }
+
     function testFactoryPredictsOwnerAddressAndRejectsForeignAccounts() public {
         address predicted = factory.accountOf(address(0xD00D));
         assertEq(predicted.code.length, 0);

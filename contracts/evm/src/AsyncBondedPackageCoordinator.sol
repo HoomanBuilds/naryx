@@ -467,6 +467,29 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         Package storage p = _package(id, expectedVersion, State.RECOVERY_PENDING);
         if (block.timestamp >= p.terms.recoveryDeadline) revert DeadlinePassed();
         if (p.recoveryActionSubmitted) revert WrongState();
+        _requestRecovery(p, id);
+    }
+
+    /// @notice Once the recovery deadline has passed without a submitted recovery, the package owner or
+    /// solver submits the signed CANCEL_OR_RECONCILE action, so a request the venue still holds, or already
+    /// cancelled, reaches an authenticated terminal outcome and the package can close. A missed recovery duty
+    /// must be slashed first, and conflicting evidence stays locked.
+    function submitOverdueRecovery(bytes32 id, uint64 expectedVersion) external nonReentrant {
+        _assertDeployment();
+        Package storage p = _packages[id];
+        if (p.state == State.NONE) revert PackageMissing();
+        if (p.stateVersion != expectedVersion) revert WrongVersion();
+        if (msg.sender != p.terms.owner && msg.sender != p.terms.solver) revert UnauthorizedActor();
+        if (block.timestamp < p.terms.recoveryDeadline) revert DeadlineNotReached();
+        if (
+            p.requestKey == bytes32(0) || p.evidenceConflict || p.recoveryActionSubmitted
+                || (p.state != State.MANUAL_INTERVENTION
+                    && (p.state != State.RECOVERY_PENDING || p.recoveryDutyActive))
+        ) revert WrongState();
+        _requestRecovery(p, id);
+    }
+
+    function _requestRecovery(Package storage p, bytes32 id) private {
         _assertAdapter(p.terms, false);
         p.recoveryActionSubmitted = true;
         bool accepted = IAsyncVenueAdapter(p.terms.adapter)
