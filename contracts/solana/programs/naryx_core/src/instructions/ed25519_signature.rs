@@ -44,7 +44,8 @@ pub(crate) fn signed_ed25519_public_key(
 
 fn preceding_verifier(
     instructions_sysvar: &AccountInfo,
-) -> std::result::Result<anchor_lang::solana_program::instruction::Instruction, Ed25519SignatureError> {
+) -> std::result::Result<anchor_lang::solana_program::instruction::Instruction, Ed25519SignatureError>
+{
     let current_index = load_current_index_checked(instructions_sysvar)
         .map_err(|_| Ed25519SignatureError::InvalidInstruction)?;
     let verifier_index = current_index

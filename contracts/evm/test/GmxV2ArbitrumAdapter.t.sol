@@ -399,10 +399,13 @@ abstract contract GmxV2FactoryRoute is Test {
             );
     }
 
-    function _spot(GmxTestToken baseToken, GmxTestToken token, uint24 poolFee, uint256 baseLiquidity, uint256 quoteLiquidity)
-        internal
-        returns (UniswapV3SpotPort.Deployment memory spot, GmxSpotPool pool)
-    {
+    function _spot(
+        GmxTestToken baseToken,
+        GmxTestToken token,
+        uint24 poolFee,
+        uint256 baseLiquidity,
+        uint256 quoteLiquidity
+    ) internal returns (UniswapV3SpotPort.Deployment memory spot, GmxSpotPool pool) {
         GmxSpotFactory spotFactory = new GmxSpotFactory();
         pool = new GmxSpotPool(address(spotFactory), address(baseToken), address(token), poolFee);
         spotFactory.setPool(address(baseToken), address(token), poolFee, address(pool));
@@ -631,8 +634,7 @@ contract GmxV2ArbitrumAdapterTest is GmxV2FactoryRoute {
     function testCancellationWithUnexpectedPositionFailsClosed() public {
         bytes32 key = _fundAndCreate(_request());
         dataStore.setContains(adapter.ORDER_LIST(), key, false);
-        bytes32 positionKey =
-            keccak256(abi.encode(address(account), address(market), address(token), false));
+        bytes32 positionKey = keccak256(abi.encode(address(account), address(market), address(token), false));
         bytes32 sizeKey = keccak256(abi.encode(positionKey, adapter.SIZE_IN_USD()));
         dataStore.setUint(sizeKey, SIZE);
         orderHandler.cancelOrder(adapter, key, exchangeRouter.orderData());
@@ -998,10 +1000,14 @@ contract GmxV2CoordinatedSpotEntryTest is GmxV2FactoryRoute {
         vm.expectRevert(GmxV2IsolatedAccount.UnauthorizedCaller.selector);
         created.initialize(address(this));
         vm.expectRevert(GmxV2IsolatedAccountFactory.UnauthorizedCaller.selector);
-        factory.recordSpotFill(predicted, 0, bytes32(0), bytes32(0), bytes32(0), bytes32(0), 1, address(0), address(0), 0, 0);
+        factory.recordSpotFill(
+            predicted, 0, bytes32(0), bytes32(0), bytes32(0), bytes32(0), 1, address(0), address(0), 0, 0
+        );
         vm.prank(address(spotPort));
         vm.expectRevert(GmxV2IsolatedAccountFactory.UnknownAccount.selector);
-        factory.recordSpotFill(address(this), 0, bytes32(0), bytes32(0), bytes32(0), bytes32(0), 1, address(0), address(0), 0, 0);
+        factory.recordSpotFill(
+            address(this), 0, bytes32(0), bytes32(0), bytes32(0), bytes32(0), 1, address(0), address(0), 0, 0
+        );
     }
 
     function _openFor(address packageOwner, uint256 ownerKey, bytes32 salt) private returns (bytes32 requestKey) {

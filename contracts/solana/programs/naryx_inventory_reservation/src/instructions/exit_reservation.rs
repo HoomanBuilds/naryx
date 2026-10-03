@@ -9,8 +9,8 @@ use naryx_core::{
 
 use crate::{
     constants::{
-        LIVE_PAIR_SEED, RESERVATION_ACTION_EXIT, RESERVATION_CAPACITY_SEED,
-        RESERVATION_CLASS_SEED, RESERVATION_SEED, RESERVATION_VAULT_SEED, RESERVATION_VERSION,
+        LIVE_PAIR_SEED, RESERVATION_ACTION_EXIT, RESERVATION_CAPACITY_SEED, RESERVATION_CLASS_SEED,
+        RESERVATION_SEED, RESERVATION_VAULT_SEED, RESERVATION_VERSION,
     },
     error::ErrorCode,
     events::{ReservationConsumed, ReservationFunded, ReservationReleased},
@@ -638,11 +638,7 @@ pub fn release_exit_reservation_handler(ctx: Context<ReleaseExitReservation>) ->
     ctx.accounts.solver_quote.reload()?;
     ctx.accounts.vault.reload()?;
     require!(
-        ctx.accounts
-            .solver_quote
-            .amount
-            .checked_sub(reclaim_before)
-            == Some(quote_atoms)
+        ctx.accounts.solver_quote.amount.checked_sub(reclaim_before) == Some(quote_atoms)
             && vault_before.checked_sub(ctx.accounts.vault.amount) == Some(quote_atoms)
             && ctx.accounts.vault.amount == 0,
         ErrorCode::TokenDeltaMismatch

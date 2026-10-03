@@ -484,7 +484,15 @@ pub(crate) fn handler<'info>(
     validate_basic_inputs(order_hash, quote_hash, route_hash, &args)?;
     #[cfg(feature = "devnet-test-perp")]
     if args.action == CashCarryAction::Exit {
-        return execute_firm_exit(ctx, order_hash, quote_hash, route_hash, args, quote, firm_quote_atoms);
+        return execute_firm_exit(
+            ctx,
+            order_hash,
+            quote_hash,
+            route_hash,
+            args,
+            quote,
+            firm_quote_atoms,
+        );
     }
     require!(
         args.action == CashCarryAction::Entry && !args.recovery && args.spot_sqrt_price_limit == 1,
@@ -797,7 +805,10 @@ fn execute_firm_exit<'info>(
     );
     // The reservation class and quote lock are bound to the active domain; a package opened under
     // an earlier domain exits through the public or recovery path instead.
-    require!(open.domain == domain, ErrorCode::CashCarryOpenPackageMismatch);
+    require!(
+        open.domain == domain,
+        ErrorCode::CashCarryOpenPackageMismatch
+    );
     let resources = &ctx.accounts.resources;
     let admission = reconstruct_admission(resources, &args, domain.clone())?;
     validate_cash_carry_exit_admission(
@@ -1056,7 +1067,9 @@ fn validate_buy_back_delivery(
     executor_quote_atoms: u64,
 ) -> Result<()> {
     require!(
-        firm_quote_atoms != 0 && executor_base_atoms == 0 && executor_quote_atoms == firm_quote_atoms,
+        firm_quote_atoms != 0
+            && executor_base_atoms == 0
+            && executor_quote_atoms == firm_quote_atoms,
         ErrorCode::CashCarryPostconditionFailed
     );
     Ok(())
@@ -1192,7 +1205,12 @@ fn validate_firm_accounts(
     // The solver settlement slot receives quote on entry and the bought-back base on exit; the
     // reservation vault escrows the opposite asset.
     let (solver_settlement_mint, vault_mint, vault_atoms, reservation_action) = if exit {
-        (base_mint, quote_mint, firm_quote_atoms, RESERVATION_ACTION_EXIT)
+        (
+            base_mint,
+            quote_mint,
+            firm_quote_atoms,
+            RESERVATION_ACTION_EXIT,
+        )
     } else {
         (
             quote_mint,

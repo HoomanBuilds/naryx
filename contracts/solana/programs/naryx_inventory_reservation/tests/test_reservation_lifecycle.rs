@@ -2,8 +2,9 @@ use anchor_lang::prelude::Pubkey;
 use naryx_core::{DomainRef, ProtocolId};
 use naryx_inventory_reservation::{
     constants::{
-        LIVE_PAIR_SEED, RESERVATION_ACTION_ENTRY, RESERVATION_ACTION_EXIT, RESERVATION_CAPACITY_SEED,
-        RESERVATION_CLASS_SEED, RESERVATION_SEED, RESERVATION_VAULT_SEED, RESERVATION_VERSION,
+        LIVE_PAIR_SEED, RESERVATION_ACTION_ENTRY, RESERVATION_ACTION_EXIT,
+        RESERVATION_CAPACITY_SEED, RESERVATION_CLASS_SEED, RESERVATION_SEED,
+        RESERVATION_VAULT_SEED, RESERVATION_VERSION,
     },
     instructions::{domain_ref_identity, reservation_id},
     state::{

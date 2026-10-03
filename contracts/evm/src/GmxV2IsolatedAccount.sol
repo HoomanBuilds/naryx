@@ -162,8 +162,7 @@ contract GmxV2IsolatedAccount is ISpotFillRecorder, ReentrancyGuard {
 
     /// @notice Called once by the factory in the same transaction that clones the account.
     function initialize(address owner_) external {
-        if (msg.sender != factory || address(this) == implementation || owner != address(0) || owner_ == address(0))
-        {
+        if (msg.sender != factory || address(this) == implementation || owner != address(0) || owner_ == address(0)) {
             revert UnauthorizedCaller();
         }
         owner = owner_;

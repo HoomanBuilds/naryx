@@ -91,7 +91,13 @@ contract GmxV2IsolatedAccountFactory is ISpotFillRecorder {
                 || spotPort_.verifier() != address(this) || spotPort_.verifierCodeHash() != address(this).codehash
         ) revert InvalidConfiguration();
         _verifyImplementation(
-            implementation_, adapter_, adapterCodeHash_, exitController_, exitControllerCodeHash_, spotPort_, spotPortCodeHash_
+            implementation_,
+            adapter_,
+            adapterCodeHash_,
+            exitController_,
+            exitControllerCodeHash_,
+            spotPort_,
+            spotPortCodeHash_
         );
         adapter = adapter_;
         adapterCodeHash = adapterCodeHash_;
@@ -101,9 +107,7 @@ contract GmxV2IsolatedAccountFactory is ISpotFillRecorder {
         spotPortCodeHash = spotPortCodeHash_;
         implementation = address(implementation_);
         accountCodeHash = keccak256(
-            abi.encodePacked(
-                hex"363d3d373d3d3d363d73", address(implementation_), hex"5af43d82803e903d91602b57fd5bf3"
-            )
+            abi.encodePacked(hex"363d3d373d3d3d363d73", address(implementation_), hex"5af43d82803e903d91602b57fd5bf3")
         );
         emit Configured(adapter_, exitController_, address(spotPort_), accountCodeHash);
     }
@@ -121,8 +125,7 @@ contract GmxV2IsolatedAccountFactory is ISpotFillRecorder {
             address(implementation_).code.length == 0 || implementation_.factory() != address(this)
                 || implementation_.owner() != address(0) || implementation_.market() != market
                 || address(implementation_.collateralToken()) != address(collateralToken)
-                || implementation_.deploymentHash() != deploymentHash
-                || implementation_.entryController() != adapter_
+                || implementation_.deploymentHash() != deploymentHash || implementation_.entryController() != adapter_
                 || implementation_.entryControllerCodeHash() != adapterCodeHash_
                 || implementation_.exitController() != exitController_
                 || implementation_.exitControllerCodeHash() != exitControllerCodeHash_
@@ -185,10 +188,10 @@ contract GmxV2IsolatedAccountFactory is ISpotFillRecorder {
         uint256 baseAtoms,
         uint256 quoteAtoms
     ) external {
-        if (
-            accountCodeHash == bytes32(0) || msg.sender != address(spotPort)
-                || msg.sender.codehash != spotPortCodeHash
-        ) revert UnauthorizedCaller();
+        if (accountCodeHash == bytes32(0) || msg.sender != address(spotPort) || msg.sender.codehash != spotPortCodeHash)
+        {
+            revert UnauthorizedCaller();
+        }
         if (!isAccount(strategyAccount)) revert UnknownAccount();
         GmxV2IsolatedAccount(strategyAccount)
             .recordSpotFill(

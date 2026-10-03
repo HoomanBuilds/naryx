@@ -1103,12 +1103,22 @@ fn venue_code_identity_is_constant_cost_and_binds_program_data_header() {
 
     write_program_data_header(&mut env, venue_program_data, 4_243, upgrade_authority);
     assert_custom_error(
-        send(&mut env.svm, &payer, &[&proposer], &[propose_market.clone()]),
+        send(
+            &mut env.svm,
+            &payer,
+            &[&proposer],
+            &[propose_market.clone()],
+        ),
         ErrorCode::ResourceCodeIdentityMismatch,
     );
     write_program_data_header(&mut env, venue_program_data, 4_242, Pubkey::new_unique());
     assert_custom_error(
-        send(&mut env.svm, &payer, &[&proposer], &[propose_market.clone()]),
+        send(
+            &mut env.svm,
+            &payer,
+            &[&proposer],
+            &[propose_market.clone()],
+        ),
         ErrorCode::ResourceCodeIdentityMismatch,
     );
     write_program_data_header(&mut env, venue_program_data, 4_242, upgrade_authority);

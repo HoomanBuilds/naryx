@@ -906,7 +906,13 @@ fn solver_set_additions_wait_for_the_delay_and_removals_revoke_at_once() {
     );
     let mut unauthorized_removal = remove.clone();
     unauthorized_removal.accounts[0].pubkey = env.executor.pubkey();
-    assert!(send(&mut env.svm, &env.payer, &[&env.executor], &[unauthorized_removal]).is_err());
+    assert!(send(
+        &mut env.svm,
+        &env.payer,
+        &[&env.executor],
+        &[unauthorized_removal]
+    )
+    .is_err());
     send(&mut env.svm, &env.payer, &[&env.pauser], &[remove]).unwrap();
 
     let stale = env.execution_ix(

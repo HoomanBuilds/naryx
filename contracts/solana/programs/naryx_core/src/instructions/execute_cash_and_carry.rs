@@ -1234,7 +1234,10 @@ fn execution_solver(
         Ok(Pubkey::default())
     } else {
         let solver = signed_solver.ok_or_else(|| error!(ErrorCode::CashCarrySolverInvalid))?;
-        require!(registry.is_active(&solver), ErrorCode::CashCarrySolverInvalid);
+        require!(
+            registry.is_active(&solver),
+            ErrorCode::CashCarrySolverInvalid
+        );
         Ok(solver)
     }
 }
@@ -2262,7 +2265,10 @@ mod tests {
         assert!(validate_quote_against_series(&execution_args(), &quote, &binding).is_err());
         let mut exit = execution_args();
         exit.action = CashCarryAction::Exit;
-        assert_eq!(validate_quote_against_series(&exit, &quote, &binding).unwrap(), 5);
+        assert_eq!(
+            validate_quote_against_series(&exit, &quote, &binding).unwrap(),
+            5
+        );
         quote.expected_side = PACKAGE_BOOK_QUOTE_SIDE_ASK;
         assert!(validate_quote_against_series(&exit, &quote, &binding).is_err());
 
@@ -2464,7 +2470,13 @@ mod tests {
             bump: 255,
         };
         assert_eq!(
-            execution_solver(CashCarryAction::Entry, false, &registry, Some(active_solver)).unwrap(),
+            execution_solver(
+                CashCarryAction::Entry,
+                false,
+                &registry,
+                Some(active_solver)
+            )
+            .unwrap(),
             active_solver
         );
         // Any active solver may authorize with its own signature.
