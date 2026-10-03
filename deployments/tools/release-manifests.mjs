@@ -651,8 +651,9 @@ async function validate(written, envs, liveEnv, log) {
         log('solver: Hyperliquid Testnet executor markets and tokens match live testnet metadata');
       }
       if (solver.NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED === 'true') {
+        // The default market client is the pinned testnet info client; constructing it reads nothing.
         (await dist('services/solver', 'hyperliquid-testnet-quote-config.js')).loadHyperliquidTestnetQuoteRuntime(solver, {
-          nonceSource, market: {}, currentTimeMs: () => BigInt(Date.now()),
+          nonceSource, currentTimeMs: () => BigInt(Date.now()),
         });
         log('solver: Hyperliquid Testnet quote config loads');
       }
