@@ -1030,6 +1030,76 @@ contract GmxV2CoordinatedSpotEntryTest is GmxV2FactoryRoute {
         assertEq(token.balanceOf(address(adapter)), 0);
     }
 
+    /// GMX cancels the entry while the spot leg is worth less than the signed rollback floor. Past the recovery
+    /// deadline the owner takes the spot in kind, so the package reaches RECOVERED and closes without the price
+    /// recovering.
+    function testCancelledEntryBelowRollbackFloorReleasesSpotInKindAfterRecoveryDeadline() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        request.spot.rollbackMinQuoteAtoms = SPOT_BASE * 3;
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(request);
+        bytes32 id = coordinator.packageId(terms);
+        _fundOwner(owner, request, id);
+        token.mint(address(this), terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.approve(address(coordinator), terms.bondAtoms + terms.recoveryReserveAtoms);
+        coordinator.reserve(terms, _signature(coordinator.reserveDigest(terms)));
+        bytes32 requestKey = coordinator.submitRequest(id, 1, request);
+        coordinator.markVenuePending(id, 2);
+        vm.prank(address(account));
+        exchangeRouter.cancelOrder(requestKey);
+        assertEq(token.balanceOf(owner), COLLATERAL + MAX_SPOT_QUOTE - 2 * SPOT_BASE);
+
+        vm.expectRevert();
+        adapter.finalizeUnfilledRequest(requestKey);
+        vm.expectRevert(GmxV2IsolatedAccount.FundingMismatch.selector);
+        adapter.relayEvidence(requestKey, 3);
+
+        vm.warp(terms.recoveryDeadline - 1);
+        vm.prank(owner);
+        vm.expectRevert(GmxV2ArbitrumAdapter.DeadlineNotReached.selector);
+        adapter.takeUnfilledSpotInKind(requestKey);
+
+        vm.warp(terms.recoveryDeadline);
+        coordinator.beginRecovery(id, 3);
+        vm.prank(owner);
+        coordinator.submitOverdueRecovery(id, 4);
+        vm.expectRevert();
+        adapter.finalizeUnfilledRequest(requestKey);
+        vm.expectRevert(GmxV2ArbitrumAdapter.UnauthorizedCaller.selector);
+        adapter.takeUnfilledSpotInKind(requestKey);
+        vm.prank(address(0xBAD));
+        vm.expectRevert(GmxV2ArbitrumAdapter.UnauthorizedCaller.selector);
+        adapter.takeUnfilledSpotInKind(requestKey);
+
+        vm.prank(owner);
+        vm.expectEmit(address(account));
+        emit GmxV2IsolatedAccount.SpotInventoryReturnedInKind(id, requestKey, owner, SPOT_BASE);
+        adapter.takeUnfilledSpotInKind(requestKey);
+        assertEq(baseToken.balanceOf(owner), SPOT_BASE);
+        assertEq(baseToken.balanceOf(address(account)), 0);
+        assertFalse(account.hasActiveSpotInventory());
+        assertEq(adapter.activePackageOf(address(account)), bytes32(0));
+        assertEq(adapter.activeRequestKeyOf(address(account)), bytes32(0));
+
+        vm.prank(owner);
+        vm.expectRevert(GmxV2IsolatedAccount.InvalidRequest.selector);
+        adapter.takeUnfilledSpotInKind(requestKey);
+        vm.prank(owner);
+        vm.expectRevert(GmxV2IsolatedAccount.InvalidRequest.selector);
+        adapter.finalizeUnfilledRequest(requestKey);
+
+        adapter.relayEvidence(requestKey, 5);
+        coordinator.close(id, 6);
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
+        assertEq(token.balanceOf(owner), COLLATERAL + MAX_SPOT_QUOTE - 2 * SPOT_BASE);
+        assertEq(baseToken.balanceOf(owner), SPOT_BASE);
+        assertEq(token.balanceOf(terms.bondRecipient), terms.bondAtoms);
+        assertEq(token.balanceOf(terms.recoveryReserveRecipient), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(terms.slashRecipient), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
+        assertEq(token.balanceOf(address(adapter)), 0);
+        assertEq(token.balanceOf(address(account)), 0);
+    }
+
     function testFactoryPredictsOwnerAddressAndRejectsForeignAccounts() public {
         address predicted = factory.accountOf(address(0xD00D));
         assertEq(predicted.code.length, 0);
@@ -1446,6 +1516,62 @@ contract GmxV2ExitControllerTest is GmxV2FactoryRoute {
         assertEq(baseToken.balanceOf(address(account)), SPOT_BASE);
         assertEq(adapter.activePackageOf(address(account)), PACKAGE_ID);
         assertEq(exitController.finalPackageReceipt(exitRequestKey).commitment, bytes32(0));
+    }
+
+    /// GMX closes the short but the spot sale cannot meet the signed floor. Past `cancelAfter` the owner takes
+    /// the spot in kind, which releases the package and records an in-kind receipt.
+    function testExecutedExitBelowSpotFloorReleasesSpotInKindAfterCancelAfter() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        authorization.spotMinQuoteAtoms = SPOT_BASE * 3;
+        bytes32 exitRequestKey = _submit(authorization);
+        uint256 ownerBefore = token.balanceOf(owner);
+        exchangeRouter.executeDecreaseOrder(exitRequestKey, 0, COLLATERAL);
+        assertFalse(exitController.finalizeExecutedExit(exitRequestKey));
+        assertEq(token.balanceOf(owner) - ownerBefore, COLLATERAL);
+
+        vm.warp(authorization.cancelAfter - 1);
+        vm.prank(owner);
+        vm.expectRevert(GmxV2ExitController.InvalidOutcome.selector);
+        exitController.takeSpotInKind(exitRequestKey);
+
+        vm.warp(authorization.cancelAfter);
+        assertFalse(exitController.requestCancellationOrReconciliation(exitRequestKey));
+        vm.expectRevert(GmxV2ExitController.UnauthorizedCaller.selector);
+        exitController.takeSpotInKind(exitRequestKey);
+        vm.prank(feePayer);
+        vm.expectRevert(GmxV2ExitController.UnauthorizedCaller.selector);
+        exitController.takeSpotInKind(exitRequestKey);
+
+        vm.prank(owner);
+        vm.expectEmit(address(account));
+        emit GmxV2IsolatedAccount.SpotInventoryReturnedInKind(PACKAGE_ID, entryRequestKey, owner, SPOT_BASE);
+        assertTrue(exitController.takeSpotInKind(exitRequestKey));
+
+        (,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertTrue(released);
+        assertEq(baseToken.balanceOf(owner), SPOT_BASE);
+        assertEq(token.balanceOf(owner) - ownerBefore, COLLATERAL);
+        assertEq(baseToken.balanceOf(address(account)), 0);
+        assertEq(token.balanceOf(address(account)), 0);
+        assertFalse(account.hasActiveSpotInventory());
+        assertEq(adapter.activePackageOf(address(account)), bytes32(0));
+        assertEq(adapter.activeRequestKeyOf(address(account)), bytes32(0));
+        assertEq(exitController.activeExitRequestKey(address(account)), bytes32(0));
+        GmxV2ExitController.FinalPackageReceipt memory receipt = exitController.finalPackageReceipt(exitRequestKey);
+        assertNotEq(receipt.commitment, bytes32(0));
+        assertNotEq(receipt.spotEvidenceHash, bytes32(0));
+        assertEq(receipt.recipient, owner);
+        assertEq(receipt.spotBaseAtoms, SPOT_BASE);
+        assertEq(receipt.spotQuoteAtoms, 0);
+        assertEq(receipt.perpStatus, uint8(GmxV2ExitController.Status.EXECUTED));
+        assertEq(receipt.terminalState, exitController.TERMINAL_SPOT_IN_KIND());
+
+        vm.prank(owner);
+        vm.expectRevert(GmxV2ExitController.InvalidOutcome.selector);
+        exitController.takeSpotInKind(exitRequestKey);
+        assertTrue(exitController.finalizeExecutedExit(exitRequestKey));
+        assertEq(baseToken.balanceOf(owner), SPOT_BASE);
+        assertEq(exitController.finalPackageReceipt(exitRequestKey).commitment, receipt.commitment);
     }
 
     function testDelegatedEoaOwnerSubmitsFullCloseWithItsOwnSignature() public {

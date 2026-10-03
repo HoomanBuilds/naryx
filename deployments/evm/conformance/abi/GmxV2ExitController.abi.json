@@ -205,6 +205,19 @@
   },
   {
     "type": "function",
+    "name": "TERMINAL_SPOT_IN_KIND",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "activeExitRequestKey",
     "inputs": [
       {
@@ -2663,6 +2676,25 @@
       }
     ],
     "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "takeSpotInKind",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "released",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "event",

@@ -2607,6 +2607,19 @@
   },
   {
     "type": "function",
+    "name": "takeUnfilledSpotInKind",
+    "inputs": [
+      {
+        "name": "requestKey",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "unconsumedFundingAtoms",
     "inputs": [],
     "outputs": [
@@ -2827,6 +2840,11 @@
   {
     "type": "error",
     "name": "AlreadyFunded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DeadlineNotReached",
     "inputs": []
   },
   {
