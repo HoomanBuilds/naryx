@@ -442,7 +442,11 @@ export async function readSolanaDevnetQuoteState(
   return Object.freeze({ slot, market, oraclePricePerLot, reservationClass, shard, levels: page.levels });
 }
 
-/** A usable firm level: active this epoch, the reviewed policy and settlement class, enough capacity. */
+/**
+ * The usable firm level with the latest expiry (ties to the lower slot index): active this epoch,
+ * the reviewed policy and settlement class, enough capacity. The latest expiry gives the quote the
+ * longest time to fund, lock, and execute.
+ */
 export function selectFirmLevel(
   state: SolanaDevnetLiveQuoteState,
   config: SolanaDevnetSolverConfig,
@@ -451,13 +455,21 @@ export function selectFirmLevel(
   maximumExpiry: bigint,
   side: number = QUOTE_SIDE_ASK,
 ): QuoteLevelState | undefined {
-  return state.levels.find((level) => level.active && level.epoch === state.shard.epoch
-    && level.side === side && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
-    && bytesEqual(level.reservationPolicyHash, state.reservationClass.policyHash)
-    && bytesEqual(level.settlementClassIdentityHash, config.series.settlementClassIdentityHash)
-    && units >= level.minPackageSizeUnits && units <= level.maxPackageSizeUnits && units <= level.remainingCapacity
-    && level.expirySlot > minimumExpiry && level.expirySlot <= maximumExpiry
-    && level.expirySlot <= state.shard.heartbeatExpirySlot);
+  let selected: QuoteLevelState | undefined;
+  for (const level of state.levels) {
+    const usable = level.active && level.epoch === state.shard.epoch
+      && level.side === side && level.quoteMode === QUOTE_MODE_FIRM_ONCHAIN && level.maxFeeAtoms === 0n
+      && bytesEqual(level.reservationPolicyHash, state.reservationClass.policyHash)
+      && bytesEqual(level.settlementClassIdentityHash, config.series.settlementClassIdentityHash)
+      && units >= level.minPackageSizeUnits && units <= level.maxPackageSizeUnits && units <= level.remainingCapacity
+      && level.expirySlot > minimumExpiry && level.expirySlot <= maximumExpiry
+      && level.expirySlot <= state.shard.heartbeatExpirySlot;
+    if (usable && (selected === undefined || level.expirySlot > selected.expirySlot
+      || (level.expirySlot === selected.expirySlot && level.slotIndex < selected.slotIndex))) {
+      selected = level;
+    }
+  }
+  return selected;
 }
 
 /**

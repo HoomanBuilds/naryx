@@ -85,6 +85,30 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   assert.equal(selectFirmLevel({ ...state, levels: [{ ...level, side: 1 }] }, config, 2n, 450n, 550n, 1)?.levelId, 77n);
 });
 
+test('binds a quote to the usable level with the latest expiry, ties to the lower slot index', () => {
+  const policy = new Uint8Array(32).fill(4);
+  const settlement = new Uint8Array(32).fill(5);
+  const level: QuoteLevelState = {
+    slotIndex: 0, settlementClassIdentityHash: settlement, reservationPolicyHash: policy, referenceOffset: 0n, levelId: 1n,
+    epoch: 2n, levelSequence: 1n, minPackageSizeUnits: 1n, maxPackageSizeUnits: 10n, maxFeeAtoms: 0n, expirySlot: 460n,
+    remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
+  };
+  const state = (levels: QuoteLevelState[]) => ({
+    slot: 400n, market, oraclePricePerLot: 150_000n,
+    reservationClass: { policyHash: policy } as never,
+    shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
+    levels,
+  });
+  const config = { series: { settlementClassIdentityHash: settlement } } as never;
+  // An older level with little time left sits in the first slot; the fresh one wins.
+  const fresh = { ...level, slotIndex: 7, levelId: 2n, expirySlot: 540n };
+  const tie = { ...level, slotIndex: 9, levelId: 3n, expirySlot: 540n };
+  assert.equal(selectFirmLevel(state([level, tie, fresh]), config, 2n, 450n, 550n)?.levelId, 2n);
+  // A later level outside the window, or without the capacity, does not count.
+  const late = { ...level, slotIndex: 3, levelId: 4n, expirySlot: 551n };
+  assert.equal(selectFirmLevel(state([level, late, { ...fresh, remainingCapacity: 1n }]), config, 2n, 450n, 550n)?.levelId, 1n);
+});
+
 test('keeps a standing level per side that a quote made a lead time from now can still use', () => {
   const policy = new Uint8Array(32).fill(4);
   const settlement = new Uint8Array(32).fill(5);
