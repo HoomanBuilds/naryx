@@ -201,12 +201,16 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   the API sweep drives it even when the owner has left the page. A request still pending when its
   recovery deadline passes goes to manual intervention, which has no on-chain path out while GMX
   still holds the order; keep the solver and API running.
-- Arbitrum entry pricing: on 2026-10-03 the GMX ETH/USD testnet market was about 38:1 short-heavy, so
-  a new short paid about 15 to 18% negative price impact and GMX cancelled every entry whose
-  acceptable price allows only `perpSlippageBps`; the solver does not price GMX impact yet. GMX also
-  cancels a short whose collateral (the quoted margin) is under its `MIN_COLLATERAL_USD` (1 USD), for
-  example a 0.001 WETH package at 15% margin. Both are refunded by the bonded recovery, less the
-  pool round trip.
+- Arbitrum entry pricing: entries and exits are priced at GMX's own Reader execution price for the
+  exact size, so the quoted spread includes GMX's price impact. On 2026-10-03 the GMX ETH/USD testnet
+  market was about 29:1 short-heavy and a new short paid about 15% negative price impact, so entries
+  are declined before signing: the spread exceeds any usual `maxEntrySpread`, and the impact, which
+  GMX V2.2 charges when the short closes, exceeds a 15% margin. A short whose collateral after fees
+  is under GMX's `MIN_COLLATERAL_USD` (1 USD, for example 0.001 WETH at 15% margin) is declined too.
+  Of a close's negative impact GMX pays out at most `MAX_POSITION_IMPACT_FACTOR` (0.5%) and keeps
+  the rest as claimable collateral for the account; the Naryx account has no path to claim it, so
+  the quotes count it as a cost. The open-interest multiplier on GMX's minimum collateral factor is
+  not modeled (about 0.001% on testnet).
 - Arbitrum exit: GMX's accrued borrowing and funding fees are not read exactly, so the close carries
   a slippage allowance; if it is too small, GMX cancels the close and the package stays open. The
   close callback gas (`exitCallbackGasLimit`) is untested on the live network, and GMX refunds the
