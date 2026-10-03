@@ -562,7 +562,9 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
     spotQuoteAtoms: 600n,
     perpStatus: 2,
     terminalState: 1,
+    ...asyncReceiptOverride,
   });
+  let asyncReceiptOverride: Readonly<{ spotQuoteAtoms?: bigint; terminalState?: number }> = {};
   let asyncStage: "pending" | "recovery" | "final" = "pending";
   const expectedOwnerKey = keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes32" }], [entryAdapter, asyncEntryKey]));
   const asyncReadPort: EvmReadPort = {
@@ -790,6 +792,25 @@ test("evm testnet terminal prepares atomically and observes without browser-cont
     const finalBody = (await finished.json()) as { lifecycle: string; exitCompleted: boolean };
     assert.equal(finalBody.lifecycle, "CLOSED");
     assert.equal(finalBody.exitCompleted, true);
+
+    // The owner took the spot leg in kind after cancelAfter: a completed exit with zero quote proceeds.
+    const observeFinal = () => fetch(`${url}/internal/terminal/evm-testnet/observe-async`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ attemptId: "attempt-arb-final-00001", idempotencyKey: "idem-arb-final-000003" }),
+    });
+    asyncReceiptOverride = { terminalState: 2, spotQuoteAtoms: 0n };
+    const inKind = await observeFinal();
+    assert.equal(inKind.status, 200);
+    const inKindBody = (await inKind.json()) as { exitCompleted: boolean; finalReceipt: { terminalState: number; spotQuoteAtoms: string } };
+    assert.equal(inKindBody.exitCompleted, true);
+    assert.equal(inKindBody.finalReceipt.terminalState, 2);
+    assert.equal(inKindBody.finalReceipt.spotQuoteAtoms, "0");
+    asyncReceiptOverride = { terminalState: 2, spotQuoteAtoms: 600n };
+    const paidInKind = (await (await observeFinal()).json()) as { lifecycle: string; exitCompleted: boolean };
+    assert.equal(paidInKind.lifecycle, "EVIDENCE_MISMATCH");
+    assert.equal(paidInKind.exitCompleted, false);
+    asyncReceiptOverride = {};
   } finally {
     await close(server);
   }

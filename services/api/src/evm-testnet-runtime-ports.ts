@@ -1299,7 +1299,11 @@ export function validateEvmTestnetAsyncObservation(
     if (finalReceipt.perpStatus !== (VENUE_STATUS_LABELS as readonly string[]).indexOf("EXECUTED")) {
       throw new Error("EVM async exit completion requires the EXECUTED status discriminant.");
     }
-    if (finalReceipt.terminalState !== 1) throw new Error("EVM async exit completion requires terminal state 1.");
+    // 1: the spot leg sold at or above the signed floor. 2: after cancelAfter the owner took it in kind.
+    const proceeds = finalReceipt.spotQuoteAtoms !== "0";
+    if (!(finalReceipt.terminalState === 1 ? proceeds : finalReceipt.terminalState === 2 && !proceeds)) {
+      throw new Error("EVM async exit completion requires terminal state 1 with spot proceeds or 2 in kind.");
+    }
     if (evidenceGrade !== "finalized-contract-receipt") {
       throw new Error("EVM async exit completion requires finalized-contract-receipt evidence.");
     }
