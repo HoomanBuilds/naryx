@@ -2013,7 +2013,15 @@ export function TradingTerminal({
         }
         if (flow.reclaimed) return none("Funding reclaimed", "The unreserved funding returned to your wallet. Start a new order to trade again.");
         const lifecycle = flow.observation?.lifecycle;
-        if (lifecycle === "EXECUTED") return none("Entry executed", "The bonded solver executed the package entry on Arbitrum Sepolia. Evidence is in the package review and on the Activity page.");
+        // The solver releases its bond (coordinator CLOSED) right after GMX settles the request, so a closed
+        // package says only that the entry finished; the GMX request status says how.
+        const entryStatus = flow.observation?.entry?.status;
+        if (lifecycle === "EXECUTED" || (lifecycle === "CLOSED" && entryStatus === "EXECUTED")) {
+          return none("Entry executed", "GMX opened the short and the spot leg is in your strategy account: the package is open. Evidence is in the package review and on the Activity page; exit it from this ticket or Portfolio.");
+        }
+        if ((lifecycle === "CLOSED" || lifecycle === "RECOVERED") && (entryStatus === "CANCELLED" || entryStatus === "RECOVERED")) {
+          return none("Entry cancelled by GMX", "GMX did not open the short, so the bonded recovery sold the spot leg back and returned the USDC to your wallet. No package is open; start a new order to trade again.");
+        }
         if (lifecycle && isArbitrumObservationTerminal(flow.observation)) {
           return none(`Package ${lifecycle.replace(/_/g, " ").toLowerCase()}`, flow.observation?.reason ?? "The asynchronous package reached a terminal state. Evidence is in the package review.");
         }
