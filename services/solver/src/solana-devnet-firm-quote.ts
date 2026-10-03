@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import {
   bytesEqual,
+  canonicalBytes,
+  compareBytes,
+  encodeAssetRef,
   exactPrice,
   packageOrderHash,
   quoteHash,
@@ -17,6 +20,8 @@ import {
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
+  type AdapterRef,
+  type AssetAmount,
   type AssetRef,
   type Hash32,
   type PackageOrder,
@@ -109,6 +114,16 @@ function fail(message: string): never {
 function sameAsset(left: AssetRef, right: AssetRef): boolean {
   return left.assetId === right.assetId && left.decimals === right.decimals
     && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+/**
+ * Per-asset fee entries in canonical asset order. The test perp charges its taker fee in the quote
+ * asset, and a solver quote always lists the base asset's fee as well, here zero.
+ */
+function feesByAsset(base: AssetRef, quote: AssetRef, quoteAtoms: bigint): AssetAmount[] {
+  const key = (asset: AssetRef) => canonicalBytes((writer) => encodeAssetRef(writer, asset));
+  return [{ asset: base, atoms: 0n }, { asset: quote, atoms: quoteAtoms }]
+    .sort((left, right) => compareBytes(key(left.asset), key(right.asset)));
 }
 
 function gcd(left: bigint, right: bigint): bigint {
@@ -242,11 +257,16 @@ export function firmRouteBindingId(name: string): string {
 
 function accountBindings(
   manifest: SolanaDevnetSharedManifest,
+  config: SolanaDevnetSolverConfig,
   accounts: SolanaDevnetFirmAccounts,
 ): RouteAccountBindingInput[] {
   const programCode: Record<string, string> = {
     coreProgram: 'core', reservationProgram: 'reservation', packageBookProgram: 'package_book',
     perpAdapterProgram: 'perp_adapter', perpVenueProgram: 'perp_venue',
+  };
+  // Each leg's action targets its adapter's program; admission binds the leg to the target's adapter.
+  const legAdapter: Record<string, AdapterRef> = {
+    reservationProgram: config.spot.adapter, perpAdapterProgram: config.perpetual.adapter,
   };
   const tokenAuthority: Record<string, string> = {
     reservationVault: accounts.reservation!, solverQuote: accounts.solver!, traderBase: accounts.trader!,
@@ -254,9 +274,11 @@ function accountBindings(
   };
   return Object.entries(accounts).map(([name, identity]) => {
     const program = programCode[name];
+    const adapter = legAdapter[name];
     const authority = tokenAuthority[name];
     return {
       routeBindingId: firmRouteBindingId(name),
+      ...(adapter === undefined ? {} : { adapter, adapterBindingId: 'program' }),
       accountIdentity: identity,
       ...(program === undefined ? {} : { codeIdentity: toHex(programAddress(manifest, program).codeIdentity) }),
       ...(authority === undefined ? {} : { ownerIdentity: TOKEN_PROGRAM_ID.toBase58(), authorityIdentity: authority }),
@@ -772,9 +794,13 @@ export function createSolanaDevnetFirmQuotePort(
         fail('entry spread is worse than the order maximum');
       }
       leg = pricing;
+      // The protocol takes a signed rate only in lowest terms; dividing both sides keeps it exact.
+      const divisor = gcd(spreadQuoteAtoms < 0n ? -spreadQuoteAtoms : spreadQuoteAtoms, order.quantity.atoms);
       quotedOutcome = {
         kind: 'ENTRY_SPREAD',
-        entrySpread: { baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms, baseAtoms: order.quantity.atoms, roundingDirection: 'CEIL' },
+        entrySpread: {
+          baseAsset, quoteAsset, quoteAtoms: spreadQuoteAtoms / divisor, baseAtoms: order.quantity.atoms / divisor, roundingDirection: 'CEIL',
+        },
       };
     }
     const side = exit ? QUOTE_SIDE_BID : QUOTE_SIDE_ASK;
@@ -840,7 +866,7 @@ export function createSolanaDevnetFirmQuotePort(
       routeExpiryValue,
       feePolicyVersion: config.feePolicyVersion,
       feePolicyManifestHash: config.feePolicyManifestHash,
-      accountBindings: accountBindings(manifest, accounts),
+      accountBindings: accountBindings(manifest, config, accounts),
       serviceCharges: [],
       preconditions: config.route.preconditions,
       legs: [
@@ -861,6 +887,7 @@ export function createSolanaDevnetFirmQuotePort(
     };
     const validatedRoute = routePayload(route, 'solanaDevnetRoute');
     const zeroQuote = { asset: quoteAsset, atoms: 0n };
+    const venueFees = feesByAsset(baseAsset, quoteAsset, leg.perpFeeAtoms);
     const unsigned: SolverQuoteInput = {
       version: 1,
       environment: order.environment,
@@ -879,9 +906,9 @@ export function createSolanaDevnetFirmQuotePort(
       expectedNetSpotQuantity: exit ? { asset: baseAsset, atoms: -order.quantity.atoms } : order.quantity,
       expectedBaseAssetFee: { asset: baseAsset, atoms: 0n },
       expectedMarginDelta: zeroQuote,
-      expectedRawFillFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
-      expectedBuilderFeesByAsset: [zeroQuote],
-      expectedNormalizedVenueFeesByAsset: [{ asset: quoteAsset, atoms: leg.perpFeeAtoms }],
+      expectedRawFillFeesByAsset: venueFees,
+      expectedBuilderFeesByAsset: feesByAsset(baseAsset, quoteAsset, 0n),
+      expectedNormalizedVenueFeesByAsset: venueFees,
       solverFee: zeroQuote,
       protocolFee: zeroQuote,
       expectedPriorityFee: zeroQuote,

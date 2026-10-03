@@ -127,6 +127,11 @@
       "$input": "init",
       "pointer": "/fragments/orderContext/quoteAsset"
     },
+    "maxVenueFeeAtoms": {
+      "$bigint": {
+        "$operator": "max venue fees per package (test perp taker fee at the maximum order size, with headroom), quote atoms; the order cap and the fee policy pass-through limit"
+      }
+    },
     "res": {
       "baseAsset": {
         "subjectId": {
@@ -299,13 +304,34 @@
         "$def": "domain"
       },
       "scopeDirection": "LONG_SPOT_SHORT_PERP",
+      "scopeQuantityPolicyClass": "EXACT_ATOMIC",
+      "scopeSettlementClass": "ATOMIC_POSTCONDITION",
+      "scopeAccountModeClass": "user-owned-v1",
       "feePolicyVersion": 1,
       "activationUnit": "SOLANA_SLOT",
       "activationValue": {
         "$def": "activation.activationValue"
       },
       "serviceFeeRules": [],
-      "passThroughCostRules": [],
+      "passThroughCostRules": [
+        {
+          "costCategory": "VENUE",
+          "costAssetId": {
+            "$def": "res.quoteAsset.subjectId"
+          },
+          "costAssetManifestHash": {
+            "$def": "res.quoteAsset.manifestHash"
+          },
+          "costAssetDecimals": {
+            "$def": "quoteAssetRef.decimals"
+          },
+          "maxAtoms": {
+            "$def": "maxVenueFeeAtoms"
+          },
+          "roundingDirection": "TOWARD_ZERO",
+          "refundRule": "REFUND_UNUSED_PREPAID_TO_OWNER"
+        }
+      ],
       "refundPolicyVersion": 1,
       "expiryUnit": "SOLANA_SLOT",
       "expiryValue": {
@@ -435,6 +461,7 @@
           "feePolicyManifest": {
             "$def": "feePolicyManifest"
           },
+          "accountModeClass": "user-owned-v1",
           "activeRegistryRecords": [
             {
               "$merge": [
@@ -681,9 +708,7 @@
               "$def": "quoteAssetRef"
             },
             "maxAtoms": {
-              "$bigint": {
-                "$operator": "max venue fee, quote atoms"
-              }
+              "$def": "maxVenueFeeAtoms"
             }
           }
         ],
@@ -840,7 +865,7 @@
         },
         "route": {
           "actions": {
-            "$operator": "reviewed ActionCommitmentInput[]"
+            "$operator": "reviewed ActionCommitmentInput[]: the spot action targets firm-reservationProgram and the perp action firm-perpAdapterProgram, the bindings that carry the leg adapters"
           },
           "preconditions": {
             "$operator": "reviewed StateConstraintInput[]"

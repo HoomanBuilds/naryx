@@ -15,6 +15,7 @@ import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   createCanonicalExitOrder,
   EntryOrderValidationError,
+  venueFeeCapsWithBase,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
 } from "./canonical-entry-order.js";
@@ -480,6 +481,8 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
   const { manifest, port } = input;
   const config = validateConfig(input.config);
   if (manifest.domain.domainId !== "svm:devnet") fail("manifest domain must be svm:devnet");
+  // The test perp charges its taker fee in the quote asset; every quote also lists a zero base fee.
+  const venueFeeCaps = venueFeeCapsWithBase(config.baseAsset, config.maxVenueFeeAtomsByAsset);
   const feed = new SolanaDevnetMarketFeed(manifest, config, port);
   await feed.refresh();
   const program = (name: string) => {
@@ -522,7 +525,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       maxEntrySpread: config.maxEntrySpread,
       maximumQuantityAtoms: config.maximumQuantityAtoms,
       maxSlippageBps: config.maxSlippageBps,
-      maxVenueFeeAtomsByAsset: config.maxVenueFeeAtomsByAsset,
+      maxVenueFeeAtomsByAsset: venueFeeCaps,
       maxMarginAddedAtoms: config.maxMarginAddedAtoms,
       maxProtocolFeeAtoms: config.maxProtocolFeeAtoms,
       maxSolverFeeAtoms: config.maxSolverFeeAtoms,
