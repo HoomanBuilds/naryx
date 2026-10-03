@@ -328,9 +328,10 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   } = {
     terms: undefined, state: 0, stateVersion: 0n, requestKey: hex('0'),
   };
-  // The GMX request's adapter status, whether the account still holds the spot leg, chain time, and
-  // whether the RPC drops the next submitRecovery (the service missing its recovery window).
-  const venue = { status: 1, holdsSpot: true, now: NOW, dropSubmitRecovery: false };
+  // The GMX request's adapter status, whether the account still holds the spot leg, chain time, whether
+  // the RPC drops the next submitRecovery (the service missing its recovery window), and whether the spot
+  // is worth less than the signed rollback floor (the sale fails gas estimation).
+  const venue = { status: 1, holdsSpot: true, now: NOW, dropSubmitRecovery: false, belowRollbackFloor: false };
   const recoveryDeadline = () => journal().plan(ATTEMPT_ID)!.terms.recoveryDeadline;
   const advanceState = (state: number, requestKey = packageRecord.requestKey) => {
     packageRecord = { ...packageRecord, state, stateVersion: packageRecord.stateVersion + 1n, requestKey };
@@ -376,6 +377,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
         venue.dropSubmitRecovery = false;
         throw new Error('RPC unavailable');
       }
+      if (functionName === 'finalizeUnfilledRequest' && venue.belowRollbackFloor) throw new Error('PostconditionFailed');
       writes.push(functionName);
       if (functionName === 'approve') allowances.set(String(args?.[0]), args?.[1] as bigint);
       if (functionName === 'reserve') reserveArgs.push(args?.[1] as Hex);
@@ -573,6 +575,36 @@ test('Arbitrum executor recovers a GMX-cancelled or overdue entry through the bo
       journal.close();
       rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test('Arbitrum executor closes a below-floor cancelled entry once the owner takes the spot in kind, never forcing the sale', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+  const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+  try {
+    const { port, writes, ownerFunds, venue, slashed } = fakeChain(() => journal);
+    const prepared = await executor(port, journal).instance.prepare(ATTEMPT_ID);
+    await executor(port, journal).instance.authorize(ATTEMPT_ID, await ownerAccount.signTypedData(prepared.typedData as never));
+    ownerFunds();
+    assert.equal((await executor(port, journal).instance.advance(ATTEMPT_ID)).status, 'VENUE_PENDING');
+    const before = writes.length;
+    const sent = () => writes.slice(before);
+    venue.status = 3;
+    venue.belowRollbackFloor = true;
+    await assert.rejects(executor(port, journal).instance.advance(ATTEMPT_ID), /PostconditionFailed/);
+    assert.deepEqual(sent(), []);
+
+    // Past the recovery deadline the owner's wallet takes the spot leg in kind through the adapter.
+    venue.now = journal.plan(ATTEMPT_ID)!.terms.recoveryDeadline;
+    venue.holdsSpot = false;
+    const closed = await executor(port, journal).instance.advance(ATTEMPT_ID);
+    assert.equal(closed.status, 'SETTLED');
+    assert.equal(closed.coordinatorState, 'CLOSED');
+    assert.deepEqual(sent(), ['relayEvidence', 'beginRecovery', 'submitOverdueRecovery', 'relayEvidence', 'close']);
+    assert.equal(slashed(), false);
+  } finally {
+    journal.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
