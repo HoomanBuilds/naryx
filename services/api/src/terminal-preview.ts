@@ -156,7 +156,11 @@ export function resolveTerminalMarket(
   }
   const market = observedMarket(source.descriptor, source.latest(), context.nowMs);
   if (market === undefined) {
-    throw new TerminalMarketUnavailableError(staleCode, "No fresh market observation is available.");
+    const reason = source.unavailableReason?.();
+    throw new TerminalMarketUnavailableError(
+      staleCode,
+      reason === undefined ? "No fresh market observation is available." : `No fresh market observation is available: ${reason}.`,
+    );
   }
   return { descriptor: source.descriptor, market };
 }

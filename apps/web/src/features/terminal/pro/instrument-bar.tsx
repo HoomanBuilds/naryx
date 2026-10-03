@@ -47,7 +47,7 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
     ? { tag: "FIXTURE", className: styles.labelFixture, title: "These reference values are unattested fixtures, not market data." }
     : grade === "OBSERVED_UNATTESTED"
       ? { tag: "LIVE", className: styles.labelObserved, title: `Observed book prices captured ${snapshot.environment.capturedAt}. Unsigned and unattested.` }
-      : { tag: "UNAVAILABLE", className: styles.labelFixture, title: "No fresh live market is available for this domain." };
+      : { tag: "UNAVAILABLE", className: styles.labelFixture, title: snapshot.environment.detail };
 
   return (
     <section className={styles.instrumentBar} aria-label="Instrument">

@@ -57,6 +57,8 @@ export type TerminalMarketDescriptor = Readonly<{
 export interface TerminalMarketSource {
   readonly descriptor: TerminalMarketDescriptor;
   latest(): TerminalMarketObservation | undefined;
+  /** Why the source has no fresh observation, when it knows: a short venue check message. */
+  unavailableReason?(): string | undefined;
 }
 
 export type TerminalMarketSources = Readonly<Partial<Record<DomainId, TerminalMarketSource>>>;
@@ -120,6 +122,10 @@ export function createHyperliquidTestnetMarketSource(
         perpTakerRate: snapshot.perpTakerRate,
         capturedAtMs: snapshot.capturedAtMs,
       });
+    },
+    unavailableReason(): string | undefined {
+      const failure = priceFeed.failure?.();
+      return failure === undefined ? undefined : `Hyperliquid testnet ${failure}`;
     },
   });
 }

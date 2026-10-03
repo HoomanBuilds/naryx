@@ -1640,7 +1640,11 @@ export function TradingTerminal({
         // A configured service that fails shows the domain's market as unavailable; neither fixture
         // data nor another domain's numbers are kept. A 503 market answer keeps the service connected.
         if (active) {
-          setSnapshot((previous) => unavailableTerminalSnapshot(previous, selectedDomain));
+          setSnapshot((previous) => unavailableTerminalSnapshot(
+            previous,
+            selectedDomain,
+            cause instanceof TerminalMarketUnavailableError ? cause.reason : undefined,
+          ));
           setSnapshotDomain(selectedDomain);
           // A size typed for another lane is in that lane's base asset, so it is not carried over, and
           // the next lane that loads takes its own default again.

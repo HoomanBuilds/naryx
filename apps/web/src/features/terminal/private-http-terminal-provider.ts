@@ -2381,11 +2381,14 @@ const TERMINAL_MARKET_UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
 /** The service is reachable but has no fresh live market for the requested domain. */
 export class TerminalMarketUnavailableError extends Error {
   readonly code: string;
+  /** The service's own printable reason, such as a venue book check, when it gave one. */
+  readonly reason: string | undefined;
 
-  constructor(code: string) {
+  constructor(code: string, reason?: string) {
     super("Live market data is unavailable for this domain.");
     this.name = "TerminalMarketUnavailableError";
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -2415,9 +2418,10 @@ async function terminalReadFailure(response: Response, name: string): Promise<Er
   if (response.status === 503) {
     try {
       const payload = await response.json() as unknown;
-      const code = isRecord(payload) && isRecord(payload.error) ? payload.error.code : undefined;
-      if (typeof code === "string" && TERMINAL_MARKET_UNAVAILABLE_CODES.has(code)) {
-        return new TerminalMarketUnavailableError(code);
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (typeof error?.code === "string" && TERMINAL_MARKET_UNAVAILABLE_CODES.has(error.code)) {
+        const reason = typeof error.message === "string" && /^[ -~]{1,240}$/.test(error.message) ? error.message : undefined;
+        return new TerminalMarketUnavailableError(error.code, reason);
       }
     } catch {
       // An unreadable 503 body is reported as a plain failure below.
@@ -2434,6 +2438,7 @@ async function terminalReadFailure(response: Response, name: string): Promise<Er
 export function unavailableTerminalSnapshot(
   previous: TerminalViewModel,
   domain: DomainId,
+  reason?: string,
 ): TerminalViewModel {
   const ownLane = previous.selectedDomain === domain && previous.environment.source === "PRIVATE_TERMINAL_BFF";
   return {
@@ -2441,7 +2446,7 @@ export function unavailableTerminalSnapshot(
     environment: {
       label: "UNAVAILABLE",
       title: "Market data unavailable",
-      detail: "The service has no fresh live market for this domain.",
+      detail: reason ?? "The service has no fresh live market for this domain.",
       capturedAt: "",
       source: "PRIVATE_TERMINAL_BFF",
       evidenceGrade: "UNAVAILABLE",
@@ -2453,7 +2458,7 @@ export function unavailableTerminalSnapshot(
       ...previous.market,
       ...(ownLane ? {} : { base: "-", quote: "-" }),
       packageId: "Market unavailable",
-      metrics: [{ label: "Market data", value: "Unavailable", detail: "No fresh live observation" }],
+      metrics: [{ label: "Market data", value: "Unavailable", detail: reason ?? "No fresh live observation" }],
     },
     chart: { ...previous.chart, points: [] },
     plans: previous.plans.map((plan) => ({ ...plan, legs: [] })),

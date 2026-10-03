@@ -52,6 +52,8 @@ export interface HyperliquidTestnetPriceSource {
   latest(): HyperliquidTestnetPriceSnapshot | undefined;
   /** The live metadata names of the configured spot pair and perpetual, once read. */
   coins?(): Readonly<{ spot: string; perp: string }> | undefined;
+  /** Why the last refresh failed, until one succeeds. */
+  failure?(): string | undefined;
 }
 
 export type HyperliquidTestnetPriceFeedOptions = Readonly<{
@@ -268,6 +270,7 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
   #timer: ReturnType<typeof setTimeout> | undefined;
   #started = false;
   #failing = false;
+  #failure: string | undefined;
 
   constructor(config: HyperliquidTestnetRuntimeConfig, options: HyperliquidTestnetPriceFeedOptions = {}) {
     const order = config.orderContext;
@@ -291,6 +294,11 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
     return this.#coins;
   }
 
+  /** Why the last refresh failed, until one succeeds; a book or fee check message, never a URL. */
+  failure(): string | undefined {
+    return this.#failure;
+  }
+
   // Resolves after the first refresh attempt and never rejects; a failed attempt leaves no snapshot.
   start(): Promise<boolean> {
     if (this.#started) return this.#inFlight ?? Promise.resolve(this.#snapshot !== undefined);
@@ -312,11 +320,13 @@ export class HyperliquidTestnetPriceFeed implements HyperliquidTestnetPriceSourc
       () => {
         if (this.#failing) this.#report("refresh recovered");
         this.#failing = false;
+        this.#failure = undefined;
         return true;
       },
       (error: unknown) => {
         if (!this.#failing) this.#report(`refresh failed, keeping the previous snapshot: ${failureMessage(error)}`);
         this.#failing = true;
+        this.#failure = failureMessage(error);
         return false;
       },
     ).finally(() => {
