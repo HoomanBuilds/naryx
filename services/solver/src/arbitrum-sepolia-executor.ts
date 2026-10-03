@@ -53,13 +53,22 @@ import {
   ARBITRUM_SEPOLIA_CHAIN_ID,
   ARBITRUM_SEPOLIA_DOMAIN_ID,
   GMX_DATA_STORE_KEYS,
+  GMX_FLOAT_PRECISION,
+  arbitrumHedgeSizeAtoms,
   arbitrumSepoliaAccountCodeHash,
   arbitrumSepoliaAccountOf,
   ceilDiv,
   createViemArbitrumSepoliaReadPort,
+  decimalText,
   gmxDecreaseExecutionFeeWei,
+  gmxEntryCollateralRefusal,
   gmxIncreaseExecutionFeeWei,
+  gmxIndexPrice,
+  readArbitrumSepoliaReferencePrice,
+  readGmxEntryCollateralLimits,
   readGmxExecutionFeeParameters,
+  readGmxPositionFeeFactor,
+  readGmxShortExecutionPrice,
   readGmxUint,
   requireArbitrumSepoliaChain,
   requireArbitrumSepoliaCode,
@@ -174,7 +183,13 @@ export interface ArbitrumSepoliaExecutorConfig {
   readonly spotPort: ArbitrumSepoliaContractIdentity;
   readonly spotBaseToken: ArbitrumSepoliaContractIdentity;
   readonly gmxDataStore: ArbitrumSepoliaContractIdentity;
+  /** The pinned GMX V2.2 Reader; the short is checked against its execution price before the owner signs. */
+  readonly gmxReader: ArbitrumSepoliaContractIdentity;
   readonly gmxMarket: Address;
+  /** The reference feed the quote priced from; the short is sized at its live answer. */
+  readonly priceFeed: ArbitrumSepoliaContractIdentity;
+  readonly priceFeedDecimals: number;
+  readonly maxPriceAgeSeconds: bigint;
   readonly quoteAssetDecimals: number;
   readonly executionClassManifestHash: Hex;
   readonly seriesIdentityKey: Hex;
@@ -512,7 +527,7 @@ function requirePositive(value: bigint, cap: bigint, name: string): bigint {
 function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
   const identities = [
     config.coordinator, config.adapter, config.accountFactory, config.accountImplementation, config.collateralToken,
-    config.spotPort, config.spotBaseToken, config.gmxDataStore,
+    config.spotPort, config.spotBaseToken, config.gmxDataStore, config.gmxReader, config.priceFeed,
   ];
   if (config.domain?.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
     || identities.some((identity) => !ADDRESS.test(identity?.address ?? '')
@@ -523,6 +538,8 @@ function validateConfig(config: ArbitrumSepoliaExecutorConfig): void {
     || !Number.isSafeInteger(config.seriesBindingVersion) || config.seriesBindingVersion < 1
     || !Number.isSafeInteger(config.quoteAssetDecimals) || config.quoteAssetDecimals < 0
     || config.quoteAssetDecimals > GMX_USD_DECIMALS
+    || !Number.isSafeInteger(config.priceFeedDecimals) || config.priceFeedDecimals < 0 || config.priceFeedDecimals > 36
+    || typeof config.maxPriceAgeSeconds !== 'bigint' || config.maxPriceAgeSeconds <= 0n
     || !Number.isSafeInteger(config.executionFeeBufferBps) || config.executionFeeBufferBps < 0
     || config.executionFeeBufferBps > 10_000
     || !Number.isSafeInteger(config.receiptWaitMs) || config.receiptWaitMs < 1 || config.receiptWaitMs > 20_000
@@ -1436,6 +1453,47 @@ export class ArbitrumSepoliaExecutor {
     return lower(this.#options.config.coordinator.address);
   }
 
+  /**
+   * GMX V2.2 opens a short of `sizeDeltaUsd / price` tokens and keeps its price impact as pending
+   * impact, so the short is sized at the live reference to hedge exactly the spot quantity. Before
+   * the owner signs, GMX's own execution price for that size must still meet the signed acceptable
+   * price, and the position must pass GMX's minimum collateral validation.
+   */
+  async #gmxShortSize(quantity: bigint, baseDecimals: number, acceptablePrice: bigint, collateralAtoms: bigint): Promise<bigint> {
+    const { chain, config } = this.#options;
+    let reference;
+    try {
+      reference = await readArbitrumSepoliaReferencePrice(chain, {
+        feed: config.priceFeed, decimals: config.priceFeedDecimals, maxAgeSeconds: config.maxPriceAgeSeconds,
+      });
+    } catch {
+      fail('PRICE_UNAVAILABLE', 'the reference price is stale or unavailable, so nothing was signed; try again shortly');
+    }
+    const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - config.quoteAssetDecimals);
+    const sizeAtoms = arbitrumHedgeSizeAtoms(quantity, baseDecimals, config.quoteAssetDecimals, reference);
+    const dataStore = lower(config.gmxDataStore.address);
+    const market = lower(config.gmxMarket);
+    const [gmx, limits, feeFactor] = await Promise.all([
+      readGmxShortExecutionPrice(chain, config.gmxReader, dataStore, market, {
+        indexPrice: gmxIndexPrice(reference, baseDecimals), quoteDecimals: config.quoteAssetDecimals, sizeDeltaUsd: sizeAtoms * usdScale,
+      }),
+      readGmxEntryCollateralLimits(chain, dataStore, market),
+      readGmxPositionFeeFactor(chain, dataStore, market),
+    ]);
+    if (gmx.executionPrice < acceptablePrice) {
+      const unit = 10n ** BigInt(baseDecimals);
+      fail('PRICE_MOVED', `GMX would now fill this short at ${decimalText(gmx.executionPrice * unit, GMX_FLOAT_PRECISION)}, `
+        + `under the signed acceptable price of ${decimalText(acceptablePrice * unit, GMX_FLOAT_PRECISION)}; nothing was signed. `
+        + 'Create a fresh order to re-quote');
+    }
+    const refusal = gmxEntryCollateralRefusal({
+      sizeAtoms, marginAtoms: collateralAtoms, positionFeeAtoms: ceilDiv(sizeAtoms * feeFactor, GMX_FLOAT_PRECISION),
+      priceImpactUsd: gmx.priceImpactUsd, quoteDecimals: config.quoteAssetDecimals, limits,
+    });
+    if (refusal !== undefined) fail('COLLATERAL_BELOW_MINIMUM', refusal);
+    return sizeAtoms * usdScale;
+  }
+
   async #requireChain(): Promise<void> {
     try {
       await requireArbitrumSepoliaChain(this.#options.chain);
@@ -1607,10 +1665,10 @@ export class ArbitrumSepoliaExecutor {
     }
     // The quote asset is the GMX USD unit at par, so quote atoms scale to GMX 30-decimal USD exactly.
     const usdScale = 10n ** BigInt(GMX_USD_DECIMALS - config.quoteAssetDecimals);
-    const sizeDeltaUsd = quote.expectedPerpNotional.atoms * usdScale;
     // A short increase accepts any fill at or above this price, so the bound rounds up.
     const acceptablePrice = ceilDiv(perpetual.limitPrice.quoteAtoms * usdScale, perpetual.limitPrice.baseAtoms);
     const quantity = order.quantity.atoms;
+    const sizeDeltaUsd = await this.#gmxShortSize(quantity, order.quantity.asset.decimals, acceptablePrice, quote.expectedMarginDelta.atoms);
     const rollbackMinQuoteAtoms = ceilDiv(quantity * rollback.limitPrice.quoteAtoms, rollback.limitPrice.baseAtoms);
     const nonce = await this.#read(coordinator, ARBITRUM_ASYNC_COORDINATOR_ABI, 'nextNonce', [ownerAddress]);
     if (typeof nonce !== 'bigint') fail('CHAIN_MISMATCH', 'owner nonce is invalid');

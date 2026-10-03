@@ -16,7 +16,7 @@ import {
   type PackageOrderInput,
   type QuotedOutcomeInput,
 } from '@naryx/protocol-types';
-import { ContractFunctionRevertedError, hashTypedData, type Address, type Hex } from 'viem';
+import { ContractFunctionRevertedError, encodeAbiParameters, hashTypedData, keccak256, type Address, type Hex } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import {
   ArbitrumSepoliaExecutor,
@@ -62,6 +62,13 @@ const spotPort = address('e');
 const spotPool = address('9');
 const uniswapFactory = address('1');
 const spotQuoter = { address: address('2'), expectedCodeHash: hex('2') };
+const gmxReader = { address: address('a'), expectedCodeHash: hex('a') };
+// GMX prices are 30-decimal USD per base atom: the reference is 2500.12345678 USD per 10^18 atoms.
+const REFERENCE_PRICE = 2_500_123_456_780_000n;
+const marketKey = (name: string) => keccak256(encodeAbiParameters(
+  [{ type: 'bytes32' }, { type: 'address' }],
+  [keccak256(encodeAbiParameters([{ type: 'string' }], [name])), market],
+));
 
 type QuoterCall = Readonly<{ address: Address; functionName: string; args?: readonly unknown[] }>;
 
@@ -70,10 +77,22 @@ function readPort(options: Readonly<{
   quoterCodeHash?: Hex;
   poolFactory?: Address;
   calls?: QuoterCall[];
+  /** GMX's execution price for the short and its price impact; no impact by default. */
+  gmx?: Readonly<{ executionPrice: bigint; priceImpactUsd: bigint }>;
+  minCollateralUsd?: bigint;
+  readerCodeHash?: Hex;
 }> = {}): ArbitrumSepoliaReadPort {
   const codes = new Map<string, Hex>([
     [priceFeed.address, priceFeed.expectedCodeHash], [dataStore.address, dataStore.expectedCodeHash],
     [spotPort, hex('e')], [spotQuoter.address, options.quoterCodeHash ?? spotQuoter.expectedCodeHash],
+    [gmxReader.address, options.readerCodeHash ?? gmxReader.expectedCodeHash],
+  ]);
+  const uints = new Map<string, bigint>([
+    [gmxPositionFeeFactorKey(market, true), 3n * 10n ** 26n],
+    [gmxPositionFeeFactorKey(market, false), 5n * 10n ** 26n],
+    [GMX_DATA_STORE_KEYS.minCollateralUsd, options.minCollateralUsd ?? 10n ** 30n],
+    [GMX_DATA_STORE_KEYS.minPositionSizeUsd, 10n ** 30n],
+    [marketKey('MIN_COLLATERAL_FACTOR'), 5n * 10n ** 27n],
   ]);
   return {
     chainId: async () => 421_614n,
@@ -85,9 +104,13 @@ function readPort(options: Readonly<{
         case 'decimals': return 8;
         case 'latestRoundData': return [7n, ANSWER, NOW - 10n, NOW - 10n, 7n];
         case 'getUint':
-          if (args?.[0] === gmxPositionFeeFactorKey(market, true)) return 3n * 10n ** 26n;
-          if (args?.[0] === gmxPositionFeeFactorKey(market, false)) return 5n * 10n ** 26n;
+          if (uints.has(String(args?.[0]))) return uints.get(String(args?.[0]));
           break;
+        case 'getExecutionPrice': {
+          options.calls?.push({ address: target, functionName, ...(args === undefined ? {} : { args }) });
+          const gmx = options.gmx ?? { executionPrice: REFERENCE_PRICE, priceImpactUsd: 0n };
+          return { ...gmx, balanceWasImproved: false, proportionalPendingImpactUsd: 0n, totalImpactUsd: 0n, priceImpactDiffUsd: 0n };
+        }
         case 'spotPort': return spotPort;
         case 'spotPortCodeHash': return hex('e');
         case 'pool': return spotPool;
@@ -162,7 +185,7 @@ function quoteRuntime(chain: ArbitrumSepoliaReadPort = readPort()) {
     marginBps: 1_000, perpSlippageBps: 100, rollbackSlippageBps: 200,
     baseAsset: base, quoteAsset: quote, accountFactory, accountImplementation,
     priceFeed, priceFeedDecimals: 8, maxPriceAgeSeconds: 60n,
-    gmxDataStore: dataStore, gmxMarket: market, spotQuoter,
+    gmxDataStore: dataStore, gmxReader, gmxMarket: market, spotQuoter,
     spot: { adapter: spotAdapter, venue, market: versionedManifestRef('weth-usdc-spot', 1, hash('7')), action: action(0, spotAdapter) },
     perpetual: { adapter: perpetualAdapter, venue, market: versionedManifestRef('gmx-eth-usd', 1, hash('8')), action: action(1, perpetualAdapter) },
     accountBindings: [
@@ -198,7 +221,7 @@ test('quotes the Arbitrum spot leg at the pool cost for the exact size and the h
   assert.equal(terms.expectedPerpNotional.atoms, 25_001_234n);
   // The signed spread is the true one: 66 quote atoms over 10^16 base atoms, in lowest terms.
   assert.deepEqual(spreadOf(terms.quotedOutcome), [33n, 5_000_000_000_000_000n]);
-  assert.deepEqual(calls, [{
+  assert.deepEqual(calls.filter((call) => call.functionName === 'quoteExactOutputSingle'), [{
     address: spotQuoter.address,
     functionName: 'quoteExactOutputSingle',
     args: [{ tokenIn: address('c'), tokenOut: address('f'), amount: QUANTITY, fee: 500, sqrtPriceLimitX96: 0n }],
@@ -229,21 +252,95 @@ test('quotes the Arbitrum spot leg at the pool cost for the exact size and the h
   }, 800_000n, 100_000_000n, 2_000n), 291_600_000_000_000n);
 });
 
+test('quotes an Arbitrum short at GMX\'s execution price for the exact size and refuses it when impact breaks the spread cap', async () => {
+  // GMX fills the short 0.2% under the reference (negative price impact on an imbalanced market).
+  const executionPrice = (REFERENCE_PRICE * 998n) / 1_000n;
+  const gmx = { executionPrice, priceImpactUsd: -(25_001_234n * 10n ** 24n) / 500n };
+  // A 10 USDC per WETH cap admits it; the quote carries the impact.
+  const order = validatePackageOrderProfile({
+    ...orderInput(),
+    maxEntrySpread: { baseAsset: base, quoteAsset: quote, quoteAtoms: 1n, baseAtoms: 10n ** 11n, roundingDirection: 'CEIL' },
+  });
+  const orderHash = packageOrderHash(order);
+  const calls: QuoterCall[] = [];
+  const runtime = quoteRuntime(readPort({ gmx, calls }));
+  const candidates = await runtime.candidates({ order, orderHash });
+  const decision = planAtomicEntryRoute({ order, orderHash }, () => candidates);
+  const terms = await runtime.terms({ order, decision });
+  // GMX is asked for exactly the hedge size, 0.01 ETH at the reference in whole USDC atoms.
+  const reader = calls.find((call) => call.functionName === 'getExecutionPrice');
+  assert.equal(reader?.address, gmxReader.address);
+  assert.equal(reader?.args?.[5], 25_001_234n * 10n ** 24n);
+  assert.equal(reader?.args?.[7], false);
+  // Proceeds are the quantity at GMX's fill, rounded down: 24951232.09 USDC atoms.
+  assert.equal(terms.expectedPerpNotional.atoms, 24_951_232n);
+  // 25001300 - 24951232 = 50068 quote atoms over 10^16 base atoms: 5.0068 USDC per WETH.
+  assert.deepEqual(spreadOf(terms.quotedOutcome), [12_517n, 2_500_000_000_000_000n]);
+  // GMX sizes the short, its fee, and the margin at the reference size, unchanged by the impact.
+  assert.equal(terms.expectedMarginDelta.atoms, 2_500_124n);
+  assert.equal(terms.expectedNormalizedVenueFeesByAsset.find((fee) => fee.asset.assetId === quote.assetId)?.atoms, 12_501n);
+  // The acceptable price is GMX's execution price less the 1% perp slippage, never the reference.
+  const perpetual = decision.route.legs.find((leg) => leg.legRole === 'PERPETUAL')!;
+  const usdScale = 10n ** 24n;
+  const acceptable = (perpetual.limitPrice!.quoteAtoms * usdScale + perpetual.limitPrice!.baseAtoms - 1n) / perpetual.limitPrice!.baseAtoms;
+  assert.equal(acceptable, (executionPrice * 9_900n + 9_999n) / 10_000n);
+  assert.ok(acceptable < (REFERENCE_PRICE * 9_900n) / 10_000n);
+  await signAtomicEntryQuote({ order, decision, terms, signer: ed25519Signer() });
+
+  // Under a 1 USDC cap the same impact is refused before anything is signed, naming GMX's fill.
+  const capped = validatePackageOrderProfile(orderInput());
+  await assert.rejects(
+    async () => quoteRuntime(readPort({ gmx })).candidates({ order: capped, orderHash: packageOrderHash(capped) }),
+    (error: Error & { code?: string }) => error.code === 'QUOTE_DECLINED'
+      && /entry spread is 5\.00 per unit \(spot cost 2500\.13, GMX short fill 2495\.12 impact included, reference 2500\.12\), above your signed maximum of 1\.00; nothing was signed\.$/.test(error.message)
+      && error.message.length <= 'QUOTE_DECLINED: '.length + 240,
+  );
+  // A Reader that is not the pinned GMX Reader is never trusted.
+  await assert.rejects(
+    async () => quoteRuntime(readPort({ readerCodeHash: hex('b') })).candidates({ order, orderHash }),
+    /GMX reader code hash does not match/,
+  );
+});
+
+test('refuses an Arbitrum entry below GMX\'s minimum collateral as read from the data store', async () => {
+  // 0.001 ETH: 2.500123 USDC short with a 10% margin of 0.250013 leaves about 0.2475 USD after both fees.
+  const small = validatePackageOrderProfile({
+    ...orderInput(), quantity: assetAmount(base, 10n ** 15n), maxSpotQuoteIn: assetAmount(quote, 2_600_000n),
+  });
+  const orderHash = packageOrderHash(small);
+  await assert.rejects(
+    async () => quoteRuntime(readPort({ quoteIn: 2_500_130n })).candidates({ order: small, orderHash }),
+    (error: Error & { code?: string }) => error.code === 'QUOTE_DECLINED'
+      && /GMX would hold 0\.24 USD of collateral for this short after fees, below its minimum of 1\.00 USD; nothing was signed\. Increase the size\.$/.test(error.message),
+  );
+  // The minimum is GMX's live MIN_COLLATERAL_USD, not a constant: at 0.10 USD the same entry quotes.
+  const candidates = await quoteRuntime(readPort({ quoteIn: 2_500_130n, minCollateralUsd: 10n ** 29n }))
+    .candidates({ order: small, orderHash });
+  assert.equal(candidates.length, 1);
+  // GMX V2.2 charges the short's pending impact when it closes: a 15% impact (3.7502 USD) on 0.01 ETH
+  // exceeds its 2.5 USD margin, so even a spread cap that allows it cannot make the package closable.
+  const wide = validatePackageOrderProfile({
+    ...orderInput(),
+    maxEntrySpread: { baseAsset: base, quoteAsset: quote, quoteAtoms: 1n, baseAtoms: 10n ** 9n, roundingDirection: 'CEIL' },
+  });
+  await assert.rejects(
+    async () => quoteRuntime(readPort({
+      gmx: { executionPrice: (REFERENCE_PRICE * 85n) / 100n, priceImpactUsd: -(25_001_234n * 10n ** 24n * 15n) / 100n },
+    })).candidates({ order: wide, orderHash: packageOrderHash(wide) }),
+    /GMX's price impact of 3\.76 USD on this short, charged when it closes, leaves -1\.27 USD of collateral after fees, below its minimum of 1\.00 USD; nothing was signed\.$/,
+  );
+});
+
 test('refuses to sign an Arbitrum entry whose pool cost puts the real spread above the signed cap', async () => {
   // The pool 20% above the reference: the API's spot bound (quoter cost plus slippage) admits the
   // buy, but the trader would pay about 500 USDC per WETH over the hedge against a 1 USDC cap.
   const order = validatePackageOrderProfile({ ...orderInput(), maxSpotQuoteIn: assetAmount(quote, 30_300_000n) });
   const orderHash = packageOrderHash(order);
   const runtime = quoteRuntime(readPort({ quoteIn: 30_001_482n }));
-  const candidates = await runtime.candidates({ order, orderHash });
-  const decision = planAtomicEntryRoute({ order, orderHash }, () => candidates);
-  const terms = await runtime.terms({ order, decision });
-  assert.equal(terms.expectedSpotNotional.atoms, 30_001_482n);
   // 30001482 - 25001234 = 5000248 quote atoms over 10^16 base atoms: 500.0248 USDC per WETH.
-  assert.deepEqual(spreadOf(terms.quotedOutcome), [625_031n, 1_250_000_000_000_000n]);
   await assert.rejects(
-    signAtomicEntryQuote({ order, decision, terms, signer: ed25519Signer() }),
-    /quoted spread is worse than the order maximum/,
+    async () => runtime.candidates({ order, orderHash }),
+    /entry spread is 500\.02 per unit \(spot cost 3000\.14, GMX short fill 2500\.12/,
   );
 });
 
@@ -276,7 +373,8 @@ function executorConfig(): ArbitrumSepoliaExecutorConfig {
     accountFactory: identity(accountFactory, '4'), accountImplementation: identity(accountImplementation, '8'),
     collateralToken: identity(collateral, 'c'),
     spotPort: identity(address('e'), 'e'), spotBaseToken: identity(address('f'), 'f'),
-    gmxDataStore: dataStore, gmxMarket: market, quoteAssetDecimals: 6,
+    gmxDataStore: dataStore, gmxReader, gmxMarket: market, quoteAssetDecimals: 6,
+    priceFeed, priceFeedDecimals: 8, maxPriceAgeSeconds: 60n,
     executionClassManifestHash: hex('8'), seriesIdentityKey: hex('9'), seriesBindingVersion: 1, seriesBindingHash: hex('7'),
     bondAtoms: 5_000_000n, recoveryReserveAtoms: 5_000_000n, maxAggregateLossAtoms: 1_000_000n,
     maxIntermediateResidualAtoms: 3_000_000n, maxTerminalResidualAtoms: 1_000n, slashRecipient: address('2'),
@@ -291,7 +389,8 @@ const executorOwner = ownerAccount.address.toLowerCase() as Address;
 const executorAccount = arbitrumSepoliaAccountOf(accountFactory, accountImplementation, executorOwner);
 
 function attempt(): ArbitrumSepoliaExecutionAttempt {
-  const limit = { quoteAtoms: 2_475n, baseAtoms: 10n ** 15n };
+  // 2475 USDC per ETH: 2475 quote atoms per 10^12 base atoms.
+  const limit = { quoteAtoms: 2_475n, baseAtoms: 10n ** 12n };
   return {
     attemptId: ATTEMPT_ID, orderHash: hex('1'), quoteHash: hex('2'), routeHash: hex('3'),
     order: {
@@ -307,7 +406,8 @@ function attempt(): ArbitrumSepoliaExecutionAttempt {
         actionSlots: [{ action: 'ROLLBACK_SPOT', limitPrice: limit }],
       },
     },
-    quote: { expectedPerpNotional: { atoms: 25_001_234n }, expectedMarginDelta: { atoms: 2_500_124n } },
+    // The quoted proceeds carry GMX's price impact; the GMX short is still sized at the reference.
+    quote: { expectedPerpNotional: { atoms: 24_951_232n }, expectedMarginDelta: { atoms: 2_500_124n } },
   } as unknown as ArbitrumSepoliaExecutionAttempt;
 }
 
@@ -315,7 +415,7 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
   const config = executorConfig();
   const codes = new Map<string, Hex>([
     config.coordinator, config.adapter, config.accountFactory, config.accountImplementation, config.collateralToken,
-    config.spotPort, config.spotBaseToken, config.gmxDataStore,
+    config.spotPort, config.spotBaseToken, config.gmxDataStore, config.gmxReader, config.priceFeed,
   ].map((identity) => [identity.address, identity.expectedCodeHash]));
   codes.set(executorAccount, arbitrumSepoliaAccountCodeHash(accountImplementation));
   const writes: string[] = [];
@@ -329,9 +429,13 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
     terms: undefined, state: 0, stateVersion: 0n, requestKey: hex('0'),
   };
   // The GMX request's adapter status, whether the account still holds the spot leg, chain time, whether
-  // the RPC drops the next submitRecovery (the service missing its recovery window), and whether the spot
-  // is worth less than the signed rollback floor (the sale fails gas estimation).
-  const venue = { status: 1, holdsSpot: true, now: NOW, dropSubmitRecovery: false, belowRollbackFloor: false };
+  // the RPC drops the next submitRecovery (the service missing its recovery window), whether the spot
+  // is worth less than the signed rollback floor (the sale fails gas estimation), and GMX's execution
+  // price for the short.
+  const venue = {
+    status: 1, holdsSpot: true, now: NOW, dropSubmitRecovery: false, belowRollbackFloor: false,
+    executionPrice: REFERENCE_PRICE,
+  };
   const recoveryDeadline = () => journal().plan(ATTEMPT_ID)!.terms.recoveryDeadline;
   const advanceState = (state: number, requestKey = packageRecord.requestKey) => {
     packageRecord = { ...packageRecord, state, stateVersion: packageRecord.stateVersion + 1n, requestKey };
@@ -359,6 +463,10 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
           if (args?.[0] === GMX_DATA_STORE_KEYS.increaseOrderGasLimit) return 1_000_000n;
           return 10_000n;
         case 'nextNonce': return 0n;
+        case 'decimals': return 8;
+        case 'latestRoundData': return [7n, ANSWER, venue.now - 10n, venue.now - 10n, 7n];
+        case 'getExecutionPrice':
+          return { executionPrice: venue.executionPrice, priceImpactUsd: 0n, totalImpactUsd: 0n, priceImpactDiffUsd: 0n };
         case 'packageId': return arbitrumAsyncPackageId(terms as never, coordinator);
         case 'reserveDigest': return hashTypedData(arbitrumAsyncReserveTypedData(terms as never, coordinator) as never);
         case 'bondCommitment': return terms.bondHash;
@@ -457,6 +565,33 @@ test('Arbitrum executor refuses to plan or write when eth_chainId is not 421614'
     assert.deepEqual(writes, []);
     assert.equal(resolved(), 0);
     assert.equal(journal.plan(ATTEMPT_ID), undefined);
+  } finally {
+    journal.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Arbitrum executor sizes the GMX short at the reference and refuses before signing a short GMX would fill under the acceptable price', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+  const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+  try {
+    const { port, writes, venue } = fakeChain(() => journal);
+    // The signed acceptable price is 2475 USD per ETH; GMX would now fill at 2474.99.
+    venue.executionPrice = 2_474_990_000_000_000n;
+    await assert.rejects(
+      executor(port, journal).instance.prepare(ATTEMPT_ID),
+      (error: Error & { code?: string }) => error.code === 'PRICE_MOVED'
+        && /^GMX would now fill this short at 2474\.99, under the signed acceptable price of 2475\.00; nothing was signed\./.test(error.message),
+    );
+    assert.equal(journal.plan(ATTEMPT_ID), undefined);
+    assert.deepEqual(writes, []);
+    venue.executionPrice = 2_475_000_000_000_000n;
+    await executor(port, journal).instance.prepare(ATTEMPT_ID);
+    const request = journal.plan(ATTEMPT_ID)!.request;
+    // Quantity tokens at the reference (25.001234 USDC), not the impact-reduced quoted proceeds.
+    assert.equal(request.sizeDelta, -25_001_234n * 10n ** 24n);
+    assert.equal(request.acceptablePrice, 2_475_000_000_000_000n);
+    assert.equal(request.collateralAtoms, 2_500_124n);
   } finally {
     journal.close();
     rmSync(directory, { recursive: true, force: true });

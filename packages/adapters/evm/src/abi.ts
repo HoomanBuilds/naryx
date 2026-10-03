@@ -387,3 +387,53 @@ export const ATOMIC_PACKAGE_EXECUTOR_ABI: Abi = [
     outputs: [{ name: 'digest', type: 'bytes32' }],
   },
 ];
+
+const gmxPrice = [
+  { name: 'min', type: 'uint256' },
+  { name: 'max', type: 'uint256' },
+] as const satisfies readonly AbiParameter[];
+
+/**
+ * GMX V2.2 `Reader.getExecutionPrice`: GMX's own price impact and execution price for a position
+ * change at the given prices, read-only. A positive `sizeDeltaUsd` increases the position, a
+ * negative one decreases it, realizing `pendingImpactAmount` proportionally.
+ */
+export const GMX_V2_READER_ABI: Abi = [
+  {
+    type: 'function',
+    name: 'getExecutionPrice',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'dataStore', type: 'address' },
+      { name: 'marketKey', type: 'address' },
+      {
+        name: 'prices',
+        type: 'tuple',
+        components: [
+          { name: 'indexTokenPrice', type: 'tuple', components: gmxPrice },
+          { name: 'longTokenPrice', type: 'tuple', components: gmxPrice },
+          { name: 'shortTokenPrice', type: 'tuple', components: gmxPrice },
+        ],
+      },
+      { name: 'positionSizeInUsd', type: 'uint256' },
+      { name: 'positionSizeInTokens', type: 'uint256' },
+      { name: 'sizeDeltaUsd', type: 'int256' },
+      { name: 'pendingImpactAmount', type: 'int256' },
+      { name: 'isLong', type: 'bool' },
+    ],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'priceImpactUsd', type: 'int256' },
+          { name: 'executionPrice', type: 'uint256' },
+          { name: 'balanceWasImproved', type: 'bool' },
+          { name: 'proportionalPendingImpactUsd', type: 'int256' },
+          { name: 'totalImpactUsd', type: 'int256' },
+          { name: 'priceImpactDiffUsd', type: 'uint256' },
+        ],
+      },
+    ],
+  },
+];

@@ -52,7 +52,8 @@ function config(): ArbitrumSepoliaExecutorConfig {
     domain, coordinator: identity(address('a'), 'a'), adapter: identity(adapter, 'b'),
     accountFactory: identity(factory, '4'), accountImplementation: identity(implementation, '8'),
     collateralToken: identity(collateral, 'c'), spotPort: identity(spotPort, 'e'), spotBaseToken: identity(address('f'), 'f'),
-    gmxDataStore: identity(dataStore, '6'), gmxMarket: market, quoteAssetDecimals: 6,
+    gmxDataStore: identity(dataStore, '6'), gmxReader: identity(address('1'), '1'), gmxMarket: market, quoteAssetDecimals: 6,
+    priceFeed: identity(address('3'), '3'), priceFeedDecimals: 8, maxPriceAgeSeconds: 60n,
     executionClassManifestHash: hex('8'), seriesIdentityKey: hex('9'), seriesBindingVersion: 1, seriesBindingHash: hex('7'),
     bondAtoms: 5_000_000n, recoveryReserveAtoms: 5_000_000n, maxAggregateLossAtoms: 1_000_000n,
     maxIntermediateResidualAtoms: 3_000_000n, maxTerminalResidualAtoms: 1_000n, slashRecipient: address('2'),
@@ -126,6 +127,7 @@ function fakeChain() {
         case 'activeExitRequestKey': return state.activeExit;
         case 'nextNonce': return state.nonce;
         case 'getUint': return uints.get(String(args?.[0])) ?? 10_000n;
+        case 'getInt': return 0n;
         case 'exitDigest':
           return hashTypedData(arbitrumExitTypedData(args?.[0] as ArbitrumExitAuthorization, exitController) as never);
         case 'exitEvidence': return [state.status, state.status === 0 ? hex('0') : hex('4'), 1n, state.reconciling, state.released];
@@ -292,6 +294,7 @@ test('Arbitrum exit quote prices the close at the lower of pool, reference, and 
     spotQuoteOutAtoms: 24_926_231n,
     positionFeeFactor: 5n * 10n ** 26n,
     position: { sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY, collateralAtoms: COLLATERAL },
+    gmx: { executionPrice: 2_500_123_456_780_000n, closeImpactUsd: 0n },
   };
   const pricing = priceArbitrumExit(input);
   // Spot proceeds less the 0.3% pool fee round down; the buy-back and the 0.05% GMX fee round up.
@@ -303,6 +306,15 @@ test('Arbitrum exit quote prices the close at the lower of pool, reference, and 
   // A thin pool's price impact: the quoted proceeds never exceed what the quoter says the sale returns.
   const thin = priceArbitrumExit({ ...input, spotQuoteOutAtoms: 24_000_000n });
   assert.deepEqual([thin.expectedSpotNotionalAtoms, thin.exitOutcomeAtoms], [24_000_000n, 26_487_622n]);
+  // GMX's impact on the close (the entry's pending impact plus the close's own) moves the perp
+  // output; a negative fraction of an atom rounds against the trader.
+  const impacted = (closeImpactUsd: bigint, executionPrice = 2_500_123_456_780_000n) =>
+    priceArbitrumExit({ ...input, gmx: { executionPrice, closeImpactUsd } });
+  assert.equal(impacted(-125n * 10n ** 28n).expectedPerpOutputAtoms, 2_487_622n - 1_250_000n);
+  assert.equal(impacted(10n ** 29n).expectedPerpOutputAtoms, 2_487_622n + 100_000n);
+  assert.equal(impacted(-1n).expectedPerpOutputAtoms, 2_487_621n);
+  // The buy-back notional is at GMX's execution price for the close: 0.1% under the reference here.
+  assert.equal(impacted(0n, 2_497_623_333_323_220n).closeNotionalAtoms, 24_976_234n);
   assert.throws(() => priceArbitrumExit({
     ...input, position: { sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY * 2n, collateralAtoms: COLLATERAL },
   }), /not positive/);
