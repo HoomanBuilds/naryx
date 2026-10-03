@@ -103,6 +103,7 @@ export interface ArbitrumSepoliaExitBinding {
 
 export interface ArbitrumSepoliaLiveReadClient extends EvmReadPort {
   codeHash(address: Address): Promise<Hex | undefined>;
+  latestBlockTimestamp(): Promise<bigint>;
   attemptEvidence(
     binding: ArbitrumSepoliaAttemptBinding,
     observationStartBlock: bigint,
@@ -123,7 +124,7 @@ export interface ArbitrumSepoliaRuntimeOptions {
   readonly intents: ExecutionIntentStore;
   readonly orders: InternalOrderStore;
   readonly client: ArbitrumSepoliaLiveReadClient;
-  readonly currentUnixSeconds?: () => bigint;
+  readonly currentUnixSeconds?: () => bigint | Promise<bigint>;
   /** Without it EXIT attempts have no evidence and their observation fails closed. */
   readonly exitAuthorizations?: ArbitrumSepoliaExitAuthorizationSource;
 }
@@ -334,7 +335,8 @@ export async function createArbitrumSepoliaRuntime(
     orders: options.orders,
     deployments: [manifest.deployment],
     evidence,
-    currentUnixSeconds: options.currentUnixSeconds ?? (() => BigInt(Math.floor(Date.now() / 1_000))),
+    // The coordinator checks every deadline against block.timestamp, so admission uses chain time.
+    currentUnixSeconds: options.currentUnixSeconds ?? (() => options.client.latestBlockTimestamp()),
   });
   return createEvmTestnetAsyncObservationPort({
     contextProvider: async (attemptId) => {
@@ -355,6 +357,7 @@ export function createViemArbitrumSepoliaReadClient(rpcUrl: string): ArbitrumSep
   const client = createPublicClient({ transport: http(rpcUrl) }) as ViemClient;
   return Object.freeze({
     chainId: async () => BigInt(await client.getChainId()),
+    latestBlockTimestamp: async () => (await client.getBlock({ blockTag: "latest" })).timestamp,
     codeHash: async (address: Address) => {
       const code = await client.getCode({ address });
       return code === undefined || code === "0x" ? undefined : keccak256(code);

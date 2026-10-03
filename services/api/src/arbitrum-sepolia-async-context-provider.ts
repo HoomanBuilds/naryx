@@ -147,7 +147,8 @@ export interface ArbitrumSepoliaAsyncContextProviderOptions {
   readonly evidence: (
     attemptId: string,
   ) => Promise<ArbitrumSepoliaAsyncAttemptEvidence | undefined> | ArbitrumSepoliaAsyncAttemptEvidence | undefined;
-  readonly currentUnixSeconds: () => bigint;
+  /** Chain time: admission must agree with the coordinator's block.timestamp checks. */
+  readonly currentUnixSeconds: () => bigint | Promise<bigint>;
 }
 
 export class ArbitrumSepoliaAsyncContextError extends Error {
@@ -304,7 +305,7 @@ export function createArbitrumSepoliaAsyncContextProvider(
     }
     const configuration = deploymentFor(order.domain, options.deployments);
     validateArbitrumSepoliaAsyncDeploymentConfiguration(configuration);
-    const currentUnixSeconds = options.currentUnixSeconds();
+    const currentUnixSeconds = await options.currentUnixSeconds();
     if (typeof currentUnixSeconds !== "bigint" || currentUnixSeconds <= 0n) {
       fail("INVALID_CLOCK", "Current Arbitrum Sepolia Unix time must be positive.");
     }

@@ -156,6 +156,7 @@ function liveClient(
   for (const identity of identities) hashes.set(identity.address.toLowerCase(), identity.expectedCodeHash);
   return {
     chainId: async () => chainId,
+    latestBlockTimestamp: async () => 1n,
     codeHash: async (address) => address.toLowerCase() === wrongCodeAddress?.toLowerCase()
       ? `0x${"ff".repeat(32)}`
       : hashes.get(address.toLowerCase()),
