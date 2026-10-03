@@ -250,6 +250,12 @@ test("Hyperliquid Testnet context prices orders from the live snapshot for any o
     assert.equal(order.hyperliquidMaxNetSpotDelta?.atoms, 100_001n);
     const feeAtoms = (100_001n * 35n + 99_999n) / 100_000n;
     assert.ok(100_001n - order.hyperliquidMinNetSpotDelta!.atoms >= feeAtoms);
+    // A solver quote lists that base-asset fee, so the order signs a base-asset venue fee cap too: the
+    // fee part of the shortfall, ceil(100001 * 5 / 10000) = 51 atoms, beside the configured quote cap.
+    assert.deepEqual(order.maxVenueFeeAtomsByAsset.map((cap) => [cap.asset.assetId, cap.maxAtoms]), [
+      ["hypercore:testnet:btc", 51n], ["hypercore:testnet:usdc", 10_000n],
+    ]);
+    assert.ok(51n >= feeAtoms);
     assert.deepEqual(order.allowedRecoveryActions, [
       "CANCEL_OPEN_ORDERS", "COMPLETE_SPOT", "COMPLETE_PERP", "ROLLBACK_SPOT", "ROLLBACK_PERP",
     ]);
