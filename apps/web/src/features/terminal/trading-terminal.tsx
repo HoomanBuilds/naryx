@@ -876,6 +876,40 @@ function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
 }
 
 /** The owner's factory account, the signed quote, the reviewed bonded reservation, and its funding. */
+/** A signed per-unit rate in quote atoms over base atoms, as quote units per one base unit, two decimals. */
+function perUnitText(quoteAtoms: string, baseAtoms: string, baseDecimals: number, quoteDecimals: number): string {
+  if (!/^-?(0|[1-9][0-9]*)$/.test(quoteAtoms) || !/^[1-9][0-9]*$/.test(baseAtoms)) return "-";
+  const ten = BigInt(10);
+  const negative = quoteAtoms.startsWith("-");
+  const cents = (BigInt(negative ? quoteAtoms.slice(1) : quoteAtoms) * ten ** BigInt(baseDecimals) * BigInt(100))
+    / (BigInt(baseAtoms) * ten ** BigInt(quoteDecimals));
+  return `${negative && cents > BigInt(0) ? "-" : ""}${cents / BigInt(100)}.${(cents % BigInt(100)).toString().padStart(2, "0")}`;
+}
+
+/**
+ * The Arbitrum entry prices the solver signed: the spot pool's cost for the exact size, the short's
+ * proceeds at GMX's own execution price (its price impact included), and the resulting spread the
+ * signed maximum bounds.
+ */
+function ArbitrumEntryPrices({ quote }: { quote: LocalSolverQuote }) {
+  const terms = quote.quote;
+  const outcome = terms.quotedOutcome as Record<string, unknown> | undefined;
+  if (outcome?.kind !== "ENTRY_SPREAD") return null;
+  const spread = outcome.entrySpread as Record<string, unknown> | undefined;
+  const spot = terms.expectedSpotNotional as Record<string, unknown> | undefined;
+  const perp = terms.expectedPerpNotional as Record<string, unknown> | undefined;
+  const quoteDecimals = Number((spot?.asset as Record<string, unknown> | undefined)?.decimals);
+  const baseDecimals = Number((spread?.baseAsset as Record<string, unknown> | undefined)?.decimals);
+  if (!Number.isSafeInteger(quoteDecimals) || !Number.isSafeInteger(baseDecimals)) return null;
+  return (
+    <div className={styles.reviewGrid} aria-label="Entry prices">
+      <span>Spot cost</span><strong>{quoteAtomsText(protocolScalar(spot?.atoms), quoteDecimals)}</strong>
+      <span>Short proceeds at GMX fill</span><strong>{quoteAtomsText(protocolScalar(perp?.atoms), quoteDecimals)} (GMX price impact included)</strong>
+      <span>Entry spread</span><strong>{perUnitText(protocolScalar(spread?.quoteAtoms), protocolScalar(spread?.baseAtoms), baseDecimals, quoteDecimals)} USDC per unit</strong>
+    </div>
+  );
+}
+
 function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs: number }) {
   const account = flow.account;
   const quote = flow.quote;
@@ -911,6 +945,7 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
           <span>Settlement account</span><strong title={flow.order.settlementAccount}>{compact(flow.order.settlementAccount, 10, 8)}</strong>
         </div>
       ) : null}
+      {quote ? <ArbitrumEntryPrices quote={quote} /> : null}
       {quote ? <QuoteTerms quote={quote} /> : null}
       {quote ? <QuoteFees quote={quote} /> : null}
       {flow.attempt ? (
