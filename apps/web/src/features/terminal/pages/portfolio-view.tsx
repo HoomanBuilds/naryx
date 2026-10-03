@@ -249,7 +249,9 @@ export function PortfolioView() {
             <thead>
               <tr>
                 {POSITION_COLUMNS.map((column, index) => (
-                  <th key={column || "action"} scope="col" className={index >= 2 && index <= 3 ? styles.num : undefined}>{column}</th>
+                  <th key={column || "action"} scope="col" className={index >= 2 && index <= 3 ? styles.num : undefined}>
+                    {column || <span className="sr-only">Action</span>}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -288,6 +290,7 @@ export function PortfolioView() {
                       <button
                         type="button"
                         className={styles.ghost}
+                        aria-label={`Exit the ${DOMAIN_META[position.domain].network} package ${position.packageId}`}
                         onClick={() => {
                           setSelectedDomain(position.domain);
                           router.push("/trade?mode=exit");

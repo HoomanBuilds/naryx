@@ -157,7 +157,7 @@ export function ActivityView() {
         </div>
         {attempts.length > 0 ? (
           <div className={styles.headActions}>
-            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); clearAttempts(); }}>
+            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); clearAttempts(owners); }}>
               Clear list
             </button>
           </div>

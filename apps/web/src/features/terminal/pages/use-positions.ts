@@ -17,6 +17,8 @@ export type OpenPosition = Readonly<{
   domain: DomainId;
   packageId: string;
   size: string;
+  /** The spot leg in base units at full precision, as the exit ticket is sized; null when unknown. */
+  exactSize: string | null;
   entryNotional: string | null;
   state: "Open" | "Entering" | "Exiting" | "Unresolved";
 }>;
@@ -37,6 +39,12 @@ function units(atoms: bigint | string, decimals: number, maxFraction = 6): strin
   const whole = digits.slice(0, digits.length - decimals);
   const fraction = digits.slice(digits.length - decimals, digits.length - decimals + maxFraction).replace(/0+$/, "");
   return `${negative ? "-" : ""}${Number(whole).toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+}
+
+function exact(atoms: bigint | string, decimals: number): string {
+  const digits = (typeof atoms === "bigint" ? atoms : BigInt(atoms)).toString().padStart(decimals + 1, "0");
+  const fraction = decimals === 0 ? "" : digits.slice(-decimals).replace(/0+$/, "");
+  return `${decimals === 0 ? digits : digits.slice(0, -decimals)}${fraction ? `.${fraction}` : ""}`;
 }
 
 function usd(atoms: bigint | string, decimals: number): string {
@@ -64,6 +72,7 @@ export function usePositions(): PositionsState {
         domain: "base",
         packageId: shortId(open.entryReceiptHash),
         size: `${units(open.baseQuantityAtoms, 18)} ETH`,
+        exactSize: exact(open.baseQuantityAtoms, 18),
         entryNotional: usd(open.entryPerpNotionalWad, 18),
         state: "Open",
       }];
@@ -81,6 +90,7 @@ export function usePositions(): PositionsState {
         domain: "arbitrum",
         packageId: shortId(open.packageId),
         size: `${units(open.spotBaseAtoms, 18)} ETH`,
+        exactSize: exact(open.spotBaseAtoms, 18),
         entryNotional: usd(open.positionSizeUsd, 30),
         state: !open.entryExecuted ? "Entering" : open.activeExitRequestKey !== null ? "Exiting" : "Open",
       }];
@@ -100,6 +110,8 @@ export function usePositions(): PositionsState {
         packageId: shortId(entry.entryReceiptHash ?? entry.entryOrderHash),
         size: entry.spotQuantityAtoms !== null && account.baseDecimals !== null
           ? units(entry.spotQuantityAtoms, account.baseDecimals) : "-",
+        exactSize: entry.spotQuantityAtoms !== null && account.baseDecimals !== null
+          ? exact(entry.spotQuantityAtoms, account.baseDecimals) : null,
         entryNotional: entry.entryNotionalAtoms !== null && account.quoteDecimals !== null
           ? usd(entry.entryNotionalAtoms, account.quoteDecimals) : null,
         state: entry.state === "OPEN" ? "Open" : entry.state === "EXITING" ? "Exiting"
@@ -119,6 +131,7 @@ export function usePositions(): PositionsState {
         domain: "solana",
         packageId: shortId(solana!),
         size: units(open.spotQuantityAtoms, open.baseDecimals),
+        exactSize: exact(open.spotQuantityAtoms, open.baseDecimals),
         entryNotional: open.entryNotionalAtoms > BigInt(0) ? usd(open.entryNotionalAtoms, open.quoteDecimals) : null,
         state: "Open",
       }];

@@ -60,6 +60,7 @@ import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
+import { usePositions } from "./pages/use-positions";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -1476,6 +1477,14 @@ export function TradingTerminal({
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
   const [previewRejection, setPreviewRejection] = useState<string | null>(null);
+  // A preview belongs to the lane it was fetched for: switching lanes clears it at once instead of
+  // showing the previous lane's bound and fees until the new lane's preview arrives.
+  const [previewDomain, setPreviewDomain] = useState(selectedDomain);
+  if (previewDomain !== selectedDomain) {
+    setPreviewDomain(selectedDomain);
+    setPreview(null);
+    setPreviewRejection(null);
+  }
   const [mode, setMode] = useState<PackageMode>("entry");
   // Portfolio's Exit button opens this page with ?mode=exit; the page is static, so read it once here.
   useEffect(() => {
@@ -1557,14 +1566,18 @@ export function TradingTerminal({
   const currentBaseFlow = baseFlow?.ticketKey === ticketKey && baseFlow.owner === evmWallet.account
     ? baseFlow
     : null;
-  // A Base exit closes the whole open package read from chain, so the ticket shows that size.
+  // An exit closes the whole open package, so on every lane the ticket shows that package's size:
+  // Base from its flow's chain read, every lane from the same open-package reads Portfolio shows.
   const baseOpenPackage = currentBaseFlow?.account?.openPackage ?? null;
-  const baseExitSize = selectedDomain === "base" && mode === "exit" && baseOpenPackage !== null
-    ? atomsDecimal(baseOpenPackage.baseQuantityAtoms, 18)
-    : null;
+  const { positions: openPositions } = usePositions();
+  const laneOpenPosition = openPositions.find((position) => position.domain === selectedDomain
+    && (position.state === "Open" || position.state === "Exiting") && position.exactSize !== null);
+  const openPackageExitSize = mode !== "exit" ? null
+    : selectedDomain === "base" && baseOpenPackage !== null ? atomsDecimal(baseOpenPackage.baseQuantityAtoms, 18)
+      : laneOpenPosition?.exactSize ?? null;
   useEffect(() => {
-    if (baseExitSize !== null && baseExitSize !== size) setSize(baseExitSize);
-  }, [baseExitSize, size]);
+    if (openPackageExitSize !== null && openPackageExitSize !== size) setSize(openPackageExitSize);
+  }, [openPackageExitSize, size]);
   // Once funding is sent the flow outlives ticket edits, so the reclaim path is never lost.
   const currentArbitrumFlow = arbitrumFlow !== null && arbitrumFlow.owner === evmWallet.account &&
     (arbitrumFlow.ticketKey === ticketKey || (selectedDomain === "arbitrum" && arbitrumFlow.fundHash !== null))
@@ -2286,7 +2299,8 @@ export function TradingTerminal({
       }
       const preparation = await prepareExecution(key, exitSize);
       setExecutionReview({ preparation, preparedAt: Date.now(), ticketKey });
-      recordAttempt({ attemptId: preparation.lifecycleAttemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size, flow: "devnet", createdAt: Date.now() });
+      // An exit records the size of the package it closes, read from the attempt itself.
+      recordAttempt({ attemptId: preparation.lifecycleAttemptId, owner: wallet.selectedAccount.address, domain: "solana", mode, size: exitSize ?? size, flow: "devnet", createdAt: Date.now() });
       setLifecycleView({
         ticketKey,
         attemptId: preparation.lifecycleAttemptId,
@@ -2515,7 +2529,10 @@ export function TradingTerminal({
       if (step === "select") {
         const attempt = await privateProvider.selectHyperliquidQuote(context, base.quote);
         setHyperliquidFlow({ ...base, attempt, busy: null, error: null });
-        recordAttempt({ attemptId: attempt.attemptId, owner, domain: "hyperliquid", mode, size, flow: "hyperliquid", createdAt: Date.now() });
+        recordAttempt({
+          attemptId: attempt.attemptId, owner, domain: "hyperliquid", mode,
+          size: mode === "exit" ? openPackageExitSize ?? size : size, flow: "hyperliquid", createdAt: Date.now(),
+        });
         return;
       }
       if (!base.attempt) throw new Error("Select the reviewed Hyperliquid quote first.");

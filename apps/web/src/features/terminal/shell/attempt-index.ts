@@ -52,7 +52,8 @@ function isAttempt(value: unknown): value is RecordedAttempt {
     typeof entry.owner === "string" && OWNER.test(entry.owner) &&
     typeof entry.domain === "string" && DOMAINS.includes(entry.domain) &&
     (entry.mode === "entry" || entry.mode === "exit") &&
-    typeof entry.size === "string" && /^\d{1,9}(?:\.\d{1,6})?$/.test(entry.size) &&
+    // Sizes are in each lane's base asset, up to its full precision (18 decimals for WETH).
+    typeof entry.size === "string" && /^\d{1,12}(?:\.\d{1,18})?$/.test(entry.size) &&
     typeof entry.flow === "string" && FLOWS.includes(entry.flow) &&
     typeof entry.createdAt === "number" && Number.isSafeInteger(entry.createdAt);
 }
@@ -88,7 +89,11 @@ function subscribe(callback: () => void) {
   };
 }
 
-export function useAttemptIndex(): [readonly RecordedAttempt[], (attempt: RecordedAttempt) => void, () => void] {
+export function useAttemptIndex(): [
+  readonly RecordedAttempt[],
+  (attempt: RecordedAttempt) => void,
+  (owners: readonly string[]) => void,
+] {
   const attempts = useSyncExternalStore(subscribe, snapshot, () => EMPTY);
   const record = useCallback((attempt: RecordedAttempt) => {
     if (!isAttempt(attempt)) return;
@@ -102,12 +107,15 @@ export function useAttemptIndex(): [readonly RecordedAttempt[], (attempt: Record
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);
-  const clear = useCallback(() => {
-    memory = "[]";
+  // Clears only the given wallets' attempts; other wallets' entries in this browser are kept.
+  const clear = useCallback((owners: readonly string[]) => {
+    const keys = new Set(owners.map(ownerKey));
+    const raw = JSON.stringify(snapshot().filter((entry) => !keys.has(ownerKey(entry.owner))));
+    memory = raw;
     try {
-      window.localStorage.removeItem(KEY);
+      window.localStorage.setItem(KEY, raw);
     } catch {
-      // Nothing stored.
+      // Storage can be unavailable; the in-memory copy keeps this session's list.
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);

@@ -27,7 +27,8 @@ type TerminalContextValue = TerminalServiceConfig & {
   refreshHealth(): void;
   attempts: readonly RecordedAttempt[];
   recordAttempt(attempt: RecordedAttempt): void;
-  clearAttempts(): void;
+  /** Removes the given wallets' local attempts from this browser's list. */
+  clearAttempts(owners: readonly string[]): void;
 };
 
 export const DOMAIN_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
@@ -67,7 +68,7 @@ export function domainLive(domain: DomainId, health: PrivateTerminalRuntimeHealt
 const TerminalContext = createContext<TerminalContextValue | null>(null);
 
 export function TerminalProvider({ config, children }: { config: TerminalServiceConfig; children: ReactNode }) {
-  const [selectedDomain, setSelectedDomain] = usePersistedSetting<DomainId>("domain", "solana", DOMAIN_ORDER);
+  const [storedDomain, setSelectedDomain] = usePersistedSetting<DomainId>("domain", "solana", DOMAIN_ORDER);
   const privateProvider = useMemo(() => {
     if (!config.privateApiBaseUrl) return null;
     try {
@@ -93,13 +94,14 @@ export function TerminalProvider({ config, children }: { config: TerminalService
     return () => controller.abort();
   }, [healthRequest, privateProvider]);
 
-  // A first visit opens on a lane that executes: when the default lane is not live but another is,
-  // and the viewer has never picked one, the first live lane is selected instead.
-  useEffect(() => {
-    if (health.value === null || hasPersistedSetting("domain") || domainLive(selectedDomain, health.value)) return;
-    const live = DOMAIN_ORDER.find((domain) => domainLive(domain, health.value));
-    if (live !== undefined) setSelectedDomain(live);
-  }, [health.value, selectedDomain, setSelectedDomain]);
+  // A first visit opens on a lane that executes: when the viewer has never picked a lane and the
+  // default is not live, the first live lane is shown. That pick is derived, never saved, so a viewer
+  // who never chose moves on to another live lane if it goes down; a saved choice always wins.
+  // Health is unknown during the server render and the first client render, so both use the default.
+  const healthValue = health.value;
+  const selectedDomain = healthValue === null || hasPersistedSetting("domain") || domainLive(storedDomain, healthValue)
+    ? storedDomain
+    : DOMAIN_ORDER.find((domain) => domainLive(domain, healthValue)) ?? storedDomain;
 
   const refreshHealth = useCallback(() => {
     if (!privateProvider) return;

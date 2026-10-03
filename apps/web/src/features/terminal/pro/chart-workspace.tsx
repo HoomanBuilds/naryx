@@ -192,9 +192,14 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
   const fundingRate = parseMetric(snapshot, /funding/i);
   const holdingDays = Number(/(\d+)D$/i.exec(snapshot.market.packageId)?.[1] ?? "30");
   const quantity = Number(size);
-  const entryBasis = useMemo(() => feed.candles("basis", "1m").at(-1)?.close ?? 0, [feed]);
+  // The latest basis candle, else the snapshot's observed basis; never an assumed zero, which would
+  // move break-even and the convergence payoff by the whole basis.
+  const observedBasis = useMemo(() => feed.candles("basis", "1m").at(-1)?.close ?? null, [feed]);
+  const basisKnown = observedBasis ?? parseMetric(snapshot, /^basis$/i);
+  const entryBasis = basisKnown ?? 0;
   const fees = preview ? Number(preview.totalFee.value) : 0;
-  const valid = spot !== null && Number.isFinite(quantity) && quantity > 0;
+  const sized = spot !== null && Number.isFinite(quantity) && quantity > 0;
+  const valid = sized && basisKnown !== null;
   const notional = valid ? quantity * spot : 0;
   const funding = withFunding && fundingRate !== null ? notional * (fundingRate / 100) * (holdingDays / 365) : 0;
   const pnl = (exitBasis: number) => notional * ((entryBasis - exitBasis) / 10_000) - fees + funding;
@@ -221,7 +226,7 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
   return (
     <div className={styles.payoffHost}>
       <div className={styles.payoffStats}>
-        <div><span>Entry basis</span><strong>{entryBasis.toFixed(1)} bps</strong></div>
+        <div><span>Entry basis</span><strong>{basisKnown === null ? "-" : `${entryBasis.toFixed(1)} bps`}</strong></div>
         <div><span>Notional</span><strong>{valid ? `$${notional.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "-"}</strong></div>
         <div><span>Break-even exit</span><strong>{valid ? `${breakeven.toFixed(1)} bps` : "-"}</strong></div>
         <div title="Days of funding at the current rate that repay the previewed fees, exiting at the entry basis"><span>Fee payback</span><strong>{paybackDays === null ? "-" : `${paybackDays < 10 ? paybackDays.toFixed(1) : Math.round(paybackDays)} days`}</strong></div>
@@ -279,7 +284,11 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
             ) : null}
           </svg>
         ) : null}
-        {!valid ? <div className={styles.chartLoading}>Enter a package size to model the payoff.</div> : null}
+        {!valid ? (
+          <div className={styles.chartLoading}>
+            {sized ? "The payoff needs an observed basis; none is available for this lane yet." : "Enter a package size to model the payoff."}
+          </div>
+        ) : null}
         {hoverBasis !== null && hoverValue !== null ? (
           <div className={styles.depthTooltip} style={{ left: Math.min(Math.max(x(hoverBasis) + 12, 8), Math.max(8, width - 196)) }}>
             <span>Exit basis</span><strong>{hoverBasis.toFixed(1)} bps</strong>
