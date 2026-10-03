@@ -26,6 +26,7 @@
     "gmxOrderVault": { "address": "0x1b8AC606de71686fd2a1AEDEcb6E0EFba28909a2" },
     "gmxOrderHandler": { "address": "0xC881c2391611829d7bc81c12a285cB0201F08f8c" },
     "gmxRoleStore": { "address": "0x433E3C47885b929aEcE4149E3c835E565a20D95c" },
+    "gmxReader": { "address": "0x4750376b9378294138Cf7B7D69a2d243f4940f71", "expectCodeHash": "0xb0843df7e769e7c8016867899eb1362fce76a9de556f794e7bcae5ef5c5aa2ef" },
     "uniswapQuoter": { "address": "0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0B", "expectCodeHash": "0xb906edfeaf29492e10fc571af73ce1baa5ae85accc925f8c5037808d6202ba0e" },
     "priceFeed": { "address": { "$operator": "reviewed Arbitrum Sepolia ETH/USD reference feed address" } }
   },
@@ -212,7 +213,8 @@
             "router": { "$contract": "gmxRouter" },
             "orderVault": { "$contract": "gmxOrderVault" },
             "orderHandler": { "$contract": "gmxOrderHandler" },
-            "roleStore": { "$contract": "gmxRoleStore" }
+            "roleStore": { "$contract": "gmxRoleStore" },
+            "reader": { "$contract": "gmxReader" }
           },
           "executionClassManifestHash": { "$def": "executionClassManifestHash" },
           "route": {
@@ -298,7 +300,7 @@
           "venueWindowSeconds": { "$bigint": { "$operator": "GMX venue window, seconds" } },
           "recoveryWindowSeconds": { "$bigint": { "$operator": "recovery window, seconds" } },
           "marginBps": { "$number": { "$operator": "margin bps of perp notional" } },
-          "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps" } },
+          "perpSlippageBps": { "$number": { "$operator": "perp slippage, bps (applied to GMX's own execution price for the exact size, price impact included; covers oracle and open interest movement until GMX executes)" } },
           "rollbackSlippageBps": { "$number": { "$operator": "rollback slippage, bps" } },
           "baseAsset": { "$def": "baseAssetRef" },
           "quoteAsset": { "$def": "quoteAssetRef" },
@@ -308,6 +310,7 @@
           "priceFeedDecimals": { "$def": "priceFeedDecimals" },
           "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age, seconds (recommended 600; the Arbitrum Sepolia ETH/USD feed updated every 30 to 135 s when measured on 2026-10-02)" } },
           "gmxDataStore": { "$contract": "gmxDataStore" },
+          "gmxReader": { "$contract": "gmxReader" },
           "gmxMarket": { "$release": "contracts.market.addressLower" },
           "spotQuoter": { "$contract": "uniswapQuoter" },
           "spot": {
@@ -350,7 +353,11 @@
         "spotPort": { "$contract": "spotPort" },
         "spotBaseToken": { "$contract": "spotBaseToken" },
         "gmxDataStore": { "$contract": "gmxDataStore" },
+        "gmxReader": { "$contract": "gmxReader" },
         "gmxMarket": { "$release": "contracts.market.addressLower" },
+        "priceFeed": { "$contract": "priceFeed" },
+        "priceFeedDecimals": { "$def": "priceFeedDecimals" },
+        "maxPriceAgeSeconds": { "$bigint": { "$operator": "max reference price age when sizing the GMX short, seconds (recommended 600, equal to the quote maxPriceAgeSeconds)" } },
         "quoteAssetDecimals": { "$def": "quoteDecimals" },
         "executionClassManifestHash": { "$0x": { "$def": "executionClassManifestHash" } },
         "seriesIdentityKey": { "$0x": { "$def": "seriesIdentityKey" } },
@@ -406,6 +413,7 @@
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-data-store", "address": { "$release": "contracts.gmxDataStore.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxDataStore.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-exchange-router", "address": { "$release": "contracts.gmxExchangeRouter.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxExchangeRouter.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-order-handler", "address": { "$release": "contracts.gmxOrderHandler.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxOrderHandler.codeHash" } }] },
+          { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-gmx-reader", "address": { "$release": "contracts.gmxReader.addressLower" }, "expectedCodeHash": { "$release": "contracts.gmxReader.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-price-feed", "address": { "$release": "contracts.priceFeed.addressLower" }, "expectedCodeHash": { "$release": "contracts.priceFeed.codeHash" } }] },
           { "$merge": [{ "$def": "codeWatch" }, { "targetId": "arbitrum-sepolia-uniswap-quoter", "address": { "$release": "contracts.uniswapQuoter.addressLower" }, "expectedCodeHash": { "$release": "contracts.uniswapQuoter.codeHash" } }] }
         ]
