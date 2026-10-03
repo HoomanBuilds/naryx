@@ -54,6 +54,8 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   baseTestnetAtomic: RuntimeBoundaryHealth;
   arbitrumTestnetAsync: RuntimeBoundaryHealth;
   hyperliquidTestnet: RuntimeBoundaryHealth;
+  /** Each configured lane's market as the service reports it; LIVE serves previews and quotes. */
+  markets: Readonly<Partial<Record<DomainId, "LIVE" | "UNAVAILABLE">>>;
   controls: Readonly<{
     /** DISABLED: no local runtime is composed, the default for a real testnet deployment. */
     localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" | "DISABLED";
@@ -1339,9 +1341,19 @@ function requireRuntimeBoundaryHealth(value: unknown, name: string): RuntimeBoun
   });
 }
 
+/** A service without the markets report (older releases) reports none. */
+function requireMarketStates(value: unknown): PrivateTerminalRuntimeHealth["markets"] {
+  if (value === undefined) return Object.freeze({});
+  if (!isRecord(value) || Object.entries(value).some(([domain, state]) =>
+    !TERMINAL_DOMAINS.has(domain) || (state !== "LIVE" && state !== "UNAVAILABLE"))) {
+    throw new Error("Private terminal market health is invalid.");
+  }
+  return Object.freeze({ ...value }) as PrivateTerminalRuntimeHealth["markets"];
+}
+
 function requireRuntimeHealth(
   value: unknown,
-): Omit<PrivateTerminalRuntimeHealth, "controls"> {
+): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets"> {
   if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
   requireExactKeys(
     value,
@@ -3392,6 +3404,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const runtime = requireRuntimeHealth(payload.runtime);
     return Object.freeze({
       ...runtime,
+      markets: requireMarketStates(payload.markets),
       controls: requireRuntimeControls(payload),
     });
   }

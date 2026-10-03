@@ -74,6 +74,11 @@ export function domainLive(domain: DomainId, health: PrivateTerminalRuntimeHealt
   return health !== null && health.controls.executionReadinessAvailable && domainHealth(domain, health)?.available === true;
 }
 
+/** A lane whose live market the service serves, for previews and quotes, whether or not it executes. */
+export function domainQuoting(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): boolean {
+  return health?.markets[domain] === "LIVE";
+}
+
 const TerminalContext = createContext<TerminalContextValue | null>(null);
 
 export function TerminalProvider({ config, children }: { config: TerminalServiceConfig; children: ReactNode }) {
@@ -104,13 +109,17 @@ export function TerminalProvider({ config, children }: { config: TerminalService
   }, [healthRequest, privateProvider]);
 
   // A first visit opens on a lane that executes: when the viewer has never picked a lane and the
-  // default is not live, the first live lane is shown. That pick is derived, never saved, so a viewer
-  // who never chose moves on to another live lane if it goes down; a saved choice always wins.
-  // Health is unknown during the server render and the first client render, so both use the default.
+  // default is not live, the first live lane is shown; with none, the first lane with a live market.
+  // That pick is derived, never saved, so a viewer who never chose moves on to another live lane if it
+  // goes down; a saved choice always wins. Health is unknown during the server render and the first
+  // client render, so both use the default.
   const healthValue = health.value;
+  const firstLive = DOMAIN_ORDER.find((domain) => domainLive(domain, healthValue));
   const selectedDomain = healthValue === null || hasPersistedSetting("domain") || domainLive(storedDomain, healthValue)
     ? storedDomain
-    : DOMAIN_ORDER.find((domain) => domainLive(domain, healthValue)) ?? storedDomain;
+    : firstLive ?? (domainQuoting(storedDomain, healthValue)
+      ? storedDomain
+      : DOMAIN_ORDER.find((domain) => domainQuoting(domain, healthValue)) ?? storedDomain);
 
   const refreshHealth = useCallback(() => {
     if (!privateProvider) return;
