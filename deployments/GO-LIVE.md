@@ -186,12 +186,27 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
 - Base has run the whole user journey on a local anvil fork of Base Sepolia, deployed with these
   runbooks and driven through the real web app, API, and solver with a fresh wallet: claim test
   USDC, set up the account, enter, reload, restart the API, wait past staleness, exit, withdraw,
-  enter again, and a second wallet trading at the same time. Arbitrum, Solana, and Hyperliquid
-  have not had a journey run; expect their first live run to surface integration issues.
+  enter again, and a second wallet trading at the same time. Arbitrum has run the same journey on
+  a local anvil fork of Arbitrum Sepolia, with GMX orders executed and cancelled through the pinned
+  OrderHandler by an impersonated order keeper using GMX's on-chain Chainlink price feed provider
+  (the live keepers use Data Streams reports, which a fork cannot produce): entry, reload, API
+  restart, an hour of accrued fees, full close, a close GMX cancelled and its retry, a second
+  wallet, an oversized order refused before signing, and GMX-cancelled entries refunded by the
+  bonded recovery. Solana and Hyperliquid have not had a journey run; expect their first live run
+  to surface integration issues.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
-  week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. Automated
-  recovery of a stuck GMX order is not built, so a failed order is resolved by the bonded recovery
-  path and the operator.
+  week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. A request GMX
+  cancels, or one still pending after its venue deadline, is recovered by the solver through the
+  coordinator's bonded recovery (the spot leg is sold back to the owner and the package closes);
+  the API sweep drives it even when the owner has left the page. A request still pending when its
+  recovery deadline passes goes to manual intervention, which has no on-chain path out while GMX
+  still holds the order; keep the solver and API running.
+- Arbitrum entry pricing: on 2026-10-03 the GMX ETH/USD testnet market was about 38:1 short-heavy, so
+  a new short paid about 15 to 18% negative price impact and GMX cancelled every entry whose
+  acceptable price allows only `perpSlippageBps`; the solver does not price GMX impact yet. GMX also
+  cancels a short whose collateral (the quoted margin) is under its `MIN_COLLATERAL_USD` (1 USD), for
+  example a 0.001 WETH package at 15% margin. Both are refunded by the bonded recovery, less the
+  pool round trip.
 - Arbitrum exit: GMX's accrued borrowing and funding fees are not read exactly, so the close carries
   a slippage allowance; if it is too small, GMX cancels the close and the package stays open. The
   close callback gas (`exitCallbackGasLimit`) is untested on the live network, and GMX refunds the
