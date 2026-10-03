@@ -2058,6 +2058,10 @@ export function TradingTerminal({
     }
     const exitUnavailable = EXIT_UNAVAILABLE[selectedDomain];
     if (mode === "exit" && exitUnavailable !== undefined) return none("Exit not available yet", exitUnavailable);
+    // Nobody is let into a package they could not close: entries pause for as long as exits do.
+    if (mode === "entry" && exitUnavailable !== undefined) {
+      return none("Entries paused", `Entries are paused until exits are available on this lane. ${exitUnavailable}`);
+    }
     if (!privateProvider || providerConnection !== "connected") {
       return { kind: "none", disabled: true, label: "Private service required", reason: "Connect the private terminal service before preparing execution." };
     }
@@ -2259,7 +2263,7 @@ export function TradingTerminal({
 
   async function handlePrepareExecution() {
     if (!privateProvider || providerConnection !== "connected" ||
-        selectedDomain !== "solana" || (mode === "exit" && EXIT_UNAVAILABLE.solana !== undefined) || !wallet.selectedAccount ||
+        selectedDomain !== "solana" || EXIT_UNAVAILABLE.solana !== undefined || !wallet.selectedAccount ||
         !wallet.canSignAndSendV0 || !wallet.canSignMessage || !preview || preview.source !== "PRIVATE_TERMINAL_BFF" ||
         quoteMode !== "coordinated_limits" ||
         currentSubmission || executionBusy) return;
