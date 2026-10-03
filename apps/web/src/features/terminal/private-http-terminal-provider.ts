@@ -2414,11 +2414,16 @@ async function terminalReadFailure(response: Response, name: string): Promise<Er
   return new Error(`Private terminal ${name} failed with ${response.status}.`);
 }
 
-/** Replaces every market number with an unavailable state; nothing from another domain is shown. */
+/**
+ * Replaces every market number with an unavailable state; nothing from another domain is shown. Only
+ * this lane's own last service identity is kept: another lane's or the local fixture's pair, size
+ * symbol, and size presets are cleared.
+ */
 export function unavailableTerminalSnapshot(
   previous: TerminalViewModel,
   domain: DomainId,
 ): TerminalViewModel {
+  const ownLane = previous.selectedDomain === domain && previous.environment.source === "PRIVATE_TERMINAL_BFF";
   return {
     ...previous,
     environment: {
@@ -2434,11 +2439,13 @@ export function unavailableTerminalSnapshot(
     domains: previous.domains.map((entry) => entry.id === domain ? { ...entry, state: "Unavailable" } : entry),
     market: {
       ...previous.market,
+      ...(ownLane ? {} : { base: "-", quote: "-" }),
       packageId: "Market unavailable",
       metrics: [{ label: "Market data", value: "Unavailable", detail: "No fresh live observation" }],
     },
     chart: { ...previous.chart, points: [] },
     plans: previous.plans.map((plan) => ({ ...plan, legs: [] })),
+    ...(ownLane ? {} : { ticket: { ...previous.ticket, defaultSize: "0", sizeSymbol: "-" } }),
   };
 }
 

@@ -1642,6 +1642,8 @@ export function TradingTerminal({
         if (active) {
           setSnapshot((previous) => unavailableTerminalSnapshot(previous, selectedDomain));
           setSnapshotDomain(selectedDomain);
+          // A size typed for another lane is in that lane's base asset, so it is not carried over.
+          if (sizedLane.current !== selectedDomain) setSize("");
           setProviderConnection(cause instanceof TerminalMarketUnavailableError ? "connected" : "disconnected");
         }
       }
@@ -1700,6 +1702,14 @@ export function TradingTerminal({
     const controller = new AbortController();
     let active = true;
     const timeout = window.setTimeout(async () => {
+      // An empty size, such as on a lane whose market never loaded, has nothing to preview.
+      if (size === "") {
+        if (active) {
+          setPreview(null);
+          setPreviewRejection(null);
+        }
+        return;
+      }
       const input = {
         domain: selectedDomain,
         mode,
