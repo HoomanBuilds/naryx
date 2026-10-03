@@ -1011,6 +1011,10 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         if (error instanceof SolverQuoteClientError) {
+          if (error.code === "QUOTE_DECLINED") {
+            reject(response, 409, error.code, `${error.detail ?? "The solver declined this quote."} Nothing was signed; try again or a smaller size.`);
+            return;
+          }
           reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);
           return;
         }

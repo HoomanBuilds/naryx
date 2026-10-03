@@ -41,9 +41,10 @@ import {
   hyperliquidTestnetDecimal,
   type HyperliquidTestnetQuoteMarketReadPort,
 } from './hyperliquid-testnet-market-preflight.js';
-import type {
-  InternalAtomicQuoteCandidateProvider,
-  InternalAtomicQuoteTermsProvider,
+import {
+  InternalAtomicQuoteError,
+  type InternalAtomicQuoteCandidateProvider,
+  type InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms, Ed25519AtomicQuoteSigner } from './signed-atomic-entry-quote.js';
 import {
@@ -824,8 +825,18 @@ export function createHyperliquidTestnetQuoteRuntime(
   // or superseded snapshot fails closed instead of re-reading the market.
   const prepared = new Map<string, Awaited<ReturnType<typeof build>>>();
   const key = (orderHash: Hash32) => Buffer.from(orderHash).toString('hex');
+  // A live book that is empty, stale, too wide, or too thin for the order's limits declines the
+  // quote with its reason, so the trader sees why instead of an opaque failure.
+  const declined = async <T>(price: () => Promise<T>): Promise<T> => {
+    try {
+      return await price();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.split('\n', 1)[0]!.slice(0, 200) : 'pricing failed';
+      throw new InternalAtomicQuoteError('QUOTE_DECLINED', `Hyperliquid testnet quote declined: ${reason}`);
+    }
+  };
   const candidates: InternalAtomicQuoteCandidateProvider = async ({ order, orderHash }) => {
-    const created = await build(order, orderHash, input);
+    const created = await declined(() => build(order, orderHash, input));
     prepared.delete(key(orderHash));
     prepared.set(key(orderHash), created);
     while (prepared.size > MAX_PREPARED_QUOTES) prepared.delete(prepared.keys().next().value!);
@@ -850,7 +861,7 @@ export function createHyperliquidTestnetQuoteRuntime(
     return Object.freeze({ ...created.terms, quoteNonce });
   };
   const exit: HyperliquidTestnetExitQuoter = async ({ order, orderHash, signer }) => {
-    const built = await buildHyperliquidTestnetExit(order, orderHash, input);
+    const built = await declined(() => buildHyperliquidTestnetExit(order, orderHash, input));
     const quoteNonce = input.nonceSource.next();
     if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
     return signHyperliquidTestnetExitQuote({

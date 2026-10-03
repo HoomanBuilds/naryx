@@ -29,6 +29,7 @@ import {
 } from '@naryx/protocol-types';
 import {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+  InternalAtomicQuoteError,
   SqliteAtomicQuoteNonceSource,
   SqliteInternalAtomicQuoteStore,
   composeQuoteProviders,
@@ -339,6 +340,10 @@ test('fails closed when the book cannot fill within the signed limit or is stale
 
   await reject(fakeMarket({ spotBook: book('@1', 900, [['59990', '1']], [['60000', '0.006']]) }),
     /spot book cannot fill the requested size/);
+  // A market that cannot price the order declines it with the reason the trader is shown.
+  await assert.rejects(quoteFor(input, fakeMarket({ spotBook: book('@1', 900, [['59990', '1']], [['60000', '0.006']]) })),
+    (error: unknown) => error instanceof InternalAtomicQuoteError && error.code === 'QUOTE_DECLINED'
+      && error.message === 'QUOTE_DECLINED: Hyperliquid testnet quote declined: spot book cannot fill the requested size within the signed limit');
   await reject(fakeMarket({
     spotBook: book('@1', 900, [['59990', '1']], [['60000', '0.006'], ['69931', '1']]),
   }), /spot book cannot fill the requested size within the signed limit/);

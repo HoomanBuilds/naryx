@@ -37,14 +37,19 @@ export interface VerifiedSolverAtomicQuote {
 }
 
 export class SolverQuoteClientError extends Error {
-  readonly code: "INVALID_REQUEST" | "INVALID_ENDPOINT" | "UPSTREAM_REJECTED" | "INVALID_RESPONSE";
+  readonly code: "INVALID_REQUEST" | "INVALID_ENDPOINT" | "UPSTREAM_REJECTED" | "INVALID_RESPONSE" | "QUOTE_DECLINED";
+  /** The solver's own reason for a declined quote, safe to show the trader. */
+  readonly detail: string | undefined;
 
-  constructor(code: SolverQuoteClientError["code"], message: string) {
+  constructor(code: SolverQuoteClientError["code"], message: string, detail?: string) {
     super(`${code}: ${message}`);
     this.name = "SolverQuoteClientError";
     this.code = code;
+    this.detail = detail;
   }
 }
+
+const DECLINED_REASON = /^QUOTE_DECLINED: ([ -~]{1,240})$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -219,6 +224,16 @@ export class HttpInternalSolverQuoteClient implements SolverAtomicQuotePort {
       signal: AbortSignal.timeout(SOLVER_QUOTE_TIMEOUT_MS),
     });
     if (!response.ok) {
+      // A declined quote carries the solver's bounded printable reason, such as a book too thin for
+      // the order's limits; every other failure stays opaque.
+      if (response.status === 409) {
+        const body = await response.json().catch(() => undefined) as unknown;
+        const error = isRecord(body) && isRecord(body.error) ? body.error : undefined;
+        const reason = error?.code === "QUOTE_DECLINED" && typeof error.message === "string"
+          ? DECLINED_REASON.exec(error.message)?.[1]
+          : undefined;
+        if (reason !== undefined) throw new SolverQuoteClientError("QUOTE_DECLINED", reason, reason);
+      }
       throw new SolverQuoteClientError(
         "UPSTREAM_REJECTED",
         `solver rejected quote request with HTTP ${response.status}`,
