@@ -550,6 +550,7 @@ async function validate(written, envs, liveEnv, log) {
   const closers = [];
   const readText = (path) => readFileSync(path, 'utf8');
   const nonceSource = { next: () => 1n };
+  let hyperliquidMarkets;
   try {
     const api = envs['api.env'];
     if (api !== undefined) {
@@ -614,7 +615,7 @@ async function validate(written, envs, liveEnv, log) {
         if (api.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== 'TESTNET') fail('api.env: NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.');
         const hyperliquid = await dist('services/api', 'hyperliquid-testnet-runtime-client.js');
         const config = hyperliquid.loadHyperliquidTestnetRuntimeConfig(api.NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG);
-        await hyperliquidMetadataCheck(config);
+        hyperliquidMarkets = await hyperliquidMetadataCheck(config);
         log('api: Hyperliquid Testnet runtime config loads and matches live testnet metadata');
       }
       if (api.NARYX_EXECUTION_POLICY_FILE !== undefined) {
@@ -655,7 +656,15 @@ async function validate(written, envs, liveEnv, log) {
         (await dist('services/solver', 'hyperliquid-testnet-quote-config.js')).loadHyperliquidTestnetQuoteRuntime(solver, {
           nonceSource, currentTimeMs: () => BigInt(Date.now()),
         });
-        log('solver: Hyperliquid Testnet quote config loads');
+        // The solver prices from the books it names; they must be the API's configured markets.
+        if (hyperliquidMarkets !== undefined) {
+          const { parseProtocolJson } = await protocol();
+          const quote = parseProtocolJson(readText(solver.NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG), 'hyperliquidQuote').market;
+          if (quote?.spot?.coin !== hyperliquidMarkets.spotCoin || quote?.perpetual?.coin !== hyperliquidMarkets.perpetualCoin) {
+            fail(`solver quote books ${quote?.spot?.coin} and ${quote?.perpetual?.coin} are not the configured testnet markets ${hyperliquidMarkets.spotCoin} and ${hyperliquidMarkets.perpetualCoin}.`);
+          }
+        }
+        log('solver: Hyperliquid Testnet quote config loads and prices the configured testnet books');
       }
     }
     const keeper = envs['keeper.env'];
@@ -729,6 +738,11 @@ async function hyperliquidMetadataCheck(config) {
   if (universe === undefined || !universe.tokens.includes(config.market.spot.tokenIndex) || !universe.tokens.includes(config.market.quoteTokenIndex)) {
     fail('Hyperliquid spot universe does not pair the configured spot and quote tokens.');
   }
+  // HyperCore order wires name a spot pair as 10000 plus its universe index and a perpetual by its index.
+  if (config.market.spot.assetId !== 10_000 + config.market.spot.universeIndex || config.market.perpetual.assetId !== config.market.perpetual.assetIndex) {
+    fail('Hyperliquid asset ids must be 10000 plus the spot universe index and the perpetual asset index.');
+  }
+  return { spotCoin: universe.name, perpetualCoin: perpetual.name };
 }
 
 /** The executor's market qualification names, token ids, and canonical flags must be the live testnet ones. */
