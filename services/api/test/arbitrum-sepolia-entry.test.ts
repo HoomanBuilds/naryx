@@ -316,6 +316,7 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
     return new Response(JSON.stringify(authorization(body.ownerSignature !== undefined)), { status: 200 });
   }) as typeof fetch;
   let admissible = true;
+  let openPackage = `0x${"0".repeat(64)}`;
   const routes = createArbitrumSepoliaOwnerRoutes({
     terminalOrigin: "http://localhost:3000",
     deployment: configuration,
@@ -327,7 +328,7 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
       chainId: async () => 421_614n,
       codeHash: async () => arbitrumSepoliaAccountCodeHash(configuration),
       latestBlockTimestamp: async () => 1n,
-      readContract: async () => `0x${"0".repeat(64)}`,
+      readContract: async ({ functionName }) => functionName === "activePackageOf" ? openPackage : `0x${"0".repeat(64)}`,
     },
     intents: {
       getAttempt: () => ({ status: "ARBITRUM_ASYNC_QUOTE_SELECTED", domainId: "eip155:421614", orderHash: "1".repeat(64) }),
@@ -363,6 +364,16 @@ test("Arbitrum owner routes return wallet work bound to the attempt owner and re
   assert.equal((refused.body.error as { code: string }).code, "PACKAGE_NOT_ADMITTED");
   assert.deepEqual(relayed, []);
   admissible = true;
+  // While another package is open or entering in the owner's account, funding would revert: refuse first.
+  openPackage = `0x${"7".repeat(64)}`;
+  const busy = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
+  assert.equal(busy.status, 409);
+  assert.equal((busy.body.error as { code: string }).code, "PACKAGE_ALREADY_OPEN");
+  // The attempt's own package, once funded, is not another package.
+  openPackage = packageId;
+  assert.equal((await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId })).status, 200);
+  openPackage = `0x${"0".repeat(64)}`;
+  relayed.length = 0;
   const prepared = await call("POST", "/internal/terminal/arbitrum-sepolia/prepare-owner-authorization", { attemptId });
   assert.equal(prepared.status, 200);
   assert.equal(prepared.body.account, account);

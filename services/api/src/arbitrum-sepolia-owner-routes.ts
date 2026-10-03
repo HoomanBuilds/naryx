@@ -318,7 +318,14 @@ export function createArbitrumSepoliaOwnerRoutes(
       const { attemptId } = exactStrings(await readJson(request), ["attemptId"]);
       const owner = attemptOwner(attemptId!);
       await admitted(attemptId!);
-      return checked(await executor.prepare(attemptId!), owner);
+      const authorization = checked(await executor.prepare(attemptId!), owner);
+      // The account and the adapter hold one package at a time, so funding a second one always reverts.
+      await requireChain();
+      const open = await readArbitrumSepoliaOpenPackage(port, deployment, owner);
+      if (open !== null && open.packageId.toLowerCase() !== authorization.packageId.toLowerCase()) {
+        throw new OwnerRouteError(409, "PACKAGE_ALREADY_OPEN", "Your strategy account already holds an open or entering package, and it holds one at a time. Exit it, or wait for its entry to finish, before starting another; nothing was signed or sent.");
+      }
+      return authorization;
     },
     [ARBITRUM_SEPOLIA_AUTHORIZE_OWNER_PATH]: async (request) => {
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
