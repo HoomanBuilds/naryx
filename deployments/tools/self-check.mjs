@@ -114,6 +114,20 @@ check('every template uses known directives, declared definitions, and release v
       }
     };
     walk(template, file);
+    // The generator resolves definitions in order, so a definition can only name one declared before it.
+    const declared = new Set();
+    const before = (node, path) => {
+      if (Array.isArray(node)) return node.forEach((entry, index) => before(entry, `${path}[${index}]`));
+      if (node === null || typeof node !== 'object') return;
+      for (const [key, value] of Object.entries(node)) {
+        if (key === '$def') assert.ok(declared.has(value.split('.')[0]), `${file}: ${path} names definition ${value} before it is declared`);
+        before(value, `${path}.${key}`);
+      }
+    };
+    for (const [name, value] of Object.entries(template.definitions ?? {})) {
+      before(value, `definitions.${name}`);
+      declared.add(name);
+    }
   }
 });
 

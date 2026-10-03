@@ -143,6 +143,7 @@
         { "$def": "activation" }
       ]
     },
+    "executionClassManifestHash": { "$bytes": { "$operator": "executionClassManifestHash deploy parameter (the coordinator's executionClassManifestHash())" } },
     "seriesBinding": {
       "schemaVersion": 1,
       "bindingVersion": { "$number": { "$operator": "series binding version solvers put in reserved terms" } },
@@ -161,7 +162,6 @@
       "spotBaseAtomsPerPackageUnit": { "$bigint": { "$operator": "spot base atoms per package unit" } },
       "perpQuantityAtomsPerPackageUnit": { "$bigint": { "$operator": "perp quantity atoms per package unit" } }
     },
-    "executionClassManifestHash": { "$bytes": { "$operator": "executionClassManifestHash deploy parameter (the coordinator's executionClassManifestHash())" } },
     "seriesIdentityKey": { "$protocol": "cashCarrySeriesIdentityKey", "args": [{ "$def": "seriesBinding" }] },
     "seriesBindingHash": { "$protocol": "cashCarrySeriesBindingV1Hash", "args": [{ "$def": "seriesBinding" }] },
     "contextId": { "$operator": "order context id; the web terminal default is arbitrum-sepolia:eth-usdc:gmx" },
