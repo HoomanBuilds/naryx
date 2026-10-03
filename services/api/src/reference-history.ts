@@ -15,6 +15,9 @@ const PRUNE_INTERVAL_MS = 3_600_000;
 const DEFAULT_CANDLE_LIMIT = 300;
 const MAX_CANDLE_LIMIT = 1_000;
 const RESPONSE_CACHE_MS = 5_000;
+// Hourly and coarser candles scan up to the whole retention window; they are rebuilt at most once a
+// minute per lane, series, and interval, whatever limits clients ask for.
+const COARSE_RESPONSE_CACHE_MS = 60_000;
 const SOURCE_LABEL = /^[\x20-\x7e]{1,200}$/;
 const QUERY_KEYS: readonly string[] = ["domain", "series", "interval", "limit"];
 
@@ -391,7 +394,9 @@ export function createReferenceCandleRoutes(options: Readonly<{
   nowMs?: () => number;
 }>): (request: IncomingMessage, response: ServerResponse) => boolean {
   const nowMs = options.nowMs ?? Date.now;
-  const cache = createReadCache<unknown>({ ttlMs: RESPONSE_CACHE_MS, maxKeys: 512 });
+  type Body = Readonly<{ to: number; candles: readonly Readonly<{ time: number }>[] }> & Record<string, unknown>;
+  const fine = createReadCache<Body>({ ttlMs: RESPONSE_CACHE_MS, maxKeys: 512 });
+  const coarse = createReadCache<Body>({ ttlMs: COARSE_RESPONSE_CACHE_MS, maxKeys: 512 });
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://private-terminal.local");
     if (url.pathname !== REFERENCE_CANDLES_PATH) return false;
@@ -409,7 +414,11 @@ export function createReferenceCandleRoutes(options: Readonly<{
       return true;
     }
     const descriptor = options.markets?.[query.domain]?.descriptor;
-    void cache(`${query.domain}|${query.series}|${query.interval}|${query.limit}`, async () => ({
+    const seconds = REFERENCE_INTERVALS[query.interval];
+    const cache = seconds >= 3_600 ? coarse : fine;
+    // One read at the largest limit serves every limit: the cache key has no limit, so varying it
+    // cannot force a fresh scan, and each response is that read clipped to its own window.
+    void cache(`${query.domain}|${query.series}|${query.interval}`, async () => ({
       version: 1,
       domain: query.domain,
       series: query.series,
@@ -418,9 +427,12 @@ export function createReferenceCandleRoutes(options: Readonly<{
       market: descriptor === undefined ? null : { base: descriptor.baseSymbol, quote: descriptor.quoteSymbol },
       sampleIntervalSeconds: REFERENCE_SAMPLE_INTERVAL_MS / 1_000,
       methodology: REFERENCE_METHODOLOGY,
-      ...options.store.candles(query, nowMs()),
+      ...options.store.candles({ ...query, limit: MAX_CANDLE_LIMIT }, nowMs()),
     })).then(
-      (body) => send(response, 200, body),
+      (full) => {
+        const from = full.to - (query.limit - 1) * seconds;
+        send(response, 200, { ...full, from, candles: full.candles.filter((candle) => candle.time >= from) });
+      },
       () => send(response, 500, { error: { code: "REFERENCE_READ_FAILED", message: "Reference history reading failed." } }),
     );
     return true;

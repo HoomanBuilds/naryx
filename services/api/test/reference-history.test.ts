@@ -155,3 +155,36 @@ test("reference candle queries are validated strictly and served only on GET", a
   assert.equal((await fetch(`${origin}${path}?domain=base&series=spot&interval=1m`, { method: "POST" })).status, 405);
   assert.equal((await fetch(`${origin}/internal/terminal/reference-candle`)).status, 404);
 });
+
+test("candle limits share one read per lane, series, and interval, each response clipped to its window", async (t) => {
+  const reads: number[] = [];
+  const candle = (time: number) => ({ time, open: "1", high: "1", low: "1", close: "1", samples: 1 });
+  const handler = createReferenceCandleRoutes({
+    store: {
+      candles: (query) => {
+        reads.push(query.limit);
+        return { from: 3_600 - 999 * 3_600, to: 3_600 * 10, sources: [], latestObservedAtMs: null, candles: [candle(3_600 * 8), candle(3_600 * 9), candle(3_600 * 10)] };
+      },
+    },
+    nowMs: () => T0,
+  });
+  const server = createServer((request, response) => {
+    if (!handler(request, response)) {
+      response.statusCode = 404;
+      response.end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const get = async (limit: number) =>
+    await (await fetch(`${origin}/internal/terminal/reference-candles?domain=base&series=basis&interval=1h&limit=${limit}`)).json() as
+      { from: number; candles: { time: number }[] };
+  const two = await get(2);
+  const all = await get(300);
+  // Varying the limit does not force another scan; the one read used the largest limit.
+  assert.deepEqual(reads, [1_000]);
+  assert.equal(two.from, 3_600 * 9);
+  assert.deepEqual(two.candles.map((entry) => entry.time), [3_600 * 9, 3_600 * 10]);
+  assert.equal(all.candles.length, 3);
+});

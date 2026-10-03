@@ -520,10 +520,8 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
     // executor each minute, so a package resolved later (for example after its lane is released)
     // leaves UNRESOLVED without its owner having to poll.
     const executionPort = hyperliquidExecutionRuntime;
-    const sweep = setInterval(() => {
-      void executionPort.reconcileUnresolved().catch(() => undefined);
-    }, 60_000);
-    sweep.unref();
+    const cursor = { offset: 0 };
+    everyMinute(async () => { await executionPort.reconcileUnresolved(20, cursor); });
   } catch (error) {
     hyperliquidExecutionRuntimeError = error;
     reportRuntimeFailure("hyperliquidTestnetExecutor", error);
@@ -675,10 +673,16 @@ const terminalMarketSources: TerminalMarketSources = {
 };
 // Reference history: every configured lane's live market source, sampled into a durable store the
 // terminal chart reads. On only when its database path is set.
+// History only feeds the chart, so a store that cannot open turns the chart off, never trading.
 const referenceHistoryPath = process.env.NARYX_REFERENCE_HISTORY_DB;
-const referenceHistory = referenceHistoryPath === undefined || referenceHistoryPath === ""
-  ? undefined
-  : new SqliteReferenceHistoryStore(absolutePath(referenceHistoryPath, "NARYX_REFERENCE_HISTORY_DB"));
+let referenceHistory: SqliteReferenceHistoryStore | undefined;
+if (referenceHistoryPath !== undefined && referenceHistoryPath !== "") {
+  try {
+    referenceHistory = new SqliteReferenceHistoryStore(absolutePath(referenceHistoryPath, "NARYX_REFERENCE_HISTORY_DB"));
+  } catch (error) {
+    process.stderr.write(`Reference history is off: ${error instanceof Error ? error.message : "store did not open"}\n`);
+  }
+}
 const referenceRecorder = referenceHistory === undefined ? undefined : new ReferenceHistoryRecorder(
   referenceHistory,
   Object.entries(terminalMarketSources).flatMap(([domain, source]): ReferenceLane[] => {
