@@ -34,6 +34,11 @@ test("Arbitrum market source prices spot from either pool token order and shows 
     assert.equal(observation.perpTakerRate, "0.0006");
     assert.equal(observation.capturedAtMs, 5);
   }
+  // GMX's own execution prices for opening and closing the largest short replace the reference.
+  const impacted = createArbitrumSepoliaMarketSource(config, reference, {
+    latest: () => ({ ...pool(true), gmxShortOpenPrice: 2_330_000_000_000_000n, gmxShortClosePrice: 2_740_500_000_000_000n }),
+  }).latest();
+  assert.deepEqual([impacted?.perpBid, impacted?.perpAsk], ["2330", "2740.5"]);
   const source = createArbitrumSepoliaMarketSource(config, reference, { latest: () => pool(true) });
   assert.equal(source.descriptor.baseSymbol, "WETH");
   // An asset id without a plain symbol segment shows the fallback instead of failing startup.

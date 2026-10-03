@@ -4,7 +4,7 @@ import {
   arbitrumSepoliaAccountOf,
   type ArbitrumSepoliaAsyncDeploymentConfiguration,
 } from "./arbitrum-sepolia-async-context-provider.js";
-import { ArbitrumSepoliaMarketFeed, gmxPositionFeeFactorKey } from "./arbitrum-sepolia-market-source.js";
+import { ArbitrumSepoliaMarketFeed, gmxPositionFeeFactorKey, readGmxShortExecutionPrice } from "./arbitrum-sepolia-market-source.js";
 import {
   arbitrumSepoliaSpotQuoteTarget,
   type ArbitrumSepoliaOrderRuntime,
@@ -41,7 +41,10 @@ const ACCOUNT_ABI = parseAbi([
   "function activeSpotRegistration() view returns (SpotEntryRegistration)",
 ]);
 const EXIT_CONTROLLER_ABI = parseAbi(["function activeExitRequestKey(address account) view returns (bytes32)"]);
-const DATA_STORE_ABI = parseAbi(["function getUint(bytes32 key) view returns (uint256)"]);
+const DATA_STORE_ABI = parseAbi([
+  "function getUint(bytes32 key) view returns (uint256)",
+  "function getInt(bytes32 key) view returns (int256)",
+]);
 
 /** The EIP-712 fields of `GmxV2ExitController.ExitAuthorization`, in its typehash order. */
 export const ARBITRUM_EXIT_AUTHORIZATION_FIELDS = Object.freeze([
@@ -172,15 +175,26 @@ export type ArbitrumSepoliaExitLimits = Readonly<{
   minExitQuoteOutcomeAtoms: bigint;
 }>;
 
+/** The close's worst index price: the reference plus slippage, 30-decimal USD per base atom, rounded up. */
+export function arbitrumSepoliaExitWorstPrice(
+  reference: Pick<ArbitrumSepoliaReferencePriceSnapshot, "answer" | "decimals">,
+  baseDecimals: number,
+  slippageBps: number,
+): bigint {
+  const priceDenominator = 10n ** BigInt(reference.decimals + baseDecimals) * BPS;
+  return (reference.answer * GMX_FLOAT_PRECISION * (BPS + BigInt(slippageBps)) + priceDenominator - 1n) / priceDenominator;
+}
+
 /**
  * Exit minimums, every amount rounded against the trader. The spot leg must return at least the
  * lower of the pool mid and the reference price less the pool fee, and of the quoter's executable
  * proceeds for exactly that base (price impact included), less the trader's slippage. The
- * GMX decrease, which pays collateral plus the short's PnL less fees to the owner, must return at
- * least its value with the short bought back at the reference plus slippage, less the larger
- * position fee factor; the slippage is applied once more to that value as the allowance for
- * borrowing and funding fees accrued since entry and for the USDC oracle. The exit outcome is the
- * sum of both legs paid to the owner.
+ * GMX decrease, which pays collateral plus the short's PnL plus GMX's price impact less fees to the
+ * owner, must return at least its value with the short bought back at the reference plus slippage,
+ * with the impact GMX's own Reader reports for that close at that price, less the larger position fee
+ * factor; the slippage is applied once more to that value as the allowance for borrowing and
+ * funding fees accrued since entry and for the USDC oracle. The exit outcome is the sum of both
+ * legs paid to the owner.
  */
 export function arbitrumSepoliaExitLimits(input: Readonly<{
   position: ArbitrumSepoliaExitPosition;
@@ -191,6 +205,12 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
   /** The quoter's proceeds for an exact-input sale of exactly `position.quantityAtoms`. */
   spotQuoteOutAtoms: bigint;
   positionFeeFactor: bigint;
+  /**
+   * The impact GMX pays out or charges on the full close at the worst price, 30-decimal USD: the
+   * close's own impact plus the entry's pending impact, including the part GMX holds back as
+   * claimable collateral (Reader `totalImpactUsd - priceImpactDiffUsd`).
+   */
+  closeImpactUsd: bigint;
   slippageBps: number;
 }>): ArbitrumSepoliaExitLimits {
   const { position, reference, pool } = input;
@@ -201,6 +221,7 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
     || pool.poolFee < 0n || pool.poolFee >= POOL_FEE_SCALE
     || typeof input.spotQuoteOutAtoms !== "bigint" || input.spotQuoteOutAtoms <= 0n
     || input.positionFeeFactor < 0n || input.positionFeeFactor >= GMX_FLOAT_PRECISION
+    || typeof input.closeImpactUsd !== "bigint"
     || input.quoteDecimals < 0 || input.quoteDecimals > GMX_USD_DECIMALS) {
     fail("INVALID_EXIT", "Exit pricing inputs are invalid.");
   }
@@ -223,11 +244,10 @@ export function arbitrumSepoliaExitLimits(input: Readonly<{
   if (minSpotQuoteOutAtoms <= 0n) fail("INVALID_EXIT", "The spot leg's minimum proceeds round to zero.");
 
   // GMX prices are USD per base atom with 30 decimals; the buy-back price rounds up.
-  const priceDenominator = 10n ** BigInt(reference.decimals + input.baseDecimals) * BPS;
-  const worstPrice = (reference.answer * GMX_FLOAT_PRECISION * (BPS + slippage) + priceDenominator - 1n) / priceDenominator;
+  const worstPrice = arbitrumSepoliaExitWorstPrice(reference, input.baseDecimals, input.slippageBps);
   const pnlUsd = position.sizeInUsd - position.sizeInTokens * worstPrice;
   const closeFeeUsd = (position.sizeInUsd * input.positionFeeFactor + GMX_FLOAT_PRECISION - 1n) / GMX_FLOAT_PRECISION;
-  const valueUsd = position.collateralAtoms * usdScale + pnlUsd - closeFeeUsd;
+  const valueUsd = position.collateralAtoms * usdScale + pnlUsd + input.closeImpactUsd - closeFeeUsd;
   const minPerpOutputAtoms = valueUsd <= 0n ? 0n : (valueUsd * (BPS - slippage)) / (BPS * usdScale);
   if (minPerpOutputAtoms <= 0n) {
     fail("POSITION_UNDERWATER", "The short's worst-case close output is not positive; it cannot be exited with this slippage.");
@@ -278,7 +298,7 @@ export async function createArbitrumSepoliaExitOrder(input: Readonly<{
     await port.readContract({ address: dataStore, abi: DATA_STORE_ABI, functionName: "getUint", args: [key] }),
     name,
   );
-  const [reference, pool, sizeInUsd, sizeInTokens, collateralAtoms, positiveFee, negativeFee] = await Promise.all([
+  const [reference, pool, sizeInUsd, sizeInTokens, collateralAtoms, positiveFee, negativeFee, pendingImpactAmount] = await Promise.all([
     runtime.feed.refresh(),
     new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs).refresh(),
     getUint(gmxShortPositionKey(account, market, collateral, "SIZE_IN_USD"), "position size"),
@@ -286,8 +306,19 @@ export async function createArbitrumSepoliaExitOrder(input: Readonly<{
     getUint(gmxShortPositionKey(account, market, collateral, "COLLATERAL_AMOUNT"), "position collateral"),
     getUint(gmxPositionFeeFactorKey(market, true), "position fee factor"),
     getUint(gmxPositionFeeFactorKey(market, false), "position fee factor"),
+    port.readContract({
+      address: dataStore, abi: DATA_STORE_ABI, functionName: "getInt",
+      args: [gmxShortPositionKey(account, market, collateral, "PENDING_IMPACT_AMOUNT")],
+    }),
   ]);
   if (sizeInUsd !== open.positionSizeUsd) fail("CHAIN_MISMATCH", "GMX position size changed while reading.");
+  if (typeof pendingImpactAmount !== "bigint") fail("CHAIN_MISMATCH", "GMX pending impact is invalid.");
+  const closeImpact = await readGmxShortExecutionPrice(port, deployment, {
+    indexPrice: arbitrumSepoliaExitWorstPrice(reference, config.baseAsset.decimals, input.slippageBps),
+    quoteDecimals: config.quoteAsset.decimals,
+    sizeDeltaUsd: -sizeInUsd,
+    position: { sizeInUsd, sizeInTokens, pendingImpactAmount },
+  });
   const spotQuoteOutAtoms = await quoteUniswapV3Sell(port, arbitrumSepoliaSpotQuoteTarget(config, pool), open.spotBaseAtoms);
   const limits = arbitrumSepoliaExitLimits({
     position: { quantityAtoms: open.spotBaseAtoms, sizeInUsd, sizeInTokens, collateralAtoms },
@@ -297,6 +328,7 @@ export async function createArbitrumSepoliaExitOrder(input: Readonly<{
     pool,
     spotQuoteOutAtoms,
     positionFeeFactor: positiveFee > negativeFee ? positiveFee : negativeFee,
+    closeImpactUsd: closeImpact.closeImpactUsd,
     slippageBps: input.slippageBps,
   });
   const context = runtime.contexts(config.contextId);

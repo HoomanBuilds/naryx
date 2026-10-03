@@ -84,6 +84,8 @@ export const ARBITRUM_SEPOLIA_GMX_DEPENDENCIES = Object.freeze({
   orderVault: "0x1b8AC606de71686fd2a1AEDEcb6E0EFba28909a2",
   orderHandler: "0xC881c2391611829d7bc81c12a285cB0201F08f8c",
   roleStore: "0x433E3C47885b929aEcE4149E3c835E565a20D95c",
+  // GMX V2.2 periphery: its getExecutionPrice prices entries and exits at GMX's own execution price.
+  reader: "0x4750376b9378294138Cf7B7D69a2d243f4940f71",
 } satisfies Record<string, Address>);
 
 type AdmissionConfiguration = Omit<PackageAdmissionInput, "order" | "quote" | "route" | "currentTime">;

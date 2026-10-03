@@ -97,8 +97,16 @@ function config(): ArbitrumSepoliaOrderContextConfig {
   };
 }
 
+type ReaderCall = readonly unknown[];
+
 /** The owner's executed package, its GMX short, the reference feed, and the factory's spot pool. */
-function chain(state: { activePackage: Hex; activeExit: Hex }): ArbitrumSepoliaPriceReadPort {
+function chain(state: {
+  activePackage: Hex;
+  activeExit: Hex;
+  /** GMX's realized impact for the full close, as its Reader reports it. */
+  closeImpactUsd?: bigint | undefined;
+  readerCalls?: ReaderCall[];
+}): ArbitrumSepoliaPriceReadPort {
   const configuration = deployment();
   const account = arbitrumSepoliaAccountOf(configuration, owner);
   const market = configuration.market.address;
@@ -115,6 +123,7 @@ function chain(state: { activePackage: Hex; activeExit: Hex }): ArbitrumSepoliaP
     [evmAddress(0x55), word(0x55)],
     [evmAddress(0x56), word(0x56)],
     [configuration.spotPort!.address, configuration.spotPort!.expectedCodeHash],
+    [configuration.gmx.reader.address.toLowerCase(), configuration.gmx.reader.expectedCodeHash],
   ]);
   return {
     chainId: async () => 421_614n,
@@ -132,6 +141,18 @@ function chain(state: { activePackage: Hex; activeExit: Hex }): ArbitrumSepoliaP
         case "activeSpotRegistration": return { packageId: state.activePackage, baseAtoms: QUANTITY };
         case "activeExitRequestKey": return state.activeExit;
         case "getUint": return uints.get(String(args?.[0])) ?? 0n;
+        case "getInt":
+          return args?.[0] === gmxShortPositionKey(account, market, collateral, "PENDING_IMPACT_AMOUNT") ? -6n * 10n ** 14n : 0n;
+        case "getExecutionPrice": {
+          state.readerCalls?.push(args ?? []);
+          // GMX credits at most 0.1% of the size as negative impact and holds the rest back.
+          const charged = state.closeImpactUsd ?? 0n;
+          const credited = charged < -SIZE_USD / 1_000n ? -SIZE_USD / 1_000n : charged;
+          return {
+            executionPrice: 2_500_000_000_000_000n, priceImpactUsd: 0n,
+            totalImpactUsd: credited, priceImpactDiffUsd: credited - charged,
+          };
+        }
         case "spotPort": return configuration.spotPort!.address;
         case "spotPortCodeHash": return configuration.spotPort!.expectedCodeHash;
         case "pool": return evmAddress(0x88);
@@ -151,7 +172,7 @@ test("Arbitrum exit limits round against the trader and refuse an underwater sho
   const input = {
     position: { quantityAtoms: QUANTITY, sizeInUsd: SIZE_USD, sizeInTokens: QUANTITY, collateralAtoms: COLLATERAL },
     baseDecimals: 18, quoteDecimals: 6, reference: { answer: ANSWER, decimals: 8 }, pool: POOL,
-    spotQuoteOutAtoms: MID_PROCEEDS, positionFeeFactor: 5n * 10n ** 26n, slippageBps: 100,
+    spotQuoteOutAtoms: MID_PROCEEDS, positionFeeFactor: 5n * 10n ** 26n, closeImpactUsd: 0n, slippageBps: 100,
   };
   const limits = arbitrumSepoliaExitLimits(input);
   // Spot: 0.01 ETH at the 2500.12345678 reference less the 0.3% pool fee and 1% slippage, rounded down.
@@ -162,6 +183,9 @@ test("Arbitrum exit limits round against the trader and refuse an underwater sho
   assert.equal(limits.minExitQuoteOutcomeAtoms, 26_892_202n);
   assert.equal(limits.entryNotionalAtoms, 25_001_234n);
   // A thin pool's executable proceeds below the reference figure set the spot floor: 20,000,000 less 1%.
+  // GMX's realized close impact moves the perp floor: a 0.125 USD cost and a 0.05 USD rebate, less 1%.
+  assert.equal(arbitrumSepoliaExitLimits({ ...input, closeImpactUsd: -125n * 10n ** 27n }).minPerpOutputAtoms, 2_091_484n);
+  assert.equal(arbitrumSepoliaExitLimits({ ...input, closeImpactUsd: 5n * 10n ** 28n }).minPerpOutputAtoms, 2_264_734n);
   const thin = arbitrumSepoliaExitLimits({ ...input, spotQuoteOutAtoms: 20_000_000n });
   assert.deepEqual([thin.minSpotQuoteOutAtoms, thin.minExitQuoteOutcomeAtoms], [19_800_000n, 19_800_000n + 2_215_234n]);
   assert.throws(
@@ -177,7 +201,8 @@ test("Arbitrum exit limits round against the trader and refuse an underwater sho
 test("Arbitrum exit order reads the open package from chain and stores a canonical async EXIT order", async () => {
   const configuration = deployment();
   const packageId = word(0x5a);
-  const state = { activePackage: packageId, activeExit: word(0) };
+  const readerCalls: ReaderCall[] = [];
+  const state: Parameters<typeof chain>[0] = { activePackage: packageId, activeExit: word(0), readerCalls };
   const port = chain(state);
   const runtime = await createArbitrumSepoliaOrderRuntime({ config: config(), deployment: configuration, port });
   const stored: InternalOrderInput[] = [];
@@ -203,6 +228,14 @@ test("Arbitrum exit order reads the open package from chain and stores a canonic
   );
   assert.deepEqual([order.minSpotQuoteOut?.atoms, order.minExitQuoteOutcome?.atoms, order.maxMarginAdded.atoms],
     [24_676_968n, 26_892_202n, 0n]);
+  // GMX's Reader prices the full close at the worst price (the reference plus 1%) with the short's
+  // size, tokens, and pending impact, so its realized impact is the one GMX pays out or charges.
+  assert.deepEqual(readerCalls[0]?.slice(3), [SIZE_USD, QUANTITY, -SIZE_USD, -6n * 10n ** 14n, false]);
+  assert.equal((readerCalls[0]?.[2] as { indexTokenPrice: { min: bigint } }).indexTokenPrice.min, 2_525_124_691_347_800n);
+  state.closeImpactUsd = -125n * 10n ** 27n;
+  await create();
+  assert.equal(stored[1]!.order.order.minExitQuoteOutcome?.atoms, 24_676_968n + 2_091_484n);
+  stored.pop();
 
   const refused = (code: string) => (error: unknown) => error instanceof ArbitrumSepoliaExitError && error.code === code;
   await assert.rejects(create(101), refused("EXCESS_SLIPPAGE"));

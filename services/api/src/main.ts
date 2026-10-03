@@ -375,12 +375,17 @@ if (explicitlyEnabled("NARYX_ARBITRUM_SEPOLIA_ORDER_CONTEXT_ENABLED")) {
     // The terminal market reads the factory's spot pool and the GMX fee beside the reference feed;
     // until its first read lands, snapshot and preview report the market unavailable.
     try {
-      const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs);
+      const marketFeed = new ArbitrumSepoliaMarketFeed(deployment, port, config.pollIntervalMs, {
+        reference: arbitrumOrderRuntime.feed,
+        sizeAtoms: config.maximumQuantityAtoms,
+        baseDecimals: config.baseAsset.decimals,
+        quoteDecimals: config.quoteAsset.decimals,
+      });
       marketFeed.start();
       arbitrumMarketSource = createArbitrumSepoliaMarketSource(config, arbitrumOrderRuntime.feed, marketFeed);
       referenceSources.arbitrum = {
         spot: `Uniswap V3 pool slot0 mid behind the spot port of factory ${deployment.accountFactory.address}, Arbitrum Sepolia`,
-        perp: `Chainlink-compatible feed ${config.priceFeed.address} latestRoundData, Arbitrum Sepolia`,
+        perp: `GMX Reader ${deployment.gmx.reader.address} getExecutionPrice for the largest order at the Chainlink-compatible feed ${config.priceFeed.address}, Arbitrum Sepolia`,
       };
     } catch (error) {
       reportRuntimeFailure("arbitrumSepoliaTerminalMarket", error);

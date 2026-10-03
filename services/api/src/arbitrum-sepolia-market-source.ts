@@ -5,7 +5,7 @@ import type {
   ArbitrumSepoliaPriceReadPort,
   ArbitrumSepoliaReferencePriceFeed,
 } from "./arbitrum-sepolia-order-context.js";
-import { requiredEvmAddress } from "@naryx/adapter-evm";
+import { equalHash, GMX_V2_READER_ABI, requiredEvmAddress } from "@naryx/adapter-evm";
 import { decimalString, terminalAssetSymbol, type TerminalMarketDescriptor, type TerminalMarketObservation, type TerminalMarketSource } from "./private-terminal-manifest.js";
 
 const FACTORY_ABI = parseAbi([
@@ -35,13 +35,89 @@ export function gmxPositionFeeFactorKey(market: Address, forPositiveImpact: bool
   ));
 }
 
+export type GmxShortExecutionPrice = Readonly<{
+  /** 30-decimal USD per base atom, the price GMX checks against the order's acceptable price. */
+  executionPrice: bigint;
+  priceImpactUsd: bigint;
+  /**
+   * What a decrease pays out or charges for impact: its own plus the position's pending impact. GMX
+   * credits at most MAX_POSITION_IMPACT_FACTOR of a negative total and takes the rest from the
+   * position as claimable collateral, which the Naryx account never claims, so the close output
+   * carries the full negative total (Reader `totalImpactUsd - priceImpactDiffUsd`).
+   */
+  closeImpactUsd: bigint;
+}>;
+
+/**
+ * GMX's own execution price for a short of `sizeDeltaUsd` (positive increases, negative decreases
+ * `position`), from the pinned GMX Reader, whose code hash is checked at every use. The ETH/USD
+ * market's index and long token are priced at `indexPrice` and its short token, the collateral, at par.
+ */
+export async function readGmxShortExecutionPrice(
+  port: ArbitrumSepoliaPriceReadPort,
+  deployment: Pick<ArbitrumSepoliaAsyncDeploymentConfiguration, "market" | "gmx">,
+  input: Readonly<{
+    indexPrice: bigint;
+    quoteDecimals: number;
+    sizeDeltaUsd: bigint;
+    position?: Readonly<{ sizeInUsd: bigint; sizeInTokens: bigint; pendingImpactAmount: bigint }>;
+  }>,
+): Promise<GmxShortExecutionPrice> {
+  if (input.indexPrice <= 0n || input.sizeDeltaUsd === 0n || input.quoteDecimals < 0 || input.quoteDecimals > 30
+    || (input.sizeDeltaUsd < 0n) !== (input.position !== undefined)) {
+    throw new Error("GMX execution price inputs are invalid.");
+  }
+  const reader = requiredEvmAddress(deployment.gmx.reader.address, "gmx.reader");
+  const code = await port.codeHash(reader);
+  if (code === undefined || !equalHash(code, deployment.gmx.reader.expectedCodeHash)) {
+    throw new Error("GMX reader code does not match the reviewed identity.");
+  }
+  const index = { min: input.indexPrice, max: input.indexPrice };
+  const collateral = 10n ** BigInt(30 - input.quoteDecimals);
+  const result = await port.readContract({
+    address: reader,
+    abi: GMX_V2_READER_ABI,
+    functionName: "getExecutionPrice",
+    args: [
+      requiredEvmAddress(deployment.gmx.dataStore.address, "gmx.dataStore"),
+      requiredEvmAddress(deployment.market.address, "market"),
+      { indexTokenPrice: index, longTokenPrice: index, shortTokenPrice: { min: collateral, max: collateral } },
+      input.position?.sizeInUsd ?? 0n, input.position?.sizeInTokens ?? 0n, input.sizeDeltaUsd,
+      input.position?.pendingImpactAmount ?? 0n, false,
+    ],
+  }) as Record<string, unknown> | undefined;
+  const executionPrice = result?.executionPrice;
+  const priceImpactUsd = result?.priceImpactUsd;
+  const totalImpactUsd = result?.totalImpactUsd;
+  const priceImpactDiffUsd = result?.priceImpactDiffUsd;
+  if (typeof executionPrice !== "bigint" || executionPrice <= 0n || typeof priceImpactUsd !== "bigint"
+    || typeof totalImpactUsd !== "bigint" || typeof priceImpactDiffUsd !== "bigint" || priceImpactDiffUsd < 0n) {
+    throw new Error("GMX reader returned an invalid execution price.");
+  }
+  return Object.freeze({ executionPrice, priceImpactUsd, closeImpactUsd: totalImpactUsd - priceImpactDiffUsd });
+}
+
 export type ArbitrumSepoliaMarketSnapshot = Readonly<{
   sqrtPriceX96: bigint;
   baseIsToken0: boolean;
   poolFee: bigint;
   /** The GMX position fee factor for a price-impact-increasing trade, the higher of the two, in 1e30. */
   positionFeeFactor: bigint;
+  /**
+   * GMX's own execution prices, 30-decimal USD per base atom, at the reference for a short of the
+   * largest order size: opening it (the bid) and buying it back (the ask), price impact included.
+   */
+  gmxShortOpenPrice?: bigint;
+  gmxShortClosePrice?: bigint;
   observedAtMs: number;
+}>;
+
+/** What the terminal's GMX prices are read for: the largest order, at the live reference. */
+export type ArbitrumSepoliaGmxQuoteSize = Readonly<{
+  reference: Pick<ArbitrumSepoliaReferencePriceFeed, "latest">;
+  sizeAtoms: bigint;
+  baseDecimals: number;
+  quoteDecimals: number;
 }>;
 
 /** A refresh also names the pool and its tokens, which the spot quoter needs. */
@@ -60,6 +136,7 @@ export class ArbitrumSepoliaMarketFeed {
   readonly #deployment: Pick<ArbitrumSepoliaAsyncDeploymentConfiguration, "accountFactory" | "collateralToken" | "market" | "gmx">;
   readonly #port: ArbitrumSepoliaPriceReadPort;
   readonly #pollIntervalMs: number;
+  readonly #gmxQuote: ArbitrumSepoliaGmxQuoteSize | undefined;
   #latest: ArbitrumSepoliaMarketSnapshot | undefined;
   #timer: ReturnType<typeof setInterval> | undefined;
 
@@ -67,10 +144,30 @@ export class ArbitrumSepoliaMarketFeed {
     deployment: Pick<ArbitrumSepoliaAsyncDeploymentConfiguration, "accountFactory" | "collateralToken" | "market" | "gmx">,
     port: ArbitrumSepoliaPriceReadPort,
     pollIntervalMs: number,
+    gmxQuote?: ArbitrumSepoliaGmxQuoteSize,
   ) {
     this.#deployment = deployment;
     this.#port = port;
     this.#pollIntervalMs = pollIntervalMs;
+    this.#gmxQuote = gmxQuote;
+  }
+
+  /** GMX's execution prices for opening and closing a short of the configured size at the reference. */
+  async #gmxPrices(): Promise<Readonly<{ gmxShortOpenPrice?: bigint; gmxShortClosePrice?: bigint }>> {
+    const quote = this.#gmxQuote;
+    const reference = quote?.reference.latest();
+    if (quote === undefined) return {};
+    if (reference === undefined) throw new Error("Arbitrum Sepolia reference price is unavailable.");
+    const indexPrice = (reference.answer * GMX_FLOAT_PRECISION) / 10n ** BigInt(reference.decimals + quote.baseDecimals);
+    const sizeInUsd = (quote.sizeAtoms * indexPrice) / 10n ** BigInt(30 - quote.quoteDecimals) * 10n ** BigInt(30 - quote.quoteDecimals);
+    const [open, close] = await Promise.all([
+      readGmxShortExecutionPrice(this.#port, this.#deployment, { indexPrice, quoteDecimals: quote.quoteDecimals, sizeDeltaUsd: sizeInUsd }),
+      readGmxShortExecutionPrice(this.#port, this.#deployment, {
+        indexPrice, quoteDecimals: quote.quoteDecimals, sizeDeltaUsd: -sizeInUsd,
+        position: { sizeInUsd, sizeInTokens: quote.sizeAtoms, pendingImpactAmount: 0n },
+      }),
+    ]);
+    return { gmxShortOpenPrice: open.executionPrice, gmxShortClosePrice: close.executionPrice };
   }
 
   latest(): ArbitrumSepoliaMarketSnapshot | undefined {
@@ -103,10 +200,11 @@ export class ArbitrumSepoliaMarketFeed {
       }
       const pool = requiredEvmAddress(String(poolValue), "spotPort.pool");
       const market = requiredEvmAddress(this.#deployment.market.address, "market");
-      const [slot0, token0, positionFeeFactor] = await Promise.all([
+      const [slot0, token0, positionFeeFactor, gmxPrices] = await Promise.all([
         read(pool, POOL_ABI, "slot0"),
         read(pool, POOL_ABI, "token0"),
         read(requiredEvmAddress(this.#deployment.gmx.dataStore.address, "gmx.dataStore"), DATA_STORE_ABI, "getUint", [gmxPositionFeeFactorKey(market, false)]),
+        this.#gmxPrices(),
       ]);
       const sqrtPriceX96 = (slot0 as readonly unknown[])[0];
       if (typeof sqrtPriceX96 !== "bigint" || sqrtPriceX96 <= 0n || typeof poolFee !== "number"
@@ -119,6 +217,7 @@ export class ArbitrumSepoliaMarketFeed {
         baseIsToken0: requiredEvmAddress(String(token0), "pool.token0") === baseToken,
         poolFee: BigInt(poolFee),
         positionFeeFactor,
+        ...gmxPrices,
         observedAtMs: Date.now(),
         pool,
         baseToken,
@@ -147,9 +246,10 @@ export class ArbitrumSepoliaMarketFeed {
 
 /**
  * Arbitrum Sepolia: spot is the Uniswap V3 pool mid with the pool fee as its taker rate; the
- * perpetual is GMX V2, shown at the Chainlink reference the order context prices from, with the GMX
- * market's live position fee factor as its taker rate (GMX fills at its oracle price plus price
- * impact, so no spread is shown). Every value comes from live reads.
+ * perpetual is GMX V2, shown at GMX's own execution prices for opening (bid) and closing (ask) a
+ * short of the largest order size when the market feed reads them, price impact included, else at
+ * the Chainlink reference the order context prices from, with the GMX market's live position fee
+ * factor as its taker rate. Every value comes from live reads.
  */
 export function createArbitrumSepoliaMarketSource(
   config: Pick<ArbitrumSepoliaOrderContextConfig, "contextId" | "baseAsset" | "quoteAsset" | "maximumQuantityAtoms" | "maxSlippageBps" | "maxStalenessSeconds">,
@@ -186,11 +286,12 @@ export function createArbitrumSepoliaMarketSource(
         ? decimalString(squared * baseScale, Q192 * quoteScale)
         : decimalString(Q192 * baseScale, squared * quoteScale);
       const perp = decimalString(price.answer, 10n ** BigInt(price.decimals));
+      const gmxPrice = (value: bigint | undefined) => value === undefined ? perp : decimalString(value * baseScale, GMX_FLOAT_PRECISION);
       return Object.freeze({
         spotBid: spot,
         spotAsk: spot,
-        perpBid: perp,
-        perpAsk: perp,
+        perpBid: gmxPrice(pool.gmxShortOpenPrice),
+        perpAsk: gmxPrice(pool.gmxShortClosePrice),
         spotTakerRate: decimalString(pool.poolFee, 1_000_000n),
         perpTakerRate: decimalString(pool.positionFeeFactor, GMX_FLOAT_PRECISION),
         capturedAtMs: pool.observedAtMs,
