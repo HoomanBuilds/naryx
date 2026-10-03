@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed } from "./public-market-feed";
@@ -291,6 +291,8 @@ function remainingText(deadlineSeconds: string, nowMs: number): string {
 }
 
 const OBSERVATION_POLL_INTERVAL_MS = 4000;
+// Live books move, so the service snapshot and the ticket preview are re-read on this cadence.
+const MARKET_REFRESH_MS = 10_000;
 const OBSERVATION_MAX_AUTO_FAILURES = 3;
 
 function isObservationTerminal(observation: SolanaExecutionObservation | null): boolean {
@@ -1474,6 +1476,14 @@ export function TradingTerminal({
   } = useTerminal();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
+  // The lane whose default size the ticket took; a refresh of the same lane keeps the trader's size.
+  const sizedLane = useRef<DomainId | null>(null);
+  const [marketTick, setMarketTick] = useState(0);
+  useEffect(() => {
+    if (!privateProvider) return;
+    const timer = window.setInterval(() => setMarketTick((tick) => tick + 1), MARKET_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [privateProvider]);
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
   const [previewRejection, setPreviewRejection] = useState<string | null>(null);
@@ -1617,7 +1627,10 @@ export function TradingTerminal({
           setSnapshot(serviceSnapshot);
           setSnapshotDomain(selectedDomain);
           // Each lane sizes in its own base asset, so a newly loaded lane starts from its own default.
-          setSize(trimSize(serviceSnapshot.ticket.defaultSize));
+          if (sizedLane.current !== selectedDomain) {
+            sizedLane.current = selectedDomain;
+            setSize(trimSize(serviceSnapshot.ticket.defaultSize));
+          }
           setProviderConnection("connected");
         }
       } catch (cause) {
@@ -1639,7 +1652,7 @@ export function TradingTerminal({
       active = false;
       controller.abort();
     };
-  }, [privateProvider, selectedDomain]);
+  }, [marketTick, privateProvider, selectedDomain]);
 
   useEffect(() => {
     if (!privateProvider || selectedDomain !== "hyperliquid" ||
@@ -1726,7 +1739,7 @@ export function TradingTerminal({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
+  }, [marketTick, mode, privateProvider, quoteMode, selectedDomain, size, slippage]);
 
   const lifecycleAttemptId = currentExecutionReview?.preparation.lifecycleAttemptId ?? null;
   const lifecycleTicketKey = currentExecutionReview?.ticketKey ?? null;
