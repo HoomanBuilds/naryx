@@ -618,8 +618,8 @@ export function solverQuote(input: SolverQuoteInput, context = 'solverQuote'): S
       'reservation is required exactly for firm quote modes',
     );
   }
-  if (isFirm && (outcome.kind !== 'ENTRY_SPREAD' || residualBase !== undefined)) {
-    throw new MalformedInputError(context, 'firm quotes require atomic entry outcomes');
+  if (isFirm && residualBase !== undefined) {
+    throw new MalformedInputError(context, 'firm quotes require atomic outcomes without terminal residuals');
   }
   const reservationId = hasReservation
     ? commitmentHash(input.reservationId!, `${context}.reservationId`)

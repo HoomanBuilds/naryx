@@ -49,14 +49,8 @@ export const DOMAIN_META: Readonly<Record<DomainId, {
   hyperliquid: { label: "Hyperliquid", network: "Hyperliquid testnet", runtime: "HyperCore", wallet: "evm", settlementClass: "BATCHED_IOC_WITH_RECOVERY", settlement: "IOC with recovery", executionMode: "Hyperliquid coordinated testnet" },
 };
 
-/**
- * Lanes whose open packages the product cannot exit yet, with the reason shown in place of an exit.
- * The only Solana Devnet exit route is the solver's firm buy-back, and the protocol admits firm
- * quotes for entries only, so that exit quote is refused before any transaction is built.
- */
-export const EXIT_UNAVAILABLE: Readonly<Partial<Record<DomainId, string>>> = {
-  solana: "Solana Devnet exits are not available yet. The Devnet exit route needs a firm solver buy-back quote, and the protocol admits firm quotes only for entries, so an open Solana package cannot be exited through Naryx today.",
-};
+/** Lanes whose open packages the product cannot exit yet, with the reason shown in place of an exit. */
+export const EXIT_UNAVAILABLE: Readonly<Partial<Record<DomainId, string>>> = {};
 
 export function domainHealth(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): RuntimeBoundaryHealth | null {
   if (!health) return null;

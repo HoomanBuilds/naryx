@@ -673,11 +673,14 @@ function validateExecutableQuoteShape(
     requireCondition(quote.quoteMode === 'EXECUTION_COMMITMENT', 'packageAdmission.quote.quoteMode', 'Hyperliquid requires an execution commitment');
   }
   if (firm) {
+    const supportedFirmAction = order.action === 'ENTRY'
+      ? order.settlementClass === 'ATOMIC_POSTCONDITION'
+        || order.settlementClass === 'ASYNC_BONDED_SOLVER'
+      : order.settlementClass === 'ATOMIC_POSTCONDITION';
     requireCondition(
-      order.action === 'ENTRY'
-        && (order.settlementClass === 'ATOMIC_POSTCONDITION' || order.settlementClass === 'ASYNC_BONDED_SOLVER'),
+      supportedFirmAction,
       'packageAdmission.quote.quoteMode',
-      'firm quotes require atomic or asynchronous bonded entry',
+      'firm quotes require atomic entry or exit, or asynchronous bonded entry',
     );
     requireCondition(quote.reservationId !== undefined, 'packageAdmission.quote.reservationId', 'firm quote reservation is missing');
   } else {

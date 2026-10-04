@@ -382,10 +382,13 @@ test('a Solana firm exit quote passes every fee list rule, and the order cap sti
   assert.ok(exitFee > 0n);
   const trader = key();
   const policy = templatePolicy(exitFee);
-  // The protocol validates the fee lists before the quote mode, and it does not yet admit a firm quote
-  // with an exit outcome. Reaching that rule, not the base-asset fee rule, is what the fee lists prove;
-  // once the protocol admits firm exits this exit must run through validatePackageAdmission as entry does.
-  await assert.rejects(signThroughSolver(packageOrder('EXIT', trader, policy.orderCaps), policy.feePolicy), (error: Error) =>
-    /firm quotes require atomic entry outcomes/.test(error.message) && !/expectedBaseAssetFee/.test(error.message));
+  const order = packageOrder('EXIT', trader, policy.orderCaps);
+  const signed = await signThroughSolver(order, policy.feePolicy);
+  const admitted = admit(order, signed, policy.feePolicy, policy.accountModeClass);
+  assert.equal(admitted.order.action, 'EXIT');
+  assert.equal(admitted.quote.quoteMode, 'FIRM_ONCHAIN');
+  assert.equal(admitted.quote.quotedOutcome.kind, 'EXIT_QUOTE_OUTCOME');
+  assert.equal(admitted.quote.expectedNormalizedVenueFeesByAsset.find((fee) => compareBytes(assetKey(fee.asset), assetKey(quote)) === 0)?.atoms, exitFee);
+  assert.equal(admitted.quote.expectedNetSpotQuantity.atoms, -QUANTITY);
   await assert.rejects(signThroughSolver(packageOrder('EXIT', trader, templatePolicy(exitFee - 1n).orderCaps), policy.feePolicy), /perp taker fee exceeds the order cap/);
 });

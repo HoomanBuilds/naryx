@@ -235,6 +235,16 @@ describe('solver quote', () => {
     assert.doesNotThrow(() =>
       solverQuote(baseInput({ quoteMode: 'FIRM_ONCHAIN', reservationId: 'aa'.repeat(32) })),
     );
+    assert.doesNotThrow(() =>
+      solverQuote(baseInput({
+        quoteMode: 'FIRM_ONCHAIN',
+        reservationId: 'aa'.repeat(32),
+        quotedOutcome: {
+          kind: 'EXIT_QUOTE_OUTCOME',
+          exitQuoteOutcome: baseInput().expectedSpotNotional,
+        },
+      })),
+    );
     assert.throws(
       () => solverQuote(baseInput({ quoteMode: 'IMPLIED', reservationId: 'aa'.repeat(32) })),
       MalformedInputError,
