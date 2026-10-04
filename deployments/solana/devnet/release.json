@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "network": "solana-devnet",
+  "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  "releaseCommit": "84953be2a4ff4353520b4ccb1bfd72da23430a99",
+  "toolchain": {
+    "anchor": "1.0.0",
+    "solanaCli": "3.1.13",
+    "rustc": "1.92.0"
+  },
+  "governance": {
+    "configDelaySlots": "150",
+    "proposer": "9ZRF16TLuZs6V1xghEpeujTGRcAEQ1WRe5AzCmsRQkNn",
+    "canceller": "AP34Y5ufcSSyGJvrCEZtXYYcxqg6aQ9rRkrW92oVSWnb",
+    "executor": "B9aCtSvmBjjz5a3o6Z8QWRAmekiUVXKEvLsoNCp7fFDv",
+    "pauser": "E2S7yypgxHifC2tkiCZKMtbHr45W2GbtXfYpnuGU9JMA",
+    "upgradeAuthority": "AP34Y5ufcSSyGJvrCEZtXYYcxqg6aQ9rRkrW92oVSWnb",
+    "marketOwner": "E2S7yypgxHifC2tkiCZKMtbHr45W2GbtXfYpnuGU9JMA",
+    "fundingKeeper": "B9aCtSvmBjjz5a3o6Z8QWRAmekiUVXKEvLsoNCp7fFDv"
+  },
+  "programs": {
+    "core": {
+      "programId": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg",
+      "programDataAddress": "5HTBNbuoVUnq85RPsW9SYRM82X8rzy67UrRwMCVc52aW",
+      "deploymentSlot": 507412880,
+      "deploymentSignature": "5pkAhjGFHk1TfXGZEzXPgM8A25z5CY1e9sT38TuZjh6TJquGMRXEuWAF4Ez5UXtjCGEG41EUpfH5VprB4kZmurgg",
+      "programDataHeaderIdentity": "2cf3ecf97b7ea2e2bad592081812d2b8ebebd311caba3a62e19b9aff9452cc3c",
+      "programElfSha256": "110cb45039b6b02fff8f5ac763de5beb1b32de959e00ffa74034d913ca90fc4a"
+    },
+    "inventoryReservation": {
+      "programId": "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt",
+      "programDataAddress": "EPbtmdBcneB8vLvrktr1RqTus3Nwbi3S3c99pGvGGpu8",
+      "deploymentSlot": 507413041,
+      "deploymentSignature": "4RUqtrn4nuF2cfHzMP4aJWrRcN2HyCqpp22nNRrsLkaTCJRMX8S1foynZtHPwGY55XBvCpLMuNGpLSB2U1kR4wr3",
+      "programDataHeaderIdentity": "bba8b0cb5c17620865bd0281951c2155ce2004f219915f1cc40f6be26509bb6f",
+      "programElfSha256": "8c91ee0b08049393288458b868dd6e257c2076b36e5c02682187d723f21ac108"
+    },
+    "packageBook": {
+      "programId": "CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY",
+      "programDataAddress": "Fz9RYhawLp8qVPoMSxYMy3KhNyxGYVcEQJ4XnoKJUW5Y",
+      "deploymentSlot": 507413176,
+      "deploymentSignature": "66hYBCPRR23fCsu4NMy1jajcMUiDxMqnpopB4wyKjB5GmhDJpLJzLQ42RH76TF1b4aXHoPd7EUEB6DTUrMJLk2Hw",
+      "programDataHeaderIdentity": "ca1d1f33fc7c99420d8218b7bcd1f8e3b01c5e6442b1a9be0d58e407f82e6bb0",
+      "programElfSha256": "8db487d697012e09569f6d2b495734778ee08dfbff021d7745fd77f9fa90a55f"
+    },
+    "testPerp": {
+      "programId": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD",
+      "programDataAddress": "HzDeXcfbsSLHfXJ3TLHZEDmQUZNvRCiXjWC6ZUMdehHc",
+      "deploymentSlot": 507413266,
+      "deploymentSignature": "49FjesWUjcFK9WFVkQNthZFHPALsysiUN9zeNTkS1VWNdYZxCzJv1D2dFexBZQeYvfqg7HJ4V3WzoC6KXLtiFwTp",
+      "programDataHeaderIdentity": "f2d5b3a77fd190e2936fc42e02c50fb84477515e04a125183291b773d886b63b",
+      "programElfSha256": "676389f3f792c49086189cece2f5c9ae14cb9ac95d5a881c9a126aa06d613014"
+    },
+    "testPerpAdapter": {
+      "programId": "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1",
+      "programDataAddress": "dxmqGPjovYgKLimwg53RR4eqSDZPwVKhDdAgcHTavzY",
+      "deploymentSlot": 507413349,
+      "deploymentSignature": "4XaXNyZSSeKsGy2MZ6DzxEhBqPUbba2PTktejTDdiNTihFREDmx5AvvHh9wb9n36VLd2Krov3BShpAKxPfGrBREs",
+      "programDataHeaderIdentity": "16d5dc620a0ed3998c7890067779b642c67aa3b649e0f519d5561644ee3d4680",
+      "programElfSha256": "ea442b3149591cdef99edaa244a06cdacc4ee6f84fe283391f0eb6a7f9147b4f"
+    }
+  },
+  "domainManifest": {
+    "manifestVersion": 1,
+    "environment": "devnet",
+    "domainId": "svm:devnet",
+    "runtimeClassId": "svm",
+    "runtimeClassVersion": 1,
+    "chainNamespace": "solana",
+    "chainReference": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    "executionVerifierId": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg",
+    "executionVerifierCodeHash": "110cb45039b6b02fff8f5ac763de5beb1b32de959e00ffa74034d913ca90fc4a",
+    "clockModelId": "solana-slot",
+    "finalityPolicyHash": "6a4b57ec803a4652a8ab5820192f10a009de6420afa8e6867424f30e54cee682",
+    "addressCodecId": "solana-base58-pubkey",
+    "supportedSettlementClasses": ["ATOMIC_POSTCONDITION"],
+    "manifestHash": "5739080f6306276a5c387cf20ae53c567b5472379505315360557c067dfcb02c"
+  },
+  "economicSeries": {
+    "seriesId": "sol-cash-carry-30d-usdc-v1",
+    "templateId": "cash-and-carry-v1",
+    "templateManifestHash": "e0cc63d5d637d077be2a77f73714b7f4d1f208d9faa07fbedf54db9bdfffd33a",
+    "seriesManifestHash": "a499a684450338f4a857a8eaf0faec11868c9dc3d32da0ec297b5ca73b4266cd",
+    "executionClassManifestHash": "06793ec300c8148ec579b3c8bdd12ceb4a802442c96069cf414a11caff9a5cce",
+    "settlementClassIdentityHash": "d859a5e58ad327a34dc770b146a6120cda0a194dd25734f9fec462a18e11e596",
+    "spotBaseAtomsPerPackageUnit": "1000000",
+    "perpQuantityAtomsPerPackageUnit": "1000000"
+  },
+  "testAssets": {
+    "baseMint": "So11111111111111111111111111111111111111112",
+    "quoteMint": "2shmXsTTFVqeNzi4TdKYCNK4GSgCBU1C9jvxXu8E9UkC",
+    "quoteDecimals": 6,
+    "quoteFaucetAuthority": "Hn6YYTDf9ewbjv6jHSkzXMMi2o71TDkCACypfAidJvyB",
+    "quoteMintCreateSignature": "2hmAgak8Uox6UZ2x5AWWRwVzsHAcBnVh5kkLDveuhRTY3PzUWDktgs1tGG3M1TEiyTk4DoUsPF3uhep8YbSU9i4A"
+  },
+  "accounts": {
+    "protocolConfig": "GA7G8TkPSXqueLiV6BVQNTzovgcF9178wby3Ty7VgXYL",
+    "solverRegistry": "Cp1RZ58wtEwHFh8WYc4mrCQ2PCKRYosjb8enG83xnH2k",
+    "testPerpMarket": "aS8LGmZ1sdbqbipwBdToLT45mMsjarUAx67YeQWyvUm",
+    "collateralVault": "DkSFwt6AmdkCxZLdJpKdTuhsECJvGqYyZJhp7gwXjYc9",
+    "feeVault": "DziENMHEMg3SbVi2sVT4iKGia2ymXSRGdfWTqsEm9Wga",
+    "insuranceVault": "BLtSv6inERg6xT2XLkDUYHvnuM5AVfuVKZFz4NZt4Y5R",
+    "reservationClass": "CdV3VVq86Dfy884VuXALxLWHNXXFJh8L4uEpdo1ztD9P",
+    "packageBookClass": "7jRG2V7VgQGwgLLBfXobRmeMKtYvgRVtYjCNuDv5ELhm",
+    "packageBookShard": "DK3kxiLnKQ832UQuKijmeNNBvee3qpMdfTCzi89thwSS",
+    "packageBookLevelPage": "4Z58p7p4YfA7rBqb4oSPAjhqnqtQnb2a8DPL9WAksDh3",
+    "seriesIndex": "9A17yyDhDuaMJHGaVuEWdW7S7WASMyeGV94KFE4F2Sjs",
+    "seriesRecord": "4EgKEgQXwFGNbVJCMk7EUU37Y2A26GHj6qptZNYPvBMt",
+    "solverBaseInventory": "APkLGd7ZL2aEsSuMybKEsojMN3he9zRkeaxhUviB6DYL",
+    "solverQuoteInventory": "6xGcyAskKNWzymyuRtwKUgMXkiwgfHn3k5Vh1EQAccbj"
+  },
+  "market": {
+    "oracle": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+    "feedIdHex": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+    "baseLotAtoms": "1000000",
+    "quoteTickAtomsPerBaseLot": "1",
+    "takerFeeBps": 5,
+    "halfSpreadBps": 2,
+    "impactBpsPerUnit": 1,
+    "maxSlippageBps": 100,
+    "initialMarginBps": 1000,
+    "maintenanceMarginBps": 500,
+    "liquidationPenaltyBps": 100,
+    "maxPriceAgeSeconds": 60,
+    "maxConfidenceBps": 50,
+    "maxPositionLots": "1000000"
+  },
+  "limitsAndFees": {
+    "maximumPackageNotionalQuoteAtoms": "5000000000",
+    "reservationMaxBaseAtoms": "10000000000",
+    "reservationMaxSolverBaseAtoms": "100000000000",
+    "packageBookMaxFeeAtoms": "0",
+    "naryxServiceFeeAtoms": "0",
+    "venueFeePolicy": "SIGNED_PASS_THROUGH_ONLY",
+    "marketFeeUpdatePolicy": "NEW_MARKET_VERSION",
+    "packageFeeUpdatePolicy": "DELAYED_CLASS_VERSION"
+  },
+  "lookupTable": {
+    "address": "2etWLExqGpMfBjrsYaKgXsYXKXDuwhSLapSutjpPpBS2",
+    "authority": null,
+    "frozen": true,
+    "addressCount": 44,
+    "createSignature": "3txjy6HX4b97J3sCNgj766v8o7bkjgS34kH1Sm9qyjPkAD8RZ5Hv3oKtbGtiT25nFrpUFVkFJATT79Z21GMKh8wk",
+    "freezeSignature": "75x6x7CMTig1EiGMdBEcLbVyU2djzcRRxZA5odmzyhyJnNwAimYtSSZtvBiawN6TC4y4TwqS8EPrYPRFhjBHVyA"
+  },
+  "activationTransactions": {
+    "initializeCore": "31TZjzu21WHj3rRcWrBgPdB4yvGEqHQ99hTpQbKe5YUYgqZAqdwV9y4KrEhhKcUQxGzPMB5RKejwSBzL7yRHAo63",
+    "proposeSolver": "2jatLGCkmkQJcwEr9F5udj9e6DeK1UAKfk3MkbnbQ7kAjFpAfEeukH4tuTurzDKPVMtjqF3qjCAadbVbySLg9wf9",
+    "scheduleUnpause": "58tqr1NBCJ3kq7NyxpvpnGXyy2u8VG5EuKU4imonRuys8ErL54yeSZgPYwTVU4EBNpYn8APS58bowuNdSHimqfwG",
+    "activateSolver": "3XWkQobMKaG5FPXvXxhovHN9xtKpiB3iMUPexxAtXhYL1SQEfnoYvgYw3oHrr9mogjeEQpABeZRy9BYbUCndCsMY",
+    "activateEntry": "5giRRSywtWZrxtFGnxndDdx1nwGtrEtpmxmZsGyHEsnpAB1wvjoorJBfJfF5bCkQRsmvJh7Q7LCC64qL8LDXcgBt",
+    "initializeMarket": "3yQg7p6mjMtGdQqqMPehnF1jx2Ff6pnxdtEwVKFby8TiTnC9qWr7ivAdkjzJuwY8uVbikqw758EF5pnbzh4H75UA",
+    "initializeReservationClass": "e97tVfFaweon3ffT2L8YxiskeYZdAk5N2jGFnc9Vb7TqYWVEx6zFChVAg3od2afst7Mw5y4ssPXXYpqFKusZpQS",
+    "initializePackageBookClass": "3xAB2LmeaM5aKJ6neveeDNuRQjKgpExHXC2jvbp6Y978tqKruwSQ1aPgiMPyoNK5wsfmJsdHMGUuzNFsQa18pAdM",
+    "activateBaseAsset": "5R3yLtxTevo3G8ZAuM1A7b8KrS7RgoEvr9dqDxhhzjMm8n7KP2r78iV6NWc15BLGkcPPUb1bPzz5oK7b4UjiZLZ9",
+    "activateQuoteAsset": "5CssUJJnhceNLnRALa3oz7KKhFbFhcVqzmaPSekHgjf1pFB9AUPpGxV5cqkmcH6VaGxq9emcZCR6d9PCGJ55unAB",
+    "activateSpotVenue": "31qiUpqxPQaV7qxJdTmnAuXdT1Q17V2gE21SyTjdcro7ikdfwhQuy3q63bBhqxoWbDLnNBCTHYUb44zZruERLqn3",
+    "activatePerpVenue": "3qy1RrvoYoNEYFPwVgsdBLkH7CsCRzrKdz5G7nHcFYuHenUzuGxGx9ayZ5DAii98UgErGJiqxxrGzh2PTLtwgc5R",
+    "activateSpotMarket": "2AzzoFDrbfvYx9J4opHuNzwKW7Yo7LtL7FwUsBmPJprdUkvpSqh6HUxLxNeZsbMd1JBUkpCWEL25kBFJTkimECBE",
+    "activatePerpMarket": "65c6aQ6UqVcii9eGviSEDArXGjBD2zqavGUr3RYzit9LDjaGdSxnz8wnhjADEMdLvDGV2kfVb4HMX3Qk4gCzATUd",
+    "activateSpotAdapter": "5VzzaqjC93hdpzjDvdSaeJqcNRe7Pn5s7gXJVoaqxAcXVMBRG7CqhartuonJTGt98mTGSeb7ieKBCSXbG3eRVSoQ",
+    "activatePerpAdapter": "4yp4obfJaQx83xkiwZbk5mYgFGakfctKKZrEQRCEk2v6Ai3b5ZnjEmEkBDhWMxEWZR7GhpSW3cQWX6BK1nZZixHA",
+    "activateSeries": "2pSSLrTCHhagS5PJCiSwuj8eu36YXCZLzFWxUYX12fUWPQkU1gmvJgz9NEZpsLwAQVVhX2WTcqM84SLR5g495riY",
+    "initializePackageBookShard": "3HiezvpiCqPwkFKFDG7ECJnSxRBkaGX2oWn95hfCbjKgAuQFfRPi7XvrnuSgDYVY2uKzDD2p6PK57pGoVuQQD2KZ",
+    "fundInsuranceVault": "57LB719DbgM242N8Lc7bLR9P6AkYQ14ro24TL5eLoFRSuXetL4YAmEsn5BAajJ7muKr8YUc254ew1D3YxQrRJmkB"
+  },
+  "testnetFunding": {
+    "solver": "DvJy78diprF1EGCEbdCZMkY3PXb7rgVSHKRpNrusTYLc",
+    "solverWrappedSolAtoms": "1500000000",
+    "solverTestUsdcAtoms": "100000000000",
+    "insuranceTestUsdcAtoms": "100000000000",
+    "fundSolverSolSignature": "HXZdXPjDTWtLjesN5cL9MAh3HV2YkXscTH95iv1GdWKfdoAf7mREPYZYEQSCVE6ie29WyjTfFNUzusxwV1GXKJ7",
+    "wrapSolverSolSignature": "4ibR8j5LbBuTCmWLczUMtJYhYpnP715GYV8yiRBMefazonKNuh6pigWwpN6K2oTBXSgfqfUE3JeRnY7uS4NNGnMj",
+    "claimSolverQuoteSignature": "3JaSLThbZm95Swso4x513kLAESRaQfxSvmN7DP58sVwvVCa4GVhrJMsxQdbScak8URA59FVcMvmybAQ8pFztqnLJ"
+  },
+  "activationState": "ACTIVE",
+  "limitations": [
+    "Devnet only. This record authorizes no mainnet action.",
+    "The quote mint is Naryx test USDC with no real value.",
+    "The perpetual venue is the Naryx deterministic Devnet test venue, not evidence of production venue liquidity.",
+    "The inventory reservation venue holds funded Devnet inventory and is not an AMM or external spot market.",
+    "The release charges zero Naryx service fee. The test venue fee is a signed pass-through cost.",
+    "Deployment and activation do not imply organic volume, external market-maker participation, or mainnet readiness."
+  ]
+}
