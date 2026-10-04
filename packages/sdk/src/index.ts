@@ -64,3 +64,18 @@ export {
   verifySelectiveDisclosure,
 } from '@naryx/protocol-types';
 export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy } from './maker-automation.js';
+export {
+  NARYX_RFQ_HPKE_SUITE_ID,
+  NARYX_RFQ_HPKE_PUBLIC_KEY_BYTES,
+  NARYX_RFQ_HPKE_PRIVATE_KEY_BYTES,
+  NARYX_RFQ_HPKE_ENCAPSULATED_KEY_BYTES,
+  NARYX_RFQ_MAX_PLAINTEXT_BYTES,
+  NaryxPrivateRfqCryptoError,
+  generateNaryxRfqHpkeKeyPair,
+  encryptPrivateRfqRequest,
+  decryptPrivateRfqRequest,
+  encryptPrivateRfqResponse,
+  decryptPrivateRfqResponse,
+  type PrivateRfqEnvelopeHeaderInput,
+  type NaryxRfqHpkeKeyPair,
+} from './private-rfq-crypto.js';
