@@ -48,7 +48,7 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
         assertEq(address(deployment.coordinator.bondToken()), USDC);
         assertEq(deployment.coordinator.deploymentChainId(), deployer.ARBITRUM_SEPOLIA_CHAIN_ID());
         assertEq(deployment.coordinator.deploymentDomainIdHash(), keccak256(bytes(deployer.DOMAIN_ID())));
-        assertEq(deployment.coordinator.executionClassManifestHash(), EXECUTION_CLASS_MANIFEST_HASH);
+        assertEq(deployment.coordinator.executionClassManifestHash(), bytes32(0));
         assertEq(deployment.accountFactory.market(), ETH_USD_MARKET);
         assertEq(address(deployment.accountFactory.collateralToken()), USDC);
         assertEq(address(deployment.adapter.factory()), address(deployment.accountFactory));
@@ -71,6 +71,7 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
             configCodeHash: address(deployment.config).codehash,
             domainManifestVersion: 1,
             domainManifestHash: DOMAIN_MANIFEST_HASH,
+            executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH,
             coordinator: deployment.coordinator,
             coordinatorCodeHash: address(deployment.coordinator).codehash,
             accountFactory: deployment.accountFactory,
@@ -127,7 +128,6 @@ contract DeployArbitrumSepoliaAsyncGmxTest is Test {
             marketCodeHash: ETH_USD_MARKET.codehash,
             collateralToken: IERC20(USDC),
             collateralTokenCodeHash: USDC.codehash,
-            executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH,
             gmxCodeHashes: DeployArbitrumSepoliaAsyncGmx.GmxCodeHashes({
                 dataStore: deployer.GMX_DATA_STORE().codehash,
                 eventEmitter: deployer.GMX_EVENT_EMITTER().codehash,

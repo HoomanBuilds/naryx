@@ -122,6 +122,43 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
     }
 
+    function testExecutionClassActivationIsDelayedPauseGatedAndNonReusable() public {
+        ProtocolConfig pendingConfig =
+            new ProtocolConfig("eip155:421614", 1, MANIFEST_HASH, 10, PROPOSER, CANCELLER, EXECUTOR, PAUSER);
+        AsyncBondedPackageCoordinator pendingCoordinator =
+            new AsyncBondedPackageCoordinator(pendingConfig, token, bytes32(0));
+
+        vm.prank(PROPOSER);
+        pendingCoordinator.proposeExecutionClass(CLASS_HASH);
+        vm.prank(EXECUTOR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AsyncBondedPackageCoordinator.ExecutionClassProposalNotReady.selector, uint64(block.timestamp + 10)
+            )
+        );
+        pendingCoordinator.activateExecutionClass();
+
+        vm.warp(block.timestamp + 10);
+        vm.prank(EXECUTOR);
+        pendingCoordinator.activateExecutionClass();
+        assertEq(pendingCoordinator.executionClassManifestHash(), CLASS_HASH);
+
+        vm.prank(PROPOSER);
+        vm.expectRevert(
+            abi.encodeWithSelector(AsyncBondedPackageCoordinator.ExecutionClassManifestHashUsed.selector, CLASS_HASH)
+        );
+        pendingCoordinator.proposeExecutionClass(CLASS_HASH);
+
+        vm.prank(PROPOSER);
+        pendingConfig.scheduleUnpause();
+        vm.warp(block.timestamp + 10);
+        vm.prank(EXECUTOR);
+        pendingConfig.activateUnpause();
+        vm.prank(PROPOSER);
+        vm.expectRevert(AsyncBondedPackageCoordinator.InvalidConfiguration.selector);
+        pendingCoordinator.proposeExecutionClass(keccak256("next-execution-class"));
+    }
+
     function testReplayInvalidSignatureAndDomainRotation() public {
         IAsyncVenueAdapter.VenueRequest memory request = _request();
         AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, request);

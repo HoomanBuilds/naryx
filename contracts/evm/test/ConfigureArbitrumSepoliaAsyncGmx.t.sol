@@ -78,7 +78,6 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
                 marketCodeHash: address(market).codehash,
                 collateralToken: IERC20(address(token)),
                 collateralTokenCodeHash: address(token).codehash,
-                executionClassManifestHash: EXECUTION_CLASS_MANIFEST_HASH,
                 gmxCodeHashes: _gmxCodeHashes(),
                 spot: spot
             })
@@ -87,6 +86,7 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
         route.configCodeHash = address(deployment.config).codehash;
         route.domainManifestVersion = 2;
         route.domainManifestHash = DOMAIN_MANIFEST_HASH;
+        route.executionClassManifestHash = EXECUTION_CLASS_MANIFEST_HASH;
         route.coordinator = deployment.coordinator;
         route.coordinatorCodeHash = address(deployment.coordinator).codehash;
         route.accountFactory = deployment.accountFactory;
@@ -108,6 +108,10 @@ contract ConfigureArbitrumSepoliaAsyncGmxTest is Test {
         operator.runProposeDomain(route.config, 2, DOMAIN_MANIFEST_HASH, proposer);
         vm.warp(block.timestamp + DELAY);
         operator.runActivateDomain(route.config, 2, DOMAIN_MANIFEST_HASH, executor);
+
+        operator.runProposeExecutionClass(route, proposer);
+        vm.warp(block.timestamp + DELAY);
+        operator.runActivateExecutionClass(route, executor);
 
         vm.expectRevert(ConfigureArbitrumSepoliaAsyncGmx.InvalidRoute.selector);
         operator.runScheduleUnpause(route, proposer);

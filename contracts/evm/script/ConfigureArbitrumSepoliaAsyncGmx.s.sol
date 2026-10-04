@@ -22,6 +22,7 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         bytes32 configCodeHash;
         uint32 domainManifestVersion;
         bytes32 domainManifestHash;
+        bytes32 executionClassManifestHash;
         AsyncBondedPackageCoordinator coordinator;
         bytes32 coordinatorCodeHash;
         GmxV2IsolatedAccountFactory accountFactory;
@@ -66,6 +67,24 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         (bool exists, uint32 pendingVersion, bytes32 pendingHash,) = config.pendingDomain();
         if (!exists || pendingVersion != manifestVersion || pendingHash != manifestHash) revert InvalidRoute();
         config.activateDomain();
+        vm.stopBroadcast();
+    }
+
+    function runProposeExecutionClass(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, PROPOSER);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
+        route.coordinator.proposeExecutionClass(route.executionClassManifestHash);
+        vm.stopBroadcast();
+    }
+
+    function runActivateExecutionClass(Route calldata route, address operatorAddress) external {
+        _requireOperator(route, operatorAddress, EXECUTOR);
+        vm.startBroadcast(operatorAddress);
+        _verifyPausedRoute(route);
+        (bool exists, bytes32 pendingHash,) = route.coordinator.pendingExecutionClass();
+        if (!exists || pendingHash != route.executionClassManifestHash) revert InvalidRoute();
+        route.coordinator.activateExecutionClass();
         vm.stopBroadcast();
     }
 
@@ -130,6 +149,7 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
                 || address(route.adapter).codehash != route.adapterCodeHash || route.configCodeHash == bytes32(0)
                 || route.coordinatorCodeHash == bytes32(0) || route.accountFactoryCodeHash == bytes32(0)
                 || route.adapterCodeHash == bytes32(0) || address(route.coordinator.config()) != address(route.config)
+                || route.executionClassManifestHash == bytes32(0)
                 || route.coordinator.deploymentChainId() != ARBITRUM_SEPOLIA_CHAIN_ID
                 || route.coordinator.deploymentDomainIdHash() != DOMAIN_ID_HASH
                 || address(route.coordinator.bondToken()) != address(route.accountFactory.collateralToken())
@@ -166,6 +186,7 @@ contract ConfigureArbitrumSepoliaAsyncGmx is Script {
         if (
             !active || handler != address(route.adapter) || adapterCodeHash != route.adapterCodeHash
                 || handlerCodeHash != route.adapterCodeHash
+                || route.coordinator.executionClassManifestHash() != route.executionClassManifestHash
         ) revert InvalidRoute();
         GmxV2IsolatedAccount(route.accountFactory.implementation()).assertDeployment();
         route.spotPort.assertDeployment();

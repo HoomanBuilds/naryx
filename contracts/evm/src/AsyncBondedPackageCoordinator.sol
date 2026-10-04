@@ -57,6 +57,11 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         uint64 activationTimestamp;
     }
 
+    struct PendingExecutionClass {
+        bytes32 manifestHash;
+        uint64 activationTimestamp;
+    }
+
     struct Terms {
         DomainRef domain;
         address owner;
@@ -150,10 +155,23 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
     error InvalidEvidence();
     error FundingMismatch();
     error ReleaseLocked();
+    error ExecutionClassManifestHashZero();
+    error ExecutionClassManifestHashUsed(bytes32 manifestHash);
+    error ExecutionClassProposalExists();
+    error ExecutionClassProposalMissing();
+    error ExecutionClassProposalNotReady(uint64 activationTimestamp);
+    error ActivationTimestampOverflow();
 
     event AdmissionProposed(address indexed adapter, address indexed handler, uint64 activationTimestamp);
     event AdmissionActivated(address indexed adapter, address indexed handler);
     event AdmissionPaused(address indexed adapter);
+    event ExecutionClassProposed(
+        address indexed actor, bytes32 previousHash, bytes32 proposedHash, uint64 activationTimestamp
+    );
+    event ExecutionClassProposalCancelled(
+        address indexed actor, bytes32 activeHash, bytes32 cancelledHash, uint64 activationTimestamp
+    );
+    event ExecutionClassActivated(address indexed actor, bytes32 previousHash, bytes32 newHash);
     event PackageTransition(bytes32 indexed packageId, State state, uint64 stateVersion, bytes32 evidenceHash);
     event RequestRegistered(bytes32 indexed packageId, bytes32 indexed requestKey);
     event RecoveryActionSubmitted(bytes32 indexed packageId, bytes32 indexed requestKey);
@@ -173,10 +191,12 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
     bytes32 public immutable deploymentDomainIdHash;
     bytes32 public immutable configCodeHash;
     bytes32 public immutable tokenCodeHash;
-    bytes32 public immutable executionClassManifestHash;
+    bytes32 public executionClassManifestHash;
 
     mapping(address adapter => Admission admission) public admissions;
     mapping(address adapter => PendingAdmission pending) private _pendingAdmissions;
+    PendingExecutionClass private _pendingExecutionClass;
+    mapping(bytes32 manifestHash => bool used) private _usedExecutionClassManifestHashes;
     mapping(address owner => uint256 nonce) public nextNonce;
     mapping(bytes32 packageId => Package packageData) private _packages;
     mapping(bytes32 adapterRequestKey => bytes32 packageId) public requestKeyOwner;
@@ -184,10 +204,9 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
     constructor(ProtocolConfig config_, IERC20 bondToken_, bytes32 executionClassManifestHash_)
         EIP712("Naryx Async Bonded Package", "1")
     {
-        if (
-            address(config_).code.length == 0 || address(bondToken_).code.length == 0
-                || executionClassManifestHash_ == bytes32(0)
-        ) revert InvalidConfiguration();
+        if (address(config_).code.length == 0 || address(bondToken_).code.length == 0) {
+            revert InvalidConfiguration();
+        }
         (string memory domainId, uint32 version, bytes32 manifestHash) = config_.domain();
         if (version == 0 || manifestHash == bytes32(0)) revert InvalidConfiguration();
         config = config_;
@@ -197,6 +216,64 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         configCodeHash = address(config_).codehash;
         tokenCodeHash = address(bondToken_).codehash;
         executionClassManifestHash = executionClassManifestHash_;
+        if (executionClassManifestHash_ != bytes32(0)) {
+            _usedExecutionClassManifestHashes[executionClassManifestHash_] = true;
+        }
+    }
+
+    function pendingExecutionClass()
+        external
+        view
+        returns (bool exists, bytes32 manifestHash, uint64 activationTimestamp)
+    {
+        PendingExecutionClass memory pending = _pendingExecutionClass;
+        return (pending.activationTimestamp != 0, pending.manifestHash, pending.activationTimestamp);
+    }
+
+    function proposeExecutionClass(bytes32 manifestHash) external {
+        _assertDeployment();
+        (address proposer,,,) = config.roles();
+        if (msg.sender != proposer) revert UnauthorizedRole();
+        if (!config.entryPaused()) revert InvalidConfiguration();
+        if (_pendingExecutionClass.activationTimestamp != 0) revert ExecutionClassProposalExists();
+        if (manifestHash == bytes32(0)) revert ExecutionClassManifestHashZero();
+        if (_usedExecutionClassManifestHashes[manifestHash]) {
+            revert ExecutionClassManifestHashUsed(manifestHash);
+        }
+        uint256 activation = block.timestamp + config.configDelaySeconds();
+        if (activation > type(uint64).max) revert ActivationTimestampOverflow();
+        _pendingExecutionClass =
+            PendingExecutionClass({manifestHash: manifestHash, activationTimestamp: uint64(activation)});
+        emit ExecutionClassProposed(msg.sender, executionClassManifestHash, manifestHash, uint64(activation));
+    }
+
+    function cancelExecutionClassProposal() external {
+        _assertDeployment();
+        (, address canceller,,) = config.roles();
+        if (msg.sender != canceller) revert UnauthorizedRole();
+        PendingExecutionClass memory pending = _pendingExecutionClass;
+        if (pending.activationTimestamp == 0) revert ExecutionClassProposalMissing();
+        delete _pendingExecutionClass;
+        emit ExecutionClassProposalCancelled(
+            msg.sender, executionClassManifestHash, pending.manifestHash, pending.activationTimestamp
+        );
+    }
+
+    function activateExecutionClass() external {
+        _assertDeployment();
+        (,, address executor,) = config.roles();
+        if (msg.sender != executor) revert UnauthorizedRole();
+        if (!config.entryPaused()) revert InvalidConfiguration();
+        PendingExecutionClass memory pending = _pendingExecutionClass;
+        if (pending.activationTimestamp == 0) revert ExecutionClassProposalMissing();
+        if (block.timestamp < pending.activationTimestamp) {
+            revert ExecutionClassProposalNotReady(pending.activationTimestamp);
+        }
+        bytes32 previousHash = executionClassManifestHash;
+        executionClassManifestHash = pending.manifestHash;
+        _usedExecutionClassManifestHashes[pending.manifestHash] = true;
+        delete _pendingExecutionClass;
+        emit ExecutionClassActivated(msg.sender, previousHash, executionClassManifestHash);
     }
 
     function pendingAdmission(address adapter) external view returns (PendingAdmission memory) {

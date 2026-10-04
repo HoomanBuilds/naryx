@@ -48,7 +48,6 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
         bytes32 marketCodeHash;
         IERC20 collateralToken;
         bytes32 collateralTokenCodeHash;
-        bytes32 executionClassManifestHash;
         GmxCodeHashes gmxCodeHashes;
         UniswapV3SpotPort.Deployment spot;
     }
@@ -97,9 +96,8 @@ contract DeployArbitrumSepoliaAsyncGmx is Script {
             parameters.executor,
             parameters.pauser
         );
-        deployment.coordinator = new AsyncBondedPackageCoordinator(
-            deployment.config, parameters.collateralToken, parameters.executionClassManifestHash
-        );
+        deployment.coordinator =
+            new AsyncBondedPackageCoordinator(deployment.config, parameters.collateralToken, bytes32(0));
         deployment.orderVerifier = new GmxV2OrderVerifier();
         deployment.exitOrderVerifier = new GmxV2ExitOrderVerifier();
         deployment.accountFactory = new GmxV2IsolatedAccountFactory(parameters.market, parameters.collateralToken, gmx);
