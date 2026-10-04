@@ -7,6 +7,7 @@ import {
   openSealedAuction,
   privateRfqAssociatedData,
   privateRfqEnvelopeHash,
+  privateRfqResponseAssociatedData,
   replaySealedAuction,
   resolvePrivateDelivery,
   sealedAuctionFallback,
@@ -111,6 +112,10 @@ describe('private direct RFQ envelope', () => {
     assert.deepEqual(verifyPrivateRfqResponse(envelope, { ...response, solverId: 'solver-b' }), { valid: false, reason: 'RESPONDER_MISMATCH' });
     assert.deepEqual(verifyPrivateRfqResponse(envelope, { ...response, responseEncryptionKey: key(6) }), { valid: false, reason: 'RESPONSE_KEY_SUBSTITUTED' });
     assert.deepEqual(verifyPrivateRfqResponse(envelope, { ...response, quoteOrderHash: hex('56') }), { valid: false, reason: 'QUOTE_ORDER_SUBSTITUTED' });
+    const associatedData = toHex(privateRfqResponseAssociatedData(response));
+    for (const change of [{ solverId: 'solver-b' }, { quoteHash: hex('89') }, { quoteOrderHash: hex('56') }, { responseEncryptionKey: key(6) }]) {
+      assert.notEqual(toHex(privateRfqResponseAssociatedData({ ...response, ...change })), associatedData);
+    }
   });
 
   test('a failed private path never downgrades silently', () => {

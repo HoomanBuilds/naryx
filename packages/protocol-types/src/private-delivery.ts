@@ -273,6 +273,25 @@ export interface PrivateRfqResponseInput {
   readonly responseCiphertextHash: Uint8Array | string;
 }
 
+export type PrivateRfqResponseAssociatedDataInput = Omit<PrivateRfqResponseInput, 'responseCiphertextHash'>;
+
+/** Canonical response metadata authenticated by the pinned encryption suite. */
+export function privateRfqResponseAssociatedData(input: PrivateRfqResponseAssociatedDataInput): Uint8Array {
+  object(input, 'privateRfqResponseAssociatedData');
+  const envelopeHash = commitmentHash(input.envelopeHash, 'privateRfqResponseAssociatedData.envelopeHash');
+  const solverId = protocolId(input.solverId, 'privateRfqResponseAssociatedData.solverId');
+  const quoteHash = commitmentHash(input.quoteHash, 'privateRfqResponseAssociatedData.quoteHash');
+  const quoteOrderHash = commitmentHash(input.quoteOrderHash, 'privateRfqResponseAssociatedData.quoteOrderHash');
+  const responseEncryptionKey = keyBytes(input.responseEncryptionKey, 'privateRfqResponseAssociatedData.responseEncryptionKey');
+  return canonicalBytes((writer) => {
+    encodeCommitmentHash(writer, envelopeHash, 'envelopeHash');
+    encodeProtocolId(writer, solverId, 'solverId');
+    encodeCommitmentHash(writer, quoteHash, 'quoteHash');
+    encodeCommitmentHash(writer, quoteOrderHash, 'quoteOrderHash');
+    writer.writeByteString(responseEncryptionKey, 'responseEncryptionKey');
+  });
+}
+
 export type PrivateRfqResponseRejection = 'ENVELOPE_MISMATCH' | 'RESPONDER_MISMATCH' | 'RESPONSE_KEY_SUBSTITUTED' | 'QUOTE_ORDER_SUBSTITUTED';
 
 /** Binds an encrypted quote response to its envelope, recipient, response key, and order. */
