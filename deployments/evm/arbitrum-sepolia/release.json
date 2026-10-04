@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "network": "arbitrum-sepolia",
+  "chainId": 421614,
+  "releaseCommit": "a555a6db1cfc3b9ed8820ec3c670eacb7fcea71c",
+  "toolchain": {
+    "forge": "1.5.1-stable",
+    "solc": "0.8.37",
+    "optimizerRuns": 200,
+    "evmVersion": "cancun"
+  },
+  "governance": {
+    "configDelaySeconds": 60,
+    "proposer": "0xe25C5A25764dC73F5d9eF6781110a75e2Ae46747",
+    "canceller": "0xf467dd5DBEd4480DcC212fad3774B2479C437626",
+    "executor": "0x55893fB621d90020176F5bF5bd9e0F9d9C280B2e",
+    "pauser": "0x0157BbB82933B843A54e18fA61E2fbdE8d20CDb5"
+  },
+  "contracts": {
+    "protocolConfig": {
+      "address": "0x874Fb603585566b196a68b45B0Ee15c784Fd6C7E",
+      "transactionHash": "0xc76fde45d62edaedbef28e2f348922aca588190dd8b12372b3e8d2821727e671",
+      "blockNumber": 315600243,
+      "runtimeCodeHash": "0x039c0ba34cfc0ac2f1fee177d6cf541cfb81cd1457d4ffb53476b270546badbd"
+    },
+    "coordinator": {
+      "address": "0x6A061c585aAcF699d1342C3AA729C3515A608354",
+      "transactionHash": "0xa700371dd32bc32231c51b1293472f1519e279fd7ace914a5dde9f42e812b661",
+      "blockNumber": 315600256,
+      "runtimeCodeHash": "0x343f031c545b87d67368af66bb579f2f908b51df1df14f509cea71e47d5f4815"
+    },
+    "orderVerifier": {
+      "address": "0xA3aFc1eD9b66971bd1Ab99d1276dc577727e81F7",
+      "transactionHash": "0x8208e95bfed7e14ad280bfb9840e839cc0db09af1b585fd077d4ec3011a136cf",
+      "blockNumber": 315600269,
+      "runtimeCodeHash": "0xf26d49a18e66da56d4c6eb6999d0b08d878a1ebfb91df173f6268544bcf1b12c"
+    },
+    "exitOrderVerifier": {
+      "address": "0x02B08F573827d94CbFb0256aA0613D2Bd69D182c",
+      "transactionHash": "0x20586333ab5b5ecf052a5d5eb34c44d39007c78fbf49e4994dc33c99c6fb3b73",
+      "blockNumber": 315600282,
+      "runtimeCodeHash": "0x11a773b5a788783b9b5600fc87d8b955984a1360655d399d53b039abed846be3"
+    },
+    "accountFactory": {
+      "address": "0xc639fE88ECe35dEA4f3137f9c0A9848b6bA8f122",
+      "transactionHash": "0xbe4d3a0c475889d43bd1ee0c3c82135f53f1cca8d21fd9e45e7779e19ff160b3",
+      "blockNumber": 315600296,
+      "runtimeCodeHash": "0x720c468ef2cbc4064a56e8f1026f18bb986fb67badc1964661efdc37d14ecb7d",
+      "accountCodeHash": "0xb19b8196d1b3f4b68631aeb0c4413a8b75ce7d2eb86241ab8b5dd8741f88fe62"
+    },
+    "entryAdapter": {
+      "address": "0xdDc1DD10599Af8e17e737ff40309Af77Dea1e7EC",
+      "transactionHash": "0x4ec2b0ae5502f1b679c38ea734707b62d15fff48210eebabc1a4621c9cd9bb0d",
+      "blockNumber": 315600311,
+      "runtimeCodeHash": "0x18c88cc7bbfd1139267cafa6d941c0cec0a7ef8e2e67a85ff6e61cb28d69e751"
+    },
+    "exitController": {
+      "address": "0xF21e586ea7fcD0e38c9926a5233719458778bFD4",
+      "transactionHash": "0x2cc5f848df71dfc5d587396b32301b17683e923a2f55d6e602b9bef44ffe75f1",
+      "blockNumber": 315600325,
+      "runtimeCodeHash": "0xbce31f068794c117762fe3c29bc8a07a952b8a57f031f32b76d76589a25843a3"
+    },
+    "spotPort": {
+      "address": "0xd75EE2d75E96129f856Af189257A40e9BBfAf8B2",
+      "transactionHash": "0x35fd9533143e2f55c0557f7808f56c20f93285e30de6989bb0e903db1192c95f",
+      "blockNumber": 315600339,
+      "runtimeCodeHash": "0x0e254e2e0d73df727a1bcde8e8f67019d7b682276754bdafe39ef2170a6b6ad4"
+    },
+    "accountImplementation": {
+      "address": "0x026d316E6c3b9b21cd36fe33fb57CC708E055df5",
+      "transactionHash": "0x4d6dc38253fd489e53765e56186cd604725bce16a216020d1c02c34e38a1a487",
+      "blockNumber": 315600352,
+      "runtimeCodeHash": "0x5e9a28875a03a2fd14a0bb04f4a4f0e6fbe40052db02d08dfba7095ff15951a5"
+    }
+  },
+  "domainManifest": {
+    "manifestVersion": 2,
+    "environment": "testnet",
+    "domainId": "eip155:421614",
+    "runtimeClassId": "naryx-evm",
+    "runtimeClassVersion": 1,
+    "chainNamespace": "eip155",
+    "chainReference": "421614",
+    "executionVerifierId": "async-bonded-package-coordinator-v1",
+    "executionVerifierCodeHash": "0x343f031c545b87d67368af66bb579f2f908b51df1df14f509cea71e47d5f4815",
+    "clockModelId": "evm-unix-seconds",
+    "finalityPolicyHash": "0xec35c9e6f7b07bcfae921e6516eaca905f21c9217a2cb950c5426a72d6dd05e2",
+    "finalityPolicy": {
+      "requiredConfirmations": 2,
+      "requireFinalized": false,
+      "reorgAction": "HALT_AND_RECONCILE"
+    },
+    "addressCodecId": "evm-address-20",
+    "supportedSettlementClasses": ["ASYNC_BONDED_SOLVER"],
+    "manifestHash": "0xfb297f9fcdedf9d82c240cdd8d725a42e37b516b311cdc86199f3d3583ce9094"
+  },
+  "executionClass": {
+    "executionClassVersion": 1,
+    "executionClassId": "arbitrum-sepolia-gmx-v2-cash-carry-v1",
+    "seriesId": "eth-cash-carry-30d-usdc-v1",
+    "seriesVersion": 1,
+    "seriesManifestHash": "0x11326420e4131ef3149f51134ca01c2a8017c112f30c1b728f9c30a6e041127a",
+    "domains": [{
+      "domainId": "eip155:421614",
+      "domainManifestVersion": 2,
+      "domainManifestHash": "0xfb297f9fcdedf9d82c240cdd8d725a42e37b516b311cdc86199f3d3583ce9094"
+    }],
+    "venueClasses": ["evm-gmx-v2-perp-v1", "evm-uniswap-v3-spot-v1"],
+    "collateralMode": "user-owned-isolated-prefunded-v1",
+    "settlementClass": "ASYNC_BONDED_SOLVER",
+    "firmnessClass": "bonded-solver-reservation-v1",
+    "deliveryPolicyHash": "0x6e030b378cf7a278791afd0319f244f352a973f8e99d7920139db3fd10189430",
+    "recoveryPolicyHash": "0x0d3940ee52fa93d368810527d91b18746edafa52db3ca4953ee97773b42445a5",
+    "matchingPolicyHash": "0x353a364b763db24f920cd5b55653a3a9165932c2c0ab14a9042f0b29944b5329",
+    "manifestHash": "0xdc9992d0e747dc414eb157aced90d3c634d2adb1a1d85b47afb171dbc8121017"
+  },
+  "economicSeries": {
+    "seriesId": "eth-cash-carry-30d-usdc-v1",
+    "templateId": "cash-and-carry-v1",
+    "templateManifestHash": "0x3435aad20a22038f6e95eea807d622df4c030b9872f7722e71e586de93f2a705",
+    "underlyingRefs": ["eth", "eth"],
+    "quoteAsset": "usdc-sg",
+    "legRatios": ["1/1", "-1/1"],
+    "evaluationWindowMilliseconds": "2592000000",
+    "quoteConvention": "annualized-net-yield-v1",
+    "riskClass": "delta-neutral-basis-v1",
+    "lifecycleConvention": "rolling-evaluation-window-v1",
+    "manifestHash": "0x11326420e4131ef3149f51134ca01c2a8017c112f30c1b728f9c30a6e041127a"
+  },
+  "externalDependencies": {
+    "gmxMarket": { "address": "0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc", "runtimeCodeHash": "0x1c23d77b59296d60300925c688c1f1a3def4cb63cad5ac73946b8c4bc5f7f100" },
+    "gmxDataStore": { "address": "0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201", "runtimeCodeHash": "0x1c62ed601d163d16f62dee3ff2c5e91fcb7d9406a88fcdac26953456b27881ec" },
+    "gmxEventEmitter": { "address": "0xa973c2692C1556E1a3d478e745e9a75624AEDc73", "runtimeCodeHash": "0x5d2ab11227b86e1d7b79502fd7d483d82fa514b9bc67d2435d738df9a48a6916" },
+    "gmxExchangeRouter": { "address": "0x6B489dD5bB1AAE8df246359d59aA7316760a75d2", "runtimeCodeHash": "0x4918351ca88b4f25dc3d459034f308fbfd95264805a7464be082e10d11224956" },
+    "gmxRouter": { "address": "0x72F13a44C8ba16a678CAD549F17bc9e06d2B8bD2", "runtimeCodeHash": "0x4e0895acd0d498bc441e133c40b9e510b281f9ee552740ef6d1fec21ed578126" },
+    "gmxOrderVault": { "address": "0x1b8AC606de71686fd2a1AEDEcb6E0EFba28909a2", "runtimeCodeHash": "0x02d6f9e82e6ad6e25c9eef71b9cc3fb4b6358efa34afed582c281a4e55573cc7" },
+    "gmxOrderHandler": { "address": "0xC881c2391611829d7bc81c12a285cB0201F08f8c", "runtimeCodeHash": "0xcb2bc1fac2a3dc8dbe883783e2354143d84920f248ec59b37b954ea38daa54cb" },
+    "gmxRoleStore": { "address": "0x433E3C47885b929aEcE4149E3c835E565a20D95c", "runtimeCodeHash": "0x8ea5890ad6a95624659f5460155bfe2824f332d39009b204c96471de85bb5099" },
+    "gmxReader": { "address": "0x4750376b9378294138Cf7B7D69a2d243f4940f71", "runtimeCodeHash": "0xb0843df7e769e7c8016867899eb1362fce76a9de556f794e7bcae5ef5c5aa2ef" },
+    "collateralToken": { "address": "0x3253a335E7bFfB4790Aa4C25C4250d206E9b9773", "symbol": "USDC.SG", "decimals": 6, "runtimeCodeHash": "0xc22e72f1cdc6eed404a4b7a88c92e1023a12a47c6d9b3b81baf770fe98ea5550" },
+    "weth": { "address": "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73", "runtimeCodeHash": "0x8a1593d032307ff2286c334c968d0828ef480e1aac8457db3aa1b56d571e4336" },
+    "uniswapFactory": { "address": "0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e", "runtimeCodeHash": "0x7e1ac1f0ac9876f7cb5d557153766c07f30efed60f4ad7f14ba34bdd27031124" },
+    "uniswapPool": { "address": "0xf72b5dE85C8ad701081A4295DBFAa6527f61E203", "fee": 100, "runtimeCodeHash": "0xf5dd890a51c9c38fc5a2a73bf553269606be090b2492164f18e3d966a67920d6" },
+    "uniswapQuoter": { "address": "0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0B", "runtimeCodeHash": "0xb906edfeaf29492e10fc571af73ce1baa5ae85accc925f8c5037808d6202ba0e" },
+    "ethUsdPriceFeed": { "address": "0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165", "decimals": 8, "runtimeCodeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2" }
+  },
+  "activationTransactions": {
+    "proposeDomain": "0xa50e7c8c1161a3e99365eb7b8fdc010d8956beb86cccdb04c6f5917aa8cff50c",
+    "activateDomain": "0x006db8d1d5dd620771f22dc9bc489c928cc72e7119b942d109a3d853369c8128",
+    "proposeExecutionClass": "0x1c362d90d6ad576d8b4eafce73f47391d9ae4e2ff708fdb79169c9430916ce79",
+    "activateExecutionClass": "0x232138d41fae4df396d3997dcb7b87526e4d0f3316321fa2aa70e622b48f5da1",
+    "proposeAdmission": "0xacb397f697708ad3dffddad79ff351eb3b5a2ace7e74dc61d7fb84655c4f0c72",
+    "activateAdmission": "0xd9f3c974b9f66070378e307f275e83e7564d4376a1e069e70dbf56419e159048",
+    "scheduleUnpause": "0x67a22b07b82e1edbfd3f49804640cb974b3e0b015011b71ec05c4382fc557d91",
+    "activateEntry": "0xfbac047bb302b0e724a881ed8c590f53ceda5a537f3ab5905b211d69902bfe60"
+  },
+  "testnetFunding": {
+    "solver": "0x30b8b89eccc3cdd7faa139126583d2b380734e31",
+    "usdcSgAtoms": "100000000000",
+    "transactionHash": "0x278decc198a9d610d46ace39ce7a6bd821aa4d0979273fe24a095e610a147dff",
+    "blockNumber": 315604061
+  },
+  "activationState": "ACTIVE",
+  "limitations": [
+    "Testnet only. This record authorizes no mainnet action.",
+    "USDC.SG is a public-mint GMX test token with no real value.",
+    "The WETH/USDC.SG Uniswap V3 pool is test liquidity seeded for conformance, not market-depth evidence.",
+    "ASYNC_BONDED_SOLVER is not atomic. GMX request execution and authenticated recovery occur across transactions.",
+    "The alpha route charges zero Naryx service fee. GMX execution and venue costs are signed pass-through costs. A future service-fee mechanism requires a reviewed protocol version rather than silently repricing this deployment.",
+    "Deployment and activation do not imply user funding, organic volume, or mainnet readiness."
+  ]
+}
