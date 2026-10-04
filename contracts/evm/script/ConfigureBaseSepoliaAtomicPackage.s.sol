@@ -7,6 +7,7 @@ import {NaryxStrategyAccountFactory} from "../src/NaryxStrategyAccountFactory.so
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
 import {PackageVerifier} from "../src/PackageVerifier.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
@@ -16,6 +17,7 @@ import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 contract ConfigureBaseSepoliaAtomicPackage is Script {
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
     bytes32 public constant DOMAIN_ID_HASH = keccak256("eip155:84532");
+    bytes32 public constant SOLVER_FEE_POLICY_SUBJECT_ID = keccak256("naryx.cash-carry.solver-fee");
 
     struct Route {
         ProtocolConfig config;
@@ -117,6 +119,46 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         (bool exists, bytes32 pendingHash,) = config.pendingCashCarryTemplate();
         if (!exists || pendingHash != templateManifestHash) revert InvalidRoute();
         config.activateCashCarryTemplate();
+        vm.stopBroadcast();
+    }
+
+    function runProposeSolverFeePolicy(
+        ProtocolConfig config,
+        PackageVerifier verifier,
+        PolicyRegistry policyRegistry,
+        uint32 version,
+        bytes32 manifestHash,
+        uint16 maximumFeeBps,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, true);
+        _start(operatorAddress);
+        _verifyFeePolicy(config, verifier, policyRegistry);
+        policyRegistry.proposeActivation(
+            PolicyRegistry.PolicyKind.FEE_POLICY, SOLVER_FEE_POLICY_SUBJECT_ID, version, manifestHash, maximumFeeBps
+        );
+        vm.stopBroadcast();
+    }
+
+    function runActivateSolverFeePolicy(
+        ProtocolConfig config,
+        PackageVerifier verifier,
+        PolicyRegistry policyRegistry,
+        uint32 version,
+        bytes32 manifestHash,
+        uint16 maximumFeeBps,
+        address operatorAddress
+    ) external {
+        _requireOperator(config, operatorAddress, false);
+        _start(operatorAddress);
+        _verifyFeePolicy(config, verifier, policyRegistry);
+        PolicyRegistry.Pending memory pending =
+            policyRegistry.pending(PolicyRegistry.PolicyKind.FEE_POLICY, SOLVER_FEE_POLICY_SUBJECT_ID);
+        if (
+            !pending.exists || pending.resume || pending.version != version || pending.manifestHash != manifestHash
+                || pending.maximumFeeBps != maximumFeeBps
+        ) revert InvalidRoute();
+        policyRegistry.activate(PolicyRegistry.PolicyKind.FEE_POLICY, SOLVER_FEE_POLICY_SUBJECT_ID);
         vm.stopBroadcast();
     }
 
@@ -340,6 +382,18 @@ contract ConfigureBaseSepoliaAtomicPackage is Script {
         if (block.chainid != BASE_SEPOLIA_CHAIN_ID) revert InvalidChain();
         (string memory domainId,,) = config.domain();
         if (keccak256(bytes(domainId)) != DOMAIN_ID_HASH || !config.entryPaused()) revert InvalidRoute();
+    }
+
+    function _verifyFeePolicy(ProtocolConfig config, PackageVerifier verifier, PolicyRegistry policyRegistry)
+        private
+        view
+    {
+        _verifyDomainStep(config);
+        if (
+            address(policyRegistry.config()) != address(config) || address(verifier.config()) != address(config)
+                || address(verifier.validationHelper().policyRegistry()) != address(policyRegistry)
+                || verifier.validationHelper().feePolicySubjectId() != SOLVER_FEE_POLICY_SUBJECT_ID
+        ) revert InvalidRoute();
     }
 
     function _verifyTemplateStep(ProtocolConfig config, uint32 domainManifestVersion, bytes32 domainManifestHash)

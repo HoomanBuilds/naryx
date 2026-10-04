@@ -22,6 +22,7 @@ interface IBaseSepoliaUniswapV3Factory {
 contract DeployBaseSepoliaAtomicPackage is Script {
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
     string public constant DOMAIN_ID = "eip155:84532";
+    bytes32 public constant SOLVER_FEE_POLICY_SUBJECT_ID = keccak256("naryx.cash-carry.solver-fee");
 
     address public constant UNISWAP_FACTORY = 0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24;
     address public constant WETH = 0x4200000000000000000000000000000000000006;
@@ -62,6 +63,7 @@ contract DeployBaseSepoliaAtomicPackage is Script {
         ResourceRegistry resourceRegistry;
         CashCarrySeriesRegistry cashCarrySeriesRegistry;
         PackageQuoteShardRegistry packageQuoteShardRegistry;
+        PolicyRegistry policyRegistry;
         PackageVerifier verifier;
         NaryxStrategyAccountFactory strategyAccountFactory;
         UniswapV3SpotPort spotPort;
@@ -110,15 +112,15 @@ contract DeployBaseSepoliaAtomicPackage is Script {
         deployment.resourceRegistry = new ResourceRegistry(deployment.config);
         deployment.cashCarrySeriesRegistry = new CashCarrySeriesRegistry(deployment.config, deployment.resourceRegistry);
         deployment.packageQuoteShardRegistry = new PackageQuoteShardRegistry(deployment.config);
+        deployment.policyRegistry = new PolicyRegistry(deployment.config);
         deployment.verifier = new PackageVerifier(
             deployment.config,
             deployment.solverRegistry,
             deployment.resourceRegistry,
             deployment.cashCarrySeriesRegistry,
             deployment.packageQuoteShardRegistry,
-            // Solver fees stay disabled in this deployment; a fee-enabled verifier binds a PolicyRegistry fee subject.
-            PolicyRegistry(address(0)),
-            bytes32(0)
+            deployment.policyRegistry,
+            SOLVER_FEE_POLICY_SUBJECT_ID
         );
         // Strategy accounts are created per owner through the factory, never by this script.
         deployment.strategyAccountFactory = new NaryxStrategyAccountFactory(deployment.verifier);

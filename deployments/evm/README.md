@@ -174,7 +174,7 @@ forge script script/DeployBaseSepoliaAtomicPackage.s.sol:DeployBaseSepoliaAtomic
   --rpc-url "$RPC_URL" --account naryx-base-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
 
-`.returns` lists, in order: `ProtocolConfig`, `SolverRegistry`, `ResourceRegistry`, `CashCarrySeriesRegistry`, `PackageQuoteShardRegistry`, `PackageVerifier`, `NaryxStrategyAccountFactory`, `UniswapV3SpotPort`, `NaryxTestPerpMarket`. The factory's constructor also creates an inert reference account it owns; `cast call "$FACTORY" "accountCodeHash()(bytes32)"` is the runtime code hash every account shares.
+`.returns` lists, in order: `ProtocolConfig`, `SolverRegistry`, `ResourceRegistry`, `CashCarrySeriesRegistry`, `PackageQuoteShardRegistry`, `PolicyRegistry`, `PackageVerifier`, `NaryxStrategyAccountFactory`, `UniswapV3SpotPort`, `NaryxTestPerpMarket`. The policy registry is bound to the verifier's fixed `naryx.cash-carry.solver-fee` subject, but no policy is active at deployment, so every nonzero solver fee fails closed. The factory's constructor also creates an inert reference account it owns; `cast call "$FACTORY" "accountCodeHash()(bytes32)"` is the runtime code hash every account shares.
 
 #### Test perpetual market
 
@@ -257,6 +257,22 @@ forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepolia
 ```
 
 Both steps refuse unless entry is paused and the active domain is exactly the reviewed version `2` manifest, and activation refuses unless the pending proposal is exactly the reviewed hash. Confirm with `cast call "$CONFIG" "cashCarryTemplateManifestHash()(bytes32)"`.
+
+#### Solver fee policy
+
+The zero-fee alpha needs no fee-policy activation. A future nonzero solver fee is possible without redeploying the verifier: publish a new immutable fee-policy manifest, then propose and activate its monotonically increasing version through the same delayed governance. The registry hard-caps any policy at 1,000 basis points, while launch policy should remain zero until the fee cohort is explicitly approved. Every accepted quote still binds its exact fee atoms and cannot be repriced by a later policy.
+
+```bash
+forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepoliaAtomicPackage \
+  --sig "runProposeSolverFeePolicy(address,address,address,uint32,bytes32,uint16,address)" \
+  "$CONFIG" "$VERIFIER" "$POLICY_REGISTRY" "$FEE_POLICY_VERSION" "$FEE_POLICY_MANIFEST_HASH" "$MAXIMUM_SOLVER_FEE_BPS" "$PROPOSER" \
+  --rpc-url "$RPC_URL" --account naryx-base-proposer --sender "$PROPOSER" --broadcast
+# wait configDelaySeconds
+forge script script/ConfigureBaseSepoliaAtomicPackage.s.sol:ConfigureBaseSepoliaAtomicPackage \
+  --sig "runActivateSolverFeePolicy(address,address,address,uint32,bytes32,uint16,address)" \
+  "$CONFIG" "$VERIFIER" "$POLICY_REGISTRY" "$FEE_POLICY_VERSION" "$FEE_POLICY_MANIFEST_HASH" "$MAXIMUM_SOLVER_FEE_BPS" "$EXECUTOR" \
+  --rpc-url "$RPC_URL" --account naryx-base-executor --sender "$EXECUTOR" --broadcast
+```
 
 ### 4. Deploy the firm liquidity layer
 

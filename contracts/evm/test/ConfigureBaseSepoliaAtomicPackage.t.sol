@@ -7,6 +7,7 @@ import {DeployBaseSepoliaAtomicPackage} from "../script/DeployBaseSepoliaAtomicP
 import {CashCarrySeriesRegistry} from "../src/CashCarrySeriesRegistry.sol";
 import {PackageQuoteShard} from "../src/PackageQuoteShard.sol";
 import {PackageQuoteShardRegistry} from "../src/PackageQuoteShardRegistry.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {ResourceRegistry} from "../src/ResourceRegistry.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
@@ -27,6 +28,7 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
     address private pauser;
     address private solver;
     ConfigureBaseSepoliaAtomicPackage private operator;
+    PolicyRegistry private policyRegistry;
     ConfigureBaseSepoliaAtomicPackage.Route private route;
 
     function setUp() public {
@@ -93,6 +95,7 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         );
 
         operator = new ConfigureBaseSepoliaAtomicPackage();
+        policyRegistry = deployed.policyRegistry;
         route.config = deployed.config;
         // The reviewed domain manifest commits to the deployed verifier's runtime code hash, and the template
         // manifest lists that domain reference, so both hashes exist only after deployment.
@@ -213,6 +216,35 @@ contract ConfigureBaseSepoliaAtomicPackageTest is Test {
         exactAdmission.spot.adapter.manifest.manifestHash = keccak256("wrong-adapter-manifest");
         vm.expectRevert();
         route.resources.validateCashCarry(exactAdmission);
+    }
+
+    function testSolverFeePolicyStartsDisabledAndChangesOnlyAfterDelay() public {
+        bytes32 subject = operator.SOLVER_FEE_POLICY_SUBJECT_ID();
+        assertEq(policyRegistry.policy(PolicyRegistry.PolicyKind.FEE_POLICY, subject).version, 0);
+
+        bytes32 versionOneHash = keccak256("base-solver-fee-policy-v1");
+        operator.runProposeSolverFeePolicy(route.config, route.verifier, policyRegistry, 1, versionOneHash, 0, proposer);
+        vm.expectRevert(abi.encodeWithSelector(PolicyRegistry.ProposalNotReady.selector, uint64(1_000 + DELAY)));
+        operator.runActivateSolverFeePolicy(
+            route.config, route.verifier, policyRegistry, 1, versionOneHash, 0, executor
+        );
+        vm.stopBroadcast();
+
+        vm.warp(1_000 + DELAY);
+        operator.runActivateSolverFeePolicy(
+            route.config, route.verifier, policyRegistry, 1, versionOneHash, 0, executor
+        );
+        assertEq(policyRegistry.policy(PolicyRegistry.PolicyKind.FEE_POLICY, subject).maximumFeeBps, 0);
+
+        bytes32 versionTwoHash = keccak256("base-solver-fee-policy-v2");
+        operator.runProposeSolverFeePolicy(route.config, route.verifier, policyRegistry, 2, versionTwoHash, 1, proposer);
+        vm.warp(block.timestamp + DELAY);
+        operator.runActivateSolverFeePolicy(
+            route.config, route.verifier, policyRegistry, 2, versionTwoHash, 1, executor
+        );
+        PolicyRegistry.Policy memory current = policyRegistry.policy(PolicyRegistry.PolicyKind.FEE_POLICY, subject);
+        assertEq(current.version, 2);
+        assertEq(current.maximumFeeBps, 1);
     }
 
     function _manifest(string memory subject, string memory manifest)

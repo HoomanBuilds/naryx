@@ -9,6 +9,7 @@ import {Math} from "openzeppelin-contracts/utils/math/Math.sol";
 import {NaryxTestUSDC} from "../src/conformance/NaryxTestUSDC.sol";
 import {NaryxStrategyAccount} from "../src/NaryxStrategyAccount.sol";
 import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
+import {PolicyRegistry} from "../src/PolicyRegistry.sol";
 import {UniswapV3SpotPort} from "../src/UniswapV3SpotPort.sol";
 import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
@@ -60,12 +61,21 @@ contract DeployBaseSepoliaAtomicPackageTest is Test {
         assertEq(deployment.resourceRegistry.cashCarryTemplateManifestHash(), bytes32(0));
         assertEq(address(deployment.cashCarrySeriesRegistry.resources()), address(deployment.resourceRegistry));
         assertEq(address(deployment.packageQuoteShardRegistry.config()), address(deployment.config));
+        assertEq(address(deployment.policyRegistry.config()), address(deployment.config));
         assertEq(address(deployment.verifier.config()), address(deployment.config));
         assertEq(address(deployment.verifier.solverRegistry()), address(deployment.solverRegistry));
         assertEq(address(deployment.verifier.resourceRegistry()), address(deployment.resourceRegistry));
         assertEq(address(deployment.verifier.cashCarrySeriesRegistry()), address(deployment.cashCarrySeriesRegistry));
         assertEq(
             address(deployment.verifier.packageQuoteShardRegistry()), address(deployment.packageQuoteShardRegistry)
+        );
+        assertEq(address(deployment.verifier.validationHelper().policyRegistry()), address(deployment.policyRegistry));
+        assertEq(deployment.verifier.validationHelper().feePolicySubjectId(), script.SOLVER_FEE_POLICY_SUBJECT_ID());
+        assertEq(
+            deployment.policyRegistry
+            .policy(PolicyRegistry.PolicyKind.FEE_POLICY, script.SOLVER_FEE_POLICY_SUBJECT_ID())
+            .version,
+            0
         );
         assertEq(address(deployment.strategyAccountFactory.verifier()), address(deployment.verifier));
         NaryxStrategyAccount strategyAccount = deployment.strategyAccountFactory.create(strategyOwner);
