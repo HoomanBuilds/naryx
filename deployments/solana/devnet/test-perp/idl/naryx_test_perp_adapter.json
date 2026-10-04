@@ -1,5 +1,5 @@
 {
-  "address": "CvMLjMW9zwP4ue6j3Q716QRCZgGA6e17zvo3mKJri6hN",
+  "address": "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1",
   "metadata": {
     "name": "naryx_test_perp_adapter",
     "version": "0.1.0",
@@ -151,7 +151,7 @@
         },
         {
           "name": "test_perp_program",
-          "address": "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs"
+          "address": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
         },
         {
           "name": "market",
@@ -251,7 +251,7 @@
         },
         {
           "name": "test_perp_program",
-          "address": "BPykuGV913hi9N22T3XqphEt8WP5ve7dg9j5QW1kc7Gs"
+          "address": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
         },
         {
           "name": "market",

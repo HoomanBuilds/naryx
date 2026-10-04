@@ -29,9 +29,9 @@ pub const CASH_CARRY_EXECUTOR_SEED: &[u8] = b"cash-carry-executor";
 
 // Both programs depend on this crate, so their IDs cannot be imported. `anchor keys sync` does not
 // rewrite these copies; scripts/sync-core-program-ids.mjs does.
-pub const PACKAGE_BOOK_PROGRAM_ID: Pubkey = pubkey!("EvE2mjwHrtfQgNu8Whh6QGZBmkzxRjKadsHi4Uqk96dc");
+pub const PACKAGE_BOOK_PROGRAM_ID: Pubkey = pubkey!("CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY");
 pub const INVENTORY_RESERVATION_PROGRAM_ID: Pubkey =
-    pubkey!("8Dby697KuRBW1TsGucdXdQugVoko4WoJXRUTZdHfy4Dx");
+    pubkey!("CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt");
 pub const PACKAGE_BOOK_CLASS_SEED: &[u8] = b"package-book-class";
 pub const PACKAGE_QUOTE_SHARD_SEED: &[u8] = b"package-quote-shard";
 pub const PACKAGE_QUOTE_LEVEL_PAGE_SEED: &[u8] = b"quote-level-page";
