@@ -38,7 +38,7 @@
     "runtimeClassVersion": 1,
     "chainNamespace": "eip155",
     "chainReference": "421614",
-    "executionVerifierId": "package-verifier-v1",
+    "executionVerifierId": "async-bonded-package-coordinator-v1",
     "executionVerifierCodeHash": { "$release": "contracts.coordinator.codeHashBytes" },
     "clockModelId": "evm-unix-seconds",
     "finalityPolicyHash": { "$bytes": { "$operator": "reviewed finality policy manifest hash (0x + 64 hex), the one used for the domain rotation" } },

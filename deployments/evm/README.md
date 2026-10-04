@@ -89,6 +89,7 @@ Compute the reviewed hash from the repository root with the protocol codec (buil
 
 ```bash
 DOMAIN_ID=eip155:421614 CHAIN_REFERENCE=421614 SETTLEMENT_CLASS=ASYNC_BONDED_SOLVER \
+EXECUTION_VERIFIER_ID=async-bonded-package-coordinator-v1 \
 EXECUTION_VERIFIER_CODE_HASH=0x... FINALITY_POLICY_HASH=0x... \
 node --input-type=module -e '
 import { domainManifestHash, toHex } from "./packages/protocol-types/dist/index.js";
@@ -100,7 +101,7 @@ console.log("0x" + toHex(domainManifestHash({
   runtimeClassVersion: 1,
   chainNamespace: "eip155",
   chainReference: process.env.CHAIN_REFERENCE,
-  executionVerifierId: "package-verifier-v1",
+  executionVerifierId: process.env.EXECUTION_VERIFIER_ID,
   executionVerifierCodeHash: process.env.EXECUTION_VERIFIER_CODE_HASH,
   clockModelId: "evm-unix-seconds",
   finalityPolicyHash: process.env.FINALITY_POLICY_HASH,
@@ -110,7 +111,7 @@ console.log("0x" + toHex(domainManifestHash({
 '
 ```
 
-`FINALITY_POLICY_HASH` is the reviewed finality policy manifest hash. It must equal `finality.manifestHash` in the runtime manifest.
+`FINALITY_POLICY_HASH` is the reviewed finality policy manifest hash. It must equal `finality.manifestHash` in the runtime manifest. Base uses `package-verifier-v1` as `EXECUTION_VERIFIER_ID`; Arbitrum uses `async-bonded-package-coordinator-v1`.
 
 ## Test USDC and spot liquidity
 
@@ -338,11 +339,11 @@ The GMX Arbitrum Sepolia addresses are pinned constants in `DeployArbitrumSepoli
 
 One stage deploys everything and binds it into the account factory. There is no per-user account here: any wallet later creates its own account with `GmxV2IsolatedAccountFactory.create(owner)`, an ERC-1167 clone of the reviewed implementation at a CREATE2 address salted by `keccak256(abi.encode(owner))`. One coordinator admission of the shared adapter covers every factory account.
 
-`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, `executionClassManifestHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. `market` is the GMX ETH/USD market `0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` and `collateralToken` is `USDC.SG`; confirm both with `cast call 0x4750376b9378294138Cf7B7D69a2d243f4940f71 "getMarket(address,address)((address,address,address,address))" 0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201 0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` (Reader, DataStore) before deploying. The spot quote token must be the collateral token. Use the fee 100 WETH/USDC.SG pool seeded above: factory `0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e`, WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`, and the code hashes read with `cast codehash`.
+`DeployArbitrumSepoliaAsyncGmx.Parameters`, in order: `domainManifestVersion` (`1`), `domainManifestHash` (provisional), `configDelaySeconds`, `proposer`, `canceller`, `executor`, `pauser`, `market`, `marketCodeHash`, `collateralToken`, `collateralTokenCodeHash`, the GMX code hashes as `(dataStore,eventEmitter,exchangeRouter,router,orderVault,orderHandler,roleStore)`, and the spot venue as `(chainId,factory,pool,baseToken,quoteToken,baseTokenDecimals,quoteTokenDecimals,poolFee,factoryCodeHash,poolCodeHash,baseTokenCodeHash,quoteTokenCodeHash)`. The coordinator starts with no active execution class because its canonical class manifest commits to the reviewed domain, which commits to the coordinator's deployed code hash. `market` is the GMX ETH/USD market `0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` and `collateralToken` is `USDC.SG`; confirm both with `cast call 0x4750376b9378294138Cf7B7D69a2d243f4940f71 "getMarket(address,address)((address,address,address,address))" 0xCF4c2C4c53157BcC01A596e3788fFF69cBBCD201 0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` (Reader, DataStore) before deploying. The spot quote token must be the collateral token. Use the fee 100 WETH/USDC.SG pool seeded above: factory `0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e`, WETH `0x980B62Da83eFf3D4576C647993b0c1D7faf17c73`, and the code hashes read with `cast codehash`.
 
 ```bash
 forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsyncGmx \
-  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,bytes32,address,bytes32,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32),(uint256,address,address,address,address,uint8,uint8,uint24,bytes32,bytes32,bytes32,bytes32)))" \
+  --sig "run((uint32,bytes32,uint64,address,address,address,address,address,bytes32,address,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32),(uint256,address,address,address,address,uint8,uint8,uint24,bytes32,bytes32,bytes32,bytes32)))" \
   "$ARBITRUM_DEPLOY_PARAMETERS" \
   --rpc-url "$RPC_URL" --account naryx-arbitrum-deployer --sender "$DEPLOYER" --broadcast --slow
 ```
@@ -351,14 +352,16 @@ forge script script/DeployArbitrumSepoliaAsyncGmx.s.sol:DeployArbitrumSepoliaAsy
 
 ### 2. Rotate to the reviewed domain manifest
 
-Compute the reviewed hash with `DOMAIN_ID=eip155:421614`, `CHAIN_REFERENCE=421614`, `SETTLEMENT_CLASS=ASYNC_BONDED_SOLVER`, and `EXECUTION_VERIFIER_CODE_HASH=$(cast codehash "$COORDINATOR" --rpc-url "$RPC_URL")`. Then run `runProposeDomain` (proposer), wait, and `runActivateDomain` (executor) exactly as in the Base lane, against `script/ConfigureArbitrumSepoliaAsyncGmx.s.sol:ConfigureArbitrumSepoliaAsyncGmx`.
+Compute the reviewed hash with `DOMAIN_ID=eip155:421614`, `CHAIN_REFERENCE=421614`, `SETTLEMENT_CLASS=ASYNC_BONDED_SOLVER`, `EXECUTION_VERIFIER_ID=async-bonded-package-coordinator-v1`, and `EXECUTION_VERIFIER_CODE_HASH=$(cast codehash "$COORDINATOR" --rpc-url "$RPC_URL")`. Then run `runProposeDomain` (proposer), wait, and `runActivateDomain` (executor) exactly as in the Base lane, against `script/ConfigureArbitrumSepoliaAsyncGmx.s.sol:ConfigureArbitrumSepoliaAsyncGmx`.
+
+After the reviewed domain is active, compute the canonical `SeriesExecutionClass` against that exact domain. Run `runProposeExecutionClass` (proposer), wait, and `runActivateExecutionClass` (executor). An execution class is nonzero, delayed, active only while entry is paused, and cannot be reactivated after retirement. No admission or unpause is ready until the coordinator reports the exact reviewed hash.
 
 ### 3. Configure
 
-`ConfigureArbitrumSepoliaAsyncGmx.Route`, in order: `config`, `configCodeHash`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `coordinator`, `coordinatorCodeHash`, `accountFactory`, `accountFactoryCodeHash`, `adapter`, `adapterCodeHash`, `exitController`, `exitControllerCodeHash`, `spotPort`, `spotPortCodeHash`, `accountCodeHash` (the factory's `accountCodeHash()`). Every step checks that the factory binds exactly this adapter, exit controller, spot port, and account code.
+`ConfigureArbitrumSepoliaAsyncGmx.Route`, in order: `config`, `configCodeHash`, `domainManifestVersion` (`2`), `domainManifestHash` (reviewed), `executionClassManifestHash` (reviewed), `coordinator`, `coordinatorCodeHash`, `accountFactory`, `accountFactoryCodeHash`, `adapter`, `adapterCodeHash`, `exitController`, `exitControllerCodeHash`, `spotPort`, `spotPortCodeHash`, `accountCodeHash` (the factory's `accountCodeHash()`). Every step checks that the factory binds exactly this adapter, exit controller, spot port, and account code.
 
 ```bash
-ARBITRUM_ROUTE_TYPE='(address,bytes32,uint32,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,bytes32)'
+ARBITRUM_ROUTE_TYPE='(address,bytes32,uint32,bytes32,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,address,bytes32,bytes32)'
 arbitrum_step() { # function, operator address, keystore name, extra flags
   forge script script/ConfigureArbitrumSepoliaAsyncGmx.s.sol:ConfigureArbitrumSepoliaAsyncGmx \
     --sig "$1($ARBITRUM_ROUTE_TYPE,address)" "$ARBITRUM_ROUTE" "$2" \
@@ -370,6 +373,8 @@ Steps, in order:
 
 | Step | Operator |
 |---|---|
+| `runProposeExecutionClass` | proposer |
+| `runActivateExecutionClass` (after `configDelaySeconds`) | executor |
 | `runProposeAdmission` | proposer |
 | `runActivateAdmission` (after `configDelaySeconds`) | executor |
 | `runScheduleUnpause` (requires the active admission and the exact factory binding) | proposer |
