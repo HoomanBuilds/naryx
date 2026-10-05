@@ -125,6 +125,37 @@ pub mod naryx_core {
         instructions::resource_registry::tighten_resource_control(ctx, control)
     }
 
+    pub fn propose_fee_policy(
+        ctx: Context<ProposeFeePolicy>,
+        args: ProposeFeePolicyArgs,
+    ) -> Result<()> {
+        instructions::fee_policy::propose(ctx, args)
+    }
+
+    pub fn activate_fee_policy(ctx: Context<ActivateFeePolicy>) -> Result<()> {
+        instructions::fee_policy::activate(ctx)
+    }
+
+    pub fn cancel_fee_policy_proposal(ctx: Context<CancelFeePolicyProposal>) -> Result<()> {
+        instructions::fee_policy::cancel(ctx)
+    }
+
+    pub fn pause_fee_policy(ctx: Context<PauseFeePolicy>) -> Result<()> {
+        instructions::fee_policy::pause(ctx)
+    }
+
+    pub fn propose_fee_policy_resume(ctx: Context<ProposeFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::propose_resume(ctx)
+    }
+
+    pub fn cancel_fee_policy_resume(ctx: Context<CancelFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::cancel_resume(ctx)
+    }
+
+    pub fn activate_fee_policy_resume(ctx: Context<ActivateFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::activate_resume(ctx)
+    }
+
     pub fn propose_initial_cash_carry_series_binding(
         ctx: Context<ProposeInitialCashCarrySeriesBinding>,
         args: ProposeCashCarrySeriesBindingArgs,
@@ -364,6 +395,37 @@ pub mod naryx_core {
         control: ResourceControl,
     ) -> Result<()> {
         instructions::resource_registry::tighten_resource_control(ctx, control)
+    }
+
+    pub fn propose_fee_policy(
+        ctx: Context<ProposeFeePolicy>,
+        args: ProposeFeePolicyArgs,
+    ) -> Result<()> {
+        instructions::fee_policy::propose(ctx, args)
+    }
+
+    pub fn activate_fee_policy(ctx: Context<ActivateFeePolicy>) -> Result<()> {
+        instructions::fee_policy::activate(ctx)
+    }
+
+    pub fn cancel_fee_policy_proposal(ctx: Context<CancelFeePolicyProposal>) -> Result<()> {
+        instructions::fee_policy::cancel(ctx)
+    }
+
+    pub fn pause_fee_policy(ctx: Context<PauseFeePolicy>) -> Result<()> {
+        instructions::fee_policy::pause(ctx)
+    }
+
+    pub fn propose_fee_policy_resume(ctx: Context<ProposeFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::propose_resume(ctx)
+    }
+
+    pub fn cancel_fee_policy_resume(ctx: Context<CancelFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::cancel_resume(ctx)
+    }
+
+    pub fn activate_fee_policy_resume(ctx: Context<ActivateFeePolicyResume>) -> Result<()> {
+        instructions::fee_policy::activate_resume(ctx)
     }
 
     pub fn propose_initial_cash_carry_series_binding(

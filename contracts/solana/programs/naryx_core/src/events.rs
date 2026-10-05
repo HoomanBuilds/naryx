@@ -257,3 +257,60 @@ pub struct CashCarryStrategyAuthorityInitialized {
     pub quote_mint: Pubkey,
     pub rise_strategy: Pubkey,
 }
+
+#[event]
+pub struct FeePolicyProposed {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+    pub direction: crate::state::FeePolicyDirection,
+    pub quote_asset: crate::state::ManifestRef,
+    pub version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub maximum_protocol_fee_bps: u16,
+    pub maximum_solver_fee_bps: u16,
+    pub protocol_fee_recipient: Pubkey,
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct FeePolicyActivated {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+    pub version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub maximum_protocol_fee_bps: u16,
+    pub maximum_solver_fee_bps: u16,
+    pub protocol_fee_recipient: Pubkey,
+    pub paused: bool,
+}
+
+#[event]
+pub struct FeePolicyProposalCancelled {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+}
+
+#[event]
+pub struct FeePolicyPaused {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+}
+
+#[event]
+pub struct FeePolicyResumeProposed {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct FeePolicyResumeCancelled {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+}
+
+#[event]
+pub struct FeePolicyResumeActivated {
+    pub actor: Pubkey,
+    pub policy: Pubkey,
+}

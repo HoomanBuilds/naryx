@@ -8,6 +8,7 @@ pub mod execute_cash_and_carry;
 #[cfg(feature = "conformance")]
 pub mod execute_conformance_atomic;
 pub mod execute_firm_cash_and_carry;
+pub mod fee_policy;
 pub mod initialize;
 pub mod pause_entry;
 pub mod program_identity;
@@ -25,6 +26,7 @@ pub use {
 pub use cash_carry_strategy::*;
 pub use execute_cash_and_carry::*;
 pub use execute_firm_cash_and_carry::*;
+pub use fee_policy::*;
 pub use resource_registry::*;
 pub use series_registry::*;
 

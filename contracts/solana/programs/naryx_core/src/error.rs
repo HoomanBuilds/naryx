@@ -354,4 +354,40 @@ pub enum ErrorCode {
     SolverNotActive,
     #[msg("Solver set or proposal queue is full")]
     SolverSetFull,
+    #[msg("Fee policy version is zero")]
+    FeePolicyVersionZero,
+    #[msg("Fee policy manifest hash is all zero")]
+    FeePolicyHashZero,
+    #[msg("Fee policy total cap exceeds the hard maximum")]
+    FeePolicyCapTooHigh,
+    #[msg("Fee policy recipient is the default Pubkey")]
+    FeePolicyRecipientInvalid,
+    #[msg("Fee policy identity does not match its domain, direction, or quote asset")]
+    FeePolicyIdentityMismatch,
+    #[msg("A fee policy proposal is already pending")]
+    FeePolicyProposalExists,
+    #[msg("No fee policy proposal is pending")]
+    FeePolicyProposalMissing,
+    #[msg("Fee policy proposal is before its activation slot")]
+    FeePolicyProposalNotReady,
+    #[msg("Fee policy version is not increasing")]
+    FeePolicyVersionNotIncreasing,
+    #[msg("Fee policy is unknown")]
+    FeePolicyUnknown,
+    #[msg("Fee policy is already paused")]
+    FeePolicyAlreadyPaused,
+    #[msg("Fee policy is not paused")]
+    FeePolicyNotPaused,
+    #[msg("A fee policy resume is already pending")]
+    FeePolicyResumeExists,
+    #[msg("No fee policy resume is pending")]
+    FeePolicyResumeMissing,
+    #[msg("Fee policy resume is before its activation slot")]
+    FeePolicyResumeNotReady,
+    #[msg("Fee policy is not active for this quote")]
+    FeePolicyNotActive,
+    #[msg("Fee policy package notional is zero")]
+    FeePolicyNotionalZero,
+    #[msg("Fee exceeds the active policy cap")]
+    FeePolicyFeeExceeded,
 }
