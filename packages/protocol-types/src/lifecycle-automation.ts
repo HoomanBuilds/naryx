@@ -53,6 +53,11 @@ export const KEEPER_ACTION_KIND = Object.freeze({
   FUNDING_SETTLEMENT: 4,
   RECOVERY: 5,
   EMERGENCY_RISK_REDUCTION: 6,
+  MIGRATE: 7,
+  DECREASE: 8,
+  INCREASE: 9,
+  PACKAGE_TWAP: 10,
+  EMERGENCY_UNWIND: 11,
 } as const);
 export type KeeperActionKind = keyof typeof KEEPER_ACTION_KIND;
 
@@ -714,6 +719,7 @@ export function authorizeKeeperAction(
   if (
     before.dependencyState === 'HALTED' &&
     authorization.actionKind !== 'EMERGENCY_RISK_REDUCTION' &&
+    authorization.actionKind !== 'EMERGENCY_UNWIND' &&
     authorization.actionKind !== 'RECOVERY'
   ) {
     return reject('DEPENDENCY_HALTED');

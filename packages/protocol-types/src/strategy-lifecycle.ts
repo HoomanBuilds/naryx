@@ -28,6 +28,7 @@ export const STRATEGY_OPERATION = Object.freeze({
   DECREASE: 11,
   EXIT: 12,
   ADOPT_BASELINE: 13,
+  EMERGENCY_UNWIND: 14,
 } as const);
 export type StrategyOperation = keyof typeof STRATEGY_OPERATION;
 
@@ -37,6 +38,7 @@ export const DELEGABLE_AUTHORITY = Object.freeze({
   ROLL: 2,
   DECREASE: 3,
   EXIT: 4,
+  EMERGENCY_UNWIND: 5,
 } as const);
 export type DelegableAuthority = keyof typeof DELEGABLE_AUTHORITY;
 
@@ -184,11 +186,13 @@ export function strategyState(input: StrategyState, context = 'strategyState'): 
     input.liabilities.map((liability, index) => {
       const at = `${context}.liabilities[${index}]`;
       object(liability, at);
+      const atoms = unsigned(liability.atoms, U128_BITS, `${at}.atoms`);
+      if (atoms === 0n) throw new MalformedInputError(`${at}.atoms`, 'a liability cannot be zero');
       return Object.freeze({
         liabilityId: protocolId(liability.liabilityId, `${at}.liabilityId`),
         kind: variant(LIABILITY_KIND, liability.kind, `${at}.kind`),
         assetId: protocolId(liability.assetId, `${at}.assetId`),
-        atoms: unsigned(liability.atoms, U128_BITS, `${at}.atoms`),
+        atoms,
         transferable: bool(liability.transferable, `${at}.transferable`),
       });
     }),
@@ -199,7 +203,7 @@ export function strategyState(input: StrategyState, context = 'strategyState'): 
     input.delegations.map((delegation, index) => {
       const at = `${context}.delegations[${index}]`;
       object(delegation, at);
-      requireArray(delegation.authorities, `${at}.authorities`, 4);
+      requireArray(delegation.authorities, `${at}.authorities`, 5);
       const authorities = [...new Set(delegation.authorities.map((value) => variant(DELEGABLE_AUTHORITY, value, `${at}.authorities`)))];
       if (authorities.length === 0 || authorities.length !== delegation.authorities.length) {
         throw new MalformedInputError(`${at}.authorities`, 'authorities must be a nonempty set');
@@ -353,7 +357,7 @@ function accept(
     writer.writeArray(nextStateHashes, (element, hash) => encodeCommitmentHash(element, hash, 'nextStateHash'));
     writer.writeU64(context.atValue, 'atValue');
     writer.writeBool(externalPositionsMoved, 'externalPositionsMoved');
-    if (operation === 'EXIT') {
+    if (operation === 'EXIT' || operation === 'EMERGENCY_UNWIND') {
       writer.writeArray(liabilitySettlements, (element, settlement) => {
         encodeProtocolId(element, settlement.liabilityId, 'liabilityId');
         element.writeU128(settlement.settledAtoms, 'settledAtoms');
@@ -561,6 +565,53 @@ export function moveLeg(
   return accept(move.operation, context, [state], [next(state, { legs: state.legs.map((value) => (value === leg ? moved : value)) })], true);
 }
 
+export interface StrategyLegMove {
+  readonly legId: string;
+  readonly newLegId: string;
+  readonly newInstrumentId: string;
+  readonly newVenueId: string;
+  readonly newLotAtoms: bigint;
+}
+
+/** Moves several legs as one strategy transition, which is required for calendar and option rolls. */
+export function moveStrategyLegs(
+  input: StrategyState,
+  context: StrategyTransitionContext,
+  operation: 'ROLL' | 'MIGRATE',
+  moves: readonly StrategyLegMove[],
+): StrategyTransitionResult {
+  const state = strategyState(input);
+  const failure = authorize(state, context, operation);
+  if (failure !== undefined) return reject(failure);
+  requireArray(moves, 'moveStrategyLegs.moves', STRATEGY_MAX_LEGS);
+  if (moves.length === 0) throw new MalformedInputError('moveStrategyLegs.moves', 'at least one leg must move');
+  const sourceIds = new Set<string>();
+  const destinationIds = new Set<string>();
+  const replacements = new Map<string, StrategyLeg>();
+  for (const [index, move] of moves.entries()) {
+    const at = `moveStrategyLegs.moves[${index}]`;
+    object(move, at);
+    const legId = protocolId(move.legId, `${at}.legId`);
+    const newLegId = protocolId(move.newLegId, `${at}.newLegId`);
+    if (sourceIds.has(legId) || destinationIds.has(newLegId)) throw new DuplicateElementError(at, 'a source or destination leg repeats');
+    sourceIds.add(legId);
+    destinationIds.add(newLegId);
+    const leg = state.legs.find((value) => value.legId === legId);
+    if (leg === undefined) throw new MalformedInputError(`${at}.legId`, 'no such leg');
+    const newVenueId = protocolId(move.newVenueId, `${at}.newVenueId`);
+    const newInstrumentId = protocolId(move.newInstrumentId, `${at}.newInstrumentId`);
+    if (operation === 'ROLL' && newVenueId !== leg.venueId) throw new MalformedInputError(`${at}.newVenueId`, 'a roll stays on its venue');
+    if (newVenueId === leg.venueId && newInstrumentId === leg.instrumentId) throw new MalformedInputError(at, 'the leg would not move');
+    const newLotAtoms = unsigned(move.newLotAtoms, U128_BITS, `${at}.newLotAtoms`);
+    if (newLotAtoms === 0n || leg.signedQuantityAtoms % newLotAtoms !== 0n) throw new MalformedInputError(`${at}.newLotAtoms`, 'the exposure does not fit the new lot lattice');
+    replacements.set(legId, { ...leg, legId: newLegId, instrumentId: newInstrumentId, venueId: newVenueId, lotAtoms: newLotAtoms });
+  }
+  const unchangedIds = new Set(state.legs.filter((leg) => !sourceIds.has(leg.legId)).map((leg) => leg.legId));
+  if ([...destinationIds].some((legId) => unchangedIds.has(legId))) throw new DuplicateElementError('moveStrategyLegs.moves', 'a destination collides with an unchanged leg');
+  const legs = state.legs.map((leg) => replacements.get(leg.legId) ?? leg);
+  return accept(operation, context, [state], [next(state, { legs })], true);
+}
+
 /** Resets leg quantities to targets that keep the series ratio, each direction, and a per-leg change bound. */
 export function rebalanceStrategy(
   input: StrategyState,
@@ -616,7 +667,136 @@ export function resizeStrategy(
   });
   if (legs.some((leg, index) => leg.signedQuantityAtoms === (state.legs[index] as StrategyLeg).signedQuantityAtoms)) return reject('CHANGE_BELOW_LOT');
   if (!ratioHolds(legs)) return reject('RATIO_BROKEN');
-  return accept(resize.operation, context, [state], [next(state, { legs })], true);
+  const liabilities = state.liabilities.map((liability) => {
+    const product = liability.atoms * change;
+    const delta = resize.operation === 'INCREASE' ? (product + BPS - 1n) / BPS : product / BPS;
+    return { ...liability, atoms: resize.operation === 'INCREASE' ? liability.atoms + delta : liability.atoms - delta };
+  });
+  return accept(resize.operation, context, [state], [next(state, { legs, liabilities })], true);
+}
+
+export type StrategyPackageTransitionOperation = 'ROLL' | 'MIGRATE' | 'REBALANCE' | 'INCREASE' | 'DECREASE' | 'EXIT' | 'EMERGENCY_UNWIND';
+
+function sameLegIdentity(left: StrategyLeg, right: StrategyLeg): boolean {
+  return left.legId === right.legId && left.underlyingId === right.underlyingId && left.instrumentId === right.instrumentId
+    && left.venueId === right.venueId && left.lotAtoms === right.lotAtoms && left.ratioNumerator === right.ratioNumerator
+    && left.ratioDenominator === right.ratioDenominator;
+}
+
+function sameLiabilityIdentity(left: StrategyLiability, right: StrategyLiability): boolean {
+  return left.liabilityId === right.liabilityId && left.kind === right.kind && left.assetId === right.assetId && left.transferable === right.transferable;
+}
+
+function sameIdentitySet<T>(left: readonly T[], right: readonly T[], same: (a: T, b: T) => boolean): boolean {
+  return left.length === right.length && left.every((value, index) => same(value, right[index] as T));
+}
+
+function sameRollExposureSet(left: readonly StrategyLeg[], right: readonly StrategyLeg[]): boolean {
+  if (left.length !== right.length) return false;
+  const matched = new Set<number>();
+  return left.every((leg) => {
+    const index = right.findIndex((candidate, candidateIndex) => !matched.has(candidateIndex)
+      && candidate.underlyingId === leg.underlyingId
+      && candidate.venueId === leg.venueId
+      && candidate.signedQuantityAtoms === leg.signedQuantityAtoms
+      && candidate.ratioNumerator === leg.ratioNumerator
+      && candidate.ratioDenominator === leg.ratioDenominator);
+    if (index === -1) return false;
+    matched.add(index);
+    return true;
+  });
+}
+
+function grossExposure(state: StrategyState): bigint {
+  return state.legs.reduce((sum, leg) => sum + absBigInt(leg.signedQuantityAtoms), 0n);
+}
+
+function liabilityIncreased(prior: StrategyState, candidate: StrategyState): boolean {
+  return candidate.liabilities.some((liability) => {
+    const previous = prior.liabilities.find((value) => value.liabilityId === liability.liabilityId);
+    return previous === undefined || previous.assetId !== liability.assetId || liability.atoms > previous.atoms;
+  });
+}
+
+/** Applies a complete receipt-bound package state after its external venue actions have settled. */
+export function applyPackageStateTransition(
+  input: StrategyState,
+  context: StrategyTransitionContext,
+  operation: StrategyPackageTransitionOperation,
+  nextInput: StrategyState,
+): StrategyTransitionResult {
+  const state = strategyState(input);
+  if (!['ROLL', 'MIGRATE', 'REBALANCE', 'INCREASE', 'DECREASE', 'EXIT', 'EMERGENCY_UNWIND'].includes(operation)) {
+    throw new MalformedInputError('applyPackageStateTransition.operation', 'unsupported package transition');
+  }
+  const failure = authorize(state, context, operation);
+  if (failure !== undefined) return reject(failure);
+  const candidate = strategyState(nextInput, 'applyPackageStateTransition.nextState');
+  for (const leg of candidate.legs) {
+    const prior = state.legs.find((value) => value.legId === leg.legId);
+    if (prior !== undefined && !sameLegIdentity(prior, leg)) {
+      throw new MalformedInputError('applyPackageStateTransition.nextState.legs', 'changed leg terms require a new leg identity');
+    }
+  }
+  for (const liability of candidate.liabilities) {
+    const prior = state.liabilities.find((value) => value.liabilityId === liability.liabilityId);
+    if (prior !== undefined && !sameLiabilityIdentity(prior, liability)) {
+      throw new MalformedInputError('applyPackageStateTransition.nextState.liabilities', 'changed liability terms require a new liability identity');
+    }
+  }
+  if (
+    candidate.strategyId !== state.strategyId || candidate.ownerId !== state.ownerId || candidate.subaccountId !== state.subaccountId
+    || candidate.seriesId !== state.seriesId || candidate.executionClassId !== state.executionClassId
+    || candidate.venuePositionsTransferable !== state.venuePositionsTransferable
+    || candidate.legalTransferRestricted !== state.legalTransferRestricted
+    || candidate.stateVersion !== state.stateVersion + 1n
+  ) {
+    throw new MalformedInputError('applyPackageStateTransition.nextState', 'package execution cannot change strategy identity, ownership, terms, or skip a state version');
+  }
+  if (operation === 'EXIT' || operation === 'EMERGENCY_UNWIND') {
+    if (candidate.open) throw new MalformedInputError('applyPackageStateTransition.nextState.open', 'an unwind must close the strategy');
+    if (candidate.legs.some((leg) => leg.signedQuantityAtoms !== 0n)) throw new MalformedInputError('applyPackageStateTransition.nextState.legs', 'an unwind must flatten every strategy leg');
+    if (candidate.delegations.length !== 0) throw new MalformedInputError('applyPackageStateTransition.nextState.delegations', 'a closed strategy keeps no delegation');
+    if (candidate.liabilities.some((liability) => {
+      const prior = state.liabilities.find((value) => value.liabilityId === liability.liabilityId);
+      return prior === undefined || !sameLiabilityIdentity(prior, liability) || liability.atoms > prior.atoms;
+    })) {
+      return reject('UNAUTHORIZED');
+    }
+  } else if (!candidate.open) {
+    throw new MalformedInputError('applyPackageStateTransition.nextState.open', 'only an exit or emergency unwind may close the strategy');
+  } else if (
+    candidate.delegations.length !== state.delegations.length
+    || candidate.delegations.some((delegation, index) => {
+      const prior = state.delegations[index];
+      return prior === undefined || delegation.delegateId !== prior.delegateId || delegation.expiresAtValue !== prior.expiresAtValue
+        || delegation.authorities.length !== prior.authorities.length
+        || delegation.authorities.some((authority, authorityIndex) => authority !== prior.authorities[authorityIndex]);
+    })
+  ) {
+    throw new MalformedInputError('applyPackageStateTransition.nextState.delegations', 'package execution cannot change delegations');
+  }
+  if (operation === 'REBALANCE' || operation === 'INCREASE' || operation === 'DECREASE') {
+    if (!sameIdentitySet(state.legs, candidate.legs, sameLegIdentity) || !sameIdentitySet(state.liabilities, candidate.liabilities, sameLiabilityIdentity)) {
+      throw new MalformedInputError('applyPackageStateTransition.nextState', 'this operation may change quantities but not position or liability identities');
+    }
+  }
+  if (operation === 'ROLL') {
+    if (!sameRollExposureSet(state.legs, candidate.legs) || !sameIdentitySet(state.liabilities, candidate.liabilities, sameLiabilityIdentity)) {
+      throw new MalformedInputError('applyPackageStateTransition.nextState', 'a roll preserves leg count and liability identities');
+    }
+    if (state.liabilities.some((liability, index) => liability.atoms !== candidate.liabilities[index]?.atoms)) {
+      throw new MalformedInputError('applyPackageStateTransition.nextState.liabilities', 'a roll cannot change liabilities');
+    }
+  }
+  if (operation === 'INCREASE' && grossExposure(candidate) <= grossExposure(state)) return reject('CHANGE_BELOW_LOT');
+  if (operation === 'DECREASE' && grossExposure(candidate) >= grossExposure(state)) return reject('CHANGE_BELOW_LOT');
+  if (operation === 'DECREASE' && liabilityIncreased(state, candidate)) return reject('UNAUTHORIZED');
+  const actor = protocolId(context.actorId, 'applyPackageStateTransition.context.actorId');
+  if (actor !== state.ownerId && (grossExposure(candidate) > grossExposure(state) || liabilityIncreased(state, candidate))) {
+    return reject('UNAUTHORIZED');
+  }
+  return accept(operation, context, [state], [candidate], true);
 }
 
 export interface LiabilitySettlement {
@@ -656,6 +836,34 @@ export function exitStrategy(
   const liabilities = state.liabilities.filter((liability) => !settled.has(liability.liabilityId));
   const ordered = state.liabilities.flatMap((liability) => settled.get(liability.liabilityId) ?? []);
   return accept('EXIT', context, [state], [next(state, { open: false, legs, liabilities, delegations: [] })], true, ordered);
+}
+
+/** A pre-authorized emergency path closes every position under a distinct auditable operation. */
+export function emergencyUnwindStrategy(
+  input: StrategyState,
+  context: StrategyTransitionContext,
+  settlements: readonly LiabilitySettlement[] = [],
+): StrategyTransitionResult {
+  const state = strategyState(input);
+  const failure = authorize(state, context, 'EMERGENCY_UNWIND');
+  if (failure !== undefined) return reject(failure);
+  requireArray(settlements, 'emergencyUnwindStrategy.settlements', STRATEGY_MAX_LEGS * 4);
+  const settled = new Map<string, { liabilityId: ProtocolId; settledAtoms: bigint; evidenceHash: CommitmentHash }>();
+  for (const [index, settlement] of settlements.entries()) {
+    const at = `emergencyUnwindStrategy.settlements[${index}]`;
+    object(settlement, at);
+    const liabilityId = protocolId(settlement.liabilityId, `${at}.liabilityId`);
+    const liability = state.liabilities.find((value) => value.liabilityId === liabilityId);
+    if (liability === undefined) throw new MalformedInputError(`${at}.liabilityId`, 'no such liability');
+    if (settled.has(liabilityId)) throw new MalformedInputError(`${at}.liabilityId`, 'a liability is settled twice');
+    const settledAtoms = unsigned(settlement.settledAtoms, U128_BITS, `${at}.settledAtoms`);
+    if (settledAtoms !== liability.atoms) throw new MalformedInputError(`${at}.settledAtoms`, 'a settlement covers the full liability');
+    settled.set(liabilityId, { liabilityId, settledAtoms, evidenceHash: commitmentHash(settlement.evidenceHash, `${at}.evidenceHash`) });
+  }
+  const legs = state.legs.map((leg) => ({ ...leg, signedQuantityAtoms: 0n }));
+  const liabilities = state.liabilities.filter((liability) => !settled.has(liability.liabilityId));
+  const ordered = state.liabilities.flatMap((liability) => settled.get(liability.liabilityId) ?? []);
+  return accept('EMERGENCY_UNWIND', context, [state], [next(state, { open: false, legs, liabilities, delegations: [] })], true, ordered);
 }
 
 /**

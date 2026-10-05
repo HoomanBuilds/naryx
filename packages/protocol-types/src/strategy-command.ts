@@ -8,24 +8,30 @@ import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 import {
   assignInternal,
   adoptObservedBaseline,
+  applyPackageStateTransition,
   DELEGABLE_AUTHORITY,
   delegateManagement,
   encodeStrategyState,
   exitStrategy,
+  emergencyUnwindStrategy,
   mergeStrategies,
   moveLeg,
+  moveStrategyLegs,
   novateStrategy,
   rebalanceStrategy,
   resizeStrategy,
   revokeDelegation,
   splitStrategy,
+  STRATEGY_OPERATION,
   strategyState,
   type DelegableAuthority,
   type StrategyState,
+  type StrategyPackageTransitionOperation,
   type StrategyTransitionContext,
   type StrategyTransitionResult,
 } from './strategy-lifecycle.js';
 import { requiresSuccessfulReceipt, type PackageReceiptInput } from './terminal-outcome.js';
+import { strategyPackageReceipt, type StrategyPackageReceiptInput } from './strategy-package-receipt.js';
 
 export const STRATEGY_COMMAND_VERSION = 1;
 
@@ -52,6 +58,10 @@ export const STRATEGY_COMMAND_KIND = Object.freeze({
   DECREASE: 12,
   EXIT: 13,
   ADOPT_BASELINE: 14,
+  ROLL_PACKAGE: 15,
+  MIGRATE_PACKAGE: 16,
+  EMERGENCY_UNWIND: 17,
+  APPLY_PACKAGE: 18,
 } as const);
 export type StrategyCommandKind = keyof typeof STRATEGY_COMMAND_KIND;
 
@@ -70,6 +80,17 @@ export type StrategyCommandParameters =
     readonly otherExpectedStateHash: Uint8Array | string;
     readonly mergedStrategyId: string;
   }
+  | {
+    readonly kind: 'ROLL_PACKAGE' | 'MIGRATE_PACKAGE';
+    readonly moves: readonly {
+      readonly legId: string;
+      readonly newLegId: string;
+      readonly newInstrumentId: string;
+      readonly newVenueId: string;
+      readonly newLotAtoms: bigint;
+    }[];
+    readonly executionReceiptHashes: readonly (Uint8Array | string)[];
+  }
   /** Transfers the whole strategy; each venue confirmation names the evidence of its transfer. */
   | { readonly kind: 'NOVATE'; readonly newOwnerId: string; readonly venueConfirmations: readonly { readonly venueId: string; readonly evidenceHash: Uint8Array | string }[] }
   | {
@@ -82,6 +103,11 @@ export type StrategyCommandParameters =
     readonly executionReceiptHashes: readonly (Uint8Array | string)[];
   }
   | {
+    readonly kind: 'EMERGENCY_UNWIND';
+    readonly settlements: readonly { readonly liabilityId: string; readonly settledAtoms: bigint; readonly evidenceHash: Uint8Array | string }[];
+    readonly executionReceiptHashes: readonly (Uint8Array | string)[];
+  }
+  | {
     readonly kind: 'REBALANCE';
     readonly targets: readonly { readonly legId: string; readonly signedQuantityAtoms: bigint; readonly maximumChangeAtoms: bigint }[];
     readonly executionReceiptHashes: readonly (Uint8Array | string)[];
@@ -90,6 +116,12 @@ export type StrategyCommandParameters =
   | {
     readonly kind: 'EXIT';
     readonly settlements: readonly { readonly liabilityId: string; readonly settledAtoms: bigint; readonly evidenceHash: Uint8Array | string }[];
+    readonly executionReceiptHashes: readonly (Uint8Array | string)[];
+  }
+  | {
+    readonly kind: 'APPLY_PACKAGE';
+    readonly operation: StrategyPackageTransitionOperation;
+    readonly nextState: StrategyState;
     readonly executionReceiptHashes: readonly (Uint8Array | string)[];
   }
   | { readonly kind: 'ADOPT_BASELINE'; readonly observed: readonly { readonly legId: string; readonly signedQuantityAtoms: bigint }[] };
@@ -157,8 +189,8 @@ function encodeParameters(writer: CanonicalWriter, parameters: StrategyCommandPa
       return;
     case 'DELEGATE': {
       encodeProtocolId(writer, protocolId(parameters.delegateId, 'strategyCommand.delegateId'), 'delegateId');
-      if (!Array.isArray(parameters.authorities) || parameters.authorities.length === 0 || parameters.authorities.length > 4) {
-        throw new MalformedInputError('strategyCommand.authorities', 'expected 1 to 4 delegable authorities');
+      if (!Array.isArray(parameters.authorities) || parameters.authorities.length === 0 || parameters.authorities.length > 5) {
+        throw new MalformedInputError('strategyCommand.authorities', 'expected 1 to 5 delegable authorities');
       }
       const sorted = [...new Set<DelegableAuthority>(parameters.authorities)].sort((left, right) => DELEGABLE_AUTHORITY[left] - DELEGABLE_AUTHORITY[right]);
       if (sorted.length !== parameters.authorities.length) throw new MalformedInputError('strategyCommand.authorities', 'authorities repeat');
@@ -198,6 +230,17 @@ function encodeParameters(writer: CanonicalWriter, parameters: StrategyCommandPa
       writer.writeU128(checkedUnsigned(parameters.newLotAtoms, 128, 'strategyCommand.newLotAtoms'), 'newLotAtoms');
       encodeReceipts(writer, parameters);
       return;
+    case 'ROLL_PACKAGE':
+    case 'MIGRATE_PACKAGE':
+      writer.writeArray(list(parameters.moves, 'strategyCommand.moves', 1), (inner, move) => {
+        encodeProtocolId(inner, protocolId(move.legId, 'strategyCommand.moves.legId'), 'legId');
+        encodeProtocolId(inner, protocolId(move.newLegId, 'strategyCommand.moves.newLegId'), 'newLegId');
+        encodeProtocolId(inner, protocolId(move.newInstrumentId, 'strategyCommand.moves.newInstrumentId'), 'newInstrumentId');
+        encodeProtocolId(inner, protocolId(move.newVenueId, 'strategyCommand.moves.newVenueId'), 'newVenueId');
+        inner.writeU128(checkedUnsigned(move.newLotAtoms, 128, 'strategyCommand.moves.newLotAtoms'), 'newLotAtoms');
+      }, 'moves');
+      encodeReceipts(writer, parameters);
+      return;
     case 'REBALANCE':
       writer.writeArray(list(parameters.targets, 'strategyCommand.targets', 1), (inner, target) => {
         encodeProtocolId(inner, protocolId(target.legId, 'strategyCommand.targets.legId'), 'legId');
@@ -212,11 +255,17 @@ function encodeParameters(writer: CanonicalWriter, parameters: StrategyCommandPa
       encodeReceipts(writer, parameters);
       return;
     case 'EXIT':
+    case 'EMERGENCY_UNWIND':
       writer.writeArray(list(parameters.settlements, 'strategyCommand.settlements', 0, MAX_ITEMS * 4), (inner, settlement) => {
         encodeProtocolId(inner, protocolId(settlement.liabilityId, 'strategyCommand.settlements.liabilityId'), 'liabilityId');
         inner.writeU128(checkedUnsigned(settlement.settledAtoms, 128, 'strategyCommand.settlements.settledAtoms'), 'settledAtoms');
         encodeCommitmentHash(inner, commitmentHash(settlement.evidenceHash, 'strategyCommand.settlements.evidenceHash'), 'evidenceHash');
       }, 'settlements');
+      encodeReceipts(writer, parameters);
+      return;
+    case 'APPLY_PACKAGE':
+      writer.writeEnum(STRATEGY_OPERATION, parameters.operation, 'operation');
+      encodeStrategyState(writer, parameters.nextState);
       encodeReceipts(writer, parameters);
       return;
     case 'ADOPT_BASELINE':
@@ -333,6 +382,9 @@ export function applyStrategyCommand(input: StrategyCommandInput, states: Readon
         newVenueId: parameters.newVenueId,
         newLotAtoms: parameters.newLotAtoms,
       }));
+    case 'ROLL_PACKAGE':
+    case 'MIGRATE_PACKAGE':
+      return transitioned(moveStrategyLegs(current, context, parameters.kind === 'ROLL_PACKAGE' ? 'ROLL' : 'MIGRATE', parameters.moves));
     case 'REBALANCE':
       return transitioned(rebalanceStrategy(current, context, parameters.targets));
     case 'INCREASE':
@@ -340,6 +392,10 @@ export function applyStrategyCommand(input: StrategyCommandInput, states: Readon
       return transitioned(resizeStrategy(current, context, { operation: parameters.kind, changeBps: parameters.changeBps }));
     case 'EXIT':
       return transitioned(exitStrategy(current, context, parameters.settlements));
+    case 'EMERGENCY_UNWIND':
+      return transitioned(emergencyUnwindStrategy(current, context, parameters.settlements));
+    case 'APPLY_PACKAGE':
+      return transitioned(applyPackageStateTransition(current, context, parameters.operation, parameters.nextState));
     case 'ADOPT_BASELINE':
       return transitioned(adoptObservedBaseline(current, context, parameters.observed));
   }
@@ -365,6 +421,83 @@ function sameTotals(left: Map<string, bigint>, right: Map<string, bigint>): bool
   return left.size === right.size && [...right].every(([venue, delta]) => left.get(venue) === delta);
 }
 
+export type StrategyExecutionReceiptInput = PackageReceiptInput | StrategyPackageReceiptInput;
+
+function isStrategyPackageReceipt(receipt: StrategyExecutionReceiptInput): receipt is StrategyPackageReceiptInput {
+  return 'legOutcomes' in receipt;
+}
+
+function stateLegDelta(prior: StrategyState, next: StrategyState): Map<string, bigint> {
+  return venueTotals([
+    ...next.legs.map((leg) => [leg.legId as string, leg.signedQuantityAtoms] as const),
+    ...prior.legs.map((leg) => [leg.legId as string, -leg.signedQuantityAtoms] as const),
+  ]);
+}
+
+interface LiabilityDelta {
+  readonly assetId: string;
+  readonly atoms: bigint;
+}
+
+function stateLiabilityDelta(prior: StrategyState, next: StrategyState): Map<string, LiabilityDelta> {
+  const totals = new Map<string, LiabilityDelta>();
+  for (const liability of prior.liabilities) totals.set(liability.liabilityId, { assetId: liability.assetId, atoms: -liability.atoms });
+  for (const liability of next.liabilities) {
+    const current = totals.get(liability.liabilityId);
+    if (current !== undefined && current.assetId !== liability.assetId) throw new MalformedInputError('strategyExecution.next.liabilities', 'a liability identity changed asset');
+    totals.set(liability.liabilityId, { assetId: liability.assetId, atoms: (current?.atoms ?? 0n) + liability.atoms });
+  }
+  for (const [liabilityId, delta] of totals) if (delta.atoms === 0n) totals.delete(liabilityId);
+  return totals;
+}
+
+function sameLiabilityTotals(left: Map<string, LiabilityDelta>, right: Map<string, LiabilityDelta>): boolean {
+  return left.size === right.size && [...right].every(([liabilityId, delta]) => {
+    const executed = left.get(liabilityId);
+    return executed?.assetId === delta.assetId && executed.atoms === delta.atoms;
+  });
+}
+
+function genericExecutionMatches(
+  kind: StrategyCommandKind | StrategyPackageTransitionOperation,
+  prior: StrategyState,
+  next: StrategyState,
+  receipts: readonly StrategyPackageReceiptInput[],
+): { readonly matches: true } | { readonly matches: false; readonly mismatch: StrategyExecutionMismatch } {
+  const fail = (mismatch: StrategyExecutionMismatch) => Object.freeze({ matches: false as const, mismatch });
+  const expectedAction = kind === 'ROLL_PACKAGE'
+    ? 'roll'
+    : kind === 'MIGRATE_PACKAGE'
+      ? 'migrate'
+      : kind.toLowerCase().replaceAll('_', '-');
+  const executed: (readonly [string, bigint])[] = [];
+  const liabilities = new Map<string, LiabilityDelta>();
+  for (const input of receipts) {
+    const receipt = strategyPackageReceipt(input);
+    if (!requiresSuccessfulReceipt(receipt.terminalState)) return fail('RECEIPT_NOT_SETTLED');
+    if (receipt.owner !== prior.ownerId) return fail('RECEIPT_OWNER_MISMATCH');
+    if (receipt.seriesId !== prior.seriesId || receipt.executionClassId !== prior.executionClassId) return fail('RECEIPT_MARKET_MISMATCH');
+    if (receipt.lifecycleAction !== expectedAction) return fail('RECEIPT_ACTION_MISMATCH');
+    for (const outcome of receipt.legOutcomes) {
+      if (outcome.positionLegId !== undefined && outcome.settledQuantity.atoms !== 0n) {
+        executed.push([outcome.positionLegId, outcome.settledQuantity.atoms]);
+      }
+      if (outcome.liabilityId !== undefined && outcome.settledQuantity.atoms !== 0n) {
+        const current = liabilities.get(outcome.liabilityId);
+        if (current !== undefined && current.assetId !== outcome.settledQuantity.asset.assetId) return fail('EXECUTION_AMBIGUOUS');
+        liabilities.set(outcome.liabilityId, {
+          assetId: outcome.settledQuantity.asset.assetId,
+          atoms: (current?.atoms ?? 0n) + outcome.settledQuantity.atoms,
+        });
+      }
+    }
+  }
+  for (const [liabilityId, delta] of liabilities) if (delta.atoms === 0n) liabilities.delete(liabilityId);
+  return sameTotals(venueTotals(executed), stateLegDelta(prior, next)) && sameLiabilityTotals(liabilities, stateLiabilityDelta(prior, next))
+    ? Object.freeze({ matches: true as const })
+    : fail('EXECUTION_MISMATCH');
+}
+
 /**
  * Whether settled package receipts account exactly for a position-moving transition. Every
  * receipt must be a successful terminal receipt of the strategy's owner, with its spot and
@@ -379,15 +512,25 @@ export function strategyExecutionMatches(
   kind: StrategyCommandKind,
   prior: StrategyState,
   next: StrategyState,
-  receipts: readonly PackageReceiptInput[],
+  receipts: readonly StrategyExecutionReceiptInput[],
+  packageOperation?: StrategyPackageTransitionOperation,
 ): { readonly matches: true } | { readonly matches: false; readonly mismatch: StrategyExecutionMismatch } {
   const fail = (mismatch: StrategyExecutionMismatch) => Object.freeze({ matches: false as const, mismatch });
   if (receipts.length === 0) return fail('EXECUTION_MISMATCH');
+  const genericCount = receipts.filter(isStrategyPackageReceipt).length;
+  if (genericCount !== 0 && genericCount !== receipts.length) return fail('EXECUTION_AMBIGUOUS');
+  if (genericCount === receipts.length) {
+    return genericExecutionMatches(packageOperation ?? kind, prior, next, receipts as readonly StrategyPackageReceiptInput[]);
+  }
+  if (kind === 'APPLY_PACKAGE' || kind === 'ROLL_PACKAGE' || kind === 'MIGRATE_PACKAGE' || kind === 'EMERGENCY_UNWIND') {
+    return fail('EXECUTION_AMBIGUOUS');
+  }
+  const legacyReceipts = receipts as readonly PackageReceiptInput[];
   const moving = kind === 'ROLL' || kind === 'MIGRATE';
   const distinctVenues = (state: StrategyState) => new Set(state.legs.map((leg) => leg.venueId)).size === state.legs.length;
   if (!distinctVenues(prior) || !distinctVenues(next)) return fail('EXECUTION_AMBIGUOUS');
   const moves = { ENTRY: [] as (readonly [string, bigint])[], EXIT: [] as (readonly [string, bigint])[] };
-  for (const receipt of receipts) {
+  for (const receipt of legacyReceipts) {
     if (!requiresSuccessfulReceipt(receipt.terminalState)) return fail('RECEIPT_NOT_SETTLED');
     if (receipt.owner !== prior.ownerId) return fail('RECEIPT_OWNER_MISMATCH');
     if (receipt.spotVenue === receipt.perpVenue) return fail('EXECUTION_AMBIGUOUS');

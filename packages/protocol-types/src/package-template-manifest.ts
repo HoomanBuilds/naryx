@@ -43,6 +43,8 @@ export interface PackageTemplateManifestInput {
   readonly supportedSettlementClasses: readonly SettlementClass[];
   readonly allowedSpotAdapterIds: readonly string[];
   readonly allowedPerpAdapterIds: readonly string[];
+  /** Manifest v2 generic adapter set for option, lending, collateral, future, and other implemented leg families. */
+  readonly allowedAdapterIds?: readonly string[];
   readonly riskPolicyHash: Uint8Array | string;
 }
 
@@ -64,6 +66,7 @@ export interface PackageTemplateManifest {
   readonly supportedSettlementClasses: readonly SettlementClass[];
   readonly allowedSpotAdapterIds: readonly ProtocolId[];
   readonly allowedPerpAdapterIds: readonly ProtocolId[];
+  readonly allowedAdapterIds?: readonly ProtocolId[];
   readonly riskPolicyHash: ManifestHash;
 }
 
@@ -142,8 +145,12 @@ function rejectDuplicateEntries<T>(entries: readonly CanonicalEntry<T>[], contex
 function canonicalProtocolIdSet(
   values: readonly string[],
   context: string,
+  allowEmpty = false,
 ): readonly ProtocolId[] {
-  const entries = nonemptyArray(values, context)
+  if (!Array.isArray(values) || (!allowEmpty && values.length === 0)) {
+    throw new MalformedInputError(context, allowEmpty ? 'expected an array' : 'set or array is empty');
+  }
+  const entries = values
     .map((value, index) => {
       const checked = protocolId(value, `${context}[${index}]`);
       return {
@@ -206,6 +213,9 @@ export function packageTemplateManifest(
   }
 
   const manifestVersion = nonzeroU32(input.manifestVersion, `${context}.manifestVersion`);
+  if (manifestVersion !== 1 && manifestVersion !== 2) {
+    throw new MalformedInputError(`${context}.manifestVersion`, 'supported manifest versions are 1 and 2');
+  }
   const templateVersion = nonzeroU32(input.templateVersion, `${context}.templateVersion`);
   const supportedDomains = canonicalDomainSet(
     input.supportedDomains,
@@ -241,11 +251,19 @@ export function packageTemplateManifest(
   const allowedSpotAdapterIds = canonicalProtocolIdSet(
     input.allowedSpotAdapterIds,
     `${context}.allowedSpotAdapterIds`,
+    manifestVersion === 2,
   );
   const allowedPerpAdapterIds = canonicalProtocolIdSet(
     input.allowedPerpAdapterIds,
     `${context}.allowedPerpAdapterIds`,
+    manifestVersion === 2,
   );
+  const allowedAdapterIds = manifestVersion === 2
+    ? canonicalProtocolIdSet(input.allowedAdapterIds ?? [], `${context}.allowedAdapterIds`)
+    : undefined;
+  if (manifestVersion === 1 && input.allowedAdapterIds !== undefined && input.allowedAdapterIds.length > 0) {
+    throw new MalformedInputError(`${context}.allowedAdapterIds`, 'generic adapters require manifest version 2');
+  }
   const riskPolicyHash = manifestHash(input.riskPolicyHash, `${context}.riskPolicyHash`);
 
   return Object.freeze({
@@ -274,6 +292,7 @@ export function packageTemplateManifest(
     supportedSettlementClasses,
     allowedSpotAdapterIds,
     allowedPerpAdapterIds,
+    ...(allowedAdapterIds === undefined ? {} : { allowedAdapterIds }),
     get riskPolicyHash(): ManifestHash {
       return copiedManifestHash(riskPolicyHash);
     },
@@ -325,6 +344,7 @@ function checkedPackageTemplateManifest(
       supportedSettlementClasses: value.supportedSettlementClasses,
       allowedSpotAdapterIds: value.allowedSpotAdapterIds,
       allowedPerpAdapterIds: value.allowedPerpAdapterIds,
+      ...(value.allowedAdapterIds === undefined ? {} : { allowedAdapterIds: value.allowedAdapterIds }),
       riskPolicyHash: canonicalManifestHash(
         value.riskPolicyHash,
         `${context}.riskPolicyHash`,
@@ -411,6 +431,18 @@ export function encodePackageTemplateManifest(
       ),
     'packageTemplateManifest.allowedPerpAdapterIds',
   );
+  if (checked.manifestVersion === 2) {
+    writer.writeSet(
+      checked.allowedAdapterIds as readonly ProtocolId[],
+      (target, adapterId) =>
+        encodeProtocolId(
+          target,
+          adapterId,
+          'packageTemplateManifest.allowedAdapterIds.element',
+        ),
+      'packageTemplateManifest.allowedAdapterIds',
+    );
+  }
   encodeManifestHash(writer, checked.riskPolicyHash, 'packageTemplateManifest.riskPolicyHash');
 }
 

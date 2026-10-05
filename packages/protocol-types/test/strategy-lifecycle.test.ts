@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   adoptObservedBaseline,
+  applyPackageStateTransition,
   assignInternal,
   delegateManagement,
   exitStrategy,
@@ -255,8 +256,10 @@ describe('roll, migration, rebalance, and resize', () => {
   test('resize scales every leg and rejects a change that breaks the ratio', () => {
     const [smaller] = accepted(resizeStrategy(base, ctx(base, 'bot'), { operation: 'DECREASE', changeBps: 5_000n })).states as [StrategyState];
     assert.deepEqual(quantities(smaller), { perp: -50n, spot: 50n });
+    assert.equal(smaller.liabilities[0]?.atoms, 2_500n);
     const [larger] = accepted(resizeStrategy(base, ctx(base, 'owner'), { operation: 'INCREASE', changeBps: 5_000n })).states as [StrategyState];
     assert.deepEqual(quantities(larger), { perp: -150n, spot: 150n });
+    assert.equal(larger.liabilities[0]?.atoms, 7_500n);
     assert.throws(() => resizeStrategy(base, ctx(base, 'owner'), { operation: 'DECREASE', changeBps: 10_000n }), /use exit/);
     assert.equal(rejected(resizeStrategy(base, ctx(base, 'owner'), { operation: 'DECREASE', changeBps: 50n })), 'CHANGE_BELOW_LOT');
 
@@ -269,6 +272,24 @@ describe('roll, migration, rebalance, and resize', () => {
     });
     accepted(resizeStrategy(uneven, ctx(uneven, 'owner'), { operation: 'DECREASE', changeBps: 5_000n }));
     assert.equal(rejected(resizeStrategy(uneven, ctx(uneven, 'owner'), { operation: 'DECREASE', changeBps: 6_000n })), 'RATIO_BROKEN');
+  });
+
+  test('a settled package can replace a liability only through an owner-authorized migration', () => {
+    const refinanced = {
+      ...base,
+      stateVersion: base.stateVersion + 1n,
+      liabilities: [{ liabilityId: 'fixed-loan', kind: 'BORROW' as const, assetId: 'usdc', atoms: 4_500n, transferable: true }],
+    };
+    const [next] = accepted(applyPackageStateTransition(base, ctx(base, 'owner'), 'MIGRATE', refinanced)).states as [StrategyState];
+    assert.deepEqual(next.liabilities.map((liability) => [liability.liabilityId, liability.atoms]), [['fixed-loan', 4_500n]]);
+    assert.equal(rejected(applyPackageStateTransition(base, ctx(base, 'bot'), 'MIGRATE', refinanced)), 'UNAUTHORIZED');
+    assert.throws(
+      () => applyPackageStateTransition(base, ctx(base, 'owner'), 'MIGRATE', {
+        ...refinanced,
+        liabilities: [{ ...base.liabilities[0]!, kind: 'BORROW' }],
+      }),
+      /new liability identity/,
+    );
   });
 });
 

@@ -30,12 +30,15 @@ import {
   domainRef,
   encodeAssetRef,
   encodeDomainRef,
+  encodeManifestHash,
   encodeProtocolId,
   encodeVersionedManifestRef,
+  manifestHash,
   protocolId,
   versionedManifestRef,
   type AssetRef,
   type DomainRef,
+  type ManifestHash,
   type ProtocolId,
   type VersionedManifestRef,
 } from './primitives.js';
@@ -88,7 +91,16 @@ export type GraphLegTimeInForce = keyof typeof GRAPH_LEG_TIME_IN_FORCE;
 export const EXECUTION_GROUP_KIND = Object.freeze({ ALL_OR_NONE: 1, EXACT_FILL: 2, BOUNDED_PARTIAL: 3 } as const);
 export type ExecutionGroupKind = keyof typeof EXECUTION_GROUP_KIND;
 
-export const GRAPH_LIFECYCLE_ACTION = Object.freeze({ ENTRY: 1, EXIT: 2, ROLL: 3, REBALANCE: 4, MIGRATE: 5, EMERGENCY_UNWIND: 6 } as const);
+export const GRAPH_LIFECYCLE_ACTION = Object.freeze({
+  ENTRY: 1,
+  EXIT: 2,
+  ROLL: 3,
+  REBALANCE: 4,
+  MIGRATE: 5,
+  EMERGENCY_UNWIND: 6,
+  INCREASE: 7,
+  DECREASE: 8,
+} as const);
 export type GraphLifecycleAction = keyof typeof GRAPH_LIFECYCLE_ACTION;
 
 export const GRAPH_RECOVERY_ACTION = Object.freeze({ COMPLETE: 1, ROLLBACK: 2 } as const);
@@ -154,7 +166,11 @@ export interface PackageGraphInput {
   readonly templateVersion: number;
   readonly packageTemplateManifestHash: Uint8Array | string;
   readonly seriesId: string;
+  readonly seriesVersion: number;
+  readonly seriesManifestHash: Uint8Array | string;
   readonly executionClassId: string;
+  readonly executionClassVersion: number;
+  readonly executionClassManifestHash: Uint8Array | string;
   readonly lifecycleAction: GraphLifecycleAction;
   readonly owner: string;
   readonly strategyAccountRefs: readonly string[];
@@ -200,7 +216,11 @@ export interface PackageGraph {
   readonly templateVersion: number;
   readonly packageTemplateManifestHash: CommitmentHash;
   readonly seriesId: ProtocolId;
+  readonly seriesVersion: number;
+  readonly seriesManifestHash: ManifestHash;
   readonly executionClassId: ProtocolId;
+  readonly executionClassVersion: number;
+  readonly executionClassManifestHash: ManifestHash;
   readonly lifecycleAction: GraphLifecycleAction;
   readonly owner: ProtocolId;
   readonly strategyAccountRefs: readonly ProtocolId[];
@@ -227,6 +247,13 @@ function object(value: unknown, context: string): void {
 function unsigned(value: bigint, bits: number, context: string): bigint {
   if (typeof value !== 'bigint') throw new MalformedInputError(context, 'expected a bigint');
   return checkedUnsigned(value, bits, context);
+}
+
+function nonzeroVersion(value: number, context: string): number {
+  if (!Number.isInteger(value)) throw new MalformedInputError(context, 'expected an integer');
+  const checked = unsigned(BigInt(value), U32_BITS, context);
+  if (checked === 0n) throw new MalformedInputError(context, 'version is zero');
+  return Number(checked);
 }
 
 function variant<Name extends string>(table: EnumTable<Name>, value: Name, context: string): Name {
@@ -445,10 +472,14 @@ export function packageGraph(input: PackageGraphInput, context = 'packageGraph')
     graphVersion: PACKAGE_GRAPH_VERSION,
     environment: protocolId(input.environment, `${context}.environment`),
     templateId: protocolId(input.templateId, `${context}.templateId`),
-    templateVersion: Number(unsigned(BigInt(input.templateVersion), U32_BITS, `${context}.templateVersion`)),
+    templateVersion: nonzeroVersion(input.templateVersion, `${context}.templateVersion`),
     packageTemplateManifestHash: commitmentHash(input.packageTemplateManifestHash, `${context}.packageTemplateManifestHash`),
     seriesId: protocolId(input.seriesId, `${context}.seriesId`),
+    seriesVersion: nonzeroVersion(input.seriesVersion, `${context}.seriesVersion`),
+    seriesManifestHash: manifestHash(input.seriesManifestHash, `${context}.seriesManifestHash`),
     executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    executionClassVersion: nonzeroVersion(input.executionClassVersion, `${context}.executionClassVersion`),
+    executionClassManifestHash: manifestHash(input.executionClassManifestHash, `${context}.executionClassManifestHash`),
     lifecycleAction: variant(GRAPH_LIFECYCLE_ACTION, input.lifecycleAction, `${context}.lifecycleAction`),
     owner: protocolId(input.owner, `${context}.owner`),
     strategyAccountRefs: sortedIds(input.strategyAccountRefs, 16, `${context}.strategyAccountRefs`, false),
@@ -504,7 +535,11 @@ export function packageGraphBytes(input: PackageGraphInput): Uint8Array {
     writer.writeU32(graph.templateVersion, 'templateVersion');
     encodeCommitmentHash(writer, graph.packageTemplateManifestHash, 'packageTemplateManifestHash');
     encodeProtocolId(writer, graph.seriesId, 'seriesId');
+    writer.writeU32(graph.seriesVersion, 'seriesVersion');
+    encodeManifestHash(writer, graph.seriesManifestHash, 'seriesManifestHash');
     encodeProtocolId(writer, graph.executionClassId, 'executionClassId');
+    writer.writeU32(graph.executionClassVersion, 'executionClassVersion');
+    encodeManifestHash(writer, graph.executionClassManifestHash, 'executionClassManifestHash');
     writer.writeEnum(GRAPH_LIFECYCLE_ACTION, graph.lifecycleAction, 'lifecycleAction');
     encodeProtocolId(writer, graph.owner, 'owner');
     writer.writeArray(graph.strategyAccountRefs, (inner, value) => encodeProtocolId(inner, value, 'strategyAccountRef'), 'strategyAccountRefs');
@@ -634,7 +669,11 @@ export function compilePackageGraph(
   }
   if (!template.supportedSettlementClasses.includes(graph.settlementClass)) reasons.add('SETTLEMENT_CLASS_UNSUPPORTED');
   if (graph.legs.length > template.legCount) reasons.add('TOO_MANY_LEGS');
-  const allowedAdapters = new Set<string>([...template.allowedSpotAdapterIds, ...template.allowedPerpAdapterIds]);
+  const allowedAdapters = new Set<string>([
+    ...template.allowedSpotAdapterIds,
+    ...template.allowedPerpAdapterIds,
+    ...(template.allowedAdapterIds ?? []),
+  ]);
   const active = (kind: string, leg: CheckedLeg, subject: (record: RegistrySubject) => boolean) =>
     records.some(
       (record) =>
