@@ -21,6 +21,19 @@ import {
   type TradeSide,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
+import {
+  formatHypercorePrice,
+  formatHypercoreSize,
+  powerOfTen,
+  type HypercoreFormattedPrice,
+} from './wire-format.js';
+
+export * from './strategy-planner.js';
+export {
+  formatHypercorePrice,
+  formatHypercoreSize,
+  type HypercoreFormattedPrice,
+} from './wire-format.js';
 
 const U32_MAX = 0xffff_ffff;
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
@@ -142,12 +155,6 @@ interface HyperliquidMarketBinding {
   readonly maxPriceDecimals: number;
 }
 
-export interface HypercoreFormattedPrice {
-  readonly value: string;
-  readonly scaled: bigint;
-  readonly decimals: number;
-}
-
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -235,68 +242,6 @@ function checkedHash(value: Hash32, name: string): Hash32 {
 
 function requireHash(actual: Uint8Array, expected: Uint8Array, name: string): void {
   requireCondition(bytesEqual(actual, expected), `${name} mismatch`);
-}
-
-function powerOfTen(exponent: number): bigint {
-  return 10n ** BigInt(exponent);
-}
-
-function divideRounded(
-  numerator: bigint,
-  denominator: bigint,
-  direction: ExactPrice['roundingDirection'],
-): bigint {
-  requireCondition(numerator > 0n && denominator > 0n, 'price ratio must be positive');
-  const quotient = numerator / denominator;
-  const remainder = numerator % denominator;
-  if (remainder === 0n || direction === 'FLOOR' || direction === 'TOWARD_ZERO') return quotient;
-  return quotient + 1n;
-}
-
-function decimalString(scaled: bigint, decimals: number): string {
-  const digits = scaled.toString().padStart(decimals + 1, '0');
-  if (decimals === 0) return digits;
-  const integer = digits.slice(0, -decimals);
-  const fraction = digits.slice(-decimals).replace(/0+$/, '');
-  return fraction.length === 0 ? integer : `${integer}.${fraction}`;
-}
-
-function significantFigures(value: string): number {
-  if (!value.includes('.')) return 0;
-  return value.replace('.', '').replace(/^0+/, '').length;
-}
-
-export function formatHypercorePrice(
-  price: ExactPrice,
-  maxDecimals: number,
-): HypercoreFormattedPrice {
-  const numerator = price.quoteAtoms * powerOfTen(price.baseAsset.decimals);
-  const denominator = price.baseAtoms * powerOfTen(price.quoteAsset.decimals);
-  for (let decimals = maxDecimals; decimals >= 0; decimals -= 1) {
-    const scaled = divideRounded(
-      numerator * powerOfTen(decimals),
-      denominator,
-      price.roundingDirection,
-    );
-    if (scaled === 0n) continue;
-    const value = decimalString(scaled, decimals);
-    if (significantFigures(value) <= 5) return { value, scaled, decimals };
-  }
-  throw new Error('limit price cannot be represented by HyperCore price rules');
-}
-
-export function formatHypercoreSize(
-  quantityAtoms: bigint,
-  assetDecimals: number,
-  sizeDecimals: number,
-): string {
-  requireCondition(quantityAtoms > 0n, 'order size must be positive');
-  const numerator = quantityAtoms * powerOfTen(sizeDecimals);
-  const denominator = powerOfTen(assetDecimals);
-  requireCondition(numerator % denominator === 0n, 'order size is not aligned to HyperCore size decimals');
-  const scaled = numerator / denominator;
-  requireCondition(scaled > 0n, 'order size rounds to zero');
-  return decimalString(scaled, sizeDecimals);
 }
 
 function encodedPart(value: Uint8Array): Buffer {

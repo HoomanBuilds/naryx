@@ -39,6 +39,8 @@ import {
   NARYX_STRATEGY_ACCOUNT_ABI,
 } from './abi.js';
 
+export * from './strategy-plan.js';
+
 const UINT32_MAX = (1n << 32n) - 1n;
 const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;

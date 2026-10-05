@@ -1366,9 +1366,9 @@ test('rejects wrong genesis and an uncompressed oversized entry before materiali
 });
 
 function testPerpFixture() {
-  const testPerpIdl = JSON.parse(readFileSync(new URL('../../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json', import.meta.url), 'utf8')) as Idl;
+  const devnetTestPerpIdl = JSON.parse(readFileSync(new URL('../../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json', import.meta.url), 'utf8')) as Idl;
   const fixedAddress = (name: string): PublicKey => {
-    const instruction = testPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
+    const instruction = devnetTestPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
     const flat = (items: typeof instruction.accounts): { name: string; address?: string }[] =>
       items.flatMap((item) => ('accounts' in item ? flat(item.accounts) : [item]));
     return new PublicKey(flat(instruction.accounts).find((item) => item.name === name)!.address!);
@@ -1376,6 +1376,16 @@ function testPerpFixture() {
   const { admission, binding: riseBinding } = fixture();
   const { publicExit: unusedExit, ...binding } = riseBinding;
   void unusedExit;
+  const testPerpIdl = structuredClone(devnetTestPerpIdl);
+  testPerpIdl.address = coreIdl.address;
+  const bindReservationProgram = (items: unknown): void => {
+    if (!Array.isArray(items)) return;
+    for (const item of items as { name: string; address?: string; accounts?: unknown }[]) {
+      if (item.name === 'reservation_program') item.address = new PublicKey(binding.deployments.reservation.programId).toBase58();
+      bindReservationProgram(item.accounts);
+    }
+  };
+  for (const instruction of testPerpIdl.instructions) bindReservationProgram(instruction.accounts);
   const adapterProgram = fixedAddress('perp_adapter_program');
   const venueProgram = fixedAddress('perp_venue_program');
   const testPerp = Object.fromEntries(NARYX_TEST_PERP_ACCOUNT_NAMES.map((name, index) => [name, address(230 + index).toBase58()]));
@@ -1424,6 +1434,7 @@ function testPerpFixture() {
 
 test('compiles a Devnet test perp firm entry against the devnet-test-perp core IDL', () => {
   const { binding, testPerp, testAdmission, testBinding } = testPerpFixture();
+  assert.equal(testBinding.coreIdl.address, new PublicKey(testBinding.deployments.core.programId).toBase58());
   const result = compileFirmCashCarryPlan(testAdmission, testBinding);
   const entryKeys = result.traderEntry.instructions[2]!.keys.map((key) => key.pubkey.toBase58());
   const strategyIndex = entryKeys.indexOf(binding.accounts.riseStrategy.address as string);

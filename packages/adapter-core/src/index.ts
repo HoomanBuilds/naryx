@@ -1,7 +1,9 @@
 import type {
+  AdmittedStrategyPackage,
   DomainRef,
   Hash32,
   PackageAdmission,
+  TypedStrategyRoute,
 } from '@naryx/protocol-types';
 
 export interface CompiledExecution<TPayload> {
@@ -35,6 +37,38 @@ export interface ExecutionAdapter<TPayload, TReceipt> {
     executionReference: string,
     admission: PackageAdmission,
   ): Promise<ExecutionEvidence<TReceipt> | null>;
+}
+
+export interface CompiledStrategyExecution<TPayload> {
+  readonly domains: readonly DomainRef[];
+  readonly orderHash: Hash32;
+  readonly graphHash: Hash32;
+  readonly quoteHash: Hash32;
+  readonly routeHash: Hash32;
+  readonly payload: TPayload;
+}
+
+export interface StrategyExecutionEvidence<TReceipt> {
+  readonly executionReference: string;
+  readonly domains: readonly DomainRef[];
+  readonly orderHash: Hash32;
+  readonly graphHash: Hash32;
+  readonly quoteHash: Hash32;
+  readonly routeHash: Hash32;
+  readonly receipt: TReceipt;
+}
+
+export interface StrategyExecutionAdapter<TPayload, TReceipt> {
+  compile(
+    admission: AdmittedStrategyPackage,
+    route: TypedStrategyRoute,
+  ): Promise<CompiledStrategyExecution<TPayload>>;
+  simulate(compiled: CompiledStrategyExecution<TPayload>): Promise<SimulationEvidence>;
+  readEvidence(
+    executionReference: string,
+    admission: AdmittedStrategyPackage,
+    route: TypedStrategyRoute,
+  ): Promise<StrategyExecutionEvidence<TReceipt> | null>;
 }
 
 export {
