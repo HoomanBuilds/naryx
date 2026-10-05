@@ -326,6 +326,60 @@
   padding: 12px;
 }
 
+.strategySelector {
+  display: grid;
+  gap: 6px;
+}
+
+.strategySelector label {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.strategySelector select {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--canvas);
+  color: var(--text-primary);
+  padding: 0 10px;
+  font: 500 12px var(--font-geist-mono), monospace;
+}
+
+.strategySelector span {
+  color: var(--yellow);
+  font-size: 10.5px;
+}
+
+.strategySelector span[data-active="true"] {
+  color: var(--up-strong);
+}
+
+.lifecycleSelector {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.lifecycleSelector button {
+  flex: 0 0 auto;
+  height: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-dim);
+  padding: 0 8px;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.lifecycleSelector .lifecycleActive {
+  border-color: var(--yellow);
+  color: var(--text-primary);
+}
+
 .sideSwitch {
   position: relative;
   display: grid;
@@ -1404,4 +1458,3 @@
 .stageProhibited {
   box-shadow: inset 0 -2px 0 rgba(240, 81, 95, 0.5);
 }
-

@@ -61,11 +61,26 @@ import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
 import { usePositions } from "./pages/use-positions";
+import { fetchStrategyProgram, type StrategyProgramTemplate } from "./strategy-program";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
+const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
+  templateId: "cash-and-carry-v1",
+  templateVersion: 1,
+  displayName: "Cash and carry",
+  quoteConventionId: "annualized-net-yield-v1",
+  riskClassId: "delta-neutral-basis-v1",
+  lifecycleConventionId: "paired-basis-lifecycle-v1",
+  metricIds: Object.freeze([]),
+  actions: Object.freeze([
+    Object.freeze({ action: "ENTRY", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]) }),
+    Object.freeze({ action: "EXIT", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]) }),
+  ]),
+  activation: "EXECUTABLE_BY_QUALIFIED_LANE",
+});
 
 /** "0.100000000000000000" becomes "0.1"; a whole number is kept as is. */
 function trimSize(value: string) {
@@ -1028,6 +1043,9 @@ function Ticket({
   confirming,
   action,
   actionBusy,
+  strategyTemplates,
+  selectedStrategyTemplateId,
+  selectedLifecycleAction,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1037,6 +1055,8 @@ function Ticket({
   onPrimaryAction,
   onRefreshReview,
   onRetryObservation,
+  onStrategyTemplateChange,
+  onLifecycleActionChange,
 }: {
   snapshot: TerminalViewModel;
   selectedDomain: DomainId;
@@ -1064,6 +1084,9 @@ function Ticket({
   confirming: boolean;
   action: PrimaryAction;
   actionBusy: boolean;
+  strategyTemplates: readonly StrategyProgramTemplate[];
+  selectedStrategyTemplateId: string;
+  selectedLifecycleAction: string;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1073,9 +1096,31 @@ function Ticket({
   onPrimaryAction: () => void;
   onRefreshReview: () => void;
   onRetryObservation: () => void;
+  onStrategyTemplateChange: (templateId: string) => void;
+  onLifecycleActionChange: (action: string) => void;
 }) {
   const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
-  const legs = preview?.mode === mode ? preview.legs : plan.legs;
+  const selectedTemplate = strategyTemplates.find((template) => template.templateId === selectedStrategyTemplateId);
+  const selectedAction = selectedTemplate?.actions.find((item) => item.action === selectedLifecycleAction) ?? selectedTemplate?.actions[0];
+  const nativeCashFlow = selectedStrategyTemplateId === "cash-and-carry-v1" &&
+    (selectedLifecycleAction === "ENTRY" || selectedLifecycleAction === "EXIT");
+  const ticketPreview = nativeCashFlow ? preview : null;
+  const legs = nativeCashFlow
+    ? (preview?.mode === mode ? preview.legs : plan.legs)
+    : (selectedAction?.legRoles.flatMap((role, roleIndex) => Array.from(
+      { length: Math.max(role.minimumCount, 1) },
+      (_, index) => ({
+        sequence: roleIndex * 8 + index + 1,
+        action: role.allowedFamilies.join(" / ").replaceAll("_", " ").toLowerCase(),
+        instrument: role.legTypeId.replaceAll("-", " "),
+        venue: "Qualified adapter",
+        quantity: "Bound by package",
+        limitLabel: "Typed role",
+        limit: role.allowedSides.join(" / "),
+        state: "Adapter activation required",
+        dependency: "Strategy graph",
+      }),
+    )) ?? []);
   const meta = DOMAIN_META[selectedDomain];
   const hyperliquidStage = hyperliquidFlow?.execution
     ? "executed"
@@ -1087,7 +1132,41 @@ function Ticket({
     <aside className={styles.ticket} aria-labelledby="ticket-title">
       <h2 id="ticket-title" className={styles.visuallyHidden}>Package ticket</h2>
 
-      <div className={styles.sideSwitch} role="group" aria-label="Package mode" data-mode={mode}>
+      <div className={styles.strategySelector}>
+        <label htmlFor="strategy-template">Strategy market</label>
+        <select
+          id="strategy-template"
+          value={selectedStrategyTemplateId}
+          onChange={(event) => onStrategyTemplateChange(event.target.value)}
+        >
+          {strategyTemplates.map((template) => (
+            <option key={template.templateId} value={template.templateId}>{template.displayName}</option>
+          ))}
+        </select>
+        {selectedTemplate ? (
+          <span data-active={selectedTemplate.activation === "EXECUTABLE_BY_QUALIFIED_LANE"}>
+            {selectedTemplate.activation === "EXECUTABLE_BY_QUALIFIED_LANE" ? "Qualified lane execution" : "Protocol ready, adapter activation required"}
+          </span>
+        ) : null}
+      </div>
+
+      {selectedTemplate && selectedTemplate.actions.length > 0 ? (
+        <div className={styles.lifecycleSelector} role="group" aria-label="Strategy lifecycle action">
+          {selectedTemplate.actions.map((item) => (
+            <button
+              key={item.action}
+              type="button"
+              aria-pressed={selectedLifecycleAction === item.action}
+              className={selectedLifecycleAction === item.action ? styles.lifecycleActive : undefined}
+              onClick={() => onLifecycleActionChange(item.action)}
+            >
+              {item.action.replaceAll("_", " ").toLowerCase()}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className={styles.sideSwitch} role="group" aria-label="Package mode" data-mode={mode} hidden={!nativeCashFlow}>
         <span className={styles.sidePill} aria-hidden="true" />
         {(["entry", "exit"] as const).map((item) => (
           <button
@@ -1095,7 +1174,10 @@ function Ticket({
             type="button"
             className={mode === item ? (item === "entry" ? styles.sideEntryActive : styles.sideExitActive) : undefined}
             aria-pressed={mode === item}
-            onClick={() => onModeChange(item)}
+            onClick={() => {
+              onModeChange(item);
+              onLifecycleActionChange(item === "entry" ? "ENTRY" : "EXIT");
+            }}
           >
             {item === "entry" ? "Enter package" : "Exit package"}
           </button>
@@ -1141,8 +1223,8 @@ function Ticket({
             {snapshot.ticket.sizeSymbol}
           </span>
           <span id="size-context">
-            <span key={preview?.bound.value ?? "none"} className={styles.flash}>
-              {preview ? `${preview.bound.label} ${usd(preview.bound.value)}` : previewRejection ?? "Bound unavailable"}
+            <span key={ticketPreview?.bound.value ?? "none"} className={styles.flash}>
+              {ticketPreview ? `${ticketPreview.bound.label} ${usd(ticketPreview.bound.value)}` : nativeCashFlow ? previewRejection ?? "Bound unavailable" : "Quoted by complete strategy"}
             </span>
           </span>
         </div>
@@ -1221,10 +1303,10 @@ function Ticket({
         </p>
       </div>
 
-      {executionReview ? (
+      {executionReview && nativeCashFlow ? (
         <ExecutionReviewPanel
           review={executionReview}
-          preview={preview}
+          preview={ticketPreview}
           submission={submission}
           confirming={confirming}
           onRetryObservation={onRetryObservation}
@@ -1237,46 +1319,49 @@ function Ticket({
           <span title="Estimated from the current mid price and your slippage. The binding limit is set from the pool's executable quote for this exact size when the order is created.">
             {mode === "entry" ? "Maximum quote (est.)" : "Minimum output (est.)"}
           </span>
-          <strong key={preview?.bound.value ?? "none"} className={styles.flash}>{preview ? usd(preview.bound.value) : "Unavailable"}</strong>
+          <strong key={ticketPreview?.bound.value ?? "none"} className={styles.flash}>{ticketPreview ? usd(ticketPreview.bound.value) : "Awaiting package quote"}</strong>
         </div>
         <details className={styles.feeDetails}>
           <summary className={styles.summaryRow}>
             <span>Estimated fees</span>
-            <strong key={preview?.totalFee.value ?? "none"} className={styles.flash}>{preview ? usd(preview.totalFee.value) : "Unavailable"}</strong>
+            <strong key={ticketPreview?.totalFee.value ?? "none"} className={styles.flash}>{ticketPreview ? usd(ticketPreview.totalFee.value) : "-"}</strong>
           </summary>
-          {(preview?.fees ?? []).map((row) => (
+          {(ticketPreview?.fees ?? []).map((row) => (
             <div className={`${styles.summaryRow} ${styles.summaryNested}`} key={row.label}>
               <span>{row.label}</span>
               <strong>{usd(row.value)}</strong>
             </div>
           ))}
         </details>
-        <div className={styles.summaryRow} title={SETTLEMENT_GUARANTEE[meta.settlementClass]}>
+        <div className={styles.summaryRow} title={nativeCashFlow ? SETTLEMENT_GUARANTEE[meta.settlementClass] : "The final class is bound by the selected execution route."}>
           <span>Settlement</span>
-          <strong>{meta.settlement}</strong>
+          <strong>{nativeCashFlow ? meta.settlement : selectedAction?.settlementClasses.join(" / ") ?? "Route bound"}</strong>
         </div>
         <div className={styles.summaryRow} title="Marketable limit, exact all legs: the only package order policy the initial activation accepts. Every other type, time in force, or partial-fill policy is rejected before authorization.">
           <span>Order</span>
-          <strong>Limit, {meta.settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, all legs</strong>
+          <strong>{nativeCashFlow ? `Limit, ${meta.settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, all legs` : "Typed N-leg package"}</strong>
         </div>
       </section>
 
       <details className={styles.flowDetails}>
         <summary>
           <span>Package details</span>
-          <span className={styles.fixtureText}>{preview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</span>
+          <span className={styles.fixtureText}>{ticketPreview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</span>
         </summary>
         <dl className={styles.ticketFacts}>
-          <div><dt>Package</dt><dd title={snapshot.market.packageId}>{snapshot.market.packageId}</dd></div>
-          <div><dt>Settlement class</dt><dd title={SETTLEMENT_GUARANTEE[meta.settlementClass]}>{meta.settlementClass}</dd></div>
+          <div><dt>Template</dt><dd title={selectedStrategyTemplateId}>{selectedTemplate?.displayName ?? selectedStrategyTemplateId}</dd></div>
+          <div><dt>Action</dt><dd>{selectedLifecycleAction}</dd></div>
+          {selectedTemplate ? <div><dt>Quote convention</dt><dd>{selectedTemplate.quoteConventionId}</dd></div> : null}
+          {selectedTemplate ? <div><dt>Risk class</dt><dd>{selectedTemplate.riskClassId}</dd></div> : null}
+          <div><dt>Settlement classes</dt><dd>{selectedAction?.settlementClasses.join(", ") ?? meta.settlementClass}</dd></div>
           {snapshot.ticket.evidence.map((row) => (
             <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
           ))}
         </dl>
         <p className={styles.summaryNote}>
-          {preview?.evidenceGrade === "OBSERVED_UNATTESTED"
-            ? `${preview.bound.symbol} estimate from observed books, captured ${preview.capturedAt}.`
-            : preview ? "USDC conformance estimate." : "No live estimate is available."} Balances are on the Portfolio page.
+          {ticketPreview?.evidenceGrade === "OBSERVED_UNATTESTED"
+            ? `${ticketPreview.bound.symbol} estimate from observed books, captured ${ticketPreview.capturedAt}.`
+            : ticketPreview ? "USDC conformance estimate." : "No activated adapter quote is available."} Balances are on the Portfolio page.
         </p>
       </details>
 
@@ -1532,6 +1617,17 @@ export function TradingTerminal({
   } = useTerminal();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
+  const [strategyTemplates, setStrategyTemplates] = useState<readonly StrategyProgramTemplate[]>([FALLBACK_CASH_TEMPLATE]);
+  const [selectedStrategyTemplateId, setSelectedStrategyTemplateId] = useState(FALLBACK_CASH_TEMPLATE.templateId);
+  const [selectedLifecycleAction, setSelectedLifecycleAction] = useState("ENTRY");
+  useEffect(() => {
+    if (!privateApiBaseUrl) return;
+    const controller = new AbortController();
+    void fetchStrategyProgram(privateApiBaseUrl, controller.signal)
+      .then((program) => setStrategyTemplates(program.templates))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [privateApiBaseUrl]);
   // The lane whose default size the ticket took; a refresh of the same lane keeps the trader's size.
   const sizedLane = useRef<DomainId | null>(null);
   const [marketTick, setMarketTick] = useState(0);
@@ -1613,6 +1709,8 @@ export function TradingTerminal({
 
   const ticketKey = JSON.stringify({
     selectedDomain,
+    selectedStrategyTemplateId,
+    selectedLifecycleAction,
     mode,
     size,
     slippage,
@@ -3183,21 +3281,50 @@ export function TradingTerminal({
 
   const displayedLifecycle = currentLocalFlow?.lifecycle ?? currentLifecycle?.data ?? null;
 
+  const selectedTemplate = strategyTemplates.find((template) => template.templateId === selectedStrategyTemplateId) ?? FALLBACK_CASH_TEMPLATE;
+  const nativeStrategyAction = selectedStrategyTemplateId === "cash-and-carry-v1" &&
+    (selectedLifecycleAction === "ENTRY" || selectedLifecycleAction === "EXIT");
+  const displayedPrimaryAction: PrimaryAction = nativeStrategyAction
+    ? primaryAction
+    : {
+      kind: "none",
+      label: "Adapter activation required",
+      reason: "The template, graph validation, quote economics, route commitments, and lifecycle semantics are implemented. This exact venue combination remains disabled until its typed adapters pass qualification.",
+      disabled: true,
+    };
+
   const ticketAccount = selectedDomain === "solana"
     ? wallet.selectedAccount ? shortAddress(wallet.selectedAccount.address, 4, 4) : null
     : evmWallet.account ? shortAddress(evmWallet.account, 6, 4) : null;
 
   function handlePrimaryAction() {
-    if (primaryAction.disabled) return;
-    if (primaryAction.kind === "connect") walletModal.open(DOMAIN_META[selectedDomain].wallet);
-    else if (primaryAction.kind === "switch" && evmTarget) void evmWallet.switchNetwork(evmTarget);
-    else if (primaryAction.kind === "prepare") void handlePrepareExecution();
-    else if (primaryAction.kind === "sign") void handleExecutionAction();
-    else if (primaryAction.kind === "solana-onboard") void solanaOnboarding.advance();
-    else if (primaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
-    else if (primaryAction.kind === "base" && nextBaseStep) void handleBaseStep(nextBaseStep);
-    else if (primaryAction.kind === "arbitrum" && nextArbitrumStep) void handleArbitrumStep(nextArbitrumStep);
-    else if (primaryAction.kind === "arbitrum-exit") void arbitrumExit.advance();
+    if (displayedPrimaryAction.disabled) return;
+    if (displayedPrimaryAction.kind === "connect") walletModal.open(DOMAIN_META[selectedDomain].wallet);
+    else if (displayedPrimaryAction.kind === "switch" && evmTarget) void evmWallet.switchNetwork(evmTarget);
+    else if (displayedPrimaryAction.kind === "prepare") void handlePrepareExecution();
+    else if (displayedPrimaryAction.kind === "sign") void handleExecutionAction();
+    else if (displayedPrimaryAction.kind === "solana-onboard") void solanaOnboarding.advance();
+    else if (displayedPrimaryAction.kind === "hyperliquid" && nextHyperliquidStep) void handleHyperliquidStep(nextHyperliquidStep);
+    else if (displayedPrimaryAction.kind === "base" && nextBaseStep) void handleBaseStep(nextBaseStep);
+    else if (displayedPrimaryAction.kind === "arbitrum" && nextArbitrumStep) void handleArbitrumStep(nextArbitrumStep);
+    else if (displayedPrimaryAction.kind === "arbitrum-exit") void arbitrumExit.advance();
+  }
+
+  function handleStrategyTemplateChange(templateId: string) {
+    const template = strategyTemplates.find((item) => item.templateId === templateId);
+    if (!template) return;
+    const nextAction = template.actions[0]?.action ?? "ENTRY";
+    setSelectedStrategyTemplateId(templateId);
+    setSelectedLifecycleAction(nextAction);
+    if (templateId === "cash-and-carry-v1") setMode(nextAction === "EXIT" ? "exit" : "entry");
+  }
+
+  function handleLifecycleActionChange(action: string) {
+    if (!selectedTemplate.actions.some((item) => item.action === action)) return;
+    setSelectedLifecycleAction(action);
+    if (selectedStrategyTemplateId === "cash-and-carry-v1" && (action === "ENTRY" || action === "EXIT")) {
+      setMode(action === "EXIT" ? "exit" : "entry");
+    }
   }
 
   function jumpToTicket(nextMode: PackageMode) {
@@ -3208,7 +3335,7 @@ export function TradingTerminal({
 
   const actionReason = confirmingInWallet && !currentSubmission
     ? "Approve the exact reviewed Devnet transaction in your wallet."
-    : currentExecutionError ?? primaryAction.reason;
+    : currentExecutionError ?? displayedPrimaryAction.reason;
 
   return (
     <div className={styles.terminalShell}>
@@ -3250,8 +3377,11 @@ export function TradingTerminal({
             executionReview={currentExecutionReview}
             submission={currentSubmission}
             confirming={confirmingInWallet}
-            action={{ ...primaryAction, reason: actionReason }}
+            action={{ ...displayedPrimaryAction, reason: actionReason }}
             actionBusy={executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null || arbitrumExit.busy}
+            strategyTemplates={strategyTemplates}
+            selectedStrategyTemplateId={selectedStrategyTemplateId}
+            selectedLifecycleAction={selectedLifecycleAction}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}
@@ -3261,6 +3391,8 @@ export function TradingTerminal({
             onPrimaryAction={handlePrimaryAction}
             onRefreshReview={() => void handlePrepareExecution()}
             onRetryObservation={handleRetryObservation}
+            onStrategyTemplateChange={handleStrategyTemplateChange}
+            onLifecycleActionChange={handleLifecycleActionChange}
           />
         </div>
         <div className={styles.areaBottom}>
