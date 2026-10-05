@@ -8,12 +8,14 @@ import {
   strategyCommandSubjects,
   strategyExecutionMatches,
   strategyExecutionReceiptHashes,
+  strategyPackageReceipt,
   strategyState,
   strategyStateHash,
   stringifyProtocolJson,
   toHex,
+  requiresSuccessfulReceipt,
 } from "@naryx/protocol-types";
-import type { PackageReceiptInput, StrategyCommandInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
+import type { PackageReceiptInput, StrategyCommandInput, StrategyPackageReceiptInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
 import { verifyEd25519 } from "./ed25519.js";
 
@@ -109,7 +111,37 @@ export type StrategyCommandResult =
  * Checks that a settled entry receipt can found a strategy: the book asks it for the receipt and
  * compares the owner, market, and leg quantities itself.
  */
-export type OriginReceiptReader = (receiptHashHex: string) => PackageReceiptInput | undefined;
+export type StrategyExecutionReceiptInput = PackageReceiptInput | StrategyPackageReceiptInput;
+export type OriginReceiptReader = (receiptHashHex: string) => StrategyExecutionReceiptInput | undefined;
+
+function isStrategyPackageReceipt(receipt: StrategyExecutionReceiptInput): receipt is StrategyPackageReceiptInput {
+  return "legOutcomes" in receipt;
+}
+
+function aggregatePositionDeltas(receipt: StrategyPackageReceiptInput): Map<string, bigint> {
+  const totals = new Map<string, bigint>();
+  for (const outcome of receipt.legOutcomes) {
+    if (outcome.positionLegId === undefined) continue;
+    totals.set(outcome.positionLegId, (totals.get(outcome.positionLegId) ?? 0n) + outcome.settledQuantity.atoms);
+  }
+  for (const [legId, atoms] of totals) if (atoms === 0n) totals.delete(legId);
+  return totals;
+}
+
+function aggregateLiabilityDeltas(receipt: StrategyPackageReceiptInput): Map<string, { readonly assetId: string; readonly atoms: bigint }> {
+  const totals = new Map<string, { readonly assetId: string; readonly atoms: bigint }>();
+  for (const outcome of receipt.legOutcomes) {
+    if (outcome.liabilityId === undefined) continue;
+    const assetId = outcome.settledQuantity.asset.assetId;
+    const current = totals.get(outcome.liabilityId);
+    if (current !== undefined && current.assetId !== assetId) {
+      throw new StrategyBookError("ORIGIN_MISMATCH", `Liability ${outcome.liabilityId} was settled in multiple assets.`);
+    }
+    totals.set(outcome.liabilityId, { assetId, atoms: (current?.atoms ?? 0n) + outcome.settledQuantity.atoms });
+  }
+  for (const [liabilityId, delta] of totals) if (delta.atoms === 0n) totals.delete(liabilityId);
+  return totals;
+}
 
 /**
  * Verifies one venue's evidence that a strategy's position there moved from one owner to another.
@@ -330,7 +362,13 @@ export class SqliteStrategyBookStore {
       return receipt;
     });
     const prior = states.get(command.strategyId) as StrategyState;
-    const check = strategyExecutionMatches(command.parameters.kind, prior, next[0] as StrategyState, receipts);
+    const check = strategyExecutionMatches(
+      command.parameters.kind,
+      prior,
+      next[0] as StrategyState,
+      receipts,
+      command.parameters.kind === "APPLY_PACKAGE" ? command.parameters.operation : undefined,
+    );
     if (!check.matches) throw new StrategyBookError(check.mismatch, "The bound receipts do not account for this exact position change.");
     return hashes;
   }
@@ -339,6 +377,35 @@ export class SqliteStrategyBookStore {
   private requireOrigin(originHex: string, state: StrategyState): void {
     const receipt = this.originReceipt(originHex);
     if (receipt === undefined) throw new StrategyBookError("ORIGIN_NOT_FOUND", "No settled receipt has this hash.");
+    if (isStrategyPackageReceipt(receipt)) {
+      const checked = strategyPackageReceipt(receipt);
+      if (
+        !requiresSuccessfulReceipt(checked.terminalState)
+        || checked.lifecycleAction === "exit"
+        || checked.lifecycleAction === "decrease"
+        || checked.lifecycleAction === "emergency-unwind"
+      ) {
+        throw new StrategyBookError("ORIGIN_MISMATCH", "Only a successful risk-opening package execution founds a strategy.");
+      }
+      if (checked.owner !== state.ownerId || checked.executionClassId !== state.executionClassId || checked.seriesId !== state.seriesId) {
+        throw new StrategyBookError("ORIGIN_MISMATCH", "The receipt names another owner, series, or execution class.");
+      }
+      const deltas = aggregatePositionDeltas(checked);
+      if (deltas.size !== state.legs.length || state.legs.some((leg) => deltas.get(leg.legId) !== leg.signedQuantityAtoms)) {
+        throw new StrategyBookError("ORIGIN_MISMATCH", "The receipt position deltas do not exactly found the strategy legs.");
+      }
+      const liabilities = aggregateLiabilityDeltas(checked);
+      if (
+        liabilities.size !== state.liabilities.length
+        || state.liabilities.some((liability) => {
+          const delta = liabilities.get(liability.liabilityId);
+          return delta?.assetId !== liability.assetId || delta.atoms !== liability.atoms;
+        })
+      ) {
+        throw new StrategyBookError("ORIGIN_MISMATCH", "The receipt liability deltas do not exactly found the strategy liabilities.");
+      }
+      return;
+    }
     if (receipt.action !== "ENTRY") throw new StrategyBookError("ORIGIN_MISMATCH", "Only a settled entry founds a strategy.");
     if (receipt.owner !== state.ownerId || receipt.packageMarketId !== state.executionClassId) {
       throw new StrategyBookError("ORIGIN_MISMATCH", "The receipt names another owner or market.");

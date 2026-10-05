@@ -23,6 +23,15 @@ import {
 } from '@naryx/adapter-hyperliquid';
 
 export {
+  buildSignedStrategyPackageQuote,
+  type StrategyQuoteBuildInput,
+  type StrategyQuoteSigner,
+} from './strategy-quote-builder.js';
+export {
+  buildStrategyPackageReceipt,
+  type StrategyReceiptBuildInput,
+} from './strategy-receipt-builder.js';
+export {
   EvmLocalExecutionAuthorizationService,
   type AuthorizedEvmLocalExecution,
   type EvmLocalExecutionAuthorizationChain,
@@ -896,3 +905,9 @@ export {
   type ArbitrumExitPricing,
   type ArbitrumSepoliaExitQuoteInput,
 } from './arbitrum-sepolia-exit.js';
+export {
+  compileStrategyRouteExecution,
+  type StrategyDomainCompiler,
+  type CompiledStrategyDomainExecution,
+  type CompiledStrategyRouteExecution,
+} from './strategy-execution-router.js';

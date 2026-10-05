@@ -59,6 +59,16 @@ export interface RegisteredExchangeDocument {
   readonly created: boolean;
 }
 
+export interface RegisteredStrategySeriesRecord {
+  readonly documentHashHex: string;
+  readonly document: EconomicStrategySeries;
+}
+
+export interface RegisteredExecutionClassRecord {
+  readonly documentHashHex: string;
+  readonly document: SeriesExecutionClass;
+}
+
 export type PackageExchangeSubmitResult =
   | {
       readonly accepted: true;
@@ -362,9 +372,25 @@ export class SqlitePackageExchangeStore {
     return row === undefined ? undefined : this.loadSeries(row);
   }
 
+  getSeriesRecord(seriesId: string, seriesVersion: number): RegisteredStrategySeriesRecord | undefined {
+    const row = this.documentBySubject("SERIES", seriesId, seriesVersion);
+    return row === undefined ? undefined : Object.freeze({
+      documentHashHex: toHex(hashBytes(row.document_hash, "document_hash")),
+      document: this.loadSeries(row),
+    });
+  }
+
   getExecutionClass(executionClassId: string, executionClassVersion: number): SeriesExecutionClass | undefined {
     const row = this.documentBySubject("EXECUTION_CLASS", executionClassId, executionClassVersion);
     return row === undefined ? undefined : this.loadExecutionClass(row);
+  }
+
+  getExecutionClassRecord(executionClassId: string, executionClassVersion: number): RegisteredExecutionClassRecord | undefined {
+    const row = this.documentBySubject("EXECUTION_CLASS", executionClassId, executionClassVersion);
+    return row === undefined ? undefined : Object.freeze({
+      documentHashHex: toHex(hashBytes(row.document_hash, "document_hash")),
+      document: this.loadExecutionClass(row),
+    });
   }
 
   /** Every open book with its halt state, ordered by execution class. */

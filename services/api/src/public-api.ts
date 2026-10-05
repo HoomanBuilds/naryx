@@ -17,6 +17,15 @@ import {
   compilePackageGraph,
   packageGraph,
   packageGraphHash,
+  compileTypedStrategyRoute,
+  validateStrategyPackageRouteAdmission,
+  authorizeSolverQuote,
+  bytesEqual,
+  solverCapabilityManifestHash,
+  strategyPackageOrder,
+  strategyPackageOrderHash,
+  strategyPackageQuoteHash,
+  strategyTemplateDefinitions,
   simulatePackageGraphFailures,
   privateRfqEnvelopeHash,
   ProtocolError,
@@ -34,6 +43,7 @@ import type {
   PositionSnapshotRecordInput,
   DomainRegistryRecordInput,
   DomainResourceLimit,
+  DomainRef,
   PackageGraphInput,
   PackageTemplateManifestInput,
   PackageOrderInput,
@@ -49,6 +59,10 @@ import type {
   RfqSolverCapacity,
   RouteDecisionInput,
   SolverCapabilityManifestInput,
+  StrategyPackageOrderInput,
+  StrategyPackageQuoteInput,
+  TypedAdapterActionSupportInput,
+  TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
@@ -123,6 +137,8 @@ export type PublicExchangeStore = Pick<
   | "listBooks"
   | "listSeries"
   | "listExecutionClasses"
+  | "getSeriesRecord"
+  | "getExecutionClassRecord"
   | "latestTrade"
 >;
 
@@ -337,6 +353,59 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     const series = exchange.listSeries().find((entry) => entry.seriesId === seriesId);
     if (series === undefined) throw new RequestError(404, "SERIES_NOT_FOUND", "No such strategy series.");
     return series;
+  }
+
+  function requireStrategyMarket(graph: ReturnType<typeof packageGraph>) {
+    const series = exchange.getSeriesRecord(graph.seriesId, graph.seriesVersion);
+    if (series === undefined || series.documentHashHex !== toHex(graph.seriesManifestHash)) {
+      throw new RequestError(404, "SERIES_NOT_FOUND", "The graph binds no registered strategy series.");
+    }
+    if (
+      series.document.templateId !== graph.templateId
+      || series.document.templateVersion !== graph.templateVersion
+      || !bytesEqual(series.document.templateManifestHash, graph.packageTemplateManifestHash)
+    ) {
+      throw new RequestError(400, "SERIES_MISMATCH", "The strategy series does not bind the graph template.");
+    }
+    const definition = strategyTemplateDefinitions().find((template) => template.templateId === graph.templateId);
+    if (
+      definition === undefined
+      || series.document.quoteConvention !== definition.quoteConventionId
+      || series.document.riskClass !== definition.riskClassId
+      || series.document.lifecycleConvention !== definition.lifecycleConventionId
+    ) {
+      throw new RequestError(400, "SERIES_MISMATCH", "The strategy series carries unsupported economics or lifecycle semantics.");
+    }
+    const executionClass = exchange.getExecutionClassRecord(graph.executionClassId, graph.executionClassVersion);
+    if (executionClass === undefined || executionClass.documentHashHex !== toHex(graph.executionClassManifestHash)) {
+      throw new RequestError(404, "EXECUTION_CLASS_NOT_FOUND", "The graph binds no registered execution class.");
+    }
+    if (
+      executionClass.document.seriesId !== graph.seriesId
+      || executionClass.document.seriesVersion !== graph.seriesVersion
+      || !bytesEqual(executionClass.document.seriesManifestHash, graph.seriesManifestHash)
+      || executionClass.document.settlementClass !== graph.settlementClass
+    ) {
+      throw new RequestError(400, "EXECUTION_CLASS_MISMATCH", "The execution class does not bind the graph series and settlement class.");
+    }
+    const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
+      if (!domains.some((domain) => domain.domainId === leg.domain.domainId
+        && domain.domainManifestVersion === leg.domain.domainManifestVersion
+        && bytesEqual(domain.domainManifestHash, leg.domain.domainManifestHash))) domains.push(leg.domain);
+      return domains;
+    }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+    if (
+      graphDomains.length !== executionClass.document.domains.length
+      || graphDomains.some((domain, index) => {
+        const expected = executionClass.document.domains[index];
+        return expected === undefined || domain.domainId !== expected.domainId
+          || domain.domainManifestVersion !== expected.domainManifestVersion
+          || !bytesEqual(domain.domainManifestHash, expected.domainManifestHash);
+      })
+    ) {
+      throw new RequestError(400, "EXECUTION_CLASS_MISMATCH", "The execution class domains do not match the graph.");
+    }
+    return series.document;
   }
 
   /** The last recorded trade of a book, labeled OBSERVED: the final fill price and the traded quantity. */
@@ -630,6 +699,34 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const instrument = requireRegistry().latest("MARKET", id(match[1], "Instrument id"));
       if (instrument === undefined) throw new RequestError(404, "NOT_FOUND", "No such instrument.");
       return instrument;
+    }
+    if (path === "/v1/strategy-program") {
+      onlyParams(url, []);
+      return {
+        programVersion: 1,
+        templates: strategyTemplateDefinitions().map((template) => ({
+          templateId: template.templateId,
+          templateVersion: template.templateVersion,
+          displayName: template.displayName,
+          quoteConventionId: template.quoteConventionId,
+          riskClassId: template.riskClassId,
+          lifecycleConventionId: template.lifecycleConventionId,
+          metricIds: template.metricIds,
+          actions: template.actionSpecs.map((action) => ({
+            action: action.action,
+            minimumLegs: action.minimumLegs,
+            maximumLegs: action.maximumLegs,
+            settlementClasses: action.allowedSettlementClasses,
+            legRoles: action.legRules.map((leg) => ({
+              legTypeId: leg.legTypeId,
+              allowedFamilies: leg.allowedFamilies,
+              allowedSides: leg.allowedSides,
+              minimumCount: leg.minimumCount,
+              maximumCount: leg.maximumCount,
+            })),
+          })),
+        })),
+      };
     }
     if (path === "/v1/package-templates") {
       onlyParams(url, []);
@@ -925,6 +1022,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/de-risk/validate",
       "/v1/packages/compile",
       "/v1/packages/simulate",
+      "/v1/strategy-orders/validate",
+      "/v1/strategy-routes/compile",
+      "/v1/strategy-quotes/admit",
       "/v1/rfqs/private",
       "/v1/auctions/sealed",
       "/v1/orders",
@@ -981,6 +1081,15 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       try {
         const order = validatePackageOrderProfile(body.order as PackageOrderInput);
         return { valid: true, orderHash: toHex(packageOrderHash(order)) };
+      } catch (error) {
+        if (error instanceof ProtocolError) return { valid: false, error: { code: error.code, context: error.context, detail: error.detail } };
+        throw error;
+      }
+    }
+    if (path === "/v1/strategy-orders/validate") {
+      try {
+        const order = strategyPackageOrder(object(body.order, "order") as unknown as StrategyPackageOrderInput);
+        return { valid: true, order, orderHash: toHex(strategyPackageOrderHash(order)) };
       } catch (error) {
         if (error instanceof ProtocolError) return { valid: false, error: { code: error.code, context: error.context, detail: error.detail } };
         throw error;
@@ -1081,6 +1190,94 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       const result = compilePackageGraph(input, { templateManifest: template.document, activeRegistryRecords: context.activeRegistryRecords, resourceLimits: context.resourceLimits, currentTime });
       return { ...result, currentTime, timeSource };
+    }
+    if (path === "/v1/strategy-routes/compile") {
+      const context = options.graphContext;
+      if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
+      const input = object(body.graph, "graph") as unknown as PackageGraphInput;
+      const graph = packageGraph(input);
+      requireStrategyMarket(graph);
+      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
+      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
+      const current = nowIn(graph.expiryUnit);
+      const currentTime = current === undefined
+        ? { unit: graph.expiryUnit, value: body.atSlot as bigint }
+        : { unit: graph.expiryUnit, value: current };
+      if (typeof currentTime.value !== "bigint" || currentTime.value <= 0n) {
+        throw new RequestError(400, "TIME_REQUIRED", "A slot-timed strategy route compiles at an explicit positive atSlot.");
+      }
+      const result = compileTypedStrategyRoute({
+        graph: input,
+        compileContext: {
+          templateManifest: template.document,
+          activeRegistryRecords: context.activeRegistryRecords,
+          resourceLimits: context.resourceLimits,
+          currentTime,
+        },
+        adapterSupport: body.adapterSupport as readonly TypedAdapterActionSupportInput[],
+        orderHash: body.orderHash as Uint8Array | string,
+        solverId: body.solverId as string,
+        routeExpiryUnit: graph.expiryUnit,
+        routeExpiryValue: body.routeExpiryValue as bigint,
+      });
+      return { ...result, currentTime, timeSource: current === undefined ? "CALLER" : "SERVER" };
+    }
+    if (path === "/v1/strategy-quotes/admit") {
+      const context = options.graphContext;
+      if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
+      const graphInput = object(body.graph, "graph") as unknown as PackageGraphInput;
+      const graph = packageGraph(graphInput);
+      const series = requireStrategyMarket(graph);
+      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
+      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
+      const current = nowIn(graph.expiryUnit);
+      const currentTime = current === undefined
+        ? { unit: graph.expiryUnit, value: body.atSlot as bigint }
+        : { unit: graph.expiryUnit, value: current };
+      if (typeof currentTime.value !== "bigint" || currentTime.value <= 0n) {
+        throw new RequestError(400, "TIME_REQUIRED", "A slot-timed strategy quote is admitted at an explicit positive atSlot.");
+      }
+      const admitted = validateStrategyPackageRouteAdmission(
+        object(body.order, "order") as unknown as StrategyPackageOrderInput,
+        graphInput,
+        object(body.quote, "quote") as unknown as StrategyPackageQuoteInput,
+        object(body.route, "route") as unknown as TypedStrategyRoute,
+        {
+          templateManifest: template.document,
+          activeRegistryRecords: context.activeRegistryRecords,
+          resourceLimits: context.resourceLimits,
+          currentTime,
+        },
+      );
+      if (admitted.order.quoteAsset.assetId !== series.quoteAsset) {
+        throw new RequestError(400, "SERIES_MISMATCH", "The order quote asset differs from the registered strategy series.");
+      }
+      if (currentTime.value >= admitted.quote.validUntilValue) throw new RequestError(400, "QUOTE_EXPIRED", "The strategy quote has expired.");
+      const capability = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", admitted.quote.solverId);
+      if (capability === undefined || !bytesEqual(solverCapabilityManifestHash(capability.document), admitted.quote.solverCapabilityManifestHash)) {
+        throw new RequestError(400, "SOLVER_CAPABILITY_MISMATCH", "The quote does not bind the registered solver capability.");
+      }
+      if (capability.document.validityUnit !== admitted.quote.validUntilUnit) {
+        throw new RequestError(400, "SOLVER_CAPABILITY_MISMATCH", "The solver capability and strategy quote use different clocks.");
+      }
+      for (const domain of admitted.quote.domains) {
+        const authorization = authorizeSolverQuote(capability.document, {
+          environment: admitted.quote.environment,
+          domain,
+          templateId: admitted.quote.templateId,
+          quoteMode: admitted.quote.quoteMode,
+          marketId: admitted.quote.executionClassId,
+          notionalAtoms: admitted.quote.totalGrossNotional.atoms,
+          scheme: admitted.quote.solverSignatureScheme,
+          verificationKey: admitted.quote.solverVerificationKey,
+          atValue: currentTime.value,
+        });
+        if (!authorization.authorized) throw new RequestError(400, "SOLVER_NOT_AUTHORIZED", `The solver capability rejects this quote: ${authorization.reason}.`);
+      }
+      if (admitted.quote.solverSignatureScheme !== "ED25519" || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
+      }
+      return admitted;
     }
     if (path === "/v1/position-snapshots") {
       // A signed read-only observation from a position source. The store verifies the authority

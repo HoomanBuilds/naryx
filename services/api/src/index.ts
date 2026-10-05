@@ -1,4 +1,11 @@
 export {
+  SqliteStrategyPackageStore,
+  StrategyPackageStoreError,
+  type StoredStrategyPackageOrder,
+  type StoredStrategyPackageQuote,
+  type StoredStrategyPackageReceipt,
+} from "./strategy-package-store.js";
+export {
   createSolanaDevnetExecutionPorts,
   deriveSolanaDevnetLifecycleBinding,
   HttpSolanaDevnetReadOnlyRpc,

@@ -7,7 +7,7 @@ import {
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { toProtocolJson } from "@naryx/protocol-types";
+import { strategyTemplateDefinitions, toProtocolJson } from "@naryx/protocol-types";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
@@ -479,6 +479,43 @@ export function createPrivateTerminalRequestHandler(
         return;
       }
       sendJson(response, 200, hyperliquidTestnetContext);
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/strategy-program") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      sendJson(response, 200, {
+        version: 1,
+        templates: strategyTemplateDefinitions().map((template) => ({
+          templateId: template.templateId,
+          templateVersion: template.templateVersion,
+          displayName: template.displayName,
+          quoteConventionId: template.quoteConventionId,
+          riskClassId: template.riskClassId,
+          lifecycleConventionId: template.lifecycleConventionId,
+          metricIds: template.metricIds,
+          actions: template.actionSpecs.map((action) => ({
+            action: action.action,
+            minimumLegs: action.minimumLegs,
+            maximumLegs: action.maximumLegs,
+            settlementClasses: action.allowedSettlementClasses,
+            legRoles: action.legRules.map((leg) => ({
+              legTypeId: leg.legTypeId,
+              allowedFamilies: leg.allowedFamilies,
+              allowedSides: leg.allowedSides,
+              minimumCount: leg.minimumCount,
+              maximumCount: leg.maximumCount,
+            })),
+          })),
+          activation: template.templateId === "cash-and-carry-v1"
+            ? "EXECUTABLE_BY_QUALIFIED_LANE"
+            : "ADAPTER_ACTIVATION_REQUIRED",
+        })),
+      });
       return;
     }
 

@@ -66,7 +66,15 @@ export interface KeeperActionPlan {
   readonly grantsAuthority: boolean;
 }
 
-const EXIT_KINDS = new Set(["SCHEDULED_EXIT", "RECOVERY", "EMERGENCY_RISK_REDUCTION"]);
+export interface KeeperActionPlannerInput {
+  readonly authorization: KeeperActionAuthorizationInput;
+  readonly before: StrategyHealthSnapshotInput;
+  readonly positions: readonly NormalizedPositionInput[];
+}
+
+export type KeeperActionPlanner = (input: KeeperActionPlannerInput) => KeeperActionPlan | undefined;
+
+const EXIT_KINDS = new Set(["SCHEDULED_EXIT", "RECOVERY", "EMERGENCY_RISK_REDUCTION", "EMERGENCY_UNWIND"]);
 
 function absolute(value: bigint): bigint {
   return value < 0n ? -value : value;
@@ -91,6 +99,7 @@ export class SqliteKeeperExecutor {
     readonly authorities: ReadonlyMap<string, Uint8Array>;
     readonly strategies: Pick<SqliteStrategyBookStore, "strategy">;
     readonly positions?: Pick<SqlitePositionSnapshotStore, "latest">;
+    readonly actionPlanner?: KeeperActionPlanner;
     readonly clock?: () => number;
   };
 
@@ -145,9 +154,9 @@ export class SqliteKeeperExecutor {
   /** Projects the action from the strategy's signed positions; undefined for actions it cannot price. */
   plan(authorization: KeeperActionAuthorizationInput, before: StrategyHealthSnapshotInput): KeeperActionPlan | undefined {
     const positions = (this.options.positions?.latest(authorization.strategyId) ?? []).flatMap((entry) => entry.record.positions as readonly NormalizedPositionInput[]);
-    if (positions.length === 0) return undefined;
     const reward = authorization.rewardQuoteAtoms;
     if (EXIT_KINDS.has(authorization.actionKind)) {
+      if (positions.length === 0) return undefined;
       const cost = packageCloseCostIndex(positions);
       if (!cost.complete) return undefined;
       return {
@@ -166,6 +175,7 @@ export class SqliteKeeperExecutor {
       };
     }
     if (authorization.actionKind === "REBALANCE") {
+      if (positions.length === 0) return undefined;
       const delta = positions.reduce((sum, position) => sum + position.quantityBaseAtoms, 0n);
       if (delta === 0n) return undefined;
       // Trim the legs that carry the excess, largest first, until the package is delta neutral.
@@ -196,8 +206,10 @@ export class SqliteKeeperExecutor {
         grantsAuthority: false,
       };
     }
-    // Rolls and funding settlement need venue-specific pricing this executor does not hold.
-    return undefined;
+    // A roll, migration, resize, funding settlement, or TWAP slice needs an exact venue-aware
+    // route. The injected planner remains bounded by the owner-signed keeper authorization and the
+    // kernel independently checks its projected state, cost, reward, and risk before queueing it.
+    return this.options.actionPlanner?.({ authorization, before, positions });
   }
 
   /**
