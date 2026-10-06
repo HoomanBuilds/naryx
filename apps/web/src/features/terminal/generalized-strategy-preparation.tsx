@@ -23,6 +23,10 @@ const DOMAIN_KINDS = new Set([
   "EVM_ASYNC_EXECUTOR",
   "HYPERCORE_EXECUTOR",
 ]);
+const NATIVE_HYPERCORE_TEMPLATES = new Set([
+  "treasury-inventory-hedge-v1",
+  "perpetual-funding-spread-v1",
+]);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -94,6 +98,40 @@ type PackageQuoteReview = Readonly<{
 
 type StagedStrategyOrder = Readonly<{
   sourceOrderHash: string;
+  orderHash: string;
+  graphHash: string;
+}>;
+
+type NativeStrategyMarketProfile = Readonly<{
+  role: string;
+  entrySide: "BUY" | "SELL";
+  coin: string;
+  assetId: number;
+  sizeDecimals: number;
+  maximumPriceDecimals: number;
+}>;
+
+type NativeStrategyProfile = Readonly<{
+  profileId: string;
+  displayName: string;
+  templateId: string;
+  templateVersion: number;
+  seriesId: string;
+  executionClassId: string;
+  settlementAccount: string;
+  baseAsset: Readonly<{ assetId: string; decimals: number }>;
+  quoteAsset: Readonly<{ assetId: string; decimals: number }>;
+  markets: readonly NativeStrategyMarketProfile[];
+  bounds: Readonly<{
+    minimumQuantityAtoms: string;
+    maximumQuantityAtoms: string;
+    maximumEconomicQuantityAtoms: string;
+    maximumExpiryTtlMs: string;
+  }>;
+}>;
+
+type CreatedNativeStrategyOrder = Readonly<{
+  profileId: string;
   orderHash: string;
   graphHash: string;
 }>;
@@ -371,6 +409,123 @@ function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: st
   });
 }
 
+function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyProfile[] {
+  const root = record(payload, "Native strategy profiles");
+  if (root.version !== 1) throw new Error("Native strategy profile version is unsupported.");
+  return list(root.profiles, "Native strategy profiles").map((candidate, index): NativeStrategyProfile => {
+    const profile = record(candidate, `Native strategy profile ${index}`);
+    const baseAsset = record(profile.baseAsset, `Native strategy profile ${index} base asset`);
+    const quoteAsset = record(profile.quoteAsset, `Native strategy profile ${index} quote asset`);
+    const bounds = record(profile.bounds, `Native strategy profile ${index} bounds`);
+    const markets = list(profile.markets, `Native strategy profile ${index} markets`).map((value, marketIndex) => {
+      const market = record(value, `Native strategy profile ${index} market ${marketIndex}`);
+      if (market.entrySide !== "BUY" && market.entrySide !== "SELL") {
+        throw new Error(`Native strategy profile ${index} market ${marketIndex} side is invalid.`);
+      }
+      return Object.freeze({
+        role: text(market.role, `Native strategy profile ${index} market ${marketIndex} role`),
+        entrySide: market.entrySide,
+        coin: text(market.coin, `Native strategy profile ${index} market ${marketIndex} coin`),
+        assetId: unsignedInteger(market.assetId, `Native strategy profile ${index} market ${marketIndex} asset id`),
+        sizeDecimals: unsignedInteger(market.sizeDecimals, `Native strategy profile ${index} market ${marketIndex} size decimals`),
+        maximumPriceDecimals: unsignedInteger(market.maximumPriceDecimals, `Native strategy profile ${index} market ${marketIndex} price decimals`),
+      });
+    });
+    if (markets.length === 0) throw new Error(`Native strategy profile ${index} has no markets.`);
+    return Object.freeze({
+      profileId: text(profile.profileId, `Native strategy profile ${index} id`),
+      displayName: text(profile.displayName, `Native strategy profile ${index} display name`),
+      templateId: text(profile.templateId, `Native strategy profile ${index} template`),
+      templateVersion: integer(profile.templateVersion, `Native strategy profile ${index} template version`),
+      seriesId: text(profile.seriesId, `Native strategy profile ${index} series`),
+      executionClassId: text(profile.executionClassId, `Native strategy profile ${index} execution class`),
+      settlementAccount: text(profile.settlementAccount, `Native strategy profile ${index} settlement account`),
+      baseAsset: Object.freeze({
+        assetId: text(baseAsset.assetId, `Native strategy profile ${index} base asset id`),
+        decimals: unsignedInteger(baseAsset.decimals, `Native strategy profile ${index} base decimals`),
+      }),
+      quoteAsset: Object.freeze({
+        assetId: text(quoteAsset.assetId, `Native strategy profile ${index} quote asset id`),
+        decimals: unsignedInteger(quoteAsset.decimals, `Native strategy profile ${index} quote decimals`),
+      }),
+      markets: Object.freeze(markets),
+      bounds: Object.freeze({
+        minimumQuantityAtoms: decimalInteger(bounds.minimumQuantityAtoms, `Native strategy profile ${index} minimum quantity`),
+        maximumQuantityAtoms: decimalInteger(bounds.maximumQuantityAtoms, `Native strategy profile ${index} maximum quantity`),
+        maximumEconomicQuantityAtoms: decimalInteger(bounds.maximumEconomicQuantityAtoms, `Native strategy profile ${index} maximum economic quantity`),
+        maximumExpiryTtlMs: decimalInteger(bounds.maximumExpiryTtlMs, `Native strategy profile ${index} expiry TTL`),
+      }),
+    });
+  });
+}
+
+function parseCreatedNativeStrategyOrder(
+  payload: unknown,
+  expected: Readonly<{ profileId: string; templateId: string; lifecycleAction: string }>,
+): CreatedNativeStrategyOrder {
+  const root = record(payload, "Native strategy order creation");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || typeof root.created !== "boolean"
+    || root.profileId !== expected.profileId || root.templateId !== expected.templateId
+    || root.lifecycleAction !== expected.lifecycleAction) {
+    throw new Error("Native strategy order creation response changed the requested strategy.");
+  }
+  return Object.freeze({
+    profileId: expected.profileId,
+    orderHash: hash(root.orderHash, "Native strategy order hash"),
+    graphHash: hash(root.graphHash, "Native strategy graph hash"),
+  });
+}
+
+function amountToAtoms(value: string, decimals: number, context: string): bigint {
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value)) throw new Error(`${context} must be a decimal amount.`);
+  const [whole = "0", fraction = ""] = value.split(".");
+  if (fraction.length > decimals) throw new Error(`${context} supports at most ${decimals} decimal places.`);
+  const atoms = BigInt(whole) * (BigInt(10) ** BigInt(decimals))
+    + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
+  if (atoms <= BigInt(0)) throw new Error(`${context} must be greater than zero.`);
+  return atoms;
+}
+
+function greatestCommonDivisor(left: bigint, right: bigint): bigint {
+  let a = left;
+  let b = right;
+  while (b !== BigInt(0)) [a, b] = [b, a % b];
+  return a;
+}
+
+function priceToAtomicRatio(
+  value: string,
+  baseDecimals: number,
+  quoteDecimals: number,
+  maximumPriceDecimals: number,
+  context: string,
+): Readonly<{ quoteAtoms: string; baseAtoms: string }> {
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value)) throw new Error(`${context} must be a decimal price.`);
+  const [whole = "0", fraction = ""] = value.split(".");
+  if (fraction.length > maximumPriceDecimals) {
+    throw new Error(`${context} supports at most ${maximumPriceDecimals} decimal places.`);
+  }
+  const displayScale = BigInt(10) ** BigInt(fraction.length);
+  const displayNumerator = BigInt(whole) * displayScale + BigInt(fraction || "0");
+  if (displayNumerator <= BigInt(0)) throw new Error(`${context} must be greater than zero.`);
+  const quoteAtoms = displayNumerator * (BigInt(10) ** BigInt(quoteDecimals));
+  const baseAtoms = displayScale * (BigInt(10) ** BigInt(baseDecimals));
+  const divisor = greatestCommonDivisor(quoteAtoms, baseAtoms);
+  return Object.freeze({
+    quoteAtoms: (quoteAtoms / divisor).toString(),
+    baseAtoms: (baseAtoms / divisor).toString(),
+  });
+}
+
+function randomNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return BigInt(`0x${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`).toString();
+}
+
+function unixTimeMs(): bigint {
+  return BigInt(Date.now());
+}
+
 function parseStrategyOrderAuthorization(
   payload: unknown,
   requestedOrderHash: string,
@@ -581,6 +736,7 @@ export function GeneralizedStrategyPreparationPanel({
   templateId,
   lifecycleAction,
   sourceOrderHash = null,
+  strategyOwner = null,
   signStrategyOrder,
 }: {
   privateApiBaseUrl: string | null;
@@ -588,6 +744,7 @@ export function GeneralizedStrategyPreparationPanel({
   templateId: string;
   lifecycleAction: string;
   sourceOrderHash?: string | null;
+  strategyOwner?: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
 }) {
   const [orderHash, setOrderHash] = useState("");
@@ -605,6 +762,15 @@ export function GeneralizedStrategyPreparationPanel({
   const [strategyReceipt, setStrategyReceipt] = useState<StrategyReceiptSummary | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
+  const [nativeProfiles, setNativeProfiles] = useState<readonly NativeStrategyProfile[] | null>(null);
+  const [nativeProfileError, setNativeProfileError] = useState<string | null>(null);
+  const [selectedNativeProfileId, setSelectedNativeProfileId] = useState("");
+  const [nativeQuantity, setNativeQuantity] = useState("");
+  const [nativeEconomicQuantity, setNativeEconomicQuantity] = useState("");
+  const [nativeLimitPrices, setNativeLimitPrices] = useState<Record<string, string>>({});
+  const [expectedStrategyStateHash, setExpectedStrategyStateHash] = useState("");
+  const [createdNativeOrder, setCreatedNativeOrder] = useState<CreatedNativeStrategyOrder | null>(null);
+  const [nativeCreateBusy, setNativeCreateBusy] = useState(false);
   const [stageBusy, setStageBusy] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [prepareBusy, setPrepareBusy] = useState(false);
@@ -633,7 +799,117 @@ export function GeneralizedStrategyPreparationPanel({
     return () => controller.abort();
   }, [publicApiBaseUrl]);
 
+  useEffect(() => {
+    if (privateApiBaseUrl === null || sourceOrderHash !== null || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/strategy-order-profiles`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseNativeStrategyProfiles(await response.json());
+    }).then((profiles) => {
+      setNativeProfiles(profiles);
+      setNativeProfileError(null);
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setNativeProfiles([]);
+      setNativeProfileError(cause instanceof Error ? cause.message : "Native strategy profiles are unavailable.");
+    });
+    return () => controller.abort();
+  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+
   const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
+  const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
+    ?? matchingNativeProfiles[0]
+    ?? null;
+
+  async function createNativeStrategyOrder() {
+    if (privateApiBaseUrl === null || selectedNativeProfile === null) return;
+    setNativeCreateBusy(true);
+    setError(null);
+    try {
+      if (strategyOwner === null || !OWNER.test(strategyOwner)) {
+        throw new Error("Connect the EVM wallet that will own and authorize this strategy.");
+      }
+      if (lifecycleAction !== "ENTRY" && lifecycleAction !== "EXIT") {
+        throw new Error("This native strategy profile supports entry and exit only.");
+      }
+      const quantityAtoms = amountToAtoms(
+        nativeQuantity,
+        selectedNativeProfile.baseAsset.decimals,
+        "Package quantity",
+      );
+      const economicQuantityAtoms = selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
+        ? quantityAtoms
+        : amountToAtoms(
+          nativeEconomicQuantity,
+          selectedNativeProfile.baseAsset.decimals,
+          "Inventory exposure",
+        );
+      const limitPrices = selectedNativeProfile.markets.map((market) => ({
+        legId: market.role,
+        ...priceToAtomicRatio(
+          nativeLimitPrices[market.role] ?? "",
+          selectedNativeProfile.baseAsset.decimals,
+          selectedNativeProfile.quoteAsset.decimals,
+          market.maximumPriceDecimals,
+          `${market.coin} limit price`,
+        ),
+      }));
+      const ttlMs = BigInt(selectedNativeProfile.bounds.maximumExpiryTtlMs) < BigInt(60_000)
+        ? BigInt(selectedNativeProfile.bounds.maximumExpiryTtlMs)
+        : BigInt(60_000);
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-orders/create`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: selectedNativeProfile.profileId,
+          owner: strategyOwner,
+          lifecycleAction,
+          quantityAtoms: quantityAtoms.toString(),
+          economicQuantityAtoms: economicQuantityAtoms.toString(),
+          limitPrices,
+          expiryValue: (unixTimeMs() + ttlMs).toString(),
+          nonce: randomNonce(),
+          ...(lifecycleAction === "EXIT" ? { expectedStrategyStateHash } : {}),
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = parseCreatedNativeStrategyOrder(await response.json(), {
+        profileId: selectedNativeProfile.profileId,
+        templateId,
+        lifecycleAction,
+      });
+      setCreatedNativeOrder(created);
+      setStaged(null);
+      setOrderHash(created.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+      setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
+      setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
+      setExecutionProgress(null);
+      setStrategyReceipt(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Native strategy order creation failed closed.");
+    } finally {
+      setNativeCreateBusy(false);
+    }
+  }
 
   async function stageStrategyOrder() {
     if (privateApiBaseUrl === null || sourceOrderHash === null || !HASH.test(sourceOrderHash)) return;
@@ -895,6 +1171,15 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  const nativeOrderFieldsReady = selectedNativeProfile !== null
+    && strategyOwner !== null
+    && OWNER.test(strategyOwner)
+    && nativeQuantity.trim() !== ""
+    && (selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
+      || nativeEconomicQuantity.trim() !== "")
+    && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
+    && (lifecycleAction !== "EXIT" || HASH.test(expectedStrategyStateHash));
+
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
@@ -912,6 +1197,131 @@ export function GeneralizedStrategyPreparationPanel({
             {stageBusy ? "Staging typed strategy order" : staged?.sourceOrderHash === sourceOrderHash ? "Restage typed strategy order" : "Stage typed strategy order"}
           </button>
           {staged ? <p className={styles.fieldContext}>Graph {compact(staged.graphHash)} is stored for solver quoting.</p> : null}
+        </div>
+      ) : null}
+      {sourceOrderHash === null && NATIVE_HYPERCORE_TEMPLATES.has(templateId) ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="native-strategy-profile">HyperCore strategy market</label>
+          <select
+            id="native-strategy-profile"
+            value={selectedNativeProfile?.profileId ?? ""}
+            disabled={nativeProfiles === null || matchingNativeProfiles.length === 0}
+            onChange={(event) => {
+              setSelectedNativeProfileId(event.target.value);
+              setNativeQuantity("");
+              setNativeEconomicQuantity("");
+              setExpectedStrategyStateHash("");
+              setCreatedNativeOrder(null);
+              setOrderHash("");
+              setError(null);
+            }}
+          >
+            {matchingNativeProfiles.length === 0 ? <option value="">No reviewed market is active</option> : null}
+            {matchingNativeProfiles.map((profile) => (
+              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+            ))}
+          </select>
+          {selectedNativeProfile ? (
+            <>
+              <label htmlFor="native-strategy-quantity">Package quantity</label>
+              <input
+                id="native-strategy-quantity"
+                value={nativeQuantity}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => {
+                  setNativeQuantity(event.target.value.trim());
+                  setCreatedNativeOrder(null);
+                  setError(null);
+                }}
+              />
+              <p className={styles.fieldContext}>
+                Reviewed range {formatAtomicAmount(
+                  selectedNativeProfile.bounds.minimumQuantityAtoms,
+                  selectedNativeProfile.baseAsset.decimals,
+                  selectedNativeProfile.markets[0]?.coin ?? selectedNativeProfile.baseAsset.assetId,
+                )} to {formatAtomicAmount(
+                  selectedNativeProfile.bounds.maximumQuantityAtoms,
+                  selectedNativeProfile.baseAsset.decimals,
+                  selectedNativeProfile.markets[0]?.coin ?? selectedNativeProfile.baseAsset.assetId,
+                )}.
+              </p>
+              {selectedNativeProfile.templateId === "treasury-inventory-hedge-v1" ? (
+                <>
+                  <label htmlFor="native-strategy-economic-quantity">Inventory exposure to hedge</label>
+                  <input
+                    id="native-strategy-economic-quantity"
+                    value={nativeEconomicQuantity}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="0.00"
+                    onChange={(event) => {
+                      setNativeEconomicQuantity(event.target.value.trim());
+                      setCreatedNativeOrder(null);
+                      setError(null);
+                    }}
+                  />
+                </>
+              ) : null}
+              {selectedNativeProfile.markets.map((market) => (
+                <Fragment key={market.role}>
+                  <label htmlFor={`native-strategy-price-${market.role}`}>
+                    {market.coin} {lifecycleAction === "ENTRY" ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY"} limit price
+                  </label>
+                  <input
+                    id={`native-strategy-price-${market.role}`}
+                    value={nativeLimitPrices[market.role] ?? ""}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder={`Price in ${selectedNativeProfile.quoteAsset.assetId.split(":").at(-1)?.toUpperCase() ?? "quote asset"}`}
+                    onChange={(event) => {
+                      setNativeLimitPrices((current) => ({ ...current, [market.role]: event.target.value.trim() }));
+                      setCreatedNativeOrder(null);
+                      setError(null);
+                    }}
+                  />
+                </Fragment>
+              ))}
+              {lifecycleAction === "EXIT" ? (
+                <>
+                  <label htmlFor="native-strategy-state-hash">Expected open strategy state</label>
+                  <input
+                    id="native-strategy-state-hash"
+                    value={expectedStrategyStateHash}
+                    inputMode="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="64 lowercase hex characters"
+                    onChange={(event) => {
+                      setExpectedStrategyStateHash(event.target.value.trim());
+                      setCreatedNativeOrder(null);
+                      setError(null);
+                    }}
+                  />
+                </>
+              ) : null}
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || nativeCreateBusy || !nativeOrderFieldsReady}
+                onClick={() => void createNativeStrategyOrder()}
+              >
+                {nativeCreateBusy ? "Creating typed strategy order" : createdNativeOrder ? "Recreate typed strategy order" : "Create typed strategy order"}
+              </button>
+              <p className={styles.fieldContext} role="status">
+                {createdNativeOrder
+                  ? `Graph ${compact(createdNativeOrder.graphHash)} is stored for solver quoting.`
+                  : strategyOwner === null
+                    ? "Connect the EVM wallet that will own this package."
+                    : `Settlement uses ${selectedNativeProfile.settlementAccount} on HyperCore Testnet.`}
+              </p>
+            </>
+          ) : (
+            <p className={styles.fieldContext} role="status">
+              {nativeProfiles === null ? "Loading reviewed HyperCore markets." : nativeProfileError ?? "No reviewed HyperCore market matches this strategy."}
+            </p>
+          )}
         </div>
       ) : null}
       <div className={styles.strategyPrepareForm}>

@@ -301,6 +301,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     || bounds.maximumQuantityAtoms > bounds.maximumEconomicQuantityAtoms
     || bounds.maximumAggregateRecoveryLossQuoteAtoms
       < bounds.maximumRecoveryCostQuoteAtoms * BigInt(markets.length)
+    || bounds.maximumExpiryTtlMs < 10_000n
     || bounds.maximumExpiryTtlMs > 86_400_000n) {
     fail("INVALID_CONFIGURATION", `${context}.bounds are inconsistent.`);
   }

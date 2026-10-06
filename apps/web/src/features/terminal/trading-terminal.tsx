@@ -1366,6 +1366,7 @@ function Ticket({
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
+          strategyOwner={selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner ?? null : null}
           signStrategyOrder={signStrategyOrder}
         />
       ) : null}
