@@ -23,6 +23,27 @@ export type HyperliquidTestnetFinalPackageStatus =
   | "RECOVERY_REQUIRED"
   | "MANUAL_INTERVENTION";
 
+export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
+  role: "SPOT" | "PERPETUAL";
+  clientOrderId: string;
+  requestedSignedBaseAtoms: string;
+  filledSignedBaseAtoms: string;
+  grossQuoteAtoms: string;
+  feeAssetId: string;
+  feeAssetDecimals: number;
+  feeAtoms: string;
+  venueFeeQuoteAtoms: string;
+  evidenceCommitment: string;
+}>;
+
+export type HyperliquidTestnetExecutionEvidence = Readonly<{
+  evidenceVersion: string;
+  observedAtMs: string;
+  terminalResidualBaseAtoms: string;
+  terminalResidualQuoteAtoms: string;
+  legs: readonly [HyperliquidTestnetLegExecutionEvidence, HyperliquidTestnetLegExecutionEvidence];
+}>;
+
 export type HyperliquidTestnetTerminalExecutionResult =
   | Readonly<{
     attemptId: string;
@@ -107,6 +128,7 @@ export type HyperliquidTestnetTerminalExecutionResult =
     /** Account-wide deltas over the executor's serialized window: exactly this package's fills. */
     observedNetSpotDeltaAtoms?: string;
     observedPerpetualDeltaAtoms?: string;
+    executionEvidence?: HyperliquidTestnetExecutionEvidence;
   }>
   | Readonly<{
     attemptId: string;
@@ -223,6 +245,90 @@ function requireEvidenceCommitments(value: unknown): readonly string[] {
 function requireSubmissionStatus(value: unknown): HyperliquidTestnetSubmissionStatus {
   if (value === "ACKNOWLEDGED" || value === "REJECTED" || value === "AMBIGUOUS") return value;
   throw new Error("submissionStatus is unsupported");
+}
+
+function requireSignedAtoms(value: unknown, name: string): string {
+  if (typeof value !== "string" || !SIGNED_ATOMS_PATTERN.test(value)) {
+    throw new Error(`${name} must be signed integer atoms`);
+  }
+  return value;
+}
+
+function requireUnsignedAtoms(value: unknown, name: string, nonzero = false): string {
+  const checked = requireSignedAtoms(value, name);
+  if (checked.startsWith("-") || (nonzero && checked === "0")) {
+    throw new Error(`${name} must be ${nonzero ? "positive" : "nonnegative"} integer atoms`);
+  }
+  return checked;
+}
+
+function requireLegExecutionEvidence(
+  value: unknown,
+  role: "SPOT" | "PERPETUAL",
+): HyperliquidTestnetLegExecutionEvidence {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "clientOrderId", "evidenceCommitment", "feeAssetDecimals", "feeAssetId", "feeAtoms",
+    "filledSignedBaseAtoms", "grossQuoteAtoms", "requestedSignedBaseAtoms", "role",
+    "venueFeeQuoteAtoms",
+  ])) throw new Error(`${role} execution evidence has invalid fields`);
+  if (value.role !== role) throw new Error(`${role} execution evidence role is invalid`);
+  if (typeof value.clientOrderId !== "string" || !/^0x[0-9a-f]{32}$/.test(value.clientOrderId)) {
+    throw new Error(`${role} clientOrderId is invalid`);
+  }
+  if (typeof value.feeAssetId !== "string" || value.feeAssetId.length < 1
+    || value.feeAssetId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value.feeAssetId)) {
+    throw new Error(`${role} feeAssetId is invalid`);
+  }
+  if (typeof value.feeAssetDecimals !== "number" || !Number.isInteger(value.feeAssetDecimals)
+    || value.feeAssetDecimals < 0 || value.feeAssetDecimals > 30) {
+    throw new Error(`${role} feeAssetDecimals is invalid`);
+  }
+  return Object.freeze({
+    role,
+    clientOrderId: value.clientOrderId,
+    requestedSignedBaseAtoms: requireSignedAtoms(
+      value.requestedSignedBaseAtoms, `${role}.requestedSignedBaseAtoms`,
+    ),
+    filledSignedBaseAtoms: requireSignedAtoms(
+      value.filledSignedBaseAtoms, `${role}.filledSignedBaseAtoms`,
+    ),
+    grossQuoteAtoms: requireUnsignedAtoms(value.grossQuoteAtoms, `${role}.grossQuoteAtoms`),
+    feeAssetId: value.feeAssetId,
+    feeAssetDecimals: value.feeAssetDecimals,
+    feeAtoms: requireUnsignedAtoms(value.feeAtoms, `${role}.feeAtoms`),
+    venueFeeQuoteAtoms: requireUnsignedAtoms(
+      value.venueFeeQuoteAtoms, `${role}.venueFeeQuoteAtoms`,
+    ),
+    evidenceCommitment: requireCommitment(value.evidenceCommitment, `${role}.evidenceCommitment`),
+  });
+}
+
+function requireExecutionEvidence(value: unknown): HyperliquidTestnetExecutionEvidence {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "evidenceVersion", "legs", "observedAtMs", "terminalResidualBaseAtoms",
+    "terminalResidualQuoteAtoms",
+  ])) throw new Error("executionEvidence has invalid fields");
+  if (!Array.isArray(value.legs) || value.legs.length !== 2) {
+    throw new Error("executionEvidence must contain the spot and perpetual legs");
+  }
+  const legs: readonly [
+    HyperliquidTestnetLegExecutionEvidence,
+    HyperliquidTestnetLegExecutionEvidence,
+  ] = Object.freeze([
+    requireLegExecutionEvidence(value.legs[0], "SPOT"),
+    requireLegExecutionEvidence(value.legs[1], "PERPETUAL"),
+  ]);
+  return Object.freeze({
+    evidenceVersion: requireUnsignedAtoms(value.evidenceVersion, "evidenceVersion", true),
+    observedAtMs: requireUnsignedAtoms(value.observedAtMs, "observedAtMs", true),
+    terminalResidualBaseAtoms: requireUnsignedAtoms(
+      value.terminalResidualBaseAtoms, "terminalResidualBaseAtoms",
+    ),
+    terminalResidualQuoteAtoms: requireUnsignedAtoms(
+      value.terminalResidualQuoteAtoms, "terminalResidualQuoteAtoms",
+    ),
+    legs,
+  });
 }
 
 const BASE_KEYS = ["attemptId", "domain", "environment", "idempotencyKey", "status"] as const;
@@ -353,9 +459,14 @@ export function validateHyperliquidTestnetTerminalExecutionResult(
     case "RECONCILED": {
       const reconciledKeys = [...BASE_KEYS, "actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"];
       const observed = "observedNetSpotDeltaAtoms" in value;
-      if (!hasExactKeys(value, (observed
-        ? [...reconciledKeys, "observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms"]
-        : reconciledKeys).sort())) {
+      const hasExecutionEvidence = "executionEvidence" in value;
+      if (hasExecutionEvidence && !observed) {
+        throw new Error("executionEvidence requires observed package deltas");
+      }
+      const expectedKeys = [...reconciledKeys];
+      if (observed) expectedKeys.push("observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms");
+      if (hasExecutionEvidence) expectedKeys.push("executionEvidence");
+      if (!hasExactKeys(value, expectedKeys.sort())) {
         throw new Error("RECONCILED has invalid fields");
       }
       if (observed && (typeof value.observedNetSpotDeltaAtoms !== "string"
@@ -388,6 +499,9 @@ export function validateHyperliquidTestnetTerminalExecutionResult(
         ...(observed ? {
           observedNetSpotDeltaAtoms: value.observedNetSpotDeltaAtoms as string,
           observedPerpetualDeltaAtoms: value.observedPerpetualDeltaAtoms as string,
+        } : {}),
+        ...(hasExecutionEvidence ? {
+          executionEvidence: requireExecutionEvidence(value.executionEvidence),
         } : {}),
       });
     }

@@ -27,6 +27,8 @@ const ERROR = `0x${'cc'.repeat(32)}` as const;
 const EVIDENCE = `0x${'dd'.repeat(32)}` as const;
 const SPOT_CLOID = `0x${'51'.repeat(16)}` as const;
 const PERP_CLOID = `0x${'52'.repeat(16)}` as const;
+const BASE_ASSET = Object.freeze({ assetId: 'btc', assetManifestHash: hash(7), decimals: 3 });
+const QUOTE_ASSET = Object.freeze({ assetId: 'usdc', assetManifestHash: hash(8), decimals: 2 });
 
 function hash(byte: number): Uint8Array {
   return new Uint8Array(32).fill(byte);
@@ -68,9 +70,15 @@ function plan(): HyperliquidExecutionPlan {
       expiresAfter: 1_005_000,
     },
     legs: [
-      { role: 'SPOT', legIndex: 0, clientOrderId: SPOT_CLOID, order: spot },
-      { role: 'PERPETUAL', legIndex: 1, clientOrderId: PERP_CLOID, order: perpetual },
+      { role: 'SPOT', legIndex: 0, clientOrderId: SPOT_CLOID, order: spot,
+        baseAsset: BASE_ASSET, quoteAsset: QUOTE_ASSET, signedBaseDeltaAtoms: 1_000n },
+      { role: 'PERPETUAL', legIndex: 1, clientOrderId: PERP_CLOID, order: perpetual,
+        baseAsset: BASE_ASSET, quoteAsset: QUOTE_ASSET, signedBaseDeltaAtoms: -999n },
     ],
+    terminalResidualPolicy: {
+      kind: 'EXACT_NET', netSpotDeltaAtoms: 999n,
+      maxTerminalResidualBaseAtoms: 0n, maxTerminalResidualQuoteAtoms: 0n,
+    },
   } as unknown as HyperliquidExecutionPlan;
 }
 
@@ -237,6 +245,81 @@ test('executor returns sanitized authoritative reconciled evidence', async () =>
       rawEvidenceCommitments: [EVIDENCE],
     });
     assert.equal(server.calls(), 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('executor exposes commitment-bound normalized fills and fees', async () => {
+  const expectedSubmission = submission('SUBMISSION_ACKNOWLEDGED');
+  const sourcePlan = plan();
+  const acceptedEvidence = {
+    evidenceVersion: 1_000_100n,
+    observedAtMs: 1_000_100n,
+    spot: { clientOrderId: SPOT_CLOID, filledSignedBaseAtoms: 1_000n },
+    perpetual: { clientOrderId: PERP_CLOID, filledSignedBaseAtoms: -999n },
+    netSpotDeltaAtoms: 999n,
+    perpetualPositionDeltaAtoms: -999n,
+    fees: [
+      { assetId: 'btc', assetDecimals: 3, amountAtoms: 1n, evidenceStatus: 'CONFIRMED' },
+      { assetId: 'usdc', assetDecimals: 2, amountAtoms: 3n, evidenceStatus: 'CONFIRMED' },
+    ],
+  };
+  const coordinator = new HyperliquidTestnetRuntimeCoordinator(
+    {
+      prepare: async () => ({ status: 'PREPARED' as const, state: { checkpoint: 'prepared' } }),
+      reconcile: async () => ({
+        status: 'RECONCILED',
+        attempt: {
+          status: 'COMPLETED_EXACT', reasons: [], plan: sourcePlan,
+          acceptedEvidence,
+        },
+        rawResponseCommitments: [{ sha256: EVIDENCE }],
+        observedFills: [
+          { clientOrderId: SPOT_CLOID, signedBaseAtoms: 1_000n,
+            price: { coefficient: 60n, scale: 0 }, feeToken: 'BTC', feeAtoms: 1n,
+            observedAtMs: 1_000_050 },
+          { clientOrderId: PERP_CLOID, signedBaseAtoms: -999n,
+            price: { coefficient: 60n, scale: 0 }, feeToken: 'USDC', feeAtoms: 3n,
+            observedAtMs: 1_000_051 },
+        ],
+        accountObservation: {},
+      }),
+    },
+    { submitPackage: async () => expectedSubmission },
+  );
+  const server = await start(coordinator);
+  try {
+    const response = await execute(server.url);
+    assert.equal(response.status, 200);
+    const evidence = response.body.executionEvidence as {
+      evidenceVersion: string;
+      observedAtMs: string;
+      terminalResidualBaseAtoms: string;
+      terminalResidualQuoteAtoms: string;
+      legs: Array<Record<string, unknown>>;
+    };
+    assert.equal(evidence.evidenceVersion, '1000100');
+    assert.equal(evidence.observedAtMs, '1000100');
+    assert.equal(evidence.terminalResidualBaseAtoms, '0');
+    assert.equal(evidence.terminalResidualQuoteAtoms, '0');
+    assert.deepEqual(evidence.legs.map((leg) => ({
+      role: leg.role,
+      requested: leg.requestedSignedBaseAtoms,
+      filled: leg.filledSignedBaseAtoms,
+      gross: leg.grossQuoteAtoms,
+      feeAsset: leg.feeAssetId,
+      fee: leg.feeAtoms,
+      quoteFee: leg.venueFeeQuoteAtoms,
+    })), [
+      { role: 'SPOT', requested: '1000', filled: '1000', gross: '6000',
+        feeAsset: 'btc', fee: '1', quoteFee: '6' },
+      { role: 'PERPETUAL', requested: '-999', filled: '-999', gross: '5994',
+        feeAsset: 'usdc', fee: '3', quoteFee: '3' },
+    ]);
+    assert.ok(evidence.legs.every((leg) =>
+      typeof leg.evidenceCommitment === 'string'
+      && /^0x[0-9a-f]{64}$/.test(leg.evidenceCommitment)));
   } finally {
     await server.close();
   }

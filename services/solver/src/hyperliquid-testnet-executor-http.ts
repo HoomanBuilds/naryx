@@ -51,6 +51,27 @@ export type HyperliquidTestnetLaneReleaseRequest = Readonly<{
   reason: string;
 }>;
 
+export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
+  role: 'SPOT' | 'PERPETUAL';
+  clientOrderId: `0x${string}`;
+  requestedSignedBaseAtoms: string;
+  filledSignedBaseAtoms: string;
+  grossQuoteAtoms: string;
+  feeAssetId: string;
+  feeAssetDecimals: number;
+  feeAtoms: string;
+  venueFeeQuoteAtoms: string;
+  evidenceCommitment: string;
+}>;
+
+export type HyperliquidTestnetExecutionEvidence = Readonly<{
+  evidenceVersion: string;
+  observedAtMs: string;
+  terminalResidualBaseAtoms: string;
+  terminalResidualQuoteAtoms: string;
+  legs: readonly [HyperliquidTestnetLegExecutionEvidence, HyperliquidTestnetLegExecutionEvidence];
+}>;
+
 /** The operator actions of a loaded executor runtime that the loopback route exposes. */
 export interface HyperliquidTestnetLaneOperator {
   releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
@@ -135,6 +156,7 @@ export type HyperliquidTestnetExecutorResult =
       /** Account-wide deltas over the serialized window, so exactly this package's fills. */
       observedNetSpotDeltaAtoms?: string;
       observedPerpetualDeltaAtoms?: string;
+      executionEvidence?: HyperliquidTestnetExecutionEvidence;
     }>
   | Readonly<{
       attemptId: string;
@@ -379,6 +401,212 @@ function submissionStatus(submission: HyperliquidPackageSubmissionResult): Submi
   throw new HyperliquidTestnetExecutorError('INVALID_RESULT', 'submission status is invalid');
 }
 
+function unsignedInteger(value: unknown, name: string): bigint {
+  requireCondition(typeof value === 'bigint' && value >= 0n, 'INVALID_RESULT', `${name} is invalid`);
+  return value;
+}
+
+function signedInteger(value: unknown, name: string): bigint {
+  requireCondition(typeof value === 'bigint', 'INVALID_RESULT', `${name} is invalid`);
+  return value;
+}
+
+function positiveSafeInteger(value: unknown, name: string): number {
+  requireCondition(typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
+    'INVALID_RESULT', `${name} is invalid`);
+  return value;
+}
+
+function nonnegativeSafeInteger(value: unknown, name: string): number {
+  requireCondition(typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
+    'INVALID_RESULT', `${name} is invalid`);
+  return value;
+}
+
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function pow10(decimals: number): bigint {
+  return 10n ** BigInt(decimals);
+}
+
+function divideUp(numerator: bigint, denominator: bigint): bigint {
+  requireCondition(numerator >= 0n && denominator > 0n, 'INVALID_RESULT',
+    'execution evidence division is invalid');
+  return numerator === 0n ? 0n : (numerator + denominator - 1n) / denominator;
+}
+
+function quoteAtomsForFill(
+  fill: Record<string, unknown>,
+  baseDecimals: number,
+  quoteDecimals: number,
+  baseAtoms: bigint,
+  roundUp: boolean,
+): bigint {
+  requireCondition(isRecord(fill.price), 'INVALID_RESULT', 'execution fill price is invalid');
+  const coefficient = unsignedInteger(fill.price.coefficient, 'execution fill price coefficient');
+  const scale = nonnegativeSafeInteger(fill.price.scale, 'execution fill price scale');
+  requireCondition(coefficient > 0n && scale <= 30, 'INVALID_RESULT',
+    'execution fill price is invalid');
+  const numerator = coefficient * absolute(baseAtoms) * pow10(quoteDecimals);
+  const denominator = pow10(scale + baseDecimals);
+  return roundUp ? divideUp(numerator, denominator) : numerator / denominator;
+}
+
+function executionEvidenceCommitment(
+  actionCommitment: string,
+  requestCommitment: string,
+  rawEvidenceCommitments: readonly string[],
+  evidence: Omit<HyperliquidTestnetLegExecutionEvidence, 'evidenceCommitment'>,
+): string {
+  return `0x${createHash('sha256')
+    .update('NARYX/hyperliquid-testnet/leg-execution-evidence/v1', 'ascii')
+    .update(stringifyProtocolJson({
+      actionCommitment,
+      requestCommitment,
+      rawEvidenceCommitments,
+      evidence,
+    }, 'solver.hyperliquidTestnet.legExecutionEvidence'))
+    .digest('hex')}`;
+}
+
+function executionEvidence(
+  reconciliation: Record<string, unknown>,
+  actionCommitment: string,
+  requestCommitment: string,
+  rawEvidenceCommitments: readonly string[],
+): HyperliquidTestnetExecutionEvidence | undefined {
+  const attempt = reconciliation.attempt;
+  if (!isRecord(attempt) || attempt.acceptedEvidence === null
+    || attempt.acceptedEvidence === undefined) return undefined;
+  requireCondition(isRecord(attempt.acceptedEvidence) && isRecord(attempt.plan),
+    'INVALID_RESULT', 'accepted execution evidence is invalid');
+  const accepted = attempt.acceptedEvidence;
+  const plan = attempt.plan;
+  requireCondition(Array.isArray(plan.legs) && plan.legs.length === 2
+    && Array.isArray(reconciliation.observedFills), 'INVALID_RESULT',
+  'accepted execution evidence is invalid');
+  const plannedLegs = plan.legs as unknown[];
+  const observedFills = reconciliation.observedFills as unknown[];
+  const evidenceVersion = unsignedInteger(accepted.evidenceVersion, 'evidenceVersion');
+  const observedAtMs = unsignedInteger(accepted.observedAtMs, 'observedAtMs');
+  requireCondition(evidenceVersion > 0n && observedAtMs > 0n, 'INVALID_RESULT',
+    'accepted execution evidence is stale');
+  requireCondition(isRecord(accepted.spot) && isRecord(accepted.perpetual)
+    && Array.isArray(accepted.fees), 'INVALID_RESULT', 'accepted execution evidence is invalid');
+
+  const normalizedFees = new Map<string, bigint>();
+  for (const [index, rawFee] of accepted.fees.entries()) {
+    requireCondition(isRecord(rawFee) && typeof rawFee.assetId === 'string'
+      && rawFee.assetId.length > 0 && rawFee.assetId.length <= 128,
+    'INVALID_RESULT', `accepted fee ${index} is invalid`);
+    const decimals = nonnegativeSafeInteger(rawFee.assetDecimals, `accepted fee ${index} decimals`);
+    requireCondition(decimals <= 30 && rawFee.evidenceStatus === 'CONFIRMED',
+      'INVALID_RESULT', `accepted fee ${index} is invalid`);
+    const amount = unsignedInteger(rawFee.amountAtoms, `accepted fee ${index} amount`);
+    const key = `${rawFee.assetId}\u0000${decimals}`;
+    normalizedFees.set(key, (normalizedFees.get(key) ?? 0n) + amount);
+  }
+
+  const roles = ['SPOT', 'PERPETUAL'] as const;
+  const legs = roles.map((role): HyperliquidTestnetLegExecutionEvidence => {
+    const leg = plannedLegs.find((candidate) => isRecord(candidate) && candidate.role === role);
+    const acceptedLeg = role === 'SPOT' ? accepted.spot : accepted.perpetual;
+    requireCondition(isRecord(acceptedLeg), 'INVALID_RESULT', `${role} accepted evidence is invalid`);
+    requireCondition(isRecord(leg) && isRecord(leg.baseAsset) && isRecord(leg.quoteAsset)
+      && typeof leg.clientOrderId === 'string' && /^0x[0-9a-f]{32}$/.test(leg.clientOrderId),
+    'INVALID_RESULT', `${role} execution plan evidence is invalid`);
+    const baseAsset = leg.baseAsset;
+    const quoteAsset = leg.quoteAsset;
+    requireCondition(typeof baseAsset.assetId === 'string' && baseAsset.assetId.length > 0
+      && typeof quoteAsset.assetId === 'string' && quoteAsset.assetId.length > 0,
+    'INVALID_RESULT', `${role} execution assets are invalid`);
+    const baseDecimals = nonnegativeSafeInteger(baseAsset.decimals, `${role} base decimals`);
+    const quoteDecimals = nonnegativeSafeInteger(quoteAsset.decimals, `${role} quote decimals`);
+    requireCondition(baseDecimals <= 30 && quoteDecimals <= 30,
+      'INVALID_RESULT', `${role} execution asset decimals are invalid`);
+    const requested = signedInteger(leg.signedBaseDeltaAtoms, `${role} requested quantity`);
+    const filled = signedInteger(acceptedLeg.filledSignedBaseAtoms, `${role} filled quantity`);
+    requireCondition(acceptedLeg.clientOrderId === leg.clientOrderId,
+      'INVALID_RESULT', `${role} client order identity is invalid`);
+    const fills = observedFills.filter((candidate) => isRecord(candidate)
+      && candidate.clientOrderId === leg.clientOrderId) as Record<string, unknown>[];
+    requireCondition(fills.reduce((sum, fill) => sum
+      + signedInteger(fill.signedBaseAtoms, `${role} fill quantity`), 0n) === filled,
+    'INVALID_RESULT', `${role} observed fills do not reconcile`);
+    let grossQuoteAtoms = 0n;
+    let feeAtoms = 0n;
+    let venueFeeQuoteAtoms = 0n;
+    for (const fill of fills) {
+      const fillAtoms = signedInteger(fill.signedBaseAtoms, `${role} fill quantity`);
+      const fillFeeAtoms = unsignedInteger(fill.feeAtoms, `${role} fill fee`);
+      positiveSafeInteger(fill.observedAtMs, `${role} fill observation time`);
+      requireCondition(typeof fill.feeToken === 'string' && fill.feeToken.length > 0,
+        'INVALID_RESULT', `${role} fill fee token is invalid`);
+      const quoteValue = quoteAtomsForFill(
+        fill, baseDecimals, quoteDecimals, fillAtoms, fillAtoms > 0n,
+      );
+      grossQuoteAtoms += quoteValue;
+      feeAtoms += fillFeeAtoms;
+      venueFeeQuoteAtoms += role === 'SPOT' && requested > 0n
+        ? quoteAtomsForFill(fill, baseDecimals, quoteDecimals, fillFeeAtoms, true)
+        : fillFeeAtoms;
+    }
+    const feeAsset = role === 'SPOT' && requested > 0n ? baseAsset : quoteAsset;
+    const feeAssetId = feeAsset.assetId as string;
+    const feeAssetDecimals = role === 'SPOT' && requested > 0n ? baseDecimals : quoteDecimals;
+    const key = `${feeAssetId}\u0000${feeAssetDecimals}`;
+    normalizedFees.set(key, (normalizedFees.get(key) ?? 0n) - feeAtoms);
+    const normalized = Object.freeze({
+      role,
+      clientOrderId: leg.clientOrderId as `0x${string}`,
+      requestedSignedBaseAtoms: requested.toString(),
+      filledSignedBaseAtoms: filled.toString(),
+      grossQuoteAtoms: grossQuoteAtoms.toString(),
+      feeAssetId,
+      feeAssetDecimals,
+      feeAtoms: feeAtoms.toString(),
+      venueFeeQuoteAtoms: venueFeeQuoteAtoms.toString(),
+    });
+    return Object.freeze({
+      ...normalized,
+      evidenceCommitment: executionEvidenceCommitment(
+        actionCommitment, requestCommitment, rawEvidenceCommitments, normalized,
+      ),
+    });
+  }) as [HyperliquidTestnetLegExecutionEvidence, HyperliquidTestnetLegExecutionEvidence];
+  requireCondition([...normalizedFees.values()].every((amount) => amount === 0n),
+    'INVALID_RESULT', 'accepted fees do not reconcile with observed fills');
+  const netSpot = signedInteger(accepted.netSpotDeltaAtoms, 'net spot delta');
+  const perpetual = signedInteger(accepted.perpetualPositionDeltaAtoms, 'perpetual delta');
+  const residualBase = absolute(netSpot + perpetual);
+  let residualQuote = 0n;
+  requireCondition(isRecord(plan.terminalResidualPolicy), 'INVALID_RESULT',
+    'terminal residual policy is invalid');
+  if (plan.terminalResidualPolicy.kind === 'EXACT_NET') {
+    requireCondition(residualBase === 0n, 'INVALID_RESULT',
+      'exact execution evidence contains a residual');
+  } else {
+    requireCondition(plan.terminalResidualPolicy.kind === 'BOUNDED_NET'
+      && isRecord(plan.terminalResidualPolicy.residualValuationReferencePrice),
+    'INVALID_RESULT', 'terminal residual policy is invalid');
+    const price = plan.terminalResidualPolicy.residualValuationReferencePrice;
+    const quoteAtoms = unsignedInteger(price.quoteAtoms, 'residual valuation quote atoms');
+    const baseAtoms = unsignedInteger(price.baseAtoms, 'residual valuation base atoms');
+    requireCondition(quoteAtoms > 0n && baseAtoms > 0n, 'INVALID_RESULT',
+      'terminal residual valuation is invalid');
+    residualQuote = divideUp(residualBase * quoteAtoms, baseAtoms);
+  }
+  return Object.freeze({
+    evidenceVersion: evidenceVersion.toString(),
+    observedAtMs: observedAtMs.toString(),
+    terminalResidualBaseAtoms: residualBase.toString(),
+    terminalResidualQuoteAtoms: residualQuote.toString(),
+    legs: Object.freeze(legs),
+  });
+}
+
 function base(request: HyperliquidTestnetExecutorRequest) {
   return {
     attemptId: request.attemptId,
@@ -473,6 +701,11 @@ function sanitizeResult(
     ? reconciliation.attempt.acceptedEvidence : undefined;
   const netSpot = signedAtoms(evidence?.netSpotDeltaAtoms);
   const perpetual = signedAtoms(evidence?.perpetualPositionDeltaAtoms);
+  const normalizedExecutionEvidence = packageStatus === 'MANUAL_INTERVENTION'
+    ? undefined
+    : executionEvidence(
+      reconciliation, actionCommitment, requestCommitment, rawEvidenceCommitments,
+    );
   return Object.freeze({
     ...base(request), status: 'RECONCILED' as const,
     submissionStatus: status, packageStatus,
@@ -483,6 +716,9 @@ function sanitizeResult(
     ...(netSpot === undefined || perpetual === undefined ? {} : {
       observedNetSpotDeltaAtoms: netSpot,
       observedPerpetualDeltaAtoms: perpetual,
+    }),
+    ...(normalizedExecutionEvidence === undefined ? {} : {
+      executionEvidence: normalizedExecutionEvidence,
     }),
   });
 }

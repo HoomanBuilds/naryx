@@ -800,6 +800,8 @@ export {
   type HyperliquidTestnetExecutorPort,
   type HyperliquidTestnetExecutorRequest,
   type HyperliquidTestnetExecutorResult,
+  type HyperliquidTestnetExecutionEvidence,
+  type HyperliquidTestnetLegExecutionEvidence,
   type HyperliquidTestnetExecutorRuntime,
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetAttemptHandoff,

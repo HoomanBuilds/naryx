@@ -15,6 +15,7 @@ const ACTION = `0x${"aa".repeat(32)}`;
 const REQUEST = `0x${"bb".repeat(32)}`;
 const ERROR = `0x${"cc".repeat(32)}`;
 const EVIDENCE = `0x${"dd".repeat(32)}`;
+const LEG_EVIDENCE = `0x${"de".repeat(32)}`;
 const ENDPOINT = "/internal/terminal/hyperliquid-testnet/execute";
 const CONTEXT_ENDPOINT = "/internal/terminal/hyperliquid-testnet/context";
 const TERMINAL_CONTEXT: HyperliquidTestnetTerminalContext = Object.freeze({
@@ -28,6 +29,26 @@ const TERMINAL_CONTEXT: HyperliquidTestnetTerminalContext = Object.freeze({
   environment: "TESTNET",
   authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
   maxOpenPackagesPerOwner: 1,
+});
+const EXECUTION_EVIDENCE = Object.freeze({
+  evidenceVersion: "1000100",
+  observedAtMs: "1000100",
+  terminalResidualBaseAtoms: "0",
+  terminalResidualQuoteAtoms: "0",
+  legs: Object.freeze([
+    Object.freeze({
+      role: "SPOT", clientOrderId: `0x${"51".repeat(16)}`,
+      requestedSignedBaseAtoms: "1000", filledSignedBaseAtoms: "1000",
+      grossQuoteAtoms: "6000", feeAssetId: "btc", feeAssetDecimals: 3,
+      feeAtoms: "1", venueFeeQuoteAtoms: "6", evidenceCommitment: LEG_EVIDENCE,
+    }),
+    Object.freeze({
+      role: "PERPETUAL", clientOrderId: `0x${"52".repeat(16)}`,
+      requestedSignedBaseAtoms: "-999", filledSignedBaseAtoms: "-999",
+      grossQuoteAtoms: "5994", feeAssetId: "usdc", feeAssetDecimals: 2,
+      feeAtoms: "3", venueFeeQuoteAtoms: "3", evidenceCommitment: LEG_EVIDENCE,
+    }),
+  ]),
 });
 
 async function listen(server: ReturnType<typeof createPrivateTerminalServer>): Promise<string> {
@@ -194,6 +215,9 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
       actionCommitment: ACTION,
       requestCommitment: REQUEST,
       rawEvidenceCommitments: [EVIDENCE],
+      observedNetSpotDeltaAtoms: "999",
+      observedPerpetualDeltaAtoms: "-999",
+      executionEvidence: EXECUTION_EVIDENCE,
     };
     const reconciled = await fetch(`${serverUrl}${ENDPOINT}`, {
       method: "POST",
@@ -231,6 +255,7 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
       { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: "NOT_A_HASH", requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] },
       { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE], plan: {} },
       { ...base("RECONCILED"), submissionStatus: "VENUE_SUCCESS", packageStatus: "COMPLETED_EXACT", reasons: ["SETTLED"], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] },
+      { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: [], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE], observedNetSpotDeltaAtoms: "999", observedPerpetualDeltaAtoms: "-999", executionEvidence: { ...EXECUTION_EVIDENCE, terminalResidualQuoteAtoms: "-1" } },
     ];
     for (const bad of badResults) {
       next = bad;
