@@ -102,6 +102,11 @@ test('prepares an exact EVM account signature envelope from a compiled package r
       chainId: 84_532,
       solver: SOLVER,
       totalGrossNotionalAtoms: 100_000_000n,
+      feePolicyVersion: 1,
+      feePolicyManifestHash: HASH_C,
+      feeToken: TOKEN,
+      protocolFeeAtoms: 25_000n,
+      solverFeeAtoms: 15_000n,
       nonce: 0n,
       deadline: 2_000_000_000n,
       callPolicies: [{

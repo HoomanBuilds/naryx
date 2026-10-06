@@ -58,6 +58,11 @@ export interface EvmStrategyAccountBinding {
   readonly chainId: number;
   readonly solver: Address;
   readonly totalGrossNotionalAtoms: bigint;
+  readonly feePolicyVersion: number;
+  readonly feePolicyManifestHash: Hex;
+  readonly feeToken: Address;
+  readonly protocolFeeAtoms: bigint;
+  readonly solverFeeAtoms: bigint;
   readonly nonce: bigint;
   readonly deadline: bigint;
   readonly callPolicies: readonly EvmStrategyCallPolicy[];
@@ -213,6 +218,13 @@ function prepareEvmAccount(
     ...(identity.previousStateHash === undefined ? {} : { previousStateHash: hexHash(identity.previousStateHash, 'previous state hash') }),
     ...(identity.nextStateHash === undefined ? {} : { nextStateHash: hexHash(identity.nextStateHash, 'next state hash') }),
     totalGrossNotionalAtoms: binding.totalGrossNotionalAtoms,
+    fees: {
+      policyVersion: binding.feePolicyVersion,
+      policyManifestHash: binding.feePolicyManifestHash,
+      token: binding.feeToken,
+      protocolFeeAtoms: binding.protocolFeeAtoms,
+      solverFeeAtoms: binding.solverFeeAtoms,
+    },
     solver: binding.solver,
     nonce: binding.nonce,
     deadline: binding.deadline,

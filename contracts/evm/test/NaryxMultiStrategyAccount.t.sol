@@ -8,6 +8,7 @@ import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol"
 import {NaryxMultiStrategyAccount} from "../src/NaryxMultiStrategyAccount.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
+import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
 import {ITypedStrategyAdapter} from "../src/interfaces/ITypedStrategyAdapter.sol";
 
@@ -53,6 +54,8 @@ contract NaryxMultiStrategyAccountTest is Test {
     bytes32 private constant ADAPTER_MANIFEST_HASH = keccak256("typed-strategy-adapter-v1");
     bytes32 private constant TEMPLATE_ID = keccak256("perpetual-funding-spread-v1");
     bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("funding-spread-template-v1");
+    bytes32 private constant FEE_POLICY_SUBJECT_ID = keccak256("multi-strategy-fees");
+    bytes32 private constant FEE_POLICY_MANIFEST_HASH = keccak256("multi-strategy-fees-v1");
     bytes32 private constant STATE_ONE = keccak256("state-one");
     bytes32 private constant EVIDENCE_ONE = keccak256("evidence-one");
     bytes32 private constant EVIDENCE_TWO = keccak256("evidence-two");
@@ -61,6 +64,7 @@ contract NaryxMultiStrategyAccountTest is Test {
     address private constant GOVERNANCE_EXECUTOR = address(0x103);
     address private constant PAUSER = address(0x104);
     address private constant RECIPIENT = address(0x105);
+    address private constant PROTOCOL_RECIPIENT = address(0x106);
 
     uint256 private ownerKey = 0xA11CE;
     uint256 private solverKey = 0xB0B;
@@ -69,6 +73,7 @@ contract NaryxMultiStrategyAccountTest is Test {
     ProtocolConfig private config;
     SolverRegistry private solvers;
     TypedStrategyAdapterRegistry private adapters;
+    StrategyFeePolicyRegistry private feePolicies;
     NaryxMultiStrategyAccount private account;
     MultiStrategyToken private base;
     MultiStrategyToken private quote;
@@ -80,9 +85,10 @@ contract NaryxMultiStrategyAccountTest is Test {
         config = new ProtocolConfig(DOMAIN_ID, 1, DOMAIN_HASH, 1, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER);
         solvers = new SolverRegistry(config, solver);
         adapters = new TypedStrategyAdapterRegistry(config);
+        feePolicies = new StrategyFeePolicyRegistry(config);
         base = new MultiStrategyToken("Base", "BASE");
         quote = new MultiStrategyToken("Quote", "QUOTE");
-        account = new NaryxMultiStrategyAccount(owner, config, solvers, adapters);
+        account = new NaryxMultiStrategyAccount(owner, config, solvers, adapters, feePolicies, FEE_POLICY_SUBJECT_ID);
         adapter = new MultiStrategyAdapter(address(account), base, quote);
 
         vm.prank(PROPOSER);
@@ -91,11 +97,54 @@ contract NaryxMultiStrategyAccountTest is Test {
         vm.prank(GOVERNANCE_EXECUTOR);
         adapters.activateRegistration(ADAPTER_ID);
         vm.prank(PROPOSER);
+        feePolicies.proposePolicy(FEE_POLICY_SUBJECT_ID, _feePolicy());
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        feePolicies.activate(FEE_POLICY_SUBJECT_ID);
+        vm.prank(PROPOSER);
         config.scheduleUnpause();
         vm.warp(block.timestamp + 1);
         vm.prank(GOVERNANCE_EXECUTOR);
         config.activateUnpause();
         quote.mint(address(account), 1_000 ether);
+    }
+
+    function testCollectsSignedProtocolAndSolverFeesWithinDelayedPolicy() public {
+        NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        execution.fees.protocolFeeAtoms = 0.1 ether;
+        execution.fees.solverFeeAtoms = 0.05 ether;
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            25 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_ONE)
+        );
+
+        account.execute(
+            execution,
+            calls,
+            _sign(ownerKey, account.ownerDigest(execution, calls)),
+            _sign(solverKey, account.solverDigest(execution, calls))
+        );
+
+        assertEq(quote.balanceOf(PROTOCOL_RECIPIENT), 0.1 ether);
+        assertEq(quote.balanceOf(solver), 0.05 ether);
+    }
+
+    function testRejectsSignedFeeAbovePolicyCap() public {
+        NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        execution.fees.protocolFeeAtoms = 0.125 ether + 1;
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            25 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_ONE)
+        );
+        bytes memory ownerSignature = _sign(ownerKey, account.ownerDigest(execution, calls));
+        bytes memory solverSignature = _sign(solverKey, account.solverDigest(execution, calls));
+
+        vm.expectRevert(StrategyFeePolicyRegistry.FeeExceedsPolicy.selector);
+        account.execute(execution, calls, ownerSignature, solverSignature);
     }
 
     function testExecutesFundingSpreadLifecycleAndClearsAllowance() public {
@@ -236,9 +285,12 @@ contract NaryxMultiStrategyAccountTest is Test {
 
         vm.prank(PAUSER);
         solvers.removeSolver(solver);
+        vm.prank(PAUSER);
+        feePolicies.pause(FEE_POLICY_SUBJECT_ID);
         quote.mint(address(adapter), 10 ether);
         NaryxMultiStrategyAccount.Execution memory exit = _execution(account.EXIT(), STATE_ONE, bytes32(0), 1);
         exit.solver = address(0);
+        exit.fees = NaryxMultiStrategyAccount.FeeTerms(0, bytes32(0), address(0), 0, 0);
         NaryxMultiStrategyAccount.AdapterCall[] memory exitCalls = _calls(
             false, address(0), 0, abi.encode(uint8(0), IERC20(address(quote)), address(0), 10 ether, EVIDENCE_TWO)
         );
@@ -304,6 +356,13 @@ contract NaryxMultiStrategyAccountTest is Test {
             previousStateHash: previousState,
             nextStateHash: nextState,
             totalGrossNotionalAtoms: 50 ether,
+            fees: NaryxMultiStrategyAccount.FeeTerms({
+                policyVersion: 1,
+                policyManifestHash: FEE_POLICY_MANIFEST_HASH,
+                token: address(quote),
+                protocolFeeAtoms: 0,
+                solverFeeAtoms: 0
+            }),
             solver: solver,
             nonce: nonce,
             deadline: block.timestamp + 1 hours
@@ -346,6 +405,19 @@ contract NaryxMultiStrategyAccountTest is Test {
 
     function _settlement() private pure returns (TypedStrategyAdapterRegistry.SettlementClassRef memory) {
         return TypedStrategyAdapterRegistry.SettlementClassRef(keccak256("ATOMIC_POSTCONDITION"), 1);
+    }
+
+    function _feePolicy() private view returns (StrategyFeePolicyRegistry.Policy memory) {
+        return StrategyFeePolicyRegistry.Policy({
+            version: 1,
+            manifestHash: FEE_POLICY_MANIFEST_HASH,
+            token: address(quote),
+            expectedTokenCodeHash: address(quote).codehash,
+            protocolRecipient: PROTOCOL_RECIPIENT,
+            maximumProtocolFeeBps: 25,
+            maximumSolverFeeBps: 15,
+            paused: false
+        });
     }
 
     function _sign(uint256 key, bytes32 digest) private view returns (bytes memory) {

@@ -92,6 +92,13 @@ function input() {
     templateManifestHash: HASH_A,
     nextStateHash: HASH_B,
     totalGrossNotionalAtoms: 100_000_000n,
+    fees: {
+      policyVersion: 1,
+      policyManifestHash: HASH_C,
+      token: TOKEN,
+      protocolFeeAtoms: 25_000n,
+      solverFeeAtoms: 15_000n,
+    },
     solver: SOLVER,
     nonce: 0n,
     deadline: 2_000_000_000n,
@@ -143,6 +150,11 @@ test('binds a compiled atomic strategy plan to the multi-strategy account signat
           { name: 'settlementClass', type: 'tuple', components: [{ name: 'classId', type: 'bytes32' }, { name: 'classVersion', type: 'uint32' }] },
           { name: 'operation', type: 'uint8' }, { name: 'previousStateHash', type: 'bytes32' },
           { name: 'nextStateHash', type: 'bytes32' }, { name: 'totalGrossNotionalAtoms', type: 'uint256' },
+          { name: 'fees', type: 'tuple', components: [
+            { name: 'policyVersion', type: 'uint32' }, { name: 'policyManifestHash', type: 'bytes32' },
+            { name: 'token', type: 'address' }, { name: 'protocolFeeAtoms', type: 'uint256' },
+            { name: 'solverFeeAtoms', type: 'uint256' },
+          ] },
           { name: 'solver', type: 'address' }, { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' },
         ] },
         { name: 'calls', type: 'tuple[]', components: [
@@ -197,6 +209,13 @@ test('encodes owner-only recovery for a fully risk-reducing plan', () => {
     ...candidate,
     operation: 'EXIT',
     solver: '0x0000000000000000000000000000000000000000',
+    fees: {
+      policyVersion: 0,
+      policyManifestHash: ZERO_HASH,
+      token: '0x0000000000000000000000000000000000000000',
+      protocolFeeAtoms: 0n,
+      solverFeeAtoms: 0n,
+    },
     previousStateHash: HASH_B,
     nextStateHash: ZERO_HASH,
     callPolicies: [{ ...candidate.callPolicies[0]!, riskIncreasing: false }],
@@ -204,6 +223,6 @@ test('encodes owner-only recovery for a fully risk-reducing plan', () => {
   const encoded = encodeEvmMultiStrategyAccountRecovery({ envelope, ownerSignature: '0x0102' });
   assert.equal(
     encoded.slice(0, 10),
-    keccak256(stringToHex('executeRecovery((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,address,uint256,uint256),((bytes32,uint32,bytes32),uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes)')).slice(0, 10),
+    keccak256(stringToHex('executeRecovery((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes)')).slice(0, 10),
   );
 });

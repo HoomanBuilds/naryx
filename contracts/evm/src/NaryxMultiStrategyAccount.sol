@@ -8,6 +8,7 @@ import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
+import {StrategyFeePolicyRegistry} from "./StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
 import {ITypedStrategyAdapter} from "./interfaces/ITypedStrategyAdapter.sol";
 import {OwnerSignature} from "./libraries/OwnerSignature.sol";
@@ -46,9 +47,18 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         bytes32 previousStateHash;
         bytes32 nextStateHash;
         uint256 totalGrossNotionalAtoms;
+        FeeTerms fees;
         address solver;
         uint256 nonce;
         uint256 deadline;
+    }
+
+    struct FeeTerms {
+        uint32 policyVersion;
+        bytes32 policyManifestHash;
+        address token;
+        uint256 protocolFeeAtoms;
+        uint256 solverFeeAtoms;
     }
 
     struct AdapterCall {
@@ -80,6 +90,7 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         bytes32 nextStateHash;
         bytes32 callsHash;
         bytes32 evidenceRoot;
+        FeeTerms fees;
         uint256 nonce;
         address solver;
     }
@@ -114,16 +125,27 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         uint8 stage,
         bytes32 evidenceHash
     );
+    event StrategyFeesCollected(
+        bytes32 indexed receiptHash,
+        address indexed token,
+        address indexed protocolRecipient,
+        address solverRecipient,
+        uint256 protocolFeeAtoms,
+        uint256 solverFeeAtoms
+    );
 
     address public immutable owner;
     ProtocolConfig public immutable config;
     SolverRegistry public immutable solverRegistry;
     TypedStrategyAdapterRegistry public immutable adapterRegistry;
+    StrategyFeePolicyRegistry public immutable feePolicyRegistry;
+    bytes32 public immutable feePolicySubjectId;
     uint256 public immutable deploymentChainId;
     bytes32 public immutable deploymentDomainIdHash;
     bytes32 public immutable configCodeHash;
     bytes32 public immutable solverRegistryCodeHash;
     bytes32 public immutable adapterRegistryCodeHash;
+    bytes32 public immutable feePolicyRegistryCodeHash;
 
     uint256 public nextNonce;
     mapping(bytes32 packageId => PackageState state) private _packages;
@@ -133,24 +155,31 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         address owner_,
         ProtocolConfig config_,
         SolverRegistry solverRegistry_,
-        TypedStrategyAdapterRegistry adapterRegistry_
+        TypedStrategyAdapterRegistry adapterRegistry_,
+        StrategyFeePolicyRegistry feePolicyRegistry_,
+        bytes32 feePolicySubjectId_
     ) EIP712("Naryx Multi Strategy Account", "1") {
         if (
             owner_ == address(0) || owner_ == address(this) || address(config_).code.length == 0
                 || address(solverRegistry_).code.length == 0 || address(adapterRegistry_).code.length == 0
+                || address(feePolicyRegistry_).code.length == 0 || feePolicySubjectId_ == bytes32(0)
                 || address(solverRegistry_.config()) != address(config_)
                 || address(adapterRegistry_.config()) != address(config_)
+                || address(feePolicyRegistry_.config()) != address(config_)
         ) revert InvalidConfiguration();
         (string memory domainId,,) = config_.domain();
         owner = owner_;
         config = config_;
         solverRegistry = solverRegistry_;
         adapterRegistry = adapterRegistry_;
+        feePolicyRegistry = feePolicyRegistry_;
+        feePolicySubjectId = feePolicySubjectId_;
         deploymentChainId = block.chainid;
         deploymentDomainIdHash = keccak256(bytes(domainId));
         configCodeHash = address(config_).codehash;
         solverRegistryCodeHash = address(solverRegistry_).codehash;
         adapterRegistryCodeHash = address(adapterRegistry_).codehash;
+        feePolicyRegistryCodeHash = address(feePolicyRegistry_).codehash;
     }
 
     function packageState(bytes32 packageId) external view returns (PackageState memory) {
@@ -211,14 +240,16 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         _validateState(_packages[execution.packageId], execution);
         nextNonce = execution.nonce + 1;
         bytes32[] memory evidence = _executeCalls(execution, calls);
-        return _finalize(execution, calls, evidence, callCommitment);
+        address protocolRecipient = _collectFees(execution);
+        return _finalize(execution, calls, evidence, callCommitment, protocolRecipient);
     }
 
     function _finalize(
         Execution calldata execution,
         AdapterCall[] calldata calls,
         bytes32[] memory evidence,
-        bytes32 callCommitment
+        bytes32 callCommitment,
+        address protocolRecipient
     ) private returns (bytes32 receiptHash) {
         bytes32 evidenceRoot = keccak256(abi.encode(evidence));
         receiptHash = _receiptHash(execution, callCommitment, evidenceRoot);
@@ -233,6 +264,7 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
             nextStateHash: execution.nextStateHash,
             callsHash: callCommitment,
             evidenceRoot: evidenceRoot,
+            fees: execution.fees,
             nonce: execution.nonce,
             solver: execution.solver
         });
@@ -254,6 +286,16 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
             evidenceRoot,
             execution.nextStateHash
         );
+        if (execution.fees.protocolFeeAtoms != 0 || execution.fees.solverFeeAtoms != 0) {
+            emit StrategyFeesCollected(
+                receiptHash,
+                execution.fees.token,
+                protocolRecipient,
+                execution.solver,
+                execution.fees.protocolFeeAtoms,
+                execution.fees.solverFeeAtoms
+            );
+        }
         for (uint256 index = 0; index < calls.length; ++index) {
             emit AdapterLegExecuted(
                 receiptHash,
@@ -274,6 +316,33 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         for (uint256 index = 0; index < calls.length; ++index) {
             evidence[index] = _executeAdapterCall(execution, calls[index], index);
         }
+    }
+
+    function _collectFees(Execution calldata execution) private returns (address protocolRecipient) {
+        FeeTerms calldata fees = execution.fees;
+        if (execution.solver == address(0)) {
+            if (
+                fees.policyVersion != 0 || fees.policyManifestHash != bytes32(0) || fees.token != address(0)
+                    || fees.protocolFeeAtoms != 0 || fees.solverFeeAtoms != 0
+            ) revert InvalidExecution();
+            return address(0);
+        }
+        if (fees.policyVersion == 0 || fees.policyManifestHash == bytes32(0) || fees.token == address(0)) {
+            revert InvalidExecution();
+        }
+        protocolRecipient = feePolicyRegistry.validateFees(
+            feePolicySubjectId,
+            fees.policyVersion,
+            fees.policyManifestHash,
+            fees.token,
+            fees.protocolFeeAtoms,
+            fees.solverFeeAtoms,
+            execution.totalGrossNotionalAtoms
+        );
+        if (fees.protocolFeeAtoms != 0) {
+            IERC20(fees.token).safeTransfer(protocolRecipient, fees.protocolFeeAtoms);
+        }
+        if (fees.solverFeeAtoms != 0) IERC20(fees.token).safeTransfer(execution.solver, fees.solverFeeAtoms);
     }
 
     function _receiptHash(Execution calldata execution, bytes32 callCommitment, bytes32 evidenceRoot)
@@ -320,6 +389,7 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
             block.chainid != deploymentChainId || address(config).codehash != configCodeHash
                 || address(solverRegistry).codehash != solverRegistryCodeHash
                 || address(adapterRegistry).codehash != adapterRegistryCodeHash
+                || address(feePolicyRegistry).codehash != feePolicyRegistryCodeHash
         ) revert InvalidConfiguration();
         if (
             execution.packageId == bytes32(0) || execution.orderHash == bytes32(0) || execution.graphHash == bytes32(0)

@@ -15,12 +15,12 @@ import {
 import type { EvmStrategyExecutionPlan, EvmStrategyLegCall } from './strategy-plan.js';
 
 const ACCOUNT_ABI = parseAbi([
-  'function execute((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
-  'function executeRecovery((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature) returns (bytes32 receiptHash)',
+  'function execute((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
+  'function executeRecovery((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature) returns (bytes32 receiptHash)',
 ]);
 
 const EXECUTION_PARAMETERS = parseAbiParameters(
-  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,address solver,uint256 nonce,uint256 deadline)',
+  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
 );
 const CALL_PARAMETERS = parseAbiParameters(
   '((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[]',
@@ -82,9 +82,18 @@ export interface EvmMultiStrategyExecution {
   readonly previousStateHash: Hex;
   readonly nextStateHash: Hex;
   readonly totalGrossNotionalAtoms: bigint;
+  readonly fees: EvmStrategyFeeTerms;
   readonly solver: Address;
   readonly nonce: bigint;
   readonly deadline: bigint;
+}
+
+export interface EvmStrategyFeeTerms {
+  readonly policyVersion: number;
+  readonly policyManifestHash: Hex;
+  readonly token: Address;
+  readonly protocolFeeAtoms: bigint;
+  readonly solverFeeAtoms: bigint;
 }
 
 export interface EvmMultiStrategyCall {
@@ -155,6 +164,7 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
   previousStateHash?: Hex;
   nextStateHash?: Hex;
   totalGrossNotionalAtoms: bigint;
+  fees: EvmStrategyFeeTerms;
   solver: Address;
   nonce: bigint;
   deadline: bigint;
@@ -202,6 +212,23 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
   requireCondition((input.operation === 'EXIT' || input.operation === 'EMERGENCY_UNWIND') === (nextStateHash === ZERO_HASH), 'only terminal operations produce a zero next state');
   if (previousStateHash !== ZERO_HASH) hash32(previousStateHash, 'previous state hash');
   if (nextStateHash !== ZERO_HASH) hash32(nextStateHash, 'next state hash');
+  const solver = getAddress(input.solver);
+  const recovery = solver === ZERO_ADDRESS;
+  requireCondition(input.fees.protocolFeeAtoms >= 0n && input.fees.solverFeeAtoms >= 0n, 'strategy fees cannot be negative');
+  if (recovery) {
+    requireCondition(
+      input.fees.policyVersion === 0
+        && input.fees.policyManifestHash.toLowerCase() === ZERO_HASH
+        && getAddress(input.fees.token) === ZERO_ADDRESS
+        && input.fees.protocolFeeAtoms === 0n
+        && input.fees.solverFeeAtoms === 0n,
+      'recovery execution must be fee-free',
+    );
+  } else {
+    requireCondition(Number.isInteger(input.fees.policyVersion) && input.fees.policyVersion > 0, 'fee policy version is invalid');
+    hash32(input.fees.policyManifestHash, 'fee policy manifest hash');
+    requireCondition(getAddress(input.fees.token) !== ZERO_ADDRESS, 'fee token is invalid');
+  }
   const execution: EvmMultiStrategyExecution = Object.freeze({
     domainIdHash: domainHash(plan.domain),
     domainManifestVersion: plan.domain.domainManifestVersion,
@@ -221,7 +248,14 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
     previousStateHash,
     nextStateHash,
     totalGrossNotionalAtoms: input.totalGrossNotionalAtoms,
-    solver: getAddress(input.solver),
+    fees: Object.freeze({
+      policyVersion: input.fees.policyVersion,
+      policyManifestHash: input.fees.policyManifestHash.toLowerCase() as Hex,
+      token: getAddress(input.fees.token),
+      protocolFeeAtoms: input.fees.protocolFeeAtoms,
+      solverFeeAtoms: input.fees.solverFeeAtoms,
+    }),
+    solver,
     nonce: input.nonce,
     deadline: input.deadline,
   });
