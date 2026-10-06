@@ -15,6 +15,7 @@ import {
   createEvmExactFutureMaterializer,
   createEvmExactSpotMaterializer,
   createEvmExactVaultMaterializer,
+  createEvmPremiaV3OptionMaterializer,
   type EvmStrategyLegMaterializationContext,
   type EvmTypedAdapterMaterializerBinding,
 } from '../src/index.js';
@@ -233,6 +234,56 @@ test('materializes package-isolated Aave V3 lending actions', () => {
   assert.equal(decoded.action, 3);
   assert.equal(decoded.inputAtoms, 100n);
   assert.equal(decoded.minimumPostHealthFactor, 2_000n);
+});
+
+test('materializes exact Premia V3 option position bounds', () => {
+  const materializer = createEvmPremiaV3OptionMaterializer({
+    binding: binding('OPTION_BUY', 'naryx.evm.premia-v3-option-exact'),
+    bounds: [{
+      legId: 'leg',
+      premiumLimit: 10n,
+      maximumInputAtoms: 10n,
+      expectedPreLongs: 0n,
+      expectedPreShorts: 0n,
+      expectedPostLongs: 100n,
+      expectedPostShorts: 0n,
+      minimumAccountTokenDelta: -10n,
+      maximumAccountTokenDelta: -10n,
+    }],
+  });
+  const result = materializer.materialize(context({
+    legFamily: 'OPTION_BUY',
+    side: 'BUY',
+    quantityAtoms: 100n,
+    marginDeltaAtoms: 0n,
+  }));
+  const [decoded] = decodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'packageId', type: 'bytes32' },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'quoteHash', type: 'bytes32' },
+        { name: 'routeHash', type: 'bytes32' },
+        { name: 'action', type: 'uint8' },
+        { name: 'isBuy', type: 'bool' },
+        { name: 'size', type: 'uint256' },
+        { name: 'premiumLimit', type: 'uint256' },
+        { name: 'maximumInputAtoms', type: 'uint256' },
+        { name: 'expectedPreLongs', type: 'uint256' },
+        { name: 'expectedPreShorts', type: 'uint256' },
+        { name: 'expectedPostLongs', type: 'uint256' },
+        { name: 'expectedPostShorts', type: 'uint256' },
+        { name: 'minimumAccountTokenDelta', type: 'int256' },
+        { name: 'maximumAccountTokenDelta', type: 'int256' },
+      ],
+    }],
+    result.data,
+  );
+  assert.equal(decoded.action, 1);
+  assert.equal(decoded.isBuy, true);
+  assert.equal(decoded.expectedPostLongs, 100n);
+  assert.equal(decoded.minimumAccountTokenDelta, -10n);
 });
 
 test('materializes exact perpetual observations and enforces the quoted margin input', () => {

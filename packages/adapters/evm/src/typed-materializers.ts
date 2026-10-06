@@ -10,6 +10,7 @@ const PERP_CLASS_ID = 'naryx.evm.perp-exact';
 const FUTURE_CLASS_ID = 'naryx.evm.future-exact';
 const ERC4626_CLASS_ID = 'naryx.evm.erc4626-exact';
 const AAVE_V3_LENDING_CLASS_ID = 'naryx.evm.aave-v3-lending-exact';
+const PREMIA_V3_OPTION_CLASS_ID = 'naryx.evm.premia-v3-option-exact';
 const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MIN = -(1n << 127n);
@@ -52,6 +53,18 @@ export interface EvmAaveV3LendingLegBounds {
   readonly minimumPostDebtBase: bigint;
   readonly maximumPostDebtBase: bigint;
   readonly minimumPostHealthFactor: bigint;
+}
+
+export interface EvmPremiaV3OptionLegBounds {
+  readonly legId: string;
+  readonly premiumLimit: bigint;
+  readonly maximumInputAtoms: bigint;
+  readonly expectedPreLongs: bigint;
+  readonly expectedPreShorts: bigint;
+  readonly expectedPostLongs: bigint;
+  readonly expectedPostShorts: bigint;
+  readonly minimumAccountTokenDelta: bigint;
+  readonly maximumAccountTokenDelta: bigint;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -422,6 +435,82 @@ export function createEvmAaveV3LendingMaterializer(input: Readonly<{
             minimumPostDebtBase: bounds.minimumPostDebtBase,
             maximumPostDebtBase: bounds.maximumPostDebtBase,
             minimumPostHealthFactor: bounds.minimumPostHealthFactor,
+          }],
+        ),
+        gasLimit: input.binding.maximumGasLimit,
+      });
+    },
+  });
+}
+
+export function createEvmPremiaV3OptionMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  bounds: readonly EvmPremiaV3OptionLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  requireCondition(input.binding.materializationClassId === PREMIA_V3_OPTION_CLASS_ID, 'Premia V3 materializer class mismatch');
+  const checked = input.bounds.map((value) => {
+    unsigned(value.premiumLimit, UINT256_MAX, `leg ${value.legId} premium limit`);
+    unsigned(value.maximumInputAtoms, UINT256_MAX, `leg ${value.legId} maximum input`);
+    unsigned(value.expectedPreLongs, UINT256_MAX, `leg ${value.legId} pre longs`);
+    unsigned(value.expectedPreShorts, UINT256_MAX, `leg ${value.legId} pre shorts`);
+    unsigned(value.expectedPostLongs, UINT256_MAX, `leg ${value.legId} post longs`);
+    unsigned(value.expectedPostShorts, UINT256_MAX, `leg ${value.legId} post shorts`);
+    requireCondition(value.minimumAccountTokenDelta <= value.maximumAccountTokenDelta, `leg ${value.legId} account delta range is inverted`);
+    return value;
+  });
+  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'Premia V3 option leg bounds repeat');
+  return Object.freeze({
+    ...input.binding,
+    adapterAddress: getAddress(input.binding.adapterAddress),
+    materialize(context: EvmStrategyLegMaterializationContext) {
+      const leg = graphLeg(context);
+      const trade = leg.legFamily === 'OPTION_BUY' || leg.legFamily === 'OPTION_SELL' || leg.legFamily === 'OPTION_MINT';
+      const action = trade ? 1 : leg.legFamily === 'OPTION_EXERCISE' ? 2 : leg.legFamily === 'OPTION_CASH_SETTLE' ? 3 : 0;
+      requireCondition(action !== 0, `leg ${leg.legId} is not a Premia V3 option action`);
+      if (trade) requireCondition(leg.side === 'BUY' || leg.side === 'SELL', `Premia V3 trade leg ${leg.legId} requires a side`);
+      const matches = checked.filter((value) => value.legId === leg.legId);
+      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact Premia V3 bounds`);
+      const bounds = matches[0]!;
+      if (trade) requireCondition(bounds.premiumLimit > 0n, `leg ${leg.legId} premium limit must be positive`);
+      else requireCondition(bounds.premiumLimit === 0n && bounds.maximumInputAtoms === 0n, `leg ${leg.legId} settlement cannot carry trade funding`);
+      return Object.freeze({
+        data: encodeAbiParameters(
+          [{
+            type: 'tuple',
+            components: [
+              { name: 'packageId', type: 'bytes32' },
+              { name: 'orderHash', type: 'bytes32' },
+              { name: 'quoteHash', type: 'bytes32' },
+              { name: 'routeHash', type: 'bytes32' },
+              { name: 'action', type: 'uint8' },
+              { name: 'isBuy', type: 'bool' },
+              { name: 'size', type: 'uint256' },
+              { name: 'premiumLimit', type: 'uint256' },
+              { name: 'maximumInputAtoms', type: 'uint256' },
+              { name: 'expectedPreLongs', type: 'uint256' },
+              { name: 'expectedPreShorts', type: 'uint256' },
+              { name: 'expectedPostLongs', type: 'uint256' },
+              { name: 'expectedPostShorts', type: 'uint256' },
+              { name: 'minimumAccountTokenDelta', type: 'int256' },
+              { name: 'maximumAccountTokenDelta', type: 'int256' },
+            ],
+          }],
+          [{
+            packageId: context.packageId,
+            orderHash: context.orderHash,
+            quoteHash: context.quoteHash,
+            routeHash: context.routeHash,
+            action,
+            isBuy: trade && leg.side === 'BUY',
+            size: trade ? leg.quantityAtoms : 0n,
+            premiumLimit: bounds.premiumLimit,
+            maximumInputAtoms: bounds.maximumInputAtoms,
+            expectedPreLongs: bounds.expectedPreLongs,
+            expectedPreShorts: bounds.expectedPreShorts,
+            expectedPostLongs: bounds.expectedPostLongs,
+            expectedPostShorts: bounds.expectedPostShorts,
+            minimumAccountTokenDelta: bounds.minimumAccountTokenDelta,
+            maximumAccountTokenDelta: bounds.maximumAccountTokenDelta,
           }],
         ),
         gasLimit: input.binding.maximumGasLimit,
