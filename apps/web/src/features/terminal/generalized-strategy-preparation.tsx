@@ -119,6 +119,12 @@ type StrategyExecutionResult = Readonly<{
   reasons: readonly string[];
 }>;
 
+type StrategyExecutionProgress = Readonly<{
+  state: "NOT_STARTED" | "QUEUED" | "EXECUTING" | "UNCERTAIN" | "COMPLETED";
+  lane: string | null;
+  queuePosition: number | null;
+}>;
+
 type StrategyReceiptAmount = Readonly<{
   assetId: string;
   decimals: number;
@@ -493,6 +499,45 @@ function hasTerminalStrategyReceipt(result: StrategyExecutionResult): boolean {
     && (result.packageStatus === "NO_EFFECT" || result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED");
 }
 
+function isFinalStrategyResult(result: StrategyExecutionResult): boolean {
+  return hasTerminalStrategyReceipt(result)
+    || result.status === "NOT_SUBMITTED"
+    || result.status === "CHECKPOINT_INCOMPLETE"
+    || result.status === "CHECKPOINT_FAILED";
+}
+
+function parseExecutionProgress(
+  payload: unknown,
+  attemptId: string,
+  idempotencyKey: string,
+): Readonly<{ progress: StrategyExecutionProgress; result: StrategyExecutionResult | null }> {
+  const root = record(payload, "Strategy execution progress");
+  if (root.attemptId !== attemptId || root.idempotencyKey !== idempotencyKey) {
+    throw new Error("Strategy execution progress does not bind the selected attempt.");
+  }
+  const lane = root.lane === null || root.lane === undefined ? null : text(root.lane, "Strategy execution lane");
+  if (root.state === "COMPLETED") {
+    return Object.freeze({
+      progress: Object.freeze({ state: "COMPLETED", lane, queuePosition: null }),
+      result: parseExecutionResult(root.result, attemptId, idempotencyKey),
+    });
+  }
+  if (root.state === "QUEUED") {
+    const queuePosition = unsignedInteger(root.queuePosition, "Strategy execution queue position");
+    return Object.freeze({
+      progress: Object.freeze({ state: "QUEUED", lane, queuePosition }),
+      result: null,
+    });
+  }
+  if (root.state !== "NOT_STARTED" && root.state !== "EXECUTING" && root.state !== "UNCERTAIN") {
+    throw new Error("Strategy execution progress state is invalid.");
+  }
+  return Object.freeze({
+    progress: Object.freeze({ state: root.state, lane, queuePosition: null }),
+    result: null,
+  });
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -551,6 +596,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [selectionKey, setSelectionKey] = useState("");
   const [executionKey, setExecutionKey] = useState("");
   const [executionResult, setExecutionResult] = useState<StrategyExecutionResult | null>(null);
+  const [executionProgress, setExecutionProgress] = useState<StrategyExecutionProgress | null>(null);
   const [strategyReceipt, setStrategyReceipt] = useState<StrategyReceiptSummary | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
@@ -610,6 +656,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setExecutionProgress(null);
       setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order staging failed closed.");
@@ -643,6 +690,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setExecutionProgress(null);
       setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
@@ -671,6 +719,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setExecutionProgress(null);
       setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
@@ -711,6 +760,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setExecutionProgress(null);
       setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order authorization failed closed.");
@@ -750,6 +800,7 @@ export function GeneralizedStrategyPreparationPanel({
       }));
       setExecutionKey("");
       setExecutionResult(null);
+      setExecutionProgress(null);
       setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy execution selection failed closed.");
@@ -764,9 +815,12 @@ export function GeneralizedStrategyPreparationPanel({
     setError(null);
     const idempotencyKey = executionKey || `strategy-exec-${executionAttempt.attemptId.slice(-40)}`;
     if (executionKey === "") setExecutionKey(idempotencyKey);
+    let handoffStarted = false;
     try {
       if (authorizeExecution === undefined) throw new Error("Connect the package owner wallet before execution.");
       await authorizeExecution(executionAttempt);
+      handoffStarted = true;
+      setExecutionProgress(Object.freeze({ state: "EXECUTING", lane: null, queuePosition: null }));
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/execute`, {
         method: "POST",
         cache: "no-store",
@@ -778,6 +832,11 @@ export function GeneralizedStrategyPreparationPanel({
       if (!response.ok) throw new Error(await failureMessage(response));
       const result = parseExecutionResult(await response.json(), executionAttempt.attemptId, idempotencyKey);
       setExecutionResult(result);
+      setExecutionProgress(Object.freeze({
+        state: isFinalStrategyResult(result) ? "COMPLETED" : "UNCERTAIN",
+        lane: null,
+        queuePosition: null,
+      }));
       if (hasTerminalStrategyReceipt(result) && publicApiBaseUrl !== null) {
         const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${executionAttempt.quoteHash}`, {
           headers: { Accept: "application/json" },
@@ -789,7 +848,46 @@ export function GeneralizedStrategyPreparationPanel({
         setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), executionAttempt.quoteHash));
       }
     } catch (cause) {
+      if (handoffStarted) setExecutionProgress(Object.freeze({ state: "UNCERTAIN", lane: null, queuePosition: null }));
       setError(cause instanceof Error ? cause.message : "Strategy execution failed closed.");
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
+  async function refreshExecutionStatus() {
+    if (privateApiBaseUrl === null || executionAttempt === null) return;
+    setExecutionBusy(true);
+    setError(null);
+    const idempotencyKey = executionKey || `strategy-exec-${executionAttempt.attemptId.slice(-40)}`;
+    if (executionKey === "") setExecutionKey(idempotencyKey);
+    try {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/attempt-status`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attemptId: executionAttempt.attemptId, idempotencyKey }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const next = parseExecutionProgress(await response.json(), executionAttempt.attemptId, idempotencyKey);
+      setExecutionProgress(next.progress);
+      if (next.result !== null) {
+        setExecutionResult(next.result);
+        if (hasTerminalStrategyReceipt(next.result) && publicApiBaseUrl !== null) {
+          const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${executionAttempt.quoteHash}`, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+          });
+          if (!receiptResponse.ok) throw new Error("Execution finalized, but its canonical strategy receipt is unavailable.");
+          setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), executionAttempt.quoteHash));
+        }
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy execution status failed closed.");
     } finally {
       setExecutionBusy(false);
     }
@@ -833,6 +931,7 @@ export function GeneralizedStrategyPreparationPanel({
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
+            setExecutionProgress(null);
             setStrategyReceipt(null);
             setError(null);
           }}
@@ -890,6 +989,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setSelectionKey("");
                 setExecutionKey("");
                 setExecutionResult(null);
+                setExecutionProgress(null);
                 setStrategyReceipt(null);
                 setError(null);
               }}
@@ -919,6 +1019,7 @@ export function GeneralizedStrategyPreparationPanel({
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
+            setExecutionProgress(null);
             setStrategyReceipt(null);
             setError(null);
           }}
@@ -991,16 +1092,34 @@ export function GeneralizedStrategyPreparationPanel({
               <button
                 type="button"
                 className={styles.primaryAction}
-                disabled={privateApiBaseUrl === null || executionBusy || executionResult !== null}
+                disabled={privateApiBaseUrl === null || executionBusy || executionResult !== null || executionProgress !== null}
                 onClick={() => void executeStrategy()}
               >
-                {executionBusy ? "Signing and executing package" : executionResult ? "Package execution recorded" : "Sign and execute selected package"}
+                {executionBusy ? "Signing and executing package" : executionResult ? "Package execution recorded" : executionProgress ? "Execution handoff started" : "Sign and execute selected package"}
               </button>
               {executionResult ? (
                 <p className={styles.fieldContext} role="status">
                   {executionResult.status}{executionResult.packageStatus ? ` / ${executionResult.packageStatus}` : ""}
                   {executionResult.reasons.length > 0 ? `: ${executionResult.reasons.join(", ")}` : ""}
                 </p>
+              ) : null}
+              {executionProgress && executionProgress.state !== "COMPLETED" ? (
+                <p className={styles.fieldContext} role="status">
+                  {executionProgress.state === "QUEUED"
+                    ? `Queued at position ${executionProgress.queuePosition ?? 0}${executionProgress.lane ? ` on ${executionProgress.lane}` : ""}.`
+                    : `${executionProgress.state.replaceAll("_", " ").toLowerCase()}${executionProgress.lane ? ` on ${executionProgress.lane}` : ""}.`}
+                </p>
+              ) : null}
+              {executionProgress && executionProgress.state !== "COMPLETED"
+                && (executionResult === null || !isFinalStrategyResult(executionResult)) ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={privateApiBaseUrl === null || executionBusy}
+                  onClick={() => void refreshExecutionStatus()}
+                >
+                  {executionBusy ? "Refreshing execution evidence" : "Refresh durable execution status"}
+                </button>
               ) : null}
               {strategyReceipt ? (
                 <div className={styles.quoteReview}>
