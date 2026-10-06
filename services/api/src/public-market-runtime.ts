@@ -54,6 +54,8 @@ export interface PublicMarketRuntime {
   readonly solverApiEnabled: boolean;
   /** Canonical strategy-order admission shared with the private terminal when configured. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
+  /** Immutable provenance for strategy orders derived from an owner-authorized canonical order. */
+  readonly strategyPackageSources?: Pick<SqliteStrategyPackageStore, "bindSourceOrder" | "sourceBinding">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
@@ -450,6 +452,7 @@ export function loadPublicMarketRuntime(
       ...(strategies === undefined ? {} : { strategies }),
       ...(strategyPackages === undefined ? {} : { strategyPackages }),
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
+      ...(strategyPackages === undefined ? {} : { strategyPackageSources: strategyPackages }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),

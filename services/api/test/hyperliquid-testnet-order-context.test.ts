@@ -22,6 +22,7 @@ import {
   InternalOrderCoordinator,
   SqliteExecutionIntentStore,
   SqliteInternalOrderStore,
+  SqliteStrategyPackageStore,
   createFetchHyperliquidTestnetInfoPort,
   createHyperliquidTestnetOrderRuntime,
   loadHyperliquidTestnetRuntimeConfig,
@@ -496,6 +497,9 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
   assert.equal(await feed.refresh(), true);
   const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
   await withOrders(async (orders) => {
+    const strategyScratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-strategy-source-"));
+    const strategyStore = new SqliteStrategyPackageStore(join(strategyScratch, "strategies.db"), { clock: () => market.now });
+    try {
     const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
     const created = await coordinator.createOrder(orderRequest("1", "hyper-generalized-order-0001"));
     let captured: Readonly<{ order: StrategyPackageOrderInput; graph: PackageGraphInput }> | undefined;
@@ -515,18 +519,18 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
       intake: {
         store: (order, graph) => {
           captured = { order, graph };
+          const stored = strategyStore.registerOrder(order, graph);
           return {
             version: 1,
             status: "STORED_FOR_QUOTING",
-            created: true,
-            orderHashHex: toHex(strategyPackageOrderHash(order)),
-            graphHashHex: toHex(packageGraphHash(graph)),
+            ...stored,
             currentTime: { unit: "HYPERLIQUID_UNIX_MILLISECONDS", value: BigInt(market.now) },
             timeSource: "SERVER",
             stages: [],
           };
         },
       },
+      sources: strategyStore,
     });
     const staged = port.stage(created.record.orderHashHex);
     assert.equal(staged.intake.status, "STORED_FOR_QUOTING");
@@ -542,6 +546,16 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
     ]);
     assert.equal(staged.intake.orderHashHex, toHex(strategyPackageOrderHash(staged.order)));
     assert.equal(staged.intake.graphHashHex, toHex(packageGraphHash(staged.graph)));
+    assert.deepEqual(strategyStore.sourceBinding(staged.intake.orderHashHex), {
+      orderHashHex: staged.intake.orderHashHex,
+      sourceOrderHashHex: created.record.orderHashHex,
+      recordedAtMs: market.now,
+    });
+    assert.equal(port.stage(created.record.orderHashHex).intake.created, false);
+    assert.throws(
+      () => strategyStore.bindSourceOrder(staged.intake.orderHashHex, "ff".repeat(32)),
+      { code: "SOURCE_CONFLICT" },
+    );
     const unreviewed = createHyperliquidGeneralizedOrderPort({
       config: runtimeConfig,
       profile: {
@@ -553,8 +567,13 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
       orders,
       intents: { getAttemptForOrder: () => undefined, getAuthorization: () => undefined },
       intake: { store: () => { throw new Error("intake must not run"); } },
+      sources: { bindSourceOrder: () => { throw new Error("source binding must not run"); } },
     });
     assert.throws(() => unreviewed.stage(created.record.orderHashHex), { code: "SOURCE_ORDER_NOT_REVIEWED" });
+    } finally {
+      strategyStore.close();
+      rmSync(strategyScratch, { recursive: true, force: true });
+    }
   });
 });
 

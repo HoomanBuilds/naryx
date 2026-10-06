@@ -766,7 +766,8 @@ let hyperliquidGeneralizedOrder: ReturnType<typeof createHyperliquidGeneralizedO
 try {
   const profile = loadHyperliquidGeneralizedOrderProfile(process.env);
   if (profile !== undefined) {
-    if (hyperliquidConfig === undefined || publicMarket?.strategyOrderIntake === undefined) {
+    if (hyperliquidConfig === undefined || publicMarket?.strategyOrderIntake === undefined
+      || publicMarket.strategyPackageSources === undefined) {
       throw new Error("Hyperliquid generalized order staging requires the testnet runtime and public strategy market.");
     }
     hyperliquidGeneralizedOrder = createHyperliquidGeneralizedOrderPort({
@@ -775,6 +776,7 @@ try {
       orders: orderStore,
       intents: executionIntentStore,
       intake: publicMarket.strategyOrderIntake,
+      sources: publicMarket.strategyPackageSources,
     });
   }
 } catch (error) {

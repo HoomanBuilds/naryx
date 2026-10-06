@@ -21,6 +21,7 @@ import {
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { HyperliquidTestnetRuntimeConfig } from "./hyperliquid-testnet-runtime-client.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
+import type { SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import type {
   StrategyOrderIntakePort,
   StrategyOrderIntakeResult,
@@ -358,6 +359,7 @@ export function createHyperliquidGeneralizedOrderPort(input: Readonly<{
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
   intents: Pick<ExecutionIntentStore, "getAttemptForOrder" | "getAuthorization">;
   intake: StrategyOrderIntakePort;
+  sources: Pick<SqliteStrategyPackageStore, "bindSourceOrder">;
 }>): HyperliquidGeneralizedOrderPort {
   if (input.config.orderContext === undefined) {
     throw new HyperliquidGeneralizedOrderError("INVALID_CONFIGURATION", "Hyperliquid order context is missing.");
@@ -383,6 +385,11 @@ export function createHyperliquidGeneralizedOrderPort(input: Readonly<{
       if (intake.orderHashHex !== toHex(strategyPackageOrderHash(documents.order))
         || intake.graphHashHex !== toHex(packageGraphHash(documents.graph))) {
         throw new HyperliquidGeneralizedOrderError("INTAKE_MISMATCH", "Strategy order intake returned an invalid identity.");
+      }
+      const sourceBinding = input.sources.bindSourceOrder(intake.orderHashHex, sourceOrderHash);
+      if (sourceBinding.binding.orderHashHex !== intake.orderHashHex
+        || sourceBinding.binding.sourceOrderHashHex !== sourceOrderHash) {
+        throw new HyperliquidGeneralizedOrderError("INTAKE_MISMATCH", "Strategy order source binding returned an invalid identity.");
       }
       return Object.freeze({ sourceOrderHash, ...documents, intake });
     },

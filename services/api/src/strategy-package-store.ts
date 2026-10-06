@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS strategy_package_quotes (
   route_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_package_sources (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  source_order_hash BLOB NOT NULL UNIQUE,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_package_receipts (
   receipt_hash BLOB PRIMARY KEY,
   order_hash BLOB NOT NULL REFERENCES strategy_package_orders(order_hash),
@@ -60,6 +65,8 @@ CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE 
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_delete BEFORE DELETE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_source_change BEFORE UPDATE ON strategy_package_sources BEGIN SELECT RAISE(ABORT, 'strategy package sources are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_source_delete BEFORE DELETE ON strategy_package_sources BEGIN SELECT RAISE(ABORT, 'strategy package sources are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_receipt_change BEFORE UPDATE ON strategy_package_receipts BEGIN SELECT RAISE(ABORT, 'strategy package receipts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_receipt_delete BEFORE DELETE ON strategy_package_receipts BEGIN SELECT RAISE(ABORT, 'strategy package receipts are immutable'); END;
 `;
@@ -105,6 +112,12 @@ export interface StoredStrategyPackageAdmission {
 export interface StoredStrategyPackageReceipt {
   readonly receiptHashHex: string;
   readonly receipt: StrategyPackageReceipt;
+  readonly recordedAtMs: number;
+}
+
+export interface StrategyPackageSourceBinding {
+  readonly orderHashHex: string;
+  readonly sourceOrderHashHex: string;
   readonly recordedAtMs: number;
 }
 
@@ -199,6 +212,47 @@ export class SqliteStrategyPackageStore {
         .run(quoteHash, orderHash, routeHash, admission.quote.solverId, stringifyProtocolJson(admission.quote), stringifyProtocolJson(admission.route), this.clock());
       return Object.freeze({ created: true, quoteHashHex, routeHashHex });
     }).immediate();
+  }
+
+  bindSourceOrder(orderHashHex: string, sourceOrderHashHex: string): { readonly created: boolean; readonly binding: StrategyPackageSourceBinding } {
+    const orderHash = hashBuffer(orderHashHex);
+    const sourceOrderHash = hashBuffer(sourceOrderHashHex);
+    requireCondition(this.db.prepare("SELECT 1 FROM strategy_package_orders WHERE order_hash = ?").get(orderHash) !== undefined, "ORDER_NOT_FOUND", "The strategy package order is not stored.");
+    return this.db.transaction(() => {
+      const known = this.db.prepare("SELECT source_order_hash, recorded_at_ms FROM strategy_package_sources WHERE order_hash = ?").get(orderHash) as { source_order_hash: Uint8Array; recorded_at_ms: number } | undefined;
+      if (known !== undefined) {
+        requireCondition(toHex(known.source_order_hash) === sourceOrderHashHex, "SOURCE_CONFLICT", "The strategy package order is already bound to another source order.");
+        return Object.freeze({
+          created: false,
+          binding: Object.freeze({ orderHashHex, sourceOrderHashHex, recordedAtMs: known.recorded_at_ms }),
+        });
+      }
+      const recordedAtMs = this.clock();
+      try {
+        this.db.prepare("INSERT INTO strategy_package_sources (order_hash, source_order_hash, recorded_at_ms) VALUES (?, ?, ?)")
+          .run(orderHash, sourceOrderHash, recordedAtMs);
+      } catch (error) {
+        if (String(error).includes("UNIQUE constraint failed: strategy_package_sources.source_order_hash")) {
+          throw new StrategyPackageStoreError("SOURCE_CONFLICT", "The source order is already bound to another strategy package order.");
+        }
+        throw error;
+      }
+      return Object.freeze({
+        created: true,
+        binding: Object.freeze({ orderHashHex, sourceOrderHashHex, recordedAtMs }),
+      });
+    }).immediate();
+  }
+
+  sourceBinding(orderHashHex: string): StrategyPackageSourceBinding | undefined {
+    const row = this.db.prepare("SELECT source_order_hash, recorded_at_ms FROM strategy_package_sources WHERE order_hash = ?")
+      .get(hashBuffer(orderHashHex)) as { source_order_hash: Uint8Array; recorded_at_ms: number } | undefined;
+    if (row === undefined) return undefined;
+    return Object.freeze({
+      orderHashHex,
+      sourceOrderHashHex: toHex(row.source_order_hash),
+      recordedAtMs: row.recorded_at_ms,
+    });
   }
 
   recordReceipt(input: StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string } {
