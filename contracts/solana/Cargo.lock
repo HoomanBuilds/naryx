@@ -2047,6 +2047,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "naryx_multi_strategy"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "naryx_core",
+ "solana-sdk-ids 3.1.0",
+ "solana-sha256-hasher 3.1.0",
+]
+
+[[package]]
 name = "naryx_orca_adapter"
 version = "0.1.0"
 dependencies = [
@@ -2057,6 +2067,7 @@ dependencies = [
  "solana-account 3.4.0",
  "solana-keypair",
  "solana-message 3.1.0",
+ "solana-sha256-hasher 3.1.0",
  "solana-signer",
  "solana-transaction",
 ]
@@ -2078,6 +2089,7 @@ dependencies = [
  "anchor-lang",
  "phoenix-rise",
  "phoenix-rise-accounts",
+ "solana-sha256-hasher 3.1.0",
 ]
 
 [[package]]
@@ -2102,6 +2114,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "naryx_test_perp",
+ "solana-sha256-hasher 3.1.0",
 ]
 
 [[package]]

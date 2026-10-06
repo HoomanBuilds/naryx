@@ -32,4 +32,8 @@ pub mod naryx_orca_adapter {
     ) -> Result<()> {
         swap::exact_input(ctx, amount_in, minimum_amount_out, sqrt_price_limit, a_to_b)
     }
+
+    pub fn execute_typed_strategy_leg(ctx: Context<SwapOrca>, payload: Vec<u8>) -> Result<()> {
+        swap::execute_typed(ctx, payload)
+    }
 }

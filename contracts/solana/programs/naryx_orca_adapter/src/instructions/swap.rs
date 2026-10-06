@@ -2,7 +2,7 @@ use anchor_lang::{
     prelude::*,
     solana_program::{
         instruction::{AccountMeta, Instruction},
-        program::invoke,
+        program::{invoke, set_return_data},
     },
 };
 use anchor_spl::token::{Token, TokenAccount};
@@ -11,6 +11,11 @@ use crate::{
     constants::{ORCA_SWAP_DISCRIMINATOR, ORCA_WHIRLPOOL_PROGRAM_ID},
     error::ErrorCode,
 };
+use solana_sha256_hasher::hashv;
+
+const EXACT_OUTPUT_DISCRIMINATOR: [u8; 8] = [0x2d, 0x63, 0x4c, 0xf2, 0xdf, 0x70, 0xa8, 0xa2];
+const EXACT_INPUT_DISCRIMINATOR: [u8; 8] = [0xc2, 0xcb, 0x8e, 0x96, 0x89, 0x6e, 0x51, 0x5e];
+const TYPED_EVIDENCE_DOMAIN: &[u8] = b"naryx.orca.typed-leg-evidence.v1";
 
 #[derive(Accounts)]
 pub struct SwapOrca<'info> {
@@ -72,7 +77,7 @@ pub struct OrcaSwapExecuted {
     pub output_atoms: u64,
 }
 
-#[derive(AnchorSerialize)]
+#[derive(AnchorSerialize, AnchorDeserialize)]
 struct OrcaSwapArgs {
     amount: u64,
     other_amount_threshold: u64,
@@ -98,6 +103,7 @@ pub fn exact_output(
             a_to_b,
         },
     )
+    .map(|_| ())
 }
 
 pub fn exact_input(
@@ -117,9 +123,41 @@ pub fn exact_input(
             a_to_b,
         },
     )
+    .map(|_| ())
 }
 
-fn execute(ctx: Context<SwapOrca>, args: OrcaSwapArgs) -> Result<()> {
+pub fn execute_typed(ctx: Context<SwapOrca>, payload: Vec<u8>) -> Result<()> {
+    require!(payload.len() >= 8, ErrorCode::TypedPayloadInvalid);
+    let (discriminator, encoded) = payload.split_at(8);
+    require!(
+        discriminator == EXACT_OUTPUT_DISCRIMINATOR || discriminator == EXACT_INPUT_DISCRIMINATOR,
+        ErrorCode::TypedPayloadInvalid
+    );
+    let mut encoded = encoded;
+    let args = OrcaSwapArgs::deserialize(&mut encoded)
+        .map_err(|_| error!(ErrorCode::TypedPayloadInvalid))?;
+    require!(
+        encoded.is_empty()
+            && args.amount_specified_is_input == (discriminator == EXACT_INPUT_DISCRIMINATOR),
+        ErrorCode::TypedPayloadInvalid
+    );
+    let authority = ctx.accounts.token_authority.key();
+    let whirlpool = ctx.accounts.whirlpool.key();
+    let (input_atoms, output_atoms) = execute(ctx, args)?;
+    let evidence = hashv(&[
+        TYPED_EVIDENCE_DOMAIN,
+        authority.as_ref(),
+        whirlpool.as_ref(),
+        discriminator,
+        &input_atoms.to_le_bytes(),
+        &output_atoms.to_le_bytes(),
+    ])
+    .to_bytes();
+    set_return_data(&evidence);
+    Ok(())
+}
+
+fn execute(ctx: Context<SwapOrca>, args: OrcaSwapArgs) -> Result<(u64, u64)> {
     require!(args.amount != 0, ErrorCode::AmountZero);
     require!(args.other_amount_threshold != 0, ErrorCode::ThresholdZero);
 
@@ -177,7 +215,7 @@ fn execute(ctx: Context<SwapOrca>, args: OrcaSwapArgs) -> Result<()> {
         input_atoms,
         output_atoms,
     });
-    Ok(())
+    Ok((input_atoms, output_atoms))
 }
 
 fn build_swap_instruction(accounts: &SwapOrca<'_>, args: &OrcaSwapArgs) -> Result<Instruction> {

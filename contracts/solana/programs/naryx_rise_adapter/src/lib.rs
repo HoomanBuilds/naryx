@@ -35,4 +35,11 @@ pub mod naryx_rise_adapter {
     ) -> Result<()> {
         market_order::close_short(ctx, args)
     }
+
+    pub fn execute_typed_strategy_leg<'info>(
+        ctx: Context<'info, ExecuteRiseOrder<'info>>,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        market_order::execute_typed(ctx, payload)
+    }
 }

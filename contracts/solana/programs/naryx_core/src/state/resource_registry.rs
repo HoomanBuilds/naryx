@@ -11,6 +11,14 @@ use crate::{
 pub const SPOT_ADAPTER_CLASS_ID: &str = "naryx.solana.spot-exact";
 pub const FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID: &str = "naryx.solana.spot-firm-reservation";
 pub const PERP_ADAPTER_CLASS_ID: &str = "naryx.solana.perp-exact";
+pub const INVENTORY_ADAPTER_CLASS_ID: &str = "naryx.solana.inventory-transfer";
+pub const FUTURE_ADAPTER_CLASS_ID: &str = "naryx.solana.future-exact";
+pub const OPTION_ADAPTER_CLASS_ID: &str = "naryx.solana.option-exact";
+pub const LENDING_ADAPTER_CLASS_ID: &str = "naryx.solana.lending-exact";
+pub const COLLATERAL_ADAPTER_CLASS_ID: &str = "naryx.solana.collateral-transfer";
+pub const MARGIN_ADAPTER_CLASS_ID: &str = "naryx.solana.margin-transfer";
+pub const ACCOUNT_ADAPTER_CLASS_ID: &str = "naryx.solana.account-transfer";
+pub const ESCROW_ADAPTER_CLASS_ID: &str = "naryx.solana.cross-domain-escrow";
 pub const CASH_AND_CARRY_TEMPLATE_ID: &str = "cash-and-carry-v1";
 pub const SUPPORTED_ADAPTER_CLASS_VERSION: u32 = 1;
 pub const SUPPORTED_TEMPLATE_VERSION: u32 = 1;
@@ -40,6 +48,14 @@ pub enum ExecutionRole {
     None,
     Spot,
     Perp,
+    Inventory,
+    Future,
+    Option,
+    Lending,
+    Collateral,
+    Margin,
+    Account,
+    Escrow,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
@@ -55,8 +71,8 @@ impl Lifecycle {
     pub fn permissions(self) -> u8 {
         match self {
             Self::Active => 0b11,
-            Self::EntryPaused | Self::ExitOnly => 0b10,
-            Self::AllPaused | Self::Deprecated => 0,
+            Self::EntryPaused | Self::ExitOnly | Self::Deprecated => 0b10,
+            Self::AllPaused => 0,
         }
     }
 
@@ -67,6 +83,53 @@ impl Lifecycle {
     pub fn allows_exit(self) -> bool {
         self.permissions() & 0b10 != 0
     }
+}
+
+pub fn supports_adapter_class(role: ExecutionRole, descriptor: &DescriptorRef) -> bool {
+    if descriptor.version != SUPPORTED_ADAPTER_CLASS_VERSION
+        || descriptor.manifest_hash == [0u8; HASH_BYTE_LENGTH]
+    {
+        return false;
+    }
+    let id = descriptor.id.as_str();
+    match role {
+        ExecutionRole::None => false,
+        ExecutionRole::Spot => {
+            id == SPOT_ADAPTER_CLASS_ID || id == FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID
+        }
+        ExecutionRole::Perp => id == PERP_ADAPTER_CLASS_ID,
+        ExecutionRole::Inventory => id == INVENTORY_ADAPTER_CLASS_ID,
+        ExecutionRole::Future => id == FUTURE_ADAPTER_CLASS_ID,
+        ExecutionRole::Option => id == OPTION_ADAPTER_CLASS_ID,
+        ExecutionRole::Lending => id == LENDING_ADAPTER_CLASS_ID,
+        ExecutionRole::Collateral => id == COLLATERAL_ADAPTER_CLASS_ID,
+        ExecutionRole::Margin => id == MARGIN_ADAPTER_CLASS_ID,
+        ExecutionRole::Account => id == ACCOUNT_ADAPTER_CLASS_ID,
+        ExecutionRole::Escrow => id == ESCROW_ADAPTER_CLASS_ID,
+    }
+}
+
+pub fn supports_template(template: &DescriptorRef) -> bool {
+    if template.version != SUPPORTED_TEMPLATE_VERSION
+        || template.manifest_hash == [0u8; HASH_BYTE_LENGTH]
+    {
+        return false;
+    }
+    matches!(
+        template.id.as_str(),
+        "cash-and-carry-v1"
+            | "reverse-cash-and-carry-v1"
+            | "perpetual-funding-spread-v1"
+            | "hedge-migration-v1"
+            | "delta-neutral-rebalance-v1"
+            | "treasury-inventory-hedge-v1"
+            | "calendar-spread-v1"
+            | "option-spread-v1"
+            | "collateral-conversion-hedge-v1"
+            | "fixed-rate-refinance-v1"
+            | "sol-structured-hedge-v1"
+            | "session-aware-tokenized-asset-v1"
+    )
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]

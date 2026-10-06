@@ -24,6 +24,7 @@ custom-panic = []
 anchor-lang = "=1.2.0"
 anchor-spl = { version = "=1.2.0", features = ["token"] }
 naryx_test_perp = { path = "../naryx_test_perp", features = ["cpi"] }
+solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program::set_return_data;
 use anchor_spl::token::Token;
 use naryx_test_perp::{
     program::NaryxTestPerp, OrderSide, PlaceMarketOrderArgs, TestPerpMarket, TestPerpPosition,
@@ -8,6 +9,11 @@ use crate::{
     error::TestPerpAdapterError, read_position_and_collateral, TestPerpStrategy,
     TEST_PERP_PROGRAM_ID, TEST_PERP_STRATEGY_SEED,
 };
+use solana_sha256_hasher::hashv;
+
+const ENTER_SHORT_DISCRIMINATOR: [u8; 8] = [0x69, 0xb8, 0x33, 0x73, 0xed, 0x51, 0x4e, 0x70];
+const CLOSE_SHORT_DISCRIMINATOR: [u8; 8] = [0xd4, 0x96, 0x10, 0xa3, 0xd8, 0xde, 0x26, 0xe6];
+const TYPED_EVIDENCE_DOMAIN: &[u8] = b"naryx.test-perp.typed-leg-evidence.v1";
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InitializeTestPerpStrategyArgs {
@@ -119,7 +125,7 @@ pub fn execute_order(
     ctx: Context<ExecuteTestPerpOrder>,
     args: TestPerpMarketOrderArgs,
     entry: bool,
-) -> Result<()> {
+) -> Result<[u8; 32]> {
     require!(
         ctx.remaining_accounts.is_empty(),
         TestPerpAdapterError::UnexpectedRemainingAccounts
@@ -211,5 +217,40 @@ pub fn execute_order(
         post_collateral >= args.min_post_collateral_quote_lots,
         TestPerpAdapterError::CollateralPostconditionFailed
     );
+    Ok(hashv(&[
+        TYPED_EVIDENCE_DOMAIN,
+        ctx.accounts.strategy.key().as_ref(),
+        ctx.accounts.position.key().as_ref(),
+        &[u8::from(entry)],
+        &pre_position.to_le_bytes(),
+        &post_position.to_le_bytes(),
+        &post_collateral.to_le_bytes(),
+        &args.client_order_id.to_le_bytes(),
+    ])
+    .to_bytes())
+}
+
+pub fn execute_typed(ctx: Context<ExecuteTestPerpOrder>, payload: Vec<u8>) -> Result<()> {
+    require!(
+        payload.len() >= 8,
+        TestPerpAdapterError::TypedPayloadInvalid
+    );
+    let (discriminator, encoded) = payload.split_at(8);
+    let entry = if discriminator == ENTER_SHORT_DISCRIMINATOR {
+        true
+    } else if discriminator == CLOSE_SHORT_DISCRIMINATOR {
+        false
+    } else {
+        return err!(TestPerpAdapterError::TypedPayloadInvalid);
+    };
+    let mut encoded = encoded;
+    let args = TestPerpMarketOrderArgs::deserialize(&mut encoded)
+        .map_err(|_| error!(TestPerpAdapterError::TypedPayloadInvalid))?;
+    require!(
+        encoded.is_empty(),
+        TestPerpAdapterError::TypedPayloadInvalid
+    );
+    let evidence = execute_order(ctx, args, entry)?;
+    set_return_data(&evidence);
     Ok(())
 }

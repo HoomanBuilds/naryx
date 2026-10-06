@@ -30,4 +30,6 @@ pub enum TestPerpAdapterError {
     PositionPostconditionFailed,
     #[msg("Authoritative test perp collateral postcondition failed")]
     CollateralPostconditionFailed,
+    #[msg("Typed strategy payload is not a supported test perp adapter instruction")]
+    TypedPayloadInvalid,
 }

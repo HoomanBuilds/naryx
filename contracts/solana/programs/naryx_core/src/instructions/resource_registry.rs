@@ -15,11 +15,9 @@ use crate::{
         ResourceRegistrationProposed,
     },
     state::{
-        DescriptorRef, ExecutionRole, Lifecycle, ManifestRef, MarketUnits, PendingControl,
-        ProtocolConfig, ResourceControl, ResourceIndex, ResourceKind, ResourceManifest,
-        ResourceRecord, SettlementRef, CASH_AND_CARRY_TEMPLATE_ID,
-        FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID, PERP_ADAPTER_CLASS_ID, SPOT_ADAPTER_CLASS_ID,
-        SUPPORTED_ADAPTER_CLASS_VERSION, SUPPORTED_TEMPLATE_VERSION,
+        supports_adapter_class, supports_template, DescriptorRef, ExecutionRole, Lifecycle,
+        ManifestRef, MarketUnits, PendingControl, ProtocolConfig, ResourceControl, ResourceIndex,
+        ResourceKind, ResourceManifest, ResourceRecord, SettlementRef,
     },
     wire::{DomainRef, HASH_BYTE_LENGTH},
 };
@@ -1106,34 +1104,13 @@ fn require_graph_assets(
 }
 
 fn require_role(role: ExecutionRole) -> Result<()> {
-    require!(
-        matches!(role, ExecutionRole::Spot | ExecutionRole::Perp),
-        ErrorCode::ResourceRoleMismatch
-    );
+    require!(role != ExecutionRole::None, ErrorCode::ResourceRoleMismatch);
     Ok(())
 }
 
 fn validate_adapter_descriptor(role: ExecutionRole, descriptor: &DescriptorRef) -> Result<()> {
-    descriptor.id.as_str();
     require!(
-        descriptor.version == SUPPORTED_ADAPTER_CLASS_VERSION
-            && descriptor.manifest_hash != [0u8; HASH_BYTE_LENGTH],
-        ErrorCode::ResourceDescriptorUnsupported
-    );
-    let expected = match role {
-        ExecutionRole::Spot => {
-            require!(
-                descriptor.id.as_str() == SPOT_ADAPTER_CLASS_ID
-                    || descriptor.id.as_str() == FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID,
-                ErrorCode::ResourceDescriptorUnsupported
-            );
-            return Ok(());
-        }
-        ExecutionRole::Perp => PERP_ADAPTER_CLASS_ID,
-        ExecutionRole::None => return err!(ErrorCode::ResourceRoleMismatch),
-    };
-    require!(
-        descriptor.id.as_str() == expected,
+        supports_adapter_class(role, descriptor),
         ErrorCode::ResourceDescriptorUnsupported
     );
     Ok(())
@@ -1141,9 +1118,7 @@ fn validate_adapter_descriptor(role: ExecutionRole, descriptor: &DescriptorRef) 
 
 fn validate_template(template: &DescriptorRef) -> Result<()> {
     require!(
-        template.id.as_str() == CASH_AND_CARRY_TEMPLATE_ID
-            && template.version == SUPPORTED_TEMPLATE_VERSION
-            && template.manifest_hash != [0u8; HASH_BYTE_LENGTH],
+        supports_template(template),
         ErrorCode::ResourceDescriptorUnsupported
     );
     Ok(())

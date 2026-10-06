@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program::{get_return_data, invoke_signed};
+use anchor_lang::solana_program::program::{get_return_data, invoke_signed, set_return_data};
 use phoenix_rise::ix::{
     market_order::{
         create_place_market_order_delegated_ix, MarketOrderDelegatedParams, MarketOrderParams,
@@ -13,11 +13,16 @@ use phoenix_rise_accounts::{
     trader::{TraderHeader, TraderPositions},
     PhoenixAccount,
 };
+use solana_sha256_hasher::hashv;
 
 use crate::{
     error::RiseAdapterError, RiseStrategy, ACTIVE_TRADER_BUFFER_SEED, GLOBAL_TRADER_INDEX_SEED,
     RISE_GLOBAL_CONFIG, RISE_LOG_AUTHORITY, RISE_PROGRAM_ID, RISE_STRATEGY_SEED,
 };
+
+const ENTER_SHORT_DISCRIMINATOR: [u8; 8] = [0xe7, 0x30, 0xf1, 0xa3, 0xdf, 0x67, 0x8c, 0x6f];
+const CLOSE_SHORT_DISCRIMINATOR: [u8; 8] = [0x1f, 0x69, 0x36, 0xc1, 0x7c, 0xd9, 0xcc, 0x39];
+const TYPED_EVIDENCE_DOMAIN: &[u8] = b"naryx.rise.typed-leg-evidence.v1";
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
 pub struct RiseMarketOrderArgs {
@@ -84,21 +89,43 @@ pub fn enter_short<'info>(
     ctx: Context<'info, ExecuteRiseOrder<'info>>,
     args: RiseMarketOrderArgs,
 ) -> Result<()> {
-    execute_order(ctx, args, OrderAction::EnterShort)
+    execute_order(ctx, args, OrderAction::EnterShort).map(|_| ())
 }
 
 pub fn close_short<'info>(
     ctx: Context<'info, ExecuteRiseOrder<'info>>,
     args: RiseMarketOrderArgs,
 ) -> Result<()> {
-    execute_order(ctx, args, OrderAction::CloseShort)
+    execute_order(ctx, args, OrderAction::CloseShort).map(|_| ())
+}
+
+pub fn execute_typed<'info>(
+    ctx: Context<'info, ExecuteRiseOrder<'info>>,
+    payload: Vec<u8>,
+) -> Result<()> {
+    require!(payload.len() >= 8, RiseAdapterError::TypedPayloadInvalid);
+    let (discriminator, encoded) = payload.split_at(8);
+    let action = if discriminator == ENTER_SHORT_DISCRIMINATOR {
+        OrderAction::EnterShort
+    } else if discriminator == CLOSE_SHORT_DISCRIMINATOR {
+        OrderAction::CloseShort
+    } else {
+        return err!(RiseAdapterError::TypedPayloadInvalid);
+    };
+    let mut encoded = encoded;
+    let args = RiseMarketOrderArgs::deserialize(&mut encoded)
+        .map_err(|_| error!(RiseAdapterError::TypedPayloadInvalid))?;
+    require!(encoded.is_empty(), RiseAdapterError::TypedPayloadInvalid);
+    let evidence = execute_order(ctx, args, action)?;
+    set_return_data(&evidence);
+    Ok(())
 }
 
 fn execute_order<'info>(
     ctx: Context<'info, ExecuteRiseOrder<'info>>,
     args: RiseMarketOrderArgs,
     action: OrderAction,
-) -> Result<()> {
+) -> Result<[u8; 32]> {
     require!(
         ctx.accounts.phoenix_program.executable,
         RiseAdapterError::InvalidRiseProgram
@@ -217,7 +244,24 @@ fn execute_order<'info>(
         post_collateral >= args.min_post_collateral_quote_lots,
         RiseAdapterError::CollateralPostconditionFailed
     );
-    Ok(())
+    let strategy = ctx.accounts.strategy.key();
+    let trader_account = ctx.accounts.trader_account.key();
+    let action = [match action {
+        OrderAction::EnterShort => 1,
+        OrderAction::CloseShort => 0,
+    }];
+    Ok(hashv(&[
+        TYPED_EVIDENCE_DOMAIN,
+        strategy.as_ref(),
+        trader_account.as_ref(),
+        action.as_ref(),
+        return_bytes.as_slice(),
+        &pre_position.to_le_bytes(),
+        &post_position.to_le_bytes(),
+        &post_collateral.to_le_bytes(),
+        &args.client_order_id.to_le_bytes(),
+    ])
+    .to_bytes())
 }
 
 fn validate_and_collect_accounts<'info>(

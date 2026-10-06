@@ -20,4 +20,6 @@ pub enum ErrorCode {
     MinimumOutputNotMet,
     #[msg("Swap instruction serialization failed")]
     SerializationFailed,
+    #[msg("Typed strategy payload is not a supported Orca adapter instruction")]
+    TypedPayloadInvalid,
 }

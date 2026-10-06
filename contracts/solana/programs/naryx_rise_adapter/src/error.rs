@@ -62,4 +62,6 @@ pub enum RiseAdapterError {
     PositionPostconditionFailed,
     #[msg("Authoritative Rise collateral postcondition failed")]
     CollateralPostconditionFailed,
+    #[msg("Typed strategy payload is not a supported Rise adapter instruction")]
+    TypedPayloadInvalid,
 }

@@ -9,6 +9,7 @@ skip-lint = false
 naryx_conformance_venue = "ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y"
 naryx_core = "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
 naryx_inventory_reservation = "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt"
+naryx_multi_strategy = "5P1Sh9xsWzpzT86jPwTnKwrP2UEZFELUFNcaV7wa7Jvd"
 naryx_orca_adapter = "Ao5mbjTPVAoM4SVobYMyaQwPRKruk9Rd7CF1ENL1xjUU"
 naryx_package_book = "CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY"
 naryx_rise_adapter = "9FAYFVXcJYqxcpw7bf6eK6iY6SkwYx6T4PT7NF3VjfzQ"
