@@ -19,6 +19,7 @@ import {
   packageGraphHash,
   compileTypedStrategyRoute,
   validateStrategyPackageRouteAdmission,
+  validateStrategyPackageOrderGraph,
   authorizeSolverQuote,
   bytesEqual,
   solverCapabilityManifestHash,
@@ -1047,6 +1048,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/packages/compile",
       "/v1/packages/simulate",
       "/v1/strategy-orders/validate",
+      "/v1/strategy-orders",
       "/v1/strategy-routes/compile",
       "/v1/strategy-quotes/admit",
       "/v1/strategy-packages/submit",
@@ -1119,6 +1121,45 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (error instanceof ProtocolError) return { valid: false, error: { code: error.code, context: error.context, detail: error.detail } };
         throw error;
       }
+    }
+    if (path === "/v1/strategy-orders") {
+      const context = options.graphContext;
+      if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
+      const graphInput = object(body.graph, "graph") as unknown as PackageGraphInput;
+      const graph = packageGraph(graphInput);
+      requireStrategyMarket(graph);
+      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
+      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
+      const current = nowIn(graph.expiryUnit);
+      const currentTime = current === undefined
+        ? { unit: graph.expiryUnit, value: body.atSlot as bigint }
+        : { unit: graph.expiryUnit, value: current };
+      if (typeof currentTime.value !== "bigint" || currentTime.value <= 0n) {
+        throw new RequestError(400, "TIME_REQUIRED", "A slot-timed strategy order is admitted at an explicit positive atSlot.");
+      }
+      const validated = validateStrategyPackageOrderGraph(
+        object(body.order, "order") as unknown as StrategyPackageOrderInput,
+        graphInput,
+        {
+          templateManifest: template.document,
+          activeRegistryRecords: context.activeRegistryRecords,
+          resourceLimits: context.resourceLimits,
+          currentTime,
+        },
+      );
+      const series = requireStrategyMarket(validated.graph);
+      if (validated.order.quoteAsset.assetId !== series.quoteAsset) {
+        throw new RequestError(400, "SERIES_MISMATCH", "The order quote asset differs from the registered strategy series.");
+      }
+      const stored = requireStrategyPackages().registerOrder(validated.order, validated.graph);
+      return {
+        version: 1,
+        status: "STORED_FOR_QUOTING",
+        ...stored,
+        currentTime,
+        timeSource: current === undefined ? "CALLER" : "SERVER",
+        stages: validated.compiledGraph.stages,
+      };
     }
     if (path === "/v1/routes/replay-decision") return replayRouteDecision(body.decision as RouteDecisionInput);
     if (path === "/v1/routes/compare") {

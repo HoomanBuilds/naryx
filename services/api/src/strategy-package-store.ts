@@ -356,13 +356,14 @@ export class SqliteStrategyPackageStore {
 }
 
 export function createStrategyPackageInternalHandler(
-  store: Pick<SqliteStrategyPackageStore, "admissionByQuote" | "recordReceipt">,
+  store: Pick<SqliteStrategyPackageStore, "admissionByQuote" | "order" | "recordReceipt">,
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
-    const match = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(url.pathname);
+    const quoteMatch = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(url.pathname);
+    const orderMatch = /^\/internal\/strategy-packages\/orders\/([0-9a-f]{64})$/.exec(url.pathname);
     const recordsReceipt = url.pathname === "/internal/strategy-packages/receipts";
-    if (match === null && !recordsReceipt) return false;
+    if (quoteMatch === null && orderMatch === null && !recordsReceipt) return false;
     if (!internalCaller(request)) return sendError(response, 403, "FORBIDDEN", "Strategy package routes answer loopback callers only.");
     if (url.search !== "") return sendError(response, 400, "INVALID_REQUEST", "Strategy package routes accept no query parameters.");
     if (recordsReceipt) {
@@ -389,7 +390,12 @@ export function createStrategyPackageInternalHandler(
     }
     if (request.method !== "GET") return sendError(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
     try {
-      const admission = store.admissionByQuote(match![1]!);
+      if (orderMatch !== null) {
+        const stored = store.order(orderMatch[1]!);
+        if (stored === undefined) return sendError(response, 404, "NOT_FOUND", "No stored strategy package order exists for this hash.");
+        return sendJson(response, 200, { version: 1, ...stored });
+      }
+      const admission = store.admissionByQuote(quoteMatch![1]!);
       if (admission === undefined) return sendError(response, 404, "NOT_FOUND", "No admitted strategy package exists for this quote.");
       return sendJson(response, 200, { version: 1, ...admission });
     } catch (error) {

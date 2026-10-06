@@ -1301,8 +1301,10 @@ export {
 export {
   validateStrategyPackageAdmission,
   validateStrategyPackageRouteAdmission,
+  validateStrategyPackageOrderGraph,
   type AdmittedStrategyPackage,
   type AdmittedStrategyRoute,
+  type ValidatedStrategyPackageOrder,
 } from './strategy-package-admission.js';
 export {
   basisPackageMetrics,

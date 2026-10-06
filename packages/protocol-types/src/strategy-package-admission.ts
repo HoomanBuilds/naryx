@@ -36,6 +36,12 @@ export interface AdmittedStrategyPackage {
   readonly compiledGraph: CompiledPackageGraph;
 }
 
+export interface ValidatedStrategyPackageOrder {
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraph;
+  readonly compiledGraph: CompiledPackageGraph;
+}
+
 export interface AdmittedStrategyRoute extends AdmittedStrategyPackage {
   readonly route: TypedStrategyRoute;
 }
@@ -85,14 +91,9 @@ export function validateStrategyPackageAdmission(
   compileContext: PackageGraphCompileContext,
 ): AdmittedStrategyPackage {
   const context = 'validateStrategyPackageAdmission';
-  const order = strategyPackageOrder(orderInput, `${context}.order`);
-  const graph = packageGraph(graphInput, `${context}.graph`);
+  const validated = validateStrategyPackageOrderGraph(orderInput, graphInput, compileContext, context);
+  const { order, graph, compiledGraph: compiled } = validated;
   const quote = strategyPackageQuote(quoteInput, `${context}.quote`);
-  const templateValidation = validateStrategyTemplateGraph(graphInput);
-  requireCondition(templateValidation.valid, `${context}.graph`, `template graph is invalid: ${templateValidation.valid ? '' : templateValidation.reasons.join(',')}`);
-  const compiled = compilePackageGraph(graphInput, compileContext);
-  requireCondition(compiled.compiled, `${context}.graph`, `graph compilation failed: ${compiled.compiled ? '' : compiled.reasons.join(',')}`);
-  requireCondition(compareBytes(order.graphHash, compiled.graphHash) === 0, `${context}.order.graphHash`, 'order does not bind the compiled graph');
   requireCondition(compareBytes(quote.graphHash, compiled.graphHash) === 0, `${context}.quote.graphHash`, 'quote does not bind the compiled graph');
   requireCondition(compareBytes(quote.orderHash, strategyPackageOrderHash(orderInput)) === 0, `${context}.quote.orderHash`, 'quote does not bind the order');
   requireCondition(order.environment === graph.environment && quote.environment === graph.environment, `${context}.environment`, 'environment mismatch');
@@ -157,6 +158,33 @@ export function validateStrategyPackageAdmission(
     requireCondition(cost.amount.atoms <= capFor(caps, quote.quoteAsset), `${context}.quote.passThroughCosts`, `${cost.category} cost exceeds the signed cap`);
   }
   return Object.freeze({ order, quote, graph, compiledGraph: compiled });
+}
+
+export function validateStrategyPackageOrderGraph(
+  orderInput: StrategyPackageOrderInput,
+  graphInput: PackageGraphInput,
+  compileContext: PackageGraphCompileContext,
+  context = 'validateStrategyPackageOrderGraph',
+): ValidatedStrategyPackageOrder {
+  const order = strategyPackageOrder(orderInput, `${context}.order`);
+  const graph = packageGraph(graphInput, `${context}.graph`);
+  const templateValidation = validateStrategyTemplateGraph(graphInput);
+  requireCondition(templateValidation.valid, `${context}.graph`, `template graph is invalid: ${templateValidation.valid ? '' : templateValidation.reasons.join(',')}`);
+  const compiled = compilePackageGraph(graphInput, compileContext);
+  requireCondition(compiled.compiled, `${context}.graph`, `graph compilation failed: ${compiled.compiled ? '' : compiled.reasons.join(',')}`);
+  requireCondition(compareBytes(order.graphHash, compiled.graphHash) === 0, `${context}.order.graphHash`, 'order does not bind the compiled graph');
+  requireCondition(order.environment === graph.environment, `${context}.environment`, 'environment mismatch');
+  requireCondition(order.templateId === graph.templateId && order.templateVersion === graph.templateVersion, `${context}.templateId`, 'template mismatch');
+  requireCondition(compareBytes(order.packageTemplateManifestHash, graph.packageTemplateManifestHash) === 0, `${context}.order.packageTemplateManifestHash`, 'template manifest mismatch');
+  requireCondition(order.seriesId === graph.seriesId && order.seriesVersion === graph.seriesVersion, `${context}.seriesId`, 'series mismatch');
+  requireCondition(compareBytes(order.seriesManifestHash, graph.seriesManifestHash) === 0, `${context}.order.seriesManifestHash`, 'series manifest mismatch');
+  requireCondition(order.executionClassId === graph.executionClassId && order.executionClassVersion === graph.executionClassVersion, `${context}.executionClassId`, 'execution class mismatch');
+  requireCondition(compareBytes(order.executionClassManifestHash, graph.executionClassManifestHash) === 0, `${context}.order.executionClassManifestHash`, 'execution class manifest mismatch');
+  requireCondition(order.owner === graph.owner, `${context}.owner`, 'owner mismatch');
+  requireCondition(order.lifecycleAction === graph.lifecycleAction, `${context}.lifecycleAction`, 'lifecycle action mismatch');
+  requireCondition(order.settlementClass === graph.settlementClass, `${context}.settlementClass`, 'settlement class mismatch');
+  requireCondition(order.expiryUnit === graph.expiryUnit && order.expiryValue <= graph.packageExpiryValue, `${context}.expiryValue`, 'order expiry is outside the graph expiry');
+  return Object.freeze({ order, graph, compiledGraph: compiled });
 }
 
 export function validateStrategyPackageRouteAdmission(

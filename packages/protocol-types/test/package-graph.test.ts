@@ -10,7 +10,10 @@ import {
   packageGraphHash,
   packageTemplateManifestHash,
   simulatePackageGraphFailures,
+  STRATEGY_QUOTE_CONVENTION_ID,
+  STRATEGY_RISK_CLASS_ID,
   toHex,
+  validateStrategyPackageOrderGraph,
   versionedManifestRef,
   type AdapterRef,
   type AssetRef,
@@ -20,6 +23,7 @@ import {
   type PackageGraphInput,
   type PackageLegInput,
   type PackageTemplateManifestInput,
+  type StrategyPackageOrderInput,
   type VersionedManifestRef,
 } from '../src/index.js';
 
@@ -311,6 +315,42 @@ describe('typed strategy route compilation', () => {
     routeExpiryValue: 1_800n,
   });
 
+  const strategyOrder = (overrides: Partial<StrategyPackageOrderInput> = {}): StrategyPackageOrderInput => ({
+    version: 1,
+    environment: cashGraph.environment,
+    templateId: cashGraph.templateId,
+    templateVersion: cashGraph.templateVersion,
+    packageTemplateManifestHash: cashGraph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(cashGraph),
+    seriesId: cashGraph.seriesId,
+    seriesVersion: cashGraph.seriesVersion,
+    seriesManifestHash: cashGraph.seriesManifestHash,
+    executionClassId: cashGraph.executionClassId,
+    executionClassVersion: cashGraph.executionClassVersion,
+    executionClassManifestHash: cashGraph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.ANNUALIZED_NET_YIELD,
+    riskClassId: STRATEGY_RISK_CLASS_ID.DELTA_NEUTRAL_BASIS,
+    owner: cashGraph.owner,
+    settlementAccount: 'strategy-1',
+    lifecycleAction: cashGraph.lifecycleAction,
+    settlementClass: cashGraph.settlementClass,
+    packageOrderType: 'LIMIT',
+    packageTimeInForce: 'FOK',
+    economicQuantity: { asset: sol, atoms: 1_000_000_000n },
+    quoteAsset: usdc,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [],
+    maximumMarginIncrease: { asset: usdc, atoms: 0n },
+    maximumResidualValue: { asset: usdc, atoms: 0n },
+    expiryUnit: cashGraph.expiryUnit,
+    expiryValue: 1_900n,
+    nonce: 1n,
+    ...overrides,
+  });
+
   test('binds every leg to a materializer that supports its exact side', () => {
     const result = compile(support);
     assert.equal(result.compiled, true);
@@ -333,5 +373,18 @@ describe('typed strategy route compilation', () => {
       { ...support[0]!, materializationClassId: 'second-spot-materializer-v1' },
     ]);
     assert.deepEqual(result.compiled ? [] : result.reasons, ['ADAPTER_ACTION_AMBIGUOUS']);
+  });
+
+  test('stores for quoting only an order bound to the exact compiled graph and expiry', () => {
+    const validated = validateStrategyPackageOrderGraph(strategyOrder(), cashGraph, cashContext);
+    assert.equal(toHex(validated.compiledGraph.graphHash), toHex(packageGraphHash(cashGraph)));
+    assert.throws(
+      () => validateStrategyPackageOrderGraph(strategyOrder({ owner: 'other-owner' }), cashGraph, cashContext),
+      /owner mismatch/,
+    );
+    assert.throws(
+      () => validateStrategyPackageOrderGraph(strategyOrder({ expiryValue: 2_001n }), cashGraph, cashContext),
+      /outside the graph expiry/,
+    );
   });
 });
