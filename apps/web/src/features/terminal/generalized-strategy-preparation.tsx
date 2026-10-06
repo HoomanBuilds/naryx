@@ -86,6 +86,15 @@ type StagedStrategyOrder = Readonly<{
   graphHash: string;
 }>;
 
+type SelectedStrategyExecution = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  quoteHash: string;
+  routeHash: string;
+  sourceOrderHash: string;
+  selectedAtMs: number;
+}>;
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value as Record<string, unknown>;
@@ -308,6 +317,29 @@ function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: st
   });
 }
 
+function parseSelectedExecution(
+  payload: unknown,
+  expected: Readonly<{ orderHash: string; quoteHash: string; routeHash: string; sourceOrderHash: string }>,
+): SelectedStrategyExecution {
+  const root = record(payload, "Strategy execution selection");
+  if (root.version !== 1 || root.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED") {
+    throw new Error("Strategy execution selection response is invalid.");
+  }
+  const selected = Object.freeze({
+    attemptId: text(root.attemptId, "Strategy attempt id"),
+    orderHash: hash(root.orderHashHex, "Selected order hash"),
+    quoteHash: hash(root.quoteHashHex, "Selected quote hash"),
+    routeHash: hash(root.routeHashHex, "Selected route hash"),
+    sourceOrderHash: hash(root.sourceOrderHashHex, "Selected source order hash"),
+    selectedAtMs: unsignedInteger(root.selectedAtMs, "Selection time"),
+  });
+  if (selected.orderHash !== expected.orderHash || selected.quoteHash !== expected.quoteHash
+    || selected.routeHash !== expected.routeHash || selected.sourceOrderHash !== expected.sourceOrderHash) {
+    throw new Error("Strategy execution selection changed a reviewed commitment.");
+  }
+  return selected;
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -357,11 +389,14 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
+  const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
+  const [selectionKey, setSelectionKey] = useState("");
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
   const [stageBusy, setStageBusy] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [prepareBusy, setPrepareBusy] = useState(false);
+  const [selectionBusy, setSelectionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -407,6 +442,8 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteReview(null);
       setQuoteHash("");
       setReview(null);
+      setExecutionAttempt(null);
+      setSelectionKey("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order staging failed closed.");
     } finally {
@@ -434,6 +471,8 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteReview(parsed);
       setQuoteHash(parsed.quoteHash);
       setReview(null);
+      setExecutionAttempt(null);
+      setSelectionKey("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
@@ -456,10 +495,47 @@ export function GeneralizedStrategyPreparationPanel({
       });
       if (!response.ok) throw new Error(await failureMessage(response));
       setReview(parseReview(await response.json(), quoteHash));
+      setExecutionAttempt(null);
+      setSelectionKey("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
     } finally {
       setPrepareBusy(false);
+    }
+  }
+
+  async function selectExecution() {
+    if (privateApiBaseUrl === null || review === null || sourceOrderHash === null) return;
+    setSelectionBusy(true);
+    setError(null);
+    const idempotencyKey = selectionKey || crypto.randomUUID();
+    if (selectionKey === "") setSelectionKey(idempotencyKey);
+    try {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/select`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderHash: review.orderHash,
+          quoteHash: review.quoteHash,
+          routeHash: review.routeHash,
+          sourceOrderHash,
+          idempotencyKey,
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      setExecutionAttempt(parseSelectedExecution(await response.json(), {
+        orderHash: review.orderHash,
+        quoteHash: review.quoteHash,
+        routeHash: review.routeHash,
+        sourceOrderHash,
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy execution selection failed closed.");
+    } finally {
+      setSelectionBusy(false);
     }
   }
 
@@ -496,6 +572,8 @@ export function GeneralizedStrategyPreparationPanel({
             setQuoteRequestKey("");
             setQuoteReview(null);
             setReview(null);
+            setExecutionAttempt(null);
+            setSelectionKey("");
             setError(null);
           }}
         />
@@ -547,6 +625,8 @@ export function GeneralizedStrategyPreparationPanel({
               onChange={(event) => {
                 setQuoteHash(event.target.value);
                 setReview(null);
+                setExecutionAttempt(null);
+                setSelectionKey("");
                 setError(null);
               }}
             >
@@ -570,6 +650,8 @@ export function GeneralizedStrategyPreparationPanel({
           onChange={(event) => {
             setQuoteHash(event.target.value.trim());
             setReview(null);
+            setExecutionAttempt(null);
+            setSelectionKey("");
             setError(null);
           }}
         />
@@ -617,6 +699,19 @@ export function GeneralizedStrategyPreparationPanel({
               </div>
             </div>
           ))}
+          <button
+            type="button"
+            className={styles.primaryAction}
+            disabled={privateApiBaseUrl === null || selectionBusy || sourceOrderHash === null}
+            onClick={() => void selectExecution()}
+          >
+            {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
+          </button>
+          {executionAttempt ? (
+            <p className={styles.fieldContext} role="status">
+              Attempt {compact(executionAttempt.attemptId)} durably binds every reviewed commitment. Nothing has been submitted.
+            </p>
+          ) : null}
           <p className={styles.reviewNotice}>
             This is an execution review artifact only. A domain-specific signer and executor must independently revalidate it before submission.
           </p>

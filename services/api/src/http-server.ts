@@ -98,6 +98,10 @@ import {
   HyperliquidGeneralizedOrderError,
   type HyperliquidGeneralizedOrderPort,
 } from "./hyperliquid-generalized-order.js";
+import {
+  StrategyPackageStoreError,
+  type SqliteStrategyPackageStore,
+} from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 
 const MAX_BODY_BYTES = 4_096;
@@ -268,6 +272,7 @@ export function createPrivateTerminalRequestHandler(
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
+  generalizedStrategyExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution">,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -590,6 +595,51 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "STRATEGY_PREPARATION_FAILED", "Generalized strategy preparation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/strategy-executions/select") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (generalizedStrategyExecutions === undefined) {
+        reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Generalized strategy selection is unavailable.");
+        return;
+      }
+      try {
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).sort().join(",") !== "idempotencyKey,orderHash,quoteHash,routeHash,sourceOrderHash"
+          || typeof (body as { quoteHash?: unknown }).quoteHash !== "string"
+          || typeof (body as { orderHash?: unknown }).orderHash !== "string"
+          || typeof (body as { routeHash?: unknown }).routeHash !== "string"
+          || typeof (body as { sourceOrderHash?: unknown }).sourceOrderHash !== "string"
+          || typeof (body as { idempotencyKey?: unknown }).idempotencyKey !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request must contain only the reviewed order, quote, route, source, and idempotency key.");
+          return;
+        }
+        const values = body as { quoteHash: string; orderHash: string; routeHash: string; sourceOrderHash: string; idempotencyKey: string };
+        const selected = generalizedStrategyExecutions.selectHyperliquidExecution({
+          quoteHashHex: values.quoteHash,
+          orderHashHex: values.orderHash,
+          routeHashHex: values.routeHash,
+          sourceOrderHashHex: values.sourceOrderHash,
+          idempotencyKey: values.idempotencyKey,
+        });
+        sendJson(response, 200, { version: 1, ...selected });
+      } catch (error) {
+        if (error instanceof StrategyPackageStoreError) {
+          const status = error.code === "QUOTE_NOT_FOUND" ? 404
+            : error.code === "CORRUPT_ROW" ? 500
+              : error.code === "IDEMPOTENCY_CONFLICT" || error.code === "QUOTE_ALREADY_SELECTED" ? 409
+                : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "STRATEGY_SELECTION_FAILED", "Generalized strategy selection failed closed.");
       }
       return;
     }
@@ -1342,6 +1392,7 @@ export function createPrivateTerminalServer(
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
+  generalizedStrategyExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution">,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1366,6 +1417,7 @@ export function createPrivateTerminalServer(
     strategyExecutionCapabilities,
     generalizedStrategyPreparation,
     hyperliquidGeneralizedOrder,
+    generalizedStrategyExecutions,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

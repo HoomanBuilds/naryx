@@ -6,6 +6,8 @@ export {
   type StoredStrategyPackageOrder,
   type StoredStrategyPackageQuote,
   type StoredStrategyPackageReceipt,
+  type SelectHyperliquidStrategyExecutionRequest,
+  type SelectedStrategyPackageAttempt,
 } from "./strategy-package-store.js";
 export {
   HttpStrategyPreparationClient,

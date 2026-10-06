@@ -144,3 +144,64 @@ test("private terminal stages a reviewed Hyperliquid order for generalized quoti
     body: JSON.stringify({ sourceOrderHash, extra: true }),
   })).status, 400);
 });
+
+test("private terminal selects exactly the reviewed generalized Hyperliquid quote", async (context) => {
+  const sourceOrderHash = "11".repeat(32);
+  const orderHash = "22".repeat(32);
+  const quoteHash = "33".repeat(32);
+  const routeHash = "44".repeat(32);
+  const attemptId = `strategy-hl-${"55".repeat(24)}`;
+  const idempotencyKey = "strategy-selection-0001";
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined,
+    undefined, "DISABLED", undefined, undefined, undefined, undefined, undefined,
+    undefined, {}, undefined, () => [], undefined, undefined, {
+      selectHyperliquidExecution: (request) => {
+        assert.deepEqual(request, {
+          quoteHashHex: quoteHash,
+          orderHashHex: orderHash,
+          routeHashHex: routeHash,
+          sourceOrderHashHex: sourceOrderHash,
+          idempotencyKey,
+        });
+        return {
+          attemptId,
+          idempotencyKey,
+          orderHashHex: orderHash,
+          graphHashHex: "66".repeat(32),
+          quoteHashHex: quoteHash,
+          routeHashHex: routeHash,
+          sourceOrderHashHex: sourceOrderHash,
+          status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+          selectedAtMs: 1_000,
+        };
+      },
+    },
+  );
+  context.after(() => server.close());
+  const origin = await listen(server);
+  const response = await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderHash, quoteHash, routeHash, sourceOrderHash, idempotencyKey }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    version: 1,
+    attemptId,
+    idempotencyKey,
+    orderHashHex: orderHash,
+    graphHashHex: "66".repeat(32),
+    quoteHashHex: quoteHash,
+    routeHashHex: routeHash,
+    sourceOrderHashHex: sourceOrderHash,
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs: 1_000,
+  });
+  assert.equal((await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderHash, quoteHash, routeHash, sourceOrderHash, idempotencyKey, extra: true }),
+  })).status, 400);
+});

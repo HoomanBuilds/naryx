@@ -820,6 +820,7 @@ const server = createPrivateTerminalServer(
   currentStrategyExecutionCapabilities,
   generalizedStrategyPreparation,
   hyperliquidGeneralizedOrder,
+  publicMarket?.strategyPackageExecutions,
 );
 
 const publicServer = publicMarket?.listener === undefined

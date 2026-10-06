@@ -56,6 +56,8 @@ export interface PublicMarketRuntime {
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Immutable provenance for strategy orders derived from an owner-authorized canonical order. */
   readonly strategyPackageSources?: Pick<SqliteStrategyPackageStore, "bindSourceOrder" | "sourceBinding">;
+  /** Durable selection and lookup for generalized Hyperliquid Testnet execution attempts. */
+  readonly strategyPackageExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution" | "strategyExecutionAttempt">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
@@ -453,6 +455,7 @@ export function loadPublicMarketRuntime(
       ...(strategyPackages === undefined ? {} : { strategyPackages }),
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(strategyPackages === undefined ? {} : { strategyPackageSources: strategyPackages }),
+      ...(strategyPackages === undefined ? {} : { strategyPackageExecutions: strategyPackages }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
