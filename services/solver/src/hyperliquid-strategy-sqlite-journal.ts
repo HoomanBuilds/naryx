@@ -146,6 +146,12 @@ export interface HyperliquidStrategySqliteJournalOptions {
 }
 
 export interface HyperliquidStrategyDurableSubmissionJournalPort {
+  submissionContext(input: Readonly<{
+    account: HyperliquidSubmissionAccount;
+    agentWallet: `0x${string}`;
+    signerLeaseId: string;
+    nowMs: bigint;
+  }>): Readonly<{ expectedVersion: bigint; nonce: bigint }>;
   prepare(input: HyperliquidStrategyJournalPrepareInput): Promise<HyperliquidStrategyJournalReceipt>;
   confirmDurable(input: Readonly<{
     expectedVersion: bigint;

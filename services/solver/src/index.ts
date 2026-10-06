@@ -678,6 +678,16 @@ export {
   type HyperliquidStrategySubmissionResult,
 } from './hyperliquid-strategy-testnet-submission.js';
 export {
+  HyperliquidStrategyTestnetRuntime,
+  createHyperliquidStrategyTestnetRuntime,
+  type HyperliquidStrategyRuntimeEvidencePort,
+  type HyperliquidStrategyRuntimeJournalPort,
+  type HyperliquidStrategyRuntimeResult,
+  type HyperliquidStrategyRuntimeSubmissionPort,
+  type HyperliquidStrategyStageRuntimeResult,
+  type HyperliquidStrategyTestnetRuntimeOptions,
+} from './hyperliquid-strategy-testnet-runtime.js';
+export {
   AtomicRouteDecisionError,
   planAtomicEntryRoute,
   type AtomicRouteCandidate,
