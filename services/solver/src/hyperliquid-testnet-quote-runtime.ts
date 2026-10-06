@@ -1184,8 +1184,9 @@ async function generalizedTreasuryHedgeTerms(
   input: HyperliquidTestnetGeneralizedTreasuryHedgePricingInput,
 ): Promise<GeneralizedStrategyQuoteTerms> {
   const { order, graph } = documents;
+  const opening = order.lifecycleAction === 'ENTRY';
   if (order.templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
-    || order.lifecycleAction !== 'ENTRY'
+    || (!opening && order.lifecycleAction !== 'EXIT')
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
     || graph.legs.length !== 1
     || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
@@ -1194,7 +1195,7 @@ async function generalizedTreasuryHedgeTerms(
   }
   const perpetual = graph.legs[0]!;
   if (perpetual.legTypeId !== 'treasury-hedge'
-    || perpetual.legFamily !== 'PERP_OPEN'
+    || perpetual.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
     || (perpetual.side !== 'BUY' && perpetual.side !== 'SELL')
     || !sameDomain(perpetual.domain, input.domain)
     || !sameAdapter(perpetual.adapter, input.perpetual.adapter)
@@ -1239,7 +1240,9 @@ async function generalizedTreasuryHedgeTerms(
     execution.numerator * fee.numerator,
     execution.denominator * fee.denominator,
   );
-  const marginAtoms = ceilDiv(notionalAtoms * requireBps(input.marginBps, 'marginBps'), BPS_SCALE);
+  const marginAtoms = opening
+    ? ceilDiv(notionalAtoms * requireBps(input.marginBps, 'marginBps'), BPS_SCALE)
+    : 0n;
   if (marginAtoms > order.maximumMarginIncrease.atoms) {
     throw new Error('required margin exceeds the signed cap');
   }
@@ -1265,7 +1268,7 @@ async function generalizedTreasuryHedgeTerms(
         hedgeAtoms: signedHedgeAtoms,
         hedgeCostAtoms: venueFeeAtoms,
         maximumLossAtoms: marginAtoms,
-        liquidationDistanceBps: BigInt(input.marginBps),
+        liquidationDistanceBps: opening ? BigInt(input.marginBps) : 0n,
       }),
     }),
     legEconomics: Object.freeze([Object.freeze({
@@ -1370,19 +1373,22 @@ async function generalizedFundingSpreadTerms(
   input: HyperliquidTestnetGeneralizedFundingSpreadPricingInput,
 ): Promise<GeneralizedStrategyQuoteTerms> {
   const { order, graph } = documents;
+  const opening = order.lifecycleAction === 'ENTRY';
   if (order.templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
-    || order.lifecycleAction !== 'ENTRY'
+    || (!opening && order.lifecycleAction !== 'EXIT')
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
     || graph.legs.length !== 2
     || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
     || order.expiryUnit !== currentTime.unit) {
-    throw new Error('committed package is not a supported Hyperliquid funding spread entry');
+    throw new Error('committed package is not a supported Hyperliquid funding spread action');
   }
   const long = graph.legs.find((leg) => leg.legTypeId === 'funding-long');
   const short = graph.legs.find((leg) => leg.legTypeId === 'funding-short');
   if (long === undefined || short === undefined
-    || long.legFamily !== 'PERP_OPEN' || long.side !== 'BUY'
-    || short.legFamily !== 'PERP_OPEN' || short.side !== 'SELL'
+    || long.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
+    || long.side !== (opening ? 'BUY' : 'SELL')
+    || short.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
+    || short.side !== (opening ? 'SELL' : 'BUY')
     || !sameDomain(long.domain, input.domain) || !sameDomain(short.domain, input.domain)
     || !sameAdapter(long.adapter, input.longPerpetual.adapter)
     || !sameAdapter(short.adapter, input.shortPerpetual.adapter)
@@ -1407,10 +1413,14 @@ async function generalizedFundingSpreadTerms(
   formatHypercoreSize(short.quantityAtoms, input.baseAsset.decimals, input.shortPerpetual.sizeDecimals);
   const longWire = formatHypercorePrice(long.limitPrice, 6 - input.longPerpetual.sizeDecimals);
   const shortWire = formatHypercorePrice(short.limitPrice, 6 - input.shortPerpetual.sizeDecimals);
-  if (compareHypercoreWirePriceToExact(longWire, long.limitPrice) > 0) {
+  const longPriceRelation = compareHypercoreWirePriceToExact(longWire, long.limitPrice);
+  const shortPriceRelation = compareHypercoreWirePriceToExact(shortWire, short.limitPrice);
+  if ((long.side === 'BUY' && longPriceRelation > 0)
+    || (long.side === 'SELL' && longPriceRelation < 0)) {
     throw new Error('signed long perpetual limit is not safely representable on HyperCore');
   }
-  if (compareHypercoreWirePriceToExact(shortWire, short.limitPrice) < 0) {
+  if ((short.side === 'BUY' && shortPriceRelation > 0)
+    || (short.side === 'SELL' && shortPriceRelation < 0)) {
     throw new Error('signed short perpetual limit is not safely representable on HyperCore');
   }
   const [longBookValue, shortBookValue, fees, longContext, shortContext] = await Promise.all([
@@ -1425,15 +1435,19 @@ async function generalizedFundingSpreadTerms(
   const longBook = liveBook(longBookValue, input.longPerpetual.coin, 'long perpetual book', now, input);
   const shortBook = liveBook(shortBookValue, input.shortPerpetual.coin, 'short perpetual book', now, input);
   const longExecution = sweep(
-    longBook, 'BUY', long.quantityAtoms, longWire,
+    longBook, long.side, long.quantityAtoms, longWire,
     input.baseAsset, input.quoteAsset, 'long perpetual book',
   );
   const shortExecution = sweep(
-    shortBook, 'SELL', short.quantityAtoms, shortWire,
+    shortBook, short.side, short.quantityAtoms, shortWire,
     input.baseAsset, input.quoteAsset, 'short perpetual book',
   );
-  const longNotionalAtoms = ceilDiv(longExecution.numerator, longExecution.denominator);
-  const shortNotionalAtoms = shortExecution.numerator / shortExecution.denominator;
+  const longNotionalAtoms = long.side === 'BUY'
+    ? ceilDiv(longExecution.numerator, longExecution.denominator)
+    : longExecution.numerator / longExecution.denominator;
+  const shortNotionalAtoms = short.side === 'BUY'
+    ? ceilDiv(shortExecution.numerator, shortExecution.denominator)
+    : shortExecution.numerator / shortExecution.denominator;
   const takerFee = feeRate(fees.userCrossRate, 'userCrossRate');
   const longFeeAtoms = ceilDiv(
     longExecution.numerator * takerFee.numerator,
@@ -1444,8 +1458,8 @@ async function generalizedFundingSpreadTerms(
     shortExecution.denominator * takerFee.denominator,
   );
   const marginBps = requireBps(input.marginBps, 'marginBps');
-  const longMarginAtoms = ceilDiv(longNotionalAtoms * marginBps, BPS_SCALE);
-  const shortMarginAtoms = ceilDiv(shortNotionalAtoms * marginBps, BPS_SCALE);
+  const longMarginAtoms = opening ? ceilDiv(longNotionalAtoms * marginBps, BPS_SCALE) : 0n;
+  const shortMarginAtoms = opening ? ceilDiv(shortNotionalAtoms * marginBps, BPS_SCALE) : 0n;
   const totalMarginAtoms = longMarginAtoms + shortMarginAtoms;
   if (totalMarginAtoms > order.maximumMarginIncrease.atoms) {
     throw new Error('required margin exceeds the signed cap');
@@ -1526,7 +1540,7 @@ async function generalizedFundingSpreadTerms(
       builderFee: assetAmount(input.quoteAsset, 0n),
       residualValue: assetAmount(input.quoteAsset, 0n),
     })]),
-    netPackageOutcomeAtoms: expectedFundingAtoms - totalFeesAtoms,
+    netPackageOutcomeAtoms: (opening ? expectedFundingAtoms : 0n) - totalFeesAtoms,
     serviceCharges: Object.freeze([]),
     passThroughCosts: Object.freeze([Object.freeze({
       category: 'VENUE' as const,

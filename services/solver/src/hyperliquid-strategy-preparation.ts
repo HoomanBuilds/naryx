@@ -111,7 +111,6 @@ export class HyperliquidStrategyPreparationContextResolver implements StrategyPr
       && sameDomain(lane.domain, documents.route.domainPlans[0]!.domain));
     if (matches.length !== 1) throw new Error('strategy package must resolve to exactly one Hyperliquid preparation lane');
     const lane = matches[0]!;
-    if (documents.order.lifecycleAction !== 'ENTRY') throw new Error('Hyperliquid generalized lifecycle preparation currently accepts entry only');
     if (documents.order.expiryUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
       || documents.order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY') {
       throw new Error('Hyperliquid strategy preparation requires batched IOC settlement with millisecond expiry');

@@ -1161,7 +1161,8 @@ test('prices a native two-market Hyperliquid funding spread from both books and 
       return { funding: coin === 'LONG:BTC' ? '0.00001' : '0.00004' };
     },
   };
-  const terms = await createHyperliquidTestnetGeneralizedFundingSpreadPricing({
+  let quoteNonce = 2n;
+  const pricing = createHyperliquidTestnetGeneralizedFundingSpreadPricing({
     domain,
     baseAsset: base,
     quoteAsset: quote,
@@ -1176,7 +1177,7 @@ test('prices a native two-market Hyperliquid funding spread from both books and 
     quoteTtlMs: 200n,
     feePolicyVersion: 1,
     feePolicyManifestHash: hash('d'),
-    nonceSource: { next: () => 3n },
+    nonceSource: { next: () => ++quoteNonce },
     longPerpetual: {
       adapter: perpetualAdapter,
       venue,
@@ -1191,7 +1192,8 @@ test('prices a native two-market Hyperliquid funding spread from both books and 
       coin: 'SHORT:BTC',
       sizeDecimals: 5,
     },
-  }).quote({
+  });
+  const terms = await pricing.quote({
     documents: {
       orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
       graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
@@ -1224,4 +1226,39 @@ test('prices a native two-market Hyperliquid funding spread from both books and 
   assert.equal(terms.routeExpiryValue, 1_100n);
   assert.equal(terms.validUntilValue, 1_200n);
   assert.equal(terms.quoteNonce, 3n);
+
+  const exitGraph = packageGraph({
+    ...graph,
+    lifecycleAction: 'EXIT',
+    legs: graph.legs.map((leg) => ({
+      ...leg,
+      legFamily: 'PERP_CLOSE' as const,
+      side: leg.legTypeId === 'funding-long' ? 'SELL' as const : 'BUY' as const,
+      limitPrice: price(leg.legTypeId === 'funding-long' ? 600n : 602n),
+    })),
+    nonce: 4n,
+  });
+  const exitOrder = strategyPackageOrder({
+    ...order,
+    graphHash: packageGraphHash(exitGraph),
+    lifecycleAction: 'EXIT',
+    maximumMarginIncrease: assetAmount(quote, 0n),
+    expectedStrategyStateHash: hash('e'),
+    nonce: 4n,
+  });
+  requests.length = 0;
+  const exitTerms = await pricing.quote({
+    documents: {
+      orderHashHex: Buffer.from(strategyPackageOrderHash(exitOrder)).toString('hex'),
+      graphHashHex: Buffer.from(packageGraphHash(exitGraph)).toString('hex'),
+      order: exitOrder,
+      graph: exitGraph,
+      recordedAtMs: 1,
+    },
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+  assert.equal(exitTerms.legEconomics[0]?.marginDelta.atoms, 0n);
+  assert.equal(exitTerms.legEconomics[1]?.marginDelta.atoms, 0n);
+  assert.equal(exitTerms.netPackageOutcomeAtoms, -540_585n);
+  assert.equal(exitTerms.quoteNonce, 4n);
 });
