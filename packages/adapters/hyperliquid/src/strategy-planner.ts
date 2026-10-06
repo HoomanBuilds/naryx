@@ -199,12 +199,13 @@ export function compileHyperliquidStrategyPlan(input: Readonly<{
         || leg.legFamily === 'PERP_DECREASE',
       `HyperCore cannot materialize ${leg.legFamily}`,
     );
-    const binding = bindings.find((candidate) =>
+    const matchingBindings = bindings.filter((candidate) =>
       sameAdapter(candidate.adapter, leg.adapter)
       && sameManifest(candidate.venue, leg.venue)
       && sameManifest(candidate.market, leg.market),
     );
-    requireCondition(binding !== undefined, `no HyperCore binding for leg ${leg.legId}`);
+    requireCondition(matchingBindings.length === 1, `leg ${leg.legId} must resolve to exactly one HyperCore binding`);
+    const binding = matchingBindings[0]!;
     requireCondition(leg.limitPrice !== undefined, `HyperCore leg ${leg.legId} requires an exact limit price`);
     requireCondition(leg.timeInForce === 'IOC', `HyperCore leg ${leg.legId} requires IOC`);
     const routeLeg = route.legs.find((value) => value.legId === leg.legId);

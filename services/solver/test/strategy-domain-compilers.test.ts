@@ -52,4 +52,16 @@ test('domain compilers expose only their exact runtime family and reject mixed-d
     materializers: [materializer(otherDomain)],
   }), /materializer domain mismatch/);
   assert.throws(() => createHyperliquidStrategyDomainCompiler({ domain, bindings: [] }), /market binding/);
+  const hyperliquidBinding = {
+    adapter,
+    venue,
+    market,
+    assetId: 0,
+    sizeDecimals: 5,
+    maximumPriceDecimals: 6,
+  };
+  assert.throws(() => createHyperliquidStrategyDomainCompiler({
+    domain,
+    bindings: [hyperliquidBinding, hyperliquidBinding],
+  }), /must be unique/);
 });

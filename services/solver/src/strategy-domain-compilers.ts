@@ -24,6 +24,7 @@ import {
   type Hash32,
   type TypedStrategyDomainPlan,
   type TypedStrategyRoute,
+  type VersionedManifestRef,
 } from '@naryx/protocol-types';
 import type { PublicKey } from '@solana/web3.js';
 import { toHex, type Address } from 'viem';
@@ -53,6 +54,23 @@ function assertMaterializerDomains(
 ): void {
   requireCondition(materializers.length > 0, `${context} requires at least one materializer`);
   requireCondition(materializers.every((value) => sameDomain(value.domain, domain)), `${context} materializer domain mismatch`);
+}
+
+function sameManifest(left: VersionedManifestRef, right: VersionedManifestRef): boolean {
+  return left.subjectId === right.subjectId
+    && left.manifestVersion === right.manifestVersion
+    && bytesEqual(left.manifestHash, right.manifestHash);
+}
+
+function sameHyperliquidBindingIdentity(
+  left: HyperliquidStrategyMarketBindingInput,
+  right: HyperliquidStrategyMarketBindingInput,
+): boolean {
+  return left.adapter.adapterId === right.adapter.adapterId
+    && left.adapter.adapterManifestVersion === right.adapter.adapterManifestVersion
+    && bytesEqual(left.adapter.adapterManifestHash, right.adapter.adapterManifestHash)
+    && sameManifest(left.venue, right.venue)
+    && sameManifest(left.market, right.market);
 }
 
 export function createSolanaStrategyDomainCompiler(input: Readonly<{
@@ -112,6 +130,8 @@ export function createHyperliquidStrategyDomainCompiler(input: Readonly<{
   bindings: readonly HyperliquidStrategyMarketBindingInput[];
 }>): StrategyDomainCompiler<HyperliquidStrategyExecutionPlan> {
   requireCondition(input.bindings.length > 0, 'HyperCore strategy compiler requires at least one market binding');
+  requireCondition(input.bindings.every((binding, index) => input.bindings.findIndex((candidate) =>
+    sameHyperliquidBindingIdentity(candidate, binding)) === index), 'HyperCore strategy compiler market bindings must be unique');
   const bindings = Object.freeze([...input.bindings]);
   return Object.freeze({
     domain: input.domain,
