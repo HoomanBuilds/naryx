@@ -94,6 +94,7 @@ function executionPlan(kind: 'EXACT_NET' | 'BOUNDED_NET' = 'EXACT_NET'):
     },
     legs: [
       {
+        legId: 'spot',
         role: 'SPOT',
         legIndex: 0,
         adapter: spotAdapter,
@@ -110,6 +111,7 @@ function executionPlan(kind: 'EXACT_NET' | 'BOUNDED_NET' = 'EXACT_NET'):
         order: spotOrder,
       },
       {
+        legId: 'perpetual',
         role: 'PERPETUAL',
         legIndex: 1,
         adapter: perpetualAdapter,

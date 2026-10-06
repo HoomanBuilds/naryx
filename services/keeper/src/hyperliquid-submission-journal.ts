@@ -143,8 +143,8 @@ function normalizedAction(plan: HyperliquidExecutionPlan): HypercoreBatchedOrder
   const { action } = plan.unsignedRequestFields;
   requireCondition(action.type === 'order' && action.grouping === 'na', 'unsupported HyperCore action');
   requireCondition(action.orders.length === 2 && plan.legs.length === 2, 'two IOC legs are required');
-  const first = normalizedOrder(action.orders[0]);
-  const second = normalizedOrder(action.orders[1]);
+  const first = normalizedOrder(action.orders[0]!);
+  const second = normalizedOrder(action.orders[1]!);
   const spot = plan.legs.find((leg) => leg.role === 'SPOT');
   const perpetual = plan.legs.find((leg) => leg.role === 'PERPETUAL');
   requireCondition(spot !== undefined && perpetual !== undefined, 'distinct plan legs are required');

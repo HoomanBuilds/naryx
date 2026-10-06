@@ -32,6 +32,7 @@ export * from './hyperliquid-recovery-validation.js';
 export * from './hyperliquid-recovery-reconciliation.js';
 export * from './hyperliquid-recovery-submission-journal.js';
 export * from './hyperliquid-evidence-collector.js';
+export * from './hyperliquid-strategy-evidence.js';
 export * from './hyperliquid-testnet-evidence-runtime.js';
 export * from './hyperliquid-testnet-evidence-http.js';
 export * from './hyperliquid-mainnet-shadow.js';
@@ -323,6 +324,7 @@ function normalizedPlannedLeg(
   requireCondition(input.order.c.toLowerCase() === input.clientOrderId.toLowerCase(),
     `${context}.clientOrderId mismatch`);
   return Object.freeze({
+    legId: input.legId,
     role: input.role,
     legIndex: input.legIndex,
     adapter: adapterRef(input.adapter, `${context}.adapter`),

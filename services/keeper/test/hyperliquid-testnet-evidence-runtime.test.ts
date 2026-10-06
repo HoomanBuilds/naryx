@@ -104,13 +104,13 @@ function executionPlan(): HyperliquidExecutionPlan {
     },
     legs: [
       {
-        role: 'SPOT', legIndex: 0, adapter: spotAdapter, venue, market: spotMarket,
+        legId: 'spot', role: 'SPOT', legIndex: 0, adapter: spotAdapter, venue, market: spotMarket,
         baseAsset, quoteAsset, side: 'BUY', quantityAtoms: 100n,
         sizeDecimals: 8, maxPriceDecimals: 0, signedBaseDeltaAtoms: 100n,
         clientOrderId: spotCloid, order: spotOrder,
       },
       {
-        role: 'PERPETUAL', legIndex: 1, adapter: perpAdapter, venue, market: perpMarket,
+        legId: 'perpetual', role: 'PERPETUAL', legIndex: 1, adapter: perpAdapter, venue, market: perpMarket,
         baseAsset, quoteAsset, side: 'SELL', quantityAtoms: 100n,
         sizeDecimals: 6, maxPriceDecimals: 0, signedBaseDeltaAtoms: -100n,
         clientOrderId: perpCloid, order: perpOrder,

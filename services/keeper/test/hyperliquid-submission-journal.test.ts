@@ -79,11 +79,11 @@ function plan(): HyperliquidExecutionPlan {
       expiresAfter: Number(nowMs + 5_000n),
     },
     legs: [
-      { role: 'SPOT', legIndex: 0, adapter: spotAdapter, venue, market: spotMarket,
+      { legId: 'spot', role: 'SPOT', legIndex: 0, adapter: spotAdapter, venue, market: spotMarket,
         baseAsset, quoteAsset, side: 'BUY', quantityAtoms: 100n,
         sizeDecimals: 6, maxPriceDecimals: 2,
         signedBaseDeltaAtoms: 100n, clientOrderId: spotClientOrderId, order: spot },
-      { role: 'PERPETUAL', legIndex: 1, adapter: perpetualAdapter, venue,
+      { legId: 'perpetual', role: 'PERPETUAL', legIndex: 1, adapter: perpetualAdapter, venue,
         market: perpetualMarket, baseAsset, quoteAsset, side: 'SELL', quantityAtoms: 100n,
         sizeDecimals: 6, maxPriceDecimals: 0, signedBaseDeltaAtoms: -100n,
         clientOrderId: perpetualClientOrderId, order: perpetual },

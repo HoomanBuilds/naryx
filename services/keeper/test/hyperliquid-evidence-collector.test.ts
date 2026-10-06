@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import type {
   ClearinghouseStateResponse,
@@ -10,11 +11,13 @@ import type {
   UserFillsByTimeResponse,
   UserRoleResponse,
 } from '@nktkas/hyperliquid/api/info';
+import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
 import { assetRef, domainRef, hash32, manifestHash } from '@naryx/protocol-types';
 import {
   HYPERLIQUID_TESTNET_INFO_URL,
   HyperliquidAuthoritativeEvidenceCollector,
   HyperliquidSdkTestnetReadClient,
+  HyperliquidStrategyAuthoritativeEvidenceCollector,
   type HyperliquidEvidenceMarketBinding,
   type HyperliquidEvidenceWindow,
   type HyperliquidInfoEnvelope,
@@ -423,4 +426,95 @@ test('accounts for a spot buy fee charged in the base token at the token precisi
     .collectPackage(packageAttempt(), perpBefore, binding, evidenceWindow);
   assert.equal(perpResult.status, 'INCOMPLETE');
   assert.ok(perpResult.reasons.includes('UNCERTAIN_FEE_EVIDENCE'));
+});
+
+function strategyEvidenceFixture(partial = false): Readonly<{
+  client: FixtureClient;
+  request: Parameters<HyperliquidStrategyAuthoritativeEvidenceCollector['collect']>[0];
+}> {
+  const client = new FixtureClient();
+  client.stamp = 9_950;
+  const cloids = [spotCloid, perpCloid, recoveryCloid];
+  const coins = ['@7', 'BTC', 'SOL'];
+  const sides = ['B', 'A', 'B'] as const;
+  const wires = cloids.map((cloid, index) => ({
+    a: index,
+    b: sides[index] === 'B',
+    p: '60000',
+    s: '0.000001',
+    r: false,
+    t: { limit: { tif: 'Ioc' as const } },
+    c: cloid,
+  }));
+  const orders = wires.map((wire, index) => ({
+    legId: `leg-${index}`,
+    stage: 0,
+    baseAsset,
+    quoteAsset,
+    signedBaseDeltaAtoms: sides[index] === 'B' ? 100n : -100n,
+    clientOrderId: wire.c,
+    wire,
+  }));
+  const actionHash = `0x${createHash('sha256').update(JSON.stringify([
+    'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+    'order',
+    wires.map((wire) => [wire.a, wire.b, wire.p, wire.s, wire.r, wire.t.limit.tif, wire.c]),
+    'na',
+  ])).digest('hex')}` as const;
+  const plan = {
+    version: 1,
+    guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+    domain: domainRef('hypercore:testnet', 1, '71'.repeat(32)),
+    orderHash: hash32('72'.repeat(32)),
+    graphHash: hash32('73'.repeat(32)),
+    quoteHash: hash32('74'.repeat(32)),
+    routeHash: hash32('75'.repeat(32)),
+    requestExpiryMs: 11_000n,
+    orders,
+    batches: [{ stage: 0, action: { type: 'order', grouping: 'na', orders: wires },
+      legIds: orders.map((order) => order.legId) }],
+    recoveryAuthorizations: [],
+    maximumRecoveryCostQuoteAtoms: 0n,
+  } as unknown as HyperliquidStrategyExecutionPlan;
+  cloids.forEach((cloid, index) => client.statuses.set(cloid,
+    orderStatus(cloid, index + 1, coins[index]!, sides[index]!, partial && index === 2 ? 'canceled' : 'filled')));
+  client.fills = cloids.map((cloid, index) => fill(
+    cloid,
+    index + 1,
+    index + 10,
+    coins[index]!,
+    sides[index]!,
+    partial && index === 2 ? '0.0000005' : '0.000001',
+  ));
+  return Object.freeze({
+    client,
+    request: Object.freeze({
+      attemptId: 'strategy-attempt-1',
+      batchStage: 0,
+      account,
+      actionHash,
+      requestCommitment: `0x${'76'.repeat(32)}` as const,
+      durableRevision: 'sqlite-strategy-v1:1',
+      legIds: orders.map((order) => order.legId),
+      clientOrderIds: cloids,
+      plan,
+      window: evidenceWindow,
+    }),
+  });
+}
+
+test('classifies complete and partial generalized HyperCore packages from authoritative fills', async () => {
+  const complete = strategyEvidenceFixture();
+  const completeResult = await new HyperliquidStrategyAuthoritativeEvidenceCollector(complete.client)
+    .collect(complete.request);
+  assert.equal(completeResult.status, 'COMPLETE');
+  assert.equal(completeResult.outcome, 'COMPLETED');
+  assert.deepEqual(completeResult.legs.map((leg) => leg.filledSignedBaseAtoms), [100n, -100n, 100n]);
+
+  const partial = strategyEvidenceFixture(true);
+  const partialResult = await new HyperliquidStrategyAuthoritativeEvidenceCollector(partial.client)
+    .collect(partial.request);
+  assert.equal(partialResult.status, 'COMPLETE');
+  assert.equal(partialResult.outcome, 'RECOVERY_REQUIRED');
+  assert.deepEqual(partialResult.reasons, ['PARTIAL_PACKAGE_FILL']);
 });
