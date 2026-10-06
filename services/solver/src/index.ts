@@ -1022,3 +1022,20 @@ export {
   loadHyperliquidStrategyPreparationLane,
   type HyperliquidStrategyPreparationLane,
 } from './hyperliquid-strategy-preparation.js';
+export {
+  createEvmOptionSpreadGeneralizedPricing,
+  readEvmOptionPoolSnapshot,
+  type EvmOptionPoolSnapshot,
+  type EvmOptionSpreadContractIdentity,
+  type EvmOptionSpreadPoolBinding,
+  type EvmOptionSpreadPricingInput,
+  type EvmOptionSpreadQuoteNonceSource,
+  type EvmOptionSpreadReadPort,
+  type EvmOptionSpreadRole,
+} from './evm-option-spread-quote.js';
+export {
+  EvmOptionSpreadPreparationContextResolver,
+  type EvmOptionSpreadAdapterFactoryBinding,
+  type EvmOptionSpreadPackageIdPort,
+  type EvmOptionSpreadPreparationLane,
+} from './evm-option-spread-preparation.js';
