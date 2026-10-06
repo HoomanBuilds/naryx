@@ -7,9 +7,18 @@ export {
   type StoredStrategyPackageQuote,
   type StoredStrategyPackageReceipt,
   type StoredStrategyPackageAuthorization,
+  type StoredNativeStrategyPosition,
   type SelectHyperliquidStrategyExecutionRequest,
   type SelectedStrategyPackageAttempt,
 } from "./strategy-package-store.js";
+export {
+  applyNativeStrategyExitReceipt,
+  nativeStrategyPositionFromEntry,
+  validateNativeStrategyExit,
+  NativeStrategyPositionError,
+  type NativeStrategyPosition,
+  type NativeStrategyPositionStatus,
+} from "./native-strategy-position.js";
 export {
   createStrategyPackageAuthorizationPort,
   strategyPackageAuthorizationTypedData,

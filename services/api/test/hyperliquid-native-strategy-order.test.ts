@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   adapterRef,
+  assetAmount,
   assetRef,
   domainRef,
   manifestHash,
@@ -12,6 +13,7 @@ import {
   packageGraphHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyPackageReceipt,
   stringifyProtocolJson,
   toHex,
   validateStrategyTemplateGraph,
@@ -20,9 +22,12 @@ import {
   type StrategyPackageOrderInput,
 } from "@naryx/protocol-types";
 import {
+  applyNativeStrategyExitReceipt,
   createHyperliquidNativeStrategyOrderPort,
   HyperliquidNativeStrategyOrderError,
   loadHyperliquidNativeStrategyProfiles,
+  nativeStrategyPositionFromEntry,
+  validateNativeStrategyExit,
   type HyperliquidNativeStrategyProfile,
 } from "../src/index.js";
 import type { StrategyOrderIntakePort } from "../src/strategy-order-intake.js";
@@ -175,4 +180,106 @@ test("rejects requests outside reviewed quantity and expiry bounds", () => {
     expiryValue: "1004000",
     nonce: "1",
   }), (error: unknown) => error instanceof HyperliquidNativeStrategyOrderError && error.code === "LIMIT_EXCEEDED");
+});
+
+test("derives an authoritative native state and closes only its exact exit", () => {
+  const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const port = createHyperliquidNativeStrategyOrderPort({
+    profiles: [selectedProfile],
+    intake,
+    currentTimeMs: () => NOW_MS,
+  });
+  const entry = port.create({
+    profileId: selectedProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "ENTRY",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "200000",
+    limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "60001", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "3",
+  });
+  const entryOrderHash = toHex(strategyPackageOrderHash(entry.order));
+  const receipt = (created: typeof entry, lifecycleAction: "ENTRY" | "EXIT", settledAtoms: bigint) => strategyPackageReceipt({
+    version: 1,
+    environment: "testnet",
+    domains: [selectedProfile.domain],
+    orderHash: strategyPackageOrderHash(created.order),
+    graphHash: packageGraphHash(created.graph),
+    quoteHash: "51".repeat(32),
+    routeHash: "52".repeat(32),
+    templateId: created.order.templateId,
+    templateVersion: created.order.templateVersion,
+    packageTemplateManifestHash: created.order.packageTemplateManifestHash,
+    seriesId: created.order.seriesId,
+    seriesVersion: created.order.seriesVersion,
+    seriesManifestHash: created.order.seriesManifestHash,
+    executionClassId: created.order.executionClassId,
+    executionClassVersion: created.order.executionClassVersion,
+    executionClassManifestHash: created.order.executionClassManifestHash,
+    lifecycleAction,
+    owner: OWNER,
+    solverId: "solver-a",
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+    terminalState: "FINALIZED_COMPLETE",
+    quoteAsset: selectedProfile.quoteAsset,
+    legOutcomes: [{
+      legId: "treasury-hedge",
+      positionLegId: "treasury-hedge",
+      domain: selectedProfile.domain,
+      status: "EXECUTED",
+      requestedQuantity: assetAmount(selectedProfile.baseAsset, 100_000n),
+      settledQuantity: assetAmount(selectedProfile.baseAsset, settledAtoms),
+      grossNotional: assetAmount(selectedProfile.quoteAsset, 60_001n),
+      venueFee: assetAmount(selectedProfile.quoteAsset, 1n),
+      residualValue: assetAmount(selectedProfile.quoteAsset, 0n),
+      evidenceGrade: "VENUE_API_CORROBORATED",
+      onchainEnforced: false,
+      evidenceHash: "53".repeat(32),
+    }],
+    serviceFee: assetAmount(selectedProfile.quoteAsset, 0n),
+    solverFee: assetAmount(selectedProfile.quoteAsset, 0n),
+    venueFees: assetAmount(selectedProfile.quoteAsset, 1n),
+    networkCost: assetAmount(selectedProfile.quoteAsset, 0n),
+    recoveryCost: assetAmount(selectedProfile.quoteAsset, 0n),
+    terminalResidualValue: assetAmount(selectedProfile.quoteAsset, 0n),
+    finalityStatus: "FINALIZED",
+    executedAtValue: 1_001_000n,
+    receiptNonce: lifecycleAction === "ENTRY" ? 3n : 4n,
+  });
+  const opened = nativeStrategyPositionFromEntry({
+    orderHashHex: entryOrderHash,
+    receiptHashHex: "61".repeat(32),
+    order: entry.order,
+    graph: entry.graph,
+    receipt: receipt(entry, "ENTRY", -100_000n),
+  });
+  assert.ok(opened);
+  assert.equal(opened.status, "OPEN");
+  assert.equal(opened.state.legs[0]?.signedQuantityAtoms, -100_000n);
+
+  const exit = port.create({
+    profileId: selectedProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "EXIT",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "200000",
+    limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "59999", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "4",
+    expectedStrategyStateHash: opened.stateHashHex,
+  });
+  validateNativeStrategyExit(opened, exit.order, exit.graph);
+  const exitOrderHash = toHex(strategyPackageOrderHash(exit.order));
+  const closed = applyNativeStrategyExitReceipt(
+    { ...opened, status: "EXITING", exitOrderHashHex: exitOrderHash },
+    exitOrderHash,
+    "62".repeat(32),
+    exit.order,
+    exit.graph,
+    receipt(exit, "EXIT", 100_000n),
+  );
+  assert.equal(closed.status, "CLOSED");
+  assert.equal(closed.state.open, false);
+  assert.equal(closed.state.legs[0]?.signedQuantityAtoms, 0n);
 });

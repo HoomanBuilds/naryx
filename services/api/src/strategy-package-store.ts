@@ -12,6 +12,8 @@ import {
   strategyPackageQuote,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
+  strategyState,
+  strategyStateHash,
   stringifyProtocolJson,
   toHex,
   typedStrategyRouteHash,
@@ -23,10 +25,19 @@ import {
   type StrategyPackageQuoteInput,
   type StrategyPackageReceipt,
   type StrategyPackageReceiptInput,
+  type StrategyState,
   type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
+import {
+  applyNativeStrategyExitReceipt,
+  nativeStrategyPositionFromEntry,
+  NativeStrategyPositionError,
+  validateNativeStrategyExit,
+  type NativeStrategyPosition,
+  type NativeStrategyPositionStatus,
+} from "./native-strategy-position.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS strategy_package_orders (
@@ -87,10 +98,26 @@ CREATE TABLE IF NOT EXISTS strategy_package_receipts (
   receipt_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_native_positions (
+  strategy_id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  economic_quantity_atoms TEXT NOT NULL,
+  entry_order_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_orders(order_hash),
+  entry_receipt_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  state_hash BLOB NOT NULL UNIQUE,
+  state_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('OPEN', 'EXITING', 'CLOSED', 'UNRESOLVED')),
+  exit_order_hash BLOB UNIQUE REFERENCES strategy_package_orders(order_hash),
+  exit_receipt_hash BLOB UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  recorded_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE INDEX IF NOT EXISTS strategy_package_orders_by_owner ON strategy_package_orders(owner_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_quotes_by_order ON strategy_package_quotes(order_hash, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_receipts_by_order ON strategy_package_receipts(order_hash, recorded_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_package_receipts_by_quote ON strategy_package_receipts(quote_hash);
+CREATE INDEX IF NOT EXISTS strategy_native_positions_by_owner ON strategy_native_positions(owner_id, status, updated_at_ms);
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
@@ -149,6 +176,11 @@ export interface StoredStrategyPackageReceipt {
   readonly receiptHashHex: string;
   readonly receipt: StrategyPackageReceipt;
   readonly recordedAtMs: number;
+}
+
+export interface StoredNativeStrategyPosition extends NativeStrategyPosition {
+  readonly recordedAtMs: number;
+  readonly updatedAtMs: number;
 }
 
 export interface StrategyPackageSourceBinding {
@@ -321,6 +353,51 @@ function nativeAttemptRow(row: {
   });
 }
 
+type NativePositionRow = {
+  strategy_id: string;
+  owner_id: string;
+  template_id: string;
+  economic_quantity_atoms: string;
+  entry_order_hash: Uint8Array;
+  entry_receipt_hash: Uint8Array;
+  state_hash: Uint8Array;
+  state_json: string;
+  status: string;
+  exit_order_hash: Uint8Array | null;
+  exit_receipt_hash: Uint8Array | null;
+  recorded_at_ms: number;
+  updated_at_ms: number;
+};
+
+function nativePositionRow(row: NativePositionRow): StoredNativeStrategyPosition {
+  requireCondition(row.status === "OPEN" || row.status === "EXITING"
+    || row.status === "CLOSED" || row.status === "UNRESOLVED",
+  "CORRUPT_ROW", "The native strategy position status is invalid.");
+  const state = strategyState(parseProtocolJson(row.state_json) as StrategyState);
+  requireCondition(/^[1-9][0-9]*$/.test(row.economic_quantity_atoms),
+    "CORRUPT_ROW", "The native strategy economic quantity is invalid.");
+  const stateHashHex = toHex(strategyStateHash(state));
+  requireCondition(state.strategyId === row.strategy_id
+    && state.ownerId === row.owner_id
+    && stateHashHex === toHex(row.state_hash),
+  "CORRUPT_ROW", "The stored native strategy state does not match its identity or hash.");
+  return Object.freeze({
+    strategyId: row.strategy_id,
+    owner: row.owner_id,
+    templateId: row.template_id,
+    economicQuantityAtoms: BigInt(row.economic_quantity_atoms),
+    entryOrderHashHex: toHex(row.entry_order_hash),
+    entryReceiptHashHex: toHex(row.entry_receipt_hash),
+    stateHashHex,
+    state,
+    status: row.status as NativeStrategyPositionStatus,
+    ...(row.exit_order_hash === null ? {} : { exitOrderHashHex: toHex(row.exit_order_hash) }),
+    ...(row.exit_receipt_hash === null ? {} : { exitReceiptHashHex: toHex(row.exit_receipt_hash) }),
+    recordedAtMs: row.recorded_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
 export class SqliteStrategyPackageStore {
   private readonly db: Database.Database;
   private readonly clock: () => number;
@@ -482,6 +559,29 @@ export class SqliteStrategyPackageStore {
     });
   }
 
+  nativeStrategyPosition(strategyId: string): StoredNativeStrategyPosition | undefined {
+    const row = this.db.prepare("SELECT * FROM strategy_native_positions WHERE strategy_id = ?")
+      .get(strategyId) as NativePositionRow | undefined;
+    return row === undefined ? undefined : nativePositionRow(row);
+  }
+
+  nativeStrategyPositionByStateHash(stateHashHex: string): StoredNativeStrategyPosition | undefined {
+    const row = this.db.prepare("SELECT * FROM strategy_native_positions WHERE state_hash = ?")
+      .get(hashBuffer(stateHashHex)) as NativePositionRow | undefined;
+    return row === undefined ? undefined : nativePositionRow(row);
+  }
+
+  nativeStrategyPositionsByOwner(owner: string): readonly StoredNativeStrategyPosition[] {
+    requireCondition(/^0x(?!0{40}$)[0-9a-f]{40}$/.test(owner), "INVALID_OWNER",
+      "The native strategy owner must be a lowercase nonzero EVM address.");
+    const rows = this.db.prepare(`
+      SELECT * FROM strategy_native_positions
+      WHERE owner_id = ?
+      ORDER BY updated_at_ms DESC, strategy_id
+    `).all(owner) as NativePositionRow[];
+    return Object.freeze(rows.map(nativePositionRow));
+  }
+
   selectHyperliquidExecution(request: SelectHyperliquidStrategyExecutionRequest): SelectedStrategyPackageAttempt {
     const { quoteHashHex, orderHashHex, routeHashHex, sourceOrderHashHex, idempotencyKey } = request;
     requireCondition(/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(idempotencyKey), "INVALID_IDEMPOTENCY_KEY", "The execution idempotency key is invalid.");
@@ -572,6 +672,7 @@ export class SqliteStrategyPackageStore {
     requireCondition(this.ownerAuthorization(admission.orderHashHex) !== undefined,
       "OWNER_AUTHORIZATION_REQUIRED", "The strategy package owner must authorize the exact generalized order before selection.");
     requireCondition(admission.order.environment === "testnet"
+      && (admission.order.lifecycleAction === "ENTRY" || admission.order.lifecycleAction === "EXIT")
       && admission.order.settlementClass === "BATCHED_IOC_WITH_RECOVERY"
       && admission.order.expiryUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
       && admission.quote.validUntilUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
@@ -608,6 +709,22 @@ export class SqliteStrategyPackageStore {
       }
       const byQuote = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof nativeAttemptRow>[0] | undefined;
       requireCondition(byQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected with another idempotency key.");
+      let exitPosition: StoredNativeStrategyPosition | undefined;
+      if (admission.order.lifecycleAction === "EXIT") {
+        requireCondition(admission.order.expectedStrategyStateHash !== undefined,
+          "STALE_STRATEGY_STATE", "A native strategy exit must bind an open strategy state.");
+        exitPosition = this.nativeStrategyPositionByStateHash(toHex(admission.order.expectedStrategyStateHash));
+        requireCondition(exitPosition !== undefined, "STALE_STRATEGY_STATE",
+          "The native strategy state is unknown or no longer current.");
+        try {
+          validateNativeStrategyExit(exitPosition, admission.order, admission.graph);
+        } catch (error) {
+          if (error instanceof NativeStrategyPositionError) {
+            throw new StrategyPackageStoreError(error.code, error.message);
+          }
+          throw error;
+        }
+      }
       this.db.prepare(`
         INSERT INTO strategy_native_execution_attempts
           (attempt_id, idempotency_key, order_hash, graph_hash, quote_hash, route_hash,
@@ -622,6 +739,20 @@ export class SqliteStrategyPackageStore {
         hashBuffer(admission.routeHashHex),
         selectedAtMs,
       );
+      if (exitPosition !== undefined) {
+        const updated = this.db.prepare(`
+          UPDATE strategy_native_positions
+          SET status = 'EXITING', exit_order_hash = ?, exit_receipt_hash = NULL, updated_at_ms = ?
+          WHERE strategy_id = ? AND status = 'OPEN' AND state_hash = ?
+        `).run(
+          hashBuffer(admission.orderHashHex),
+          selectedAtMs,
+          exitPosition.strategyId,
+          hashBuffer(exitPosition.stateHashHex),
+        );
+        requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+          "The native strategy state changed before exit selection.");
+      }
       return Object.freeze({
         attemptId,
         idempotencyKey,
@@ -700,6 +831,82 @@ export class SqliteStrategyPackageStore {
       }
       this.db.prepare("INSERT INTO strategy_package_receipts (receipt_hash, order_hash, quote_hash, route_hash, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)")
         .run(receiptHash, receipt.orderHash, receipt.quoteHash, receipt.routeHash, receiptJson, this.clock());
+      const nativeAttempt = this.db.prepare("SELECT 1 FROM strategy_native_execution_attempts WHERE quote_hash = ?")
+        .get(receipt.quoteHash);
+      if (nativeAttempt !== undefined) {
+        const changedAtMs = this.clock();
+        requireCondition(Number.isSafeInteger(changedAtMs) && changedAtMs >= 0,
+          "INVALID_CLOCK", "The native strategy position clock is invalid.");
+        try {
+          if (order.lifecycleAction === "ENTRY") {
+            const position = nativeStrategyPositionFromEntry({
+              orderHashHex: toHex(receipt.orderHash),
+              receiptHashHex,
+              order,
+              graph,
+              receipt,
+            });
+            if (position !== undefined) {
+              this.db.prepare(`
+                INSERT INTO strategy_native_positions
+                  (strategy_id, owner_id, template_id, economic_quantity_atoms,
+                   entry_order_hash, entry_receipt_hash,
+                   state_hash, state_json, status, exit_order_hash, exit_receipt_hash,
+                   recorded_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+              `).run(
+                position.strategyId,
+                position.owner,
+                position.templateId,
+                position.economicQuantityAtoms.toString(),
+                hashBuffer(position.entryOrderHashHex),
+                hashBuffer(position.entryReceiptHashHex),
+                hashBuffer(position.stateHashHex),
+                stringifyProtocolJson(position.state),
+                position.status,
+                changedAtMs,
+                changedAtMs,
+              );
+            }
+          } else if (order.lifecycleAction === "EXIT") {
+            const row = this.db.prepare("SELECT * FROM strategy_native_positions WHERE exit_order_hash = ?")
+              .get(receipt.orderHash) as NativePositionRow | undefined;
+            requireCondition(row !== undefined, "EXIT_NOT_SELECTED",
+              "The native strategy exit receipt has no selected open position.");
+            const position = nativePositionRow(row);
+            const next = applyNativeStrategyExitReceipt(
+              position,
+              toHex(receipt.orderHash),
+              receiptHashHex,
+              order,
+              graph,
+              receipt,
+            );
+            const updated = this.db.prepare(`
+              UPDATE strategy_native_positions
+              SET state_hash = ?, state_json = ?, status = ?, exit_order_hash = ?,
+                  exit_receipt_hash = ?, updated_at_ms = ?
+              WHERE strategy_id = ? AND status = 'EXITING' AND exit_order_hash = ?
+            `).run(
+              hashBuffer(next.stateHashHex),
+              stringifyProtocolJson(next.state),
+              next.status,
+              next.exitOrderHashHex === undefined ? null : hashBuffer(next.exitOrderHashHex),
+              hashBuffer(receiptHashHex),
+              changedAtMs,
+              next.strategyId,
+              receipt.orderHash,
+            );
+            requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+              "The native strategy state changed before receipt finalization.");
+          }
+        } catch (error) {
+          if (error instanceof NativeStrategyPositionError) {
+            throw new StrategyPackageStoreError(error.code, error.message);
+          }
+          throw error;
+        }
+      }
       return Object.freeze({ created: true, receiptHashHex });
     }).immediate();
   }
