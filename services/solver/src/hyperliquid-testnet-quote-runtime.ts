@@ -1184,9 +1184,14 @@ async function generalizedTreasuryHedgeTerms(
   input: HyperliquidTestnetGeneralizedTreasuryHedgePricingInput,
 ): Promise<GeneralizedStrategyQuoteTerms> {
   const { order, graph } = documents;
-  const opening = order.lifecycleAction === 'ENTRY';
+  const opening = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
+  const expectedFamily = order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+    : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+      : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE'
+        : order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND'
+          ? 'PERP_CLOSE' : undefined;
   if (order.templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
-    || (!opening && order.lifecycleAction !== 'EXIT')
+    || expectedFamily === undefined
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
     || graph.legs.length !== 1
     || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
@@ -1195,7 +1200,7 @@ async function generalizedTreasuryHedgeTerms(
   }
   const perpetual = graph.legs[0]!;
   if (perpetual.legTypeId !== 'treasury-hedge'
-    || perpetual.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
+    || perpetual.legFamily !== expectedFamily
     || (perpetual.side !== 'BUY' && perpetual.side !== 'SELL')
     || !sameDomain(perpetual.domain, input.domain)
     || !sameAdapter(perpetual.adapter, input.perpetual.adapter)
@@ -1373,9 +1378,14 @@ async function generalizedFundingSpreadTerms(
   input: HyperliquidTestnetGeneralizedFundingSpreadPricingInput,
 ): Promise<GeneralizedStrategyQuoteTerms> {
   const { order, graph } = documents;
-  const opening = order.lifecycleAction === 'ENTRY';
+  const opening = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
+  const expectedFamily = order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+    : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+      : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE'
+        : order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND'
+          ? 'PERP_CLOSE' : undefined;
   if (order.templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
-    || (!opening && order.lifecycleAction !== 'EXIT')
+    || expectedFamily === undefined
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
     || graph.legs.length !== 2
     || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
@@ -1385,9 +1395,9 @@ async function generalizedFundingSpreadTerms(
   const long = graph.legs.find((leg) => leg.legTypeId === 'funding-long');
   const short = graph.legs.find((leg) => leg.legTypeId === 'funding-short');
   if (long === undefined || short === undefined
-    || long.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
+    || long.legFamily !== expectedFamily
     || long.side !== (opening ? 'BUY' : 'SELL')
-    || short.legFamily !== (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
+    || short.legFamily !== expectedFamily
     || short.side !== (opening ? 'SELL' : 'BUY')
     || !sameDomain(long.domain, input.domain) || !sameDomain(short.domain, input.domain)
     || !sameAdapter(long.adapter, input.longPerpetual.adapter)

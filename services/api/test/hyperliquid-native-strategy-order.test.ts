@@ -23,11 +23,13 @@ import {
 } from "@naryx/protocol-types";
 import {
   applyNativeStrategyExitReceipt,
+  applyNativeStrategyTransitionReceipt,
   createHyperliquidNativeStrategyOrderPort,
   HyperliquidNativeStrategyOrderError,
   loadHyperliquidNativeStrategyProfiles,
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
+  validateNativeStrategyTransition,
   type HyperliquidNativeStrategyProfile,
 } from "../src/index.js";
 import type { StrategyOrderIntakePort } from "../src/strategy-order-intake.js";
@@ -200,7 +202,11 @@ test("derives an authoritative native state and closes only its exact exit", () 
     nonce: "3",
   });
   const entryOrderHash = toHex(strategyPackageOrderHash(entry.order));
-  const receipt = (created: typeof entry, lifecycleAction: "ENTRY" | "EXIT", settledAtoms: bigint) => strategyPackageReceipt({
+  const receipt = (
+    created: typeof entry,
+    lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT",
+    settledAtoms: bigint,
+  ) => strategyPackageReceipt({
     version: 1,
     environment: "testnet",
     domains: [selectedProfile.domain],
@@ -228,7 +234,7 @@ test("derives an authoritative native state and closes only its exact exit", () 
       positionLegId: "treasury-hedge",
       domain: selectedProfile.domain,
       status: "EXECUTED",
-      requestedQuantity: assetAmount(selectedProfile.baseAsset, 100_000n),
+      requestedQuantity: assetAmount(selectedProfile.baseAsset, created.graph.legs[0]!.quantityAtoms),
       settledQuantity: assetAmount(selectedProfile.baseAsset, settledAtoms),
       grossNotional: assetAmount(selectedProfile.quoteAsset, 60_001n),
       venueFee: assetAmount(selectedProfile.quoteAsset, 1n),
@@ -245,7 +251,8 @@ test("derives an authoritative native state and closes only its exact exit", () 
     terminalResidualValue: assetAmount(selectedProfile.quoteAsset, 0n),
     finalityStatus: "FINALIZED",
     executedAtValue: 1_001_000n,
-    receiptNonce: lifecycleAction === "ENTRY" ? 3n : 4n,
+    receiptNonce: lifecycleAction === "ENTRY" ? 3n
+      : lifecycleAction === "INCREASE" ? 4n : lifecycleAction === "DECREASE" ? 5n : 6n,
   });
   const opened = nativeStrategyPositionFromEntry({
     orderHashHex: entryOrderHash,
@@ -258,6 +265,50 @@ test("derives an authoritative native state and closes only its exact exit", () 
   assert.equal(opened.status, "OPEN");
   assert.equal(opened.state.legs[0]?.signedQuantityAtoms, -100_000n);
 
+  const increase = port.create({
+    profileId: selectedProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "INCREASE",
+    quantityAtoms: "25000",
+    economicQuantityAtoms: "50000",
+    limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "60001", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "4",
+    expectedStrategyStateHash: opened.stateHashHex,
+  });
+  validateNativeStrategyTransition(opened, increase.order, increase.graph);
+  const increased = applyNativeStrategyTransitionReceipt(
+    opened,
+    increase.order,
+    increase.graph,
+    receipt(increase, "INCREASE", -25_000n),
+  );
+  assert.equal(increased.status, "OPEN");
+  assert.equal(increased.economicQuantityAtoms, 250_000n);
+  assert.equal(increased.state.legs[0]?.signedQuantityAtoms, -125_000n);
+
+  const decrease = port.create({
+    profileId: selectedProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "DECREASE",
+    quantityAtoms: "25000",
+    economicQuantityAtoms: "50000",
+    limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "59999", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "5",
+    expectedStrategyStateHash: increased.stateHashHex,
+  });
+  validateNativeStrategyTransition(increased, decrease.order, decrease.graph);
+  const decreased = applyNativeStrategyTransitionReceipt(
+    increased,
+    decrease.order,
+    decrease.graph,
+    receipt(decrease, "DECREASE", 25_000n),
+  );
+  assert.equal(decreased.status, "OPEN");
+  assert.equal(decreased.economicQuantityAtoms, 200_000n);
+  assert.equal(decreased.state.legs[0]?.signedQuantityAtoms, -100_000n);
+
   const exit = port.create({
     profileId: selectedProfile.profileId,
     owner: OWNER,
@@ -266,13 +317,13 @@ test("derives an authoritative native state and closes only its exact exit", () 
     economicQuantityAtoms: "200000",
     limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "59999", baseAtoms: "1" }],
     expiryValue: "1020000",
-    nonce: "4",
-    expectedStrategyStateHash: opened.stateHashHex,
+    nonce: "6",
+    expectedStrategyStateHash: decreased.stateHashHex,
   });
-  validateNativeStrategyExit(opened, exit.order, exit.graph);
+  validateNativeStrategyExit(decreased, exit.order, exit.graph);
   const exitOrderHash = toHex(strategyPackageOrderHash(exit.order));
   const closed = applyNativeStrategyExitReceipt(
-    { ...opened, status: "EXITING", exitOrderHashHex: exitOrderHash },
+    { ...decreased, status: "EXITING", exitOrderHashHex: exitOrderHash },
     exitOrderHash,
     "62".repeat(32),
     exit.order,

@@ -101,7 +101,7 @@ export interface HyperliquidNativeStrategyProfile {
 export interface HyperliquidNativeStrategyOrderRequest {
   readonly profileId: string;
   readonly owner: string;
-  readonly lifecycleAction: "ENTRY" | "EXIT";
+  readonly lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
   readonly quantityAtoms: string;
   readonly economicQuantityAtoms: string;
   readonly limitPrices: readonly Readonly<{
@@ -461,7 +461,9 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         || required.some((name) => !(name in fields))
         || typeof fields.profileId !== "string"
         || typeof fields.owner !== "string"
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT")
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
+          && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || typeof fields.quantityAtoms !== "string"
         || typeof fields.economicQuantityAtoms !== "string"
         || typeof fields.expiryValue !== "string"
@@ -474,16 +476,18 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
       const request = fields as unknown as HyperliquidNativeStrategyOrderRequest;
       const profile = profiles.get(request.profileId);
       if (profile === undefined) fail("PROFILE_NOT_FOUND", "Native strategy profile was not found.");
-      if (!OWNER.test(request.owner) || (request.lifecycleAction !== "ENTRY" && request.lifecycleAction !== "EXIT")) {
+      if (!OWNER.test(request.owner) || (request.lifecycleAction !== "ENTRY"
+        && request.lifecycleAction !== "INCREASE" && request.lifecycleAction !== "DECREASE"
+        && request.lifecycleAction !== "EXIT" && request.lifecycleAction !== "EMERGENCY_UNWIND")) {
         fail("INVALID_REQUEST", "Owner or lifecycle action is invalid.");
       }
       if (request.lifecycleAction === "ENTRY" && request.expectedStrategyStateHash !== undefined) {
         fail("INVALID_REQUEST", "Entry cannot bind an existing strategy state.");
       }
-      if (request.lifecycleAction === "EXIT"
+      if (request.lifecycleAction !== "ENTRY"
         && (request.expectedStrategyStateHash === undefined
           || !/^[0-9a-f]{64}$/.test(request.expectedStrategyStateHash))) {
-        fail("INVALID_REQUEST", "Exit requires the exact expected strategy state hash.");
+        fail("INVALID_REQUEST", "A lifecycle transition requires the exact expected strategy state hash.");
       }
       const quantityAtoms = requestAtoms(request.quantityAtoms, "quantityAtoms");
       const economicQuantityAtoms = requestAtoms(request.economicQuantityAtoms, "economicQuantityAtoms");
@@ -525,8 +529,12 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
       }
       const graphLegs = profile.markets.map((market) => {
         const limit = limits.get(market.role)!;
-        const side = request.lifecycleAction === "ENTRY" ? market.entrySide : reverse(market.entrySide);
-        const family = request.lifecycleAction === "ENTRY" ? "PERP_OPEN" as const : "PERP_CLOSE" as const;
+        const increasing = request.lifecycleAction === "ENTRY" || request.lifecycleAction === "INCREASE";
+        const side = increasing ? market.entrySide : reverse(market.entrySide);
+        const family = request.lifecycleAction === "ENTRY" ? "PERP_OPEN" as const
+          : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE" as const
+            : request.lifecycleAction === "DECREASE" ? "PERP_DECREASE" as const
+              : "PERP_CLOSE" as const;
         const quoteAtoms = requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`);
         const baseAtoms = requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`);
         return Object.freeze({

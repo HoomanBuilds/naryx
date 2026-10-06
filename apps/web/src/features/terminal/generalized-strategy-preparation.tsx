@@ -908,7 +908,9 @@ export function GeneralizedStrategyPreparationPanel({
   }, [privateApiBaseUrl, sourceOrderHash, templateId]);
 
   useEffect(() => {
-    if (privateApiBaseUrl === null || sourceOrderHash !== null || lifecycleAction !== "EXIT"
+    if (privateApiBaseUrl === null || sourceOrderHash !== null
+      || (lifecycleAction !== "INCREASE" && lifecycleAction !== "DECREASE"
+        && lifecycleAction !== "EXIT" && lifecycleAction !== "EMERGENCY_UNWIND")
       || strategyOwner === null || !OWNER.test(strategyOwner)
       || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
       return;
@@ -940,7 +942,7 @@ export function GeneralizedStrategyPreparationPanel({
     ?? matchingNativeProfiles[0]
     ?? null;
   const matchingNativePositions = (nativePositions ?? []).filter((position) =>
-    position.status === "OPEN"
+    (position.status === "OPEN" || (lifecycleAction === "EMERGENCY_UNWIND" && position.status === "UNRESOLVED"))
     && position.owner === strategyOwner
     && position.templateId === templateId
     && selectedNativeProfile !== null
@@ -950,6 +952,9 @@ export function GeneralizedStrategyPreparationPanel({
   const selectedNativePosition = matchingNativePositions.find((position) => position.strategyId === selectedNativeStrategyId)
     ?? matchingNativePositions[0]
     ?? null;
+  const nativeLifecycleSupported = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+    || lifecycleAction === "DECREASE" || lifecycleAction === "EXIT"
+    || lifecycleAction === "EMERGENCY_UNWIND";
 
   async function createNativeStrategyOrder() {
     if (privateApiBaseUrl === null || selectedNativeProfile === null) return;
@@ -959,20 +964,31 @@ export function GeneralizedStrategyPreparationPanel({
       if (strategyOwner === null || !OWNER.test(strategyOwner)) {
         throw new Error("Connect the EVM wallet that will own and authorize this strategy.");
       }
-      if (lifecycleAction !== "ENTRY" && lifecycleAction !== "EXIT") {
-        throw new Error("This native strategy profile supports entry and exit only.");
+      if (lifecycleAction !== "ENTRY" && lifecycleAction !== "INCREASE"
+        && lifecycleAction !== "DECREASE" && lifecycleAction !== "EXIT"
+        && lifecycleAction !== "EMERGENCY_UNWIND") {
+        throw new Error("This native strategy profile does not support the selected lifecycle action yet.");
       }
-      if (lifecycleAction === "EXIT" && selectedNativePosition === null) {
-        throw new Error("Select an authoritative open strategy before creating its exit.");
+      if (lifecycleAction !== "ENTRY" && selectedNativePosition === null) {
+        throw new Error("Select an authoritative open strategy before creating its transition.");
       }
-      const quantityAtoms = lifecycleAction === "EXIT"
+      const fullUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
+      const quantityAtoms = fullUnwind
         ? nativePositionQuantityAtoms(selectedNativePosition!)
         : amountToAtoms(nativeQuantity, selectedNativeProfile.baseAsset.decimals, "Package quantity");
-      const economicQuantityAtoms = lifecycleAction === "EXIT"
+      const economicQuantityAtoms = fullUnwind
         ? BigInt(selectedNativePosition!.economicQuantityAtoms)
         : selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
           ? quantityAtoms
           : amountToAtoms(nativeEconomicQuantity, selectedNativeProfile.baseAsset.decimals, "Inventory exposure");
+      if (lifecycleAction === "DECREASE") {
+        if (quantityAtoms >= nativePositionQuantityAtoms(selectedNativePosition!)) {
+          throw new Error("A decrease must retain an open package quantity. Use exit to close the strategy.");
+        }
+        if (economicQuantityAtoms >= BigInt(selectedNativePosition!.economicQuantityAtoms)) {
+          throw new Error("A decrease must retain positive economic exposure. Use exit to close the strategy.");
+        }
+      }
       const limitPrices = selectedNativeProfile.markets.map((market) => ({
         legId: market.role,
         ...priceToAtomicRatio(
@@ -1001,7 +1017,7 @@ export function GeneralizedStrategyPreparationPanel({
           limitPrices,
           expiryValue: (unixTimeMs() + ttlMs).toString(),
           nonce: randomNonce(),
-          ...(lifecycleAction === "EXIT" ? { expectedStrategyStateHash: selectedNativePosition!.stateHash } : {}),
+          ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedNativePosition!.stateHash }),
         }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
@@ -1292,14 +1308,16 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   const nativeOrderFieldsReady = selectedNativeProfile !== null
+    && nativeLifecycleSupported
     && strategyOwner !== null
     && OWNER.test(strategyOwner)
-    && (lifecycleAction === "EXIT" ? selectedNativePosition !== null : nativeQuantity.trim() !== "")
-    && (lifecycleAction === "EXIT"
+    && (lifecycleAction === "ENTRY" ? nativeQuantity.trim() !== "" : selectedNativePosition !== null)
+    && ((lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") || nativeQuantity.trim() !== "")
+    && ((lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
       || selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
-    && (lifecycleAction !== "EXIT" || HASH.test(selectedNativePosition?.stateHash ?? ""));
+    && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
 
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
@@ -1344,7 +1362,7 @@ export function GeneralizedStrategyPreparationPanel({
           </select>
           {selectedNativeProfile ? (
             <>
-              {lifecycleAction === "EXIT" ? (
+              {lifecycleAction !== "ENTRY" ? (
                 <>
                   <label htmlFor="native-strategy-position">Open strategy package</label>
                   <select
@@ -1367,7 +1385,7 @@ export function GeneralizedStrategyPreparationPanel({
                   </select>
                   {selectedNativePosition ? (
                     <p className={styles.fieldContext}>
-                      Exit is bound to state {compact(selectedNativePosition.stateHash)}. The quantity and market identity come from its finalized entry receipt.
+                      {lifecycleAction.toLowerCase()} is bound to state {compact(selectedNativePosition.stateHash)}. Market identity comes from its finalized position state.
                     </p>
                   ) : (
                     <p className={styles.fieldContext} role="status">
@@ -1379,13 +1397,13 @@ export function GeneralizedStrategyPreparationPanel({
               <label htmlFor="native-strategy-quantity">Package quantity</label>
               <input
                 id="native-strategy-quantity"
-                value={lifecycleAction === "EXIT" && selectedNativePosition !== null
+                value={(lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") && selectedNativePosition !== null
                   ? atomsToInput(nativePositionQuantityAtoms(selectedNativePosition).toString(), selectedNativeProfile.baseAsset.decimals)
                   : nativeQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
-                readOnly={lifecycleAction === "EXIT"}
+                readOnly={lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND"}
                 onChange={(event) => {
                   setNativeQuantity(event.target.value.trim());
                   setCreatedNativeOrder(null);
@@ -1408,13 +1426,13 @@ export function GeneralizedStrategyPreparationPanel({
                   <label htmlFor="native-strategy-economic-quantity">Inventory exposure to hedge</label>
                   <input
                     id="native-strategy-economic-quantity"
-                    value={lifecycleAction === "EXIT" && selectedNativePosition !== null
+                    value={(lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") && selectedNativePosition !== null
                       ? atomsToInput(selectedNativePosition.economicQuantityAtoms, selectedNativeProfile.baseAsset.decimals)
                       : nativeEconomicQuantity}
                     inputMode="decimal"
                     autoComplete="off"
                     placeholder="0.00"
-                    readOnly={lifecycleAction === "EXIT"}
+                    readOnly={lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND"}
                     onChange={(event) => {
                       setNativeEconomicQuantity(event.target.value.trim());
                       setCreatedNativeOrder(null);
@@ -1426,7 +1444,8 @@ export function GeneralizedStrategyPreparationPanel({
               {selectedNativeProfile.markets.map((market) => (
                 <Fragment key={market.role}>
                   <label htmlFor={`native-strategy-price-${market.role}`}>
-                    {market.coin} {lifecycleAction === "ENTRY" ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY"} limit price
+                    {market.coin} {(lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE")
+                      ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY"} limit price
                   </label>
                   <input
                     id={`native-strategy-price-${market.role}`}

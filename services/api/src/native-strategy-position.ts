@@ -150,10 +150,12 @@ export function validateNativeStrategyExit(
   graphInput: PackageGraphInput,
 ): void {
   const graph = packageGraph(graphInput);
-  requireCondition(position.status === "OPEN", "STRATEGY_NOT_OPEN",
-    "The native strategy position is not available for a standard exit.");
-  requireCondition(order.lifecycleAction === "EXIT" && graph.lifecycleAction === "EXIT",
-    "POSITION_ACTION_MISMATCH", "A native strategy exit must use EXIT lifecycle semantics.");
+  const emergency = order.lifecycleAction === "EMERGENCY_UNWIND";
+  requireCondition(position.status === "OPEN" || (emergency && position.status === "UNRESOLVED"),
+    "STRATEGY_NOT_OPEN", "The native strategy position is not available for this unwind.");
+  requireCondition((order.lifecycleAction === "EXIT" || emergency)
+    && graph.lifecycleAction === order.lifecycleAction,
+  "POSITION_ACTION_MISMATCH", "A native strategy unwind must use EXIT or EMERGENCY_UNWIND semantics.");
   requireCondition(order.expectedStrategyStateHash !== undefined
     && bytesEqual(order.expectedStrategyStateHash, strategyStateHash(position.state)),
   "STALE_STRATEGY_STATE", "The exit does not bind the current native strategy state.");
@@ -174,8 +176,121 @@ export function validateNativeStrategyExit(
       && leg.quantityAtoms === absolute(stateLeg.signedQuantityAtoms)
       && leg.minimumQuantityAtoms === leg.quantityAtoms
       && leg.side === (stateLeg.signedQuantityAtoms > 0n ? "SELL" : "BUY"),
-    "STRATEGY_LEG_MISMATCH", `Exit leg ${stateLeg.legId} does not exactly close the open position.`);
+    "STRATEGY_LEG_MISMATCH", `Unwind leg ${stateLeg.legId} does not exactly close the open position.`);
   }
+}
+
+export type NativeStrategyPositionTransitionAction = "INCREASE" | "DECREASE";
+
+function validateNativeStrategyIdentity(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+): void {
+  requireCondition(order.expectedStrategyStateHash !== undefined
+    && bytesEqual(order.expectedStrategyStateHash, strategyStateHash(position.state)),
+  "STALE_STRATEGY_STATE", "The transition does not bind the current native strategy state.");
+  requireCondition(order.owner === position.state.ownerId
+    && order.templateId === position.templateId
+    && order.seriesId === position.state.seriesId
+    && order.executionClassId === position.state.executionClassId
+    && order.settlementAccount === position.state.subaccountId,
+  "STRATEGY_IDENTITY_MISMATCH", "The transition order differs from the open native strategy identity.");
+}
+
+export function validateNativeStrategyTransition(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+): void {
+  const graph = packageGraph(graphInput);
+  requireCondition(position.status === "OPEN", "STRATEGY_NOT_OPEN",
+    "The native strategy position is not available for a lifecycle transition.");
+  requireCondition((order.lifecycleAction === "INCREASE" || order.lifecycleAction === "DECREASE")
+    && graph.lifecycleAction === order.lifecycleAction,
+  "POSITION_ACTION_MISMATCH", "A native strategy transition must use INCREASE or DECREASE semantics.");
+  validateNativeStrategyIdentity(position, order);
+  requireCondition(graph.legs.length === position.state.legs.length,
+    "STRATEGY_LEG_MISMATCH", "The transition must address every open native strategy leg.");
+  if (order.lifecycleAction === "DECREASE") {
+    requireCondition(order.economicQuantity.atoms < position.economicQuantityAtoms,
+      "POSITION_QUANTITY_MISMATCH", "A decrease must retain positive economic exposure; use EXIT to close it.");
+  }
+  for (const stateLeg of position.state.legs) {
+    const leg = graph.legs.find((candidate) => candidate.legId === stateLeg.legId);
+    const sameDirection = stateLeg.signedQuantityAtoms > 0n ? "BUY" : "SELL";
+    const oppositeDirection = sameDirection === "BUY" ? "SELL" : "BUY";
+    requireCondition(leg !== undefined
+      && leg.quantityAsset.assetId === stateLeg.underlyingId
+      && leg.market.subjectId === stateLeg.instrumentId
+      && leg.venue.subjectId === stateLeg.venueId
+      && leg.minimumQuantityAtoms === leg.quantityAtoms
+      && leg.side === (order.lifecycleAction === "INCREASE" ? sameDirection : oppositeDirection),
+    "STRATEGY_LEG_MISMATCH", `Transition leg ${stateLeg.legId} does not match the open position.`);
+    if (order.lifecycleAction === "DECREASE") {
+      requireCondition(leg.quantityAtoms < absolute(stateLeg.signedQuantityAtoms),
+        "POSITION_QUANTITY_MISMATCH", `Decrease leg ${stateLeg.legId} must retain an open position.`);
+    }
+  }
+}
+
+export function applyNativeStrategyTransitionReceipt(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+  receipt: StrategyPackageReceipt,
+): NativeStrategyPosition {
+  validateNativeStrategyTransition(position, order, graphInput);
+  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+    "A native strategy transition requires finalized execution evidence.");
+  const graph = packageGraph(graphInput);
+  const deltas = checkedPositionDeltas(graph, receipt);
+  if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
+    requireCondition([...deltas.values()].every((delta) => delta === 0n),
+      "POSITION_NOT_FLAT", "A flat transition receipt cannot change native strategy exposure.");
+    return position;
+  }
+  const complete = completeTerminalState(receipt.terminalState);
+  const adjustedLegs = position.state.legs.map((stateLeg) => {
+    const graphLeg = graph.legs.find((candidate) => candidate.legId === stateLeg.legId)!;
+    const delta = deltas.get(stateLeg.legId) ?? 0n;
+    if (complete) {
+      requireCondition(absolute(delta) === graphLeg.quantityAtoms,
+        "POSITION_INCOMPLETE", `A complete transition must execute ${stateLeg.legId} exactly.`);
+    }
+    const nextQuantity = stateLeg.signedQuantityAtoms + delta;
+    requireCondition(nextQuantity !== 0n && (nextQuantity > 0n) === (stateLeg.signedQuantityAtoms > 0n),
+      "POSITION_DIRECTION_MISMATCH", `Transition leg ${stateLeg.legId} cannot close or reverse the position.`);
+    return Object.freeze({
+      ...stateLeg,
+      signedQuantityAtoms: nextQuantity,
+      lotAtoms: gcd(stateLeg.lotAtoms, absolute(delta)),
+    });
+  });
+  const commonQuantity = adjustedLegs.reduce(
+    (current, leg) => gcd(current, leg.signedQuantityAtoms), 0n,
+  );
+  const nextLegs = adjustedLegs.map((leg) => Object.freeze({
+    ...leg,
+    ratioNumerator: leg.signedQuantityAtoms / commonQuantity,
+    ratioDenominator: 1n,
+  }));
+  const state = strategyState({
+    ...position.state,
+    stateVersion: position.state.stateVersion + 1n,
+    legs: nextLegs,
+  });
+  const economicQuantityAtoms = complete
+    ? order.lifecycleAction === "INCREASE"
+      ? position.economicQuantityAtoms + order.economicQuantity.atoms
+      : position.economicQuantityAtoms - order.economicQuantity.atoms
+    : position.economicQuantityAtoms;
+  return Object.freeze({
+    ...position,
+    economicQuantityAtoms,
+    state,
+    stateHashHex: toHex(strategyStateHash(state)),
+    status: complete ? "OPEN" : "UNRESOLVED",
+  });
 }
 
 export function applyNativeStrategyExitReceipt(
@@ -191,7 +306,10 @@ export function applyNativeStrategyExitReceipt(
   validateNativeStrategyExit({ ...position, status: "OPEN" }, order, graph);
   requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
     "A native strategy transition requires finalized execution evidence.");
-  if (receipt.terminalState === "NO_EFFECT") {
+  if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
+    const deltas = checkedPositionDeltas(graph, receipt);
+    requireCondition([...deltas.values()].every((delta) => delta === 0n),
+      "POSITION_NOT_FLAT", "A no-effect exit receipt cannot change native strategy exposure.");
     return Object.freeze({
       strategyId: position.strategyId,
       owner: position.owner,
@@ -215,7 +333,7 @@ export function applyNativeStrategyExitReceipt(
     return Object.freeze({ ...leg, signedQuantityAtoms: leg.signedQuantityAtoms + delta });
   });
   const openLegs = remaining.filter((leg) => leg.signedQuantityAtoms !== 0n);
-  if (completeTerminalState(receipt.terminalState) || receipt.terminalState === "RECOVERED_FLAT") {
+  if (completeTerminalState(receipt.terminalState)) {
     requireCondition(openLegs.length === 0, "POSITION_INCOMPLETE",
       "A complete exit receipt must close every native strategy leg exactly.");
   }

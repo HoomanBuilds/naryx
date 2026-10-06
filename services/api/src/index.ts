@@ -13,10 +13,13 @@ export {
 } from "./strategy-package-store.js";
 export {
   applyNativeStrategyExitReceipt,
+  applyNativeStrategyTransitionReceipt,
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
+  validateNativeStrategyTransition,
   NativeStrategyPositionError,
   type NativeStrategyPosition,
+  type NativeStrategyPositionTransitionAction,
   type NativeStrategyPositionStatus,
 } from "./native-strategy-position.js";
 export {

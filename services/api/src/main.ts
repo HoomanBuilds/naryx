@@ -784,9 +784,11 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
         laneId: `hyperliquid-testnet-${templateId}`,
         templateId,
         templateVersion: 1,
-        actions: Object.freeze(["ENTRY", "EXIT"] as const),
+        actions: Object.freeze(["ENTRY", "INCREASE", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const),
         legs: Object.freeze([
           Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
+          Object.freeze({ legFamily: "PERP_INCREASE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
+          Object.freeze({ legFamily: "PERP_DECREASE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
           Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
         ]),
         settlementClasses: Object.freeze(["BATCHED_IOC_WITH_RECOVERY"] as const),
