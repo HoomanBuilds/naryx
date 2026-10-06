@@ -32,6 +32,11 @@ import {
   loadHyperliquidTestnetExecutorRuntime,
   loadHyperliquidTestnetQuoteRuntime,
   type LoadedHyperliquidTestnetExecutorRuntime,
+  createStrategyPreparationInternalHandler,
+  HttpStrategyPackageProvider,
+  HyperliquidStrategyPreparationContextResolver,
+  loadHyperliquidStrategyPreparationLane,
+  StrategyPreparationService,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -176,7 +181,21 @@ const arbitrumExitQuotes = loadArbitrumSepoliaExitQuotes(process.env, {
   store,
 });
 const quotePort = arbitrumExitQuotes?.wrap(baseQuotePort) ?? baseQuotePort;
-const quoteServer = createInternalAtomicQuoteServer(solanaDevnetSolver?.wrap(quotePort) ?? quotePort, authorization);
+const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARATION_CONFIGS ?? '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value) => value !== '');
+const strategyPreparationHandler = strategyPreparationPaths.length === 0
+  ? undefined
+  : createStrategyPreparationInternalHandler(new StrategyPreparationService(
+    new HttpStrategyPackageProvider(apiOrigin),
+    new HyperliquidStrategyPreparationContextResolver(strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane)),
+  ));
+const quoteServer = createInternalAtomicQuoteServer(
+  solanaDevnetSolver?.wrap(quotePort) ?? quotePort,
+  authorization,
+  strategyPreparationHandler,
+);
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
   'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED',
@@ -300,9 +319,10 @@ try {
 }
 const hyperliquidQuotes = hyperliquidQuoteRuntime === undefined ? 'DISABLED' : 'TESTNET_LIVE_BOOK';
 const arbitrumQuotes = arbitrumQuoteProviders === undefined ? 'DISABLED' : 'SEPOLIA_LIVE_REFERENCE';
+const generalizedHyperliquid = strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
-  + `arbitrumSepoliaQuotes=${arbitrumQuotes}\n`);
+  + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
     + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);

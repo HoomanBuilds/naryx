@@ -944,3 +944,8 @@ export {
   type StrategyPreparationContextResolver,
 } from './strategy-preparation-service.js';
 export { createStrategyPreparationInternalHandler } from './strategy-preparation-server.js';
+export {
+  HyperliquidStrategyPreparationContextResolver,
+  loadHyperliquidStrategyPreparationLane,
+  type HyperliquidStrategyPreparationLane,
+} from './hyperliquid-strategy-preparation.js';

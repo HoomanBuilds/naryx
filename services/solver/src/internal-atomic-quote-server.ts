@@ -283,6 +283,7 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
 export function createInternalAtomicQuoteRequestHandler(
   port: InternalAtomicQuotePort,
   authorization?: SolanaExecutionAuthorizationPort,
+  additionalRoute?: (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>,
 ) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!isLoopbackAddress(request.socket.remoteAddress)) {
@@ -290,6 +291,7 @@ export function createInternalAtomicQuoteRequestHandler(
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
+    if (additionalRoute !== undefined && await additionalRoute(request, response)) return;
     if (url.pathname === '/internal/solana/execution-authorizations' && url.search === '') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST');
@@ -342,6 +344,7 @@ export function createInternalAtomicQuoteRequestHandler(
 export function createInternalAtomicQuoteServer(
   port: InternalAtomicQuotePort,
   authorization?: SolanaExecutionAuthorizationPort,
+  additionalRoute?: (request: IncomingMessage, response: ServerResponse) => boolean | Promise<boolean>,
 ) {
-  return createServer(createInternalAtomicQuoteRequestHandler(port, authorization));
+  return createServer(createInternalAtomicQuoteRequestHandler(port, authorization, additionalRoute));
 }

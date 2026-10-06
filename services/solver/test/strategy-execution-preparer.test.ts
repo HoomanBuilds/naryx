@@ -252,7 +252,6 @@ test('passes a bounded HyperCore plan only through an explicit matching executor
     templateVersion: 1,
     templateManifestHash: bytes(HASH_A),
     operation: 'ENTRY' as const,
-    nextStateHash: bytes(HASH_B),
   };
 
   const prepared = prepareCompiledStrategyExecution({

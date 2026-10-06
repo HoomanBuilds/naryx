@@ -293,8 +293,7 @@ export function prepareCompiledStrategyExecution(input: Readonly<{
   }
   if (identity.operation === 'EXIT' || identity.operation === 'EMERGENCY_UNWIND') {
     requireCondition(identity.nextStateHash === undefined, 'terminal execution cannot carry a next state hash');
-  } else {
-    requireCondition(identity.nextStateHash !== undefined, 'non-terminal execution requires a next state hash');
+  } else if (identity.nextStateHash !== undefined) {
     nonzeroHash(identity.nextStateHash, 'next state hash');
   }
   requireCondition(input.bindings.length === compiled.domains.length, 'execution bindings must cover the compiled domains exactly');
