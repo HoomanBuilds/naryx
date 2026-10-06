@@ -1050,6 +1050,7 @@ function Ticket({
   selectedLifecycleAction,
   privateApiBaseUrl,
   publicApiBaseUrl,
+  authorizeStrategyExecution,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1093,6 +1094,7 @@ function Ticket({
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  authorizeStrategyExecution?: (attempt: Readonly<{ attemptId: string; sourceOrderHash: string }>) => Promise<void>;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1327,6 +1329,7 @@ function Ticket({
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
+          authorizeExecution={authorizeStrategyExecution}
         />
       ) : null}
 
@@ -3401,6 +3404,19 @@ export function TradingTerminal({
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
+            authorizeStrategyExecution={privateProvider === null || currentHyperliquidFlow?.attempt === null
+              || currentHyperliquidFlow?.attempt === undefined
+              ? undefined
+              : async (selected) => {
+                const source = currentHyperliquidFlow.attempt!;
+                if (source.orderHash !== selected.sourceOrderHash) {
+                  throw new Error("The generalized package does not bind the selected source order.");
+                }
+                const attempt = { ...source, attemptId: selected.attemptId };
+                const authorization = await privateProvider.prepareHyperliquidAuthorization(attempt);
+                const signature = await evmWallet.signChainlessTypedData(authorization.typedData);
+                await privateProvider.authorizeHyperliquid(attempt, signature);
+              }}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}

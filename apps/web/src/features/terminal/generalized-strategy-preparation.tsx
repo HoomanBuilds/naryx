@@ -95,6 +95,12 @@ type SelectedStrategyExecution = Readonly<{
   selectedAtMs: number;
 }>;
 
+type StrategyExecutionResult = Readonly<{
+  status: string;
+  packageStatus: string | null;
+  reasons: readonly string[];
+}>;
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value as Record<string, unknown>;
@@ -340,6 +346,20 @@ function parseSelectedExecution(
   return selected;
 }
 
+function parseExecutionResult(payload: unknown, attemptId: string, idempotencyKey: string): StrategyExecutionResult {
+  const root = record(payload, "Strategy execution result");
+  if (root.attemptId !== attemptId || root.idempotencyKey !== idempotencyKey
+    || root.domain !== "hypercore:testnet" || root.environment !== "TESTNET") {
+    throw new Error("Strategy execution result does not bind the submitted testnet request.");
+  }
+  const status = text(root.status, "Strategy execution status");
+  const packageStatus = root.packageStatus === undefined ? null : text(root.packageStatus, "Strategy package status");
+  const reasons = root.reasons === undefined
+    ? []
+    : list(root.reasons, "Strategy execution reasons").map((reason, index) => text(reason, `Strategy execution reason ${index}`));
+  return Object.freeze({ status, packageStatus, reasons: Object.freeze(reasons) });
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -376,12 +396,14 @@ export function GeneralizedStrategyPreparationPanel({
   templateId,
   lifecycleAction,
   sourceOrderHash = null,
+  authorizeExecution,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   templateId: string;
   lifecycleAction: string;
   sourceOrderHash?: string | null;
+  authorizeExecution?: (attempt: SelectedStrategyExecution) => Promise<void>;
 }) {
   const [orderHash, setOrderHash] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
@@ -391,12 +413,15 @@ export function GeneralizedStrategyPreparationPanel({
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
   const [selectionKey, setSelectionKey] = useState("");
+  const [executionKey, setExecutionKey] = useState("");
+  const [executionResult, setExecutionResult] = useState<StrategyExecutionResult | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
   const [stageBusy, setStageBusy] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [prepareBusy, setPrepareBusy] = useState(false);
   const [selectionBusy, setSelectionBusy] = useState(false);
+  const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -444,6 +469,8 @@ export function GeneralizedStrategyPreparationPanel({
       setReview(null);
       setExecutionAttempt(null);
       setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order staging failed closed.");
     } finally {
@@ -473,6 +500,8 @@ export function GeneralizedStrategyPreparationPanel({
       setReview(null);
       setExecutionAttempt(null);
       setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
@@ -497,6 +526,8 @@ export function GeneralizedStrategyPreparationPanel({
       setReview(parseReview(await response.json(), quoteHash));
       setExecutionAttempt(null);
       setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
     } finally {
@@ -532,10 +563,38 @@ export function GeneralizedStrategyPreparationPanel({
         routeHash: review.routeHash,
         sourceOrderHash,
       }));
+      setExecutionKey("");
+      setExecutionResult(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy execution selection failed closed.");
     } finally {
       setSelectionBusy(false);
+    }
+  }
+
+  async function executeStrategy() {
+    if (privateApiBaseUrl === null || executionAttempt === null) return;
+    setExecutionBusy(true);
+    setError(null);
+    const idempotencyKey = executionKey || `strategy-exec-${executionAttempt.attemptId.slice(-40)}`;
+    if (executionKey === "") setExecutionKey(idempotencyKey);
+    try {
+      if (authorizeExecution === undefined) throw new Error("Connect the package owner wallet before execution.");
+      await authorizeExecution(executionAttempt);
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/execute`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attemptId: executionAttempt.attemptId, idempotencyKey }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      setExecutionResult(parseExecutionResult(await response.json(), executionAttempt.attemptId, idempotencyKey));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy execution failed closed.");
+    } finally {
+      setExecutionBusy(false);
     }
   }
 
@@ -574,6 +633,8 @@ export function GeneralizedStrategyPreparationPanel({
             setReview(null);
             setExecutionAttempt(null);
             setSelectionKey("");
+            setExecutionKey("");
+            setExecutionResult(null);
             setError(null);
           }}
         />
@@ -627,6 +688,8 @@ export function GeneralizedStrategyPreparationPanel({
                 setReview(null);
                 setExecutionAttempt(null);
                 setSelectionKey("");
+                setExecutionKey("");
+                setExecutionResult(null);
                 setError(null);
               }}
             >
@@ -652,6 +715,8 @@ export function GeneralizedStrategyPreparationPanel({
             setReview(null);
             setExecutionAttempt(null);
             setSelectionKey("");
+            setExecutionKey("");
+            setExecutionResult(null);
             setError(null);
           }}
         />
@@ -708,12 +773,30 @@ export function GeneralizedStrategyPreparationPanel({
             {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
           </button>
           {executionAttempt ? (
-            <p className={styles.fieldContext} role="status">
-              Attempt {compact(executionAttempt.attemptId)} durably binds every reviewed commitment. Nothing has been submitted.
-            </p>
+            <>
+              <p className={styles.fieldContext} role="status">
+                Attempt {compact(executionAttempt.attemptId)} durably binds every reviewed commitment. Nothing has been submitted.
+              </p>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || executionBusy || executionResult !== null}
+                onClick={() => void executeStrategy()}
+              >
+                {executionBusy ? "Signing and executing package" : executionResult ? "Package execution recorded" : "Sign and execute selected package"}
+              </button>
+              {executionResult ? (
+                <p className={styles.fieldContext} role="status">
+                  {executionResult.status}{executionResult.packageStatus ? ` / ${executionResult.packageStatus}` : ""}
+                  {executionResult.reasons.length > 0 ? `: ${executionResult.reasons.join(", ")}` : ""}
+                </p>
+              ) : null}
+            </>
           ) : null}
           <p className={styles.reviewNotice}>
-            This is an execution review artifact only. A domain-specific signer and executor must independently revalidate it before submission.
+            {executionResult
+              ? "The testnet executor independently revalidated the selected package before submission."
+              : "This remains an unsigned review until the owner signs and the testnet executor independently revalidates it."}
           </p>
         </>
       ) : null}
