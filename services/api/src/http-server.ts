@@ -100,7 +100,8 @@ import {
 } from "./hyperliquid-generalized-order.js";
 import {
   StrategyPackageStoreError,
-  type SqliteStrategyPackageStore,
+  type SelectedStrategyPackageAttempt,
+  type SelectHyperliquidStrategyExecutionRequest,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 
@@ -111,6 +112,11 @@ export type PrivateTerminalServerConfig = {
   port: number;
   terminalOrigin: TerminalOrigins;
 };
+
+interface GeneralizedStrategyExecutionPort {
+  selectHyperliquidExecution(request: SelectHyperliquidStrategyExecutionRequest): SelectedStrategyPackageAttempt;
+  strategyExecutionAttempt(attemptId: string): SelectedStrategyPackageAttempt | undefined;
+}
 
 export function isLoopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
@@ -272,7 +278,7 @@ export function createPrivateTerminalRequestHandler(
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
-  generalizedStrategyExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution">,
+  generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -454,6 +460,44 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const generalizedHyperliquidAttemptMatch = url.search === ""
+      ? /^\/internal\/solver\/hyperliquid-testnet\/strategy-attempts\/(strategy-hl-[0-9a-f]{48})$/.exec(url.pathname)
+      : null;
+    if (generalizedHyperliquidAttemptMatch !== null) {
+      if (!isDirectLoopbackRequest(request)) {
+        reject(response, 403, "LOOPBACK_REQUIRED", "Generalized Hyperliquid attempt access is loopback-only.");
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (generalizedStrategyExecutions === undefined || executionIntentStore === undefined) {
+        reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Generalized Hyperliquid attempt retrieval is unavailable.");
+        return;
+      }
+      try {
+        const attempt = generalizedStrategyExecutions.strategyExecutionAttempt(generalizedHyperliquidAttemptMatch[1]!);
+        const sourceAttempt = attempt === undefined
+          ? undefined
+          : executionIntentStore.getAttemptForOrder(attempt.sourceOrderHashHex);
+        if (attempt === undefined || sourceAttempt?.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
+          || sourceAttempt.domainId !== "hypercore:testnet") {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Generalized Hyperliquid attempt or its canonical source was not found.");
+          return;
+        }
+        sendJson(response, 200, {
+          version: 1,
+          attempt,
+          sourceAttemptId: sourceAttempt.attemptId,
+        });
+      } catch {
+        reject(response, 502, "ATTEMPT_RETRIEVAL_FAILED", "Generalized Hyperliquid attempt retrieval failed closed.");
+      }
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/internal/healthz") {
       // Each configured lane's market answers quotes and previews only while its observation is fresh.
       const nowMs = currentTimeMs();
@@ -609,6 +653,10 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Generalized strategy selection is unavailable.");
         return;
       }
+      if (executionIntentStore === undefined) {
+        reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Canonical Hyperliquid source selection is unavailable.");
+        return;
+      }
       try {
         const body = await readJson(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
@@ -622,6 +670,12 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         const values = body as { quoteHash: string; orderHash: string; routeHash: string; sourceOrderHash: string; idempotencyKey: string };
+        const sourceAttempt = executionIntentStore.getAttemptForOrder(values.sourceOrderHash);
+        if (sourceAttempt?.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
+          || sourceAttempt.domainId !== "hypercore:testnet") {
+          reject(response, 409, "SOURCE_ATTEMPT_REQUIRED", "The canonical source order must have a selected Hyperliquid Testnet attempt.");
+          return;
+        }
         const selected = generalizedStrategyExecutions.selectHyperliquidExecution({
           quoteHashHex: values.quoteHash,
           orderHashHex: values.orderHash,
@@ -1392,7 +1446,7 @@ export function createPrivateTerminalServer(
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
-  generalizedStrategyExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution">,
+  generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,

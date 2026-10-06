@@ -151,10 +151,38 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
   const quoteHash = "33".repeat(32);
   const routeHash = "44".repeat(32);
   const attemptId = `strategy-hl-${"55".repeat(24)}`;
+  const sourceAttemptId = `hyperliquid-testnet-${"77".repeat(24)}`;
   const idempotencyKey = "strategy-selection-0001";
+  const sourceAttempt = {
+    attemptId: sourceAttemptId,
+    orderHash: sourceOrderHash,
+    routeHash: "88".repeat(32),
+    quoteHash: "99".repeat(32),
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs: 900,
+    domainId: "hypercore:testnet",
+    domainManifestVersion: 1,
+    domainManifestHash: "aa".repeat(32),
+  } as const;
+  const selectedAttempt = {
+    attemptId,
+    idempotencyKey,
+    orderHashHex: orderHash,
+    graphHashHex: "66".repeat(32),
+    quoteHashHex: quoteHash,
+    routeHashHex: routeHash,
+    sourceOrderHashHex: sourceOrderHash,
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs: 1_000,
+  } as const;
   const server = createPrivateTerminalServer(
     { host: "127.0.0.1", port: 0, terminalOrigin: null },
-    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined,
+    {}, undefined, undefined, {}, undefined, undefined, {
+      getAttemptForOrder: (requested: string) => {
+        assert.equal(requested, sourceOrderHash);
+        return sourceAttempt;
+      },
+    } as never, undefined,
     undefined, "DISABLED", undefined, undefined, undefined, undefined, undefined,
     undefined, {}, undefined, () => [], undefined, undefined, {
       selectHyperliquidExecution: (request) => {
@@ -165,18 +193,9 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
           sourceOrderHashHex: sourceOrderHash,
           idempotencyKey,
         });
-        return {
-          attemptId,
-          idempotencyKey,
-          orderHashHex: orderHash,
-          graphHashHex: "66".repeat(32),
-          quoteHashHex: quoteHash,
-          routeHashHex: routeHash,
-          sourceOrderHashHex: sourceOrderHash,
-          status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
-          selectedAtMs: 1_000,
-        };
+        return selectedAttempt;
       },
+      strategyExecutionAttempt: (requested) => requested === attemptId ? selectedAttempt : undefined,
     },
   );
   context.after(() => server.close());
@@ -189,19 +208,47 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
     version: 1,
-    attemptId,
-    idempotencyKey,
-    orderHashHex: orderHash,
-    graphHashHex: "66".repeat(32),
-    quoteHashHex: quoteHash,
-    routeHashHex: routeHash,
-    sourceOrderHashHex: sourceOrderHash,
-    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
-    selectedAtMs: 1_000,
+    ...selectedAttempt,
   });
+  const metadata = await fetch(`${origin}/internal/solver/hyperliquid-testnet/strategy-attempts/${attemptId}`);
+  assert.equal(metadata.status, 200);
+  assert.deepEqual(await metadata.json(), { version: 1, attempt: selectedAttempt, sourceAttemptId });
   assert.equal((await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ orderHash, quoteHash, routeHash, sourceOrderHash, idempotencyKey, extra: true }),
   })).status, 400);
+});
+
+test("private terminal rejects generalized selection without a selected Hyperliquid source", async (context) => {
+  const sourceOrderHash = "11".repeat(32);
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, {
+      getAttemptForOrder: () => undefined,
+    } as never, undefined,
+    undefined, "DISABLED", undefined, undefined, undefined, undefined, undefined,
+    undefined, {}, undefined, () => [], undefined, undefined, {
+      selectHyperliquidExecution: () => {
+        throw new Error("selection must not be reached");
+      },
+      strategyExecutionAttempt: () => undefined,
+    },
+  );
+  context.after(() => server.close());
+  const origin = await listen(server);
+  const response = await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderHash: "22".repeat(32),
+      quoteHash: "33".repeat(32),
+      routeHash: "44".repeat(32),
+      sourceOrderHash,
+      idempotencyKey: "strategy-selection-0002",
+    }),
+  });
+  assert.equal(response.status, 409);
+  const body = await response.json() as { readonly error: { readonly code: string } };
+  assert.equal(body.error.code, "SOURCE_ATTEMPT_REQUIRED");
 });
