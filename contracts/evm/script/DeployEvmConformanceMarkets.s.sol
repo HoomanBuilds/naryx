@@ -17,7 +17,8 @@ contract DeployEvmConformanceMarkets is Script {
         uint256 lowerStrike;
         uint256 upperStrike;
         uint256 maturity;
-        uint16 premiumBps;
+        uint16 lowerStrikePremiumBps;
+        uint16 upperStrikePremiumBps;
         uint16 exerciseValueBps;
         uint256 collateralPriceQuoteAtomsPerWholeToken;
         uint16 loanToValueBps;
@@ -65,7 +66,7 @@ contract DeployEvmConformanceMarkets is Script {
             parameters.lowerStrike,
             parameters.maturity,
             true,
-            parameters.premiumBps,
+            parameters.lowerStrikePremiumBps,
             parameters.exerciseValueBps
         );
         deployment.upperStrikeCallPool = new NaryxTestOptionPool(
@@ -75,7 +76,7 @@ contract DeployEvmConformanceMarkets is Script {
             parameters.upperStrike,
             parameters.maturity,
             true,
-            parameters.premiumBps,
+            parameters.upperStrikePremiumBps,
             parameters.exerciseValueBps
         );
         deployment.lendingPool = new NaryxTestLendingPool(
