@@ -78,6 +78,7 @@ import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executo
 import { CoordinationStoreError, type SqliteCoordinationStore } from "./coordination-store.js";
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
+import { StrategyPackageStoreError, type SqliteStrategyPackageStore } from "./strategy-package-store.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -168,6 +169,8 @@ export interface PublicApiOptions {
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
+  /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
+  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
@@ -278,10 +281,11 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
 
 /**
  * The public, read-only v1 API: registries, strategy series, package markets with depth, tape,
- * candles, and an executable index, allocation evidence by capability, and side-effect-free
- * compute routes. It holds no signer, persists nothing on POST, keeps direct and implied
- * liquidity apart, omits taker and participant identities from the tape, and labels every
- * derived market number. It returns false for paths it does not own, including /v1/solver/.
+ * candles, and an executable index, allocation evidence by capability, and computation routes.
+ * It holds no signer, keeps direct and implied liquidity apart, omits participant identities from
+ * the tape, and labels every derived market number. Only the explicit strategy package submission
+ * route persists an already admitted tuple. It returns false for paths it does not own, including
+ * /v1/solver/.
  */
 export function createPublicApiHandler(options: PublicApiOptions) {
   const { exchange, registry, solverState, delivery, nowValue } = options;
@@ -329,6 +333,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function requireDelivery() {
     if (delivery === undefined) throw new RequestError(503, "PRIVATE_DELIVERY_UNAVAILABLE", "No private delivery relay is configured on this server.");
     return delivery;
+  }
+
+  function requireStrategyPackages() {
+    if (options.strategyPackages === undefined) throw new RequestError(503, "STRATEGY_PACKAGE_STORE_UNAVAILABLE", "No strategy package store is configured on this server.");
+    return options.strategyPackages;
   }
 
   function wallClockIn(unit: string): bigint {
@@ -1025,6 +1034,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategy-orders/validate",
       "/v1/strategy-routes/compile",
       "/v1/strategy-quotes/admit",
+      "/v1/strategy-packages/submit",
       "/v1/rfqs/private",
       "/v1/auctions/sealed",
       "/v1/orders",
@@ -1222,7 +1232,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       });
       return { ...result, currentTime, timeSource: current === undefined ? "CALLER" : "SERVER" };
     }
-    if (path === "/v1/strategy-quotes/admit") {
+    if (path === "/v1/strategy-quotes/admit" || path === "/v1/strategy-packages/submit") {
       const context = options.graphContext;
       if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
       const graphInput = object(body.graph, "graph") as unknown as PackageGraphInput;
@@ -1276,6 +1286,22 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       if (admitted.quote.solverSignatureScheme !== "ED25519" || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
         throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
+      }
+      if (path === "/v1/strategy-packages/submit") {
+        const store = requireStrategyPackages();
+        const storedOrder = store.registerOrder(admitted.order, admitted.graph);
+        const storedQuote = store.registerQuote(admitted);
+        return {
+          admitted,
+          storage: {
+            orderCreated: storedOrder.created,
+            quoteCreated: storedQuote.created,
+            orderHashHex: storedOrder.orderHashHex,
+            graphHashHex: storedOrder.graphHashHex,
+            quoteHashHex: storedQuote.quoteHashHex,
+            routeHashHex: storedQuote.routeHashHex,
+          },
+        };
       }
       return admitted;
     }
@@ -1376,6 +1402,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof PositionSnapshotStoreError) {
           const status = ["INVALID_RECORD", "INVALID_SIGNATURE"].includes(error.code) ? 400 : error.code === "UNKNOWN_AUTHORITY" ? 403 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof StrategyPackageStoreError) {
+          const status = error.code === "CORRUPT_ROW" ? 500 : error.code.endsWith("NOT_FOUND") ? 404 : error.code === "HASH_CONFLICT" ? 409 : 400;
           return fail(response, status, error.code, error.message);
         }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");

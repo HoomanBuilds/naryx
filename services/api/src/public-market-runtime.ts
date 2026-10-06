@@ -26,6 +26,7 @@ import { createEvmBondReader } from "./evm-bond-reader.js";
 import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
+import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -268,7 +269,8 @@ function activationDelay(value: string | undefined): bigint {
  * Loads the public v1 API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly "true", and
  * then requires an absolute exchange database path and support manifest; NARYX_REGISTRY_DB, when
  * set, enables the registry routes, and NARYX_SOLVER_API_DB (which requires the registry) enables
- * the authenticated solver API. Public routes serve reads and side-effect-free computation only.
+ * the authenticated solver API. Public routes serve reads, computation, and the explicit durable
+ * strategy package submission route when its store is configured.
  */
 export function loadPublicMarketRuntime(
   environment: NodeJS.ProcessEnv = process.env,
@@ -383,17 +385,26 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteCoordinationStore(absolute(coordinationPath, "NARYX_COORDINATION_DB"), { environment: publicEnvironment as string, clock: clockMs });
     if (coordination !== undefined) opened.push(coordination);
+    const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
+    const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
+    const strategyPackagePath = optional(environment.NARYX_STRATEGY_PACKAGE_DB);
+    if (strategyPackagePath !== undefined && (graphContext === undefined || registry === undefined)) {
+      throw new PublicMarketConfigError("NARYX_STRATEGY_PACKAGE_DB requires NARYX_GRAPH_COMPILE_CONTEXT and NARYX_REGISTRY_DB for admission.");
+    }
+    const strategyPackages = strategyPackagePath === undefined
+      ? undefined
+      : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
+    if (strategyPackages !== undefined) opened.push(strategyPackages);
     const internalHandlers = [
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
+      ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
     ];
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
       : () => BigInt(Math.floor(clockMs()));
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
-    const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
-    const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
     const catalogueSigner = loadCatalogueSigner(environment);
     const catalogue = catalogueSigner === undefined
       ? undefined
@@ -409,6 +420,7 @@ export function loadPublicMarketRuntime(
       ...(graphContext === undefined ? {} : { graphContext }),
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
+      ...(strategyPackages === undefined ? {} : { strategyPackages }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),

@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type Database from "better-sqlite3";
 import {
   bytesEqual,
@@ -23,6 +24,7 @@ import {
   type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
+import { internalCaller, sendError, sendJson } from "./internal-http.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS strategy_package_orders (
@@ -82,6 +84,18 @@ export interface StoredStrategyPackageOrder {
 export interface StoredStrategyPackageQuote {
   readonly quoteHashHex: string;
   readonly routeHashHex: string;
+  readonly quote: StrategyPackageQuote;
+  readonly route: TypedStrategyRoute;
+  readonly recordedAtMs: number;
+}
+
+export interface StoredStrategyPackageAdmission {
+  readonly orderHashHex: string;
+  readonly graphHashHex: string;
+  readonly quoteHashHex: string;
+  readonly routeHashHex: string;
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraphInput;
   readonly quote: StrategyPackageQuote;
   readonly route: TypedStrategyRoute;
   readonly recordedAtMs: number;
@@ -232,6 +246,48 @@ export class SqliteStrategyPackageStore {
     }));
   }
 
+  admissionByQuote(quoteHashHex: string): StoredStrategyPackageAdmission | undefined {
+    const row = this.db.prepare(`
+      SELECT q.order_hash, q.route_hash, q.quote_json, q.route_json, q.recorded_at_ms,
+             o.graph_hash, o.order_json, o.graph_json
+      FROM strategy_package_quotes q
+      JOIN strategy_package_orders o ON o.order_hash = q.order_hash
+      WHERE q.quote_hash = ?
+    `).get(hashBuffer(quoteHashHex)) as {
+      order_hash: Uint8Array;
+      route_hash: Uint8Array;
+      quote_json: string;
+      route_json: string;
+      recorded_at_ms: number;
+      graph_hash: Uint8Array;
+      order_json: string;
+      graph_json: string;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const order = strategyPackageOrder(parseProtocolJson(row.order_json) as StrategyPackageOrderInput);
+    const graph = packageGraph(parseProtocolJson(row.graph_json) as PackageGraphInput);
+    const quote = strategyPackageQuote(parseProtocolJson(row.quote_json) as StrategyPackageQuote);
+    const route = parseProtocolJson(row.route_json) as TypedStrategyRoute;
+    const orderHashHex = toHex(strategyPackageOrderHash(order));
+    const graphHashHex = toHex(packageGraphHash(graph));
+    const routeHashHex = toHex(typedStrategyRouteHash(route));
+    requireCondition(orderHashHex === toHex(row.order_hash), "CORRUPT_ROW", "The stored strategy package order does not match its hash.");
+    requireCondition(graphHashHex === toHex(row.graph_hash) && bytesEqual(order.graphHash, row.graph_hash), "CORRUPT_ROW", "The stored strategy package graph does not match its hash.");
+    requireCondition(toHex(strategyPackageQuoteHash(quote)) === quoteHashHex && bytesEqual(quote.orderHash, row.order_hash), "CORRUPT_ROW", "The stored strategy package quote does not match its hash.");
+    requireCondition(routeHashHex === toHex(row.route_hash) && bytesEqual(quote.routeHash, row.route_hash), "CORRUPT_ROW", "The stored strategy package route does not match its hash.");
+    return Object.freeze({
+      orderHashHex,
+      graphHashHex,
+      quoteHashHex,
+      routeHashHex,
+      order,
+      graph,
+      quote,
+      route,
+      recordedAtMs: row.recorded_at_ms,
+    });
+  }
+
   receipt(receiptHashHex: string): StrategyPackageReceiptInput | undefined {
     const row = this.db.prepare("SELECT receipt_json FROM strategy_package_receipts WHERE receipt_hash = ?").get(hashBuffer(receiptHashHex)) as { receipt_json: string } | undefined;
     if (row === undefined) return undefined;
@@ -239,4 +295,26 @@ export class SqliteStrategyPackageStore {
     requireCondition(toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex, "CORRUPT_ROW", "A stored receipt does not match its hash.");
     return receipt;
   }
+}
+
+export function createStrategyPackageInternalHandler(
+  store: Pick<SqliteStrategyPackageStore, "admissionByQuote">,
+): (request: IncomingMessage, response: ServerResponse) => boolean {
+  return (request, response) => {
+    const path = new URL(request.url ?? "/", "http://internal.local").pathname;
+    const match = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(path);
+    if (match === null) return false;
+    if (!internalCaller(request)) return sendError(response, 403, "FORBIDDEN", "Strategy package routes answer loopback callers only.");
+    if (request.method !== "GET") return sendError(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+    try {
+      const admission = store.admissionByQuote(match[1]!);
+      if (admission === undefined) return sendError(response, 404, "NOT_FOUND", "No admitted strategy package exists for this quote.");
+      return sendJson(response, 200, { version: 1, ...admission });
+    } catch (error) {
+      if (error instanceof StrategyPackageStoreError) {
+        return sendError(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+      }
+      return sendError(response, 500, "INTERNAL_ERROR", "Strategy package retrieval failed closed.");
+    }
+  };
 }

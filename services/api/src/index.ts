@@ -1,6 +1,8 @@
 export {
+  createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,
+  type StoredStrategyPackageAdmission,
   type StoredStrategyPackageOrder,
   type StoredStrategyPackageQuote,
   type StoredStrategyPackageReceipt,
