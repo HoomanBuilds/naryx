@@ -727,6 +727,7 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
     templateId: "cash-and-carry-v1",
     templateVersion: 1,
     actions: Object.freeze(["ENTRY", "EXIT"] as const),
+    legFamilies: Object.freeze(["SPOT_SWAP", "PERP_OPEN", "PERP_CLOSE"] as const),
     settlementClasses: Object.freeze([settlementClass]),
     domains: Object.freeze([domain]),
   }));

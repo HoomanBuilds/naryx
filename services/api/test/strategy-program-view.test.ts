@@ -8,6 +8,7 @@ test("activates only exact template actions backed by a qualified lane", () => {
     templateId: "cash-and-carry-v1",
     templateVersion: 1,
     actions: ["ENTRY", "EXIT"],
+    legFamilies: ["SPOT_SWAP", "PERP_OPEN", "PERP_CLOSE"],
     settlementClasses: ["ATOMIC_POSTCONDITION"],
     domains: ["base"],
   }]);
@@ -28,9 +29,26 @@ test("fails closed on duplicate or malformed lane capabilities", () => {
     templateId: "cash-and-carry-v1",
     templateVersion: 1,
     actions: ["ENTRY"],
+    legFamilies: ["SPOT_SWAP", "PERP_OPEN"],
     settlementClasses: ["ATOMIC_POSTCONDITION"],
     domains: ["base"],
   } as const;
   assert.throws(() => strategyProgramView([lane, lane]), /repeated/);
   assert.throws(() => strategyProgramView([{ ...lane, domains: [] }]), /domains are invalid/);
+  assert.throws(() => strategyProgramView([{ ...lane, legFamilies: [] }]), /leg families are invalid/);
+});
+
+test("does not activate an action when a mandatory leg family is unavailable", () => {
+  const view = strategyProgramView([{
+    laneId: "spot-only",
+    templateId: "cash-and-carry-v1",
+    templateVersion: 1,
+    actions: ["ENTRY"],
+    legFamilies: ["SPOT_SWAP"],
+    settlementClasses: ["ATOMIC_POSTCONDITION"],
+    domains: ["base"],
+  }]);
+  const entry = view.templates.find((template) => template.templateId === "cash-and-carry-v1")
+    ?.actions.find((action) => action.action === "ENTRY");
+  assert.equal(entry?.activation, "ADAPTER_ACTIVATION_REQUIRED");
 });

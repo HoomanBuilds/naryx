@@ -1,6 +1,7 @@
 import {
   strategyTemplateDefinitions,
   type GraphLifecycleAction,
+  type LegFamily,
   type SettlementClass,
 } from "@naryx/protocol-types";
 
@@ -11,6 +12,7 @@ export interface StrategyExecutionLaneCapability {
   readonly templateId: string;
   readonly templateVersion: number;
   readonly actions: readonly GraphLifecycleAction[];
+  readonly legFamilies: readonly LegFamily[];
   readonly settlementClasses: readonly SettlementClass[];
   readonly domains: readonly string[];
 }
@@ -30,6 +32,9 @@ function checkedCapabilities(values: readonly StrategyExecutionLaneCapability[])
     if (value.actions.length === 0 || new Set(value.actions).size !== value.actions.length) {
       throw new Error(`Strategy execution lane ${value.laneId} actions are invalid.`);
     }
+    if (value.legFamilies.length === 0 || new Set(value.legFamilies).size !== value.legFamilies.length) {
+      throw new Error(`Strategy execution lane ${value.laneId} leg families are invalid.`);
+    }
     if (value.settlementClasses.length === 0 || new Set(value.settlementClasses).size !== value.settlementClasses.length) {
       throw new Error(`Strategy execution lane ${value.laneId} settlement classes are invalid.`);
     }
@@ -39,6 +44,7 @@ function checkedCapabilities(values: readonly StrategyExecutionLaneCapability[])
     return Object.freeze({
       ...value,
       actions: Object.freeze([...value.actions]),
+      legFamilies: Object.freeze([...value.legFamilies]),
       settlementClasses: Object.freeze([...value.settlementClasses]),
       domains: Object.freeze([...value.domains]),
     });
@@ -56,7 +62,10 @@ export function strategyProgramView(capabilities: readonly StrategyExecutionLane
       const actions = template.actionSpecs.map((action) => {
         const qualifiedLanes = matching.filter((lane) =>
           lane.actions.includes(action.action)
-          && lane.settlementClasses.some((settlementClass) => action.allowedSettlementClasses.includes(settlementClass)),
+          && lane.settlementClasses.some((settlementClass) => action.allowedSettlementClasses.includes(settlementClass))
+          && action.legRules.every((rule) =>
+            rule.minimumCount === 0 || rule.allowedFamilies.some((family) => lane.legFamilies.includes(family)),
+          )
         ).map((lane) => lane.laneId).sort();
         return Object.freeze({
           action: action.action,
