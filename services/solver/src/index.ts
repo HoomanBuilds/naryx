@@ -922,3 +922,8 @@ export {
   type PreparedStrategyDomainExecution,
   type PreparedStrategyExecution,
 } from './strategy-execution-preparer.js';
+export {
+  createSolanaStrategyDomainCompiler,
+  createEvmStrategyDomainCompiler,
+  createHyperliquidStrategyDomainCompiler,
+} from './strategy-domain-compilers.js';

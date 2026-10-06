@@ -282,6 +282,7 @@ export function prepareCompiledStrategyExecution(input: Readonly<{
 }>): PreparedStrategyExecution {
   const { compiled, identity } = input;
   nonzeroHash(identity.packageId, 'package id');
+  requireCondition(bytesEqual(compiled.packageId, identity.packageId), 'execution identity package id differs from the compiled route');
   nonzeroHash(identity.templateManifestHash, 'template manifest hash');
   requireCondition(identity.templateId.length > 0 && Number.isInteger(identity.templateVersion) && identity.templateVersion > 0, 'template identity is invalid');
   if (identity.operation === 'ENTRY') {

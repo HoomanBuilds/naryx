@@ -36,6 +36,7 @@ function evmCompiled(): CompiledStrategyRouteExecution {
   const domain = evmDomain();
   return Object.freeze({
     version: 1,
+    packageId: bytes(HASH_F),
     settlementClass: 'ATOMIC_POSTCONDITION',
     orderHash: bytes(HASH_B),
     graphHash: bytes(HASH_C),
@@ -130,12 +131,25 @@ test('prepares an exact EVM account signature envelope from a compiled package r
   assert.equal(execution.envelope.execution.packageId, HASH_F);
   assert.equal(execution.envelope.calls[0]?.payload, '0x12345678abcdef');
   assert.notEqual(execution.envelope.ownerDigest, execution.envelope.solverDigest);
+  assert.throws(() => prepareCompiledStrategyExecution({
+    compiled,
+    identity: {
+      packageId: bytes(HASH_E),
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      templateManifestHash: bytes(HASH_A),
+      operation: 'ENTRY',
+      nextStateHash: bytes(HASH_B),
+    },
+    bindings: [],
+  }), /package id differs/);
 });
 
 test('passes a bounded HyperCore plan only through an explicit matching executor binding', () => {
   const domain = domainRef('hypercore:testnet', 1, HASH_A);
   const compiled = Object.freeze({
     version: 1 as const,
+    packageId: bytes(HASH_F),
     settlementClass: 'BATCHED_IOC_WITH_RECOVERY' as const,
     orderHash: bytes(HASH_B),
     graphHash: bytes(HASH_C),

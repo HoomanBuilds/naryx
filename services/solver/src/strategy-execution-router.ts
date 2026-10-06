@@ -10,6 +10,7 @@ import {
   type CrossDomainPlan,
   type CrossDomainPlanInput,
   type DomainRef,
+  type Hash32,
   type TypedStrategyDomainPlan,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
@@ -21,6 +22,7 @@ export interface StrategyDomainCompiler<TPayload = unknown> {
     admission: AdmittedStrategyPackage;
     route: TypedStrategyRoute;
     domainPlan: TypedStrategyDomainPlan;
+    packageId: Hash32;
   }>): Promise<CompiledStrategyExecution<TPayload>>;
 }
 
@@ -31,6 +33,7 @@ export interface CompiledStrategyDomainExecution {
 
 export interface CompiledStrategyRouteExecution {
   readonly version: 1;
+  readonly packageId: Hash32;
   readonly settlementClass: TypedStrategyRoute['settlementClass'];
   readonly orderHash: Uint8Array;
   readonly graphHash: Uint8Array;
@@ -92,10 +95,13 @@ function verifiedCrossDomainPlan(
 export async function compileStrategyRouteExecution(input: Readonly<{
   admission: AdmittedStrategyPackage;
   route: TypedStrategyRoute;
+  packageId: Hash32;
   compilers: readonly StrategyDomainCompiler[];
   crossDomainPlan?: CrossDomainPlanInput;
 }>): Promise<CompiledStrategyRouteExecution> {
   const { admission, route } = input;
+  requireCondition(input.packageId.length === 32 && input.packageId.some((byte) => byte !== 0), 'package id must be a nonzero 32-byte value');
+  const packageId = Uint8Array.from(input.packageId) as Hash32;
   const orderHash = strategyPackageOrderHash(admission.order);
   const quoteHash = strategyPackageQuoteHash(admission.quote);
   const routeHash = typedStrategyRouteHash(route);
@@ -112,7 +118,7 @@ export async function compileStrategyRouteExecution(input: Readonly<{
       compiler.executionPlanKind === domainPlan.executionPlanKind && sameDomain(compiler.domain, domainPlan.domain),
     );
     requireCondition(matches.length === 1, `domain ${domainPlan.domain.domainId} must resolve to exactly one strategy compiler`);
-    const execution = await matches[0]!.compile({ admission, route, domainPlan });
+    const execution = await matches[0]!.compile({ admission, route, domainPlan, packageId });
     requireCondition(execution.domains.length === 1 && sameDomain(execution.domains[0]!, domainPlan.domain), `domain ${domainPlan.domain.domainId} compiler returned another domain`);
     requireCondition(bytesEqual(execution.orderHash, orderHash), `domain ${domainPlan.domain.domainId} order hash mismatch`);
     requireCondition(bytesEqual(execution.graphHash, route.graphHash), `domain ${domainPlan.domain.domainId} graph hash mismatch`);
@@ -122,6 +128,7 @@ export async function compileStrategyRouteExecution(input: Readonly<{
   }));
   return Object.freeze({
     version: 1 as const,
+    packageId,
     settlementClass: route.settlementClass,
     orderHash,
     graphHash: route.graphHash,
