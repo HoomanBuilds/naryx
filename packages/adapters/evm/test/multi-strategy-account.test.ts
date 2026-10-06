@@ -56,6 +56,7 @@ function compiled(): CompiledStrategyExecution<EvmStrategyExecutionPlan> {
       guarantee: 'ATOMIC_POSTCONDITION' as const,
       domain: executionDomain,
       strategyAccount: ACCOUNT,
+      packageId: HASH_F,
       stages: Object.freeze([
         Object.freeze({
           stage: 0,
@@ -168,6 +169,14 @@ test('rejects an adapter identity policy that does not match the compiled call',
       callPolicies: [{ ...candidate.callPolicies[0]!, expectedAdapterAddress: ACCOUNT }],
     }),
     /adapter address mismatch/,
+  );
+});
+
+test('rejects a package identity that differs from the compiled leg payloads', () => {
+  const candidate = input();
+  assert.throws(
+    () => compileEvmMultiStrategyAccountEnvelope({ ...candidate, packageId: HASH_E }),
+    /plan package id mismatch/,
   );
 });
 

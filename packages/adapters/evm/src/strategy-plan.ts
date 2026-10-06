@@ -13,7 +13,7 @@ import {
   type TypedStrategyRouteLeg,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
-import { getAddress, keccak256, type Address, type Hex } from 'viem';
+import { getAddress, keccak256, toHex, type Address, type Hex } from 'viem';
 
 export interface EvmStrategyLegCall {
   readonly legId: string;
@@ -38,6 +38,7 @@ export interface EvmStrategyExecutionPlan {
   readonly guarantee: 'ATOMIC_POSTCONDITION' | 'BONDED_ASYNCHRONOUS';
   readonly domain: DomainRef;
   readonly strategyAccount: Address;
+  readonly packageId: Hex;
   readonly stages: readonly EvmStrategyStage[];
   readonly totalGasLimit: bigint;
 }
@@ -47,6 +48,10 @@ export interface EvmStrategyLegMaterializationContext {
   readonly route: TypedStrategyRoute;
   readonly graph: PackageGraph;
   readonly routeLeg: TypedStrategyRouteLeg;
+  readonly packageId: Hex;
+  readonly orderHash: Hex;
+  readonly quoteHash: Hex;
+  readonly routeHash: Hex;
 }
 
 export interface EvmStrategyLegMaterializer {
@@ -67,6 +72,15 @@ export interface EvmStrategyLegMaterializer {
 
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function nonzeroHash(value: Hex, context: string): Hex {
+  requireCondition(/^0x[0-9a-fA-F]{64}$/.test(value) && !/^0x0{64}$/.test(value), `${context} must be a nonzero bytes32`);
+  return value.toLowerCase() as Hex;
+}
+
+function bytes32(value: Uint8Array, context: string): Hex {
+  return nonzeroHash(toHex(value), context);
 }
 
 function sameDomain(left: DomainRef, right: DomainRef): boolean {
@@ -109,6 +123,7 @@ export function compileEvmStrategyPlan(input: Readonly<{
   route: TypedStrategyRoute;
   domainPlan?: TypedStrategyDomainPlan;
   strategyAccount: Address;
+  packageId: Hex;
   materializers: readonly EvmStrategyLegMaterializer[];
 }>): CompiledStrategyExecution<EvmStrategyExecutionPlan> {
   const { admission, route } = input;
@@ -129,13 +144,20 @@ export function compileEvmStrategyPlan(input: Readonly<{
   } else {
     requireCondition(route.settlementClass === 'ASYNC_BONDED_SOLVER' || route.settlementClass === 'CROSS_DOMAIN_PREPOSITIONED', 'asynchronous EVM requests require bonded or cross-domain prepositioned settlement');
   }
+  const packageId = nonzeroHash(input.packageId, 'package id');
+  const orderCommitment = strategyPackageOrderHash(admission.order);
+  const quoteCommitment = strategyPackageQuoteHash(admission.quote);
+  const routeCommitment = typedStrategyRouteHash(route);
+  const orderHash = bytes32(orderCommitment, 'order hash');
+  const quoteHash = bytes32(quoteCommitment, 'quote hash');
+  const routeHash = bytes32(routeCommitment, 'route hash');
   const calls = domainLegs.map((leg): EvmStrategyLegCall => {
     const routeLeg = route.legs.find((candidate) => candidate.legId === leg.legId);
     requireCondition(routeLeg !== undefined, `route is missing leg ${leg.legId}`);
     requireCondition(routeLeg.executionPlanKind === domainPlan.executionPlanKind, `leg ${leg.legId} plan kind mismatch`);
     const materializer = bindingFor(leg, routeLeg, input.materializers);
     requireCondition(materializer.maximumGasLimit > 0n, `leg ${leg.legId} maximum gas limit is invalid`);
-    const materialized = materializer.materialize({ admission, route, graph, routeLeg });
+    const materialized = materializer.materialize({ admission, route, graph, routeLeg, packageId, orderHash, quoteHash, routeHash });
     requireCondition(materialized.gasLimit > 0n && materialized.gasLimit <= materializer.maximumGasLimit, `leg ${leg.legId} gas limit exceeds its registered bound`);
     requireCondition(/^0x[0-9a-fA-F]{8,}$/.test(materialized.data), `leg ${leg.legId} calldata is malformed`);
     return Object.freeze({
@@ -156,21 +178,19 @@ export function compileEvmStrategyPlan(input: Readonly<{
     stage,
     calls: Object.freeze(calls.filter((call) => call.stage === stage).sort((left, right) => left.legId.localeCompare(right.legId))),
   })));
-  const orderHash = strategyPackageOrderHash(admission.order);
-  const quoteHash = strategyPackageQuoteHash(admission.quote);
-  const routeHash = typedStrategyRouteHash(route);
   return Object.freeze({
     domains: Object.freeze([domainPlan.domain]),
-    orderHash,
+    orderHash: orderCommitment,
     graphHash: route.graphHash,
-    quoteHash,
-    routeHash,
+    quoteHash: quoteCommitment,
+    routeHash: routeCommitment,
     payload: Object.freeze({
       version: 1 as const,
       planKind: domainPlan.executionPlanKind,
       guarantee: domainPlan.executionPlanKind === 'EVM_ATOMIC_BATCH' ? 'ATOMIC_POSTCONDITION' as const : 'BONDED_ASYNCHRONOUS' as const,
       domain: domainPlan.domain,
       strategyAccount: getAddress(input.strategyAccount),
+      packageId,
       stages,
       totalGasLimit: calls.reduce((sum, call) => sum + call.gasLimit, 0n),
     }),

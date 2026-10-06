@@ -61,6 +61,7 @@ function evmCompiled(): CompiledStrategyRouteExecution {
           guarantee: 'ATOMIC_POSTCONDITION',
           domain,
           strategyAccount: ACCOUNT,
+          packageId: HASH_F,
           stages: Object.freeze([Object.freeze({
             stage: 0,
             calls: Object.freeze([Object.freeze({

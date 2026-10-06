@@ -168,6 +168,7 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
   requireCondition(input.totalGrossNotionalAtoms > 0n && input.nonce >= 0n && input.deadline > 0n, 'execution quantity, nonce, or deadline is invalid');
   const account = getAddress(input.account);
   requireCondition(getAddress(plan.strategyAccount) === account, 'plan strategy account mismatch');
+  requireCondition(hash32(plan.packageId, 'plan package id') === hash32(input.packageId, 'package id'), 'plan package id mismatch');
   const calls = plan.stages.flatMap((stage, stageIndex) => {
     requireCondition(stage.stage === stageIndex && stage.calls.length > 0, 'plan stages must be contiguous and nonempty');
     return stage.calls.map((call): EvmMultiStrategyCall => {
