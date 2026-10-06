@@ -49,6 +49,7 @@ import {
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
   loadHyperliquidTestnetGeneralizedQuoteLane,
+  loadHyperliquidTestnetGeneralizedQuoteLanes,
   loadHyperliquidTestnetQuoteRuntime,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
@@ -820,6 +821,15 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
   try {
     writeFileSync(configPath, stringifyProtocolJson({
       version: 2,
+      generalized: {
+        laneId: 'hypercore-testnet-btc-carry-v1',
+        executionClassId: graph.executionClassId,
+        executionClassVersion: 1,
+        executionClassManifestHash: graph.executionClassManifestHash,
+        holdingDurationMs: 3_600_000n,
+        expectedExitBasisBps: 0n,
+        reversalThresholdPpm: 10n,
+      },
       market: {
         ...reviewedMarket,
         packageTemplateManifestHash: templateHash,
@@ -837,6 +847,12 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
     assert.deepEqual(loaded?.adapterSupport.map((support) => support.legFamily), [
       'SPOT_SWAP', 'PERP_OPEN',
     ]);
+    const lanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
+      { ...laneEnvironment, NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS: configPath },
+      [preparationLane],
+      { nonceSource: { next: () => 2n }, market, currentTimeMs: () => 1_000n },
+    );
+    assert.deepEqual(lanes.map((lane) => lane.laneId), ['hypercore-testnet-btc-carry-v1']);
     assert.equal(loadHyperliquidTestnetGeneralizedQuoteLane(
       {},
       [preparationLane],

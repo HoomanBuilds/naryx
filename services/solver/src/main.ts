@@ -31,7 +31,7 @@ import {
   requireArbitrumSepoliaChain,
   loadHyperliquidTestnetAgentSigner,
   loadHyperliquidTestnetExecutorRuntime,
-  loadHyperliquidTestnetGeneralizedQuoteLane,
+  loadHyperliquidTestnetGeneralizedQuoteLanes,
   loadHyperliquidTestnetQuoteRuntime,
   type LoadedHyperliquidTestnetExecutorRuntime,
   createStrategyPreparationInternalHandler,
@@ -203,19 +203,19 @@ const strategyPreparationService = strategyPreparationLanes.length === 0
 const strategyPreparationHandler = strategyPreparationService === undefined
   ? undefined
   : createStrategyPreparationInternalHandler(strategyPreparationService);
-const generalizedStrategyLane = loadHyperliquidTestnetGeneralizedQuoteLane(
+const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
   process.env,
   strategyPreparationLanes,
   { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
 );
-const generalizedQuoteStore = generalizedStrategyLane === undefined
+const generalizedQuoteStore = generalizedStrategyLanes.length === 0
   ? undefined
   : new SqliteGeneralizedStrategyQuoteStore(config.quoteDbPath);
-const generalizedStrategyQuoteHandler = generalizedStrategyLane === undefined
+const generalizedStrategyQuoteHandler = generalizedStrategyLanes.length === 0
   ? undefined
   : createGeneralizedStrategyQuoteInternalHandler(new GeneralizedStrategyQuoteService({
     packages: strategyPackageProvider,
-    contexts: new GeneralizedStrategyQuoteContextRegistry([generalizedStrategyLane]),
+    contexts: new GeneralizedStrategyQuoteContextRegistry(generalizedStrategyLanes),
     signer: executionSigner,
     store: generalizedQuoteStore!,
   }));
@@ -363,7 +363,7 @@ try {
 }
 const hyperliquidQuotes = hyperliquidQuoteRuntime === undefined ? 'DISABLED' : 'TESTNET_LIVE_BOOK';
 const arbitrumQuotes = arbitrumQuoteProviders === undefined ? 'DISABLED' : 'SEPOLIA_LIVE_REFERENCE';
-const generalizedHyperliquid = generalizedStrategyLane !== undefined
+const generalizedHyperliquid = generalizedStrategyLanes.length > 0
   ? 'LIVE_TESTNET_QUOTES'
   : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `

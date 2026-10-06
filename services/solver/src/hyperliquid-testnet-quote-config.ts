@@ -35,6 +35,8 @@ export const HYPERLIQUID_TESTNET_QUOTE_ENABLED_ENV =
   'NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED';
 export const HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV =
   'NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED';
+export const HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS_ENV =
+  'NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS';
 export const HYPERLIQUID_TESTNET_QUOTE_CONFIG_VERSION = 2;
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -56,6 +58,16 @@ type QuoteLegInput = Readonly<Record<string, unknown> & {
   venue: VersionedManifestRef;
   market: VersionedManifestRef;
   action: Readonly<Record<string, unknown> & { adapter: AdapterRefInput }>;
+}>;
+
+type GeneralizedLaneSettings = Readonly<{
+  laneId: string;
+  executionClassId: string;
+  executionClassVersion: number;
+  executionClassManifestHash: Uint8Array;
+  holdingDurationMs: bigint;
+  expectedExitBasisBps: bigint;
+  reversalThresholdPpm: bigint;
 }>;
 
 // Reviewed configs carry manifest hashes as plain or 0x-prefixed hex, or bytes; the runtime compares
@@ -129,9 +141,43 @@ function signedInteger(env: NodeJS.ProcessEnv, name: string): bigint {
   return BigInt(value);
 }
 
+function embeddedGeneralizedLane(value: unknown): GeneralizedLaneSettings | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Hyperliquid Testnet quote config generalized lane must be an object');
+  }
+  const lane = value as Record<string, unknown>;
+  const keys = [
+    'laneId', 'executionClassId', 'executionClassVersion', 'executionClassManifestHash',
+    'holdingDurationMs', 'expectedExitBasisBps', 'reversalThresholdPpm',
+  ];
+  if (Object.keys(lane).sort().join(',') !== [...keys].sort().join(',')
+    || typeof lane.laneId !== 'string' || lane.laneId.length === 0
+    || typeof lane.executionClassId !== 'string' || lane.executionClassId.length === 0
+    || !Number.isSafeInteger(lane.executionClassVersion) || (lane.executionClassVersion as number) < 1
+    || typeof lane.holdingDurationMs !== 'bigint' || lane.holdingDurationMs <= 0n
+    || typeof lane.expectedExitBasisBps !== 'bigint'
+    || typeof lane.reversalThresholdPpm !== 'bigint' || lane.reversalThresholdPpm <= 0n) {
+    throw new Error('Hyperliquid Testnet quote config generalized lane fields are invalid');
+  }
+  return Object.freeze({
+    laneId: lane.laneId,
+    executionClassId: lane.executionClassId,
+    executionClassVersion: lane.executionClassVersion as number,
+    executionClassManifestHash: manifestHash(
+      lane.executionClassManifestHash as Uint8Array,
+      'hyperliquidTestnetQuoteConfig.generalized.executionClassManifestHash',
+    ),
+    holdingDurationMs: lane.holdingDurationMs,
+    expectedExitBasisBps: lane.expectedExitBasisBps,
+    reversalThresholdPpm: lane.reversalThresholdPpm,
+  });
+}
+
 function quoteConfiguration(env: NodeJS.ProcessEnv): Readonly<{
   market: Record<string, unknown>;
   tradingAccount: `0x${string}`;
+  generalized?: GeneralizedLaneSettings;
 }> {
   const configuredPath = env.NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG;
   if (configuredPath === undefined || configuredPath.length === 0 || !isAbsolute(configuredPath)) {
@@ -156,9 +202,39 @@ function quoteConfiguration(env: NodeJS.ProcessEnv): Readonly<{
       `Hyperliquid Testnet quote config must contain version ${HYPERLIQUID_TESTNET_QUOTE_CONFIG_VERSION} market configuration`,
     );
   }
+  const generalized = embeddedGeneralizedLane(record.generalized);
   return Object.freeze({
     market: normalizedMarket(record.market as Record<string, unknown>),
     tradingAccount: tradingAccount as `0x${string}`,
+    ...(generalized === undefined ? {} : { generalized }),
+  });
+}
+
+function generalizedLaneSettings(
+  env: NodeJS.ProcessEnv,
+  embedded: GeneralizedLaneSettings | undefined,
+): GeneralizedLaneSettings {
+  if (embedded !== undefined) return embedded;
+  const executionClassVersionValue = positiveInteger(
+    env,
+    'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION',
+  );
+  if (executionClassVersionValue > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION is too large');
+  }
+  return Object.freeze({
+    laneId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_LANE_ID'),
+    executionClassId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_ID'),
+    executionClassVersion: Number(executionClassVersionValue),
+    executionClassManifestHash: manifestHash(required(
+      env,
+      'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_MANIFEST_HASH',
+    )),
+    holdingDurationMs: positiveInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS'),
+    expectedExitBasisBps: signedInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS'),
+    reversalThresholdPpm: env.NARYX_HYPERLIQUID_GENERALIZED_REVERSAL_THRESHOLD_PPM === undefined
+      ? 1n
+      : positiveInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_REVERSAL_THRESHOLD_PPM'),
   });
 }
 
@@ -190,7 +266,7 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     env[HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV],
     HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV,
   )) return undefined;
-  const { market, tradingAccount } = quoteConfiguration(env);
+  const { market, tradingAccount, generalized } = quoteConfiguration(env);
   const configured = market as unknown as Omit<
     HyperliquidTestnetQuoteRuntimeInput,
     'enabled' | 'currentTimeMs' | 'nonceSource' | 'market' | 'tradingAccount'
@@ -214,13 +290,7 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     && configured.templateId !== 'perpetual-funding-spread-v1') {
     throw new Error('generalized Hyperliquid quote lane does not support the configured template');
   }
-  const executionClassVersionValue = positiveInteger(
-    env,
-    'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION',
-  );
-  if (executionClassVersionValue > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION is too large');
-  }
+  const laneSettings = generalizedLaneSettings(env, generalized);
   const clock = dependencies.currentTimeMs ?? (() => BigInt(Date.now()));
   const liveMarket = dependencies.market ?? new HyperliquidSdkTestnetMarketReadClient();
   const commonPricing = {
@@ -248,15 +318,12 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     throw new Error('generalized Hyperliquid funding spread quote config requires counterPerpetual');
   }
   return Object.freeze({
-    laneId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_LANE_ID'),
+    laneId: laneSettings.laneId,
     environment: matchingLanes[0]!.environment,
     templateManifest: matchingLanes[0]!.templateManifest,
-    executionClassId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_ID'),
-    executionClassVersion: Number(executionClassVersionValue),
-    executionClassManifestHash: required(
-      env,
-      'NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_MANIFEST_HASH',
-    ),
+    executionClassId: laneSettings.executionClassId,
+    executionClassVersion: laneSettings.executionClassVersion,
+    executionClassManifestHash: laneSettings.executionClassManifestHash,
     activeRegistryRecords: matchingLanes[0]!.activeRegistryRecords,
     resourceLimits: matchingLanes[0]!.resourceLimits,
     adapterSupport: cashCarry
@@ -333,21 +400,15 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     pricing: cashCarry
       ? createHyperliquidTestnetGeneralizedCashCarryPricing({
         ...commonPricing,
-        holdingDurationMs: positiveInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS'),
-        expectedExitBasisBps: signedInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS'),
+        holdingDurationMs: laneSettings.holdingDurationMs,
+        expectedExitBasisBps: laneSettings.expectedExitBasisBps,
         spot: configured.spot,
       })
       : fundingSpread
         ? createHyperliquidTestnetGeneralizedFundingSpreadPricing({
           ...commonPricing,
-          expectedHoldingDurationMs: positiveInteger(
-            env,
-            'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS',
-          ),
-          reversalThresholdPpm: positiveInteger(
-            env,
-            'NARYX_HYPERLIQUID_GENERALIZED_REVERSAL_THRESHOLD_PPM',
-          ),
+          expectedHoldingDurationMs: laneSettings.holdingDurationMs,
+          reversalThresholdPpm: laneSettings.reversalThresholdPpm,
           longPerpetual: configured.perpetual,
           shortPerpetual: counterPerpetual!,
         })
@@ -357,6 +418,40 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
       value: clock(),
     }),
   });
+}
+
+export function loadHyperliquidTestnetGeneralizedQuoteLanes(
+  env: NodeJS.ProcessEnv,
+  preparationLanes: readonly HyperliquidStrategyPreparationLane[],
+  dependencies: HyperliquidTestnetGeneralizedQuoteConfigDependencies,
+): readonly GeneralizedStrategyQuoteLane[] {
+  if (!enabled(
+    env[HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV],
+    HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV,
+  )) return Object.freeze([]);
+  const configured = env[HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS_ENV];
+  if (configured === undefined || configured.trim() === '') {
+    const lane = loadHyperliquidTestnetGeneralizedQuoteLane(env, preparationLanes, dependencies);
+    return Object.freeze(lane === undefined ? [] : [lane]);
+  }
+  const paths = configured.split(',').map((value) => value.trim()).filter((value) => value !== '');
+  if (paths.length === 0 || paths.length > 16 || new Set(paths).size !== paths.length
+    || paths.some((path) => !isAbsolute(path))) {
+    throw new Error(`${HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS_ENV} must contain one to sixteen unique absolute paths`);
+  }
+  const lanes = paths.map((path) => {
+    const scoped = { ...env, NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG: path };
+    if (quoteConfiguration(scoped).generalized === undefined) {
+      throw new Error('every generalized quote config in the multi-lane list must contain generalized settings');
+    }
+    const lane = loadHyperliquidTestnetGeneralizedQuoteLane(scoped, preparationLanes, dependencies);
+    if (lane === undefined) throw new Error('configured generalized quote lane did not load');
+    return lane;
+  });
+  if (new Set(lanes.map((lane) => lane.laneId)).size !== lanes.length) {
+    throw new Error('generalized Hyperliquid quote lane IDs must be unique');
+  }
+  return Object.freeze(lanes);
 }
 
 export const loadHyperliquidTestnetGeneralizedCashCarryQuoteLane =

@@ -782,9 +782,11 @@ export {
 } from './hyperliquid-testnet-quote-runtime.js';
 export {
   HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED_ENV,
+  HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS_ENV,
   HYPERLIQUID_TESTNET_QUOTE_ENABLED_ENV,
   loadHyperliquidTestnetGeneralizedCashCarryQuoteLane,
   loadHyperliquidTestnetGeneralizedQuoteLane,
+  loadHyperliquidTestnetGeneralizedQuoteLanes,
   loadHyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetGeneralizedQuoteConfigDependencies,
   type HyperliquidTestnetQuoteConfigDependencies,
