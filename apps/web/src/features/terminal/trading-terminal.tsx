@@ -243,6 +243,13 @@ function atomsDecimal(atoms: string, decimals: number): string {
   return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""}`;
 }
 
+function signedAtomsDecimal(atoms: string, decimals: number): string {
+  if (!/^(?:0|-?[1-9][0-9]*)$/.test(atoms)) return "-";
+  const negative = atoms.startsWith("-");
+  const formatted = atomsDecimal(negative ? atoms.slice(1) : atoms, decimals);
+  return negative ? `-${formatted}` : formatted;
+}
+
 function quoteAtomsText(atoms: string, decimals: number): string {
   if (!/^(0|[1-9][0-9]*)$/.test(atoms)) return "-";
   const padded = atoms.padStart(decimals + 1, "0");
@@ -555,7 +562,11 @@ function HyperliquidTestnetPanel({
   const attempt = flow?.attempt ?? null;
   const execution = flow?.execution ?? null;
   const progress = hyperliquidProgressLabel(flow?.progress ?? null);
+  const account = flow?.account ?? null;
+  const baseDecimals = account?.baseDecimals ?? null;
+  const quoteDecimals = account?.quoteDecimals ?? null;
   const packages = flow?.account?.packages ?? [];
+  const executionEvidence = execution?.executionEvidence;
   const commitments = execution
     ? [
       execution.actionCommitment,
@@ -637,6 +648,29 @@ function HyperliquidTestnetPanel({
           {commitments.map((commitment) => (
             <small key={commitment} title={commitment}>Evidence: {compact(commitment, 14, 12)}</small>
           ))}
+        </div>
+      ) : null}
+      {executionEvidence && baseDecimals !== null && quoteDecimals !== null ? (
+        <div className={styles.reviewGrid}>
+          {executionEvidence.legs.map((leg) => (
+            <Fragment key={leg.role}>
+              <span>{leg.role === "SPOT" ? "Spot fill" : "Perpetual fill"}</span>
+              <strong>{signedAtomsDecimal(leg.filledSignedBaseAtoms, baseDecimals)} {baseSymbol}</strong>
+              <span>{leg.role === "SPOT" ? "Spot notional" : "Perpetual notional"}</span>
+              <strong>{quoteAtomsText(leg.grossQuoteAtoms, quoteDecimals)}</strong>
+              <span>{leg.role === "SPOT" ? "Spot venue fee" : "Perpetual venue fee"}</span>
+              <strong>{quoteAtomsText(leg.venueFeeQuoteAtoms, quoteDecimals)}</strong>
+              <span>{leg.role === "SPOT" ? "Spot evidence" : "Perpetual evidence"}</span>
+              <strong title={leg.evidenceCommitment}>{compact(leg.evidenceCommitment, 14, 12)}</strong>
+            </Fragment>
+          ))}
+          <span>Terminal residual</span>
+          <strong>
+            {atomsDecimal(executionEvidence.terminalResidualBaseAtoms, baseDecimals)} {baseSymbol}
+            {` / ${quoteAtomsText(executionEvidence.terminalResidualQuoteAtoms, quoteDecimals)}`}
+          </strong>
+          <span>Venue observation</span>
+          <strong>{new Date(Number(executionEvidence.observedAtMs)).toLocaleString()}</strong>
         </div>
       ) : null}
     </section>

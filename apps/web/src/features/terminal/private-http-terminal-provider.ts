@@ -534,6 +534,27 @@ export type HyperliquidSelectedAttempt = Readonly<{
   domainManifestHash: string;
 }>;
 
+export type HyperliquidLegExecutionEvidence = Readonly<{
+  role: "SPOT" | "PERPETUAL";
+  clientOrderId: string;
+  requestedSignedBaseAtoms: string;
+  filledSignedBaseAtoms: string;
+  grossQuoteAtoms: string;
+  feeAssetId: string;
+  feeAssetDecimals: number;
+  feeAtoms: string;
+  venueFeeQuoteAtoms: string;
+  evidenceCommitment: string;
+}>;
+
+export type HyperliquidExecutionEvidence = Readonly<{
+  evidenceVersion: string;
+  observedAtMs: string;
+  terminalResidualBaseAtoms: string;
+  terminalResidualQuoteAtoms: string;
+  legs: readonly [HyperliquidLegExecutionEvidence, HyperliquidLegExecutionEvidence];
+}>;
+
 export type HyperliquidTerminalExecutionResult = Readonly<{
   attemptId: string;
   idempotencyKey: string;
@@ -553,6 +574,7 @@ export type HyperliquidTerminalExecutionResult = Readonly<{
   /** The account-wide deltas over the serialized window: exactly this package's fills. */
   observedNetSpotDeltaAtoms?: string;
   observedPerpetualDeltaAtoms?: string;
+  executionEvidence?: HyperliquidExecutionEvidence;
 }>;
 
 export type BaseAccountSetupStep = Readonly<{
@@ -1979,6 +2001,7 @@ const HYPERLIQUID_RESULT_KEYS: Record<string, readonly string[]> = {
   RECONCILIATION_INCOMPLETE: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
   RECONCILED: ["actionCommitment", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
   RECONCILED_OBSERVED: ["actionCommitment", "observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
+  RECONCILED_EVIDENCE: ["actionCommitment", "executionEvidence", "observedNetSpotDeltaAtoms", "observedPerpetualDeltaAtoms", "packageStatus", "rawEvidenceCommitments", "reasons", "requestCommitment", "submissionStatus"],
   HANDOFF_REJECTED: ["actionCommitment", "reason", "requestCommitment"],
 };
 
@@ -2006,6 +2029,86 @@ function requireHyperliquidReasons(value: unknown, allowEmpty: boolean): readonl
   return Object.freeze(reasons);
 }
 
+function requireHyperliquidAtoms(value: unknown, name: string, signed: boolean, positive = false): string {
+  const pattern = signed ? /^(?:0|-?[1-9][0-9]{0,77})$/ : /^(?:0|[1-9][0-9]{0,77})$/;
+  if (typeof value !== "string" || !pattern.test(value) || (positive && value === "0")) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireHyperliquidLegEvidence(
+  value: unknown,
+  role: HyperliquidLegExecutionEvidence["role"],
+): HyperliquidLegExecutionEvidence {
+  if (!isRecord(value)) throw new Error(`${role} execution evidence is invalid.`);
+  requireExactKeys(value, [
+    "clientOrderId", "evidenceCommitment", "feeAssetDecimals", "feeAssetId", "feeAtoms",
+    "filledSignedBaseAtoms", "grossQuoteAtoms", "requestedSignedBaseAtoms", "role",
+    "venueFeeQuoteAtoms",
+  ], `${role} execution evidence`);
+  if (value.role !== role || typeof value.clientOrderId !== "string"
+    || !/^0x[0-9a-f]{32}$/.test(value.clientOrderId)) {
+    throw new Error(`${role} execution evidence binding is invalid.`);
+  }
+  const feeAssetId = requireString(value.feeAssetId, `${role} fee asset`);
+  const feeAssetDecimals = requireInteger(value.feeAssetDecimals, `${role} fee asset decimals`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(feeAssetId)
+    || feeAssetDecimals < 0 || feeAssetDecimals > 30) {
+    throw new Error(`${role} fee asset is invalid.`);
+  }
+  return Object.freeze({
+    role,
+    clientOrderId: value.clientOrderId,
+    requestedSignedBaseAtoms: requireHyperliquidAtoms(
+      value.requestedSignedBaseAtoms, `${role} requested quantity`, true,
+    ),
+    filledSignedBaseAtoms: requireHyperliquidAtoms(
+      value.filledSignedBaseAtoms, `${role} filled quantity`, true,
+    ),
+    grossQuoteAtoms: requireHyperliquidAtoms(value.grossQuoteAtoms, `${role} gross quote`, false),
+    feeAssetId,
+    feeAssetDecimals,
+    feeAtoms: requireHyperliquidAtoms(value.feeAtoms, `${role} fee`, false),
+    venueFeeQuoteAtoms: requireHyperliquidAtoms(
+      value.venueFeeQuoteAtoms, `${role} quote-valued fee`, false,
+    ),
+    evidenceCommitment: requireHyperliquidCommitment(
+      value.evidenceCommitment, `${role} evidence commitment`,
+    ),
+  });
+}
+
+function requireHyperliquidExecutionEvidence(value: unknown): HyperliquidExecutionEvidence {
+  if (!isRecord(value)) throw new Error("Hyperliquid execution evidence is invalid.");
+  requireExactKeys(value, [
+    "evidenceVersion", "legs", "observedAtMs", "terminalResidualBaseAtoms",
+    "terminalResidualQuoteAtoms",
+  ], "Hyperliquid execution evidence");
+  if (!Array.isArray(value.legs) || value.legs.length !== 2) {
+    throw new Error("Hyperliquid execution evidence legs are invalid.");
+  }
+  const observedAtMs = requireHyperliquidAtoms(value.observedAtMs, "Hyperliquid evidence time", false, true);
+  if (BigInt(observedAtMs) > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error("Hyperliquid evidence time is invalid.");
+  }
+  const legs: HyperliquidExecutionEvidence["legs"] = Object.freeze([
+    requireHyperliquidLegEvidence(value.legs[0], "SPOT"),
+    requireHyperliquidLegEvidence(value.legs[1], "PERPETUAL"),
+  ]);
+  return Object.freeze({
+    evidenceVersion: requireHyperliquidAtoms(value.evidenceVersion, "Hyperliquid evidence version", false, true),
+    observedAtMs,
+    terminalResidualBaseAtoms: requireHyperliquidAtoms(
+      value.terminalResidualBaseAtoms, "Hyperliquid residual base", false,
+    ),
+    terminalResidualQuoteAtoms: requireHyperliquidAtoms(
+      value.terminalResidualQuoteAtoms, "Hyperliquid residual quote", false,
+    ),
+    legs,
+  });
+}
+
 function requireHyperliquidExecutionResult(
   value: unknown,
   attempt: HyperliquidSelectedAttempt,
@@ -2014,9 +2117,12 @@ function requireHyperliquidExecutionResult(
   if (!isRecord(value) || typeof value.status !== "string") {
     throw new Error("Hyperliquid execution response is invalid.");
   }
-  const variantKeys = HYPERLIQUID_RESULT_KEYS[
-    value.status === "RECONCILED" && "observedNetSpotDeltaAtoms" in value ? "RECONCILED_OBSERVED" : value.status
-  ];
+  const variant = value.status === "RECONCILED" && "executionEvidence" in value
+    ? "RECONCILED_EVIDENCE"
+    : value.status === "RECONCILED" && "observedNetSpotDeltaAtoms" in value
+      ? "RECONCILED_OBSERVED"
+      : value.status;
+  const variantKeys = HYPERLIQUID_RESULT_KEYS[variant];
   if (!variantKeys || value.status === "RECONCILED_OBSERVED") throw new Error("Hyperliquid execution status is unsupported.");
   requireExactKeys(
     value,
@@ -2088,6 +2194,9 @@ function requireHyperliquidExecutionResult(
     result.rawEvidenceCommitments = Object.freeze(value.rawEvidenceCommitments.map(
       (commitment) => requireHyperliquidCommitment(commitment, "raw evidence commitment"),
     ));
+  }
+  if ("executionEvidence" in value) {
+    result.executionEvidence = requireHyperliquidExecutionEvidence(value.executionEvidence);
   }
   return Object.freeze(result) as HyperliquidTerminalExecutionResult;
 }
