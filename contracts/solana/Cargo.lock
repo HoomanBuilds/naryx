@@ -2037,6 +2037,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "naryx_inventory_adapter"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "solana-sha256-hasher 3.1.0",
+]
+
+[[package]]
 name = "naryx_inventory_reservation"
 version = "0.1.0"
 dependencies = [

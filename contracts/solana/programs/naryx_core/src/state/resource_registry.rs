@@ -122,6 +122,7 @@ pub fn supports_multi_strategy_adapter_class(
         (role, descriptor.id.as_str()),
         (ExecutionRole::Spot, SPOT_ADAPTER_CLASS_ID)
             | (ExecutionRole::Perp, PERP_ADAPTER_CLASS_ID)
+            | (ExecutionRole::Inventory, INVENTORY_ADAPTER_CLASS_ID)
     )
 }
 
@@ -206,6 +207,10 @@ mod tests {
         assert!(!supports_multi_strategy_adapter_class(
             ExecutionRole::Option,
             &descriptor(OPTION_ADAPTER_CLASS_ID)
+        ));
+        assert!(supports_multi_strategy_adapter_class(
+            ExecutionRole::Inventory,
+            &descriptor(INVENTORY_ADAPTER_CLASS_ID)
         ));
         assert!(!supports_multi_strategy_adapter_class(
             ExecutionRole::Spot,

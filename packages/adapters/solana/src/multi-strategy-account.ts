@@ -223,6 +223,7 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
   const strategyAccount = pda(program, [Buffer.from('multi-strategy-account'), owner.toBuffer()]);
   requireCondition(key(plan.feePayer, 'plan fee payer').equals(owner), 'plan fee payer must be the strategy owner');
   const packageId = hash32(input.packageId, 'package id');
+  requireCondition(Buffer.from(plan.packageId).equals(Buffer.from(packageId)), 'compiled plan package id mismatch');
   const position = pda(program, [Buffer.from('strategy-position'), strategyAccount.toBuffer(), packageId]);
   const receipt = pda(program, [Buffer.from('strategy-receipt'), strategyAccount.toBuffer(), u64be(input.nonce)]);
   const config = pda(coreProgram, [Buffer.from('naryx-protocol-config')]);

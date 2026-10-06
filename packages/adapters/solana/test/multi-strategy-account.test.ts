@@ -48,6 +48,7 @@ function compiled(stage = 0): CompiledStrategyExecution<SolanaStrategyInstructio
       planKind: 'SVM_ATOMIC_CPI',
       guarantee: 'ATOMIC_POSTCONDITION',
       domain,
+      packageId,
       feePayer: owner.toBase58(),
       requiredSignerPubkeys: [owner.toBase58(), strategyAccount.toBase58()],
       instructions: [{
@@ -136,5 +137,12 @@ test('compiles owner-only recovery and rejects malformed economic bounds', () =>
       policies: [policy(true)],
     }),
     /risk direction conflicts/,
+  );
+  assert.throws(
+    () => compileSolanaMultiStrategyAccountEnvelope({
+      ...baseInput(),
+      packageId: hash(21),
+    }),
+    /compiled plan package id mismatch/,
   );
 });

@@ -30,6 +30,7 @@ export interface SolanaStrategyInstructionPlan {
   readonly planKind: 'SVM_ATOMIC_CPI';
   readonly guarantee: 'ATOMIC_POSTCONDITION';
   readonly domain: DomainRef;
+  readonly packageId: Uint8Array;
   readonly feePayer: string;
   readonly requiredSignerPubkeys: readonly string[];
   readonly instructions: readonly SolanaStrategyInstructionRecord[];
@@ -41,6 +42,10 @@ export interface SolanaStrategyLegMaterializationContext {
   readonly route: TypedStrategyRoute;
   readonly graph: PackageGraph;
   readonly routeLeg: TypedStrategyRouteLeg;
+  readonly packageId: Uint8Array;
+  readonly orderHash: Uint8Array;
+  readonly quoteHash: Uint8Array;
+  readonly routeHash: Uint8Array;
 }
 
 export interface SolanaStrategyLegMaterializer {
@@ -110,6 +115,7 @@ export function compileSolanaStrategyPlan(input: Readonly<{
   admission: AdmittedStrategyPackage;
   route: TypedStrategyRoute;
   domainPlan?: TypedStrategyDomainPlan;
+  packageId: Uint8Array;
   feePayer: PublicKey | string;
   allowedSignerPubkeys: readonly (PublicKey | string)[];
   maximumTransactionComputeUnits: number;
@@ -130,6 +136,11 @@ export function compileSolanaStrategyPlan(input: Readonly<{
   requireCondition(domainLegs.every((leg) => sameDomain(leg.domain, domainPlan.domain)), 'Solana domain plan contains a leg from another domain');
   requireCondition(route.legs.filter((leg) => selectedLegIds.has(leg.legId)).length === domainLegs.length, 'route does not cover every Solana domain leg');
   requireCondition(Number.isInteger(input.maximumTransactionComputeUnits) && input.maximumTransactionComputeUnits > 0, 'transaction compute limit is invalid');
+  requireCondition(input.packageId.length === 32 && input.packageId.some((byte) => byte !== 0), 'package id must be a nonzero 32-byte value');
+  const packageId = Uint8Array.from(input.packageId);
+  const orderHash = strategyPackageOrderHash(admission.order);
+  const quoteHash = strategyPackageQuoteHash(admission.quote);
+  const routeHash = typedStrategyRouteHash(route);
   const feePayer = key(input.feePayer, 'feePayer');
   const allowedSigners = new Set(input.allowedSignerPubkeys.map((value, index) => key(value, `allowedSignerPubkeys[${index}]`).toBase58()));
   allowedSigners.add(feePayer.toBase58());
@@ -141,7 +152,7 @@ export function compileSolanaStrategyPlan(input: Readonly<{
     const programId = key(materializer.programId, `materializer ${materializer.materializationClassId} programId`);
     requireCondition(materializer.expectedProgramDataHash.length === 32 && materializer.expectedProgramDataHash.some((byte) => byte !== 0), `leg ${leg.legId} program data hash is invalid`);
     requireCondition(Number.isInteger(materializer.maximumComputeUnitLimit) && materializer.maximumComputeUnitLimit > 0, `leg ${leg.legId} maximum compute limit is invalid`);
-    const materialized = materializer.materialize({ admission, route, graph, routeLeg });
+    const materialized = materializer.materialize({ admission, route, graph, routeLeg, packageId, orderHash, quoteHash, routeHash });
     requireCondition(materialized.instruction.programId.equals(programId), `leg ${leg.legId} program id differs from its registered materializer`);
     requireCondition(Number.isInteger(materialized.computeUnitLimit) && materialized.computeUnitLimit > 0 && materialized.computeUnitLimit <= materializer.maximumComputeUnitLimit, `leg ${leg.legId} compute limit exceeds its registered bound`);
     for (const account of materialized.instruction.keys) {
@@ -164,15 +175,16 @@ export function compileSolanaStrategyPlan(input: Readonly<{
   const requiredSignerPubkeys = Object.freeze([...new Set(records.flatMap((record) => record.instruction.keys.filter((account) => account.isSigner).map((account) => account.pubkey.toBase58())).concat(feePayer.toBase58()))].sort());
   return Object.freeze({
     domains: Object.freeze([domainPlan.domain]),
-    orderHash: strategyPackageOrderHash(admission.order),
+    orderHash,
     graphHash: route.graphHash,
-    quoteHash: strategyPackageQuoteHash(admission.quote),
-    routeHash: typedStrategyRouteHash(route),
+    quoteHash,
+    routeHash,
     payload: Object.freeze({
       version: 1 as const,
       planKind: 'SVM_ATOMIC_CPI' as const,
       guarantee: 'ATOMIC_POSTCONDITION' as const,
       domain: domainPlan.domain,
+      packageId,
       feePayer: feePayer.toBase58(),
       requiredSignerPubkeys,
       instructions: Object.freeze(records),

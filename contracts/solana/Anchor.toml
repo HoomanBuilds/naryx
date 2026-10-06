@@ -5,21 +5,22 @@ package_manager = "npm"
 resolution = true
 skip-lint = false
 
+[programs.devnet]
+naryx_core = "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
+naryx_inventory_reservation = "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt"
+naryx_package_book = "CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY"
+naryx_test_perp = "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
+naryx_test_perp_adapter = "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1"
+
 [programs.localnet]
 naryx_conformance_venue = "ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y"
 naryx_core = "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
+naryx_inventory_adapter = "CEUicPZ2gS8EhV6RvDMUmJ9YjEkLetqrppHdrTMA1GNb"
 naryx_inventory_reservation = "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt"
 naryx_multi_strategy = "5P1Sh9xsWzpzT86jPwTnKwrP2UEZFELUFNcaV7wa7Jvd"
 naryx_orca_adapter = "Ao5mbjTPVAoM4SVobYMyaQwPRKruk9Rd7CF1ENL1xjUU"
 naryx_package_book = "CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY"
 naryx_rise_adapter = "9FAYFVXcJYqxcpw7bf6eK6iY6SkwYx6T4PT7NF3VjfzQ"
-naryx_test_perp = "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
-naryx_test_perp_adapter = "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1"
-
-[programs.devnet]
-naryx_core = "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
-naryx_inventory_reservation = "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt"
-naryx_package_book = "CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY"
 naryx_test_perp = "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
 naryx_test_perp_adapter = "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1"
 
