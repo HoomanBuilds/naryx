@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
-import {EIP712} from "openzeppelin-contracts/utils/cryptography/EIP712.sol";
+import {MessageHashUtils} from "openzeppelin-contracts/utils/cryptography/MessageHashUtils.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
@@ -13,7 +13,7 @@ import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
 import {ITypedStrategyAdapter} from "./interfaces/ITypedStrategyAdapter.sol";
 import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
-contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
+contract NaryxMultiStrategyAccount is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint8 public constant ENTER = 1;
@@ -31,6 +31,10 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         keccak256("OwnerExecution(bytes32 executionHash,bytes32 callsHash)");
     bytes32 private constant SOLVER_EXECUTION_TYPEHASH =
         keccak256("SolverExecution(bytes32 executionHash,bytes32 callsHash)");
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant EIP712_NAME_HASH = keccak256("Naryx Multi Strategy Account");
+    bytes32 private constant EIP712_VERSION_HASH = keccak256("1");
 
     struct Execution {
         bytes32 domainIdHash;
@@ -134,7 +138,8 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         uint256 solverFeeAtoms
     );
 
-    address public immutable owner;
+    address public owner;
+    address public immutable accountFactory;
     ProtocolConfig public immutable config;
     SolverRegistry public immutable solverRegistry;
     TypedStrategyAdapterRegistry public immutable adapterRegistry;
@@ -158,7 +163,7 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         TypedStrategyAdapterRegistry adapterRegistry_,
         StrategyFeePolicyRegistry feePolicyRegistry_,
         bytes32 feePolicySubjectId_
-    ) EIP712("Naryx Multi Strategy Account", "1") {
+    ) {
         if (
             owner_ == address(0) || owner_ == address(this) || address(config_).code.length == 0
                 || address(solverRegistry_).code.length == 0 || address(adapterRegistry_).code.length == 0
@@ -169,6 +174,7 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
         ) revert InvalidConfiguration();
         (string memory domainId,,) = config_.domain();
         owner = owner_;
+        accountFactory = msg.sender;
         config = config_;
         solverRegistry = solverRegistry_;
         adapterRegistry = adapterRegistry_;
@@ -470,5 +476,12 @@ contract NaryxMultiStrategyAccount is EIP712, ReentrancyGuard {
 
     function _executionHash(Execution calldata execution) private pure returns (bytes32) {
         return keccak256(abi.encode(execution));
+    }
+
+    function _hashTypedDataV4(bytes32 structHash) private view returns (bytes32) {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, EIP712_NAME_HASH, EIP712_VERSION_HASH, block.chainid, address(this))
+        );
+        return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
     }
 }
