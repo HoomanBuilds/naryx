@@ -41,6 +41,17 @@ export {
   type HyperliquidNativeStrategyProfile,
 } from "./hyperliquid-native-strategy-order.js";
 export {
+  createEvmOptionSpreadOrderPort,
+  EvmOptionSpreadOrderError,
+  loadEvmOptionSpreadProfiles,
+  type CreatedEvmOptionSpreadOrder,
+  type EvmOptionSpreadBounds,
+  type EvmOptionSpreadMarketProfile,
+  type EvmOptionSpreadOrderPort,
+  type EvmOptionSpreadOrderRequest,
+  type EvmOptionSpreadProfile,
+} from "./evm-option-spread-order.js";
+export {
   buildHyperliquidStrategyPackageReceipt,
   HyperliquidStrategyReceiptError,
 } from "./hyperliquid-strategy-receipt.js";
