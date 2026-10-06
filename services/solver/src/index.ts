@@ -43,6 +43,10 @@ export {
 export { createGeneralizedStrategyQuoteInternalHandler } from './strategy-quote-server.js';
 export { SqliteGeneralizedStrategyQuoteStore } from './strategy-quote-sqlite-store.js';
 export {
+  GeneralizedStrategyQuoteContextRegistry,
+  type GeneralizedStrategyQuoteLane,
+} from './strategy-quote-context-registry.js';
+export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
 } from './strategy-receipt-builder.js';
