@@ -264,3 +264,64 @@ test("private terminal rejects generalized selection without a selected Hyperliq
   const body = await response.json() as { readonly error: { readonly code: string } };
   assert.equal(body.error.code, "SOURCE_ATTEMPT_REQUIRED");
 });
+
+test("private terminal prepares and records exact strategy order authorization", async (context) => {
+  const orderHash = "22".repeat(32);
+  const signature = `0x${"33".repeat(65)}`;
+  const owner = "0x4444444444444444444444444444444444444444";
+  const typedData = {
+    domain: { name: "Naryx Strategy Package Testnet", version: "1" },
+    types: { StrategyPackageAuthorization: [{ name: "orderHash", type: "bytes32" }] },
+    primaryType: "StrategyPackageAuthorization",
+    message: { orderHash: `0x${orderHash}` },
+  } as const;
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined,
+    undefined, "DISABLED", undefined, undefined, undefined, undefined, undefined,
+    undefined, {}, undefined, () => [], undefined, undefined, undefined, {
+      prepare: (requested) => {
+        assert.equal(requested, orderHash);
+        return { version: 1, status: "UNSIGNED_STRATEGY_ORDER", orderHash, owner, typedData: typedData as never };
+      },
+      authorize: async (requested, submittedSignature) => {
+        assert.equal(requested, orderHash);
+        assert.equal(submittedSignature, signature);
+        return {
+          version: 1,
+          status: "OWNER_AUTHORIZED",
+          created: true,
+          authorization: {
+            orderHashHex: orderHash,
+            owner,
+            scheme: "EIP712_SECP256K1",
+            signature,
+            authorizedAtMs: 1_000,
+          },
+        };
+      },
+    },
+  );
+  context.after(() => server.close());
+  const origin = await listen(server);
+  const challenge = await fetch(`${origin}/internal/terminal/strategy-orders/authorization`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderHash }),
+  });
+  assert.equal(challenge.status, 200);
+  assert.deepEqual(await challenge.json(), {
+    version: 1,
+    status: "UNSIGNED_STRATEGY_ORDER",
+    orderHash,
+    owner,
+    typedData,
+  });
+  const authorization = await fetch(`${origin}/internal/terminal/strategy-orders/authorize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ orderHash, signature }),
+  });
+  assert.equal(authorization.status, 200);
+  assert.equal((await authorization.json() as { status: string }).status, "OWNER_AUTHORIZED");
+});

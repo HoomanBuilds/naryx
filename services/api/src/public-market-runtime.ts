@@ -58,6 +58,8 @@ export interface PublicMarketRuntime {
   readonly strategyPackageSources?: Pick<SqliteStrategyPackageStore, "bindSourceOrder" | "sourceBinding">;
   /** Durable selection and lookup for generalized Hyperliquid Testnet execution attempts. */
   readonly strategyPackageExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution" | "strategyExecutionAttempt">;
+  /** Immutable owner approval for an exact generalized strategy order. */
+  readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
@@ -505,6 +507,11 @@ export function loadPublicMarketRuntime(
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
+      ...(strategyPackages === undefined ? {} : {
+        strategyPackageSources: strategyPackages,
+        strategyPackageExecutions: strategyPackages,
+        strategyPackageAuthorizations: strategyPackages,
+      }),
       ...(internalHandlers.length === 0 ? {} : {
         internalHandler: (request: IncomingMessage, response: ServerResponse) => internalHandlers.some((handler) => handler(request, response)),
       }),

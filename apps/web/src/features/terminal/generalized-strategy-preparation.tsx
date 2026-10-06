@@ -5,6 +5,18 @@ import { formatAtomicAmount, formatMetricValue } from "./format";
 import styles from "./trading-terminal.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
+const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
+const STRATEGY_AUTHORIZATION_FIELDS = [
+  ["orderHash", "bytes32"],
+  ["owner", "address"],
+  ["environment", "string"],
+  ["templateId", "string"],
+  ["lifecycleAction", "string"],
+  ["settlementClass", "string"],
+  ["settlementAccount", "string"],
+  ["expiryUnit", "string"],
+  ["expiryValue", "uint256"],
+] as const;
 const DOMAIN_KINDS = new Set([
   "SOLANA_MULTI_STRATEGY_ACCOUNT",
   "EVM_MULTI_STRATEGY_ACCOUNT",
@@ -93,6 +105,12 @@ type SelectedStrategyExecution = Readonly<{
   routeHash: string;
   sourceOrderHash: string;
   selectedAtMs: number;
+}>;
+
+export type StrategyOrderAuthorizationChallenge = Readonly<{
+  orderHash: string;
+  owner: string;
+  typedData: unknown;
 }>;
 
 type StrategyExecutionResult = Readonly<{
@@ -323,6 +341,45 @@ function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: st
   });
 }
 
+function parseStrategyOrderAuthorization(
+  payload: unknown,
+  requestedOrderHash: string,
+): StrategyOrderAuthorizationChallenge {
+  const root = record(payload, "Strategy order authorization");
+  if (root.version !== 1 || root.status !== "UNSIGNED_STRATEGY_ORDER") {
+    throw new Error("Strategy order authorization response is invalid.");
+  }
+  const orderHash = hash(root.orderHash, "Authorized strategy order hash");
+  const owner = text(root.owner, "Strategy order owner");
+  if (orderHash !== requestedOrderHash || !OWNER.test(owner)) {
+    throw new Error("Strategy order authorization does not bind the reviewed order and owner.");
+  }
+  const typedData = record(root.typedData, "Strategy order typed data");
+  const domain = record(typedData.domain, "Strategy order typed-data domain");
+  const types = record(typedData.types, "Strategy order typed-data types");
+  const message = record(typedData.message, "Strategy order typed-data message");
+  const fields = list(types.StrategyPackageAuthorization, "Strategy order authorization fields");
+  const expectedFields = STRATEGY_AUTHORIZATION_FIELDS.map(([name, type]) => ({ name, type }));
+  if (domain.name !== "Naryx Strategy Package Testnet" || domain.version !== "1" || "chainId" in domain
+    || typedData.primaryType !== "StrategyPackageAuthorization"
+    || JSON.stringify(fields) !== JSON.stringify(expectedFields)
+    || message.orderHash !== `0x${orderHash}` || message.owner !== owner
+    || message.environment !== "testnet") {
+    throw new Error("Strategy order authorization typed data is invalid.");
+  }
+  return Object.freeze({ orderHash, owner, typedData });
+}
+
+function parseAuthorizedStrategyOrder(payload: unknown, expected: StrategyOrderAuthorizationChallenge): void {
+  const root = record(payload, "Authorized strategy order");
+  const authorization = record(root.authorization, "Stored strategy order authorization");
+  if (root.version !== 1 || root.status !== "OWNER_AUTHORIZED" || typeof root.created !== "boolean"
+    || authorization.orderHashHex !== expected.orderHash || authorization.owner !== expected.owner
+    || authorization.scheme !== "EIP712_SECP256K1") {
+    throw new Error("Stored strategy order authorization changed the reviewed identity.");
+  }
+}
+
 function parseSelectedExecution(
   payload: unknown,
   expected: Readonly<{ orderHash: string; quoteHash: string; routeHash: string; sourceOrderHash: string }>,
@@ -396,6 +453,7 @@ export function GeneralizedStrategyPreparationPanel({
   templateId,
   lifecycleAction,
   sourceOrderHash = null,
+  signStrategyOrder,
   authorizeExecution,
 }: {
   privateApiBaseUrl: string | null;
@@ -403,6 +461,7 @@ export function GeneralizedStrategyPreparationPanel({
   templateId: string;
   lifecycleAction: string;
   sourceOrderHash?: string | null;
+  signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
   authorizeExecution?: (attempt: SelectedStrategyExecution) => Promise<void>;
 }) {
   const [orderHash, setOrderHash] = useState("");
@@ -412,6 +471,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteHash, setQuoteHash] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
+  const [authorizedOrderHash, setAuthorizedOrderHash] = useState<string | null>(null);
   const [selectionKey, setSelectionKey] = useState("");
   const [executionKey, setExecutionKey] = useState("");
   const [executionResult, setExecutionResult] = useState<StrategyExecutionResult | null>(null);
@@ -421,6 +481,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [prepareBusy, setPrepareBusy] = useState(false);
   const [selectionBusy, setSelectionBusy] = useState(false);
+  const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -468,6 +529,7 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteHash("");
       setReview(null);
       setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
@@ -499,6 +561,7 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteHash(parsed.quoteHash);
       setReview(null);
       setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
@@ -525,6 +588,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!response.ok) throw new Error(await failureMessage(response));
       setReview(parseReview(await response.json(), quoteHash));
       setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
@@ -535,8 +599,48 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function authorizeStrategyOrder() {
+    if (privateApiBaseUrl === null || review === null) return;
+    setAuthorizationBusy(true);
+    setError(null);
+    try {
+      if (signStrategyOrder === undefined) throw new Error("Connect the strategy owner wallet before authorization.");
+      const challengeResponse = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-orders/authorization`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderHash: review.orderHash }),
+      });
+      if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
+      const challenge = parseStrategyOrderAuthorization(await challengeResponse.json(), review.orderHash);
+      const signature = await signStrategyOrder(challenge);
+      const authorizationResponse = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-orders/authorize`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderHash: review.orderHash, signature }),
+      });
+      if (!authorizationResponse.ok) throw new Error(await failureMessage(authorizationResponse));
+      parseAuthorizedStrategyOrder(await authorizationResponse.json(), challenge);
+      setAuthorizedOrderHash(review.orderHash);
+      setExecutionAttempt(null);
+      setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy order authorization failed closed.");
+    } finally {
+      setAuthorizationBusy(false);
+    }
+  }
+
   async function selectExecution() {
-    if (privateApiBaseUrl === null || review === null || sourceOrderHash === null) return;
+    if (privateApiBaseUrl === null || review === null || sourceOrderHash === null
+      || authorizedOrderHash !== review.orderHash) return;
     setSelectionBusy(true);
     setError(null);
     const idempotencyKey = selectionKey || crypto.randomUUID();
@@ -602,7 +706,7 @@ export function GeneralizedStrategyPreparationPanel({
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
         <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-        <span>{review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
+        <span>{review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
         Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
@@ -632,6 +736,7 @@ export function GeneralizedStrategyPreparationPanel({
             setQuoteReview(null);
             setReview(null);
             setExecutionAttempt(null);
+            setAuthorizedOrderHash(null);
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
@@ -687,6 +792,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setQuoteHash(event.target.value);
                 setReview(null);
                 setExecutionAttempt(null);
+                setAuthorizedOrderHash(null);
                 setSelectionKey("");
                 setExecutionKey("");
                 setExecutionResult(null);
@@ -714,6 +820,7 @@ export function GeneralizedStrategyPreparationPanel({
             setQuoteHash(event.target.value.trim());
             setReview(null);
             setExecutionAttempt(null);
+            setAuthorizedOrderHash(null);
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
@@ -767,7 +874,15 @@ export function GeneralizedStrategyPreparationPanel({
           <button
             type="button"
             className={styles.primaryAction}
-            disabled={privateApiBaseUrl === null || selectionBusy || sourceOrderHash === null}
+            disabled={privateApiBaseUrl === null || authorizationBusy || authorizedOrderHash === review.orderHash}
+            onClick={() => void authorizeStrategyOrder()}
+          >
+            {authorizationBusy ? "Confirming strategy authorization" : authorizedOrderHash === review.orderHash ? "Strategy order authorized" : "Authorize exact strategy order"}
+          </button>
+          <button
+            type="button"
+            className={styles.primaryAction}
+            disabled={privateApiBaseUrl === null || selectionBusy || sourceOrderHash === null || authorizedOrderHash !== review.orderHash}
             onClick={() => void selectExecution()}
           >
             {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
@@ -796,7 +911,9 @@ export function GeneralizedStrategyPreparationPanel({
           <p className={styles.reviewNotice}>
             {executionResult
               ? "The testnet executor independently revalidated the selected package before submission."
-              : "This remains an unsigned review until the owner signs and the testnet executor independently revalidates it."}
+              : authorizedOrderHash === review.orderHash
+                ? "The owner authorized this exact strategy hash. Selection and testnet execution remain separate fail-closed steps."
+                : "This remains an unsigned review until the owner authorizes the exact strategy hash."}
           </p>
         </>
       ) : null}

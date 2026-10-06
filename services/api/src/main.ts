@@ -117,6 +117,7 @@ import {
   createHyperliquidGeneralizedOrderPort,
   loadHyperliquidGeneralizedOrderProfile,
 } from "./hyperliquid-generalized-order.js";
+import { createStrategyPackageAuthorizationPort } from "./strategy-package-authorization.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -792,6 +793,9 @@ try {
 } catch (error) {
   reportRuntimeFailure("hyperliquidGeneralizedOrder", error);
 }
+const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
+  ? undefined
+  : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
 
 const server = createPrivateTerminalServer(
   config,
@@ -831,6 +835,7 @@ const server = createPrivateTerminalServer(
   generalizedStrategyPreparation,
   hyperliquidGeneralizedOrder,
   publicMarket?.strategyPackageExecutions,
+  strategyPackageAuthorization,
 );
 
 const publicServer = publicMarket?.listener === undefined

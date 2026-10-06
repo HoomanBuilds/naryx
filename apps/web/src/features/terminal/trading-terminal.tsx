@@ -62,7 +62,10 @@ import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
 import { usePositions } from "./pages/use-positions";
 import { fetchStrategyProgram, type StrategyProgramTemplate } from "./strategy-program";
-import { GeneralizedStrategyPreparationPanel } from "./generalized-strategy-preparation";
+import {
+  GeneralizedStrategyPreparationPanel,
+  type StrategyOrderAuthorizationChallenge,
+} from "./generalized-strategy-preparation";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -1051,6 +1054,7 @@ function Ticket({
   privateApiBaseUrl,
   publicApiBaseUrl,
   authorizeStrategyExecution,
+  signStrategyOrder,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1095,6 +1099,7 @@ function Ticket({
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   authorizeStrategyExecution?: (attempt: Readonly<{ attemptId: string; sourceOrderHash: string }>) => Promise<void>;
+  signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1329,6 +1334,7 @@ function Ticket({
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
+          signStrategyOrder={signStrategyOrder}
           authorizeExecution={authorizeStrategyExecution}
         />
       ) : null}
@@ -3416,6 +3422,14 @@ export function TradingTerminal({
                 const authorization = await privateProvider.prepareHyperliquidAuthorization(attempt);
                 const signature = await evmWallet.signChainlessTypedData(authorization.typedData);
                 await privateProvider.authorizeHyperliquid(attempt, signature);
+              }}
+            signStrategyOrder={evmWallet.account === null
+              ? undefined
+              : async (challenge) => {
+                if (evmWallet.account?.toLowerCase() !== challenge.owner) {
+                  throw new Error("Connect the EVM wallet that owns this strategy order.");
+                }
+                return evmWallet.signChainlessTypedData(challenge.typedData);
               }}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}

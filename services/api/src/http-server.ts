@@ -104,6 +104,10 @@ import {
   type SelectHyperliquidStrategyExecutionRequest,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
+import {
+  StrategyPackageAuthorizationError,
+  type StrategyPackageAuthorizationPort,
+} from "./strategy-package-authorization.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -279,6 +283,7 @@ export function createPrivateTerminalRequestHandler(
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
   generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
+  strategyPackageAuthorization?: StrategyPackageAuthorizationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -564,6 +569,7 @@ export function createPrivateTerminalRequestHandler(
         solanaLocalExecutionAvailable: solanaLocalExecution !== undefined,
         generalizedStrategyPreparationAvailable: generalizedStrategyPreparation !== undefined,
         hyperliquidGeneralizedOrderAvailable: hyperliquidGeneralizedOrder !== undefined,
+        strategyPackageAuthorizationAvailable: strategyPackageAuthorization !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
@@ -641,6 +647,51 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "STRATEGY_ORDER_STAGING_FAILED", "Strategy order staging failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/strategy-orders/authorization"
+      || url.pathname === "/internal/terminal/strategy-orders/authorize") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (strategyPackageAuthorization === undefined) {
+        reject(response, 503, "STRATEGY_AUTHORIZATION_UNAVAILABLE", "Strategy package authorization is unavailable.");
+        return;
+      }
+      try {
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)) {
+          reject(response, 400, "INVALID_REQUEST", "Request body must be an object.");
+          return;
+        }
+        const values = body as { orderHash?: unknown; signature?: unknown };
+        if (url.pathname.endsWith("/authorization")) {
+          if (Object.keys(body).join(",") !== "orderHash" || typeof values.orderHash !== "string") {
+            reject(response, 400, "INVALID_REQUEST", "Request must contain only orderHash.");
+            return;
+          }
+          sendJson(response, 200, strategyPackageAuthorization.prepare(values.orderHash));
+          return;
+        }
+        if (Object.keys(body).sort().join(",") !== "orderHash,signature"
+          || typeof values.orderHash !== "string" || typeof values.signature !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request must contain only orderHash and signature.");
+          return;
+        }
+        sendJson(response, 200, await strategyPackageAuthorization.authorize(values.orderHash, values.signature));
+      } catch (error) {
+        if (error instanceof StrategyPackageAuthorizationError) {
+          const status = error.code === "ORDER_NOT_FOUND" ? 404
+            : error.code === "ORDER_EXPIRED" || error.code === "UNSUPPORTED_ENVIRONMENT" ? 409
+              : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "STRATEGY_AUTHORIZATION_FAILED", "Strategy package authorization failed closed.");
       }
       return;
     }
@@ -1481,6 +1532,7 @@ export function createPrivateTerminalServer(
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
   generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
+  strategyPackageAuthorization?: StrategyPackageAuthorizationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1506,6 +1558,7 @@ export function createPrivateTerminalServer(
     generalizedStrategyPreparation,
     hyperliquidGeneralizedOrder,
     generalizedStrategyExecutions,
+    strategyPackageAuthorization,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

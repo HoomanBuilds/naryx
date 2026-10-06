@@ -551,6 +551,30 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
       sourceOrderHashHex: created.record.orderHashHex,
       recordedAtMs: market.now,
     });
+    assert.equal(strategyStore.ownerAuthorization(staged.intake.orderHashHex), undefined);
+    const packageSignature = `0x${"01".repeat(65)}`;
+    const authorization = strategyStore.recordOwnerAuthorization(
+      staged.intake.orderHashHex,
+      ACCOUNT,
+      packageSignature,
+    );
+    assert.equal(authorization.created, true);
+    assert.deepEqual(strategyStore.ownerAuthorization(staged.intake.orderHashHex), {
+      orderHashHex: staged.intake.orderHashHex,
+      owner: ACCOUNT,
+      scheme: "EIP712_SECP256K1",
+      signature: packageSignature,
+      authorizedAtMs: market.now,
+    });
+    assert.equal(strategyStore.recordOwnerAuthorization(
+      staged.intake.orderHashHex,
+      ACCOUNT,
+      packageSignature,
+    ).created, false);
+    assert.throws(
+      () => strategyStore.recordOwnerAuthorization(staged.intake.orderHashHex, ACCOUNT, `0x${"02".repeat(65)}`),
+      { code: "AUTHORIZATION_CONFLICT" },
+    );
     assert.equal(port.stage(created.record.orderHashHex).intake.created, false);
     assert.throws(
       () => strategyStore.bindSourceOrder(staged.intake.orderHashHex, "ff".repeat(32)),

@@ -6,9 +6,17 @@ export {
   type StoredStrategyPackageOrder,
   type StoredStrategyPackageQuote,
   type StoredStrategyPackageReceipt,
+  type StoredStrategyPackageAuthorization,
   type SelectHyperliquidStrategyExecutionRequest,
   type SelectedStrategyPackageAttempt,
 } from "./strategy-package-store.js";
+export {
+  createStrategyPackageAuthorizationPort,
+  strategyPackageAuthorizationTypedData,
+  StrategyPackageAuthorizationError,
+  type StrategyPackageAuthorizationChallenge,
+  type StrategyPackageAuthorizationPort,
+} from "./strategy-package-authorization.js";
 export {
   HttpStrategyPreparationClient,
   StrategyPreparationClientError,

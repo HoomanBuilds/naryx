@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS strategy_package_sources (
   source_order_hash BLOB NOT NULL UNIQUE,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_package_authorizations (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  owner_id TEXT NOT NULL,
+  scheme TEXT NOT NULL CHECK (scheme = 'EIP712_SECP256K1'),
+  signature TEXT NOT NULL,
+  authorized_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_execution_attempts (
   attempt_id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,
@@ -79,6 +86,8 @@ CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE 
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_delete BEFORE DELETE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_source_change BEFORE UPDATE ON strategy_package_sources BEGIN SELECT RAISE(ABORT, 'strategy package sources are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_source_delete BEFORE DELETE ON strategy_package_sources BEGIN SELECT RAISE(ABORT, 'strategy package sources are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_authorization_change BEFORE UPDATE ON strategy_package_authorizations BEGIN SELECT RAISE(ABORT, 'strategy package authorizations are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_authorization_delete BEFORE DELETE ON strategy_package_authorizations BEGIN SELECT RAISE(ABORT, 'strategy package authorizations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_attempt_change BEFORE UPDATE ON strategy_execution_attempts BEGIN SELECT RAISE(ABORT, 'strategy execution attempts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_attempt_delete BEFORE DELETE ON strategy_execution_attempts BEGIN SELECT RAISE(ABORT, 'strategy execution attempts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_receipt_change BEFORE UPDATE ON strategy_package_receipts BEGIN SELECT RAISE(ABORT, 'strategy package receipts are immutable'); END;
@@ -133,6 +142,14 @@ export interface StrategyPackageSourceBinding {
   readonly orderHashHex: string;
   readonly sourceOrderHashHex: string;
   readonly recordedAtMs: number;
+}
+
+export interface StoredStrategyPackageAuthorization {
+  readonly orderHashHex: string;
+  readonly owner: string;
+  readonly scheme: "EIP712_SECP256K1";
+  readonly signature: string;
+  readonly authorizedAtMs: number;
 }
 
 export interface SelectedStrategyPackageAttempt {
@@ -330,6 +347,69 @@ export class SqliteStrategyPackageStore {
     });
   }
 
+  recordOwnerAuthorization(
+    orderHashHex: string,
+    owner: string,
+    signature: string,
+  ): { readonly created: boolean; readonly authorization: StoredStrategyPackageAuthorization } {
+    const orderHash = hashBuffer(orderHashHex);
+    requireCondition(/^0x(?!0{40}$)[0-9a-f]{40}$/.test(owner), "INVALID_OWNER", "The strategy package owner must be a lowercase nonzero EVM address.");
+    requireCondition(/^0x[0-9a-f]{130}$/.test(signature), "INVALID_SIGNATURE", "The strategy package authorization signature is invalid.");
+    const orderRow = this.db.prepare("SELECT owner_id FROM strategy_package_orders WHERE order_hash = ?")
+      .get(orderHash) as { owner_id: string } | undefined;
+    requireCondition(orderRow !== undefined, "ORDER_NOT_FOUND", "The strategy package order is not stored.");
+    requireCondition(orderRow.owner_id === owner, "OWNER_MISMATCH", "The authorization owner differs from the strategy package owner.");
+    return this.db.transaction(() => {
+      const known = this.db.prepare("SELECT owner_id, scheme, signature, authorized_at_ms FROM strategy_package_authorizations WHERE order_hash = ?")
+        .get(orderHash) as { owner_id: string; scheme: string; signature: string; authorized_at_ms: number } | undefined;
+      if (known !== undefined) {
+        requireCondition(known.owner_id === owner && known.scheme === "EIP712_SECP256K1" && known.signature === signature,
+          "AUTHORIZATION_CONFLICT", "The strategy package order already has another authorization record.");
+        return Object.freeze({ created: false, authorization: this.ownerAuthorization(orderHashHex)! });
+      }
+      const authorizedAtMs = this.clock();
+      requireCondition(Number.isSafeInteger(authorizedAtMs) && authorizedAtMs >= 0, "INVALID_CLOCK", "The authorization clock is invalid.");
+      this.db.prepare("INSERT INTO strategy_package_authorizations (order_hash, owner_id, scheme, signature, authorized_at_ms) VALUES (?, ?, 'EIP712_SECP256K1', ?, ?)")
+        .run(orderHash, owner, signature, authorizedAtMs);
+      return Object.freeze({
+        created: true,
+        authorization: Object.freeze({
+          orderHashHex,
+          owner,
+          scheme: "EIP712_SECP256K1" as const,
+          signature,
+          authorizedAtMs,
+        }),
+      });
+    }).immediate();
+  }
+
+  ownerAuthorization(orderHashHex: string): StoredStrategyPackageAuthorization | undefined {
+    const orderHash = hashBuffer(orderHashHex);
+    const row = this.db.prepare(`
+      SELECT a.owner_id, a.scheme, a.signature, a.authorized_at_ms, o.owner_id AS order_owner
+      FROM strategy_package_authorizations a
+      JOIN strategy_package_orders o ON o.order_hash = a.order_hash
+      WHERE a.order_hash = ?
+    `).get(orderHash) as {
+      owner_id: string;
+      scheme: string;
+      signature: string;
+      authorized_at_ms: number;
+      order_owner: string;
+    } | undefined;
+    if (row === undefined) return undefined;
+    requireCondition(row.owner_id === row.order_owner && row.scheme === "EIP712_SECP256K1"
+      && /^0x[0-9a-f]{130}$/.test(row.signature), "CORRUPT_ROW", "The stored strategy package authorization is invalid.");
+    return Object.freeze({
+      orderHashHex,
+      owner: row.owner_id,
+      scheme: "EIP712_SECP256K1",
+      signature: row.signature,
+      authorizedAtMs: row.authorized_at_ms,
+    });
+  }
+
   selectHyperliquidExecution(request: SelectHyperliquidStrategyExecutionRequest): SelectedStrategyPackageAttempt {
     const { quoteHashHex, orderHashHex, routeHashHex, sourceOrderHashHex, idempotencyKey } = request;
     requireCondition(/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(idempotencyKey), "INVALID_IDEMPOTENCY_KEY", "The execution idempotency key is invalid.");
@@ -338,6 +418,8 @@ export class SqliteStrategyPackageStore {
     hashBuffer(sourceOrderHashHex);
     const admission = this.admissionByQuote(quoteHashHex);
     requireCondition(admission !== undefined, "QUOTE_NOT_FOUND", "The strategy package quote is not stored.");
+    requireCondition(this.ownerAuthorization(admission.orderHashHex) !== undefined,
+      "OWNER_AUTHORIZATION_REQUIRED", "The strategy package owner must authorize the exact generalized order before selection.");
     requireCondition(admission.order.environment === "testnet"
       && admission.order.lifecycleAction === "ENTRY"
       && admission.order.settlementClass === "BATCHED_IOC_WITH_RECOVERY"
