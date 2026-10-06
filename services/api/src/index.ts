@@ -18,6 +18,17 @@ export {
   type StrategyPackageAuthorizationPort,
 } from "./strategy-package-authorization.js";
 export {
+  createHyperliquidNativeStrategyOrderPort,
+  loadHyperliquidNativeStrategyProfiles,
+  HyperliquidNativeStrategyOrderError,
+  type CreatedHyperliquidNativeStrategyOrder,
+  type HyperliquidNativeStrategyBounds,
+  type HyperliquidNativeStrategyMarketProfile,
+  type HyperliquidNativeStrategyOrderPort,
+  type HyperliquidNativeStrategyOrderRequest,
+  type HyperliquidNativeStrategyProfile,
+} from "./hyperliquid-native-strategy-order.js";
+export {
   buildHyperliquidStrategyPackageReceipt,
   HyperliquidStrategyReceiptError,
 } from "./hyperliquid-strategy-receipt.js";

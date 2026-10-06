@@ -118,6 +118,11 @@ import {
   loadHyperliquidGeneralizedOrderProfile,
 } from "./hyperliquid-generalized-order.js";
 import { createStrategyPackageAuthorizationPort } from "./strategy-package-authorization.js";
+import {
+  createHyperliquidNativeStrategyOrderPort,
+  loadHyperliquidNativeStrategyProfiles,
+  type HyperliquidNativeStrategyProfile,
+} from "./hyperliquid-native-strategy-order.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -771,6 +776,24 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
   if (runtime.health.hyperliquidTestnet.available && runtime.hyperliquidTestnet !== undefined && hyperliquidOrderRuntime !== undefined) {
     addCashCarry("hyperliquid-testnet-cash-carry", "hyperliquid", "BATCHED_IOC_WITH_RECOVERY");
   }
+  if (runtime.health.hyperliquidTestnet.available && generalizedStrategyPreparation !== undefined) {
+    const templates = new Set(hyperliquidNativeStrategyProfiles.map((profile) => profile.templateId));
+    for (const templateId of templates) {
+      const maximumLegs = templateId === "perpetual-funding-spread-v1" ? 2 : 1;
+      capabilities.push(Object.freeze({
+        laneId: `hyperliquid-testnet-${templateId}`,
+        templateId,
+        templateVersion: 1,
+        actions: Object.freeze(["ENTRY", "EXIT"] as const),
+        legs: Object.freeze([
+          Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
+          Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
+        ]),
+        settlementClasses: Object.freeze(["BATCHED_IOC_WITH_RECOVERY"] as const),
+        domains: Object.freeze(["hyperliquid"]),
+      }));
+    }
+  }
   return Object.freeze(capabilities);
 }
 
@@ -793,6 +816,26 @@ try {
   }
 } catch (error) {
   reportRuntimeFailure("hyperliquidGeneralizedOrder", error);
+}
+let hyperliquidNativeStrategyProfiles: readonly HyperliquidNativeStrategyProfile[] = [];
+let hyperliquidNativeStrategyOrders: ReturnType<typeof createHyperliquidNativeStrategyOrderPort> | undefined;
+const hyperliquidNativeStrategyProfilePath = process.env.NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES;
+if (hyperliquidNativeStrategyProfilePath !== undefined && hyperliquidNativeStrategyProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("Hyperliquid native strategy order creation requires the public strategy market.");
+    }
+    hyperliquidNativeStrategyProfiles = loadHyperliquidNativeStrategyProfiles(
+      absolutePath(hyperliquidNativeStrategyProfilePath, "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES"),
+    );
+    hyperliquidNativeStrategyOrders = createHyperliquidNativeStrategyOrderPort({
+      profiles: hyperliquidNativeStrategyProfiles,
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    hyperliquidNativeStrategyProfiles = [];
+    reportRuntimeFailure("hyperliquidNativeStrategyOrders", error);
+  }
 }
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
@@ -846,6 +889,7 @@ const server = createPrivateTerminalServer(
     baseAsset: hyperliquidConfig.orderContext.baseAsset,
     quoteAsset: hyperliquidConfig.orderContext.quoteAsset,
   },
+  hyperliquidNativeStrategyOrders,
 );
 
 const publicServer = publicMarket?.listener === undefined
