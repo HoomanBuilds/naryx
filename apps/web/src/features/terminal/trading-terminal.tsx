@@ -1087,7 +1087,11 @@ function Ticket({
   selectedLifecycleAction,
   privateApiBaseUrl,
   publicApiBaseUrl,
+  connectedEvmAccount,
   signStrategyOrder,
+  signEvmStrategyExecution,
+  sendEvmStrategyTransaction,
+  waitForEvmStrategyReceipt,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1131,7 +1135,11 @@ function Ticket({
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  connectedEvmAccount: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
+  signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
+  sendEvmStrategyTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
+  waitForEvmStrategyReceipt?: (chainId: number, hash: string) => Promise<boolean>;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1366,8 +1374,11 @@ function Ticket({
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
-          strategyOwner={selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner ?? null : null}
+          strategyOwner={selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner ?? null : connectedEvmAccount}
           signStrategyOrder={signStrategyOrder}
+          signEvmStrategyExecution={signEvmStrategyExecution}
+          sendEvmTransaction={sendEvmStrategyTransaction}
+          waitForEvmReceipt={waitForEvmStrategyReceipt}
         />
       ) : null}
 
@@ -3442,6 +3453,7 @@ export function TradingTerminal({
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
+            connectedEvmAccount={evmWallet.account}
             signStrategyOrder={evmWallet.account === null
               ? undefined
               : async (challenge) => {
@@ -3450,6 +3462,34 @@ export function TradingTerminal({
                 }
                 return evmWallet.signChainlessTypedData(challenge.typedData);
               }}
+            signEvmStrategyExecution={evmWallet.account === null
+              ? undefined
+              : async (chainId, typedData) => {
+                const domain: EvmDomain = chainId === EVM_CHAINS.base.id
+                  ? "base"
+                  : chainId === EVM_CHAINS.arbitrum.id
+                    ? "arbitrum"
+                    : (() => { throw new Error("The reviewed strategy uses an unsupported testnet."); })();
+                return evmWallet.signTypedData(domain, typedData);
+              }}
+            sendEvmStrategyTransaction={evmWallet.account === null
+              ? undefined
+              : async (chainId, transaction) => {
+                const domain: EvmDomain = chainId === EVM_CHAINS.base.id
+                  ? "base"
+                  : chainId === EVM_CHAINS.arbitrum.id
+                    ? "arbitrum"
+                    : (() => { throw new Error("The prepared transaction uses an unsupported testnet."); })();
+                return evmWallet.sendTransaction(domain, transaction);
+              }}
+            waitForEvmStrategyReceipt={async (chainId, hash) => {
+              const domain: EvmDomain = chainId === EVM_CHAINS.base.id
+                ? "base"
+                : chainId === EVM_CHAINS.arbitrum.id
+                  ? "arbitrum"
+                  : (() => { throw new Error("The submitted transaction uses an unsupported testnet."); })();
+              return evmWallet.waitForReceipt(domain, hash);
+            }}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}

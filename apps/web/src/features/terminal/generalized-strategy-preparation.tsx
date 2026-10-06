@@ -6,6 +6,8 @@ import styles from "./trading-terminal.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
 const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
+const EVM_ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/i;
+const EVM_HASH = /^0x[0-9a-f]{64}$/;
 const STRATEGY_AUTHORIZATION_FIELDS = [
   ["orderHash", "bytes32"],
   ["owner", "address"],
@@ -39,6 +41,11 @@ type DomainReview = Readonly<{
   localGuarantee: string;
   summary: string;
   expiry: string | null;
+  evmAuthorization: Readonly<{
+    chainId: number;
+    account: string;
+    ownerTypedData: unknown;
+  }> | null;
 }>;
 
 type StrategyPreparationReview = Readonly<{
@@ -150,6 +157,47 @@ type CreatedNativeStrategyOrder = Readonly<{
   profileId: string;
   orderHash: string;
   graphHash: string;
+}>;
+
+type EvmOptionProfile = Readonly<{
+  profileId: string;
+  displayName: string;
+  chainId: number;
+  domainId: string;
+  accountFactory: string;
+  baseAsset: Readonly<{ assetId: string; decimals: number }>;
+  quoteAsset: Readonly<{ assetId: string; decimals: number }>;
+  markets: readonly Readonly<{ role: "option-long" | "option-short"; strike: string; maturity: string }>[];
+  bounds: Readonly<{
+    minimumQuantityAtoms: string;
+    maximumQuantityAtoms: string;
+    maximumExpiryTtlSeconds: string;
+  }>;
+}>;
+
+type EvmProvisioningTransaction = Readonly<{
+  kind: "CREATE_STRATEGY_ACCOUNT" | "CREATE_PACKAGE_ADAPTER";
+  to: string;
+  data: string;
+  value: "0";
+  expectedAddress: string;
+}>;
+
+type EvmProvisioningPlan = Readonly<{
+  chainId: number;
+  owner: string;
+  strategyAccount: string;
+  ready: boolean;
+  transactions: readonly EvmProvisioningTransaction[];
+}>;
+
+type AuthorizedEvmExecution = Readonly<{
+  chainId: number;
+  to: string;
+  data: string;
+  value: "0";
+  quoteHash: string;
+  expectedNextStateHash: string;
 }>;
 
 type SelectedStrategyExecution = Readonly<{
@@ -290,6 +338,9 @@ function parseReview(payload: unknown, requestedQuoteHash: string): StrategyPrep
   if (prepared.version !== 1) throw new Error("Prepared strategy version is unsupported.");
   const quoteHash = hash(prepared.quoteHash, "Quote hash");
   if (quoteHash !== requestedQuoteHash) throw new Error("Prepared strategy does not bind the requested quote.");
+  const orderHash = hash(prepared.orderHash, "Order hash");
+  const graphHash = hash(prepared.graphHash, "Graph hash");
+  const routeHash = hash(prepared.routeHash, "Route hash");
   const identity = record(prepared.identity, "Strategy identity");
   const domains = list(prepared.domains, "Prepared domains").map((candidate, index): DomainReview => {
     const domainExecution = record(candidate, `Prepared domain ${index}`);
@@ -297,6 +348,23 @@ function parseReview(payload: unknown, requestedQuoteHash: string): StrategyPrep
     if (!DOMAIN_KINDS.has(kind)) throw new Error(`Prepared domain ${index} kind is unsupported.`);
     const domain = record(domainExecution.domain, `Prepared domain ${index} identity`);
     const details = domainSummary(kind, domainExecution);
+    let evmAuthorization: DomainReview["evmAuthorization"] = null;
+    if (kind === "EVM_MULTI_STRATEGY_ACCOUNT") {
+      const envelope = record(domainExecution.envelope, `Prepared domain ${index} EVM envelope`);
+      const execution = record(envelope.execution, `Prepared domain ${index} EVM execution`);
+      const ownerTypedData = record(envelope.ownerTypedData, `Prepared domain ${index} EVM owner typed data`);
+      const typedDomain = record(ownerTypedData.domain, `Prepared domain ${index} EVM typed domain`);
+      const account = text(envelope.account, `Prepared domain ${index} EVM account`);
+      const chainId = integer(typedDomain.chainId, `Prepared domain ${index} EVM chain id`);
+      if (!EVM_ADDRESS.test(account) || typedDomain.name !== "Naryx Multi Strategy Account" || typedDomain.version !== "1"
+        || String(typedDomain.verifyingContract).toLowerCase() !== account.toLowerCase()
+        || ownerTypedData.primaryType !== "OwnerExecution"
+        || execution.orderHash !== `0x${orderHash}` || execution.quoteHash !== `0x${quoteHash}`
+        || execution.routeHash !== `0x${routeHash}`) {
+        throw new Error(`Prepared domain ${index} EVM authorization does not bind the reviewed package.`);
+      }
+      evmAuthorization = Object.freeze({ chainId, account, ownerTypedData });
+    }
     return Object.freeze({
       kind,
       domainId: text(domain.domainId, `Prepared domain ${index} id`),
@@ -306,14 +374,15 @@ function parseReview(payload: unknown, requestedQuoteHash: string): StrategyPrep
       localGuarantee: text(domainExecution.localGuarantee, `Prepared domain ${index} guarantee`),
       summary: details.summary,
       expiry: details.expiry,
+      evmAuthorization,
     });
   });
   if (domains.length === 0) throw new Error("Prepared strategy has no execution domains.");
   return Object.freeze({
     quoteHash,
-    orderHash: hash(prepared.orderHash, "Order hash"),
-    graphHash: hash(prepared.graphHash, "Graph hash"),
-    routeHash: hash(prepared.routeHash, "Route hash"),
+    orderHash,
+    graphHash,
+    routeHash,
     crossDomainPlanHash: prepared.crossDomainPlanHash === undefined ? null : hash(prepared.crossDomainPlanHash, "Cross-domain plan hash"),
     packageId: hash(identity.packageId, "Package id"),
     templateId: text(identity.templateId, "Template id"),
@@ -554,6 +623,115 @@ function atomsToInput(atoms: string, decimals: number): string {
   const whole = decimals === 0 ? padded : padded.slice(0, -decimals);
   const fraction = decimals === 0 ? "" : padded.slice(-decimals).replace(/0+$/, "");
   return `${negative ? "-" : ""}${whole}${fraction === "" ? "" : `.${fraction}`}`;
+}
+
+function parseEvmOptionProfiles(payload: unknown): readonly EvmOptionProfile[] {
+  const root = record(payload, "EVM option profiles");
+  if (root.version !== 1) throw new Error("EVM option profile version is unsupported.");
+  return list(root.profiles, "EVM option profiles").map((candidate, index): EvmOptionProfile => {
+    const profile = record(candidate, `EVM option profile ${index}`);
+    const baseAsset = record(profile.baseAsset, `EVM option profile ${index} base asset`);
+    const quoteAsset = record(profile.quoteAsset, `EVM option profile ${index} quote asset`);
+    const bounds = record(profile.bounds, `EVM option profile ${index} bounds`);
+    const markets = list(profile.markets, `EVM option profile ${index} markets`).map((candidateMarket, marketIndex) => {
+      const market = record(candidateMarket, `EVM option profile ${index} market ${marketIndex}`);
+      if (market.role !== "option-long" && market.role !== "option-short") {
+        throw new Error(`EVM option profile ${index} market ${marketIndex} role is invalid.`);
+      }
+      return Object.freeze({
+        role: market.role,
+        strike: decimalInteger(market.strike, `EVM option profile ${index} market ${marketIndex} strike`),
+        maturity: decimalInteger(market.maturity, `EVM option profile ${index} market ${marketIndex} maturity`),
+      });
+    });
+    const accountFactory = text(profile.accountFactory, `EVM option profile ${index} account factory`);
+    if (!EVM_ADDRESS.test(accountFactory) || markets.length !== 2) throw new Error(`EVM option profile ${index} is invalid.`);
+    return Object.freeze({
+      profileId: text(profile.profileId, `EVM option profile ${index} id`),
+      displayName: text(profile.displayName, `EVM option profile ${index} display name`),
+      chainId: integer(profile.chainId, `EVM option profile ${index} chain id`),
+      domainId: text(profile.domainId, `EVM option profile ${index} domain`),
+      accountFactory,
+      baseAsset: Object.freeze({
+        assetId: text(baseAsset.assetId, `EVM option profile ${index} base asset id`),
+        decimals: unsignedInteger(baseAsset.decimals, `EVM option profile ${index} base decimals`),
+      }),
+      quoteAsset: Object.freeze({
+        assetId: text(quoteAsset.assetId, `EVM option profile ${index} quote asset id`),
+        decimals: unsignedInteger(quoteAsset.decimals, `EVM option profile ${index} quote decimals`),
+      }),
+      markets: Object.freeze(markets),
+      bounds: Object.freeze({
+        minimumQuantityAtoms: decimalInteger(bounds.minimumQuantityAtoms, `EVM option profile ${index} minimum quantity`),
+        maximumQuantityAtoms: decimalInteger(bounds.maximumQuantityAtoms, `EVM option profile ${index} maximum quantity`),
+        maximumExpiryTtlSeconds: decimalInteger(bounds.maximumExpiryTtlSeconds, `EVM option profile ${index} expiry TTL`),
+      }),
+    });
+  });
+}
+
+function parseCreatedEvmOptionOrder(payload: unknown, profileId: string): Readonly<{ orderHash: string; graphHash: string }> {
+  const root = record(payload, "EVM option order creation");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
+    || root.templateId !== "option-spread-v1" || root.lifecycleAction !== "ENTRY") {
+    throw new Error("EVM option order creation changed the requested package.");
+  }
+  return Object.freeze({
+    orderHash: hash(root.orderHash, "EVM option order hash"),
+    graphHash: hash(root.graphHash, "EVM option graph hash"),
+  });
+}
+
+function parseEvmProvisioning(payload: unknown, expectedChainId: number, expectedOwner: string): EvmProvisioningPlan {
+  const root = record(decode(payload as Json), "EVM provisioning response");
+  const provisioning = record(root.provisioning, "EVM provisioning plan");
+  if (root.status !== "READY" && root.status !== "WALLET_TRANSACTIONS_REQUIRED") {
+    throw new Error("EVM provisioning status is invalid.");
+  }
+  const chainId = integer(provisioning.chainId, "EVM provisioning chain id");
+  const owner = text(provisioning.owner, "EVM provisioning owner");
+  const strategyAccount = text(provisioning.strategyAccount, "EVM strategy account");
+  if (chainId !== expectedChainId || owner.toLowerCase() !== expectedOwner.toLowerCase()
+    || !EVM_ADDRESS.test(strategyAccount) || typeof provisioning.ready !== "boolean") {
+    throw new Error("EVM provisioning plan changed the selected account.");
+  }
+  const transactions = list(provisioning.transactions, "EVM provisioning transactions").map((candidate, index) => {
+    const transaction = record(candidate, `EVM provisioning transaction ${index}`);
+    if ((transaction.kind !== "CREATE_STRATEGY_ACCOUNT" && transaction.kind !== "CREATE_PACKAGE_ADAPTER")
+      || !EVM_ADDRESS.test(String(transaction.to)) || !EVM_ADDRESS.test(String(transaction.expectedAddress))
+      || typeof transaction.data !== "string" || !/^0x(?:[0-9a-f]{2})+$/i.test(transaction.data)
+      || decimalInteger(transaction.value, `EVM provisioning transaction ${index} value`) !== "0") {
+      throw new Error(`EVM provisioning transaction ${index} is invalid.`);
+    }
+    return Object.freeze({
+      kind: transaction.kind,
+      to: String(transaction.to),
+      data: transaction.data,
+      value: "0" as const,
+      expectedAddress: String(transaction.expectedAddress),
+    });
+  });
+  if (provisioning.ready !== (transactions.length === 0)) throw new Error("EVM provisioning readiness is inconsistent.");
+  return Object.freeze({ chainId, owner, strategyAccount, ready: provisioning.ready, transactions: Object.freeze(transactions) });
+}
+
+function parseAuthorizedEvmExecution(payload: unknown, review: StrategyPreparationReview): AuthorizedEvmExecution {
+  const root = record(decode(payload as Json), "EVM strategy authorization");
+  if (root.status !== "READY_FOR_WALLET_SUBMISSION") throw new Error("EVM strategy authorization is not ready.");
+  const authorization = record(root.authorization, "EVM strategy authorization");
+  const chainId = integer(authorization.chainId, "EVM authorization chain id");
+  const to = text(authorization.to, "EVM authorization target");
+  const data = text(authorization.data, "EVM authorization calldata");
+  const quoteHash = text(authorization.quoteHash, "EVM authorization quote hash");
+  const expectedNextStateHash = text(authorization.expectedNextStateHash, "EVM authorization next state");
+  const evm = review.domains[0]?.evmAuthorization;
+  if (evm === null || evm === undefined || chainId !== evm.chainId || to.toLowerCase() !== evm.account.toLowerCase()
+    || quoteHash !== `0x${review.quoteHash}` || !EVM_HASH.test(expectedNextStateHash)
+    || decimalInteger(authorization.value, "EVM authorization value") !== "0"
+    || !/^0x(?:[0-9a-f]{2})+$/i.test(data)) {
+    throw new Error("EVM strategy authorization changed the reviewed execution.");
+  }
+  return Object.freeze({ chainId, to, data, value: "0", quoteHash, expectedNextStateHash });
 }
 
 function nativePositionQuantityAtoms(position: NativeStrategyPositionReview): bigint {
@@ -819,6 +997,9 @@ export function GeneralizedStrategyPreparationPanel({
   sourceOrderHash = null,
   strategyOwner = null,
   signStrategyOrder,
+  signEvmStrategyExecution,
+  sendEvmTransaction,
+  waitForEvmReceipt,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
@@ -827,6 +1008,9 @@ export function GeneralizedStrategyPreparationPanel({
   sourceOrderHash?: string | null;
   strategyOwner?: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
+  signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
+  sendEvmTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
+  waitForEvmReceipt?: (chainId: number, hash: string) => Promise<boolean>;
 }) {
   const [orderHash, setOrderHash] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
@@ -853,6 +1037,17 @@ export function GeneralizedStrategyPreparationPanel({
   const [nativeEconomicQuantity, setNativeEconomicQuantity] = useState("");
   const [nativeLimitPrices, setNativeLimitPrices] = useState<Record<string, string>>({});
   const [createdNativeOrder, setCreatedNativeOrder] = useState<CreatedNativeStrategyOrder | null>(null);
+  const [evmOptionProfiles, setEvmOptionProfiles] = useState<readonly EvmOptionProfile[] | null>(null);
+  const [selectedEvmOptionProfileId, setSelectedEvmOptionProfileId] = useState("");
+  const [evmOptionQuantity, setEvmOptionQuantity] = useState("");
+  const [evmLongPremium, setEvmLongPremium] = useState("");
+  const [evmShortPremium, setEvmShortPremium] = useState("");
+  const [evmProvisioning, setEvmProvisioning] = useState<EvmProvisioningPlan | null>(null);
+  const [evmCreateBusy, setEvmCreateBusy] = useState(false);
+  const [evmProvisionBusy, setEvmProvisionBusy] = useState(false);
+  const [evmExecutionBusy, setEvmExecutionBusy] = useState(false);
+  const [evmExecutionHash, setEvmExecutionHash] = useState<string | null>(null);
+  const [evmExecutionConfirmed, setEvmExecutionConfirmed] = useState(false);
   const [nativeCreateBusy, setNativeCreateBusy] = useState(false);
   const [stageBusy, setStageBusy] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
@@ -861,6 +1056,29 @@ export function GeneralizedStrategyPreparationPanel({
   const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (privateApiBaseUrl === null || sourceOrderHash !== null || templateId !== "option-spread-v1") return;
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/evm-option-spread-profiles`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseEvmOptionProfiles(await response.json());
+    }).then((profiles) => {
+      setEvmOptionProfiles(profiles);
+      setSelectedEvmOptionProfileId((current) => current || profiles[0]?.profileId || "");
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setEvmOptionProfiles([]);
+      setError(cause instanceof Error ? cause.message : "EVM option markets are unavailable.");
+    });
+    return () => controller.abort();
+  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
 
   useEffect(() => {
     if (publicApiBaseUrl === null) return;
@@ -937,6 +1155,9 @@ export function GeneralizedStrategyPreparationPanel({
   }, [privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
 
   const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
+  const selectedEvmOptionProfile = (evmOptionProfiles ?? []).find((profile) => profile.profileId === selectedEvmOptionProfileId)
+    ?? evmOptionProfiles?.[0]
+    ?? null;
   const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
@@ -955,6 +1176,125 @@ export function GeneralizedStrategyPreparationPanel({
   const nativeLifecycleSupported = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
     || lifecycleAction === "DECREASE" || lifecycleAction === "EXIT"
     || lifecycleAction === "EMERGENCY_UNWIND";
+
+  async function createEvmOptionOrder() {
+    if (privateApiBaseUrl === null || selectedEvmOptionProfile === null) return;
+    setEvmCreateBusy(true);
+    setError(null);
+    try {
+      if (lifecycleAction !== "ENTRY") throw new Error("Create an option entry before managing its lifecycle.");
+      if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
+        throw new Error("Connect the EVM wallet that will own this option package.");
+      }
+      const quantityAtoms = amountToAtoms(evmOptionQuantity, selectedEvmOptionProfile.baseAsset.decimals, "Option quantity");
+      const longPremiumAtoms = amountToAtoms(evmLongPremium, selectedEvmOptionProfile.quoteAsset.decimals, "Maximum long premium");
+      const shortPremiumAtoms = amountToAtoms(evmShortPremium, selectedEvmOptionProfile.quoteAsset.decimals, "Minimum short premium");
+      const maximumTtl = BigInt(selectedEvmOptionProfile.bounds.maximumExpiryTtlSeconds);
+      const ttl = maximumTtl < BigInt(600) ? maximumTtl : BigInt(600);
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/evm-option-spread-orders/create`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: selectedEvmOptionProfile.profileId,
+          owner: strategyOwner.toLowerCase(),
+          lifecycleAction: "ENTRY",
+          quantityAtoms: quantityAtoms.toString(),
+          limitPremiums: [
+            { legId: "option-long", quoteAtoms: longPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
+            { legId: "option-short", quoteAtoms: shortPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
+          ],
+          expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
+          nonce: BigInt(Date.now()).toString(),
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = parseCreatedEvmOptionOrder(await response.json(), selectedEvmOptionProfile.profileId);
+      setOrderHash(created.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+      setEvmProvisioning(null);
+      setEvmExecutionHash(null);
+      setEvmExecutionConfirmed(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM option order creation failed closed.");
+    } finally {
+      setEvmCreateBusy(false);
+    }
+  }
+
+  async function provisionEvmStrategy() {
+    if (privateApiBaseUrl === null || selectedEvmOptionProfile === null || !HASH.test(orderHash)) return;
+    setEvmProvisionBusy(true);
+    setError(null);
+    try {
+      if (sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
+        throw new Error("Connect the EVM wallet on the selected option testnet.");
+      }
+      const loadPlan = async () => {
+        const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/provision`, {
+          method: "POST",
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderHash }),
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        return parseEvmProvisioning(await response.json(), selectedEvmOptionProfile.chainId, strategyOwner ?? "");
+      };
+      let plan = await loadPlan();
+      for (const transaction of plan.transactions) {
+        const transactionHash = await sendEvmTransaction(plan.chainId, transaction);
+        if (!await waitForEvmReceipt(plan.chainId, transactionHash)) {
+          throw new Error(`${transaction.kind.replaceAll("_", " ").toLowerCase()} reverted on the testnet.`);
+        }
+      }
+      plan = await loadPlan();
+      if (!plan.ready) throw new Error("Strategy account provisioning has not finalized yet. Retry after the testnet confirms it.");
+      setEvmProvisioning(plan);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM strategy provisioning failed closed.");
+    } finally {
+      setEvmProvisionBusy(false);
+    }
+  }
+
+  async function executeEvmStrategy() {
+    const evm = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization : null;
+    if (privateApiBaseUrl === null || review === null || evm === null || evm === undefined) return;
+    setEvmExecutionBusy(true);
+    setError(null);
+    try {
+      if (signEvmStrategyExecution === undefined || sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
+        throw new Error("Connect the EVM wallet on the reviewed strategy testnet.");
+      }
+      const ownerSignature = await signEvmStrategyExecution(evm.chainId, evm.ownerTypedData);
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/authorize-evm`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash: review.quoteHash, ownerSignature }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const transaction = parseAuthorizedEvmExecution(await response.json(), review);
+      const transactionHash = await sendEvmTransaction(transaction.chainId, transaction);
+      setEvmExecutionHash(transactionHash);
+      const confirmed = await waitForEvmReceipt(transaction.chainId, transactionHash);
+      setEvmExecutionConfirmed(confirmed);
+      if (!confirmed) throw new Error("The option package transaction reverted on the testnet.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM strategy execution failed closed.");
+    } finally {
+      setEvmExecutionBusy(false);
+    }
+  }
 
   async function createNativeStrategyOrder() {
     if (privateApiBaseUrl === null || selectedNativeProfile === null) return;
@@ -1318,12 +1658,13 @@ export function GeneralizedStrategyPreparationPanel({
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
     && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
+  const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
 
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
         <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-        <span>{review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
+        <span>{evmExecutionConfirmed ? "ONCHAIN CONFIRMED" : evmExecutionHash ? "SUBMITTED" : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
         Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
@@ -1484,6 +1825,98 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
+      {sourceOrderHash === null && templateId === "option-spread-v1" ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="evm-option-profile">Atomic option market</label>
+          <select
+            id="evm-option-profile"
+            value={selectedEvmOptionProfile?.profileId ?? ""}
+            disabled={evmOptionProfiles === null || evmOptionProfiles.length === 0}
+            onChange={(event) => {
+              setSelectedEvmOptionProfileId(event.target.value);
+              setOrderHash("");
+              setEvmProvisioning(null);
+              setError(null);
+            }}
+          >
+            {(evmOptionProfiles ?? []).length === 0 ? <option value="">No reviewed option market is active</option> : null}
+            {(evmOptionProfiles ?? []).map((profile) => (
+              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+            ))}
+          </select>
+          {selectedEvmOptionProfile ? (
+            <>
+              <div className={styles.reviewGrid}>
+                <span>Domain</span><strong>{selectedEvmOptionProfile.domainId}</strong>
+                {selectedEvmOptionProfile.markets.map((market) => (
+                  <Fragment key={market.role}>
+                    <span>{market.role === "option-long" ? "Long strike" : "Short strike"}</span>
+                    <strong>{market.strike}</strong>
+                  </Fragment>
+                ))}
+              </div>
+              <label htmlFor="evm-option-quantity">Package quantity</label>
+              <input
+                id="evm-option-quantity"
+                value={evmOptionQuantity}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => { setEvmOptionQuantity(event.target.value.trim()); setOrderHash(""); setError(null); }}
+              />
+              <p className={styles.fieldContext}>
+                Reviewed range {formatAtomicAmount(selectedEvmOptionProfile.bounds.minimumQuantityAtoms, selectedEvmOptionProfile.baseAsset.decimals, selectedEvmOptionProfile.baseAsset.assetId)} to {formatAtomicAmount(selectedEvmOptionProfile.bounds.maximumQuantityAtoms, selectedEvmOptionProfile.baseAsset.decimals, selectedEvmOptionProfile.baseAsset.assetId)}.
+              </p>
+              <label htmlFor="evm-option-long-premium">Maximum total long premium</label>
+              <input
+                id="evm-option-long-premium"
+                value={evmLongPremium}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => { setEvmLongPremium(event.target.value.trim()); setOrderHash(""); setError(null); }}
+              />
+              <label htmlFor="evm-option-short-premium">Minimum total short premium</label>
+              <input
+                id="evm-option-short-premium"
+                value={evmShortPremium}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => { setEvmShortPremium(event.target.value.trim()); setOrderHash(""); setError(null); }}
+              />
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || evmCreateBusy || lifecycleAction !== "ENTRY"
+                  || strategyOwner === null || evmOptionQuantity === "" || evmLongPremium === "" || evmShortPremium === ""}
+                onClick={() => void createEvmOptionOrder()}
+              >
+                {evmCreateBusy ? "Creating atomic option package" : "Create atomic option package"}
+              </button>
+              {HASH.test(orderHash) ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={evmProvisionBusy || evmProvisioning?.ready === true}
+                  onClick={() => void provisionEvmStrategy()}
+                >
+                  {evmProvisionBusy ? "Provisioning strategy account" : evmProvisioning?.ready ? "Strategy account ready" : "Provision strategy account"}
+                </button>
+              ) : null}
+              <p className={styles.fieldContext} role="status">
+                {strategyOwner === null
+                  ? "Connect the EVM wallet that will own this package."
+                  : evmProvisioning?.ready
+                    ? `Strategy account ${compact(evmProvisioning.strategyAccount, 10, 8)} is ready.`
+                    : "The wallet creates one isolated account and its two policy-bound option adapters before execution."}
+              </p>
+            </>
+          ) : (
+            <p className={styles.fieldContext} role="status">Loading reviewed EVM option markets.</p>
+          )}
+        </div>
+      ) : null}
       <div className={styles.strategyPrepareForm}>
         <label htmlFor="generalized-strategy-order">Stored order hash</label>
         <input
@@ -1596,7 +2029,13 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
-        <button type="button" className={styles.secondaryAction} disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)} onClick={() => void prepare()}>
+        <button
+          type="button"
+          className={styles.secondaryAction}
+          disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)
+            || (templateId === "option-spread-v1" && lifecycleAction === "ENTRY" && evmProvisioning?.ready !== true)}
+          onClick={() => void prepare()}
+        >
           {prepareBusy ? "Preparing unsigned plan" : "Prepare unsigned plan"}
         </button>
       </div>
@@ -1640,23 +2079,43 @@ export function GeneralizedStrategyPreparationPanel({
               </div>
             </div>
           ))}
-          <button
-            type="button"
-            className={styles.primaryAction}
-            disabled={privateApiBaseUrl === null || authorizationBusy || authorizedOrderHash === review.orderHash}
-            onClick={() => void authorizeStrategyOrder()}
-          >
-            {authorizationBusy ? "Confirming strategy authorization" : authorizedOrderHash === review.orderHash ? "Strategy order authorized" : "Authorize exact strategy order"}
-          </button>
-          <button
-            type="button"
-            className={styles.primaryAction}
-            disabled={privateApiBaseUrl === null || selectionBusy || authorizedOrderHash !== review.orderHash}
-            onClick={() => void selectExecution()}
-          >
-            {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
-          </button>
-          {executionAttempt ? (
+          {evmReview ? (
+            <>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || evmExecutionBusy || evmExecutionConfirmed}
+                onClick={() => void executeEvmStrategy()}
+              >
+                {evmExecutionBusy ? "Confirming atomic option package" : evmExecutionConfirmed ? "Atomic option package confirmed" : "Sign and execute atomic option package"}
+              </button>
+              <p className={styles.fieldContext} role="status">
+                {evmExecutionHash
+                  ? `${evmExecutionConfirmed ? "Confirmed" : "Submitted"} transaction ${compact(evmExecutionHash, 12, 10)} on chain ${evmReview.chainId}.`
+                  : `The owner and solver sign the same ${review.domains[0]?.summary ?? "atomic package"}. The wallet submits one transaction.`}
+              </p>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || authorizationBusy || authorizedOrderHash === review.orderHash}
+                onClick={() => void authorizeStrategyOrder()}
+              >
+                {authorizationBusy ? "Confirming strategy authorization" : authorizedOrderHash === review.orderHash ? "Strategy order authorized" : "Authorize exact strategy order"}
+              </button>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || selectionBusy || authorizedOrderHash !== review.orderHash}
+                onClick={() => void selectExecution()}
+              >
+                {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
+              </button>
+            </>
+          )}
+          {!evmReview && executionAttempt ? (
             <>
               <p className={styles.fieldContext} role="status">
                 Attempt {compact(executionAttempt.attemptId)} durably binds every reviewed commitment. Nothing has been submitted.
@@ -1719,7 +2178,9 @@ export function GeneralizedStrategyPreparationPanel({
             </>
           ) : null}
           <p className={styles.reviewNotice}>
-            {executionResult
+            {evmExecutionConfirmed
+              ? "The atomic package executed under the strategy account's onchain call policies and postconditions."
+              : executionResult
               ? "The testnet executor independently revalidated the selected package before submission."
               : authorizedOrderHash === review.orderHash
                 ? "The owner authorized this exact strategy hash. Selection and testnet execution remain separate fail-closed steps."
