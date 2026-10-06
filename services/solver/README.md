@@ -24,11 +24,20 @@ The process composes only the runtimes it is explicitly configured for:
 |---|---|---|---|
 | Manifest-validated local Solana | `NARYX_SOLANA_LOCAL_ENVIRONMENT_MANIFEST`, `NARYX_SOLANA_LOCAL_SOLVER_ID`, `NARYX_SOLVER_SOLANA_AUTHORIZATION_DB` | The manifest's local conformance catalog | Program identity, genesis hash, and validator slot clock are read from the local validator. Prices and fees are the conformance venue's configured catalog values, not a market. |
 | Hyperliquid Testnet quotes | `NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED=true`, `NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG`, `NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT` | Live Testnet `l2Book` and `userFees` | Prices and fee rates are read live per quote. Static values are listed below. |
+| Generalized Hyperliquid strategy quotes | `NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED=true`, one matching preparation lane, and the explicit generalized execution-class variables | Live Testnet `l2Book`, `userFees`, and perpetual funding context | Signs typed cash-and-carry package quotes at `POST /internal/strategy-quotes`. It performs no venue write. |
 | Local fixture | `NARYX_LOCAL_FIXTURE_MODE=true` only | `LOCAL_ATOMIC_MARKET_CATALOG_V1` | Entirely static: fixed prices, zero fees, placeholder hashes, and a wall-clock-derived slot. Quotes are still signed with the configured solver key. The quote database may fall back to `/tmp/naryx-local/solver-quotes.db` only in this mode. It cannot be combined with a Solana environment manifest. |
 
 With none of them configured the listener starts with `runtime=NONE` and every quote fails closed. The startup line reports `runtime=` and `hyperliquidTestnetQuotes=`, and fixture mode prints an explicit warning.
 
 ### Hyperliquid Testnet quote runtime
+
+The generalized strategy quote lane reuses the same reviewed market config and requires exactly one
+matching generalized preparation manifest. It activates only for `cash-and-carry-v1`, the configured
+execution-class identity, and `BATCHED_IOC_WITH_RECOVERY`. Each quote prices both complete legs from
+live depth, reads account-specific fees and current perpetual funding through the official Testnet
+SDK, computes integer fee, margin, capital, residual, and package outcome amounts, compiles the typed
+route, signs the fee-complete quote, and stores idempotency durably. Static holding duration and exit
+basis are explicit estimate inputs. They do not authorize execution or replace signed order limits.
 
 The ordinary signed quote listener dispatches canonical `hypercore:testnet` entry orders to a separate reference cash-and-carry quote runtime when it is enabled. The runtime emits only `BATCHED_IOC_WITH_RECOVERY` routes with `HYPERCORE_BATCHED_IOC`, exact configured versioned market references, millisecond expiry, the order's explicit `EXACT_NET` or `BOUNDED_NET` residual policy, and zero protocol, solver, and builder fees. It performs no venue write, agent signing, or execution.
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { LOCAL_ATOMIC_MARKET_CATALOG_V1, localConformanceSlot } from '@naryx/adapter-core';
 import { SolanaConformanceAdapter, createBoundedSolanaConnection } from '@naryx/adapter-solana';
 import {
@@ -30,6 +30,7 @@ import {
   requireArbitrumSepoliaChain,
   loadHyperliquidTestnetAgentSigner,
   loadHyperliquidTestnetExecutorRuntime,
+  loadHyperliquidTestnetGeneralizedCashCarryQuoteLane,
   loadHyperliquidTestnetQuoteRuntime,
   type LoadedHyperliquidTestnetExecutorRuntime,
   createStrategyPreparationInternalHandler,
@@ -37,6 +38,10 @@ import {
   HyperliquidStrategyPreparationContextResolver,
   loadHyperliquidStrategyPreparationLane,
   StrategyPreparationService,
+  createGeneralizedStrategyQuoteInternalHandler,
+  GeneralizedStrategyQuoteContextRegistry,
+  GeneralizedStrategyQuoteService,
+  SqliteGeneralizedStrategyQuoteStore,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -85,6 +90,7 @@ function loadSigner(path: string) {
     throw new Error('solver signing key does not match the configured verification key');
   }
   return Object.freeze({
+    scheme: 'ED25519' as const,
     verificationKey,
     signDigest: (digest: Uint8Array) => Uint8Array.from(sign(null, Buffer.from(digest), privateKey)),
   });
@@ -185,16 +191,42 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
   .split(',')
   .map((value) => value.trim())
   .filter((value) => value !== '');
-const strategyPreparationHandler = strategyPreparationPaths.length === 0
+const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
+const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
+const strategyPreparationHandler = strategyPreparationLanes.length === 0
   ? undefined
   : createStrategyPreparationInternalHandler(new StrategyPreparationService(
-    new HttpStrategyPackageProvider(apiOrigin),
-    new HyperliquidStrategyPreparationContextResolver(strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane)),
+    strategyPackageProvider,
+    new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes),
   ));
+const generalizedStrategyLane = loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+  process.env,
+  strategyPreparationLanes,
+  { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
+);
+const generalizedQuoteStore = generalizedStrategyLane === undefined
+  ? undefined
+  : new SqliteGeneralizedStrategyQuoteStore(config.quoteDbPath);
+const generalizedStrategyQuoteHandler = generalizedStrategyLane === undefined
+  ? undefined
+  : createGeneralizedStrategyQuoteInternalHandler(new GeneralizedStrategyQuoteService({
+    packages: strategyPackageProvider,
+    contexts: new GeneralizedStrategyQuoteContextRegistry([generalizedStrategyLane]),
+    signer: executionSigner,
+    store: generalizedQuoteStore!,
+  }));
+const strategyRouteHandlers = [generalizedStrategyQuoteHandler, strategyPreparationHandler]
+  .filter((handler) => handler !== undefined);
+const strategyRouteHandler = strategyRouteHandlers.length === 0
+  ? undefined
+  : async (request: IncomingMessage, response: ServerResponse): Promise<boolean> => {
+    for (const handler of strategyRouteHandlers) if (await handler(request, response)) return true;
+    return false;
+  };
 const quoteServer = createInternalAtomicQuoteServer(
   solanaDevnetSolver?.wrap(quotePort) ?? quotePort,
   authorization,
-  strategyPreparationHandler,
+  strategyRouteHandler,
 );
 const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
@@ -287,6 +319,7 @@ function shutdown(): void {
     executorRuntime?.close();
     arbitrumJournal?.close();
     store.close();
+    generalizedQuoteStore?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {
@@ -314,12 +347,15 @@ try {
   executorRuntime?.close();
   arbitrumJournal?.close();
   store.close();
+  generalizedQuoteStore?.close();
   authorizationStore?.close();
   throw error;
 }
 const hyperliquidQuotes = hyperliquidQuoteRuntime === undefined ? 'DISABLED' : 'TESTNET_LIVE_BOOK';
 const arbitrumQuotes = arbitrumQuoteProviders === undefined ? 'DISABLED' : 'SEPOLIA_LIVE_REFERENCE';
-const generalizedHyperliquid = strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
+const generalizedHyperliquid = generalizedStrategyLane !== undefined
+  ? 'LIVE_TESTNET_QUOTES'
+  : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
   + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid}\n`);

@@ -17,6 +17,7 @@ import {
   packageGraph,
   packageGraphHash,
   packageOrderHash,
+  packageTemplateManifest,
   packageTemplateManifestHash,
   routeHash,
   routePayload,
@@ -45,12 +46,14 @@ import {
   createHyperliquidTestnetGeneralizedCashCarryPricing,
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
+  loadHyperliquidTestnetGeneralizedCashCarryQuoteLane,
   loadHyperliquidTestnetQuoteRuntime,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
   type HyperliquidTestnetQuoteMarketReadPort,
   type HyperliquidTestnetGeneralizedMarketReadPort,
   type HyperliquidTestnetQuoteRuntimeInput,
+  type HyperliquidStrategyPreparationLane,
   type HyperliquidTestnetUserFeeRates,
 } from '../src/index.js';
 
@@ -767,6 +770,79 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
   assert.equal(terms.routeExpiryValue, 1_100n);
   assert.equal(terms.validUntilValue, 1_200n);
   assert.equal(terms.quoteNonce, 1n);
+
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-generalized-hyperliquid-'));
+  const configPath = join(directory, 'quote.json');
+  const {
+    enabled: _enabled,
+    tradingAccount: _tradingAccount,
+    market: _market,
+    currentTimeMs: _currentTime,
+    nonceSource: _nonce,
+    ...reviewedMarket
+  } = runtimeInput({ next: () => 2n });
+  const preparationLane: HyperliquidStrategyPreparationLane = {
+    environment: 'testnet',
+    domain,
+    templateManifest: packageTemplateManifest(template),
+    activeRegistryRecords: [],
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    marketBindings: [{
+      adapter: spotAdapter,
+      venue,
+      market: spotMarket,
+      assetId: 10_001,
+      sizeDecimals: 5,
+      maximumPriceDecimals: 3,
+    }, {
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assetId: 3,
+      sizeDecimals: 5,
+      maximumPriceDecimals: 3,
+    }],
+  };
+  const laneEnvironment = {
+    NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED: 'true',
+    NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG: configPath,
+    NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT: tradingAccount,
+    NARYX_HYPERLIQUID_GENERALIZED_LANE_ID: 'hypercore-testnet-btc-carry-v1',
+    NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_ID: graph.executionClassId,
+    NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION: '1',
+    NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_MANIFEST_HASH:
+      Buffer.from(graph.executionClassManifestHash).toString('hex'),
+    NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS: '3600000',
+    NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS: '0',
+  };
+  try {
+    writeFileSync(configPath, stringifyProtocolJson({
+      version: 2,
+      market: {
+        ...reviewedMarket,
+        packageTemplateManifestHash: templateHash,
+        routeTtlMs: 100n,
+        quoteTtlMs: 200n,
+        marginBps: 1_000,
+      },
+    }));
+    const loaded = loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+      laneEnvironment,
+      [preparationLane],
+      { nonceSource: { next: () => 2n }, market, currentTimeMs: () => 1_000n },
+    );
+    assert.equal(loaded?.laneId, 'hypercore-testnet-btc-carry-v1');
+    assert.deepEqual(loaded?.adapterSupport.map((support) => support.legFamily), [
+      'SPOT_SWAP', 'PERP_OPEN',
+    ]);
+    assert.equal(loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+      {},
+      [preparationLane],
+      { nonceSource: { next: () => 2n }, market },
+    ), undefined);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 
   const staleMarket: HyperliquidTestnetGeneralizedMarketReadPort = {
     ...market,
