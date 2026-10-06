@@ -363,12 +363,7 @@ contract TypedStrategyAdapterRegistry {
 
     function _implementedAdapterClass(bytes32 classId, uint32 version) private pure returns (bool) {
         if (version != 1) return false;
-        return classId == keccak256("naryx.evm.spot-exact") || classId == keccak256("naryx.evm.inventory-transfer")
-            || classId == keccak256("naryx.evm.perp-exact") || classId == keccak256("naryx.evm.future-exact")
-            || classId == keccak256("naryx.evm.option-exact") || classId == keccak256("naryx.evm.lending-exact")
-            || classId == keccak256("naryx.evm.collateral-transfer")
-            || classId == keccak256("naryx.evm.margin-transfer") || classId == keccak256("naryx.evm.account-transfer")
-            || classId == keccak256("naryx.evm.cross-domain-escrow");
+        return classId == keccak256("naryx.evm.spot-exact") || classId == keccak256("naryx.evm.perp-exact");
     }
 
     function _validateDomain(DomainRef memory domain) private view {

@@ -9,6 +9,7 @@ import {IPerpMarginGate} from "../src/interfaces/IPerpMarginGate.sol";
 import {ISynFuturesInstrument} from "../src/interfaces/ISynFuturesInstrument.sol";
 import {ISynFuturesPositionObserver} from "../src/interfaces/ISynFuturesPositionObserver.sol";
 import {ITypedStrategyAdapter} from "../src/interfaces/ITypedStrategyAdapter.sol";
+import {ITypedStrategyAdapterFactory} from "../src/interfaces/ITypedStrategyAdapterFactory.sol";
 import {INaryxMultiStrategyAccountFactory} from "../src/interfaces/INaryxMultiStrategyAccountFactory.sol";
 import {SynFuturesTypedPerpAdapter} from "../src/SynFuturesTypedPerpAdapter.sol";
 import {SynFuturesTypedPerpAdapterFactory} from "../src/SynFuturesTypedPerpAdapterFactory.sol";
@@ -43,6 +44,24 @@ contract TypedAdapterAccountHarness {
         if (approvalAtoms != 0) approvalToken.forceApprove(address(adapter), approvalAtoms);
         evidenceHash = adapter.executeLeg(payload);
         if (approvalAtoms != 0) approvalToken.forceApprove(address(adapter), 0);
+    }
+}
+
+contract UnsupportedTypedFactory is ITypedStrategyAdapterFactory {
+    address public immutable baseAsset;
+    address public immutable quoteAsset;
+
+    constructor(address baseAsset_, address quoteAsset_) {
+        baseAsset = baseAsset_;
+        quoteAsset = quoteAsset_;
+    }
+
+    function factoryMetadata() external view returns (bytes32, uint32, address, address) {
+        return (keccak256("naryx.evm.option-exact"), 1, baseAsset, quoteAsset);
+    }
+
+    function validateInstance(address, address, bytes32) external pure returns (bool) {
+        return false;
     }
 }
 
@@ -430,6 +449,21 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
                     gasLimit: 500_000
                 })
             );
+        }
+
+        function testRejectsAnAdapterClassWithoutImplementedExecutionSemantics() public {
+            UnsupportedTypedFactory unsupported = new UnsupportedTypedFactory(address(base), address(quote));
+            TypedStrategyAdapterRegistry.AdapterBinding memory binding = _spotBinding();
+            binding.identity = TypedStrategyAdapterRegistry.ManifestRef(
+                keccak256("unsupported-adapter"), 1, keccak256("unsupported-adapter-v1")
+            );
+            binding.adapter = address(unsupported);
+            binding.expectedCodeHash = address(unsupported).codehash;
+            binding.adapterClassId = keccak256("naryx.evm.option-exact");
+
+            vm.expectRevert(TypedStrategyAdapterRegistry.InvalidBinding.selector);
+            vm.prank(PROPOSER);
+            adapters.proposeRegistration(binding, _control());
         }
 
         function _spotFactoryDeployment() private view returns (UniswapV3TypedSpotAdapterFactory.Deployment memory) {
