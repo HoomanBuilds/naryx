@@ -125,6 +125,10 @@ import {
   EvmOptionSpreadProvisioningClientError,
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
+import {
+  EvmStrategyExecutionAuthorizationClientError,
+  type EvmStrategyExecutionAuthorizationPort,
+} from './evm-strategy-execution-authorization-client.js';
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -317,6 +321,7 @@ export function createPrivateTerminalRequestHandler(
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
+  evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -1014,6 +1019,38 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, 'EVM_OPTION_PROVISIONING_FAILED', 'EVM option provisioning failed closed.');
+      }
+      return;
+    }
+
+    if (url.pathname === '/internal/terminal/strategy-executions/authorize-evm') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (evmStrategyExecutionAuthorization === undefined) {
+        reject(response, 503, 'EVM_STRATEGY_AUTHORIZATION_UNAVAILABLE', 'EVM strategy authorization is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).sort().join(',') !== 'ownerSignature,quoteHash'
+          || typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string'
+          || typeof (requestBody as { ownerSignature?: unknown }).ownerSignature !== 'string') {
+          throw new EvmStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'Request must contain only quoteHash and ownerSignature.');
+        }
+        const values = requestBody as { quoteHash: string; ownerSignature: string };
+        const authorized = await evmStrategyExecutionAuthorization.authorize(values.quoteHash, values.ownerSignature);
+        sendJson(response, 200, { status: 'READY_FOR_WALLET_SUBMISSION', authorization: toProtocolJson(authorized) });
+      } catch (error) {
+        if (error instanceof EvmStrategyExecutionAuthorizationClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'EVM_STRATEGY_AUTHORIZATION_FAILED', 'EVM strategy authorization failed closed.');
       }
       return;
     }
@@ -1871,6 +1908,7 @@ export function createPrivateTerminalServer(
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
+  evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1901,6 +1939,7 @@ export function createPrivateTerminalServer(
     hyperliquidNativeStrategyOrders,
     evmOptionSpreadOrders,
     evmOptionSpreadProvisioning,
+    evmStrategyExecutionAuthorization,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

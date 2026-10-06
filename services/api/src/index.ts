@@ -67,6 +67,12 @@ export {
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
 export {
+  HttpEvmStrategyExecutionAuthorizationClient,
+  EvmStrategyExecutionAuthorizationClientError,
+  type AuthorizedEvmStrategyExecution,
+  type EvmStrategyExecutionAuthorizationPort,
+} from './evm-strategy-execution-authorization-client.js';
+export {
   GeneralizedStrategyQuoteClientError,
   HttpGeneralizedStrategyQuoteClient,
   type GeneralizedStrategyQuotePort,

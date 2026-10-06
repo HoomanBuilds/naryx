@@ -1049,3 +1049,9 @@ export {
   loadEvmOptionSpreadRuntime,
 } from './evm-option-spread-config.js';
 export { SqliteEvmStrategyPackageIdStore } from './evm-strategy-package-id-store.js';
+export {
+  EvmStrategyExecutionAuthorizationService,
+  loadEvmStrategySolverKey,
+  type AuthorizedEvmStrategyExecution,
+} from './evm-strategy-execution-authorization.js';
+export { createEvmStrategyExecutionAuthorizationInternalHandler } from './evm-strategy-execution-authorization-server.js';

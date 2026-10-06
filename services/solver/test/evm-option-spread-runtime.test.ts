@@ -19,7 +19,9 @@ import {
   type PackageTemplateManifestInput,
 } from '@naryx/protocol-types';
 import { hexToBytes, type Abi, type Address, type Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import {
+  EvmStrategyExecutionAuthorizationService,
   EvmOptionSpreadPreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
@@ -40,9 +42,11 @@ const evmHash = (byte: string) => `0x${hash(byte)}` as Hex;
 const NOW = 1_000n;
 const MATURITY = 2_000n;
 const QUANTITY = 10n ** 18n;
-const OWNER = address('1');
+const OWNER_ACCOUNT = privateKeyToAccount(`0x${'11'.repeat(32)}`);
+const SOLVER_ACCOUNT = privateKeyToAccount(`0x${'33'.repeat(32)}`);
+const OWNER = OWNER_ACCOUNT.address;
 const ACCOUNT = address('2');
-const SOLVER = address('3');
+const SOLVER = SOLVER_ACCOUNT.address;
 const ACCOUNT_FACTORY = address('4');
 const LONG_POOL = address('5');
 const SHORT_POOL = address('6');
@@ -410,10 +414,41 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const prepared = await preparation.prepareByQuote(quoteHash);
   assert.equal(prepared?.domains[0]?.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
   if (prepared?.domains[0]?.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('missing EVM preparation');
-  assert.deepEqual(prepared.domains[0].envelope.calls.map((call) => call.approvalAtoms), [QUANTITY / 10n, QUANTITY]);
-  assert.equal(prepared.domains[0].envelope.execution.fees.protocolFeeAtoms, 4_000_000n);
-  assert.equal(prepared.domains[0].envelope.execution.fees.solverFeeAtoms, 2_000_000n);
-  assert.notEqual(prepared.domains[0].envelope.execution.nextStateHash, zeroBytes());
+  const envelope = prepared.domains[0].envelope;
+  assert.deepEqual(envelope.calls.map((call) => call.approvalAtoms), [QUANTITY / 10n, QUANTITY]);
+  assert.equal(envelope.execution.fees.protocolFeeAtoms, 4_000_000n);
+  assert.equal(envelope.execution.fees.solverFeeAtoms, 2_000_000n);
+  assert.notEqual(envelope.execution.nextStateHash, zeroBytes());
+
+  const ownerSignature = await OWNER_ACCOUNT.signTypedData({
+    domain: envelope.ownerTypedData.domain,
+    types: envelope.ownerTypedData.types,
+    primaryType: envelope.ownerTypedData.primaryType,
+    message: envelope.ownerTypedData.message,
+  });
+  const authorization = new EvmStrategyExecutionAuthorizationService({
+    packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
+    preparations: preparation,
+    solver: SOLVER_ACCOUNT,
+  });
+  const authorized = await authorization.authorize({ quoteHash, ownerSignature });
+  assert.equal(authorized?.to, ACCOUNT);
+  assert.equal(authorized?.chainId, 84_532);
+  assert.equal(authorized?.ownerSignature, ownerSignature);
+  assert.match(authorized?.solverSignature ?? '', /^0x[0-9a-f]{130}$/);
+  const wrongOwnerSignature = await privateKeyToAccount(`0x${'44'.repeat(32)}`).signTypedData({
+    domain: envelope.ownerTypedData.domain,
+    types: envelope.ownerTypedData.types,
+    primaryType: envelope.ownerTypedData.primaryType,
+    message: envelope.ownerTypedData.message,
+  });
+  await assert.rejects(
+    () => authorization.authorize({
+      quoteHash,
+      ownerSignature: wrongOwnerSignature,
+    }),
+    /owner signature does not authorize/,
+  );
 
   const replayChain = new ReplayedEntryChain();
   const replayPricing = pricing(replayChain);

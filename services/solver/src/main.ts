@@ -49,6 +49,9 @@ import {
   createEvmOptionSpreadProvisioningInternalHandler,
   loadEvmOptionSpreadRuntime,
   SqliteEvmStrategyPackageIdStore,
+  EvmStrategyExecutionAuthorizationService,
+  createEvmStrategyExecutionAuthorizationInternalHandler,
+  loadEvmStrategySolverKey,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -271,7 +274,22 @@ const evmOptionProvisioningHandler = evmOptionRuntime === undefined
       strategyPackageProvider,
       new EvmOptionSpreadProvisioningResolver(evmOptionRuntime.preparationLanes),
     ));
-const strategyRouteHandlers = [generalizedStrategyQuoteHandler, strategyPreparationHandler, evmOptionProvisioningHandler]
+const evmStrategyAuthorizationHandler = evmOptionRuntime === undefined || strategyPreparationService === undefined
+  ? undefined
+  : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
+      packages: strategyPackageProvider,
+      preparations: strategyPreparationService,
+      solver: loadEvmStrategySolverKey(
+        process.env.NARYX_EVM_STRATEGY_SOLVER_KEY_PATH,
+        process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
+      ),
+    }));
+const strategyRouteHandlers = [
+  generalizedStrategyQuoteHandler,
+  strategyPreparationHandler,
+  evmOptionProvisioningHandler,
+  evmStrategyAuthorizationHandler,
+]
   .filter((handler) => handler !== undefined);
 const strategyRouteHandler = strategyRouteHandlers.length === 0
   ? undefined
