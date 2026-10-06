@@ -4,6 +4,7 @@ import {
   adapterRef,
   assetRef,
   compilePackageGraph,
+  compileTypedStrategyRoute,
   domainRef,
   packageGraph,
   packageGraphHash,
@@ -253,5 +254,84 @@ describe('package graph compilation', () => {
     assert.deepEqual(simulatePackageGraphFailures(graph()), []);
     const atomicClaim = compilePackageGraph({ ...crossDomain, settlementClass: 'ATOMIC_POSTCONDITION' }, context());
     assert.deepEqual(atomicClaim.compiled ? [] : atomicClaim.reasons, ['ATOMIC_CLASS_NEEDS_ONE_ATOMIC_GROUP']);
+  });
+});
+
+describe('typed strategy route compilation', () => {
+  const cashTemplate: PackageTemplateManifestInput = {
+    ...template,
+    templateId: 'cash-and-carry-v1',
+    legCount: 2,
+    legTypes: ['spot-purchase', 'perp-sale'],
+  };
+  const cashTemplateRef = {
+    templateId: cashTemplate.templateId,
+    templateVersion: cashTemplate.templateVersion,
+    packageTemplateManifestHash: packageTemplateManifestHash(cashTemplate),
+  };
+  const cashGraph = graph({
+    templateId: cashTemplate.templateId,
+    packageTemplateManifestHash: cashTemplateRef.packageTemplateManifestHash,
+  });
+  const cashContext: PackageGraphCompileContext = {
+    ...context(),
+    templateManifest: cashTemplate,
+    activeRegistryRecords: context().activeRegistryRecords.map((entry) => ({
+      ...entry,
+      allowedTemplates: [cashTemplateRef],
+    })),
+  };
+  const support = [
+    {
+      domain: svm,
+      adapter: spotAdapter,
+      legFamily: 'SPOT_SWAP' as const,
+      supportedSides: ['BUY'] as const,
+      materializationClassId: 'orca-exact-input-v1',
+      executionPlanKind: 'SVM_ATOMIC_CPI' as const,
+      supportedSettlementClasses: ['ATOMIC_POSTCONDITION'] as const,
+    },
+    {
+      domain: svm,
+      adapter: perpAdapter,
+      legFamily: 'PERP_OPEN' as const,
+      supportedSides: ['SELL'] as const,
+      materializationClassId: 'short-perp-open-v1',
+      executionPlanKind: 'SVM_ATOMIC_CPI' as const,
+      supportedSettlementClasses: ['ATOMIC_POSTCONDITION'] as const,
+    },
+  ];
+  const compile = (adapterSupport: Parameters<typeof compileTypedStrategyRoute>[0]['adapterSupport']) => compileTypedStrategyRoute({
+    graph: cashGraph,
+    compileContext: cashContext,
+    adapterSupport,
+    orderHash: hash('d'),
+    solverId: 'solver-1',
+    routeExpiryUnit: 'EVM_UNIX_SECONDS',
+    routeExpiryValue: 1_800n,
+  });
+
+  test('binds every leg to a materializer that supports its exact side', () => {
+    const result = compile(support);
+    assert.equal(result.compiled, true);
+    if (result.compiled) {
+      assert.deepEqual(result.route.legs.map((value) => [value.legId, value.materializationClassId]), [
+        ['perp', 'short-perp-open-v1'],
+        ['spot', 'orca-exact-input-v1'],
+      ]);
+    }
+  });
+
+  test('rejects a leg when the adapter only supports its opposite side', () => {
+    const result = compile([{ ...support[0]!, supportedSides: ['SELL'] }, support[1]!]);
+    assert.deepEqual(result.compiled ? [] : result.reasons, ['ADAPTER_ACTION_UNSUPPORTED']);
+  });
+
+  test('rejects overlapping materializers instead of selecting by input order', () => {
+    const result = compile([
+      ...support,
+      { ...support[0]!, materializationClassId: 'second-spot-materializer-v1' },
+    ]);
+    assert.deepEqual(result.compiled ? [] : result.reasons, ['ADAPTER_ACTION_AMBIGUOUS']);
   });
 });

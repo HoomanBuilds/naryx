@@ -14,9 +14,11 @@ import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import {
   compilePackageGraph,
+  GRAPH_LEG_SIDE,
   packageGraph,
   packageGraphHash,
   type CompiledPackageGraph,
+  type GraphLegSide,
   type LegFamily,
   type PackageGraphCompileContext,
   type PackageGraphInput,
@@ -48,6 +50,7 @@ export interface TypedAdapterActionSupportInput {
   readonly domain: DomainRef;
   readonly adapter: AdapterRefInput;
   readonly legFamily: LegFamily;
+  readonly supportedSides: readonly GraphLegSide[];
   readonly materializationClassId: string;
   readonly executionPlanKind: ExecutionPlanKind;
   readonly supportedSettlementClasses: readonly SettlementClass[];
@@ -57,6 +60,7 @@ export interface TypedAdapterActionSupport {
   readonly domain: DomainRef;
   readonly adapter: AdapterRef;
   readonly legFamily: LegFamily;
+  readonly supportedSides: readonly GraphLegSide[];
   readonly materializationClassId: ProtocolId;
   readonly executionPlanKind: ExecutionPlanKind;
   readonly supportedSettlementClasses: readonly SettlementClass[];
@@ -97,6 +101,7 @@ export type TypedStrategyRouteRejection =
   | 'GRAPH_INVALID'
   | 'GRAPH_COMPILE_FAILED'
   | 'ADAPTER_ACTION_UNSUPPORTED'
+  | 'ADAPTER_ACTION_AMBIGUOUS'
   | 'SETTLEMENT_CLASS_UNSUPPORTED'
   | 'MIXED_PLAN_KIND_IN_DOMAIN';
 
@@ -128,6 +133,16 @@ function checkedSupport(values: readonly TypedAdapterActionSupportInput[]): read
     const context = `compileTypedStrategyRoute.adapterSupport[${index}]`;
     object(value, context);
     object(value.domain, `${context}.domain`);
+    if (!Array.isArray(value.supportedSides) || value.supportedSides.length === 0) {
+      throw new MalformedInputError(`${context}.supportedSides`, 'expected a nonempty array');
+    }
+    const supportedSides = [...value.supportedSides].sort();
+    for (let sideIndex = 0; sideIndex < supportedSides.length; sideIndex += 1) {
+      enumDiscriminant(GRAPH_LEG_SIDE, supportedSides[sideIndex]!, `${context}.supportedSides[${sideIndex}]`);
+      if (sideIndex > 0 && supportedSides[sideIndex - 1] === supportedSides[sideIndex]) {
+        throw new DuplicateElementError(`${context}.supportedSides`, 'side repeats');
+      }
+    }
     if (!Array.isArray(value.supportedSettlementClasses) || value.supportedSettlementClasses.length === 0) {
       throw new MalformedInputError(`${context}.supportedSettlementClasses`, 'expected a nonempty array');
     }
@@ -143,6 +158,7 @@ function checkedSupport(values: readonly TypedAdapterActionSupportInput[]): read
       domain: domainRef(value.domain.domainId, value.domain.domainManifestVersion, value.domain.domainManifestHash, `${context}.domain`),
       adapter: adapterRef(value.adapter, `${context}.adapter`),
       legFamily: value.legFamily,
+      supportedSides: Object.freeze(supportedSides),
       materializationClassId: protocolId(value.materializationClassId, `${context}.materializationClassId`),
       executionPlanKind: value.executionPlanKind,
       supportedSettlementClasses: Object.freeze(settlement),
@@ -210,15 +226,21 @@ export function compileTypedStrategyRoute(input: Readonly<{
   }
   const legs: TypedStrategyRouteLeg[] = [];
   for (const leg of graph.legs) {
-    const found = support.find((candidate) =>
+    const matches = support.filter((candidate) =>
       sameDomain(candidate.domain, leg.domain)
       && sameAdapter(candidate.adapter, leg.adapter)
-      && candidate.legFamily === leg.legFamily,
+      && candidate.legFamily === leg.legFamily
+      && candidate.supportedSides.includes(leg.side),
     );
-    if (found === undefined) {
+    if (matches.length === 0) {
       reasons.add('ADAPTER_ACTION_UNSUPPORTED');
       continue;
     }
+    if (matches.length > 1) {
+      reasons.add('ADAPTER_ACTION_AMBIGUOUS');
+      continue;
+    }
+    const found = matches[0]!;
     if (!found.supportedSettlementClasses.includes(graph.settlementClass)) reasons.add('SETTLEMENT_CLASS_UNSUPPORTED');
     const stage = graph.stages.findIndex((values) => values.includes(leg.legId));
     const group = graph.executionGroups.find((value) => value.legIds.includes(leg.legId));
