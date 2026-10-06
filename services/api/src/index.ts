@@ -146,6 +146,13 @@ export {
   type PublicMarketRuntime,
 } from "./public-market-runtime.js";
 export {
+  applyPublicMarketBootstrap,
+  loadPublicMarketBootstrap,
+  PublicMarketBootstrapError,
+  type PublicMarketBootstrap,
+  type PublicMarketBookBootstrap,
+} from "./public-market-bootstrap.js";
+export {
   InternalOrderCoordinator,
   TerminalOrderValidationError,
   type InternalOrderClockPort,

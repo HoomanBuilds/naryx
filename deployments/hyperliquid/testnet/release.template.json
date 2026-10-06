@@ -58,6 +58,9 @@
     "treasuryStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet treasury inventory hedge quote config with embedded generalized settings" },
     "fundingStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet perpetual funding spread quote config with embedded generalized settings" },
     "nativeStrategyOrderProfiles": { "$operator": "reviewed version 1 Testnet native strategy order profile file containing treasury hedge and funding spread profiles" },
+    "publicStrategyMarketSupport": { "$operator": "reviewed version 1 package exchange support manifest covering every generated HyperCore native strategy series and execution class" },
+    "publicStrategyMarketBootstrap": { "$operator": "reviewed version 1 Testnet public market bootstrap containing the HyperCore domain and template manifests, matching policies, economic series, execution classes, and open books" },
+    "publicStrategyGraphContext": { "$operator": "reviewed version 1 graph compilation context containing the active HyperCore registry records and resource limits for every generated native strategy profile" },
     "executionEnabled": { "$operator": "true to execute Hyperliquid Testnet packages (needs the approved agent key and a funded trading account), false for quotes only" },
     "executor": {
       "agentAddress": { "$lower": { "$operator": "approved Hyperliquid Testnet API (agent) wallet address, lowercase 0x + 40 hex" } },
@@ -213,6 +216,18 @@
       "format": "protocol-json",
       "content": { "$def": "nativeStrategyOrderProfiles" }
     },
+    "api/hyperliquid-public-market-support.json": {
+      "format": "protocol-json",
+      "content": { "$def": "publicStrategyMarketSupport" }
+    },
+    "api/hyperliquid-public-market-bootstrap.json": {
+      "format": "protocol-json",
+      "content": { "$def": "publicStrategyMarketBootstrap" }
+    },
+    "api/hyperliquid-public-graph-context.json": {
+      "format": "protocol-json",
+      "content": { "$def": "publicStrategyGraphContext" }
+    },
     "solver/hyperliquid-cash-carry-strategy-preparation.json": {
       "format": "protocol-json",
       "content": { "$def": "cashCarryStrategyPreparation" }
@@ -256,7 +271,16 @@
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN": "http://127.0.0.1:8792",
         "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB": { "$data": "api/hyperliquid-testnet-execution.db" },
         "NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED": "true",
-        "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES": { "$out": "api/hyperliquid-native-strategy-order-profiles.json" }
+        "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES": { "$out": "api/hyperliquid-native-strategy-order-profiles.json" },
+        "NARYX_PUBLIC_MARKET_ENABLED": "true",
+        "NARYX_PUBLIC_ENVIRONMENT": "testnet",
+        "NARYX_EXCHANGE_DB": { "$data": "api/package-exchange.db" },
+        "NARYX_EXCHANGE_SUPPORT_MANIFEST": { "$out": "api/hyperliquid-public-market-support.json" },
+        "NARYX_PUBLIC_MARKET_BOOTSTRAP": { "$out": "api/hyperliquid-public-market-bootstrap.json" },
+        "NARYX_REGISTRY_DB": { "$data": "api/public-registry.db" },
+        "NARYX_STRATEGY_PACKAGE_DB": { "$data": "api/strategy-packages.db" },
+        "NARYX_GRAPH_COMPILE_CONTEXT": { "$out": "api/hyperliquid-public-graph-context.json" },
+        "NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED": "true"
       }
     },
     "env/solver.env": {

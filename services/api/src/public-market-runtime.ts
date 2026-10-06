@@ -28,6 +28,7 @@ import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
+import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
 import {
   createStrategyOrderIntake,
   type StrategyOrderIntakePort,
@@ -61,7 +62,7 @@ export interface PublicMarketRuntime {
     SqliteStrategyPackageStore,
     "selectHyperliquidExecution" | "selectNativeHyperliquidExecution"
       | "strategyExecutionAttempt" | "nativeStrategyExecutionAttempt" | "anyStrategyExecutionAttempt" | "admissionByQuote"
-      | "ownerAuthorization" | "recordReceipt"
+      | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionsByOwner"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
@@ -331,6 +332,21 @@ export function loadPublicMarketRuntime(
     opened.push(store);
     const registry = optional(registryPath) === undefined ? undefined : new SqliteRegistryStore(absolute(registryPath, "NARYX_REGISTRY_DB"));
     if (registry !== undefined) opened.push(registry);
+    const bootstrapPath = optional(environment.NARYX_PUBLIC_MARKET_BOOTSTRAP);
+    if (bootstrapPath !== undefined) {
+      if (registry === undefined) {
+        throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_BOOTSTRAP requires NARYX_REGISTRY_DB.");
+      }
+      const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
+      if (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment)) {
+        throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_BOOTSTRAP requires NARYX_PUBLIC_ENVIRONMENT.");
+      }
+      applyPublicMarketBootstrap(
+        loadPublicMarketBootstrap(absolute(bootstrapPath, "NARYX_PUBLIC_MARKET_BOOTSTRAP"), publicEnvironment),
+        store,
+        registry,
+      );
+    }
     const solverState = optional(solverPath) === undefined ? undefined : new SqliteSolverApiStore(absolute(solverPath, "NARYX_SOLVER_API_DB"));
     if (solverState !== undefined) opened.push(solverState);
     const deliveryPath = optional(environment.NARYX_PRIVATE_DELIVERY_DB);

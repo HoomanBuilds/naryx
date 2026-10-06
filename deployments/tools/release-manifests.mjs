@@ -628,6 +628,61 @@ async function validate(written, envs, liveEnv, log) {
         );
         log(`api: ${hyperliquidNativeStrategyProfiles.length} native HyperCore strategy order profiles load`);
       }
+      if (api.NARYX_PUBLIC_MARKET_ENABLED === 'true') {
+        const publicMarket = await dist('services/api', 'public-market-runtime.js');
+        const databaseVariables = [
+          'NARYX_EXCHANGE_DB', 'NARYX_REGISTRY_DB', 'NARYX_SOLVER_API_DB',
+          'NARYX_PRIVATE_DELIVERY_DB', 'NARYX_EVIDENCE_DB', 'NARYX_QUALIFICATION_DB',
+          'NARYX_POSITION_DB', 'NARYX_STRATEGY_PACKAGE_DB', 'NARYX_STRATEGY_DB',
+          'NARYX_BUILDER_DB', 'NARYX_KEEPER_EXECUTOR_DB', 'NARYX_COORDINATION_DB',
+        ];
+        const isolated = { ...api };
+        for (const name of databaseVariables) {
+          if (isolated[name] !== undefined) isolated[name] = join(scratch, `${name.toLowerCase()}.db`);
+        }
+        const runtime = publicMarket.loadPublicMarketRuntime(isolated, () => Date.now());
+        if (runtime === undefined || runtime.strategyOrderIntake === undefined) {
+          fail('api: public package market must expose strategy order intake.');
+        }
+        closers.push(() => runtime.close());
+
+        if (hyperliquidNativeStrategyProfiles !== undefined) {
+          const p = await protocol();
+          const support = p.parseProtocolJson(readText(api.NARYX_EXCHANGE_SUPPORT_MANIFEST), 'publicMarketSupport');
+          const bootstrap = p.parseProtocolJson(readText(api.NARYX_PUBLIC_MARKET_BOOTSTRAP), 'publicMarketBootstrap');
+          const seriesSupport = {
+            supportedTemplateIds: support.seriesSupport.supportedTemplateIds,
+            supportedQuoteConventionIds: support.seriesSupport.supportedQuoteConventionIds,
+            supportedRiskClassIds: support.seriesSupport.supportedRiskClassIds,
+            supportedLifecycleConventionIds: support.seriesSupport.supportedLifecycleConventionIds,
+          };
+          const executionSupport = {
+            supportedVenueClassIds: support.executionClassSupport.supportedVenueClassIds,
+            supportedCollateralModeIds: support.executionClassSupport.supportedCollateralModeIds,
+            supportedSettlementClasses: support.executionClassSupport.supportedSettlementClasses,
+            supportedFirmnessClassIds: support.executionClassSupport.supportedFirmnessClassIds,
+          };
+          for (const profile of hyperliquidNativeStrategyProfiles) {
+            const series = bootstrap.series.find((value) =>
+              value.seriesId === profile.seriesId && value.seriesVersion === profile.seriesVersion);
+            const executionClass = bootstrap.executionClasses.find((value) =>
+              value.executionClassId === profile.executionClassId
+                && value.executionClassVersion === profile.executionClassVersion);
+            const template = bootstrap.packageTemplateManifests.find((value) =>
+              value.templateId === profile.templateId && value.templateVersion === profile.templateVersion);
+            if (series === undefined || executionClass === undefined || template === undefined
+              || Buffer.from(p.economicStrategySeriesHash(series, seriesSupport)).toString('hex')
+                !== Buffer.from(profile.seriesManifestHash).toString('hex')
+              || Buffer.from(p.seriesExecutionClassHash(executionClass, executionSupport)).toString('hex')
+                !== Buffer.from(profile.executionClassManifestHash).toString('hex')
+              || Buffer.from(p.packageTemplateManifestHash(template)).toString('hex')
+                !== Buffer.from(profile.packageTemplateManifestHash).toString('hex')) {
+              fail(`api: public package market bootstrap does not register native strategy profile ${profile.profileId}.`);
+            }
+          }
+        }
+        log('api: public package market bootstrap loads and registers every native HyperCore strategy market');
+      }
       if (api.NARYX_EXECUTION_POLICY_FILE !== undefined) {
         const policy = await dist('services/api', 'testnet-execution-policy.js');
         policy.loadTestnetExecutionPolicy(api.NARYX_EXECUTION_POLICY_FILE);

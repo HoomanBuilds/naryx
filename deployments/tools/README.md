@@ -94,6 +94,7 @@ node deployments/tools/release-manifests.mjs --out /srv/naryx/hyperliquid --data
 | `api/arbitrum-sepolia-runtime.json`, `api/arbitrum-sepolia-order-context.json` | `loadArbitrumSepoliaRuntimeManifest`, `loadArbitrumSepoliaOrderContextConfig` |
 | `api/solana-devnet-runtime.json`, `api/solana-devnet-order-context.json` | `loadSolanaDevnetRuntimeManifest` (API) and `loadSolanaDevnetSharedManifest` (solver), `loadSolanaDevnetOrderContextConfig` |
 | `api/hyperliquid-testnet-runtime.json`, `api/hyperliquid-native-strategy-order-profiles.json` | Hyperliquid runtime and native strategy-order profile loaders |
+| `api/hyperliquid-public-market-support.json`, `api/hyperliquid-public-market-bootstrap.json`, `api/hyperliquid-public-graph-context.json` | Private terminal package exchange support, idempotent registry and book bootstrap, and strategy graph admission |
 | `api/testnet-execution-policy.json` | `loadTestnetExecutionPolicy` |
 | `solver/base-sepolia-quote.json`, `solver/arbitrum-sepolia-quote.json`, `solver/arbitrum-sepolia-executor.json`, `solver/solana-devnet-solver.json`, `solver/hyperliquid-*.json` | the solver's quote, preparation, executor, and binding loaders |
 | `keeper/code-watchlist.json`, `keeper/funding-mirror.json` | `loadCodeHashMonitorConfig`, `loadFundingMirrorConfig` |
