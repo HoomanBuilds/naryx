@@ -40,6 +40,7 @@ export {
   type GeneralizedStrategyQuoteTerms,
   type StoredGeneralizedStrategyQuote,
 } from './strategy-quote-service.js';
+export { createGeneralizedStrategyQuoteInternalHandler } from './strategy-quote-server.js';
 export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,

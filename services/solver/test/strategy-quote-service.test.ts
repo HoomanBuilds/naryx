@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
+import { createServer } from 'node:http';
 import test from 'node:test';
 import {
   adapterRef,
@@ -18,7 +19,11 @@ import {
   type PackageGraphInput,
   type PackageTemplateManifestInput,
 } from '@naryx/protocol-types';
-import { GeneralizedStrategyQuoteError, GeneralizedStrategyQuoteService } from '../src/index.js';
+import {
+  createGeneralizedStrategyQuoteInternalHandler,
+  GeneralizedStrategyQuoteError,
+  GeneralizedStrategyQuoteService,
+} from '../src/index.js';
 
 const domain = domainRef('eip155:84532', 1, '11'.repeat(32));
 const sol = assetRef('sol', '22'.repeat(32), 9);
@@ -302,4 +307,49 @@ test('generalized RFQ prices, compiles, signs, validates, and replays one commit
     () => service.quote({ orderHash: 'ff'.repeat(32), idempotencyKey: request.idempotencyKey }),
     (error: unknown) => error instanceof GeneralizedStrategyQuoteError && error.code === 'IDEMPOTENCY_CONFLICT',
   );
+});
+
+test('generalized strategy quote handler is direct-loopback-only and maps typed failures', async () => {
+  const handler = createGeneralizedStrategyQuoteInternalHandler({
+    quote: async (request) => {
+      if (request.orderHash === 'ff'.repeat(32)) {
+        throw new GeneralizedStrategyQuoteError('ORDER_NOT_FOUND', 'order is unavailable');
+      }
+      return {
+        version: 1,
+        status: 'SIGNED',
+        idempotencyKey: request.idempotencyKey,
+        orderHash: request.orderHash,
+      } as never;
+    },
+  });
+  const server = createServer(async (request, response) => {
+    if (!(await handler(request, response))) response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('test server address is unavailable');
+  const url = `http://127.0.0.1:${address.port}/internal/strategy-quotes`;
+  const body = { orderHash: '11'.repeat(32), idempotencyKey: 'strategy-quote-0002' };
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json() as { orderHash: string }).orderHash, body.orderHash);
+    assert.equal((await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://terminal.example' },
+      body: JSON.stringify(body),
+    })).status, 403);
+    assert.equal((await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, orderHash: 'ff'.repeat(32) }),
+    })).status, 404);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
 });
