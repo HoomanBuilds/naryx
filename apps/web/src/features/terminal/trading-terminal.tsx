@@ -1087,7 +1087,6 @@ function Ticket({
   selectedLifecycleAction,
   privateApiBaseUrl,
   publicApiBaseUrl,
-  authorizeStrategyExecution,
   signStrategyOrder,
   canRefreshReview,
   onModeChange,
@@ -1132,7 +1131,6 @@ function Ticket({
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
-  authorizeStrategyExecution?: (attempt: Readonly<{ attemptId: string; sourceOrderHash: string }>) => Promise<void>;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
@@ -1369,7 +1367,6 @@ function Ticket({
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
           signStrategyOrder={signStrategyOrder}
-          authorizeExecution={authorizeStrategyExecution}
         />
       ) : null}
 
@@ -3444,19 +3441,6 @@ export function TradingTerminal({
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
-            authorizeStrategyExecution={privateProvider === null || currentHyperliquidFlow?.attempt === null
-              || currentHyperliquidFlow?.attempt === undefined
-              ? undefined
-              : async (selected) => {
-                const source = currentHyperliquidFlow.attempt!;
-                if (source.orderHash !== selected.sourceOrderHash) {
-                  throw new Error("The generalized package does not bind the selected source order.");
-                }
-                const attempt = { ...source, attemptId: selected.attemptId };
-                const authorization = await privateProvider.prepareHyperliquidAuthorization(attempt);
-                const signature = await evmWallet.signChainlessTypedData(authorization.typedData);
-                await privateProvider.authorizeHyperliquid(attempt, signature);
-              }}
             signStrategyOrder={evmWallet.account === null
               ? undefined
               : async (challenge) => {

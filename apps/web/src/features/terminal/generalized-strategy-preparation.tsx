@@ -103,7 +103,7 @@ type SelectedStrategyExecution = Readonly<{
   orderHash: string;
   quoteHash: string;
   routeHash: string;
-  sourceOrderHash: string;
+  sourceOrderHash: string | null;
   selectedAtMs: number;
 }>;
 
@@ -412,18 +412,25 @@ function parseAuthorizedStrategyOrder(payload: unknown, expected: StrategyOrderA
 
 function parseSelectedExecution(
   payload: unknown,
-  expected: Readonly<{ orderHash: string; quoteHash: string; routeHash: string; sourceOrderHash: string }>,
+  expected: Readonly<{ orderHash: string; quoteHash: string; routeHash: string; sourceOrderHash: string | null }>,
 ): SelectedStrategyExecution {
   const root = record(payload, "Strategy execution selection");
-  if (root.version !== 1 || root.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED") {
+  const legacy = expected.sourceOrderHash !== null;
+  if (root.version !== (legacy ? 1 : 2) || root.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED") {
     throw new Error("Strategy execution selection response is invalid.");
+  }
+  const sourceOrderHash = legacy
+    ? hash(root.sourceOrderHashHex, "Selected source order hash")
+    : null;
+  if (!legacy && "sourceOrderHashHex" in root) {
+    throw new Error("Native strategy execution unexpectedly carries a source order.");
   }
   const selected = Object.freeze({
     attemptId: text(root.attemptId, "Strategy attempt id"),
     orderHash: hash(root.orderHashHex, "Selected order hash"),
     quoteHash: hash(root.quoteHashHex, "Selected quote hash"),
     routeHash: hash(root.routeHashHex, "Selected route hash"),
-    sourceOrderHash: hash(root.sourceOrderHashHex, "Selected source order hash"),
+    sourceOrderHash,
     selectedAtMs: unsignedInteger(root.selectedAtMs, "Selection time"),
   });
   if (selected.orderHash !== expected.orderHash || selected.quoteHash !== expected.quoteHash
@@ -575,7 +582,6 @@ export function GeneralizedStrategyPreparationPanel({
   lifecycleAction,
   sourceOrderHash = null,
   signStrategyOrder,
-  authorizeExecution,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
@@ -583,7 +589,6 @@ export function GeneralizedStrategyPreparationPanel({
   lifecycleAction: string;
   sourceOrderHash?: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
-  authorizeExecution?: (attempt: SelectedStrategyExecution) => Promise<void>;
 }) {
   const [orderHash, setOrderHash] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
@@ -770,8 +775,7 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   async function selectExecution() {
-    if (privateApiBaseUrl === null || review === null || sourceOrderHash === null
-      || authorizedOrderHash !== review.orderHash) return;
+    if (privateApiBaseUrl === null || review === null || authorizedOrderHash !== review.orderHash) return;
     setSelectionBusy(true);
     setError(null);
     const idempotencyKey = selectionKey || crypto.randomUUID();
@@ -787,7 +791,7 @@ export function GeneralizedStrategyPreparationPanel({
           orderHash: review.orderHash,
           quoteHash: review.quoteHash,
           routeHash: review.routeHash,
-          sourceOrderHash,
+          ...(sourceOrderHash === null ? {} : { sourceOrderHash }),
           idempotencyKey,
         }),
       });
@@ -817,8 +821,6 @@ export function GeneralizedStrategyPreparationPanel({
     if (executionKey === "") setExecutionKey(idempotencyKey);
     let handoffStarted = false;
     try {
-      if (authorizeExecution === undefined) throw new Error("Connect the package owner wallet before execution.");
-      await authorizeExecution(executionAttempt);
       handoffStarted = true;
       setExecutionProgress(Object.freeze({ state: "EXECUTING", lane: null, queuePosition: null }));
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/execute`, {
@@ -1079,7 +1081,7 @@ export function GeneralizedStrategyPreparationPanel({
           <button
             type="button"
             className={styles.primaryAction}
-            disabled={privateApiBaseUrl === null || selectionBusy || sourceOrderHash === null || authorizedOrderHash !== review.orderHash}
+            disabled={privateApiBaseUrl === null || selectionBusy || authorizedOrderHash !== review.orderHash}
             onClick={() => void selectExecution()}
           >
             {selectionBusy ? "Selecting package execution" : executionAttempt ? "Package execution selected" : "Select package execution"}
@@ -1095,7 +1097,7 @@ export function GeneralizedStrategyPreparationPanel({
                 disabled={privateApiBaseUrl === null || executionBusy || executionResult !== null || executionProgress !== null}
                 onClick={() => void executeStrategy()}
               >
-                {executionBusy ? "Signing and executing package" : executionResult ? "Package execution recorded" : executionProgress ? "Execution handoff started" : "Sign and execute selected package"}
+                {executionBusy ? "Executing package" : executionResult ? "Package execution recorded" : executionProgress ? "Execution handoff started" : "Execute selected package"}
               </button>
               {executionResult ? (
                 <p className={styles.fieldContext} role="status">
