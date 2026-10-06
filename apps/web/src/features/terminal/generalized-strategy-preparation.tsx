@@ -119,6 +119,30 @@ type StrategyExecutionResult = Readonly<{
   reasons: readonly string[];
 }>;
 
+type StrategyReceiptAmount = Readonly<{
+  assetId: string;
+  decimals: number;
+  atoms: string;
+}>;
+
+type StrategyReceiptSummary = Readonly<{
+  receiptHash: string;
+  terminalState: string;
+  finalityStatus: string;
+  executedAtValue: string;
+  solverId: string;
+  venueFees: StrategyReceiptAmount;
+  residualValue: StrategyReceiptAmount;
+  legs: readonly Readonly<{
+    legId: string;
+    status: string;
+    settled: StrategyReceiptAmount;
+    venueFee: StrategyReceiptAmount;
+    evidenceGrade: string;
+    evidenceHash: string;
+  }>[];
+}>;
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value as Record<string, unknown>;
@@ -417,6 +441,58 @@ function parseExecutionResult(payload: unknown, attemptId: string, idempotencyKe
   return Object.freeze({ status, packageStatus, reasons: Object.freeze(reasons) });
 }
 
+function parseReceiptAmount(value: unknown, context: string): StrategyReceiptAmount {
+  const amount = record(value, context);
+  const asset = record(amount.asset, `${context} asset`);
+  hash(asset.assetManifestHash, `${context} asset manifest`);
+  const decimals = unsignedInteger(asset.decimals, `${context} asset decimals`);
+  if (decimals > 255) throw new Error(`${context} asset decimals are invalid.`);
+  return Object.freeze({
+    assetId: text(asset.assetId, `${context} asset id`).toUpperCase(),
+    decimals,
+    atoms: decimalInteger(amount.atoms, `${context} atoms`),
+  });
+}
+
+function parseStrategyReceipt(payload: unknown, expectedQuoteHash: string): StrategyReceiptSummary {
+  const root = record(decode(payload as Json), "Strategy receipt response");
+  if (root.version !== 1 || hash(root.quoteHash, "Receipt lookup quote hash") !== expectedQuoteHash) {
+    throw new Error("Strategy receipt response does not bind the selected quote.");
+  }
+  const receipt = record(root.receipt, "Strategy receipt");
+  if (hash(receipt.quoteHash, "Receipt quote hash") !== expectedQuoteHash) {
+    throw new Error("Strategy receipt changed the selected quote commitment.");
+  }
+  const legs = list(receipt.legOutcomes, "Strategy receipt legs").map((value, index) => {
+    const leg = record(value, `Strategy receipt leg ${index}`);
+    if (typeof leg.onchainEnforced !== "boolean") throw new Error(`Strategy receipt leg ${index} enforcement is invalid.`);
+    return Object.freeze({
+      legId: text(leg.legId, `Strategy receipt leg ${index} id`),
+      status: text(leg.status, `Strategy receipt leg ${index} status`),
+      settled: parseReceiptAmount(leg.settledQuantity, `Strategy receipt leg ${index} settled quantity`),
+      venueFee: parseReceiptAmount(leg.venueFee, `Strategy receipt leg ${index} venue fee`),
+      evidenceGrade: text(leg.evidenceGrade, `Strategy receipt leg ${index} evidence grade`),
+      evidenceHash: hash(leg.evidenceHash, `Strategy receipt leg ${index} evidence hash`),
+    });
+  });
+  if (legs.length === 0) throw new Error("Strategy receipt has no leg outcomes.");
+  return Object.freeze({
+    receiptHash: hash(root.receiptHashHex, "Strategy receipt hash"),
+    terminalState: text(receipt.terminalState, "Strategy receipt terminal state"),
+    finalityStatus: text(receipt.finalityStatus, "Strategy receipt finality"),
+    executedAtValue: decimalInteger(receipt.executedAtValue, "Strategy receipt execution time"),
+    solverId: text(receipt.solverId, "Strategy receipt solver"),
+    venueFees: parseReceiptAmount(receipt.venueFees, "Strategy receipt venue fees"),
+    residualValue: parseReceiptAmount(receipt.terminalResidualValue, "Strategy receipt residual value"),
+    legs: Object.freeze(legs),
+  });
+}
+
+function hasTerminalStrategyReceipt(result: StrategyExecutionResult): boolean {
+  return result.status === "RECONCILED"
+    && (result.packageStatus === "NO_EFFECT" || result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED");
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -475,6 +551,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [selectionKey, setSelectionKey] = useState("");
   const [executionKey, setExecutionKey] = useState("");
   const [executionResult, setExecutionResult] = useState<StrategyExecutionResult | null>(null);
+  const [strategyReceipt, setStrategyReceipt] = useState<StrategyReceiptSummary | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
   const [stageBusy, setStageBusy] = useState(false);
@@ -533,6 +610,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order staging failed closed.");
     } finally {
@@ -565,6 +643,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
@@ -592,6 +671,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
     } finally {
@@ -631,6 +711,7 @@ export function GeneralizedStrategyPreparationPanel({
       setSelectionKey("");
       setExecutionKey("");
       setExecutionResult(null);
+      setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy order authorization failed closed.");
     } finally {
@@ -669,6 +750,7 @@ export function GeneralizedStrategyPreparationPanel({
       }));
       setExecutionKey("");
       setExecutionResult(null);
+      setStrategyReceipt(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy execution selection failed closed.");
     } finally {
@@ -694,7 +776,18 @@ export function GeneralizedStrategyPreparationPanel({
         body: JSON.stringify({ attemptId: executionAttempt.attemptId, idempotencyKey }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      setExecutionResult(parseExecutionResult(await response.json(), executionAttempt.attemptId, idempotencyKey));
+      const result = parseExecutionResult(await response.json(), executionAttempt.attemptId, idempotencyKey);
+      setExecutionResult(result);
+      if (hasTerminalStrategyReceipt(result) && publicApiBaseUrl !== null) {
+        const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${executionAttempt.quoteHash}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+        });
+        if (!receiptResponse.ok) throw new Error("Execution finalized, but its canonical strategy receipt is unavailable.");
+        setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), executionAttempt.quoteHash));
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy execution failed closed.");
     } finally {
@@ -740,6 +833,7 @@ export function GeneralizedStrategyPreparationPanel({
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
+            setStrategyReceipt(null);
             setError(null);
           }}
         />
@@ -796,6 +890,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setSelectionKey("");
                 setExecutionKey("");
                 setExecutionResult(null);
+                setStrategyReceipt(null);
                 setError(null);
               }}
             >
@@ -824,6 +919,7 @@ export function GeneralizedStrategyPreparationPanel({
             setSelectionKey("");
             setExecutionKey("");
             setExecutionResult(null);
+            setStrategyReceipt(null);
             setError(null);
           }}
         />
@@ -905,6 +1001,29 @@ export function GeneralizedStrategyPreparationPanel({
                   {executionResult.status}{executionResult.packageStatus ? ` / ${executionResult.packageStatus}` : ""}
                   {executionResult.reasons.length > 0 ? `: ${executionResult.reasons.join(", ")}` : ""}
                 </p>
+              ) : null}
+              {strategyReceipt ? (
+                <div className={styles.quoteReview}>
+                  <div className={styles.reviewEconomics}>
+                    <div><span>Venue fees</span><strong>{formatAtomicAmount(strategyReceipt.venueFees.atoms, strategyReceipt.venueFees.decimals, strategyReceipt.venueFees.assetId)}</strong></div>
+                    <div><span>Terminal residual</span><strong>{formatAtomicAmount(strategyReceipt.residualValue.atoms, strategyReceipt.residualValue.decimals, strategyReceipt.residualValue.assetId)}</strong></div>
+                  </div>
+                  <div className={styles.reviewGrid}>
+                    <span>Terminal state</span><strong>{strategyReceipt.terminalState}</strong>
+                    <span>Finality</span><strong>{strategyReceipt.finalityStatus}</strong>
+                    <span>Solver</span><strong>{strategyReceipt.solverId}</strong>
+                    <span>Receipt</span><strong title={strategyReceipt.receiptHash}>{compact(strategyReceipt.receiptHash)}</strong>
+                    <span>Executed at</span><strong>{strategyReceipt.executedAtValue}</strong>
+                  </div>
+                  {strategyReceipt.legs.map((leg) => (
+                    <div className={styles.reviewGrid} key={leg.legId}>
+                      <span>{leg.legId}</span><strong>{leg.status}</strong>
+                      <span>Settled</span><strong>{formatAtomicAmount(leg.settled.atoms, leg.settled.decimals, leg.settled.assetId)}</strong>
+                      <span>Venue fee</span><strong>{formatAtomicAmount(leg.venueFee.atoms, leg.venueFee.decimals, leg.venueFee.assetId)}</strong>
+                      <span>Evidence</span><strong title={leg.evidenceHash}>{leg.evidenceGrade} / {compact(leg.evidenceHash)}</strong>
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </>
           ) : null}

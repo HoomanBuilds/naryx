@@ -356,6 +356,16 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (positions !== undefined) opened.push(positions);
+    const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
+    const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
+    const strategyPackagePath = optional(environment.NARYX_STRATEGY_PACKAGE_DB);
+    if (strategyPackagePath !== undefined && (graphContext === undefined || registry === undefined)) {
+      throw new PublicMarketConfigError("NARYX_STRATEGY_PACKAGE_DB requires NARYX_GRAPH_COMPILE_CONTEXT and NARYX_REGISTRY_DB for admission.");
+    }
+    const strategyPackages = strategyPackagePath === undefined
+      ? undefined
+      : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
+    if (strategyPackages !== undefined) opened.push(strategyPackages);
     const strategyPath = optional(environment.NARYX_STRATEGY_DB);
     if (strategyPath !== undefined && evidence === undefined) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
@@ -368,7 +378,7 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteStrategyBookStore(absolute(strategyPath, "NARYX_STRATEGY_DB"), {
         environment: publicEnvironment as string,
-        originReceipt: (receiptHashHex) => evidence.outcomeByReceipt(receiptHashHex)?.receipt,
+        originReceipt: (receiptHashHex) => strategyPackages?.receipt(receiptHashHex) ?? evidence.outcomeByReceipt(receiptHashHex)?.receipt,
         clock: clockMs,
       });
     if (strategies !== undefined) opened.push(strategies);
@@ -401,16 +411,6 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteCoordinationStore(absolute(coordinationPath, "NARYX_COORDINATION_DB"), { environment: publicEnvironment as string, clock: clockMs });
     if (coordination !== undefined) opened.push(coordination);
-    const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
-    const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
-    const strategyPackagePath = optional(environment.NARYX_STRATEGY_PACKAGE_DB);
-    if (strategyPackagePath !== undefined && (graphContext === undefined || registry === undefined)) {
-      throw new PublicMarketConfigError("NARYX_STRATEGY_PACKAGE_DB requires NARYX_GRAPH_COMPILE_CONTEXT and NARYX_REGISTRY_DB for admission.");
-    }
-    const strategyPackages = strategyPackagePath === undefined
-      ? undefined
-      : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
-    if (strategyPackages !== undefined) opened.push(strategyPackages);
     const strategyOrderIntake = strategyPackages === undefined || graphContext === undefined || registry === undefined
       ? undefined
       : createStrategyOrderIntake({

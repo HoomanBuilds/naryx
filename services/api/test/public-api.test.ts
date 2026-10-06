@@ -288,6 +288,16 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     assert.equal(receipt.status, 200);
     assert.deepEqual(receipt.body, { version: 1, receiptHash: "44".repeat(32), receipt: { version: 1, receiptNonce: 7n } });
     assert.equal((await get(`/v1/strategy-receipts/${"55".repeat(32)}`)).status, 404);
+    const byQuote = await get(`/v1/strategy-receipts/by-quote/${"22".repeat(32)}`);
+    assert.equal(byQuote.status, 200);
+    assert.deepEqual(byQuote.body, {
+      version: 1,
+      quoteHash: "22".repeat(32),
+      receiptHashHex: "44".repeat(32),
+      receipt: { version: 1, receiptNonce: 7n },
+      recordedAtMs: 120_001,
+    });
+    assert.equal((await get(`/v1/strategy-receipts/by-quote/${"33".repeat(32)}`)).status, 404);
   }, {
     strategyPackages: {
       registerOrder: () => { throw new Error("not used"); },
@@ -297,6 +307,11 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
         return [summary];
       },
       receipt: (hash) => hash === "44".repeat(32) ? ({ version: 1, receiptNonce: 7n } as never) : undefined,
+      receiptByQuote: (hash) => hash === "22".repeat(32) ? ({
+        receiptHashHex: "44".repeat(32),
+        receipt: { version: 1, receiptNonce: 7n } as never,
+        recordedAtMs: 120_001,
+      }) : undefined,
     },
   });
 });

@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS strategy_package_receipts (
 CREATE INDEX IF NOT EXISTS strategy_package_orders_by_owner ON strategy_package_orders(owner_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_quotes_by_order ON strategy_package_quotes(order_hash, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_receipts_by_order ON strategy_package_receipts(order_hash, recorded_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS strategy_package_receipts_by_quote ON strategy_package_receipts(quote_hash);
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
@@ -521,14 +522,21 @@ export class SqliteStrategyPackageStore {
       }
     }
     const receiptHashHex = toHex(receiptHash);
+    const receiptJson = stringifyProtocolJson(receipt);
     return this.db.transaction(() => {
+      const knownForQuote = this.db.prepare("SELECT receipt_hash, receipt_json FROM strategy_package_receipts WHERE quote_hash = ?").get(receipt.quoteHash) as { receipt_hash: Uint8Array; receipt_json: string } | undefined;
+      if (knownForQuote !== undefined) {
+        requireCondition(bytesEqual(knownForQuote.receipt_hash, receiptHash) && knownForQuote.receipt_json === receiptJson,
+          "RECEIPT_CONFLICT", "The selected quote already has another terminal receipt.");
+        return Object.freeze({ created: false, receiptHashHex });
+      }
       const known = this.db.prepare("SELECT receipt_json FROM strategy_package_receipts WHERE receipt_hash = ?").get(receiptHash) as { receipt_json: string } | undefined;
       if (known !== undefined) {
-        requireCondition(known.receipt_json === stringifyProtocolJson(receipt), "HASH_CONFLICT", "The receipt hash is already stored with different bytes.");
+        requireCondition(known.receipt_json === receiptJson, "HASH_CONFLICT", "The receipt hash is already stored with different bytes.");
         return Object.freeze({ created: false, receiptHashHex });
       }
       this.db.prepare("INSERT INTO strategy_package_receipts (receipt_hash, order_hash, quote_hash, route_hash, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(receiptHash, receipt.orderHash, receipt.quoteHash, receipt.routeHash, stringifyProtocolJson(receipt), this.clock());
+        .run(receiptHash, receipt.orderHash, receipt.quoteHash, receipt.routeHash, receiptJson, this.clock());
       return Object.freeze({ created: true, receiptHashHex });
     }).immediate();
   }
@@ -642,6 +650,16 @@ export class SqliteStrategyPackageStore {
     const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
     requireCondition(toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex, "CORRUPT_ROW", "A stored receipt does not match its hash.");
     return receipt;
+  }
+
+  receiptByQuote(quoteHashHex: string): StoredStrategyPackageReceipt | undefined {
+    const row = this.db.prepare("SELECT receipt_hash, receipt_json, recorded_at_ms FROM strategy_package_receipts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as { receipt_hash: Uint8Array; receipt_json: string; recorded_at_ms: number } | undefined;
+    if (row === undefined) return undefined;
+    const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
+    const receiptHashHex = toHex(row.receipt_hash);
+    requireCondition(toHex(receipt.quoteHash) === quoteHashHex && toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex,
+      "CORRUPT_ROW", "A stored receipt does not match its quote or receipt hash.");
+    return Object.freeze({ receiptHashHex, receipt, recordedAtMs: row.recorded_at_ms });
   }
 }
 

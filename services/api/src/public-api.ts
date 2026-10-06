@@ -179,7 +179,7 @@ export interface PublicApiOptions {
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
-  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt">
+  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
     & Partial<Pick<SqliteStrategyPackageStore, "order">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
@@ -774,6 +774,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
       }
       return { version: 1, admissions: requireStrategyPackages().recentAdmissions(Number(rawLimit)) };
+    }
+    if ((match = /^\/v1\/strategy-receipts\/by-quote\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const quoteHash = match[1] as string;
+      const stored = requireStrategyPackages().receiptByQuote(quoteHash);
+      if (stored === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "This quote has no terminal strategy package receipt.");
+      return { version: 1, quoteHash, ...stored };
     }
     if ((match = /^\/v1\/strategy-receipts\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);
