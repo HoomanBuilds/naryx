@@ -4,13 +4,17 @@ import {
   domainRef,
   hash32,
   protocolId,
+  toProtocolJson,
   type DomainRef,
   type Hash32,
 } from '@naryx/protocol-types';
 import { hexToBytes, keccak256, type Address, type Hex } from 'viem';
+import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import {
   prepareCompiledStrategyExecution,
+  preparedStrategyExecutionTransport,
   type CompiledStrategyRouteExecution,
+  type PreparedStrategyExecution,
 } from '../src/index.js';
 
 const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address;
@@ -131,6 +135,8 @@ test('prepares an exact EVM account signature envelope from a compiled package r
   assert.equal(execution.envelope.execution.packageId, HASH_F);
   assert.equal(execution.envelope.calls[0]?.payload, '0x12345678abcdef');
   assert.notEqual(execution.envelope.ownerDigest, execution.envelope.solverDigest);
+  assert.equal(execution.envelope.ownerTypedData.primaryType, 'OwnerExecution');
+  assert.doesNotThrow(() => toProtocolJson(preparedStrategyExecutionTransport(prepared)));
   assert.throws(() => prepareCompiledStrategyExecution({
     compiled,
     identity: {
@@ -143,6 +149,60 @@ test('prepares an exact EVM account signature envelope from a compiled package r
     },
     bindings: [],
   }), /package id differs/);
+});
+
+test('serializes Solana instructions without leaking SDK class instances across the service boundary', () => {
+  const domain = domainRef('solana:devnet', 1, HASH_A);
+  const programId = new PublicKey(new Uint8Array(32).fill(1));
+  const owner = new PublicKey(new Uint8Array(32).fill(2));
+  const strategyAccount = new PublicKey(new Uint8Array(32).fill(3));
+  const position = new PublicKey(new Uint8Array(32).fill(4));
+  const receipt = new PublicKey(new Uint8Array(32).fill(5));
+  const prepared: PreparedStrategyExecution = Object.freeze({
+    version: 1,
+    identity: Object.freeze({
+      packageId: bytes(HASH_F),
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      templateManifestHash: bytes(HASH_A),
+      operation: 'ENTRY',
+      nextStateHash: bytes(HASH_B),
+    }),
+    settlementClass: 'ATOMIC_POSTCONDITION',
+    coordination: 'SINGLE_DOMAIN_ATOMIC',
+    orderHash: bytes(HASH_B),
+    graphHash: bytes(HASH_C),
+    quoteHash: bytes(HASH_D),
+    routeHash: bytes(HASH_E),
+    domains: Object.freeze([Object.freeze({
+      kind: 'SOLANA_MULTI_STRATEGY_ACCOUNT',
+      domain,
+      routeSettlementClass: 'ATOMIC_POSTCONDITION',
+      localGuarantee: 'ATOMIC_POSTCONDITION',
+      envelope: Object.freeze({
+        instruction: new TransactionInstruction({
+          programId,
+          keys: [{ pubkey: owner, isSigner: true, isWritable: true }],
+          data: Buffer.from([1, 2, 3]),
+        }),
+        executionHash: bytes(HASH_B),
+        callsHash: bytes(HASH_C),
+        strategyAccount,
+        position,
+        receipt,
+        requiredSignerPubkeys: Object.freeze([owner.toBase58()]),
+      }),
+    })]),
+  });
+
+  const transport = preparedStrategyExecutionTransport(prepared);
+  const execution = transport.domains[0];
+  assert.equal(execution?.kind, 'SOLANA_MULTI_STRATEGY_ACCOUNT');
+  if (execution?.kind !== 'SOLANA_MULTI_STRATEGY_ACCOUNT') throw new Error('unexpected prepared execution kind');
+  assert.equal(execution.envelope.instruction.programId, programId.toBase58());
+  assert.deepEqual(execution.envelope.instruction.data, Uint8Array.from([1, 2, 3]));
+  assert.equal(Object.getPrototypeOf(execution.envelope.instruction), Object.prototype);
+  assert.doesNotThrow(() => toProtocolJson(transport));
 });
 
 test('passes a bounded HyperCore plan only through an explicit matching executor binding', () => {

@@ -923,6 +923,12 @@ export {
   type PreparedStrategyExecution,
 } from './strategy-execution-preparer.js';
 export {
+  preparedStrategyExecutionTransport,
+  type SolanaInstructionTransport,
+  type PreparedStrategyDomainTransport,
+  type PreparedStrategyExecutionTransport,
+} from './strategy-execution-transport.js';
+export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,
