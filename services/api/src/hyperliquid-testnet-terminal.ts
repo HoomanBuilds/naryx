@@ -46,6 +46,48 @@ export type HyperliquidTestnetExecutionEvidence = Readonly<{
   legs: readonly [HyperliquidTestnetLegExecutionEvidence, HyperliquidTestnetLegExecutionEvidence];
 }>;
 
+export type HyperliquidTestnetStrategyLegEvidence = Readonly<{
+  legId: string;
+  clientOrderId: string;
+  plannedSignedBaseAtoms: string;
+  filledSignedBaseAtoms: string;
+  terminalStatus: "FILLED" | "UNFILLED_IOC_CANCELLED"
+    | "PARTIALLY_FILLED_IOC_CANCELLED" | "REJECTED" | "UNKNOWN";
+  openOrderStatus: "NONE" | "OPEN" | "UNKNOWN";
+  orderId: number | null;
+  fillCount: number;
+  grossQuoteAtoms: string;
+  feeAssetId: string;
+  feeAssetDecimals: number;
+  feeAtoms: string;
+  venueFeeQuoteAtoms: string;
+  observedAtMs: string | null;
+  evidenceCommitment: string;
+}>;
+
+export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
+  batchStage: number;
+  submissionStatus: "NOT_SUBMITTED" | HyperliquidTestnetSubmissionStatus;
+  actionCommitment: string | null;
+  requestCommitment: string | null;
+  evidence: null | Readonly<{
+    status: "COMPLETE" | "INCOMPLETE";
+    outcome: "COMPLETED" | "NO_EFFECT" | "RECOVERY_REQUIRED" | "MANUAL_INTERVENTION" | null;
+    reasons: readonly string[];
+    observedAtMs: string | null;
+    legs: readonly HyperliquidTestnetStrategyLegEvidence[];
+    rawEvidenceCommitments: readonly string[];
+  }>;
+}>;
+
+export type HyperliquidTestnetStrategyPackageStatus =
+  | "COMPLETED"
+  | "NO_EFFECT"
+  | "RECOVERY_REQUIRED"
+  | "MANUAL_INTERVENTION"
+  | "EVIDENCE_INCOMPLETE"
+  | "SUBMISSION_FAILED";
+
 export type HyperliquidTestnetTerminalExecutionResult =
   | Readonly<{
     attemptId: string;
@@ -141,6 +183,16 @@ export type HyperliquidTestnetTerminalExecutionResult =
     reason: string;
     actionCommitment: string | null;
     requestCommitment: string | null;
+  }>
+  | Readonly<{
+    attemptId: string;
+    idempotencyKey: string;
+    domain: typeof HYPERLIQUID_TESTNET_DOMAIN;
+    environment: typeof HYPERLIQUID_TESTNET_ENVIRONMENT;
+    status: "STRATEGY_EXECUTION";
+    packageStatus: HyperliquidTestnetStrategyPackageStatus;
+    completedStages: readonly number[];
+    stages: readonly HyperliquidTestnetStrategyStageEvidence[];
   }>;
 
 export interface HyperliquidTestnetTerminalExecutionPort {
@@ -167,7 +219,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value).sort();
-  return keys.length === expected.length && expected.every((key, index) => keys[index] === key);
+  const required = [...expected].sort();
+  return keys.length === required.length && required.every((key, index) => keys[index] === key);
 }
 
 function requireBrowserId(value: unknown, name: string): string {
@@ -269,6 +322,134 @@ function requireUnsignedAtoms(value: unknown, name: string, nonzero = false): st
     throw new Error(`${name} must be ${nonzero ? "positive" : "nonnegative"} integer atoms`);
   }
   return checked;
+}
+
+function requireNonnegativeInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a nonnegative safe integer`);
+  }
+  return value;
+}
+
+function requireStrategyLegEvidence(value: unknown, index: number): HyperliquidTestnetStrategyLegEvidence {
+  const name = `strategy.legs[${index}]`;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "clientOrderId", "evidenceCommitment", "feeAssetDecimals", "feeAssetId", "feeAtoms",
+    "filledSignedBaseAtoms", "fillCount", "grossQuoteAtoms", "legId", "observedAtMs",
+    "openOrderStatus", "orderId", "plannedSignedBaseAtoms", "terminalStatus",
+    "venueFeeQuoteAtoms",
+  ])) throw new Error(`${name} has invalid fields`);
+  if (typeof value.clientOrderId !== "string" || !/^0x[0-9a-f]{32}$/.test(value.clientOrderId)) {
+    throw new Error(`${name}.clientOrderId is invalid`);
+  }
+  if (typeof value.feeAssetId !== "string" || value.feeAssetId.length < 1
+    || value.feeAssetId.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value.feeAssetId)) {
+    throw new Error(`${name}.feeAssetId is invalid`);
+  }
+  const feeAssetDecimals = requireNonnegativeInteger(value.feeAssetDecimals, `${name}.feeAssetDecimals`);
+  if (feeAssetDecimals > 30) throw new Error(`${name}.feeAssetDecimals is invalid`);
+  if (value.terminalStatus !== "FILLED" && value.terminalStatus !== "UNFILLED_IOC_CANCELLED"
+    && value.terminalStatus !== "PARTIALLY_FILLED_IOC_CANCELLED"
+    && value.terminalStatus !== "REJECTED" && value.terminalStatus !== "UNKNOWN") {
+    throw new Error(`${name}.terminalStatus is invalid`);
+  }
+  if (value.openOrderStatus !== "NONE" && value.openOrderStatus !== "OPEN"
+    && value.openOrderStatus !== "UNKNOWN") throw new Error(`${name}.openOrderStatus is invalid`);
+  const orderId = value.orderId === null ? null : requireNonnegativeInteger(value.orderId, `${name}.orderId`);
+  if (orderId === 0) throw new Error(`${name}.orderId is invalid`);
+  const fillCount = requireNonnegativeInteger(value.fillCount, `${name}.fillCount`);
+  const observedAtMs = value.observedAtMs === null
+    ? null : requireUnsignedAtoms(value.observedAtMs, `${name}.observedAtMs`, true);
+  const grossQuoteAtoms = requireUnsignedAtoms(value.grossQuoteAtoms, `${name}.grossQuoteAtoms`);
+  const feeAtoms = requireUnsignedAtoms(value.feeAtoms, `${name}.feeAtoms`);
+  const venueFeeQuoteAtoms = requireUnsignedAtoms(
+    value.venueFeeQuoteAtoms, `${name}.venueFeeQuoteAtoms`,
+  );
+  if ((fillCount === 0 && (observedAtMs !== null || grossQuoteAtoms !== "0"
+      || feeAtoms !== "0" || venueFeeQuoteAtoms !== "0"))
+    || (fillCount > 0 && observedAtMs === null)) {
+    throw new Error(`${name} economics are inconsistent`);
+  }
+  return Object.freeze({
+    legId: requireLegId(value.legId, `${name}.legId`),
+    clientOrderId: value.clientOrderId,
+    plannedSignedBaseAtoms: requireSignedAtoms(value.plannedSignedBaseAtoms, `${name}.plannedSignedBaseAtoms`),
+    filledSignedBaseAtoms: requireSignedAtoms(value.filledSignedBaseAtoms, `${name}.filledSignedBaseAtoms`),
+    terminalStatus: value.terminalStatus,
+    openOrderStatus: value.openOrderStatus,
+    orderId,
+    fillCount,
+    grossQuoteAtoms,
+    feeAssetId: value.feeAssetId,
+    feeAssetDecimals,
+    feeAtoms,
+    venueFeeQuoteAtoms,
+    observedAtMs,
+    evidenceCommitment: requireCommitment(value.evidenceCommitment, `${name}.evidenceCommitment`),
+  });
+}
+
+function requireStrategyStageEvidence(value: unknown, index: number): HyperliquidTestnetStrategyStageEvidence {
+  const name = `stages[${index}]`;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "actionCommitment", "batchStage", "evidence", "requestCommitment", "submissionStatus",
+  ])) throw new Error(`${name} has invalid fields`);
+  const batchStage = requireNonnegativeInteger(value.batchStage, `${name}.batchStage`);
+  const submissionStatus = value.submissionStatus === "NOT_SUBMITTED"
+    ? "NOT_SUBMITTED" as const : requireSubmissionStatus(value.submissionStatus);
+  const actionCommitment = requireNullableCommitment(value.actionCommitment, `${name}.actionCommitment`);
+  const requestCommitment = requireNullableCommitment(value.requestCommitment, `${name}.requestCommitment`);
+  if (value.evidence === null) {
+    if (submissionStatus !== "NOT_SUBMITTED") throw new Error(`${name} is missing evidence`);
+    return Object.freeze({ batchStage, submissionStatus, actionCommitment, requestCommitment, evidence: null });
+  }
+  if (submissionStatus === "NOT_SUBMITTED" || actionCommitment === null || requestCommitment === null
+    || !isRecord(value.evidence) || !hasExactKeys(value.evidence, [
+      "legs", "observedAtMs", "outcome", "rawEvidenceCommitments", "reasons", "status",
+    ])) throw new Error(`${name}.evidence has invalid fields`);
+  const evidence = value.evidence;
+  if (evidence.status !== "COMPLETE" && evidence.status !== "INCOMPLETE") {
+    throw new Error(`${name}.evidence.status is invalid`);
+  }
+  const evidenceStatus: "COMPLETE" | "INCOMPLETE" = evidence.status;
+  const completeOutcome = evidence.outcome === "COMPLETED" || evidence.outcome === "NO_EFFECT"
+    || evidence.outcome === "RECOVERY_REQUIRED" || evidence.outcome === "MANUAL_INTERVENTION";
+  if ((evidence.status === "COMPLETE" && !completeOutcome)
+    || (evidence.status === "INCOMPLETE" && evidence.outcome !== null)) {
+    throw new Error(`${name}.evidence.outcome is invalid`);
+  }
+  const evidenceOutcome = completeOutcome
+    ? evidence.outcome as "COMPLETED" | "NO_EFFECT" | "RECOVERY_REQUIRED" | "MANUAL_INTERVENTION"
+    : null;
+  const observedAtMs = evidence.observedAtMs === null
+    ? null : requireUnsignedAtoms(evidence.observedAtMs, `${name}.evidence.observedAtMs`, true);
+  if (evidence.status === "COMPLETE" && observedAtMs === null) {
+    throw new Error(`${name}.evidence.observedAtMs is required`);
+  }
+  if (!Array.isArray(evidence.legs) || evidence.legs.length < 1 || evidence.legs.length > 16) {
+    throw new Error(`${name}.evidence.legs must be bounded`);
+  }
+  const legs = evidence.legs.map((leg, legIndex) => requireStrategyLegEvidence(leg, legIndex));
+  if (new Set(legs.map((leg) => leg.legId)).size !== legs.length
+    || new Set(legs.map((leg) => leg.clientOrderId)).size !== legs.length) {
+    throw new Error(`${name}.evidence leg identities must be unique`);
+  }
+  const allowEmptyReasons = evidence.status === "COMPLETE"
+    && (evidence.outcome === "COMPLETED" || evidence.outcome === "NO_EFFECT");
+  return Object.freeze({
+    batchStage,
+    submissionStatus,
+    actionCommitment,
+    requestCommitment,
+    evidence: Object.freeze({
+      status: evidenceStatus,
+      outcome: evidenceOutcome,
+      reasons: requireReasons(evidence.reasons, allowEmptyReasons),
+      observedAtMs,
+      legs: Object.freeze(legs),
+      rawEvidenceCommitments: requireEvidenceCommitments(evidence.rawEvidenceCommitments),
+    }),
+  });
 }
 
 function requireLegExecutionEvidence(
@@ -528,6 +709,58 @@ export function validateHyperliquidTestnetTerminalExecutionResult(
         reason: requireReason(value.reason, "reason"),
         actionCommitment: requireNullableCommitment(value.actionCommitment, "actionCommitment"),
         requestCommitment: requireNullableCommitment(value.requestCommitment, "requestCommitment"),
+      });
+    }
+    case "STRATEGY_EXECUTION": {
+      if (!hasExactKeys(value, [...BASE_KEYS, "completedStages", "packageStatus", "stages"].sort())) {
+        throw new Error("STRATEGY_EXECUTION has invalid fields");
+      }
+      if (value.packageStatus !== "COMPLETED" && value.packageStatus !== "NO_EFFECT"
+        && value.packageStatus !== "RECOVERY_REQUIRED"
+        && value.packageStatus !== "MANUAL_INTERVENTION"
+        && value.packageStatus !== "EVIDENCE_INCOMPLETE"
+        && value.packageStatus !== "SUBMISSION_FAILED") {
+        throw new Error("strategy packageStatus is unsupported");
+      }
+      if (!Array.isArray(value.completedStages) || !Array.isArray(value.stages)
+        || value.stages.length < 1 || value.stages.length > 16) {
+        throw new Error("strategy stage progression is invalid");
+      }
+      const completedStages = value.completedStages.map((stage, index) =>
+        requireNonnegativeInteger(stage, `completedStages[${index}]`));
+      const stages = value.stages.map((stage, index) => requireStrategyStageEvidence(stage, index));
+      if (new Set(completedStages).size !== completedStages.length
+        || new Set(stages.map((stage) => stage.batchStage)).size !== stages.length
+        || stages.some((stage, index) => index > 0 && stages[index - 1]!.batchStage >= stage.batchStage)
+        || completedStages.some((stage, index) => stage !== stages[index]?.batchStage
+          || stages[index]?.evidence?.status !== "COMPLETE"
+          || stages[index]?.evidence?.outcome !== "COMPLETED")) {
+        throw new Error("strategy stage progression is invalid");
+      }
+      if (value.packageStatus === "COMPLETED"
+        && (completedStages.length !== stages.length
+          || stages.some((stage) => stage.evidence?.outcome !== "COMPLETED"))) {
+        throw new Error("completed strategy evidence is inconsistent");
+      }
+      if (value.packageStatus === "NO_EFFECT"
+        && (completedStages.length !== 0 || stages.length !== 1
+          || stages[0]?.evidence?.outcome !== "NO_EFFECT")) {
+        throw new Error("no-effect strategy evidence is inconsistent");
+      }
+      if (value.packageStatus === "SUBMISSION_FAILED"
+        && (completedStages.length !== 0 || stages.length !== 1
+          || stages[0]?.submissionStatus !== "NOT_SUBMITTED" || stages[0].evidence !== null)) {
+        throw new Error("failed strategy submission is inconsistent");
+      }
+      return Object.freeze({
+        attemptId: request.attemptId,
+        idempotencyKey: request.idempotencyKey,
+        domain: HYPERLIQUID_TESTNET_DOMAIN,
+        environment: HYPERLIQUID_TESTNET_ENVIRONMENT,
+        status,
+        packageStatus: value.packageStatus,
+        completedStages: Object.freeze(completedStages),
+        stages: Object.freeze(stages),
       });
     }
     default:

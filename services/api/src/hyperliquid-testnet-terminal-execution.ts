@@ -75,7 +75,9 @@ export type HyperliquidTestnetExecutorHttpOptions = Readonly<{
 export function hyperliquidTerminalResultIsFinal(result: HyperliquidTestnetTerminalExecutionResult): boolean {
   return result.status === "NOT_SUBMITTED" || result.status === "CHECKPOINT_INCOMPLETE" || result.status === "CHECKPOINT_FAILED"
     || (result.status === "RECONCILED" && (result.packageStatus === "NO_EFFECT"
-      || result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED"));
+      || result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED"))
+    || (result.status === "STRATEGY_EXECUTION"
+      && (result.packageStatus === "COMPLETED" || result.packageStatus === "NO_EFFECT"));
 }
 
 export class HyperliquidTestnetTerminalExecutionStateError extends Error {
@@ -361,7 +363,9 @@ implements HyperliquidTestnetTerminalExecutionPort {
       WHERE status = 'COMPLETED' AND CASE WHEN json_valid(result_json) THEN NOT (
         json_extract(result_json, '$.status') IN ('NOT_SUBMITTED', 'CHECKPOINT_INCOMPLETE', 'CHECKPOINT_FAILED')
         OR (json_extract(result_json, '$.status') = 'RECONCILED'
-          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED_EXACT', 'COMPLETED_BOUNDED')))
+          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED_EXACT', 'COMPLETED_BOUNDED'))
+        OR (json_extract(result_json, '$.status') = 'STRATEGY_EXECUTION'
+          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED')))
         ELSE 0 END
       ORDER BY rowid LIMIT ? OFFSET ?
     `);

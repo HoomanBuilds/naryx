@@ -146,10 +146,12 @@ test("only the owner wallet's typed-data signature authorizes its package", with
   assert.equal(ledger.packages(input.owner)[0]?.state, "PENDING_ENTRY");
 }));
 
-test("a generalized strategy attempt reuses its exact source order authorization", withLedger((ledger) => {
+test("a generalized strategy attempt requires its own authorization and bypasses the cash ledger", withLedger((ledger) => {
   const sourceOrderHash = "0c".repeat(32);
+  const strategyOrderHash = "0d".repeat(32);
   const sourceAttemptId = `hyperliquid-testnet-${"cd".repeat(24)}`;
   const strategyAttemptId = `strategy-hl-${"ef".repeat(24)}`;
+  let generalizedAuthorized = false;
   const order = {
     owner: ALICE, settlementAccount: TRADING, action: "ENTRY",
     maxSpotQuoteIn: { atoms: 1_000n }, quantity: { atoms: 100n },
@@ -168,7 +170,17 @@ test("a generalized strategy attempt reuses its exact source order authorization
     },
     orders: { getCanonicalOrderByHash: (orderHash) => orderHash === sourceOrderHash ? order : undefined },
     strategyAttempts: {
-      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId ? { sourceOrderHashHex: sourceOrderHash } : undefined,
+      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId
+        ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash } : undefined,
+    },
+    strategyReceipts: {
+      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId
+        ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash, quoteHashHex: "0e".repeat(32) } as never
+        : undefined,
+      admissionByQuote: () => ({ orderHashHex: strategyOrderHash, order: { owner: ALICE } }) as never,
+      ownerAuthorization: () => generalizedAuthorized
+        ? { owner: ALICE } as never : undefined,
+      recordReceipt: () => { throw new Error("must not record during admission"); },
     },
     tradingAccount: TRADING,
     limits: LIMITS,
@@ -177,11 +189,10 @@ test("a generalized strategy attempt reuses its exact source order authorization
   const request = { attemptId: strategyAttemptId, idempotencyKey: KEY };
   assert.throws(() => guard.admit(request), /OWNER_AUTHORIZATION_REQUIRED|must sign/);
   ledger.recordAuthorization(sourceOrderHash, ALICE, "0x00");
+  assert.throws(() => guard.admit(request), /OWNER_AUTHORIZATION_REQUIRED|must sign/);
+  generalizedAuthorized = true;
   guard.admit(request);
-  assert.deepEqual(
-    [ledger.packages(ALICE)[0]?.entryAttemptId, ledger.packages(ALICE)[0]?.entryOrderHash],
-    [strategyAttemptId, sourceOrderHash],
-  );
+  assert.deepEqual(ledger.packages(ALICE), []);
 }));
 
 test("an UNRESOLVED entry or exit takes its later final outcome, and a later unresolved one changes nothing", withLedger((ledger) => {

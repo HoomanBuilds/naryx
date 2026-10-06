@@ -158,6 +158,44 @@ function variantFixtures(): Array<{ name: string; result: HyperliquidTestnetTerm
         requestCommitment: REQUEST,
       } as unknown as HyperliquidTestnetTerminalExecutionResult,
     },
+    {
+      name: "STRATEGY_EXECUTION",
+      result: {
+        ...base("STRATEGY_EXECUTION"),
+        packageStatus: "COMPLETED",
+        completedStages: [0],
+        stages: [{
+          batchStage: 0,
+          submissionStatus: "ACKNOWLEDGED",
+          actionCommitment: ACTION,
+          requestCommitment: REQUEST,
+          evidence: {
+            status: "COMPLETE",
+            outcome: "COMPLETED",
+            reasons: [],
+            observedAtMs: "1000100",
+            legs: [{
+              legId: "spot",
+              clientOrderId: `0x${"51".repeat(16)}`,
+              plannedSignedBaseAtoms: "1000",
+              filledSignedBaseAtoms: "1000",
+              terminalStatus: "FILLED",
+              openOrderStatus: "NONE",
+              orderId: 1,
+              fillCount: 1,
+              grossQuoteAtoms: "6000",
+              feeAssetId: "btc",
+              feeAssetDecimals: 3,
+              feeAtoms: "1",
+              venueFeeQuoteAtoms: "6",
+              observedAtMs: "1000050",
+              evidenceCommitment: LEG_EVIDENCE,
+            }],
+            rawEvidenceCommitments: [EVIDENCE],
+          },
+        }],
+      } as unknown as HyperliquidTestnetTerminalExecutionResult,
+    },
   ];
 }
 

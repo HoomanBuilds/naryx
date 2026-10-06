@@ -8,6 +8,7 @@ import {
 import type { HyperliquidTestnetTerminalExecutionResult } from "../src/hyperliquid-testnet-terminal.js";
 
 type ReconciledResult = Extract<HyperliquidTestnetTerminalExecutionResult, { readonly status: "RECONCILED" }>;
+type StrategyResult = Extract<HyperliquidTestnetTerminalExecutionResult, { readonly status: "STRATEGY_EXECUTION" }>;
 
 const base = assetRef("hypercore:testnet:btc", "11".repeat(32), 5);
 const quote = assetRef("hypercore:testnet:usdc", "12".repeat(32), 6);
@@ -153,4 +154,105 @@ test("receipt construction fails closed on missing or mismatched evidence", () =
       },
     },
   }), { code: "QUANTITY_MISMATCH" });
+});
+
+test("multi-stage generalized evidence builds one deterministic N-leg receipt", () => {
+  const source = admission();
+  const generalized = {
+    ...source,
+    graph: {
+      ...source.graph,
+      legs: [...source.graph.legs, {
+        legId: "perp-close",
+        legFamily: "PERP_CLOSE",
+        side: "BUY",
+        domain,
+        quantityAsset: base,
+        quantityAtoms: 40n,
+        minimumQuantityAtoms: 40n,
+        maximumFeeQuoteAtoms: 10n,
+      }],
+    },
+    quote: {
+      ...source.quote,
+      passThroughCosts: [{ category: "VENUE", amount: assetAmount(quote, 40n) }],
+    },
+  } as unknown as StoredStrategyPackageAdmission;
+  const leg = (
+    legId: string,
+    clientOrderId: string,
+    planned: string,
+    gross: string,
+    feeAssetId: string,
+    feeAssetDecimals: number,
+    feeAtoms: string,
+    venueFeeQuoteAtoms: string,
+    evidenceByte: string,
+  ) => ({
+    legId,
+    clientOrderId,
+    plannedSignedBaseAtoms: planned,
+    filledSignedBaseAtoms: planned,
+    terminalStatus: "FILLED" as const,
+    openOrderStatus: "NONE" as const,
+    orderId: Number.parseInt(evidenceByte, 16),
+    fillCount: 1,
+    grossQuoteAtoms: gross,
+    feeAssetId,
+    feeAssetDecimals,
+    feeAtoms,
+    venueFeeQuoteAtoms,
+    observedAtMs: "1000100",
+    evidenceCommitment: `0x${evidenceByte.repeat(32)}`,
+  });
+  const result: StrategyResult = {
+    attemptId: `strategy-hl-${"51".repeat(24)}`,
+    idempotencyKey: "strategy-receipt-test-0002",
+    domain: "hypercore:testnet",
+    environment: "TESTNET",
+    status: "STRATEGY_EXECUTION",
+    packageStatus: "COMPLETED",
+    completedStages: [0, 1],
+    stages: [{
+      batchStage: 0,
+      submissionStatus: "ACKNOWLEDGED",
+      actionCommitment: `0x${"52".repeat(32)}`,
+      requestCommitment: `0x${"53".repeat(32)}`,
+      evidence: {
+        status: "COMPLETE",
+        outcome: "COMPLETED",
+        reasons: [],
+        observedAtMs: "1000200",
+        legs: [
+          leg("spot", `0x${"54".repeat(16)}`, "100", "60000000", base.assetId, base.decimals, "1", "10", "55"),
+          leg("perp", `0x${"56".repeat(16)}`, "-100", "60000000", quote.assetId, quote.decimals, "20", "20", "57"),
+        ],
+        rawEvidenceCommitments: [`0x${"58".repeat(32)}`],
+      },
+    }, {
+      batchStage: 1,
+      submissionStatus: "ACKNOWLEDGED",
+      actionCommitment: `0x${"59".repeat(32)}`,
+      requestCommitment: `0x${"5a".repeat(32)}`,
+      evidence: {
+        status: "COMPLETE",
+        outcome: "COMPLETED",
+        reasons: [],
+        observedAtMs: "1000300",
+        legs: [
+          leg("perp-close", `0x${"5b".repeat(16)}`, "40", "24000000", quote.assetId, quote.decimals, "5", "5", "5c"),
+        ],
+        rawEvidenceCommitments: [`0x${"5d".repeat(32)}`],
+      },
+    }],
+  };
+  const receipt = buildHyperliquidStrategyPackageReceipt({
+    attemptId: result.attemptId,
+    admission: generalized,
+    result,
+  })!;
+  assert.equal(receipt.terminalState, "FINALIZED_COMPLETE");
+  assert.equal(receipt.executedAtValue, 1_000_300n);
+  assert.equal(receipt.venueFees.atoms, 35n);
+  assert.equal(receipt.legOutcomes.length, 3);
 });

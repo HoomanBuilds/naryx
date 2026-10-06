@@ -127,7 +127,10 @@ export async function verifyHyperliquidTestnetAuthorization(
 }
 
 type StrategyAttemptLookup = Readonly<{
-  strategyExecutionAttempt(attemptId: string): Readonly<{ sourceOrderHashHex: string }> | undefined;
+  strategyExecutionAttempt(attemptId: string): Readonly<{
+    sourceOrderHashHex: string;
+    orderHashHex: string;
+  }> | undefined;
 }>;
 
 type AttemptBinding = Readonly<{
@@ -135,6 +138,7 @@ type AttemptBinding = Readonly<{
   orderHash: string;
   order: PackageOrder;
   selectedQuoteAttemptId: string;
+  strategyOrderHash: string | null;
 }>;
 
 function attemptBinding(
@@ -152,7 +156,13 @@ function attemptBinding(
   if (attempt !== undefined && attempt.status === "HYPERLIQUID_TESTNET_QUOTE_SELECTED") {
     const order = orders.getCanonicalOrderByHash(attempt.orderHash);
     if (order !== undefined) {
-      return Object.freeze({ attemptId, orderHash: attempt.orderHash, order, selectedQuoteAttemptId: attempt.attemptId });
+      return Object.freeze({
+        attemptId,
+        orderHash: attempt.orderHash,
+        order,
+        selectedQuoteAttemptId: attempt.attemptId,
+        strategyOrderHash: null,
+      });
     }
   }
   const strategyAttempt = STRATEGY_ATTEMPT_ID.test(attemptId)
@@ -174,6 +184,7 @@ function attemptBinding(
     orderHash: strategyAttempt.sourceOrderHashHex,
     order: sourceOrder,
     selectedQuoteAttemptId: sourceAttempt.attemptId,
+    strategyOrderHash: strategyAttempt.orderHashHex,
   });
 }
 
@@ -196,7 +207,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   strategyAttempts?: StrategyAttemptLookup;
   strategyReceipts?: Pick<
     SqliteStrategyPackageStore,
-    "strategyExecutionAttempt" | "admissionByQuote" | "recordReceipt"
+    "strategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt"
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
@@ -221,6 +232,20 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         "The order does not settle in the configured trading account.",
       );
     }
+    if (binding.strategyOrderHash !== null) {
+      const strategyAttempt = options.strategyReceipts?.strategyExecutionAttempt(request.attemptId);
+      const admission = strategyAttempt === undefined
+        ? undefined : options.strategyReceipts?.admissionByQuote(strategyAttempt.quoteHashHex);
+      const authorization = options.strategyReceipts?.ownerAuthorization(binding.strategyOrderHash);
+      if (admission === undefined || admission.orderHashHex !== binding.strategyOrderHash
+        || authorization?.owner !== admission.order.owner) {
+        throw new HyperliquidTestnetTerminalValidationError(
+          "OWNER_AUTHORIZATION_REQUIRED",
+          "The package owner must sign the generalized package authorization before execution.",
+        );
+      }
+      return binding;
+    }
     if (options.ledger.authorization(binding.orderHash)?.owner !== binding.order.owner) {
       throw new HyperliquidTestnetTerminalValidationError(
         "OWNER_AUTHORIZATION_REQUIRED",
@@ -234,7 +259,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       authorized(request);
     },
     admit(request: HyperliquidTestnetTerminalExecutionRequest) {
-      const { order, orderHash } = authorized(request);
+      const { order, orderHash, strategyOrderHash } = authorized(request);
+      if (strategyOrderHash !== null) return;
       try {
         if (order.action === "ENTRY") {
           if (options.limits === undefined) {
@@ -281,6 +307,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           admission,
           result,
         });
+        if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
+        return;
       }
       const { order } = binding;
       if (order.action === "ENTRY") {
@@ -288,7 +316,6 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       } else {
         options.ledger.settleExit(request.attemptId, result);
       }
-      if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
     },
   });
 }

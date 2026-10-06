@@ -906,7 +906,7 @@ HyperliquidTestnetStrategyStageEvidence {
       status: evidence.status,
       outcome: evidence.outcome,
       reasons: reasons(evidence.reasons, evidence.status === 'COMPLETE'
-        && evidence.outcome === 'COMPLETED'),
+        && (evidence.outcome === 'COMPLETED' || evidence.outcome === 'NO_EFFECT')),
       observedAtMs: evidence.observedAtMs === null ? null : evidence.observedAtMs.toString(),
       legs: Object.freeze(legs),
       rawEvidenceCommitments,
