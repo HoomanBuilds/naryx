@@ -7,6 +7,7 @@ import type {
   HyperliquidStrategyReconciliationHandoff,
 } from './index.js';
 import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
+import type { HyperliquidStrategyEvidenceBinding } from './hyperliquid-strategy-testnet-runtime.js';
 import {
   HyperliquidTestnetRuntimeCoordinator,
   type HyperliquidTestnetPackageSubmissionPort,
@@ -52,24 +53,33 @@ export interface HyperliquidStrategyEvidenceLeg {
   readonly openOrderStatus: 'NONE' | 'OPEN' | 'UNKNOWN';
   readonly orderId: number | null;
   readonly fillCount: number;
+  readonly grossQuoteAtoms: bigint;
+  readonly feeAssetId: string;
+  readonly feeAssetDecimals: number;
+  readonly feeAtoms: bigint;
+  readonly venueFeeQuoteAtoms: bigint;
+  readonly observedAtMs: number | null;
 }
 
 export type HyperliquidStrategyEvidenceResult = Readonly<{
   status: 'COMPLETE';
   outcome: 'COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED' | 'MANUAL_INTERVENTION';
   reasons: readonly string[];
+  observedAtMs: number;
   legs: readonly HyperliquidStrategyEvidenceLeg[];
   rawResponseCommitments: readonly unknown[];
 }> | Readonly<{
   status: 'INCOMPLETE';
   outcome: null;
   reasons: readonly string[];
+  observedAtMs: number | null;
   legs: readonly HyperliquidStrategyEvidenceLeg[];
   rawResponseCommitments: readonly unknown[];
 }>;
 
 export interface HyperliquidStrategyEvidenceCollectInput {
   readonly handoff: HyperliquidStrategyReconciliationHandoff;
+  readonly binding: HyperliquidStrategyEvidenceBinding;
   readonly plan: HyperliquidStrategyExecutionPlan;
   readonly window: HyperliquidTestnetRuntimeEvidenceWindow;
 }
@@ -213,6 +223,14 @@ function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvide
   if (value.status === 'INCOMPLETE' && value.outcome !== null) {
     throw new Error('keeper strategy evidence result is invalid');
   }
+  if ((value.status === 'COMPLETE'
+      && (typeof value.observedAtMs !== 'number' || !Number.isSafeInteger(value.observedAtMs)
+        || value.observedAtMs <= 0))
+    || (value.status === 'INCOMPLETE' && value.observedAtMs !== null
+      && (typeof value.observedAtMs !== 'number' || !Number.isSafeInteger(value.observedAtMs)
+        || value.observedAtMs <= 0))) {
+    throw new Error('keeper strategy evidence result is invalid');
+  }
   for (const leg of value.legs) {
     if (!isRecord(leg) || typeof leg.legId !== 'string'
       || typeof leg.clientOrderId !== 'string'
@@ -221,7 +239,13 @@ function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvide
       || typeof leg.terminalStatus !== 'string'
       || typeof leg.openOrderStatus !== 'string'
       || (leg.orderId !== null && typeof leg.orderId !== 'number')
-      || typeof leg.fillCount !== 'number') {
+      || typeof leg.fillCount !== 'number'
+      || typeof leg.grossQuoteAtoms !== 'bigint'
+      || typeof leg.feeAssetId !== 'string'
+      || typeof leg.feeAssetDecimals !== 'number'
+      || typeof leg.feeAtoms !== 'bigint'
+      || typeof leg.venueFeeQuoteAtoms !== 'bigint'
+      || (leg.observedAtMs !== null && typeof leg.observedAtMs !== 'number')) {
       throw new Error('keeper strategy evidence result is invalid');
     }
   }
@@ -369,6 +393,7 @@ export class HyperliquidStrategyTestnetHttpEvidence {
       actionHash: input.handoff.actionHash,
       attemptId: input.handoff.attemptId,
       batchStage: input.handoff.batchStage,
+      binding: input.binding,
       clientOrderIds: input.handoff.clientOrderIds,
       durableRevision: input.handoff.durableRevision,
       legIds: input.handoff.legIds,

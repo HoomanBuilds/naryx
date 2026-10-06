@@ -59,6 +59,7 @@ function strategyResult(
         status: 'COMPLETE',
         outcome: packageStatus,
         reasons: packageStatus === 'COMPLETED' ? [] : ['PARTIAL_PACKAGE_FILL'],
+        observedAtMs: '1000',
         legs: [],
         rawEvidenceCommitments: [],
       },

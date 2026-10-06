@@ -76,6 +76,7 @@ HyperliquidStrategyEvidenceResult {
     outcome,
     reasons: outcome === 'COMPLETED' ? []
       : outcome === 'NO_EFFECT' ? ['PACKAGE_UNFILLED'] : ['PARTIAL_PACKAGE_FILL'],
+    observedAtMs: 1_000_100 + stage,
     legs: [{
       legId: `leg-${stage}`,
       clientOrderId: `0x${(0x51 + stage).toString(16).repeat(16)}`,
@@ -86,7 +87,14 @@ HyperliquidStrategyEvidenceResult {
         : outcome === 'NO_EFFECT' ? 'UNFILLED_IOC_CANCELLED' : 'PARTIALLY_FILLED_IOC_CANCELLED',
       openOrderStatus: 'NONE',
       orderId: stage + 1,
-      fillCount: 1,
+      fillCount: outcome === 'NO_EFFECT' ? 0 : 1,
+      grossQuoteAtoms: outcome === 'COMPLETED' ? 600n
+        : outcome === 'NO_EFFECT' ? 0n : 300n,
+      feeAssetId: 'base',
+      feeAssetDecimals: 8,
+      feeAtoms: outcome === 'NO_EFFECT' ? 0n : 1n,
+      venueFeeQuoteAtoms: outcome === 'NO_EFFECT' ? 0n : 6n,
+      observedAtMs: outcome === 'NO_EFFECT' ? null : 1_000_090 + stage,
     }],
     rawResponseCommitments: [],
   };
@@ -125,6 +133,12 @@ function runtime(outcomes: readonly ('COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUI
       maxEvidenceAgeMs: 30_000,
       maxSnapshotSkewMs: 5_000,
       maxFillPages: 4,
+      evidenceBinding: {
+        spotAssetId: 10_007,
+        perpetualAssetId: 3,
+        baseFeeToken: 'BASE',
+        quoteFeeToken: 'USDC',
+      },
       currentTimeMs: () => time++,
     }),
     submittedStages,

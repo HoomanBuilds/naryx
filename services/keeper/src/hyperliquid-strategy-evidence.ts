@@ -67,6 +67,13 @@ export interface HyperliquidStrategyEvidenceWindow {
   readonly maxFillPages?: number;
 }
 
+export interface HyperliquidStrategyEvidenceBinding {
+  readonly spotAssetId: number;
+  readonly perpetualAssetId: number;
+  readonly baseFeeToken: string;
+  readonly quoteFeeToken: string;
+}
+
 export interface HyperliquidStrategyEvidenceRequest {
   readonly attemptId: string;
   readonly batchStage: number;
@@ -76,6 +83,7 @@ export interface HyperliquidStrategyEvidenceRequest {
   readonly durableRevision: string;
   readonly legIds: readonly string[];
   readonly clientOrderIds: readonly `0x${string}`[];
+  readonly binding: HyperliquidStrategyEvidenceBinding;
   readonly plan: HyperliquidStrategyExecutionPlan;
   readonly window: HyperliquidStrategyEvidenceWindow;
 }
@@ -96,6 +104,12 @@ export interface HyperliquidStrategyLegEvidence {
   readonly openOrderStatus: 'NONE' | 'OPEN' | 'UNKNOWN';
   readonly orderId: number | null;
   readonly fillCount: number;
+  readonly grossQuoteAtoms: bigint;
+  readonly feeAssetId: string;
+  readonly feeAssetDecimals: number;
+  readonly feeAtoms: bigint;
+  readonly venueFeeQuoteAtoms: bigint;
+  readonly observedAtMs: number | null;
 }
 
 export type HyperliquidStrategyEvidenceOutcome =
@@ -113,18 +127,21 @@ export type HyperliquidStrategyEvidenceIncompleteReason =
   | 'CONFLICTING_DUPLICATE_FILL'
   | 'INCOMPLETE_PAGINATION'
   | 'STALE_OR_MIXED_SNAPSHOT'
+  | 'UNCERTAIN_FEE_EVIDENCE'
   | 'MALFORMED_RESPONSE';
 
 export type HyperliquidStrategyEvidenceResult = Readonly<{
   status: 'COMPLETE';
   outcome: HyperliquidStrategyEvidenceOutcome;
   reasons: readonly string[];
+  observedAtMs: number;
   legs: readonly HyperliquidStrategyLegEvidence[];
   rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
 }> | Readonly<{
   status: 'INCOMPLETE';
   outcome: null;
   reasons: readonly HyperliquidStrategyEvidenceIncompleteReason[];
+  observedAtMs: number | null;
   legs: readonly HyperliquidStrategyLegEvidence[];
   rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
 }>;
@@ -133,7 +150,11 @@ interface ExpectedOrder {
   readonly legId: string;
   readonly cloid: `0x${string}`;
   readonly signedBaseAtoms: bigint;
+  readonly role: 'SPOT' | 'PERPETUAL';
+  readonly baseAssetId: string;
+  readonly quoteAssetId: string;
   readonly baseDecimals: number;
+  readonly quoteDecimals: number;
   readonly wire: HypercoreOrderWire;
 }
 
@@ -204,7 +225,19 @@ function validateWindow(window: HyperliquidStrategyEvidenceWindow): void {
   }
 }
 
+function validateBinding(binding: HyperliquidStrategyEvidenceBinding): void {
+  requireCondition(Number.isSafeInteger(binding.spotAssetId) && binding.spotAssetId >= 0
+    && Number.isSafeInteger(binding.perpetualAssetId) && binding.perpetualAssetId >= 0
+    && binding.spotAssetId !== binding.perpetualAssetId,
+  'strategy evidence asset binding is invalid');
+  requireCondition(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(binding.baseFeeToken)
+    && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(binding.quoteFeeToken)
+    && binding.baseFeeToken !== binding.quoteFeeToken,
+  'strategy evidence fee-token binding is invalid');
+}
+
 function expectedOrders(input: HyperliquidStrategyEvidenceRequest): readonly ExpectedOrder[] {
+  validateBinding(input.binding);
   requireCondition(IDENTIFIER.test(input.attemptId) && Number.isSafeInteger(input.batchStage)
     && input.batchStage >= 0 && HASH.test(input.actionHash)
     && HASH.test(input.requestCommitment) && IDENTIFIER.test(input.durableRevision),
@@ -230,17 +263,55 @@ function expectedOrders(input: HyperliquidStrategyEvidenceRequest): readonly Exp
       && input.clientOrderIds[index]?.toLowerCase() === cloid
       && input.legIds[index] === order.legId && batch.legIds[index] === order.legId,
     'strategy leg identity differs from the handoff');
+    const role = order.wire.a === input.binding.spotAssetId
+      ? 'SPOT' as const
+      : order.wire.a === input.binding.perpetualAssetId
+        ? 'PERPETUAL' as const
+        : null;
+    requireCondition(role !== null, 'strategy leg references an unbound market');
     return Object.freeze({
       legId: order.legId,
       cloid: cloid as `0x${string}`,
       signedBaseAtoms: order.signedBaseDeltaAtoms,
+      role,
+      baseAssetId: order.baseAsset.assetId,
+      quoteAssetId: order.quoteAsset.assetId,
       baseDecimals: order.baseAsset.decimals,
+      quoteDecimals: order.quoteAsset.decimals,
       wire: order.wire,
     });
   });
   requireCondition(new Set(result.map((order) => order.cloid)).size === result.length,
     'strategy client order IDs must be unique');
   return Object.freeze(result);
+}
+
+function decimalRatio(value: string): Readonly<{ coefficient: bigint; scale: number }> {
+  const match = /^([0-9]+)(?:\.([0-9]+))?$/.exec(value);
+  if (match === null) throw new Error('decimal is malformed');
+  const fraction = match[2] ?? '';
+  return Object.freeze({
+    coefficient: BigInt(`${match[1]}${fraction}`),
+    scale: fraction.length,
+  });
+}
+
+function divideUp(numerator: bigint, denominator: bigint): bigint {
+  if (numerator < 0n || denominator <= 0n) throw new Error('division is invalid');
+  return numerator === 0n ? 0n : (numerator + denominator - 1n) / denominator;
+}
+
+function quoteAtomsForBase(
+  price: Readonly<{ coefficient: bigint; scale: number }>,
+  baseAtoms: bigint,
+  baseDecimals: number,
+  quoteDecimals: number,
+  roundUp: boolean,
+): bigint {
+  const amount = baseAtoms < 0n ? -baseAtoms : baseAtoms;
+  const numerator = price.coefficient * amount * (10n ** BigInt(quoteDecimals));
+  const denominator = 10n ** BigInt(price.scale + baseDecimals);
+  return roundUp ? divideUp(numerator, denominator) : numerator / denominator;
 }
 
 function addReason(
@@ -379,6 +450,7 @@ function reduceLegs(
   statuses: readonly OrderStatusResponse[],
   fills: readonly UserFillsByTimeResponse[number][],
   window: HyperliquidStrategyEvidenceWindow,
+  binding: HyperliquidStrategyEvidenceBinding,
   reasons: HyperliquidStrategyEvidenceIncompleteReason[],
 ): readonly HyperliquidStrategyLegEvidence[] {
   const orderIds = new Set<number>();
@@ -396,6 +468,14 @@ function reduceLegs(
         openOrderStatus: openMatches.length === 1 ? 'OPEN' as const : 'UNKNOWN' as const,
         orderId: null,
         fillCount: 0,
+        grossQuoteAtoms: 0n,
+        feeAssetId: order.role === 'SPOT' && order.signedBaseAtoms > 0n
+          ? order.baseAssetId : order.quoteAssetId,
+        feeAssetDecimals: order.role === 'SPOT' && order.signedBaseAtoms > 0n
+          ? order.baseDecimals : order.quoteDecimals,
+        feeAtoms: 0n,
+        venueFeeQuoteAtoms: 0n,
+        observedAtMs: null,
       });
     }
     const observedOrder = response.order.order;
@@ -411,6 +491,10 @@ function reduceLegs(
     }
     const matchedFills = fills.filter((fill) => fill.oid === observedOrder.oid);
     let filledSignedBaseAtoms = 0n;
+    let grossQuoteAtoms = 0n;
+    let feeAtoms = 0n;
+    let venueFeeQuoteAtoms = 0n;
+    let observedAtMs: number | null = null;
     try {
       if (decimalToAtoms(observedOrder.origSz, order.baseDecimals, 'observed order size')
         !== (order.signedBaseAtoms < 0n ? -order.signedBaseAtoms : order.signedBaseAtoms)
@@ -418,14 +502,37 @@ function reduceLegs(
         addReason(reasons, 'MALFORMED_RESPONSE');
       }
       for (const fill of matchedFills) {
+        const baseFee = order.role === 'SPOT' && fill.side === 'B';
+        const expectedFeeToken = baseFee ? binding.baseFeeToken : binding.quoteFeeToken;
         if (fill.coin !== observedOrder.coin
           || (fill.cloid !== undefined && fill.cloid.toLowerCase() !== order.cloid)
           || fill.time < window.startTimeMs || fill.time > window.endTimeMs) {
           addReason(reasons, 'AMBIGUOUS_CLOID');
           continue;
         }
+        if (fill.feeToken !== expectedFeeToken) {
+          addReason(reasons, 'UNCERTAIN_FEE_EVIDENCE');
+          continue;
+        }
         const atoms = decimalToAtoms(fill.sz, order.baseDecimals, 'observed fill size');
-        filledSignedBaseAtoms += fill.side === 'B' ? atoms : -atoms;
+        const signedAtoms = fill.side === 'B' ? atoms : -atoms;
+        const price = decimalRatio(fill.px);
+        const observedFeeAtoms = decimalToAtoms(
+          fill.fee,
+          baseFee ? order.baseDecimals : order.quoteDecimals,
+          'observed fill fee',
+        );
+        filledSignedBaseAtoms += signedAtoms;
+        grossQuoteAtoms += quoteAtomsForBase(
+          price, atoms, order.baseDecimals, order.quoteDecimals, fill.side === 'B',
+        );
+        feeAtoms += observedFeeAtoms;
+        venueFeeQuoteAtoms += baseFee
+          ? quoteAtomsForBase(
+            price, observedFeeAtoms, order.baseDecimals, order.quoteDecimals, true,
+          )
+          : observedFeeAtoms;
+        observedAtMs = observedAtMs === null ? fill.time : Math.max(observedAtMs, fill.time);
       }
     } catch {
       addReason(reasons, 'MALFORMED_RESPONSE');
@@ -445,6 +552,14 @@ function reduceLegs(
       ...terminalStatus(response, openMatches.length, filledSignedBaseAtoms),
       orderId: observedOrder.oid,
       fillCount: matchedFills.length,
+      grossQuoteAtoms,
+      feeAssetId: order.role === 'SPOT' && order.signedBaseAtoms > 0n
+        ? order.baseAssetId : order.quoteAssetId,
+      feeAssetDecimals: order.role === 'SPOT' && order.signedBaseAtoms > 0n
+        ? order.baseDecimals : order.quoteDecimals,
+      feeAtoms,
+      venueFeeQuoteAtoms,
+      observedAtMs,
     });
   }));
 }
@@ -504,6 +619,7 @@ export class HyperliquidStrategyAuthoritativeEvidenceCollector {
       return Object.freeze({
         status: 'INCOMPLETE', outcome: null,
         reasons: Object.freeze(['READ_FAILED'] as const),
+        observedAtMs: null,
         legs: Object.freeze([]), rawResponseCommitments: Object.freeze([]),
       });
     }
@@ -528,8 +644,9 @@ export class HyperliquidStrategyAuthoritativeEvidenceCollector {
     }
     const fills = deduplicatedFills(fillPages, reasons);
     const legs = reduceLegs(expected, openOrders.payload, statuses.map((status) => status.payload),
-      fills, input.window, reasons);
+      fills, input.window, input.binding, reasons);
     const commitments = Object.freeze(envelopes.map(rawCommitment));
+    const observedAtMs = Math.max(...envelopes.map((envelope) => envelope.receivedAtMs));
     if (reasons.length > 0 || legs.some((leg) => leg.terminalStatus === 'UNKNOWN'
       || leg.openOrderStatus === 'UNKNOWN')) {
       return Object.freeze({
@@ -537,6 +654,7 @@ export class HyperliquidStrategyAuthoritativeEvidenceCollector {
         outcome: null,
         reasons: Object.freeze(reasons.length > 0
           ? reasons : ['MALFORMED_RESPONSE'] as HyperliquidStrategyEvidenceIncompleteReason[]),
+        observedAtMs,
         legs,
         rawResponseCommitments: commitments,
       });
@@ -546,6 +664,7 @@ export class HyperliquidStrategyAuthoritativeEvidenceCollector {
       status: 'COMPLETE',
       outcome: classified.outcome,
       reasons: classified.reasons,
+      observedAtMs,
       legs,
       rawResponseCommitments: commitments,
     });

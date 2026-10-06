@@ -361,13 +361,14 @@ test('generalized strategy evidence preserves canonical leg fill atoms', async (
     const decoded = parseProtocolJson(captured.rawBody,
       'test.strategy.reconcile.request') as Record<string, unknown>;
     assert.deepEqual(Object.keys(decoded).sort(), [
-      'account', 'actionHash', 'attemptId', 'batchStage', 'clientOrderIds',
-      'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
+      'account', 'actionHash', 'attemptId', 'batchStage', 'binding',
+      'clientOrderIds', 'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
     ]);
     jsonResponse(response, 200, stringifyProtocolJson({
       status: 'COMPLETE',
       outcome: 'COMPLETED',
       reasons: [],
+      observedAtMs: 949_999,
       legs: [{
         legId: 'leg-1',
         clientOrderId: `0x${'21'.repeat(16)}`,
@@ -377,6 +378,12 @@ test('generalized strategy evidence preserves canonical leg fill atoms', async (
         openOrderStatus: 'NONE',
         orderId: 1,
         fillCount: 1,
+        grossQuoteAtoms: 600n,
+        feeAssetId: 'base',
+        feeAssetDecimals: 8,
+        feeAtoms: 1n,
+        venueFeeQuoteAtoms: 6n,
+        observedAtMs: 949_998,
       }],
       rawResponseCommitments: [],
     }, 'test.strategy.reconcile.response'));
@@ -396,11 +403,18 @@ test('generalized strategy evidence preserves canonical leg fill atoms', async (
         legIds: ['leg-1'],
         clientOrderIds: [`0x${'21'.repeat(16)}`],
       },
+      binding: {
+        spotAssetId: 10_007,
+        perpetualAssetId: 3,
+        baseFeeToken: 'BASE',
+        quoteFeeToken: 'USDC',
+      },
       plan: planFixture() as never,
       window,
     });
     assert.equal(result.status, 'COMPLETE');
     assert.equal(result.legs[0]?.filledSignedBaseAtoms, 100n);
+    assert.equal(result.legs[0]?.venueFeeQuoteAtoms, 6n);
   } finally {
     await server.close();
   }

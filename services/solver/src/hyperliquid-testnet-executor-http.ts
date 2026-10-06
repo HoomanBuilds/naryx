@@ -86,6 +86,13 @@ export type HyperliquidTestnetStrategyLegEvidence = Readonly<{
   openOrderStatus: 'NONE' | 'OPEN' | 'UNKNOWN';
   orderId: number | null;
   fillCount: number;
+  grossQuoteAtoms: string;
+  feeAssetId: string;
+  feeAssetDecimals: number;
+  feeAtoms: string;
+  venueFeeQuoteAtoms: string;
+  observedAtMs: string | null;
+  evidenceCommitment: string;
 }>;
 
 export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
@@ -97,6 +104,7 @@ export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
     status: 'COMPLETE' | 'INCOMPLETE';
     outcome: 'COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED' | 'MANUAL_INTERVENTION' | null;
     reasons: readonly string[];
+    observedAtMs: string | null;
     legs: readonly HyperliquidTestnetStrategyLegEvidence[];
     rawEvidenceCommitments: readonly string[];
   }>;
@@ -818,6 +826,12 @@ HyperliquidTestnetStrategyStageEvidence {
   requireCondition((evidence.status === 'COMPLETE' && evidence.outcome !== null)
     || (evidence.status === 'INCOMPLETE' && evidence.outcome === null),
   'INVALID_RESULT', 'strategy evidence status is invalid');
+  requireCondition((evidence.status === 'COMPLETE' && Number.isSafeInteger(evidence.observedAtMs)
+      && evidence.observedAtMs > 0)
+    || (evidence.status === 'INCOMPLETE' && (evidence.observedAtMs === null
+      || Number.isSafeInteger(evidence.observedAtMs) && evidence.observedAtMs > 0)),
+  'INVALID_RESULT', 'strategy evidence observation time is invalid');
+  const rawEvidenceCommitments = evidenceCommitments(evidence.rawResponseCommitments);
   const legIds = new Set<string>();
   const clientOrderIds = new Set<string>();
   const legs = evidence.legs.map((leg, index): HyperliquidTestnetStrategyLegEvidence => {
@@ -836,11 +850,25 @@ HyperliquidTestnetStrategyStageEvidence {
       && (leg.openOrderStatus === 'NONE' || leg.openOrderStatus === 'OPEN'
         || leg.openOrderStatus === 'UNKNOWN')
       && (leg.orderId === null || Number.isSafeInteger(leg.orderId) && leg.orderId > 0)
-      && Number.isSafeInteger(leg.fillCount) && leg.fillCount >= 0,
+      && Number.isSafeInteger(leg.fillCount) && leg.fillCount >= 0
+      && typeof leg.grossQuoteAtoms === 'bigint' && leg.grossQuoteAtoms >= 0n
+      && typeof leg.feeAssetId === 'string' && leg.feeAssetId.length > 0
+      && leg.feeAssetId.length <= 128
+      && Number.isSafeInteger(leg.feeAssetDecimals) && leg.feeAssetDecimals >= 0
+      && leg.feeAssetDecimals <= 30
+      && typeof leg.feeAtoms === 'bigint' && leg.feeAtoms >= 0n
+      && typeof leg.venueFeeQuoteAtoms === 'bigint' && leg.venueFeeQuoteAtoms >= 0n
+      && (leg.observedAtMs === null
+        || Number.isSafeInteger(leg.observedAtMs) && leg.observedAtMs > 0),
     'INVALID_RESULT', `strategy evidence leg ${index} is invalid`);
+    requireCondition((leg.fillCount === 0 && leg.observedAtMs === null
+        && leg.grossQuoteAtoms === 0n && leg.feeAtoms === 0n
+        && leg.venueFeeQuoteAtoms === 0n)
+      || (leg.fillCount > 0 && leg.observedAtMs !== null),
+    'INVALID_RESULT', `strategy evidence leg ${index} economics are inconsistent`);
     legIds.add(leg.legId);
     clientOrderIds.add(leg.clientOrderId);
-    return Object.freeze({
+    const normalized = Object.freeze({
       legId: leg.legId,
       clientOrderId: leg.clientOrderId,
       plannedSignedBaseAtoms: leg.plannedSignedBaseAtoms.toString(),
@@ -849,6 +877,24 @@ HyperliquidTestnetStrategyStageEvidence {
       openOrderStatus: leg.openOrderStatus,
       orderId: leg.orderId,
       fillCount: leg.fillCount,
+      grossQuoteAtoms: leg.grossQuoteAtoms.toString(),
+      feeAssetId: leg.feeAssetId,
+      feeAssetDecimals: leg.feeAssetDecimals,
+      feeAtoms: leg.feeAtoms.toString(),
+      venueFeeQuoteAtoms: leg.venueFeeQuoteAtoms.toString(),
+      observedAtMs: leg.observedAtMs === null ? null : leg.observedAtMs.toString(),
+    });
+    return Object.freeze({
+      ...normalized,
+      evidenceCommitment: `0x${createHash('sha256')
+        .update('NARYX/hyperliquid-testnet/strategy-leg-evidence/v1', 'ascii')
+        .update(stringifyProtocolJson({
+          actionCommitment,
+          requestCommitment,
+          rawEvidenceCommitments,
+          evidence: normalized,
+        }, 'solver.hyperliquidTestnet.strategyLegEvidence'))
+        .digest('hex')}`,
     });
   });
   return Object.freeze({
@@ -861,8 +907,9 @@ HyperliquidTestnetStrategyStageEvidence {
       outcome: evidence.outcome,
       reasons: reasons(evidence.reasons, evidence.status === 'COMPLETE'
         && evidence.outcome === 'COMPLETED'),
+      observedAtMs: evidence.observedAtMs === null ? null : evidence.observedAtMs.toString(),
       legs: Object.freeze(legs),
-      rawEvidenceCommitments: evidenceCommitments(evidence.rawResponseCommitments),
+      rawEvidenceCommitments,
     }),
   });
 }

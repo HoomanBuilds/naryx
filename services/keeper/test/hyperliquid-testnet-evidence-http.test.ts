@@ -210,10 +210,13 @@ test('strategy reconcile forwards the exact generalized evidence request', async
         seenAttempt = input.attemptId;
         return {
           status: 'COMPLETE', outcome: 'COMPLETED', reasons: [],
+          observedAtMs: 1000,
           legs: [{
             legId: 'leg-1', clientOrderId: `0x${'21'.repeat(16)}`,
             plannedSignedBaseAtoms: 100n, filledSignedBaseAtoms: 100n,
             terminalStatus: 'FILLED', openOrderStatus: 'NONE', orderId: 1, fillCount: 1,
+            grossQuoteAtoms: 600n, feeAssetId: 'base', feeAssetDecimals: 8,
+            feeAtoms: 1n, venueFeeQuoteAtoms: 6n, observedAtMs: 999,
           }],
           rawResponseCommitments: [],
         };
@@ -227,6 +230,10 @@ test('strategy reconcile forwards the exact generalized evidence request', async
       actionHash: `0x${'aa'.repeat(32)}`,
       attemptId: 'strategy-attempt-1',
       batchStage: 0,
+      binding: {
+        spotAssetId: 10_007, perpetualAssetId: 3,
+        baseFeeToken: 'BASE', quoteFeeToken: 'USDC',
+      },
       clientOrderIds: [`0x${'21'.repeat(16)}`],
       durableRevision: 'sqlite-strategy-v1:1',
       legIds: ['leg-1'],

@@ -435,10 +435,10 @@ function strategyEvidenceFixture(partial = false): Readonly<{
   const client = new FixtureClient();
   client.stamp = 9_950;
   const cloids = [spotCloid, perpCloid, recoveryCloid];
-  const coins = ['@7', 'BTC', 'SOL'];
+  const coins = ['@7', 'BTC', '@7'];
   const sides = ['B', 'A', 'B'] as const;
   const wires = cloids.map((cloid, index) => ({
-    a: index,
+    a: index === 1 ? 3 : 10_007,
     b: sides[index] === 'B',
     p: '60000',
     s: '0.000001',
@@ -485,6 +485,7 @@ function strategyEvidenceFixture(partial = false): Readonly<{
     coins[index]!,
     sides[index]!,
     partial && index === 2 ? '0.0000005' : '0.000001',
+    index === 1 ? 'USDC' : 'UBTC',
   ));
   return Object.freeze({
     client,
@@ -492,6 +493,12 @@ function strategyEvidenceFixture(partial = false): Readonly<{
       attemptId: 'strategy-attempt-1',
       batchStage: 0,
       account,
+      binding: {
+        spotAssetId: 10_007,
+        perpetualAssetId: 3,
+        baseFeeToken: 'UBTC',
+        quoteFeeToken: 'USDC',
+      },
       actionHash,
       requestCommitment: `0x${'76'.repeat(32)}` as const,
       durableRevision: 'sqlite-strategy-v1:1',
@@ -510,6 +517,10 @@ test('classifies complete and partial generalized HyperCore packages from author
   assert.equal(completeResult.status, 'COMPLETE');
   assert.equal(completeResult.outcome, 'COMPLETED');
   assert.deepEqual(completeResult.legs.map((leg) => leg.filledSignedBaseAtoms), [100n, -100n, 100n]);
+  assert.deepEqual(completeResult.legs.map((leg) => leg.grossQuoteAtoms),
+    [6_000_025n, 6_000_025n, 6_000_025n]);
+  assert.deepEqual(completeResult.legs.map((leg) => leg.venueFeeQuoteAtoms),
+    [60_001n, 1n, 60_001n]);
 
   const partial = strategyEvidenceFixture(true);
   const partialResult = await new HyperliquidStrategyAuthoritativeEvidenceCollector(partial.client)
@@ -517,4 +528,5 @@ test('classifies complete and partial generalized HyperCore packages from author
   assert.equal(partialResult.status, 'COMPLETE');
   assert.equal(partialResult.outcome, 'RECOVERY_REQUIRED');
   assert.deepEqual(partialResult.reasons, ['PARTIAL_PACKAGE_FILL']);
+  assert.equal(partialResult.legs[2]?.grossQuoteAtoms, 3_000_013n);
 });

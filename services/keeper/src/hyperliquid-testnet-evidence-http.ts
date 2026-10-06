@@ -159,7 +159,7 @@ function parseReconcileRequest(value: unknown): {
 function parseStrategyReconcileRequest(value: unknown): HyperliquidStrategyEvidenceRequest {
   const keys = [
     'account', 'actionHash', 'attemptId', 'batchStage', 'clientOrderIds',
-    'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
+    'binding', 'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
   ];
   if (!isRecord(value) || !hasExactKeys(value, keys)) {
     throw new KeeperRequestError(

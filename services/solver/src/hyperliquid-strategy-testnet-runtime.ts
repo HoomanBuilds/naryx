@@ -32,6 +32,7 @@ export interface HyperliquidStrategyRuntimeSubmissionPort {
 export interface HyperliquidStrategyRuntimeEvidencePort {
   collect(input: Readonly<{
     handoff: HyperliquidStrategyReconciliationHandoff;
+    binding: HyperliquidStrategyEvidenceBinding;
     plan: HyperliquidStrategyExecutionPlan;
     window: Readonly<{
       startTimeMs: number;
@@ -44,6 +45,13 @@ export interface HyperliquidStrategyRuntimeEvidencePort {
   }>): Promise<HyperliquidStrategyEvidenceResult>;
 }
 
+export interface HyperliquidStrategyEvidenceBinding {
+  readonly spotAssetId: number;
+  readonly perpetualAssetId: number;
+  readonly baseFeeToken: string;
+  readonly quoteFeeToken: string;
+}
+
 export interface HyperliquidStrategyTestnetRuntimeOptions {
   readonly account: HyperliquidSubmissionAccount;
   readonly agentWallet: `0x${string}`;
@@ -51,6 +59,7 @@ export interface HyperliquidStrategyTestnetRuntimeOptions {
   readonly maxEvidenceAgeMs: number;
   readonly maxSnapshotSkewMs: number;
   readonly maxFillPages: number;
+  readonly evidenceBinding: HyperliquidStrategyEvidenceBinding;
   readonly evidenceReadBudgetMs?: number;
   readonly currentTimeMs?: () => number;
 }
@@ -176,6 +185,7 @@ export class HyperliquidStrategyTestnetRuntime {
       );
       const evidence = await this.#evidence.collect({
         handoff: submission.reconciliation,
+        binding: this.#options.evidenceBinding,
         plan,
         window: {
           startTimeMs: startedAtMs,

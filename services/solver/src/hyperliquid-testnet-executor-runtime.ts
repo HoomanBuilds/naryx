@@ -793,6 +793,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
             maxEvidenceAgeMs: attempt.limits.maxEvidenceAgeMs,
             maxSnapshotSkewMs: attempt.limits.maxSnapshotSkewMs,
             maxFillPages: attempt.limits.maxFillPages,
+            evidenceBinding: {
+              spotAssetId: attempt.market.spot.assetId,
+              perpetualAssetId: attempt.market.perpetual.assetId,
+              baseFeeToken: qualificationConfig.spotTokenName,
+              quoteFeeToken: qualificationConfig.quoteTokenName,
+            },
             currentTimeMs,
           },
         );

@@ -680,6 +680,7 @@ export {
 export {
   HyperliquidStrategyTestnetRuntime,
   createHyperliquidStrategyTestnetRuntime,
+  type HyperliquidStrategyEvidenceBinding,
   type HyperliquidStrategyRuntimeEvidencePort,
   type HyperliquidStrategyRuntimeJournalPort,
   type HyperliquidStrategyRuntimeResult,
