@@ -127,6 +127,7 @@ import {
   createEvmOptionSpreadOrderPort,
   loadEvmOptionSpreadProfiles,
 } from "./evm-option-spread-order.js";
+import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -864,6 +865,10 @@ if (evmOptionSpreadProfilePath !== undefined && evmOptionSpreadProfilePath !== "
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
   : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
+const evmOptionProvisioningEnabled = explicitlyEnabled('NARYX_EVM_OPTION_SPREAD_PROVISIONING_ENABLED');
+const evmOptionSpreadProvisioning = evmOptionProvisioningEnabled
+  ? new HttpEvmOptionSpreadProvisioningClient(solverOrigin)
+  : undefined;
 
 const server = createPrivateTerminalServer(
   config,
@@ -915,6 +920,7 @@ const server = createPrivateTerminalServer(
   },
   hyperliquidNativeStrategyOrders,
   evmOptionSpreadOrders,
+  evmOptionSpreadProvisioning,
 );
 
 const publicServer = publicMarket?.listener === undefined

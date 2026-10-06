@@ -121,6 +121,10 @@ import {
   EvmOptionSpreadOrderError,
   type EvmOptionSpreadOrderPort,
 } from "./evm-option-spread-order.js";
+import {
+  EvmOptionSpreadProvisioningClientError,
+  type EvmOptionSpreadProvisioningPort,
+} from './evm-option-spread-provisioning-client.js';
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -312,6 +316,7 @@ export function createPrivateTerminalRequestHandler(
   nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
+  evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -636,6 +641,7 @@ export function createPrivateTerminalRequestHandler(
         hyperliquidGeneralizedOrderAvailable: hyperliquidGeneralizedOrder !== undefined,
         hyperliquidNativeStrategyOrderAvailable: hyperliquidNativeStrategyOrders !== undefined,
         evmOptionSpreadOrderAvailable: evmOptionSpreadOrders !== undefined,
+        evmOptionSpreadProvisioningAvailable: evmOptionSpreadProvisioning !== undefined,
         strategyPackageAuthorizationAvailable: strategyPackageAuthorization !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
@@ -954,6 +960,35 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "STRATEGY_PREPARATION_FAILED", "Generalized strategy preparation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === '/internal/terminal/strategy-executions/provision') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (evmOptionSpreadProvisioning === undefined) {
+        reject(response, 503, 'EVM_OPTION_PROVISIONING_UNAVAILABLE', 'EVM option provisioning is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).length !== 1 || typeof (requestBody as { orderHash?: unknown }).orderHash !== 'string') {
+          throw new EvmOptionSpreadProvisioningClientError('INVALID_REQUEST', 'Request must contain only orderHash.');
+        }
+        const provisioning = await evmOptionSpreadProvisioning.provision((requestBody as { orderHash: string }).orderHash);
+        sendJson(response, 200, { status: provisioning.ready ? 'READY' : 'WALLET_TRANSACTIONS_REQUIRED', provisioning: toProtocolJson(provisioning) });
+      } catch (error) {
+        if (error instanceof EvmOptionSpreadProvisioningClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'EVM_OPTION_PROVISIONING_FAILED', 'EVM option provisioning failed closed.');
       }
       return;
     }
@@ -1810,6 +1845,7 @@ export function createPrivateTerminalServer(
   nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
+  evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1839,6 +1875,7 @@ export function createPrivateTerminalServer(
     nativeHyperliquidStrategyRuntime,
     hyperliquidNativeStrategyOrders,
     evmOptionSpreadOrders,
+    evmOptionSpreadProvisioning,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

@@ -43,6 +43,11 @@ import {
   GeneralizedStrategyQuoteContextRegistry,
   GeneralizedStrategyQuoteService,
   SqliteGeneralizedStrategyQuoteStore,
+  EvmOptionSpreadPreparationContextResolver,
+  EvmOptionSpreadProvisioningResolver,
+  EvmOptionSpreadProvisioningService,
+  createEvmOptionSpreadProvisioningInternalHandler,
+  loadEvmOptionSpreadRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -194,11 +199,44 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
   .filter((value) => value !== '');
 const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
-const strategyPreparationService = strategyPreparationLanes.length === 0
+const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
+const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimePath === ''
+  ? undefined
+  : loadEvmOptionSpreadRuntime(absolutePath(
+      evmOptionRuntimePath,
+      'NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `evm-option:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: { resolvePackageId: async () => undefined },
+    });
+const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
+  ? undefined
+  : new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes);
+const evmOptionPreparationResolver = evmOptionRuntime === undefined
+  ? undefined
+  : new EvmOptionSpreadPreparationContextResolver(evmOptionRuntime.preparationLanes);
+const strategyPreparationResolver = hyperliquidPreparationResolver === undefined && evmOptionPreparationResolver === undefined
+  ? undefined
+  : Object.freeze({
+      resolve: (documents: Parameters<HyperliquidStrategyPreparationContextResolver['resolve']>[0]) => {
+        const evmOption = documents.order.templateId === 'option-spread-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
+        if (evmOption) {
+          if (evmOptionPreparationResolver === undefined) throw new Error('EVM option spread preparation is not configured');
+          return evmOptionPreparationResolver.resolve(documents);
+        }
+        if (hyperliquidPreparationResolver === undefined) throw new Error('Hyperliquid strategy preparation is not configured');
+        return hyperliquidPreparationResolver.resolve(documents);
+      },
+    });
+const strategyPreparationService = strategyPreparationResolver === undefined
   ? undefined
   : new StrategyPreparationService(
       strategyPackageProvider,
-      new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes),
+      strategyPreparationResolver,
     );
 const strategyPreparationHandler = strategyPreparationService === undefined
   ? undefined
@@ -208,18 +246,28 @@ const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
   strategyPreparationLanes,
   { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
 );
-const generalizedQuoteStore = generalizedStrategyLanes.length === 0
+const allGeneralizedStrategyLanes = Object.freeze([
+  ...generalizedStrategyLanes,
+  ...(evmOptionRuntime?.quoteLanes ?? []),
+]);
+const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
   : new SqliteGeneralizedStrategyQuoteStore(config.quoteDbPath);
-const generalizedStrategyQuoteHandler = generalizedStrategyLanes.length === 0
+const generalizedStrategyQuoteHandler = allGeneralizedStrategyLanes.length === 0
   ? undefined
   : createGeneralizedStrategyQuoteInternalHandler(new GeneralizedStrategyQuoteService({
     packages: strategyPackageProvider,
-    contexts: new GeneralizedStrategyQuoteContextRegistry(generalizedStrategyLanes),
+    contexts: new GeneralizedStrategyQuoteContextRegistry(allGeneralizedStrategyLanes),
     signer: executionSigner,
     store: generalizedQuoteStore!,
   }));
-const strategyRouteHandlers = [generalizedStrategyQuoteHandler, strategyPreparationHandler]
+const evmOptionProvisioningHandler = evmOptionRuntime === undefined
+  ? undefined
+  : createEvmOptionSpreadProvisioningInternalHandler(new EvmOptionSpreadProvisioningService(
+      strategyPackageProvider,
+      new EvmOptionSpreadProvisioningResolver(evmOptionRuntime.preparationLanes),
+    ));
+const strategyRouteHandlers = [generalizedStrategyQuoteHandler, strategyPreparationHandler, evmOptionProvisioningHandler]
   .filter((handler) => handler !== undefined);
 const strategyRouteHandler = strategyRouteHandlers.length === 0
   ? undefined

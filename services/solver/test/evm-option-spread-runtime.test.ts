@@ -21,6 +21,8 @@ import {
 import { hexToBytes, type Abi, type Address, type Hex } from 'viem';
 import {
   EvmOptionSpreadPreparationContextResolver,
+  EvmOptionSpreadProvisioningResolver,
+  EvmOptionSpreadProvisioningService,
   GeneralizedStrategyQuoteContextRegistry,
   GeneralizedStrategyQuoteService,
   StrategyPreparationService,
@@ -272,6 +274,23 @@ class ReplayedEntryChain extends Chain {
   }
 }
 
+class UndeployedEntryChain extends Chain {
+  override async codeHash(value: Address) {
+    if ([ACCOUNT, LONG_ADAPTER, SHORT_ADAPTER].some((address) => address.toLowerCase() === value.toLowerCase())) return undefined;
+    return super.codeHash(value);
+  }
+
+  override async readContract(
+    request: Readonly<{ address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }>,
+  ): Promise<unknown> {
+    if (request.address.toLowerCase() === ACCOUNT_FACTORY.toLowerCase() && request.functionName === 'isAccount') return false;
+    if ((request.address.toLowerCase() === LONG_FACTORY.toLowerCase()
+      || request.address.toLowerCase() === SHORT_FACTORY.toLowerCase())
+      && request.functionName === 'validateInstance') return false;
+    return super.readContract(request);
+  }
+}
+
 function zeroBytes(): Hex {
   return `0x${'00'.repeat(32)}`;
 }
@@ -423,4 +442,49 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
     () => replayPreparation.prepareDocuments(documents),
     /entry package identity is already active/,
   );
+});
+
+test('prepares account and package adapter creation before option entry', async () => {
+  const chain = new UndeployedEntryChain();
+  const lane = {
+    environment: 'testnet' as const,
+    templateManifest: template,
+    activeRegistryRecords,
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    pricing: pricing(chain),
+    accountFactory: { address: ACCOUNT_FACTORY, expectedCodeHash: codeHash('6') },
+    expectedStrategyAccountCodeHash: codeHash('7'),
+    adapters: [{
+      role: 'option-long' as const,
+      factory: { address: LONG_FACTORY, expectedCodeHash: codeHash('8') },
+      expectedAdapterCodeHash: codeHash('a'),
+      maximumGasLimit: 600_000n,
+    }, {
+      role: 'option-short' as const,
+      factory: { address: SHORT_FACTORY, expectedCodeHash: codeHash('9') },
+      expectedAdapterCodeHash: codeHash('b'),
+      maximumGasLimit: 600_000n,
+    }] as const,
+    solver: SOLVER,
+    packageIds: { resolvePackageId: async () => undefined },
+  };
+  const documents: StoredStrategyPackageOrderDocuments = {
+    orderHashHex: protocolHex(orderHash),
+    graphHashHex: protocolHex(packageGraphHash(graph)),
+    order,
+    graph,
+    recordedAtMs: 1,
+  };
+  const service = new EvmOptionSpreadProvisioningService(
+    { getByOrder: async (requested) => protocolHex(requested) === protocolHex(orderHash) ? documents : undefined },
+    new EvmOptionSpreadProvisioningResolver([lane]),
+  );
+  const plan = await service.provisionByOrder(orderHash);
+  assert.equal(plan?.packageId, `0x${protocolHex(orderHash)}`);
+  assert.deepEqual(plan?.transactions.map((transaction) => transaction.kind), [
+    'CREATE_STRATEGY_ACCOUNT',
+    'CREATE_PACKAGE_ADAPTER',
+    'CREATE_PACKAGE_ADAPTER',
+  ]);
+  assert.equal(plan?.ready, false);
 });

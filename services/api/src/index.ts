@@ -62,6 +62,11 @@ export {
   type GeneralizedStrategyPreparationPort,
 } from "./strategy-preparation-client.js";
 export {
+  HttpEvmOptionSpreadProvisioningClient,
+  EvmOptionSpreadProvisioningClientError,
+  type EvmOptionSpreadProvisioningPort,
+} from './evm-option-spread-provisioning-client.js';
+export {
   GeneralizedStrategyQuoteClientError,
   HttpGeneralizedStrategyQuoteClient,
   type GeneralizedStrategyQuotePort,

@@ -1039,3 +1039,12 @@ export {
   type EvmOptionSpreadPackageIdPort,
   type EvmOptionSpreadPreparationLane,
 } from './evm-option-spread-preparation.js';
+export {
+  EvmOptionSpreadProvisioningResolver,
+  EvmOptionSpreadProvisioningService,
+} from './evm-option-spread-provisioning.js';
+export { createEvmOptionSpreadProvisioningInternalHandler } from './evm-option-spread-provisioning-server.js';
+export {
+  createViemEvmOptionSpreadReadPort,
+  loadEvmOptionSpreadRuntime,
+} from './evm-option-spread-config.js';
