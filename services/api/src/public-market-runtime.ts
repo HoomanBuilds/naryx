@@ -27,6 +27,7 @@ import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -395,6 +396,18 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
     if (strategyPackages !== undefined) opened.push(strategyPackages);
+    const generalizedQuoteSetting = environment.NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED ?? "false";
+    if (generalizedQuoteSetting !== "true" && generalizedQuoteSetting !== "false") {
+      throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED must be true or false.");
+    }
+    if (generalizedQuoteSetting === "true" && strategyPackages === undefined) {
+      throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED requires NARYX_STRATEGY_PACKAGE_DB.");
+    }
+    const strategyQuotes = generalizedQuoteSetting === "true"
+      ? new HttpGeneralizedStrategyQuoteClient(
+        environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+      )
+      : undefined;
     const internalHandlers = [
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
@@ -421,6 +434,7 @@ export function loadPublicMarketRuntime(
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
       ...(strategyPackages === undefined ? {} : { strategyPackages }),
+      ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),

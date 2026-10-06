@@ -14,6 +14,12 @@ export {
   type GeneralizedStrategyPreparationPort,
 } from "./strategy-preparation-client.js";
 export {
+  GeneralizedStrategyQuoteClientError,
+  HttpGeneralizedStrategyQuoteClient,
+  type GeneralizedStrategyQuotePort,
+  type GeneralizedStrategyQuoteResult,
+} from "./generalized-strategy-quote-client.js";
+export {
   createSolanaDevnetExecutionPorts,
   deriveSolanaDevnetLifecycleBinding,
   HttpSolanaDevnetReadOnlyRpc,
