@@ -367,7 +367,12 @@ export function hyperliquidTestnetAlignedEvidence(
   });
 }
 
-function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidExecutionPlannerOptions {
+type SourceHyperliquidTestnetAttempt = Extract<
+  HyperliquidTestnetAttemptHandoff,
+  { readonly admission: unknown }
+>;
+
+function plannerOptions(attempt: SourceHyperliquidTestnetAttempt): HyperliquidExecutionPlannerOptions {
   const marketRef = (value: Readonly<Record<string, unknown>>) => ({
     adapter: adapterRef({
       adapterId: value.adapterId as string,
@@ -400,7 +405,7 @@ function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidE
 }
 
 function sourceExecutionPlan(
-  attempt: HyperliquidTestnetAttemptHandoff,
+  attempt: SourceHyperliquidTestnetAttempt,
   inventory: HyperliquidTestnetAccountInventory,
 ): HyperliquidExecutionPlan {
   return new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
@@ -450,17 +455,19 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 
 function qualifyStrategyShape(
   attempt: HyperliquidTestnetAttemptHandoff,
-  sourcePlan: HyperliquidExecutionPlan,
   inventory: HyperliquidTestnetAccountInventory,
-): readonly HyperliquidExecutionPlan[] {
+): readonly Readonly<{
+  legs: readonly Readonly<{
+    role: 'SPOT' | 'PERPETUAL';
+    order: HypercoreOrderWire;
+  }>[];
+}>[] {
   const strategy = attempt.strategy?.plan;
   if (strategy === undefined) throw new Error('generalized strategy plan is missing');
-  const spot = sourcePlan.legs.find((leg) => leg.role === 'SPOT');
-  const perpetual = sourcePlan.legs.find((leg) => leg.role === 'PERPETUAL');
-  if (spot === undefined || perpetual === undefined
-    || strategy.domain.domainId !== sourcePlan.domain.domainId
-    || strategy.domain.domainManifestVersion !== sourcePlan.domain.domainManifestVersion
-    || !sameBytes(strategy.domain.domainManifestHash, sourcePlan.domain.domainManifestHash)
+  const expectedDomain = 'admission' in attempt ? attempt.admission.order.domain : strategy.domain;
+  if (strategy.domain.domainId !== expectedDomain.domainId
+    || strategy.domain.domainManifestVersion !== expectedDomain.domainManifestVersion
+    || !sameBytes(strategy.domain.domainManifestHash, expectedDomain.domainManifestHash)
     || strategy.orders.length < 1 || strategy.orders.length > 16
     || strategy.batches.length < 1 || strategy.batches.length > 16
     || strategy.requestExpiryMs <= 0n
@@ -492,26 +499,30 @@ function qualifyStrategyShape(
       throw new Error(`generalized strategy stage ${batch.stage} is inconsistent`);
     }
   }
-  const allowed = new Map<number, typeof spot>([
-    [attempt.market.spot.assetId, spot],
-    [attempt.market.perpetual.assetId, perpetual],
+  const allowed = new Map<number, 'SPOT' | 'PERPETUAL'>([
+    [attempt.market.spot.assetId, 'SPOT'],
+    [attempt.market.perpetual.assetId, 'PERPETUAL'],
   ]);
-  if (spot.order.a !== attempt.market.spot.assetId
-    || perpetual.order.a !== attempt.market.perpetual.assetId
-    || allowed.size !== 2) {
+  if (allowed.size !== 2) {
     throw new Error('qualified HyperCore market identifiers are invalid');
   }
+  const baseAssetDecimals = 'authority' in attempt
+    ? attempt.authority.baseAssetDecimals
+    : attempt.admission.order.quantity.asset.decimals;
+  const assetIdentities = new Map<number, typeof strategy.orders[number]>();
   for (const order of strategy.orders) {
-    const source = allowed.get(order.wire.a);
-    if (source === undefined
-      || order.baseAsset.assetId !== source.baseAsset.assetId
-      || order.baseAsset.decimals !== source.baseAsset.decimals
-      || !sameBytes(order.baseAsset.assetManifestHash, source.baseAsset.assetManifestHash)
-      || order.quoteAsset.assetId !== source.quoteAsset.assetId
-      || order.quoteAsset.decimals !== source.quoteAsset.decimals
-      || !sameBytes(order.quoteAsset.assetManifestHash, source.quoteAsset.assetManifestHash)) {
+    const role = allowed.get(order.wire.a);
+    const known = assetIdentities.get(order.wire.a);
+    if (role === undefined || order.baseAsset.decimals !== baseAssetDecimals
+      || (known !== undefined && (order.baseAsset.assetId !== known.baseAsset.assetId
+        || order.baseAsset.decimals !== known.baseAsset.decimals
+        || !sameBytes(order.baseAsset.assetManifestHash, known.baseAsset.assetManifestHash)
+        || order.quoteAsset.assetId !== known.quoteAsset.assetId
+        || order.quoteAsset.decimals !== known.quoteAsset.decimals
+        || !sameBytes(order.quoteAsset.assetManifestHash, known.quoteAsset.assetManifestHash)))) {
       throw new Error(`generalized strategy leg ${order.legId} uses an unqualified market or asset`);
     }
+    assetIdentities.set(order.wire.a, order);
   }
   let availableSpotAtoms = inventory.spotBalanceAtoms;
   const stages = [...new Set(strategy.orders.map((order) => order.stage))]
@@ -543,27 +554,10 @@ function qualifyStrategyShape(
       ...restrictive,
       s: sumRuntimeDecimals(orders.map((order) => order.s)),
     });
-    const role = aggregateOrder.a === attempt.market.spot.assetId ? 'SPOT' : 'PERPETUAL';
-    const legs = sourcePlan.legs.map((leg) => leg.role === role
-      ? Object.freeze({
-          ...leg,
-          signedBaseDeltaAtoms: aggregateOrder.b
-            ? leg.signedBaseDeltaAtoms < 0n ? -leg.signedBaseDeltaAtoms : leg.signedBaseDeltaAtoms
-            : leg.signedBaseDeltaAtoms > 0n ? -leg.signedBaseDeltaAtoms : leg.signedBaseDeltaAtoms,
-          order: aggregateOrder,
-        })
-      : leg) as unknown as HyperliquidExecutionPlan['legs'];
+    const role = allowed.get(aggregateOrder.a);
+    if (role === undefined) throw new Error('generalized strategy qualification market is invalid');
     return Object.freeze({
-      ...sourcePlan,
-      unsignedRequestFields: Object.freeze({
-        ...sourcePlan.unsignedRequestFields,
-        action: Object.freeze({
-          ...sourcePlan.unsignedRequestFields.action,
-          orders: Object.freeze(legs.map((leg) => leg.order)) as
-            HyperliquidExecutionPlan['unsignedRequestFields']['action']['orders'],
-        }),
-      }),
-      legs: Object.freeze(legs),
+      legs: Object.freeze([Object.freeze({ role, order: aggregateOrder })]),
     });
   }));
 }
@@ -706,14 +700,18 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       attempts,
       lane,
       async preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidTestnetAccountInventory> {
-        const snapshot = await authorityPreflight.qualify(attempt.admission);
+        const snapshot = 'authority' in attempt
+          ? await authorityPreflight.qualifyUntil(attempt.authority.requiredUntilMs)
+          : await authorityPreflight.qualify(attempt.admission);
+        const baseAssetDecimals = 'authority' in attempt
+          ? attempt.authority.baseAssetDecimals
+          : attempt.admission.order.quantity.asset.decimals;
         const inventory = hyperliquidTestnetAccountInventory(
           snapshot,
           qualificationConfig.perpetualName,
           attempt.market.spot.tokenIndex,
-          attempt.admission.order.quantity.asset.decimals,
+          baseAssetDecimals,
         );
-        const plan = sourceExecutionPlan(attempt, inventory);
         const binding = {
           spotUniverseIndex: attempt.market.spot.universeIndex,
           spotTokenIndex: attempt.market.spot.tokenIndex,
@@ -721,10 +719,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           quoteTokenIndex: attempt.market.quoteTokenIndex,
         };
         if (attempt.strategy === undefined) {
+          if (!('admission' in attempt)) throw new Error('native execution requires a strategy plan');
+          const plan = sourceExecutionPlan(attempt, inventory);
           requireExitInventory(plan, inventory);
           await marketPreflight.qualify({ plan, binding });
         } else {
-          const qualificationPlans = qualifyStrategyShape(attempt, plan, inventory);
+          const qualificationPlans = qualifyStrategyShape(attempt, inventory);
           for (const qualificationPlan of qualificationPlans) {
             await marketPreflight.qualify({ plan: qualificationPlan, binding });
           }
@@ -739,6 +739,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         if (attempt.strategy !== undefined) {
           throw new Error('generalized strategy plans use the strategy runtime');
         }
+        if (!('admission' in attempt)) throw new Error('native execution requires a strategy plan');
         const plan = sourceExecutionPlan(attempt, inventory);
         requireExitInventory(plan, inventory);
         const context = journal.submissionContext({

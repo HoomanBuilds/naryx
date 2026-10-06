@@ -77,6 +77,7 @@ import type { SolanaLocalExecutionService } from "./solana-local-execution.js";
 import {
   HyperliquidTestnetRuntimeClientError,
   type HyperliquidTestnetPreparationPort,
+  type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
 import {
@@ -100,7 +101,10 @@ import {
 } from "./hyperliquid-generalized-order.js";
 import {
   StrategyPackageStoreError,
+  type AnySelectedStrategyPackageAttempt,
+  type SelectedNativeStrategyPackageAttempt,
   type SelectedStrategyPackageAttempt,
+  type SelectNativeHyperliquidStrategyExecutionRequest,
   type SelectHyperliquidStrategyExecutionRequest,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
@@ -119,8 +123,19 @@ export type PrivateTerminalServerConfig = {
 
 interface GeneralizedStrategyExecutionPort {
   selectHyperliquidExecution(request: SelectHyperliquidStrategyExecutionRequest): SelectedStrategyPackageAttempt;
+  selectNativeHyperliquidExecution(request: SelectNativeHyperliquidStrategyExecutionRequest): SelectedNativeStrategyPackageAttempt;
   strategyExecutionAttempt(attemptId: string): SelectedStrategyPackageAttempt | undefined;
+  nativeStrategyExecutionAttempt(attemptId: string): SelectedNativeStrategyPackageAttempt | undefined;
+  anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined;
 }
+
+type NativeHyperliquidStrategyRuntime = Pick<
+  HyperliquidTestnetRuntimeConfig,
+  "domain" | "seriesManifestHash" | "executionClassManifestHash" | "market" | "bounds"
+> & Readonly<{
+  baseAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["baseAsset"];
+  quoteAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["quoteAsset"];
+}>;
 
 export function isLoopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
@@ -284,6 +299,7 @@ export function createPrivateTerminalRequestHandler(
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
   generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
   strategyPackageAuthorization?: StrategyPackageAuthorizationPort,
+  nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -512,12 +528,49 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
         return;
       }
-      if (generalizedStrategyExecutions === undefined || executionIntentStore === undefined) {
+      if (generalizedStrategyExecutions === undefined) {
         reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Generalized Hyperliquid attempt retrieval is unavailable.");
         return;
       }
       try {
-        const attempt = generalizedStrategyExecutions.strategyExecutionAttempt(generalizedHyperliquidAttemptMatch[1]!);
+        const attemptId = generalizedHyperliquidAttemptMatch[1]!;
+        const nativeAttempt = generalizedStrategyExecutions.nativeStrategyExecutionAttempt(attemptId);
+        if (nativeAttempt !== undefined) {
+          if (nativeHyperliquidStrategyRuntime === undefined) {
+            reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Native Hyperliquid runtime binding is unavailable.");
+            return;
+          }
+          const runtime = nativeHyperliquidStrategyRuntime;
+          sendJson(response, 200, {
+            version: 2,
+            attempt: nativeAttempt,
+            runtime: {
+              domainId: runtime.domain.domainId,
+              domainManifestVersion: runtime.domain.domainManifestVersion,
+              domainManifestHashHex: Buffer.from(runtime.domain.domainManifestHash).toString("hex"),
+              seriesManifestHash: runtime.seriesManifestHash,
+              executionClassManifestHash: runtime.executionClassManifestHash,
+              baseAsset: {
+                assetId: runtime.baseAsset.assetId,
+                decimals: runtime.baseAsset.decimals,
+                assetManifestHashHex: Buffer.from(runtime.baseAsset.assetManifestHash).toString("hex"),
+              },
+              quoteAsset: {
+                assetId: runtime.quoteAsset.assetId,
+                decimals: runtime.quoteAsset.decimals,
+                assetManifestHashHex: Buffer.from(runtime.quoteAsset.assetManifestHash).toString("hex"),
+              },
+              market: runtime.market,
+              limits: runtime.bounds,
+            },
+          });
+          return;
+        }
+        if (executionIntentStore === undefined) {
+          reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Source-backed Hyperliquid attempt retrieval is unavailable.");
+          return;
+        }
+        const attempt = generalizedStrategyExecutions.strategyExecutionAttempt(attemptId);
         const sourceAttempt = attempt === undefined
           ? undefined
           : executionIntentStore.getAttemptForOrder(attempt.sourceOrderHashHex);
@@ -738,23 +791,37 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Generalized strategy selection is unavailable.");
         return;
       }
-      if (executionIntentStore === undefined) {
-        reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Canonical Hyperliquid source selection is unavailable.");
-        return;
-      }
       try {
         const body = await readJson(request);
         if (typeof body !== "object" || body === null || Array.isArray(body)
-          || Object.keys(body).sort().join(",") !== "idempotencyKey,orderHash,quoteHash,routeHash,sourceOrderHash"
           || typeof (body as { quoteHash?: unknown }).quoteHash !== "string"
           || typeof (body as { orderHash?: unknown }).orderHash !== "string"
           || typeof (body as { routeHash?: unknown }).routeHash !== "string"
-          || typeof (body as { sourceOrderHash?: unknown }).sourceOrderHash !== "string"
           || typeof (body as { idempotencyKey?: unknown }).idempotencyKey !== "string") {
-          reject(response, 400, "INVALID_REQUEST", "Request must contain only the reviewed order, quote, route, source, and idempotency key.");
+          reject(response, 400, "INVALID_REQUEST", "Request must contain the reviewed order, quote, route, and idempotency key.");
           return;
         }
-        const values = body as { quoteHash: string; orderHash: string; routeHash: string; sourceOrderHash: string; idempotencyKey: string };
+        const values = body as { quoteHash: string; orderHash: string; routeHash: string; sourceOrderHash?: unknown; idempotencyKey: string };
+        const keys = Object.keys(body).sort().join(",");
+        if (keys === "idempotencyKey,orderHash,quoteHash,routeHash") {
+          const selected = generalizedStrategyExecutions.selectNativeHyperliquidExecution({
+            quoteHashHex: values.quoteHash,
+            orderHashHex: values.orderHash,
+            routeHashHex: values.routeHash,
+            idempotencyKey: values.idempotencyKey,
+          });
+          sendJson(response, 200, { version: 2, ...selected });
+          return;
+        }
+        if (keys !== "idempotencyKey,orderHash,quoteHash,routeHash,sourceOrderHash"
+          || typeof values.sourceOrderHash !== "string") {
+          reject(response, 400, "INVALID_REQUEST", "Request contains unsupported strategy selection fields.");
+          return;
+        }
+        if (executionIntentStore === undefined) {
+          reject(response, 503, "STRATEGY_SELECTION_UNAVAILABLE", "Canonical Hyperliquid source selection is unavailable.");
+          return;
+        }
         const sourceAttempt = executionIntentStore.getAttemptForOrder(values.sourceOrderHash);
         if (sourceAttempt?.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
           || sourceAttempt.domainId !== "hypercore:testnet") {
@@ -1533,6 +1600,7 @@ export function createPrivateTerminalServer(
   hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
   generalizedStrategyExecutions?: GeneralizedStrategyExecutionPort,
   strategyPackageAuthorization?: StrategyPackageAuthorizationPort,
+  nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1559,6 +1627,7 @@ export function createPrivateTerminalServer(
     hyperliquidGeneralizedOrder,
     generalizedStrategyExecutions,
     strategyPackageAuthorization,
+    nativeHyperliquidStrategyRuntime,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

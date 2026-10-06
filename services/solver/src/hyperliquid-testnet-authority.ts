@@ -352,6 +352,16 @@ export class HyperliquidTestnetAuthorityPreflight {
 
   /** Returns the qualified snapshot, so the caller reads account inventory from the same read. */
   async qualify(admission: PackageAdmission): Promise<HyperliquidTestnetAuthoritySnapshot> {
+    const recoveryDeadline = admission.order.hyperliquidRecoveryDeadlineValue;
+    requireCondition(admission.order.expiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
+      && admission.order.hyperliquidRecoveryExpiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
+      && recoveryDeadline !== undefined,
+    'package expiry semantics are not Hyperliquid milliseconds');
+    return this.qualifyUntil(admission.order.expiryValue > recoveryDeadline
+      ? admission.order.expiryValue : recoveryDeadline);
+  }
+
+  async qualifyUntil(requiredUntilMs: bigint): Promise<HyperliquidTestnetAuthoritySnapshot> {
     try {
       requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'INITIALIZING',
         'durable authority fence blocks new submissions');
@@ -362,7 +372,7 @@ export class HyperliquidTestnetAuthorityPreflight {
         this.#config.approvedAgent,
         this.#config.allowedPerpetualCoins,
       );
-      this.#validateSnapshot(snapshot, admission, nowMs);
+      this.#validateSnapshot(snapshot, requiredUntilMs, nowMs);
       requireCondition(this.#store.activate() === 'ACTIVE',
         'durable authority fence is not active');
       return snapshot;
@@ -406,7 +416,7 @@ export class HyperliquidTestnetAuthorityPreflight {
 
   #validateSnapshot(
     snapshot: HyperliquidTestnetAuthoritySnapshot,
-    admission: PackageAdmission,
+    authorizationUntilMs: bigint,
     nowMs: number,
   ): void {
     requireCondition(snapshot.environment === 'testnet' && snapshot.apiUrl === TESTNET_API_URL,
@@ -436,14 +446,9 @@ export class HyperliquidTestnetAuthorityPreflight {
       requireCondition(matches.length === 1, 'subaccount inventory is missing or ambiguous');
     }
 
-    const recoveryDeadline = admission.order.hyperliquidRecoveryDeadlineValue;
-    requireCondition(admission.order.expiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
-      && admission.order.hyperliquidRecoveryExpiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
-      && recoveryDeadline !== undefined,
-    'package expiry semantics are not Hyperliquid milliseconds');
-    const requiredUntil = BigInt(this.#config.incidentBufferMs)
-      + (admission.order.expiryValue > recoveryDeadline
-        ? admission.order.expiryValue : recoveryDeadline);
+    requireCondition(typeof authorizationUntilMs === 'bigint'
+      && authorizationUntilMs > BigInt(nowMs), 'authority horizon is expired or invalid');
+    const requiredUntil = BigInt(this.#config.incidentBufferMs) + authorizationUntilMs;
     requireCondition(requiredUntil <= BigInt(Number.MAX_SAFE_INTEGER),
       'required authority horizon is unsafe');
 

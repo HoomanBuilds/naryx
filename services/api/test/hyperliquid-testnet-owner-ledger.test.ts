@@ -170,14 +170,17 @@ test("a generalized strategy attempt requires its own authorization and bypasses
     },
     orders: { getCanonicalOrderByHash: (orderHash) => orderHash === sourceOrderHash ? order : undefined },
     strategyAttempts: {
-      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId
-        ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash } : undefined,
+      anyStrategyExecutionAttempt: (attemptId: string) => attemptId === strategyAttemptId
+        ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash, quoteHashHex: "0e".repeat(32) } : undefined,
     },
     strategyReceipts: {
-      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId
+      anyStrategyExecutionAttempt: (attemptId: string) => attemptId === strategyAttemptId
         ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash, quoteHashHex: "0e".repeat(32) } as never
         : undefined,
-      admissionByQuote: () => ({ orderHashHex: strategyOrderHash, order: { owner: ALICE } }) as never,
+      admissionByQuote: () => ({
+        orderHashHex: strategyOrderHash,
+        order: { owner: ALICE, settlementAccount: TRADING },
+      }) as never,
       ownerAuthorization: () => generalizedAuthorized
         ? { owner: ALICE } as never : undefined,
       recordReceipt: () => { throw new Error("must not record during admission"); },

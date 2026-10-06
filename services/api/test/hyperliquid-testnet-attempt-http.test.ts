@@ -187,6 +187,16 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
     status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
     selectedAtMs: 1_000,
   } as const;
+  const nativeAttempt = {
+    attemptId: `strategy-hl-${"56".repeat(24)}`,
+    idempotencyKey: "strategy-selection-0002",
+    orderHashHex: orderHash,
+    graphHashHex: "66".repeat(32),
+    quoteHashHex: quoteHash,
+    routeHashHex: routeHash,
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs: 1_001,
+  } as const;
   const server = createPrivateTerminalServer(
     { host: "127.0.0.1", port: 0, terminalOrigin: null },
     {}, undefined, undefined, {}, undefined, undefined, {
@@ -208,6 +218,18 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
         return selectedAttempt;
       },
       strategyExecutionAttempt: (requested) => requested === attemptId ? selectedAttempt : undefined,
+      selectNativeHyperliquidExecution: (request) => {
+        assert.deepEqual(request, {
+          quoteHashHex: quoteHash,
+          orderHashHex: orderHash,
+          routeHashHex: routeHash,
+          idempotencyKey: nativeAttempt.idempotencyKey,
+        });
+        return nativeAttempt;
+      },
+      nativeStrategyExecutionAttempt: (requested) => requested === nativeAttempt.attemptId ? nativeAttempt : undefined,
+      anyStrategyExecutionAttempt: (requested) => requested === nativeAttempt.attemptId
+        ? nativeAttempt : requested === attemptId ? selectedAttempt : undefined,
     },
   );
   context.after(() => server.close());
@@ -225,6 +247,18 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
   const metadata = await fetch(`${origin}/internal/solver/hyperliquid-testnet/strategy-attempts/${attemptId}`);
   assert.equal(metadata.status, 200);
   assert.deepEqual(await metadata.json(), { version: 1, attempt: selectedAttempt, sourceAttemptId });
+  const native = await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      orderHash,
+      quoteHash,
+      routeHash,
+      idempotencyKey: nativeAttempt.idempotencyKey,
+    }),
+  });
+  assert.equal(native.status, 200);
+  assert.deepEqual(await native.json(), { version: 2, ...nativeAttempt });
   assert.equal((await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -245,6 +279,9 @@ test("private terminal rejects generalized selection without a selected Hyperliq
         throw new Error("selection must not be reached");
       },
       strategyExecutionAttempt: () => undefined,
+      selectNativeHyperliquidExecution: () => { throw new Error("native selection must not be reached"); },
+      nativeStrategyExecutionAttempt: () => undefined,
+      anyStrategyExecutionAttempt: () => undefined,
     },
   );
   context.after(() => server.close());

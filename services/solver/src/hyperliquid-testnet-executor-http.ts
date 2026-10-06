@@ -226,9 +226,8 @@ export interface HyperliquidTestnetTrustedAttemptProvider {
     Promise<HyperliquidTestnetAttemptHandoff | undefined>;
 }
 
-export interface HyperliquidTestnetAttemptHandoff {
+interface HyperliquidTestnetAttemptHandoffBase {
   readonly attemptId: string;
-  readonly admission: PackageAdmission;
   readonly seriesManifestHash: string;
   readonly executionClassManifestHash: string;
   readonly market: Readonly<{
@@ -242,12 +241,27 @@ export interface HyperliquidTestnetAttemptHandoff {
     maxFillPages: number;
   }>;
   readonly selectedAtMs: number;
-  readonly strategy?: Readonly<{
-    sourceAttemptId: string;
-    graphHash: Uint8Array;
-    plan: HyperliquidStrategyExecutionPlan;
-  }>;
 }
+
+export type HyperliquidTestnetAttemptHandoff =
+  | Readonly<HyperliquidTestnetAttemptHandoffBase & {
+    admission: PackageAdmission;
+    strategy?: Readonly<{
+      sourceAttemptId: string;
+      graphHash: Uint8Array;
+      plan: HyperliquidStrategyExecutionPlan;
+    }>;
+  }>
+  | Readonly<HyperliquidTestnetAttemptHandoffBase & {
+    authority: Readonly<{
+      requiredUntilMs: bigint;
+      baseAssetDecimals: number;
+    }>;
+    strategy: Readonly<{
+      graphHash: Uint8Array;
+      plan: HyperliquidStrategyExecutionPlan;
+    }>;
+  }>;
 
 export interface HyperliquidTestnetExecutorPort {
   execute(request: HyperliquidTestnetExecutorRequest): Promise<HyperliquidTestnetExecutorResult>;
@@ -372,17 +386,34 @@ export function validateHyperliquidTestnetRuntimeAttempt(
 ): HyperliquidTestnetAttemptHandoff {
   requireCondition(isRecord(value), 'INVALID_ATTEMPT', 'attempt provider returned an invalid attempt');
   const baseKeys = [
-    'admission', 'attemptId', 'executionClassManifestHash', 'limits', 'market',
+    'attemptId', 'executionClassManifestHash', 'limits', 'market',
     'selectedAtMs', 'seriesManifestHash',
   ];
+  const nativeShape = 'authority' in value;
   const strategyShape = 'strategy' in value;
-  requireCondition(hasExactKeys(value, strategyShape ? [...baseKeys, 'strategy'] : baseKeys),
+  const expectedKeys = nativeShape
+    ? [...baseKeys, 'authority', 'strategy']
+    : strategyShape ? [...baseKeys, 'admission', 'strategy'] : [...baseKeys, 'admission'];
+  requireCondition(hasExactKeys(value, expectedKeys),
     'INVALID_ATTEMPT', 'attempt provider fields are invalid');
   const input = value as unknown as HyperliquidTestnetAttemptHandoff;
   requireCondition(input.attemptId === expectedAttemptId, 'ATTEMPT_IDENTITY_MISMATCH',
     'resolved attempt identity does not match the request');
-  requireCondition(isRecord(input.admission) && isRecord(input.market) && isRecord(input.limits),
-    'INVALID_ATTEMPT', 'attempt admission, market, or limits are invalid');
+  requireCondition(isRecord(input.market) && isRecord(input.limits),
+    'INVALID_ATTEMPT', 'attempt market or limits are invalid');
+  if (nativeShape) {
+    requireCondition('authority' in input && isRecord(input.authority)
+      && hasExactKeys(input.authority, ['baseAssetDecimals', 'requiredUntilMs'])
+      && typeof input.authority.requiredUntilMs === 'bigint'
+      && input.authority.requiredUntilMs > BigInt(input.selectedAtMs)
+      && input.authority.requiredUntilMs <= BigInt(Number.MAX_SAFE_INTEGER)
+      && Number.isSafeInteger(input.authority.baseAssetDecimals)
+      && input.authority.baseAssetDecimals >= 0 && input.authority.baseAssetDecimals <= 18,
+    'INVALID_ATTEMPT', 'native strategy authority is invalid');
+  } else {
+    requireCondition('admission' in input && isRecord(input.admission),
+      'INVALID_ATTEMPT', 'attempt admission is invalid');
+  }
   requireCondition(typeof input.seriesManifestHash === 'string' && /^[0-9a-f]{64}$/.test(input.seriesManifestHash)
     && !/^0+$/.test(input.seriesManifestHash), 'INVALID_ATTEMPT', 'series manifest hash is invalid');
   requireCondition(typeof input.executionClassManifestHash === 'string'
@@ -393,11 +424,16 @@ export function validateHyperliquidTestnetRuntimeAttempt(
     safeInteger(input.limits[field], `limits.${field}`, true);
   }
   if (strategyShape) {
-    requireCondition(isRecord(input.strategy)
-      && hasExactKeys(input.strategy, ['graphHash', 'plan', 'sourceAttemptId']),
+    requireCondition(input.strategy !== undefined && isRecord(input.strategy)
+      && hasExactKeys(input.strategy, nativeShape
+        ? ['graphHash', 'plan'] : ['graphHash', 'plan', 'sourceAttemptId']),
     'INVALID_ATTEMPT', 'strategy attempt fields are invalid');
-    requireCondition(/^hyperliquid-testnet-[0-9a-f]{48}$/.test(input.strategy.sourceAttemptId),
+    if (!nativeShape) {
+      requireCondition('sourceAttemptId' in input.strategy
+        && typeof input.strategy.sourceAttemptId === 'string'
+        && /^hyperliquid-testnet-[0-9a-f]{48}$/.test(input.strategy.sourceAttemptId),
       'INVALID_ATTEMPT', 'strategy source attempt identity is invalid');
+    }
     requireCondition(input.strategy.graphHash instanceof Uint8Array
       && input.strategy.graphHash.length === 32
       && input.strategy.graphHash.some((byte) => byte !== 0),

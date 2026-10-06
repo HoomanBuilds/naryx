@@ -5,7 +5,7 @@ import type {
   SpotMetaResponse,
   UserFeesResponse,
 } from '@nktkas/hyperliquid/api/info';
-import type { HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
+import type { HypercoreOrderWire, HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
 import type { HyperliquidTestnetRuntimeMarketBinding } from './hyperliquid-testnet-runtime.js';
 
 export const HYPERLIQUID_TESTNET_MARKET_INFO_URL = TESTNET_API_URL;
@@ -66,9 +66,17 @@ export interface HyperliquidTestnetMarketQualificationConfig {
 }
 
 export interface HyperliquidTestnetMarketQualificationInput {
-  readonly plan: HyperliquidExecutionPlan;
+  readonly plan: HyperliquidTestnetMarketQualificationPlan;
   readonly binding: HyperliquidTestnetRuntimeMarketBinding;
 }
+
+export type HyperliquidTestnetMarketQualificationPlan = Pick<HyperliquidExecutionPlan, 'legs'>
+  | Readonly<{
+    legs: readonly Readonly<{
+      role: 'SPOT' | 'PERPETUAL';
+      order: HypercoreOrderWire;
+    }>[];
+  }>;
 
 type Decimal = Readonly<{ atoms: bigint; scale: number }>;
 
@@ -221,11 +229,11 @@ function divergenceWithin(left: Decimal, right: Decimal, maxBps: number): boolea
   return difference * 10_000n <= reference * BigInt(maxBps);
 }
 
-function planOrders(plan: HyperliquidExecutionPlan) {
+function planOrders(plan: HyperliquidTestnetMarketQualificationPlan) {
   const spot = plan.legs.find((leg) => leg.role === 'SPOT')?.order;
   const perpetual = plan.legs.find((leg) => leg.role === 'PERPETUAL')?.order;
-  requireCondition(spot !== undefined && perpetual !== undefined,
-    'compiled plan must contain spot and perpetual orders');
+  requireCondition(spot !== undefined || perpetual !== undefined,
+    'compiled plan must contain at least one qualified order');
   return { spot, perpetual };
 }
 
@@ -384,42 +392,45 @@ export class HyperliquidTestnetMarketPreflight {
     'perpetual asset identity mismatch');
 
     const { spot, perpetual: perpetualOrder } = planOrders(input.plan);
-    requireCondition(spot.a === 10_000 + binding.spotUniverseIndex,
-      'compiled spot asset does not match spot universe');
-    requireCondition(perpetualOrder.a === binding.perpetualAssetIndex,
-      'compiled perpetual asset does not match perpetual metadata');
-    requireCondition(decimal(spot.s, 'spot planned quantity').scale <= spotToken.szDecimals,
-      'spot size precision exceeds token metadata');
-    requireCondition(decimal(perpetualOrder.s, 'perpetual planned quantity').scale
-      <= perpetual.szDecimals, 'perpetual size precision exceeds metadata');
-
-    const spotBook = checkedBook(snapshot.spotBook, this.#config.spotUniverseName, 'spot book');
-    const perpetualBook = checkedBook(
-      snapshot.perpetualBook, this.#config.perpetualName, 'perpetual book',
-    );
-    for (const [name, book] of [['spot book', spotBook], ['perpetual book', perpetualBook]] as const) {
-      requireCondition(book.time <= snapshot.receivedAtMs
-        && snapshot.receivedAtMs - book.time <= this.#config.maxBookAgeMs,
-      `${name} is stale or future-dated`);
+    const spotBook = spot === undefined ? undefined
+      : checkedBook(snapshot.spotBook, this.#config.spotUniverseName, 'spot book');
+    const perpetualBook = perpetualOrder === undefined ? undefined
+      : checkedBook(snapshot.perpetualBook, this.#config.perpetualName, 'perpetual book');
+    if (spot !== undefined && spotBook !== undefined) {
+      requireCondition(spot.a === 10_000 + binding.spotUniverseIndex,
+        'compiled spot asset does not match spot universe');
+      requireCondition(decimal(spot.s, 'spot planned quantity').scale <= spotToken.szDecimals,
+        'spot size precision exceeds token metadata');
+      requireCondition(spotBook.time <= snapshot.receivedAtMs
+        && snapshot.receivedAtMs - spotBook.time <= this.#config.maxBookAgeMs,
+      'spot book is stale or future-dated');
+      const required = requiredDepth(spot, this.#config.minimumSpotDepth, 'spot');
+      requireCondition(compare(executableDepth(
+        spotBook, spot.b, spot.p, 'spot',
+      ), required) >= 0, 'spot executable depth is insufficient');
     }
-    requireCondition(Math.abs(spotBook.time - perpetualBook.time)
-      <= this.#config.maxSnapshotSkewMs, 'book snapshots exceed maximum skew');
-
-    const spotRequired = requiredDepth(
-      spot, this.#config.minimumSpotDepth, 'spot',
-    );
-    const perpetualRequired = requiredDepth(
-      perpetualOrder, this.#config.minimumPerpetualDepth, 'perpetual',
-    );
-    requireCondition(compare(executableDepth(
-      spotBook, spot.b, spot.p, 'spot',
-    ), spotRequired) >= 0, 'spot executable depth is insufficient');
-    requireCondition(compare(executableDepth(
-      perpetualBook, perpetualOrder.b, perpetualOrder.p, 'perpetual',
-    ), perpetualRequired) >= 0, 'perpetual executable depth is insufficient');
-    requireCondition(divergenceWithin(
-      midpoint(spotBook, 'spot'), midpoint(perpetualBook, 'perpetual'),
-      this.#config.maxReferenceDivergenceBps,
-    ), 'spot-perpetual reference divergence exceeds the configured maximum');
+    if (perpetualOrder !== undefined && perpetualBook !== undefined) {
+      requireCondition(perpetualOrder.a === binding.perpetualAssetIndex,
+        'compiled perpetual asset does not match perpetual metadata');
+      requireCondition(decimal(perpetualOrder.s, 'perpetual planned quantity').scale
+        <= perpetual.szDecimals, 'perpetual size precision exceeds metadata');
+      requireCondition(perpetualBook.time <= snapshot.receivedAtMs
+        && snapshot.receivedAtMs - perpetualBook.time <= this.#config.maxBookAgeMs,
+      'perpetual book is stale or future-dated');
+      const required = requiredDepth(
+        perpetualOrder, this.#config.minimumPerpetualDepth, 'perpetual',
+      );
+      requireCondition(compare(executableDepth(
+        perpetualBook, perpetualOrder.b, perpetualOrder.p, 'perpetual',
+      ), required) >= 0, 'perpetual executable depth is insufficient');
+    }
+    if (spotBook !== undefined && perpetualBook !== undefined) {
+      requireCondition(Math.abs(spotBook.time - perpetualBook.time)
+        <= this.#config.maxSnapshotSkewMs, 'book snapshots exceed maximum skew');
+      requireCondition(divergenceWithin(
+        midpoint(spotBook, 'spot'), midpoint(perpetualBook, 'perpetual'),
+        this.#config.maxReferenceDivergenceBps,
+      ), 'spot-perpetual reference divergence exceeds the configured maximum');
+    }
   }
 }

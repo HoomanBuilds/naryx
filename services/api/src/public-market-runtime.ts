@@ -59,7 +59,8 @@ export interface PublicMarketRuntime {
   /** Durable selection and lookup for generalized Hyperliquid Testnet execution attempts. */
   readonly strategyPackageExecutions?: Pick<
     SqliteStrategyPackageStore,
-    "selectHyperliquidExecution" | "strategyExecutionAttempt" | "admissionByQuote"
+    "selectHyperliquidExecution" | "selectNativeHyperliquidExecution"
+      | "strategyExecutionAttempt" | "nativeStrategyExecutionAttempt" | "anyStrategyExecutionAttempt" | "admissionByQuote"
       | "ownerAuthorization" | "recordReceipt"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */

@@ -69,6 +69,16 @@ CREATE TABLE IF NOT EXISTS strategy_execution_attempts (
   status TEXT NOT NULL CHECK (status = 'HYPERLIQUID_TESTNET_QUOTE_SELECTED'),
   selected_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_native_execution_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  order_hash BLOB NOT NULL REFERENCES strategy_package_orders(order_hash),
+  graph_hash BLOB NOT NULL,
+  quote_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_quotes(quote_hash),
+  route_hash BLOB NOT NULL,
+  status TEXT NOT NULL CHECK (status = 'HYPERLIQUID_TESTNET_QUOTE_SELECTED'),
+  selected_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_package_receipts (
   receipt_hash BLOB PRIMARY KEY,
   order_hash BLOB NOT NULL REFERENCES strategy_package_orders(order_hash),
@@ -91,6 +101,8 @@ CREATE TRIGGER IF NOT EXISTS reject_strategy_package_authorization_change BEFORE
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_authorization_delete BEFORE DELETE ON strategy_package_authorizations BEGIN SELECT RAISE(ABORT, 'strategy package authorizations are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_attempt_change BEFORE UPDATE ON strategy_execution_attempts BEGIN SELECT RAISE(ABORT, 'strategy execution attempts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_attempt_delete BEFORE DELETE ON strategy_execution_attempts BEGIN SELECT RAISE(ABORT, 'strategy execution attempts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_native_execution_attempt_change BEFORE UPDATE ON strategy_native_execution_attempts BEGIN SELECT RAISE(ABORT, 'native strategy execution attempts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_native_execution_attempt_delete BEFORE DELETE ON strategy_native_execution_attempts BEGIN SELECT RAISE(ABORT, 'native strategy execution attempts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_receipt_change BEFORE UPDATE ON strategy_package_receipts BEGIN SELECT RAISE(ABORT, 'strategy package receipts are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_receipt_delete BEFORE DELETE ON strategy_package_receipts BEGIN SELECT RAISE(ABORT, 'strategy package receipts are immutable'); END;
 `;
@@ -173,6 +185,28 @@ export interface SelectHyperliquidStrategyExecutionRequest {
   readonly idempotencyKey: string;
 }
 
+export interface SelectedNativeStrategyPackageAttempt {
+  readonly attemptId: string;
+  readonly idempotencyKey: string;
+  readonly orderHashHex: string;
+  readonly graphHashHex: string;
+  readonly quoteHashHex: string;
+  readonly routeHashHex: string;
+  readonly status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED";
+  readonly selectedAtMs: number;
+}
+
+export interface SelectNativeHyperliquidStrategyExecutionRequest {
+  readonly quoteHashHex: string;
+  readonly orderHashHex: string;
+  readonly routeHashHex: string;
+  readonly idempotencyKey: string;
+}
+
+export type AnySelectedStrategyPackageAttempt =
+  | SelectedStrategyPackageAttempt
+  | SelectedNativeStrategyPackageAttempt;
+
 export interface StrategyPackageAdmissionSummary {
   readonly orderHashHex: string;
   readonly quoteHashHex: string;
@@ -225,6 +259,20 @@ function strategyAttemptId(
   return `strategy-hl-${digest.slice(0, 48)}`;
 }
 
+function nativeStrategyAttemptId(
+  orderHashHex: string,
+  quoteHashHex: string,
+  routeHashHex: string,
+): string {
+  const digest = createHash("sha256")
+    .update("NARYX/hyperliquid-native-strategy-execution-attempt/v1", "ascii")
+    .update(Buffer.from(orderHashHex, "hex"))
+    .update(Buffer.from(quoteHashHex, "hex"))
+    .update(Buffer.from(routeHashHex, "hex"))
+    .digest("hex");
+  return `strategy-hl-${digest.slice(0, 48)}`;
+}
+
 function attemptRow(row: {
   attempt_id: string;
   idempotency_key: string;
@@ -245,6 +293,29 @@ function attemptRow(row: {
     quoteHashHex: toHex(row.quote_hash),
     routeHashHex: toHex(row.route_hash),
     sourceOrderHashHex: toHex(row.source_order_hash),
+    status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+    selectedAtMs: row.selected_at_ms,
+  });
+}
+
+function nativeAttemptRow(row: {
+  attempt_id: string;
+  idempotency_key: string;
+  order_hash: Uint8Array;
+  graph_hash: Uint8Array;
+  quote_hash: Uint8Array;
+  route_hash: Uint8Array;
+  status: string;
+  selected_at_ms: number;
+}): SelectedNativeStrategyPackageAttempt {
+  requireCondition(row.status === "HYPERLIQUID_TESTNET_QUOTE_SELECTED", "CORRUPT_ROW", "The native strategy execution attempt status is invalid.");
+  return Object.freeze({
+    attemptId: row.attempt_id,
+    idempotencyKey: row.idempotency_key,
+    orderHashHex: toHex(row.order_hash),
+    graphHashHex: toHex(row.graph_hash),
+    quoteHashHex: toHex(row.quote_hash),
+    routeHashHex: toHex(row.route_hash),
     status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
     selectedAtMs: row.selected_at_ms,
   });
@@ -448,6 +519,10 @@ export class SqliteStrategyPackageStore {
       source.sourceOrderHashHex,
     );
     return this.db.transaction(() => {
+      const nativeByKey = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE idempotency_key = ?").get(idempotencyKey) as Parameters<typeof nativeAttemptRow>[0] | undefined;
+      requireCondition(nativeByKey === undefined, "IDEMPOTENCY_CONFLICT", "The execution idempotency key is already bound to a native strategy attempt.");
+      const nativeByQuote = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof nativeAttemptRow>[0] | undefined;
+      requireCondition(nativeByQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected as a native strategy attempt.");
       const byKey = this.db.prepare("SELECT * FROM strategy_execution_attempts WHERE idempotency_key = ?").get(idempotencyKey) as Parameters<typeof attemptRow>[0] | undefined;
       if (byKey !== undefined) {
         const known = attemptRow(byKey);
@@ -485,11 +560,99 @@ export class SqliteStrategyPackageStore {
     }).immediate();
   }
 
+  selectNativeHyperliquidExecution(
+    request: SelectNativeHyperliquidStrategyExecutionRequest,
+  ): SelectedNativeStrategyPackageAttempt {
+    const { quoteHashHex, orderHashHex, routeHashHex, idempotencyKey } = request;
+    requireCondition(/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(idempotencyKey), "INVALID_IDEMPOTENCY_KEY", "The execution idempotency key is invalid.");
+    hashBuffer(orderHashHex);
+    hashBuffer(routeHashHex);
+    const admission = this.admissionByQuote(quoteHashHex);
+    requireCondition(admission !== undefined, "QUOTE_NOT_FOUND", "The strategy package quote is not stored.");
+    requireCondition(this.ownerAuthorization(admission.orderHashHex) !== undefined,
+      "OWNER_AUTHORIZATION_REQUIRED", "The strategy package owner must authorize the exact generalized order before selection.");
+    requireCondition(admission.order.environment === "testnet"
+      && admission.order.settlementClass === "BATCHED_IOC_WITH_RECOVERY"
+      && admission.order.expiryUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+      && admission.quote.validUntilUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+      && admission.route.routeExpiryUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+      && admission.route.domainPlans.length === 1
+      && admission.route.domainPlans[0]?.domain.domainId === "hypercore:testnet"
+      && admission.route.domainPlans[0]?.executionPlanKind === "HYPERCORE_BATCHED_IOC",
+    "UNSUPPORTED_EXECUTION", "The selected strategy quote is not an executable native Hyperliquid Testnet package.");
+    requireCondition(admission.orderHashHex === orderHashHex
+      && admission.routeHashHex === routeHashHex,
+    "SELECTION_MISMATCH", "The selected quote does not match the reviewed order and route commitments.");
+    const selectedAtMs = this.clock();
+    requireCondition(Number.isSafeInteger(selectedAtMs) && selectedAtMs >= 0, "INVALID_CLOCK", "The execution selection clock is invalid.");
+    const currentTime = BigInt(selectedAtMs);
+    requireCondition(currentTime < admission.order.expiryValue
+      && currentTime < admission.quote.validUntilValue
+      && currentTime < admission.route.routeExpiryValue,
+    "QUOTE_EXPIRED", "The selected strategy quote or route has expired.");
+    const attemptId = nativeStrategyAttemptId(
+      admission.orderHashHex,
+      quoteHashHex,
+      admission.routeHashHex,
+    );
+    return this.db.transaction(() => {
+      const legacyByKey = this.db.prepare("SELECT * FROM strategy_execution_attempts WHERE idempotency_key = ?").get(idempotencyKey) as Parameters<typeof attemptRow>[0] | undefined;
+      requireCondition(legacyByKey === undefined, "IDEMPOTENCY_CONFLICT", "The execution idempotency key is already bound to a source-backed strategy attempt.");
+      const legacyByQuote = this.db.prepare("SELECT * FROM strategy_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof attemptRow>[0] | undefined;
+      requireCondition(legacyByQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected as a source-backed strategy attempt.");
+      const byKey = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE idempotency_key = ?").get(idempotencyKey) as Parameters<typeof nativeAttemptRow>[0] | undefined;
+      if (byKey !== undefined) {
+        const known = nativeAttemptRow(byKey);
+        requireCondition(known.attemptId === attemptId && known.quoteHashHex === quoteHashHex, "IDEMPOTENCY_CONFLICT", "The execution idempotency key is already bound to another quote.");
+        return known;
+      }
+      const byQuote = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof nativeAttemptRow>[0] | undefined;
+      requireCondition(byQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected with another idempotency key.");
+      this.db.prepare(`
+        INSERT INTO strategy_native_execution_attempts
+          (attempt_id, idempotency_key, order_hash, graph_hash, quote_hash, route_hash,
+           status, selected_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, 'HYPERLIQUID_TESTNET_QUOTE_SELECTED', ?)
+      `).run(
+        attemptId,
+        idempotencyKey,
+        hashBuffer(admission.orderHashHex),
+        hashBuffer(admission.graphHashHex),
+        hashBuffer(quoteHashHex),
+        hashBuffer(admission.routeHashHex),
+        selectedAtMs,
+      );
+      return Object.freeze({
+        attemptId,
+        idempotencyKey,
+        orderHashHex: admission.orderHashHex,
+        graphHashHex: admission.graphHashHex,
+        quoteHashHex,
+        routeHashHex: admission.routeHashHex,
+        status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED" as const,
+        selectedAtMs,
+      });
+    }).immediate();
+  }
+
   strategyExecutionAttempt(attemptId: string): SelectedStrategyPackageAttempt | undefined {
     if (!/^strategy-hl-[0-9a-f]{48}$/.test(attemptId)) return undefined;
     const row = this.db.prepare("SELECT * FROM strategy_execution_attempts WHERE attempt_id = ?")
       .get(attemptId) as Parameters<typeof attemptRow>[0] | undefined;
     return row === undefined ? undefined : attemptRow(row);
+  }
+
+  nativeStrategyExecutionAttempt(attemptId: string): SelectedNativeStrategyPackageAttempt | undefined {
+    if (!/^strategy-hl-[0-9a-f]{48}$/.test(attemptId)) return undefined;
+    const row = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE attempt_id = ?")
+      .get(attemptId) as Parameters<typeof nativeAttemptRow>[0] | undefined;
+    return row === undefined ? undefined : nativeAttemptRow(row);
+  }
+
+  anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined {
+    const native = this.nativeStrategyExecutionAttempt(attemptId);
+    if (native !== undefined) return native;
+    return this.strategyExecutionAttempt(attemptId);
   }
 
   recordReceipt(input: StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string } {

@@ -153,8 +153,9 @@ test('composes the pinned transport, durable journal, evidence client, and bound
     const runtime = loaded.runtimeFactory?.();
     assert.ok(runtime);
     const resolved = await runtime.attempts.resolve('attempt-runtime-0001');
-    assert.equal((resolved?.admission as unknown as { agent: string }).agent, agentWallet);
-    assert.equal((resolved?.admission as unknown as { trading: string }).trading, tradingAccount);
+    assert.ok(resolved && 'admission' in resolved);
+    assert.equal((resolved.admission as unknown as { agent: string }).agent, agentWallet);
+    assert.equal((resolved.admission as unknown as { trading: string }).trading, tradingAccount);
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });
@@ -202,7 +203,8 @@ test('does not accept account identity from the API attempt handoff', async () =
     const runtime = loaded.runtimeFactory?.();
     assert.ok(runtime);
     const resolved = await runtime.attempts.resolve('attempt-runtime-0002');
-    assert.equal((resolved?.admission as unknown as { trading: string }).trading,
+    assert.ok(resolved && 'admission' in resolved);
+    assert.equal((resolved.admission as unknown as { trading: string }).trading,
       `0x${'55'.repeat(20)}`);
     assert.equal('account' in (resolved as unknown as Record<string, unknown>), false);
   } finally {

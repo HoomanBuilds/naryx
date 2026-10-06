@@ -837,6 +837,15 @@ const server = createPrivateTerminalServer(
   hyperliquidGeneralizedOrder,
   publicMarket?.strategyPackageExecutions,
   strategyPackageAuthorization,
+  hyperliquidConfig?.orderContext === undefined ? undefined : {
+    domain: hyperliquidConfig.domain,
+    seriesManifestHash: hyperliquidConfig.seriesManifestHash,
+    executionClassManifestHash: hyperliquidConfig.executionClassManifestHash,
+    market: hyperliquidConfig.market,
+    bounds: hyperliquidConfig.bounds,
+    baseAsset: hyperliquidConfig.orderContext.baseAsset,
+    quoteAsset: hyperliquidConfig.orderContext.quoteAsset,
+  },
 );
 
 const publicServer = publicMarket?.listener === undefined

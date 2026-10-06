@@ -179,28 +179,165 @@ type StrategyAttemptMetadata = Readonly<{
   selectedAtMs: number;
 }>;
 
-function strategyMetadata(value: unknown, expectedAttemptId: string): Readonly<{
-  attempt: StrategyAttemptMetadata;
-  sourceAttemptId: string;
-}> {
+type NativeStrategyAttemptMetadata = Omit<StrategyAttemptMetadata, 'sourceOrderHashHex'>;
+
+type NativeStrategyAsset = Readonly<{
+  assetId: string;
+  decimals: number;
+  assetManifestHashHex: string;
+}>;
+
+type NativeStrategyRuntime = Readonly<{
+  domainId: 'hypercore:testnet';
+  domainManifestVersion: number;
+  domainManifestHashHex: string;
+  seriesManifestHash: string;
+  executionClassManifestHash: string;
+  baseAsset: NativeStrategyAsset;
+  quoteAsset: NativeStrategyAsset;
+  market: HyperliquidTestnetAttemptHandoff['market'];
+  limits: HyperliquidTestnetAttemptHandoff['limits'];
+}>;
+
+function nativeAsset(value: unknown, name: string): NativeStrategyAsset {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`native strategy ${name} asset is invalid`);
+  }
+  const asset = value as Record<string, unknown>;
+  if (Object.keys(asset).sort().join(',') !== 'assetId,assetManifestHashHex,decimals'
+    || typeof asset.assetId !== 'string' || asset.assetId.length < 1 || asset.assetId.length > 128
+    || !Number.isSafeInteger(asset.decimals) || Number(asset.decimals) < 0 || Number(asset.decimals) > 18
+    || typeof asset.assetManifestHashHex !== 'string' || !HASH.test(asset.assetManifestHashHex)
+    || /^0+$/.test(asset.assetManifestHashHex)) {
+    throw new Error(`native strategy ${name} asset is invalid`);
+  }
+  return Object.freeze(asset as unknown as NativeStrategyAsset);
+}
+
+type StrategyAttemptMetadataEnvelope =
+  | Readonly<{
+    version: 1;
+    attempt: StrategyAttemptMetadata;
+    sourceAttemptId: string;
+  }>
+  | Readonly<{
+    version: 2;
+    attempt: NativeStrategyAttemptMetadata;
+    runtime: NativeStrategyRuntime;
+  }>;
+
+function nativeRuntime(value: unknown): NativeStrategyRuntime {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('native strategy runtime must be an object');
+  }
+  const runtime = value as Record<string, unknown>;
+  const runtimeKeys = [
+    'baseAsset', 'domainId', 'domainManifestHashHex', 'domainManifestVersion',
+    'executionClassManifestHash', 'limits', 'market', 'quoteAsset', 'seriesManifestHash',
+  ];
+  const keys = Object.keys(runtime).sort();
+  if (keys.length !== runtimeKeys.length || keys.some((key, index) => key !== runtimeKeys[index])
+    || runtime.domainId !== 'hypercore:testnet'
+    || !Number.isSafeInteger(runtime.domainManifestVersion)
+    || Number(runtime.domainManifestVersion) <= 0) {
+    throw new Error('native strategy runtime identity is invalid');
+  }
+  for (const field of ['domainManifestHashHex', 'seriesManifestHash', 'executionClassManifestHash'] as const) {
+    if (typeof runtime[field] !== 'string' || !HASH.test(runtime[field]) || /^0+$/.test(runtime[field])) {
+      throw new Error('native strategy runtime commitment is invalid');
+    }
+  }
+  if (typeof runtime.market !== 'object' || runtime.market === null || Array.isArray(runtime.market)
+    || typeof runtime.limits !== 'object' || runtime.limits === null || Array.isArray(runtime.limits)) {
+    throw new Error('native strategy runtime market or limits are invalid');
+  }
+  const market = runtime.market as Record<string, unknown>;
+  if (Object.keys(market).sort().join(',') !== 'perpetual,quoteTokenIndex,spot'
+    || !Number.isSafeInteger(market.quoteTokenIndex)
+    || Number(market.quoteTokenIndex) < 0
+    || typeof market.spot !== 'object' || market.spot === null || Array.isArray(market.spot)
+    || typeof market.perpetual !== 'object' || market.perpetual === null || Array.isArray(market.perpetual)) {
+    throw new Error('native strategy runtime market is invalid');
+  }
+  const checkedLeg = (legValue: unknown, kind: 'spot' | 'perpetual') => {
+    const leg = legValue as Record<string, unknown>;
+    const extra = kind === 'spot' ? 'tokenIndex,universeIndex' : 'assetIndex';
+    const expected = `adapterId,adapterManifestHash,adapterManifestVersion,assetId,${extra},marketId,marketManifestHash,marketManifestVersion,sizeDecimals,venueId,venueManifestHash,venueManifestVersion`
+      .split(',').sort();
+    const legKeys = Object.keys(leg).sort();
+    if (legKeys.length !== expected.length || legKeys.some((key, index) => key !== expected[index])) {
+      throw new Error(`native strategy ${kind} market fields are invalid`);
+    }
+    for (const field of ['adapterId', 'venueId', 'marketId'] as const) {
+      if (typeof leg[field] !== 'string' || leg[field].length < 1 || leg[field].length > 128) {
+        throw new Error(`native strategy ${kind} market identity is invalid`);
+      }
+    }
+    for (const field of ['adapterManifestHash', 'venueManifestHash', 'marketManifestHash'] as const) {
+      if (typeof leg[field] !== 'string' || !HASH.test(leg[field]) || /^0+$/.test(leg[field])) {
+        throw new Error(`native strategy ${kind} market commitment is invalid`);
+      }
+    }
+    for (const field of ['adapterManifestVersion', 'venueManifestVersion', 'marketManifestVersion', 'assetId', 'sizeDecimals'] as const) {
+      if (!Number.isSafeInteger(leg[field]) || Number(leg[field]) < 0) {
+        throw new Error(`native strategy ${kind} market number is invalid`);
+      }
+    }
+    const indexFields = kind === 'spot' ? ['tokenIndex', 'universeIndex'] : ['assetIndex'];
+    for (const field of indexFields) {
+      if (!Number.isSafeInteger(leg[field]) || Number(leg[field]) < 0) {
+        throw new Error(`native strategy ${kind} market index is invalid`);
+      }
+    }
+  };
+  checkedLeg(market.spot, 'spot');
+  checkedLeg(market.perpetual, 'perpetual');
+  const limits = runtime.limits as Record<string, unknown>;
+  if (Object.keys(limits).sort().join(',') !== 'maxEvidenceAgeMs,maxFillPages,maxSnapshotSkewMs'
+    || Object.values(limits).some((item) => !Number.isSafeInteger(item) || Number(item) <= 0)) {
+    throw new Error('native strategy runtime limits are invalid');
+  }
+  return Object.freeze({
+    ...runtime,
+    baseAsset: nativeAsset(runtime.baseAsset, 'base'),
+    quoteAsset: nativeAsset(runtime.quoteAsset, 'quote'),
+  } as unknown as NativeStrategyRuntime);
+}
+
+function sameNativeAsset(
+  actual: Readonly<{ assetId: string; decimals: number; assetManifestHash: Uint8Array }>,
+  expected: NativeStrategyAsset,
+): boolean {
+  return actual.assetId === expected.assetId
+    && actual.decimals === expected.decimals
+    && toHex(actual.assetManifestHash) === expected.assetManifestHashHex;
+}
+
+function strategyMetadata(value: unknown, expectedAttemptId: string): StrategyAttemptMetadataEnvelope {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('strategy attempt response must be an object');
   }
   const envelope = value as Record<string, unknown>;
   const envelopeKeys = Object.keys(envelope).sort();
-  if (envelopeKeys.length !== 3 || envelopeKeys[0] !== 'attempt'
-    || envelopeKeys[1] !== 'sourceAttemptId' || envelopeKeys[2] !== 'version'
-    || envelope.version !== 1 || typeof envelope.sourceAttemptId !== 'string'
-    || !SOURCE_ATTEMPT_ID.test(envelope.sourceAttemptId)
+  const legacy = envelope.version === 1;
+  const native = envelope.version === 2;
+  const expectedEnvelopeKeys = legacy
+    ? ['attempt', 'sourceAttemptId', 'version']
+    : ['attempt', 'runtime', 'version'];
+  if ((!legacy && !native)
+    || envelopeKeys.length !== expectedEnvelopeKeys.length
+    || envelopeKeys.some((key, index) => key !== expectedEnvelopeKeys[index])
+    || (legacy && (typeof envelope.sourceAttemptId !== 'string'
+      || !SOURCE_ATTEMPT_ID.test(envelope.sourceAttemptId)))
     || typeof envelope.attempt !== 'object' || envelope.attempt === null
     || Array.isArray(envelope.attempt)) {
     throw new Error('strategy attempt response fields are invalid');
   }
   const attempt = envelope.attempt as Record<string, unknown>;
-  const expectedKeys = [
+  const expectedKeys = [...[
     'attemptId', 'graphHashHex', 'idempotencyKey', 'orderHashHex', 'quoteHashHex',
-    'routeHashHex', 'selectedAtMs', 'sourceOrderHashHex', 'status',
-  ];
+    'routeHashHex', 'selectedAtMs', 'status',
+  ], ...(legacy ? ['sourceOrderHashHex'] : [])].sort();
   const keys = Object.keys(attempt).sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])
     || attempt.attemptId !== expectedAttemptId
@@ -210,14 +347,26 @@ function strategyMetadata(value: unknown, expectedAttemptId: string): Readonly<{
     || !Number.isSafeInteger(attempt.selectedAtMs) || Number(attempt.selectedAtMs) <= 0) {
     throw new Error('strategy attempt identity is invalid');
   }
-  for (const field of ['orderHashHex', 'graphHashHex', 'quoteHashHex', 'routeHashHex', 'sourceOrderHashHex'] as const) {
+  for (const field of ['orderHashHex', 'graphHashHex', 'quoteHashHex', 'routeHashHex'] as const) {
     if (typeof attempt[field] !== 'string' || !HASH.test(attempt[field])) {
       throw new Error('strategy attempt commitment is invalid');
     }
   }
+  if (legacy) {
+    if (typeof attempt.sourceOrderHashHex !== 'string' || !HASH.test(attempt.sourceOrderHashHex)) {
+      throw new Error('strategy source commitment is invalid');
+    }
+    return Object.freeze({
+      version: 1 as const,
+      attempt: Object.freeze(attempt as unknown as StrategyAttemptMetadata),
+      sourceAttemptId: envelope.sourceAttemptId as string,
+    });
+  }
+  const runtime = nativeRuntime(envelope.runtime);
   return Object.freeze({
-    attempt: Object.freeze(attempt as unknown as StrategyAttemptMetadata),
-    sourceAttemptId: envelope.sourceAttemptId,
+    version: 2 as const,
+    attempt: Object.freeze(attempt as unknown as NativeStrategyAttemptMetadata),
+    runtime,
   });
 }
 
@@ -262,16 +411,13 @@ implements HyperliquidTestnetTrustedAttemptProvider {
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`strategy attempt API request failed with HTTP ${response.status}`);
     const metadata = strategyMetadata(await boundedProtocolJson(response), attemptId);
-    const source = await this.#sourceAttempts.resolve(metadata.sourceAttemptId);
-    if (source === undefined) throw new Error('strategy source attempt was not found');
     const documents = await this.#packages.getByQuote(commitmentHash(metadata.attempt.quoteHashHex));
     if (documents === undefined
       || documents.orderHashHex !== metadata.attempt.orderHashHex
       || documents.graphHashHex !== metadata.attempt.graphHashHex
       || documents.quoteHashHex !== metadata.attempt.quoteHashHex
-      || documents.routeHashHex !== metadata.attempt.routeHashHex
-      || toHex(source.admission.orderHash) !== metadata.attempt.sourceOrderHashHex) {
-      throw new Error('strategy attempt commitments do not match stored documents or source evidence');
+      || documents.routeHashHex !== metadata.attempt.routeHashHex) {
+      throw new Error('strategy attempt commitments do not match stored documents');
     }
     const prepared = await this.#preparations.prepareDocuments(documents);
     if (!bytesEqual(prepared.orderHash, commitmentHash(metadata.attempt.orderHashHex))
@@ -280,6 +426,52 @@ implements HyperliquidTestnetTrustedAttemptProvider {
       || !bytesEqual(prepared.routeHash, commitmentHash(metadata.attempt.routeHashHex))
       || prepared.domains.length !== 1 || prepared.domains[0]?.kind !== 'HYPERCORE_EXECUTOR') {
       throw new Error('prepared strategy execution does not match the selected attempt');
+    }
+    if (metadata.version === 2) {
+      const plan = prepared.domains[0].plan;
+      const runtime = metadata.runtime;
+      const baseDecimals = new Set(plan.orders.map((order) => order.baseAsset.decimals));
+      const requiredUntilMs = [
+        documents.order.expiryValue,
+        documents.quote.validUntilValue,
+        documents.route.routeExpiryValue,
+        plan.requestExpiryMs,
+      ].reduce((maximum, value) => value > maximum ? value : maximum, 0n);
+      if (documents.order.expiryUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+        || documents.quote.validUntilUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+        || documents.route.routeExpiryUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+        || plan.domain.domainId !== runtime.domainId
+        || plan.domain.domainManifestVersion !== runtime.domainManifestVersion
+        || toHex(plan.domain.domainManifestHash) !== runtime.domainManifestHashHex
+        || toHex(documents.order.seriesManifestHash) !== runtime.seriesManifestHash
+        || toHex(documents.order.executionClassManifestHash) !== runtime.executionClassManifestHash
+        || baseDecimals.size !== 1
+        || plan.orders.some((order) => !sameNativeAsset(order.baseAsset, runtime.baseAsset)
+          || !sameNativeAsset(order.quoteAsset, runtime.quoteAsset))) {
+        throw new Error('native strategy runtime does not match the prepared package');
+      }
+      return validateHyperliquidTestnetRuntimeAttempt(attemptId, Object.freeze({
+        attemptId,
+        authority: Object.freeze({
+          requiredUntilMs,
+          baseAssetDecimals: runtime.baseAsset.decimals,
+        }),
+        seriesManifestHash: runtime.seriesManifestHash,
+        executionClassManifestHash: runtime.executionClassManifestHash,
+        market: runtime.market,
+        limits: runtime.limits,
+        selectedAtMs: metadata.attempt.selectedAtMs,
+        strategy: Object.freeze({
+          graphHash: prepared.graphHash,
+          plan,
+        }),
+      }));
+    }
+    const source = await this.#sourceAttempts.resolve(metadata.sourceAttemptId);
+    if (source === undefined) throw new Error('strategy source attempt was not found');
+    if (!('admission' in source)
+      || toHex(source.admission.orderHash) !== metadata.attempt.sourceOrderHashHex) {
+      throw new Error('strategy source attempt does not match source evidence');
     }
     return validateHyperliquidTestnetRuntimeAttempt(attemptId, Object.freeze({
       ...source,

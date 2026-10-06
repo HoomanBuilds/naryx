@@ -13,7 +13,10 @@ import {
 } from "./execution-readiness-gate.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
-import type { SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import type {
+  SqliteStrategyPackageStore,
+  StoredStrategyPackageAdmission,
+} from "./strategy-package-store.js";
 
 /**
  * Automatic testnet execution approval within operator caps.
@@ -216,6 +219,91 @@ export function scopeFromOrder(
   });
 }
 
+function sameStrategyAsset(
+  left: Readonly<{ assetId: string; decimals: number; assetManifestHash: Uint8Array }>,
+  right: Readonly<{ assetId: string; decimals: number; assetManifestHash: Uint8Array }>,
+): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && left.assetManifestHash.length === right.assetManifestHash.length
+    && left.assetManifestHash.every((value, index) => value === right.assetManifestHash[index]);
+}
+
+function sameStrategyDomain(
+  left: Readonly<{ domainId: string; domainManifestVersion: number; domainManifestHash: Uint8Array }>,
+  right: Readonly<{ domainId: string; domainManifestVersion: number; domainManifestHash: Uint8Array }>,
+): boolean {
+  return left.domainId === right.domainId
+    && left.domainManifestVersion === right.domainManifestVersion
+    && left.domainManifestHash.length === right.domainManifestHash.length
+    && left.domainManifestHash.every((value, index) => value === right.domainManifestHash[index]);
+}
+
+function strategyCapAtoms(
+  caps: StoredStrategyPackageAdmission["order"]["maximumRecoveryCostByAsset"],
+  quoteAsset: StoredStrategyPackageAdmission["order"]["quoteAsset"],
+): bigint {
+  return caps.find((cap) => sameStrategyAsset(cap.asset, quoteAsset))?.maxAtoms ?? 0n;
+}
+
+export function scopeFromStrategyAdmission(
+  handoff: ExecutionHandoff,
+  request: Readonly<{ attemptId: string; idempotencyKey: string; orderHash: string }>,
+  admission: StoredStrategyPackageAdmission,
+): TestnetExecutionScope {
+  if (admission.orderHashHex !== request.orderHash) {
+    rejectScope("The strategy attempt does not bind the admitted order.");
+  }
+  if (admission.route.domainPlans.length !== 1 || admission.quote.domains.length !== 1) {
+    rejectScope("A testnet execution attempt must resolve to exactly one domain.");
+  }
+  const domain = admission.route.domainPlans[0]!.domain;
+  if (!sameStrategyDomain(domain, admission.quote.domains[0]!)) {
+    rejectScope("The strategy route and quote domains differ.");
+  }
+  const quoteAsset = admission.order.quoteAsset;
+  if (!sameStrategyAsset(quoteAsset, admission.quote.quoteAsset)) {
+    rejectScope("The strategy order and quote assets differ.");
+  }
+  const economics = new Map<string, (typeof admission.quote.legEconomics)[number]>(
+    admission.quote.legEconomics.map((leg) => [leg.legId, leg]),
+  );
+  let spotQuoteSpend = 0n;
+  for (const leg of admission.graph.legs) {
+    const quoted = economics.get(leg.legId);
+    if (quoted === undefined) rejectScope(`Strategy leg ${leg.legId} has no quoted economics.`);
+    if (leg.legFamily === "SPOT_SWAP" && leg.side === "BUY") {
+      spotQuoteSpend += quoted.grossNotional.atoms;
+    }
+  }
+  const marginIncrease = admission.quote.totalMarginDelta.atoms > 0n
+    ? admission.quote.totalMarginDelta.atoms : 0n;
+  const serviceCharges = admission.quote.serviceCharges.reduce(
+    (sum, charge) => sum + charge.amount.atoms,
+    0n,
+  );
+  const passThroughCosts = admission.quote.passThroughCosts.reduce(
+    (sum, cost) => sum + cost.amount.atoms,
+    0n,
+  );
+  const signedRecoveryCap = strategyCapAtoms(admission.order.maximumRecoveryCostByAsset, quoteAsset);
+  const recoveryLossAtoms = signedRecoveryCap > admission.graph.maximumRecoveryCostQuoteAtoms
+    ? signedRecoveryCap : admission.graph.maximumRecoveryCostQuoteAtoms;
+  return Object.freeze({
+    handoff,
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    environment: admission.order.environment,
+    domainId: domain.domainId,
+    orderHash: request.orderHash,
+    owner: /^0x[0-9a-fA-F]{40}$/.test(admission.order.owner)
+      ? admission.order.owner.toLowerCase() : admission.order.owner,
+    quoteAssetId: quoteAsset.assetId,
+    principalAtoms: spotQuoteSpend + marginIncrease + serviceCharges + passThroughCosts,
+    recoveryLossAtoms,
+  });
+}
+
 /**
  * Resolves a handoff to its durable order. Solana Devnet preparation is keyed by the order's
  * idempotency key; every other handoff names its selected attempt.
@@ -223,12 +311,15 @@ export function scopeFromOrder(
 export class DurableAttemptScopeResolver implements ExecutionReadinessScopeResolver<TestnetExecutionScope> {
   readonly #orders: Pick<InternalOrderStore, "getByIdempotencyKey" | "getCanonicalOrderByHash">;
   readonly #intents: Pick<ExecutionIntentStore, "getAttempt" | "getAttemptForOrder">;
-  readonly #strategyAttempts: Pick<SqliteStrategyPackageStore, "strategyExecutionAttempt"> | undefined;
+  readonly #strategyAttempts: Pick<
+    SqliteStrategyPackageStore,
+    "anyStrategyExecutionAttempt" | "admissionByQuote"
+  > | undefined;
 
   constructor(
     orders: Pick<InternalOrderStore, "getByIdempotencyKey" | "getCanonicalOrderByHash">,
     intents: Pick<ExecutionIntentStore, "getAttempt" | "getAttemptForOrder">,
-    strategyAttempts?: Pick<SqliteStrategyPackageStore, "strategyExecutionAttempt">,
+    strategyAttempts?: Pick<SqliteStrategyPackageStore, "anyStrategyExecutionAttempt" | "admissionByQuote">,
   ) {
     this.#orders = orders;
     this.#intents = intents;
@@ -253,10 +344,15 @@ export class DurableAttemptScopeResolver implements ExecutionReadinessScopeResol
         attemptId = attempt.attemptId;
         orderHash = attempt.orderHash;
       } else {
-        const strategyAttempt = this.#strategyAttempts?.strategyExecutionAttempt(request.attemptId);
+        const strategyAttempt = this.#strategyAttempts?.anyStrategyExecutionAttempt(request.attemptId);
         if (strategyAttempt === undefined) rejectScope("The named attempt does not exist.");
-        attemptId = strategyAttempt.attemptId;
-        orderHash = strategyAttempt.sourceOrderHashHex;
+        const admission = this.#strategyAttempts?.admissionByQuote(strategyAttempt.quoteHashHex);
+        if (admission === undefined) rejectScope("The strategy attempt's admission is missing.");
+        return scopeFromStrategyAdmission(handoff, {
+          attemptId: strategyAttempt.attemptId,
+          idempotencyKey: request.idempotencyKey,
+          orderHash: strategyAttempt.orderHashHex,
+        }, admission);
       }
     }
     const order = this.#orders.getCanonicalOrderByHash(orderHash);

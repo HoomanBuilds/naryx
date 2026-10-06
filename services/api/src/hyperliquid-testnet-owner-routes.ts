@@ -127,18 +127,20 @@ export async function verifyHyperliquidTestnetAuthorization(
 }
 
 type StrategyAttemptLookup = Readonly<{
-  strategyExecutionAttempt(attemptId: string): Readonly<{
-    sourceOrderHashHex: string;
+  anyStrategyExecutionAttempt(attemptId: string): Readonly<{
+    sourceOrderHashHex?: string;
     orderHashHex: string;
+    quoteHashHex: string;
   }> | undefined;
 }>;
 
 type AttemptBinding = Readonly<{
   attemptId: string;
   orderHash: string;
-  order: PackageOrder;
-  selectedQuoteAttemptId: string;
+  order: PackageOrder | null;
+  selectedQuoteAttemptId: string | null;
   strategyOrderHash: string | null;
+  strategyQuoteHash: string | null;
 }>;
 
 function attemptBinding(
@@ -162,13 +164,14 @@ function attemptBinding(
         order,
         selectedQuoteAttemptId: attempt.attemptId,
         strategyOrderHash: null,
+        strategyQuoteHash: null,
       });
     }
   }
   const strategyAttempt = STRATEGY_ATTEMPT_ID.test(attemptId)
-    ? strategyAttempts?.strategyExecutionAttempt(attemptId)
+    ? strategyAttempts?.anyStrategyExecutionAttempt(attemptId)
     : undefined;
-  const sourceAttempt = strategyAttempt === undefined
+  const sourceAttempt = strategyAttempt?.sourceOrderHashHex === undefined
     ? undefined
     : intents.getAttemptForOrder?.(strategyAttempt.sourceOrderHashHex);
   const sourceOrderHash = strategyAttempt?.sourceOrderHashHex;
@@ -176,15 +179,17 @@ function attemptBinding(
     && sourceAttempt.domainId === HYPERLIQUID_TESTNET_DOMAIN && sourceOrderHash !== undefined
     ? orders.getCanonicalOrderByHash(sourceOrderHash)
     : undefined;
-  if (strategyAttempt === undefined || sourceAttempt === undefined || sourceOrder === undefined) {
+  if (strategyAttempt === undefined
+    || (sourceOrderHash !== undefined && (sourceAttempt === undefined || sourceOrder === undefined))) {
     throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid attempt was not found.");
   }
   return Object.freeze({
     attemptId,
-    orderHash: strategyAttempt.sourceOrderHashHex,
-    order: sourceOrder,
-    selectedQuoteAttemptId: sourceAttempt.attemptId,
+    orderHash: sourceOrderHash ?? strategyAttempt.orderHashHex,
+    order: sourceOrder ?? null,
+    selectedQuoteAttemptId: sourceAttempt?.attemptId ?? null,
     strategyOrderHash: strategyAttempt.orderHashHex,
+    strategyQuoteHash: strategyAttempt.quoteHashHex,
   });
 }
 
@@ -207,7 +212,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   strategyAttempts?: StrategyAttemptLookup;
   strategyReceipts?: Pick<
     SqliteStrategyPackageStore,
-    "strategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt"
+    "anyStrategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt"
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
@@ -226,16 +231,9 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   };
   const authorized = (request: HyperliquidTestnetTerminalExecutionRequest): AttemptBinding => {
     const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
-    if (binding.order.settlementAccount !== options.tradingAccount) {
-      throw new HyperliquidTestnetTerminalValidationError(
-        "SETTLEMENT_ACCOUNT_MISMATCH",
-        "The order does not settle in the configured trading account.",
-      );
-    }
     if (binding.strategyOrderHash !== null) {
-      const strategyAttempt = options.strategyReceipts?.strategyExecutionAttempt(request.attemptId);
-      const admission = strategyAttempt === undefined
-        ? undefined : options.strategyReceipts?.admissionByQuote(strategyAttempt.quoteHashHex);
+      const admission = binding.strategyQuoteHash === null
+        ? undefined : options.strategyReceipts?.admissionByQuote(binding.strategyQuoteHash);
       const authorization = options.strategyReceipts?.ownerAuthorization(binding.strategyOrderHash);
       if (admission === undefined || admission.orderHashHex !== binding.strategyOrderHash
         || authorization?.owner !== admission.order.owner) {
@@ -244,7 +242,19 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           "The package owner must sign the generalized package authorization before execution.",
         );
       }
+      if (admission.order.settlementAccount !== options.tradingAccount) {
+        throw new HyperliquidTestnetTerminalValidationError(
+          "SETTLEMENT_ACCOUNT_MISMATCH",
+          "The generalized order does not settle in the configured trading account.",
+        );
+      }
       return binding;
+    }
+    if (binding.order === null || binding.order.settlementAccount !== options.tradingAccount) {
+      throw new HyperliquidTestnetTerminalValidationError(
+        "SETTLEMENT_ACCOUNT_MISMATCH",
+        "The order does not settle in the configured trading account.",
+      );
     }
     if (options.ledger.authorization(binding.orderHash)?.owner !== binding.order.owner) {
       throw new HyperliquidTestnetTerminalValidationError(
@@ -261,6 +271,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     admit(request: HyperliquidTestnetTerminalExecutionRequest) {
       const { order, orderHash, strategyOrderHash } = authorized(request);
       if (strategyOrderHash !== null) return;
+      if (order === null) throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid order was not found.");
       try {
         if (order.action === "ENTRY") {
           if (options.limits === undefined) {
@@ -292,7 +303,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     },
     settle(request: HyperliquidTestnetTerminalExecutionRequest, result: HyperliquidTestnetTerminalExecutionResult) {
       const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
-      const strategyAttempt = options.strategyReceipts?.strategyExecutionAttempt(request.attemptId);
+      const strategyAttempt = options.strategyReceipts?.anyStrategyExecutionAttempt(request.attemptId);
       let strategyReceipt: ReturnType<typeof buildHyperliquidStrategyPackageReceipt> = undefined;
       if (strategyAttempt !== undefined) {
         const admission = options.strategyReceipts?.admissionByQuote(strategyAttempt.quoteHashHex);
@@ -311,7 +322,9 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         return;
       }
       const { order } = binding;
+      if (order === null) throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid order was not found.");
       if (order.action === "ENTRY") {
+        if (binding.selectedQuoteAttemptId === null) throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid quote attempt was not found.");
         options.ledger.settleEntry(request.attemptId, result, entryNotional(binding.selectedQuoteAttemptId));
       } else {
         options.ledger.settleExit(request.attemptId, result);
@@ -560,12 +573,25 @@ export type HyperliquidTestnetOwnerRoutesOptions = Readonly<{
 export function createHyperliquidTestnetOwnerRoutes(
   options: HyperliquidTestnetOwnerRoutesOptions,
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
-  const typedDataFor = (binding: AttemptBinding) => hyperliquidTestnetAuthorizationTypedData({
-    orderHash: binding.orderHash,
-    action: binding.order.action,
-    owner: binding.order.owner,
-    tradingAccount: options.tradingAccount,
-  });
+  const cashOrder = (binding: AttemptBinding): PackageOrder => {
+    if (binding.order === null) {
+      throw new OwnerRouteError(
+        409,
+        "STRATEGY_AUTHORIZATION_REQUIRED",
+        "Generalized strategies use the strategy package authorization endpoint.",
+      );
+    }
+    return binding.order;
+  };
+  const typedDataFor = (binding: AttemptBinding) => {
+    const order = cashOrder(binding);
+    return hyperliquidTestnetAuthorizationTypedData({
+      orderHash: binding.orderHash,
+      action: order.action,
+      owner: order.owner,
+      tradingAccount: options.tradingAccount,
+    });
+  };
   const handlers: Readonly<Record<string, (request: IncomingMessage, url: URL) => Promise<unknown>>> = {
     [HYPERLIQUID_TESTNET_ACCOUNT_PATH]: async (request, url) => {
       if (request.method !== "GET") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
@@ -596,15 +622,16 @@ export function createHyperliquidTestnetOwnerRoutes(
       const body = await readJson(request);
       exactKeys(body, ["attemptId", "signature"]);
       const binding = attemptBinding(String(body.attemptId), options.intents, options.orders, options.strategyAttempts);
+      const order = cashOrder(binding);
       const signature = String(body.signature).toLowerCase();
       if (!await verifyHyperliquidTestnetAuthorization({
-        orderHash: binding.orderHash, action: binding.order.action,
-        owner: binding.order.owner, tradingAccount: options.tradingAccount,
+        orderHash: binding.orderHash, action: order.action,
+        owner: order.owner, tradingAccount: options.tradingAccount,
       }, signature)) {
         throw new OwnerRouteError(400, "INVALID_SIGNATURE", "The signature is not the package owner's authorization.");
       }
-      options.ledger.recordAuthorization(binding.orderHash, binding.order.owner, signature);
-      return { status: "OWNER_AUTHORIZED", attemptId: binding.attemptId, orderHash: binding.orderHash, owner: binding.order.owner };
+      options.ledger.recordAuthorization(binding.orderHash, order.owner, signature);
+      return { status: "OWNER_AUTHORIZED", attemptId: binding.attemptId, orderHash: binding.orderHash, owner: order.owner };
     },
     [HYPERLIQUID_TESTNET_EXIT_ORDER_PATH]: async (request) => {
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
