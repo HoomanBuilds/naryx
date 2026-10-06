@@ -90,6 +90,10 @@ import {
   strategyProgramView,
   type StrategyExecutionLaneCapability,
 } from "./strategy-program-view.js";
+import {
+  StrategyPreparationClientError,
+  type GeneralizedStrategyPreparationPort,
+} from "./strategy-preparation-client.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -257,6 +261,7 @@ export function createPrivateTerminalRequestHandler(
   currentTimeMs: () => number = Date.now,
   attemptOutcomes?: OwnerPackageOutcomeReader,
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
+  generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -468,6 +473,7 @@ export function createPrivateTerminalRequestHandler(
         executionIntentAvailable: executionIntentStore !== undefined,
         localExecutionAvailable: localExecutionCoordinator !== undefined,
         solanaLocalExecutionAvailable: solanaLocalExecution !== undefined,
+        generalizedStrategyPreparationAvailable: generalizedStrategyPreparation !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
@@ -497,6 +503,38 @@ export function createPrivateTerminalRequestHandler(
         sendJson(response, 200, strategyProgramView(strategyExecutionCapabilities()));
       } catch {
         reject(response, 503, "STRATEGY_CAPABILITY_UNAVAILABLE", "Strategy execution capability is unavailable.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/strategy-executions/prepare") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (generalizedStrategyPreparation === undefined) {
+        reject(response, 503, "STRATEGY_PREPARATION_UNAVAILABLE", "Generalized strategy preparation is unavailable.");
+        return;
+      }
+      try {
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).length !== 1 || typeof (body as { quoteHash?: unknown }).quoteHash !== "string") {
+          throw new StrategyPreparationClientError("INVALID_REQUEST", "Request must contain only quoteHash.");
+        }
+        const prepared = await generalizedStrategyPreparation.prepare((body as { quoteHash: string }).quoteHash);
+        sendJson(response, 200, {
+          status: "UNSIGNED_REVIEW_REQUIRED",
+          preparation: toProtocolJson(prepared),
+        });
+      } catch (error) {
+        if (error instanceof StrategyPreparationClientError) {
+          const status = error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_REQUEST" ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "STRATEGY_PREPARATION_FAILED", "Generalized strategy preparation failed closed.");
       }
       return;
     }
@@ -1247,6 +1285,7 @@ export function createPrivateTerminalServer(
   terminalMarkets: TerminalMarketSources = {},
   attemptOutcomes?: OwnerPackageOutcomeReader,
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
+  generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1269,6 +1308,7 @@ export function createPrivateTerminalServer(
     Date.now,
     attemptOutcomes,
     strategyExecutionCapabilities,
+    generalizedStrategyPreparation,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

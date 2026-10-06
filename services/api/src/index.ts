@@ -8,6 +8,12 @@ export {
   type StoredStrategyPackageReceipt,
 } from "./strategy-package-store.js";
 export {
+  HttpStrategyPreparationClient,
+  StrategyPreparationClientError,
+  type GeneralizedStrategyPreparation,
+  type GeneralizedStrategyPreparationPort,
+} from "./strategy-preparation-client.js";
+export {
   createSolanaDevnetExecutionPorts,
   deriveSolanaDevnetLifecycleBinding,
   HttpSolanaDevnetReadOnlyRpc,

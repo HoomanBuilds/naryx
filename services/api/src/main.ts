@@ -6,6 +6,7 @@ import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
 import { SqlitePackageLifecycleStore } from "./package-lifecycle-store.js";
 import { HttpInternalSolverQuoteClient } from "./solver-quote-client.js";
+import { HttpStrategyPreparationClient } from "./strategy-preparation-client.js";
 import { SqliteExecutionIntentStore } from "./execution-intent-store.js";
 import { LocalExecutionCoordinator } from "./local-execution-coordinator.js";
 import {
@@ -160,6 +161,13 @@ const orderRuntime = startup.localAtomicRuntimeMode === "PHASE4_FIXTURE"
     );
 const solverOrigin = process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788";
 const solverClient = new HttpInternalSolverQuoteClient(solverOrigin);
+const generalizedStrategyPreparationSetting = process.env.NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED ?? "false";
+if (generalizedStrategyPreparationSetting !== "true" && generalizedStrategyPreparationSetting !== "false") {
+  throw new Error("NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED must be true or false.");
+}
+const generalizedStrategyPreparation = generalizedStrategyPreparationSetting === "true"
+  ? new HttpStrategyPreparationClient(solverOrigin)
+  : undefined;
 const localExecutionCoordinator = orderRuntime === undefined
   ? undefined
   : new LocalExecutionCoordinator({
@@ -785,6 +793,7 @@ const server = createPrivateTerminalServer(
   terminalMarketSources,
   ownerPackageOutcomes,
   currentStrategyExecutionCapabilities,
+  generalizedStrategyPreparation,
 );
 
 const publicServer = publicMarket?.listener === undefined
