@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {ITypedStrategyAdapter} from "./interfaces/ITypedStrategyAdapter.sol";
+import {ITypedStrategyAdapterFactory} from "./interfaces/ITypedStrategyAdapterFactory.sol";
 
 contract TypedStrategyAdapterRegistry {
     bytes32 public constant ATOMIC_POSTCONDITION_ID = keccak256("ATOMIC_POSTCONDITION");
@@ -14,6 +15,11 @@ contract TypedStrategyAdapterRegistry {
         EXIT_ONLY,
         ALL_PAUSED,
         DEPRECATED
+    }
+
+    enum AdapterMode {
+        DIRECT,
+        FACTORY
     }
 
     struct DomainRef {
@@ -47,6 +53,7 @@ contract TypedStrategyAdapterRegistry {
     struct AdapterBinding {
         DomainRef domain;
         ManifestRef identity;
+        AdapterMode mode;
         address adapter;
         bytes32 expectedCodeHash;
         bytes32 adapterClassId;
@@ -62,6 +69,16 @@ contract TypedStrategyAdapterRegistry {
         Lifecycle state;
         uint256 maximumApprovalAtoms;
         uint256 maximumGrossNotionalAtoms;
+    }
+
+    struct CallContext {
+        address target;
+        bytes32 packageId;
+        bool riskIncreasing;
+        address approvalToken;
+        uint256 approvalAtoms;
+        uint256 grossNotionalAtoms;
+        uint256 gasLimit;
     }
 
     struct PendingRegistration {
@@ -234,11 +251,7 @@ contract TypedStrategyAdapterRegistry {
         ManifestRef calldata identity,
         TemplateRef calldata template,
         SettlementClassRef calldata settlementClass,
-        bool riskIncreasing,
-        address approvalToken,
-        uint256 approvalAtoms,
-        uint256 grossNotionalAtoms,
-        uint256 gasLimit
+        CallContext calldata context
     ) external view returns (address adapterAddress) {
         bytes32 key = _recordKey(identity);
         AdapterBinding storage binding = _bindings[key];
@@ -252,31 +265,42 @@ contract TypedStrategyAdapterRegistry {
                 || binding.settlementClass.classId != settlementClass.classId
                 || binding.settlementClass.classVersion != settlementClass.classVersion
         ) revert AdapterMismatch();
-        if (riskIncreasing && !_sameManifest(_active[identity.subjectId], identity)) revert AdapterMismatch();
-        if (binding.adapter.code.length == 0 || binding.adapter.codehash != binding.expectedCodeHash) {
+        if (context.riskIncreasing && !_sameManifest(_active[identity.subjectId], identity)) revert AdapterMismatch();
+        if (
+            context.target == address(0) || context.packageId == bytes32(0) || binding.adapter.code.length == 0
+                || binding.adapter.codehash != binding.expectedCodeHash
+        ) {
             revert AdapterCodeMismatch();
+        }
+        if (binding.mode == AdapterMode.DIRECT) {
+            if (context.target != binding.adapter) revert AdapterMismatch();
+            (address strategyAccount,,,,) = ITypedStrategyAdapter(context.target).adapterMetadata();
+            if (strategyAccount != msg.sender) revert AdapterMismatch();
+        } else if (!ITypedStrategyAdapterFactory(binding.adapter)
+                .validateInstance(context.target, msg.sender, context.packageId)) {
+            revert AdapterMismatch();
         }
         if (
             binding.baseAsset.token.codehash != binding.baseAsset.expectedCodeHash
                 || binding.quoteAsset.token.codehash != binding.quoteAsset.expectedCodeHash
         ) revert AdapterCodeMismatch();
-        uint8 permission = riskIncreasing ? 1 : 2;
+        uint8 permission = context.riskIncreasing ? 1 : 2;
         if (_permissions(control.state) & permission == 0) revert ActionNotAllowed(control.state);
-        if (grossNotionalAtoms == 0 || gasLimit == 0 || gasLimit > binding.maximumGasLimit) {
+        if (context.grossNotionalAtoms == 0 || context.gasLimit == 0 || context.gasLimit > binding.maximumGasLimit) {
             revert AdapterMismatch();
         }
         if (
-            riskIncreasing
-                && (approvalAtoms > control.maximumApprovalAtoms
-                    || grossNotionalAtoms > control.maximumGrossNotionalAtoms)
+            context.riskIncreasing
+                && (context.approvalAtoms > control.maximumApprovalAtoms
+                    || context.grossNotionalAtoms > control.maximumGrossNotionalAtoms)
         ) revert AdapterMismatch();
         if (
-            (approvalAtoms == 0 && approvalToken != address(0))
-                || (approvalAtoms != 0
-                    && approvalToken != binding.baseAsset.token
-                    && approvalToken != binding.quoteAsset.token)
+            (context.approvalAtoms == 0 && context.approvalToken != address(0))
+                || (context.approvalAtoms != 0
+                    && context.approvalToken != binding.baseAsset.token
+                    && context.approvalToken != binding.quoteAsset.token)
         ) revert AdapterMismatch();
-        return binding.adapter;
+        return context.target;
     }
 
     function pendingRegistration(bytes32 subjectId) external view returns (PendingRegistration memory) {
@@ -303,18 +327,27 @@ contract TypedStrategyAdapterRegistry {
                 || control.maximumGrossNotionalAtoms == 0
         ) revert InvalidBinding();
 
-        (
-            address strategyAccount,
-            bytes32 adapterClassId,
-            uint32 adapterClassVersion,
-            address baseAsset,
-            address quoteAsset
-        ) = ITypedStrategyAdapter(binding.adapter).adapterMetadata();
-        if (
-            strategyAccount == address(0) || adapterClassId != binding.adapterClassId
-                || adapterClassVersion != binding.adapterClassVersion || baseAsset != binding.baseAsset.token
-                || quoteAsset != binding.quoteAsset.token
-        ) revert InvalidBinding();
+        if (binding.mode == AdapterMode.DIRECT) {
+            (
+                address strategyAccount,
+                bytes32 adapterClassId,
+                uint32 adapterClassVersion,
+                address baseAsset,
+                address quoteAsset
+            ) = ITypedStrategyAdapter(binding.adapter).adapterMetadata();
+            if (
+                strategyAccount == address(0) || adapterClassId != binding.adapterClassId
+                    || adapterClassVersion != binding.adapterClassVersion || baseAsset != binding.baseAsset.token
+                    || quoteAsset != binding.quoteAsset.token
+            ) revert InvalidBinding();
+        } else {
+            (bytes32 adapterClassId, uint32 adapterClassVersion, address baseAsset, address quoteAsset) =
+                ITypedStrategyAdapterFactory(binding.adapter).factoryMetadata();
+            if (
+                adapterClassId != binding.adapterClassId || adapterClassVersion != binding.adapterClassVersion
+                    || baseAsset != binding.baseAsset.token || quoteAsset != binding.quoteAsset.token
+            ) revert InvalidBinding();
+        }
     }
 
     function _implementedTemplate(bytes32 templateId, uint32 version) private pure returns (bool) {

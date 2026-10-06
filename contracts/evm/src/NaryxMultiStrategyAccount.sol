@@ -67,6 +67,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
 
     struct AdapterCall {
         TypedStrategyAdapterRegistry.ManifestRef adapter;
+        address target;
         uint8 stage;
         bool riskIncreasing;
         address approvalToken;
@@ -367,11 +368,15 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
             item.adapter,
             execution.template,
             execution.settlementClass,
-            item.riskIncreasing,
-            item.approvalToken,
-            item.approvalAtoms,
-            item.grossNotionalAtoms,
-            item.gasLimit
+            TypedStrategyAdapterRegistry.CallContext({
+                target: item.target,
+                packageId: execution.packageId,
+                riskIncreasing: item.riskIncreasing,
+                approvalToken: item.approvalToken,
+                approvalAtoms: item.approvalAtoms,
+                grossNotionalAtoms: item.grossNotionalAtoms,
+                gasLimit: item.gasLimit
+            })
         );
         if (gasleft() <= item.gasLimit + POST_CALL_GAS_RESERVE) revert InsufficientGas(callIndex);
         if (item.approvalAtoms != 0) IERC20(item.approvalToken).forceApprove(adapter, item.approvalAtoms);

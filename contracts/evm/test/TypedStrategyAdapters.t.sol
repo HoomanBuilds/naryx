@@ -9,8 +9,17 @@ import {IPerpMarginGate} from "../src/interfaces/IPerpMarginGate.sol";
 import {ISynFuturesInstrument} from "../src/interfaces/ISynFuturesInstrument.sol";
 import {ISynFuturesPositionObserver} from "../src/interfaces/ISynFuturesPositionObserver.sol";
 import {ITypedStrategyAdapter} from "../src/interfaces/ITypedStrategyAdapter.sol";
+import {INaryxMultiStrategyAccountFactory} from "../src/interfaces/INaryxMultiStrategyAccountFactory.sol";
 import {SynFuturesTypedPerpAdapter} from "../src/SynFuturesTypedPerpAdapter.sol";
+import {SynFuturesTypedPerpAdapterFactory} from "../src/SynFuturesTypedPerpAdapterFactory.sol";
 import {UniswapV3TypedSpotAdapter} from "../src/UniswapV3TypedSpotAdapter.sol";
+import {UniswapV3TypedSpotAdapterFactory} from "../src/UniswapV3TypedSpotAdapterFactory.sol";
+import {NaryxMultiStrategyAccount} from "../src/NaryxMultiStrategyAccount.sol";
+import {NaryxMultiStrategyAccountFactory} from "../src/NaryxMultiStrategyAccountFactory.sol";
+import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {SolverRegistry} from "../src/SolverRegistry.sol";
+import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
+import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
 
 interface ITypedSpotCallback {
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
@@ -318,5 +327,187 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
 
         function _tradeArgs(int128 sizeDelta, int128 balanceDelta) private pure returns (bytes32) {
             return bytes32(uint256(uint128(sizeDelta)) << 128 | uint256(uint128(balanceDelta)));
+        }
+    }
+
+    contract TypedStrategyAdapterFactoriesTest is Test {
+        uint24 private constant POOL_FEE = 3_000;
+        uint32 private constant EXPIRY = 1_900_000_000;
+        bytes32 private constant PACKAGE_ID = keccak256("package");
+        bytes32 private constant ADAPTER_ID = keccak256("uniswap-v3-typed-factory");
+        bytes32 private constant ADAPTER_MANIFEST_HASH = keccak256("uniswap-v3-typed-factory-v1");
+        bytes32 private constant TEMPLATE_ID = keccak256("cash-and-carry-v1");
+        bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("cash-and-carry-template-v1");
+        bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("domain");
+        bytes32 private constant FEE_POLICY_SUBJECT_ID = keccak256("multi-strategy-fees");
+        address private constant PROPOSER = address(0x101);
+        address private constant CANCELLER = address(0x102);
+        address private constant GOVERNANCE_EXECUTOR = address(0x103);
+        address private constant PAUSER = address(0x104);
+        address private constant SOLVER = address(0x105);
+
+        TypedAdapterToken private base;
+        TypedAdapterToken private quote;
+        TypedAdapterV3Factory private venueFactory;
+        TypedAdapterV3Pool private pool;
+        TypedAdapterPerpVenue private perpVenue;
+        TypedStrategyAdapterRegistry private adapters;
+        NaryxMultiStrategyAccountFactory private accountFactory;
+        NaryxMultiStrategyAccount private account;
+        UniswapV3TypedSpotAdapterFactory private spotFactory;
+        SynFuturesTypedPerpAdapterFactory private perpFactory;
+
+        function setUp() public {
+            base = new TypedAdapterToken("Base", "BASE");
+            quote = new TypedAdapterToken("Quote", "QUOTE");
+            venueFactory = new TypedAdapterV3Factory();
+            pool = new TypedAdapterV3Pool(address(venueFactory), address(base), address(quote), POOL_FEE);
+            venueFactory.setPool(address(base), address(quote), POOL_FEE, address(pool));
+            perpVenue = new TypedAdapterPerpVenue(quote, EXPIRY);
+
+            ProtocolConfig config = new ProtocolConfig(
+                "eip155:31337", 1, DOMAIN_MANIFEST_HASH, 1, PROPOSER, CANCELLER, GOVERNANCE_EXECUTOR, PAUSER
+            );
+            SolverRegistry solvers = new SolverRegistry(config, SOLVER);
+            adapters = new TypedStrategyAdapterRegistry(config);
+            StrategyFeePolicyRegistry fees = new StrategyFeePolicyRegistry(config);
+            accountFactory = new NaryxMultiStrategyAccountFactory(
+                config, solvers, adapters, fees, FEE_POLICY_SUBJECT_ID
+            );
+            account = accountFactory.create(address(0xA11CE));
+            spotFactory = new UniswapV3TypedSpotAdapterFactory(_spotFactoryDeployment());
+            perpFactory = new SynFuturesTypedPerpAdapterFactory(_perpFactoryDeployment());
+
+        TypedStrategyAdapterRegistry.AdapterBinding memory binding = _spotBinding();
+        TypedStrategyAdapterRegistry.AdapterControl memory control = _control();
+        vm.prank(PROPOSER);
+        adapters.proposeRegistration(binding, control);
+            vm.warp(block.timestamp + 1);
+            vm.prank(GOVERNANCE_EXECUTOR);
+            adapters.activateRegistration(ADAPTER_ID);
+        }
+
+        function testCreatesPackageIsolatedInstancesAndRegistryResolvesOnlyTheExactTarget() public {
+            address predictedSpot = spotFactory.adapterOf(address(account), PACKAGE_ID);
+            address spot = address(spotFactory.create(address(account), PACKAGE_ID));
+            address perp = address(perpFactory.create(address(account), PACKAGE_ID));
+
+            assertEq(spot, predictedSpot);
+            assertTrue(spotFactory.validateInstance(spot, address(account), PACKAGE_ID));
+            assertTrue(perpFactory.validateInstance(perp, address(account), PACKAGE_ID));
+            assertTrue(spot != address(spotFactory.create(address(account), keccak256("other-package"))));
+
+            vm.prank(address(account));
+            address resolved = adapters.validateCall(
+                _adapterRef(),
+                _template(),
+                _settlement(),
+                TypedStrategyAdapterRegistry.CallContext({
+                    target: spot,
+                    packageId: PACKAGE_ID,
+                    riskIncreasing: true,
+                    approvalToken: address(quote),
+                    approvalAtoms: 10 ether,
+                    grossNotionalAtoms: 20 ether,
+                    gasLimit: 500_000
+                })
+            );
+            assertEq(resolved, spot);
+
+            vm.expectRevert(TypedStrategyAdapterRegistry.AdapterMismatch.selector);
+            vm.prank(address(account));
+            adapters.validateCall(
+                _adapterRef(),
+                _template(),
+                _settlement(),
+                TypedStrategyAdapterRegistry.CallContext({
+                    target: spot,
+                    packageId: keccak256("wrong-package"),
+                    riskIncreasing: true,
+                    approvalToken: address(quote),
+                    approvalAtoms: 10 ether,
+                    grossNotionalAtoms: 20 ether,
+                    gasLimit: 500_000
+                })
+            );
+        }
+
+        function _spotFactoryDeployment() private view returns (UniswapV3TypedSpotAdapterFactory.Deployment memory) {
+            return UniswapV3TypedSpotAdapterFactory.Deployment({
+                chainId: block.chainid,
+                accountFactory: INaryxMultiStrategyAccountFactory(address(accountFactory)),
+                factory: address(venueFactory),
+                pool: address(pool),
+                baseToken: base,
+                quoteToken: quote,
+                baseTokenDecimals: 18,
+                quoteTokenDecimals: 18,
+                poolFee: POOL_FEE,
+                accountFactoryCodeHash: address(accountFactory).codehash,
+                strategyAccountCodeHash: accountFactory.accountCodeHash(),
+                factoryCodeHash: address(venueFactory).codehash,
+                poolCodeHash: address(pool).codehash,
+                baseTokenCodeHash: address(base).codehash,
+                quoteTokenCodeHash: address(quote).codehash
+            });
+        }
+
+        function _perpFactoryDeployment() private view returns (SynFuturesTypedPerpAdapterFactory.Deployment memory) {
+            return SynFuturesTypedPerpAdapterFactory.Deployment({
+                chainId: block.chainid,
+                accountFactory: INaryxMultiStrategyAccountFactory(address(accountFactory)),
+                baseToken: base,
+                collateralToken: quote,
+                instrument: perpVenue,
+                observer: perpVenue,
+                marginGate: perpVenue,
+                expiry: EXPIRY,
+                accountFactoryCodeHash: address(accountFactory).codehash,
+                strategyAccountCodeHash: accountFactory.accountCodeHash(),
+                baseTokenCodeHash: address(base).codehash,
+                collateralTokenCodeHash: address(quote).codehash,
+                instrumentCodeHash: address(perpVenue).codehash,
+                observerCodeHash: address(perpVenue).codehash,
+                marginGateCodeHash: address(perpVenue).codehash
+            });
+        }
+
+        function _spotBinding() private view returns (TypedStrategyAdapterRegistry.AdapterBinding memory) {
+            return TypedStrategyAdapterRegistry.AdapterBinding({
+                domain: TypedStrategyAdapterRegistry.DomainRef(
+                    keccak256(bytes("eip155:31337")), 1, DOMAIN_MANIFEST_HASH
+                ),
+                identity: _adapterRef(),
+                mode: TypedStrategyAdapterRegistry.AdapterMode.FACTORY,
+                adapter: address(spotFactory),
+                expectedCodeHash: address(spotFactory).codehash,
+                adapterClassId: spotFactory.ADAPTER_CLASS_ID(),
+                adapterClassVersion: spotFactory.ADAPTER_CLASS_VERSION(),
+                template: _template(),
+                settlementClass: _settlement(),
+                baseAsset: TypedStrategyAdapterRegistry.AssetBinding(address(base), address(base).codehash),
+                quoteAsset: TypedStrategyAdapterRegistry.AssetBinding(address(quote), address(quote).codehash),
+                maximumGasLimit: 700_000
+            });
+        }
+
+        function _control() private pure returns (TypedStrategyAdapterRegistry.AdapterControl memory) {
+            return TypedStrategyAdapterRegistry.AdapterControl({
+                state: TypedStrategyAdapterRegistry.Lifecycle.ACTIVE,
+                maximumApprovalAtoms: 100 ether,
+                maximumGrossNotionalAtoms: 1_000 ether
+            });
+        }
+
+        function _adapterRef() private pure returns (TypedStrategyAdapterRegistry.ManifestRef memory) {
+            return TypedStrategyAdapterRegistry.ManifestRef(ADAPTER_ID, 1, ADAPTER_MANIFEST_HASH);
+        }
+
+        function _template() private pure returns (TypedStrategyAdapterRegistry.TemplateRef memory) {
+            return TypedStrategyAdapterRegistry.TemplateRef(TEMPLATE_ID, 1, TEMPLATE_MANIFEST_HASH);
+        }
+
+        function _settlement() private pure returns (TypedStrategyAdapterRegistry.SettlementClassRef memory) {
+            return TypedStrategyAdapterRegistry.SettlementClassRef(keccak256("ATOMIC_POSTCONDITION"), 1);
         }
     }

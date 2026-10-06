@@ -7,8 +7,9 @@ import {ProtocolConfig} from "./ProtocolConfig.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "./StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
+import {INaryxMultiStrategyAccountFactory} from "./interfaces/INaryxMultiStrategyAccountFactory.sol";
 
-contract NaryxMultiStrategyAccountFactory {
+contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
     ProtocolConfig public immutable config;
     SolverRegistry public immutable solverRegistry;
     TypedStrategyAdapterRegistry public immutable adapterRegistry;
@@ -20,9 +21,9 @@ contract NaryxMultiStrategyAccountFactory {
     bytes32 public immutable adapterRegistryCodeHash;
     bytes32 public immutable feePolicyRegistryCodeHash;
     address public immutable referenceAccount;
-    bytes32 public immutable accountCodeHash;
+    bytes32 public immutable override accountCodeHash;
 
-    mapping(address account => bool recognized) public isAccount;
+    mapping(address account => bool recognized) public override isAccount;
 
     error InvalidConfiguration();
     error InvalidOwner();

@@ -126,6 +126,7 @@ test('binds a compiled atomic strategy plan to the multi-strategy account signat
   assert.equal(envelope.execution.routeHash, HASH_E);
   assert.equal(envelope.execution.operation, 1);
   assert.equal(envelope.calls.length, 1);
+  assert.equal(envelope.calls[0]?.target, ADAPTER);
   assert.equal(envelope.calls[0]?.riskIncreasing, true);
   assert.equal(envelope.calls[0]?.payload, '0x12345678abcdef');
   assert.notEqual(envelope.ownerDigest, envelope.solverDigest);
@@ -159,6 +160,7 @@ test('binds a compiled atomic strategy plan to the multi-strategy account signat
         ] },
         { name: 'calls', type: 'tuple[]', components: [
           { name: 'adapter', type: 'tuple', components: [{ name: 'subjectId', type: 'bytes32' }, { name: 'manifestVersion', type: 'uint32' }, { name: 'manifestHash', type: 'bytes32' }] },
+          { name: 'target', type: 'address' },
           { name: 'stage', type: 'uint8' }, { name: 'riskIncreasing', type: 'bool' },
           { name: 'approvalToken', type: 'address' }, { name: 'approvalAtoms', type: 'uint256' },
           { name: 'grossNotionalAtoms', type: 'uint256' }, { name: 'gasLimit', type: 'uint256' },
@@ -223,6 +225,6 @@ test('encodes owner-only recovery for a fully risk-reducing plan', () => {
   const encoded = encodeEvmMultiStrategyAccountRecovery({ envelope, ownerSignature: '0x0102' });
   assert.equal(
     encoded.slice(0, 10),
-    keccak256(stringToHex('executeRecovery((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes)')).slice(0, 10),
+    keccak256(stringToHex('executeRecovery((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),address,uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes)')).slice(0, 10),
   );
 });

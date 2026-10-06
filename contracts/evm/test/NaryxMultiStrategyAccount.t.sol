@@ -316,6 +316,7 @@ contract NaryxMultiStrategyAccountTest is Test {
         return TypedStrategyAdapterRegistry.AdapterBinding({
             domain: TypedStrategyAdapterRegistry.DomainRef(keccak256(bytes(DOMAIN_ID)), 1, DOMAIN_HASH),
             identity: _adapterRef(),
+            mode: TypedStrategyAdapterRegistry.AdapterMode.DIRECT,
             adapter: address(adapter),
             expectedCodeHash: address(adapter).codehash,
             adapterClassId: keccak256("naryx.evm.perp-exact"),
@@ -385,6 +386,7 @@ contract NaryxMultiStrategyAccountTest is Test {
     {
         return NaryxMultiStrategyAccount.AdapterCall({
             adapter: _adapterRef(),
+            target: address(adapter),
             stage: 0,
             riskIncreasing: riskIncreasing,
             approvalToken: approvalToken,
