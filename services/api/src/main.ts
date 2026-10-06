@@ -113,6 +113,10 @@ import {
 } from "./reference-history.js";
 import type { DomainId } from "./terminal-types.js";
 import type { StrategyExecutionLaneCapability } from "./strategy-program-view.js";
+import {
+  createHyperliquidGeneralizedOrderPort,
+  loadHyperliquidGeneralizedOrderProfile,
+} from "./hyperliquid-generalized-order.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -758,6 +762,25 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
   return Object.freeze(capabilities);
 }
 
+let hyperliquidGeneralizedOrder: ReturnType<typeof createHyperliquidGeneralizedOrderPort> | undefined;
+try {
+  const profile = loadHyperliquidGeneralizedOrderProfile(process.env);
+  if (profile !== undefined) {
+    if (hyperliquidConfig === undefined || publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("Hyperliquid generalized order staging requires the testnet runtime and public strategy market.");
+    }
+    hyperliquidGeneralizedOrder = createHyperliquidGeneralizedOrderPort({
+      config: hyperliquidConfig,
+      profile,
+      orders: orderStore,
+      intents: executionIntentStore,
+      intake: publicMarket.strategyOrderIntake,
+    });
+  }
+} catch (error) {
+  reportRuntimeFailure("hyperliquidGeneralizedOrder", error);
+}
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -794,6 +817,7 @@ const server = createPrivateTerminalServer(
   ownerPackageOutcomes,
   currentStrategyExecutionCapabilities,
   generalizedStrategyPreparation,
+  hyperliquidGeneralizedOrder,
 );
 
 const publicServer = publicMarket?.listener === undefined

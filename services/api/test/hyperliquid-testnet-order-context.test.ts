@@ -8,7 +8,13 @@ import {
   assetRef,
   domainRef,
   exactSignedRate,
+  packageGraphHash,
+  strategyPackageOrderHash,
   stringifyProtocolJson,
+  toHex,
+  validateStrategyTemplateGraph,
+  type PackageGraphInput,
+  type StrategyPackageOrderInput,
 } from "@naryx/protocol-types";
 import {
   HYPERLIQUID_TESTNET_INFO_URL,
@@ -27,6 +33,7 @@ import {
 import { HyperliquidTestnetOwnerLedger } from "../src/hyperliquid-testnet-owner-ledger.js";
 import { createHyperliquidTestnetExitOrderFactory } from "../src/hyperliquid-testnet-owner-routes.js";
 import { hyperliquidTestnetBookFills } from "../src/hyperliquid-testnet-order-context.js";
+import { createHyperliquidGeneralizedOrderPort } from "../src/hyperliquid-generalized-order.js";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const CONTEXT_ID = "hyperliquid:testnet:btc-carry-v1";
@@ -480,6 +487,75 @@ test("strict Hyperliquid runtime config loads live pricing and rejects static pr
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test("a selected Hyperliquid package stages one typed strategy order with exact venue bindings", async () => {
+  const market = fakeMarket();
+  const runtimeConfig = config();
+  const feed = priceFeed(market, runtimeConfig);
+  assert.equal(await feed.refresh(), true);
+  const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
+  await withOrders(async (orders) => {
+    const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
+    const created = await coordinator.createOrder(orderRequest("1", "hyper-generalized-order-0001"));
+    let captured: Readonly<{ order: StrategyPackageOrderInput; graph: PackageGraphInput }> | undefined;
+    const port = createHyperliquidGeneralizedOrderPort({
+      config: runtimeConfig,
+      profile: {
+        seriesId: "btc-cash-carry-usdc",
+        seriesVersion: 1,
+        executionClassId: "hyperliquid-testnet-batched-ioc",
+        executionClassVersion: 1,
+      },
+      orders,
+      intents: {
+        getAttemptForOrder: (orderHash) => orderHash === created.record.orderHashHex ? ({} as never) : undefined,
+        getAuthorization: () => undefined,
+      },
+      intake: {
+        store: (order, graph) => {
+          captured = { order, graph };
+          return {
+            version: 1,
+            status: "STORED_FOR_QUOTING",
+            created: true,
+            orderHashHex: toHex(strategyPackageOrderHash(order)),
+            graphHashHex: toHex(packageGraphHash(graph)),
+            currentTime: { unit: "HYPERLIQUID_UNIX_MILLISECONDS", value: BigInt(market.now) },
+            timeSource: "SERVER",
+            stages: [],
+          };
+        },
+      },
+    });
+    const staged = port.stage(created.record.orderHashHex);
+    assert.equal(staged.intake.status, "STORED_FOR_QUOTING");
+    assert.equal(validateStrategyTemplateGraph(staged.graph).valid, true);
+    assert.equal(captured?.graph.settlementClass, "BATCHED_IOC_WITH_RECOVERY");
+    assert.deepEqual(captured?.graph.legs.map((leg) => [leg.legId, leg.adapter.adapterId, leg.market.subjectId]), [
+      ["perp", "hypercore-perpetual-v1", "perp-btc-usdc"],
+      ["spot", "hypercore-spot-v1", "spot-btc-usdc"],
+    ]);
+    assert.deepEqual(staged.graph.recoverySlots.map((slot) => [slot.legId, slot.action]), [
+      ["perp", "COMPLETE"],
+      ["spot", "COMPLETE"],
+    ]);
+    assert.equal(staged.intake.orderHashHex, toHex(strategyPackageOrderHash(staged.order)));
+    assert.equal(staged.intake.graphHashHex, toHex(packageGraphHash(staged.graph)));
+    const unreviewed = createHyperliquidGeneralizedOrderPort({
+      config: runtimeConfig,
+      profile: {
+        seriesId: "btc-cash-carry-usdc",
+        seriesVersion: 1,
+        executionClassId: "hyperliquid-testnet-batched-ioc",
+        executionClassVersion: 1,
+      },
+      orders,
+      intents: { getAttemptForOrder: () => undefined, getAuthorization: () => undefined },
+      intake: { store: () => { throw new Error("intake must not run"); } },
+    });
+    assert.throws(() => unreviewed.stage(created.record.orderHashHex), { code: "SOURCE_ORDER_NOT_REVIEWED" });
+  });
 });
 
 test("Hyperliquid Testnet selection uses its own durable attempt identity without Solana authorization", async () => {

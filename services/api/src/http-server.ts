@@ -94,6 +94,11 @@ import {
   StrategyPreparationClientError,
   type GeneralizedStrategyPreparationPort,
 } from "./strategy-preparation-client.js";
+import {
+  HyperliquidGeneralizedOrderError,
+  type HyperliquidGeneralizedOrderPort,
+} from "./hyperliquid-generalized-order.js";
+import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -262,6 +267,7 @@ export function createPrivateTerminalRequestHandler(
   attemptOutcomes?: OwnerPackageOutcomeReader,
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
+  hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -474,6 +480,7 @@ export function createPrivateTerminalRequestHandler(
         localExecutionAvailable: localExecutionCoordinator !== undefined,
         solanaLocalExecutionAvailable: solanaLocalExecution !== undefined,
         generalizedStrategyPreparationAvailable: generalizedStrategyPreparation !== undefined,
+        hyperliquidGeneralizedOrderAvailable: hyperliquidGeneralizedOrder !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
@@ -503,6 +510,54 @@ export function createPrivateTerminalRequestHandler(
         sendJson(response, 200, strategyProgramView(strategyExecutionCapabilities()));
       } catch {
         reject(response, 503, "STRATEGY_CAPABILITY_UNAVAILABLE", "Strategy execution capability is unavailable.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/strategy-orders/stage") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (hyperliquidGeneralizedOrder === undefined) {
+        reject(response, 503, "STRATEGY_ORDER_STAGING_UNAVAILABLE", "Strategy order staging is unavailable.");
+        return;
+      }
+      try {
+        const body = await readJson(request);
+        if (typeof body !== "object" || body === null || Array.isArray(body)
+          || Object.keys(body).length !== 1 || typeof (body as { sourceOrderHash?: unknown }).sourceOrderHash !== "string") {
+          throw new HyperliquidGeneralizedOrderError("INVALID_REQUEST", "Request must contain only sourceOrderHash.");
+        }
+        const staged = hyperliquidGeneralizedOrder.stage((body as { sourceOrderHash: string }).sourceOrderHash);
+        sendJson(response, 200, {
+          version: 1,
+          status: staged.intake.status,
+          created: staged.intake.created,
+          sourceOrderHash: staged.sourceOrderHash,
+          orderHash: staged.intake.orderHashHex,
+          graphHash: staged.intake.graphHashHex,
+          templateId: staged.order.templateId,
+          lifecycleAction: staged.order.lifecycleAction,
+          seriesId: staged.order.seriesId,
+          executionClassId: staged.order.executionClassId,
+        });
+      } catch (error) {
+        if (error instanceof HyperliquidGeneralizedOrderError) {
+          const status = error.code === "ORDER_NOT_FOUND" ? 404
+            : error.code === "SOURCE_ORDER_NOT_REVIEWED" || error.code === "SOURCE_ORDER_MISMATCH" ? 409
+              : error.code === "INVALID_CONFIGURATION" ? 503
+                : error.code === "INTAKE_MISMATCH" ? 500
+                  : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        if (error instanceof StrategyOrderIntakeError) {
+          reject(response, error.status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "STRATEGY_ORDER_STAGING_FAILED", "Strategy order staging failed closed.");
       }
       return;
     }
@@ -1286,6 +1341,7 @@ export function createPrivateTerminalServer(
   attemptOutcomes?: OwnerPackageOutcomeReader,
   strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
   generalizedStrategyPreparation?: GeneralizedStrategyPreparationPort,
+  hyperliquidGeneralizedOrder?: HyperliquidGeneralizedOrderPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1309,6 +1365,7 @@ export function createPrivateTerminalServer(
     attemptOutcomes,
     strategyExecutionCapabilities,
     generalizedStrategyPreparation,
+    hyperliquidGeneralizedOrder,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

@@ -7,6 +7,7 @@ import {
   HyperliquidTestnetRuntimeClientError,
   type HyperliquidTestnetAttemptPreparation,
 } from "../src/index.js";
+import type { HyperliquidGeneralizedOrderPort } from "../src/hyperliquid-generalized-order.js";
 
 const ATTEMPT_ID = "hypercore-attempt-0001";
 const HANDOFF = Object.freeze({
@@ -80,4 +81,66 @@ test("private Hyperliquid attempt endpoint stays unavailable and maps missing at
   assert.equal((await fetch(
     `${missingOrigin}/internal/solver/hyperliquid-testnet/attempts/${ATTEMPT_ID}`,
   )).status, 404);
+});
+
+test("private terminal stages a reviewed Hyperliquid order for generalized quoting", async (context) => {
+  const sourceOrderHash = "11".repeat(32);
+  const orderHash = "22".repeat(32);
+  const graphHash = "33".repeat(32);
+  const staging: HyperliquidGeneralizedOrderPort = {
+    stage: (requested) => {
+      assert.equal(requested, sourceOrderHash);
+      return {
+        sourceOrderHash,
+        order: {
+          templateId: "cash-and-carry-v1",
+          lifecycleAction: "ENTRY",
+          seriesId: "btc-cash-carry-usdc",
+          executionClassId: "hyperliquid-testnet-batched-ioc",
+        },
+        graph: {},
+        intake: {
+          version: 1,
+          status: "STORED_FOR_QUOTING",
+          created: true,
+          orderHashHex: orderHash,
+          graphHashHex: graphHash,
+          currentTime: { unit: "HYPERLIQUID_UNIX_MILLISECONDS", value: 1n },
+          timeSource: "SERVER",
+          stages: [],
+        },
+      } as never;
+    },
+  };
+  const server = createPrivateTerminalServer(
+    { host: "127.0.0.1", port: 0, terminalOrigin: null },
+    {}, undefined, undefined, {}, undefined, undefined, undefined, undefined,
+    undefined, "DISABLED", undefined, undefined, undefined, undefined, undefined,
+    undefined, {}, undefined, () => [], undefined, staging,
+  );
+  context.after(() => server.close());
+  const origin = await listen(server);
+  const response = await fetch(`${origin}/internal/terminal/strategy-orders/stage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourceOrderHash }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    version: 1,
+    status: "STORED_FOR_QUOTING",
+    created: true,
+    sourceOrderHash,
+    orderHash,
+    graphHash,
+    templateId: "cash-and-carry-v1",
+    lifecycleAction: "ENTRY",
+    seriesId: "btc-cash-carry-usdc",
+    executionClassId: "hyperliquid-testnet-batched-ioc",
+  });
+  assert.equal((await fetch(`${origin}/internal/terminal/strategy-orders/stage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourceOrderHash, extra: true }),
+  })).status, 400);
 });

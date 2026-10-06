@@ -28,6 +28,10 @@ import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
+import {
+  createStrategyOrderIntake,
+  type StrategyOrderIntakePort,
+} from "./strategy-order-intake.js";
 import bs58 from "bs58";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
@@ -48,6 +52,8 @@ export interface PublicMarketRuntime {
   readonly clockUnit: PublicMarketClockUnit;
   readonly requestsPerMinute: number;
   readonly solverApiEnabled: boolean;
+  /** Canonical strategy-order admission shared with the private terminal when configured. */
+  readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   close(): void;
@@ -396,6 +402,15 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
     if (strategyPackages !== undefined) opened.push(strategyPackages);
+    const strategyOrderIntake = strategyPackages === undefined || graphContext === undefined || registry === undefined
+      ? undefined
+      : createStrategyOrderIntake({
+        exchange: store,
+        registry,
+        graphContext,
+        store: strategyPackages,
+        clockMs,
+      });
     const generalizedQuoteSetting = environment.NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED ?? "false";
     if (generalizedQuoteSetting !== "true" && generalizedQuoteSetting !== "false") {
       throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED must be true or false.");
@@ -434,6 +449,7 @@ export function loadPublicMarketRuntime(
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
       ...(strategyPackages === undefined ? {} : { strategyPackages }),
+      ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
@@ -482,6 +498,7 @@ export function loadPublicMarketRuntime(
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
+      ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(internalHandlers.length === 0 ? {} : {
         internalHandler: (request: IncomingMessage, response: ServerResponse) => internalHandlers.some((handler) => handler(request, response)),
       }),

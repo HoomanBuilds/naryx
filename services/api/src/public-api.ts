@@ -19,7 +19,6 @@ import {
   packageGraphHash,
   compileTypedStrategyRoute,
   validateStrategyPackageRouteAdmission,
-  validateStrategyPackageOrderGraph,
   authorizeSolverQuote,
   bytesEqual,
   solverCapabilityManifestHash,
@@ -84,6 +83,11 @@ import {
   GeneralizedStrategyQuoteClientError,
   type GeneralizedStrategyQuotePort,
 } from "./generalized-strategy-quote-client.js";
+import {
+  createStrategyOrderIntake,
+  StrategyOrderIntakeError,
+  type StrategyOrderIntakePort,
+} from "./strategy-order-intake.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -177,6 +181,8 @@ export interface PublicApiOptions {
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt">
     & Partial<Pick<SqliteStrategyPackageStore, "order">>;
+  /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
+  readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
   readonly strategyQuotes?: GeneralizedStrategyQuotePort;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
@@ -301,6 +307,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   const { windowMs, maxRequests } = options.rateLimit;
   const clockMs = options.clockMs ?? Date.now;
   const limiter = createRateLimiter({ windowMs, maxRequests, clockMs });
+  const strategyOrderIntake = options.strategyOrderIntake ?? (
+    registry !== undefined && options.graphContext !== undefined && options.strategyPackages !== undefined
+      ? createStrategyOrderIntake({
+        exchange,
+        registry,
+        graphContext: options.graphContext,
+        store: options.strategyPackages,
+        clockMs,
+      })
+      : undefined
+  );
 
   function limited(request: IncomingMessage): boolean {
     return limiter(requestClientKey(request));
@@ -1136,43 +1153,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
     }
     if (path === "/v1/strategy-orders") {
-      const context = options.graphContext;
-      if (context === undefined) throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
-      const graphInput = object(body.graph, "graph") as unknown as PackageGraphInput;
-      const graph = packageGraph(graphInput);
-      requireStrategyMarket(graph);
-      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
-      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
-      const current = nowIn(graph.expiryUnit);
-      const currentTime = current === undefined
-        ? { unit: graph.expiryUnit, value: body.atSlot as bigint }
-        : { unit: graph.expiryUnit, value: current };
-      if (typeof currentTime.value !== "bigint" || currentTime.value <= 0n) {
-        throw new RequestError(400, "TIME_REQUIRED", "A slot-timed strategy order is admitted at an explicit positive atSlot.");
+      if (strategyOrderIntake === undefined) {
+        throw new RequestError(503, "STRATEGY_ORDER_INTAKE_UNAVAILABLE", "Strategy order intake is not configured on this server.");
       }
-      const validated = validateStrategyPackageOrderGraph(
+      return strategyOrderIntake.store(
         object(body.order, "order") as unknown as StrategyPackageOrderInput,
-        graphInput,
-        {
-          templateManifest: template.document,
-          activeRegistryRecords: context.activeRegistryRecords,
-          resourceLimits: context.resourceLimits,
-          currentTime,
-        },
+        object(body.graph, "graph") as unknown as PackageGraphInput,
+        body.atSlot as bigint | undefined,
       );
-      const series = requireStrategyMarket(validated.graph);
-      if (validated.order.quoteAsset.assetId !== series.quoteAsset) {
-        throw new RequestError(400, "SERIES_MISMATCH", "The order quote asset differs from the registered strategy series.");
-      }
-      const stored = requireStrategyPackages().registerOrder(validated.order, validated.graph);
-      return {
-        version: 1,
-        status: "STORED_FOR_QUOTING",
-        ...stored,
-        currentTime,
-        timeSource: current === undefined ? "CALLER" : "SERVER",
-        stages: validated.compiledGraph.stages,
-      };
     }
     if (path === "/v1/strategy-quotes/request") {
       const keys = Object.keys(body).sort();
@@ -1557,6 +1545,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
             : error.code === "NOT_FOUND" ? 404
               : error.code === "QUOTE_DECLINED" ? 409 : 502;
           return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof StrategyOrderIntakeError) {
+          return fail(response, error.status, error.code, error.message);
         }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });
