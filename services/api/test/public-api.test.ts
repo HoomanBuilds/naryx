@@ -260,6 +260,42 @@ test("registries, strategy series, and package markets are listed from their sto
   }
 });
 
+test("recent admitted strategy packages are exposed as bounded read-only summaries", async () => {
+  const summary = {
+    orderHashHex: "11".repeat(32),
+    quoteHashHex: "22".repeat(32),
+    routeHashHex: "33".repeat(32),
+    templateId: "funding-spread-v1",
+    templateVersion: 1,
+    lifecycleAction: "ENTRY" as const,
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY" as const,
+    solverId: "solver-a",
+    domainIds: ["hypercore:testnet"],
+    validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS" as const,
+    validUntilValue: 123_456n,
+    recordedAtMs: 120_000,
+  };
+  let requestedLimit = 0;
+  await withMarket(async (get) => {
+    const result = await get("/v1/strategy-packages/recent?limit=7");
+    assert.equal(result.status, 200);
+    assert.equal(requestedLimit, 7);
+    assert.deepEqual(result.body, { version: 1, admissions: [summary] });
+    assert.equal((await get("/v1/strategy-packages/recent?limit=0")).status, 400);
+    assert.equal((await get("/v1/strategy-packages/recent?limit=51")).status, 400);
+    assert.equal((await get("/v1/strategy-packages/recent?other=1")).status, 400);
+  }, {
+    strategyPackages: {
+      registerOrder: () => { throw new Error("not used"); },
+      registerQuote: () => { throw new Error("not used"); },
+      recentAdmissions: (limit) => {
+        requestedLimit = limit;
+        return [summary];
+      },
+    },
+  });
+});
+
 test("candles are built only from recorded trades and the index keeps executable depth separate", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);

@@ -170,7 +170,7 @@ export interface PublicApiOptions {
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
-  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote">;
+  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
@@ -736,6 +736,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           })),
         })),
       };
+    }
+    if (path === "/v1/strategy-packages/recent") {
+      onlyParams(url, ["limit"]);
+      const rawLimit = url.searchParams.get("limit") ?? "20";
+      if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) {
+        throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
+      }
+      return { version: 1, admissions: requireStrategyPackages().recentAdmissions(Number(rawLimit)) };
     }
     if (path === "/v1/package-templates") {
       onlyParams(url, []);

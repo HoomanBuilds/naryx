@@ -1049,6 +1049,7 @@ function Ticket({
   selectedStrategyTemplateId,
   selectedLifecycleAction,
   privateApiBaseUrl,
+  publicApiBaseUrl,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1091,6 +1092,7 @@ function Ticket({
   selectedStrategyTemplateId: string;
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
+  publicApiBaseUrl: string | null;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1317,7 +1319,14 @@ function Ticket({
         />
       ) : null}
 
-      {!nativeCashFlow ? <GeneralizedStrategyPreparationPanel baseUrl={privateApiBaseUrl} /> : null}
+      {!nativeCashFlow ? (
+        <GeneralizedStrategyPreparationPanel
+          privateApiBaseUrl={privateApiBaseUrl}
+          publicApiBaseUrl={publicApiBaseUrl}
+          templateId={selectedStrategyTemplateId}
+          lifecycleAction={selectedLifecycleAction}
+        />
+      ) : null}
 
       <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
@@ -3389,6 +3398,7 @@ export function TradingTerminal({
             selectedStrategyTemplateId={selectedStrategyTemplateId}
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
+            publicApiBaseUrl={publicApiBaseUrl}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}

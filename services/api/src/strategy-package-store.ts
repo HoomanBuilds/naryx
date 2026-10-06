@@ -19,6 +19,7 @@ import {
   type StrategyPackageOrder,
   type StrategyPackageOrderInput,
   type StrategyPackageQuote,
+  type StrategyPackageQuoteInput,
   type StrategyPackageReceipt,
   type StrategyPackageReceiptInput,
   type TypedStrategyRoute,
@@ -104,6 +105,21 @@ export interface StoredStrategyPackageAdmission {
 export interface StoredStrategyPackageReceipt {
   readonly receiptHashHex: string;
   readonly receipt: StrategyPackageReceipt;
+  readonly recordedAtMs: number;
+}
+
+export interface StrategyPackageAdmissionSummary {
+  readonly orderHashHex: string;
+  readonly quoteHashHex: string;
+  readonly routeHashHex: string;
+  readonly templateId: string;
+  readonly templateVersion: number;
+  readonly lifecycleAction: StrategyPackageOrder["lifecycleAction"];
+  readonly settlementClass: StrategyPackageOrder["settlementClass"];
+  readonly solverId: string;
+  readonly domainIds: readonly string[];
+  readonly validUntilUnit: StrategyPackageQuote["validUntilUnit"];
+  readonly validUntilValue: bigint;
   readonly recordedAtMs: number;
 }
 
@@ -286,6 +302,48 @@ export class SqliteStrategyPackageStore {
       route,
       recordedAtMs: row.recorded_at_ms,
     });
+  }
+
+  recentAdmissions(limit: number): readonly StrategyPackageAdmissionSummary[] {
+    requireCondition(Number.isSafeInteger(limit) && limit > 0 && limit <= 50, "INVALID_LIMIT", "Recent strategy packages limit must be between 1 and 50.");
+    const rows = this.db.prepare(`
+      SELECT q.quote_hash, q.order_hash, q.route_hash, q.quote_json, q.route_json, q.recorded_at_ms,
+             o.order_json
+      FROM strategy_package_quotes q
+      JOIN strategy_package_orders o ON o.order_hash = q.order_hash
+      ORDER BY q.recorded_at_ms DESC, q.quote_hash DESC
+      LIMIT ?
+    `).all(limit) as {
+      quote_hash: Uint8Array;
+      order_hash: Uint8Array;
+      route_hash: Uint8Array;
+      quote_json: string;
+      route_json: string;
+      recorded_at_ms: number;
+      order_json: string;
+    }[];
+    return Object.freeze(rows.map((row): StrategyPackageAdmissionSummary => {
+      const order = strategyPackageOrder(parseProtocolJson(row.order_json) as StrategyPackageOrderInput);
+      const quote = strategyPackageQuote(parseProtocolJson(row.quote_json) as StrategyPackageQuoteInput);
+      const route = parseProtocolJson(row.route_json) as TypedStrategyRoute;
+      requireCondition(bytesEqual(strategyPackageOrderHash(order), row.order_hash), "CORRUPT_ROW", "A recent strategy package order does not match its hash.");
+      requireCondition(bytesEqual(strategyPackageQuoteHash(quote), row.quote_hash) && bytesEqual(quote.orderHash, row.order_hash), "CORRUPT_ROW", "A recent strategy package quote does not match its hash.");
+      requireCondition(bytesEqual(typedStrategyRouteHash(route), row.route_hash) && bytesEqual(quote.routeHash, row.route_hash), "CORRUPT_ROW", "A recent strategy package route does not match its hash.");
+      return Object.freeze({
+        orderHashHex: toHex(row.order_hash),
+        quoteHashHex: toHex(row.quote_hash),
+        routeHashHex: toHex(row.route_hash),
+        templateId: order.templateId,
+        templateVersion: order.templateVersion,
+        lifecycleAction: order.lifecycleAction,
+        settlementClass: order.settlementClass,
+        solverId: quote.solverId,
+        domainIds: Object.freeze(route.domainPlans.map((plan) => plan.domain.domainId)),
+        validUntilUnit: quote.validUntilUnit,
+        validUntilValue: quote.validUntilValue,
+        recordedAtMs: row.recorded_at_ms,
+      });
+    }));
   }
 
   receipt(receiptHashHex: string): StrategyPackageReceiptInput | undefined {

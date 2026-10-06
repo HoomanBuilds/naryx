@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import styles from "./trading-terminal.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -37,6 +37,18 @@ type StrategyPreparationReview = Readonly<{
   settlementClass: string;
   coordination: string;
   domains: readonly DomainReview[];
+}>;
+
+type AdmissionSummary = Readonly<{
+  quoteHash: string;
+  routeHash: string;
+  templateId: string;
+  templateVersion: number;
+  lifecycleAction: string;
+  settlementClass: string;
+  solverId: string;
+  domainIds: readonly string[];
+  validUntilValue: string;
 }>;
 
 function record(value: unknown, context: string): Record<string, unknown> {
@@ -150,6 +162,27 @@ function parseReview(payload: unknown, requestedQuoteHash: string): StrategyPrep
   });
 }
 
+function parseAdmissions(payload: unknown): readonly AdmissionSummary[] {
+  const root = record(decode(payload as Json), "Recent strategy packages");
+  if (root.version !== 1) throw new Error("Recent strategy package version is unsupported.");
+  return list(root.admissions, "Recent strategy package admissions").map((candidate, index): AdmissionSummary => {
+    const admission = record(candidate, `Recent strategy package ${index}`);
+    const domainIds = list(admission.domainIds, `Recent strategy package ${index} domains`).map((domain, domainIndex) => text(domain, `Recent strategy package ${index} domain ${domainIndex}`));
+    if (domainIds.length === 0) throw new Error(`Recent strategy package ${index} has no domain.`);
+    return Object.freeze({
+      quoteHash: hash(admission.quoteHashHex, `Recent strategy package ${index} quote hash`),
+      routeHash: hash(admission.routeHashHex, `Recent strategy package ${index} route hash`),
+      templateId: text(admission.templateId, `Recent strategy package ${index} template`),
+      templateVersion: integer(admission.templateVersion, `Recent strategy package ${index} template version`),
+      lifecycleAction: text(admission.lifecycleAction, `Recent strategy package ${index} action`),
+      settlementClass: text(admission.settlementClass, `Recent strategy package ${index} settlement class`),
+      solverId: text(admission.solverId, `Recent strategy package ${index} solver`),
+      domainIds: Object.freeze(domainIds),
+      validUntilValue: text(admission.validUntilValue, `Recent strategy package ${index} validity`),
+    });
+  });
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -164,18 +197,52 @@ async function failureMessage(response: Response): Promise<string> {
   }
 }
 
-export function GeneralizedStrategyPreparationPanel({ baseUrl }: { baseUrl: string | null }) {
+export function GeneralizedStrategyPreparationPanel({
+  privateApiBaseUrl,
+  publicApiBaseUrl,
+  templateId,
+  lifecycleAction,
+}: {
+  privateApiBaseUrl: string | null;
+  publicApiBaseUrl: string | null;
+  templateId: string;
+  lifecycleAction: string;
+}) {
   const [quoteHash, setQuoteHash] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
+  const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
+  const [admissionError, setAdmissionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (publicApiBaseUrl === null) return;
+    const controller = new AbortController();
+    void fetch(`${publicApiBaseUrl}/v1/strategy-packages/recent?limit=50`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Recent package feed answered HTTP ${response.status}.`);
+      return parseAdmissions(await response.json());
+    }).then((value) => {
+      setAdmissions(value);
+      setAdmissionError(null);
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setAdmissionError(cause instanceof Error ? cause.message : "Recent package feed is unavailable.");
+    });
+    return () => controller.abort();
+  }, [publicApiBaseUrl]);
+
+  const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
+
   async function prepare() {
-    if (baseUrl === null || !HASH.test(quoteHash)) return;
+    if (privateApiBaseUrl === null || !HASH.test(quoteHash)) return;
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${baseUrl}/internal/terminal/strategy-executions/prepare`, {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/prepare`, {
         method: "POST",
         cache: "no-store",
         credentials: "omit",
@@ -202,6 +269,27 @@ export function GeneralizedStrategyPreparationPanel({ baseUrl }: { baseUrl: stri
         Load a solver-signed quote already admitted by the package market. Naryx recompiles its typed graph and route before returning any plan.
       </p>
       <div className={styles.strategyPrepareForm}>
+        {matchingAdmissions.length > 0 ? (
+          <>
+            <label htmlFor="generalized-strategy-admission">Recent admitted package</label>
+            <select
+              id="generalized-strategy-admission"
+              value={matchingAdmissions.some((admission) => admission.quoteHash === quoteHash) ? quoteHash : ""}
+              onChange={(event) => {
+                setQuoteHash(event.target.value);
+                setReview(null);
+                setError(null);
+              }}
+            >
+              <option value="">Select an admitted quote</option>
+              {matchingAdmissions.map((admission) => (
+                <option key={admission.quoteHash} value={admission.quoteHash}>
+                  {admission.domainIds.join(" + ")} / {admission.solverId} / {compact(admission.quoteHash, 8, 6)}
+                </option>
+              ))}
+            </select>
+          </>
+        ) : null}
         <label htmlFor="generalized-strategy-quote">Quote hash</label>
         <input
           id="generalized-strategy-quote"
@@ -216,14 +304,19 @@ export function GeneralizedStrategyPreparationPanel({ baseUrl }: { baseUrl: stri
             setError(null);
           }}
         />
-        <button type="button" className={styles.secondaryAction} disabled={baseUrl === null || busy || !HASH.test(quoteHash)} onClick={() => void prepare()}>
+        <button type="button" className={styles.secondaryAction} disabled={privateApiBaseUrl === null || busy || !HASH.test(quoteHash)} onClick={() => void prepare()}>
           {busy ? "Preparing" : "Prepare unsigned plan"}
         </button>
       </div>
       <p className={styles.fieldContext} role="status">
-        {error ?? (baseUrl === null
+        {error ?? (privateApiBaseUrl === null
           ? "Configure the private terminal API to prepare an admitted package."
-          : review ? "Compilation passed. Nothing has been signed or submitted." : "Preparation is read-only and never broadcasts.")}
+          : review ? "Compilation passed. Nothing has been signed or submitted."
+            : admissionError ?? (publicApiBaseUrl === null
+              ? "Preparation is read-only. Paste an admitted quote hash from the package API."
+              : matchingAdmissions.length === 0
+                ? "No recent admitted quote matches this template and lifecycle action."
+                : "Select a recent admitted quote or paste its hash. Preparation never broadcasts."))}
       </p>
       {review ? (
         <>
