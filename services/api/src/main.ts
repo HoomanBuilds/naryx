@@ -123,6 +123,10 @@ import {
   loadHyperliquidNativeStrategyProfiles,
   type HyperliquidNativeStrategyProfile,
 } from "./hyperliquid-native-strategy-order.js";
+import {
+  createEvmOptionSpreadOrderPort,
+  loadEvmOptionSpreadProfiles,
+} from "./evm-option-spread-order.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -839,6 +843,24 @@ if (hyperliquidNativeStrategyProfilePath !== undefined && hyperliquidNativeStrat
     reportRuntimeFailure("hyperliquidNativeStrategyOrders", error);
   }
 }
+let evmOptionSpreadOrders: ReturnType<typeof createEvmOptionSpreadOrderPort> | undefined;
+const evmOptionSpreadProfilePath = process.env.NARYX_EVM_OPTION_SPREAD_ORDER_PROFILES;
+if (evmOptionSpreadProfilePath !== undefined && evmOptionSpreadProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("EVM option spread order creation requires the public strategy market.");
+    }
+    evmOptionSpreadOrders = createEvmOptionSpreadOrderPort({
+      profiles: loadEvmOptionSpreadProfiles(absolutePath(
+        evmOptionSpreadProfilePath,
+        "NARYX_EVM_OPTION_SPREAD_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    reportRuntimeFailure("evmOptionSpreadOrders", error);
+  }
+}
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
   : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
@@ -892,6 +914,7 @@ const server = createPrivateTerminalServer(
     quoteAsset: hyperliquidConfig.orderContext.quoteAsset,
   },
   hyperliquidNativeStrategyOrders,
+  evmOptionSpreadOrders,
 );
 
 const publicServer = publicMarket?.listener === undefined
