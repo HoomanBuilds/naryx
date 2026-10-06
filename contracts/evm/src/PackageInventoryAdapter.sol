@@ -19,8 +19,10 @@ contract PackageInventoryAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         address strategyAccount;
         bytes32 packageId;
         IERC20 inventoryToken;
+        IERC20 quoteToken;
         bytes32 strategyAccountCodeHash;
         bytes32 inventoryTokenCodeHash;
+        bytes32 quoteTokenCodeHash;
     }
 
     struct ExactInventoryLeg {
@@ -45,27 +47,33 @@ contract PackageInventoryAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     bytes32 public immutable packageId;
     uint256 public immutable deploymentChainId;
     IERC20 public immutable inventoryToken;
+    IERC20 public immutable quoteToken;
     bytes32 public immutable strategyAccountCodeHash;
     bytes32 public immutable inventoryTokenCodeHash;
+    bytes32 public immutable quoteTokenCodeHash;
 
     constructor(Deployment memory deployment) {
         if (
-            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0
-                || deployment.packageId == bytes32(0) || address(deployment.inventoryToken).code.length == 0
-                || deployment.strategyAccountCodeHash == bytes32(0)
-                || deployment.inventoryTokenCodeHash == bytes32(0)
+            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
+                || address(deployment.inventoryToken).code.length == 0
+                || address(deployment.quoteToken).code.length == 0
+                || address(deployment.inventoryToken) == address(deployment.quoteToken)
+                || deployment.strategyAccountCodeHash == bytes32(0) || deployment.inventoryTokenCodeHash == bytes32(0)
+                || deployment.quoteTokenCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         strategyAccount = deployment.strategyAccount;
         packageId = deployment.packageId;
         deploymentChainId = deployment.chainId;
         inventoryToken = deployment.inventoryToken;
+        quoteToken = deployment.quoteToken;
         strategyAccountCodeHash = deployment.strategyAccountCodeHash;
         inventoryTokenCodeHash = deployment.inventoryTokenCodeHash;
+        quoteTokenCodeHash = deployment.quoteTokenCodeHash;
         _assertDeployment();
     }
 
     function adapterMetadata() external view returns (address, bytes32, uint32, address, address) {
-        return (strategyAccount, ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(inventoryToken), address(0));
+        return (strategyAccount, ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(inventoryToken), address(quoteToken));
     }
 
     function executeLeg(bytes calldata payload) external nonReentrant returns (bytes32 evidenceHash) {
@@ -115,8 +123,7 @@ contract PackageInventoryAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     function _validateLeg(ExactInventoryLeg memory leg) private view {
         if (
             leg.packageId != packageId || leg.orderHash == bytes32(0) || leg.quoteHash == bytes32(0)
-                || leg.routeHash == bytes32(0) || (leg.action != LOCK && leg.action != RELEASE)
-                || leg.inputAtoms == 0
+                || leg.routeHash == bytes32(0) || (leg.action != LOCK && leg.action != RELEASE) || leg.inputAtoms == 0
         ) revert InvalidLeg();
         if (
             (leg.action == LOCK && leg.expectedPostInventoryAtoms < leg.expectedPreInventoryAtoms)
@@ -132,6 +139,7 @@ contract PackageInventoryAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         if (
             block.chainid != deploymentChainId || strategyAccount.codehash != strategyAccountCodeHash
                 || address(inventoryToken).codehash != inventoryTokenCodeHash
+                || address(quoteToken).codehash != quoteTokenCodeHash
         ) revert DeploymentChanged();
     }
 }

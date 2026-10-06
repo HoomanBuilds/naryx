@@ -15,9 +15,11 @@ contract PackageInventoryAdapterFactory is ITypedStrategyAdapterFactory {
         uint256 chainId;
         INaryxMultiStrategyAccountFactory accountFactory;
         IERC20 inventoryToken;
+        IERC20 quoteToken;
         bytes32 accountFactoryCodeHash;
         bytes32 strategyAccountCodeHash;
         bytes32 inventoryTokenCodeHash;
+        bytes32 quoteTokenCodeHash;
     }
 
     struct InstanceBinding {
@@ -40,16 +42,23 @@ contract PackageInventoryAdapterFactory is ITypedStrategyAdapterFactory {
         if (
             deployment.chainId == 0 || address(deployment.accountFactory).code.length == 0
                 || address(deployment.inventoryToken).code.length == 0
-                || deployment.accountFactoryCodeHash == bytes32(0)
-                || deployment.strategyAccountCodeHash == bytes32(0)
-                || deployment.inventoryTokenCodeHash == bytes32(0)
+                || address(deployment.quoteToken).code.length == 0
+                || address(deployment.inventoryToken) == address(deployment.quoteToken)
+                || deployment.accountFactoryCodeHash == bytes32(0) || deployment.strategyAccountCodeHash == bytes32(0)
+                || deployment.inventoryTokenCodeHash == bytes32(0) || deployment.quoteTokenCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         _deployment = deployment;
         _assertDeployment();
     }
 
     function factoryMetadata() external view returns (bytes32, uint32, address, address) {
-        return (ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(_deployment.inventoryToken), address(0));
+        return
+            (
+                ADAPTER_CLASS_ID,
+                ADAPTER_CLASS_VERSION,
+                address(_deployment.inventoryToken),
+                address(_deployment.quoteToken)
+            );
     }
 
     function adapterOf(address strategyAccount, bytes32 packageId) public view returns (address) {
@@ -110,8 +119,10 @@ contract PackageInventoryAdapterFactory is ITypedStrategyAdapterFactory {
             strategyAccount: strategyAccount,
             packageId: packageId,
             inventoryToken: _deployment.inventoryToken,
+            quoteToken: _deployment.quoteToken,
             strategyAccountCodeHash: _deployment.strategyAccountCodeHash,
-            inventoryTokenCodeHash: _deployment.inventoryTokenCodeHash
+            inventoryTokenCodeHash: _deployment.inventoryTokenCodeHash,
+            quoteTokenCodeHash: _deployment.quoteTokenCodeHash
         });
     }
 
@@ -121,6 +132,7 @@ contract PackageInventoryAdapterFactory is ITypedStrategyAdapterFactory {
                 || address(_deployment.accountFactory).codehash != _deployment.accountFactoryCodeHash
                 || _deployment.accountFactory.accountCodeHash() != _deployment.strategyAccountCodeHash
                 || address(_deployment.inventoryToken).codehash != _deployment.inventoryTokenCodeHash
+                || address(_deployment.quoteToken).codehash != _deployment.quoteTokenCodeHash
         ) revert DeploymentChanged();
     }
 

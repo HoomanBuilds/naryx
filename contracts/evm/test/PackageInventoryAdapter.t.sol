@@ -37,11 +37,13 @@ contract PackageInventoryAdapterTest is Test {
     bytes32 private constant ROUTE_HASH = keccak256("route");
 
     InventoryAdapterToken private token;
+    InventoryAdapterToken private quote;
     InventoryAdapterAccount private account;
     PackageInventoryAdapter private adapter;
 
     function setUp() public {
         token = new InventoryAdapterToken();
+        quote = new InventoryAdapterToken();
         account = new InventoryAdapterAccount();
         adapter = new PackageInventoryAdapter(
             PackageInventoryAdapter.Deployment({
@@ -49,8 +51,10 @@ contract PackageInventoryAdapterTest is Test {
                 strategyAccount: address(account),
                 packageId: PACKAGE_ID,
                 inventoryToken: token,
+                quoteToken: quote,
                 strategyAccountCodeHash: address(account).codehash,
-                inventoryTokenCodeHash: address(token).codehash
+                inventoryTokenCodeHash: address(token).codehash,
+                quoteTokenCodeHash: address(quote).codehash
             })
         );
         token.mint(address(account), 100 ether);
