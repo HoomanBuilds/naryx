@@ -33,8 +33,20 @@ export interface StoredStrategyPackageDocuments {
   readonly recordedAtMs: number;
 }
 
+export interface StoredStrategyPackageOrderDocuments {
+  readonly orderHashHex: string;
+  readonly graphHashHex: string;
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraph;
+  readonly recordedAtMs: number;
+}
+
 export interface StrategyPackageProvider {
   getByQuote(quoteHash: Hash32): Promise<StoredStrategyPackageDocuments | undefined>;
+}
+
+export interface StrategyPackageOrderProvider {
+  getByOrder(orderHash: Hash32): Promise<StoredStrategyPackageOrderDocuments | undefined>;
 }
 
 function loopbackOrigin(endpoint: string): string {
@@ -139,7 +151,44 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
   });
 }
 
-export class HttpStrategyPackageProvider implements StrategyPackageProvider {
+function decodeOrderDocuments(value: unknown, expectedOrderHash: Hash32): StoredStrategyPackageOrderDocuments {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('strategy package order response must be an object');
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const expectedKeys = ['graph', 'graphHashHex', 'order', 'orderHashHex', 'recordedAtMs', 'version'];
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index]) || record.version !== 1) {
+    throw new Error('strategy package order response fields are invalid');
+  }
+  if (typeof record.graphHashHex !== 'string' || !/^[0-9a-f]{64}$/.test(record.graphHashHex)
+    || typeof record.orderHashHex !== 'string' || !/^[0-9a-f]{64}$/.test(record.orderHashHex)
+    || !Number.isSafeInteger(record.recordedAtMs) || Number(record.recordedAtMs) < 0) {
+    throw new Error('strategy package order response identity is invalid');
+  }
+  let order: StrategyPackageOrder;
+  let graph: PackageGraph;
+  try {
+    order = strategyPackageOrder(record.order as StrategyPackageOrderInput);
+    graph = packageGraph(record.graph as PackageGraphInput);
+  } catch {
+    throw new Error('strategy package order documents are invalid');
+  }
+  const orderHashHex = toHex(strategyPackageOrderHash(order));
+  const graphHashHex = toHex(packageGraphHash(graph));
+  if (orderHashHex !== record.orderHashHex || graphHashHex !== record.graphHashHex
+    || !bytesEqual(expectedOrderHash, strategyPackageOrderHash(order))
+    || !bytesEqual(order.graphHash, packageGraphHash(graph))) {
+    throw new Error('strategy package order commitments are mismatched');
+  }
+  return Object.freeze({
+    orderHashHex,
+    graphHashHex,
+    order,
+    graph,
+    recordedAtMs: Number(record.recordedAtMs),
+  });
+}
+
+export class HttpStrategyPackageProvider implements StrategyPackageProvider, StrategyPackageOrderProvider {
   readonly #origin: string;
   readonly #fetch: typeof fetch;
 
@@ -159,5 +208,18 @@ export class HttpStrategyPackageProvider implements StrategyPackageProvider {
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`strategy package retrieval failed with HTTP ${response.status}`);
     return decodeDocuments(await boundedProtocolJson(response), quoteHash);
+  }
+
+  async getByOrder(orderHash: Hash32): Promise<StoredStrategyPackageOrderDocuments | undefined> {
+    if (!(orderHash instanceof Uint8Array) || orderHash.length !== 32) throw new Error('order hash must be 32 bytes');
+    const hashHex = toHex(orderHash);
+    const response = await this.#fetch(`${this.#origin}/internal/strategy-packages/orders/${hashHex}`, {
+      method: 'GET',
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status === 404) return undefined;
+    if (!response.ok) throw new Error(`strategy package order retrieval failed with HTTP ${response.status}`);
+    return decodeOrderDocuments(await boundedProtocolJson(response), orderHash);
   }
 }

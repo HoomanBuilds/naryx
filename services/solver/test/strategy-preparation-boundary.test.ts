@@ -14,7 +14,7 @@ import {
 
 const QUOTE_HASH = '11'.repeat(32);
 
-test('strategy package provider accepts only loopback and rejects mismatched documents', async () => {
+test('strategy package provider accepts only loopback and rejects mismatched quote and order documents', async () => {
   assert.throws(() => new HttpStrategyPackageProvider('https://api.example'), /loopback/);
   const fetchImplementation = async () => new Response(stringifyProtocolJson({
     version: 1,
@@ -30,6 +30,7 @@ test('strategy package provider accepts only loopback and rejects mismatched doc
   }), { headers: { 'Content-Type': 'application/json' } });
   const provider = new HttpStrategyPackageProvider('http://127.0.0.1:8787', fetchImplementation as typeof fetch);
   await assert.rejects(() => provider.getByQuote(commitmentHash(QUOTE_HASH)), /documents are invalid/);
+  await assert.rejects(() => provider.getByOrder(commitmentHash('22'.repeat(32))), /response fields are invalid/);
 });
 
 test('preparation service does not resolve context for an unknown quote', async () => {

@@ -28,6 +28,19 @@ export {
   type StrategyQuoteSigner,
 } from './strategy-quote-builder.js';
 export {
+  GeneralizedStrategyQuoteError,
+  GeneralizedStrategyQuoteService,
+  InMemoryGeneralizedStrategyQuoteStore,
+  type GeneralizedStrategyPricingPort,
+  type GeneralizedStrategyQuoteContext,
+  type GeneralizedStrategyQuoteContextResolver,
+  type GeneralizedStrategyQuoteRequest,
+  type GeneralizedStrategyQuoteResponse,
+  type GeneralizedStrategyQuoteStore,
+  type GeneralizedStrategyQuoteTerms,
+  type StoredGeneralizedStrategyQuote,
+} from './strategy-quote-service.js';
+export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
 } from './strategy-receipt-builder.js';
@@ -936,7 +949,9 @@ export {
 export {
   HttpStrategyPackageProvider,
   type StoredStrategyPackageDocuments,
+  type StoredStrategyPackageOrderDocuments,
   type StrategyPackageProvider,
+  type StrategyPackageOrderProvider,
 } from './http-strategy-package-provider.js';
 export {
   StrategyPreparationService,
