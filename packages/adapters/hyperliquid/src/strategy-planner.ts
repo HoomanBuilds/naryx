@@ -14,11 +14,16 @@ import {
   type ExactPrice,
   type GraphRecoveryAction,
   type ManifestHash,
+  type PackageAdmission,
   type TypedStrategyDomainPlan,
   type TypedStrategyRoute,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
-import type { HypercoreOrderWire } from './index.js';
+import type {
+  HypercoreOrderWire,
+  HyperliquidExecutionPlan,
+  HyperliquidPlannedLeg,
+} from './index.js';
 import { formatHypercorePrice, formatHypercoreSize } from './wire-format.js';
 
 const CLIENT_ORDER_ID_DOMAIN = 'naryx/hypercore/strategy-client-order-id/v1';
@@ -105,6 +110,25 @@ function sameManifest(left: VersionedManifestRef, right: VersionedManifestRef): 
   return left.subjectId === right.subjectId
     && left.manifestVersion === right.manifestVersion
     && bytesEqual(left.manifestHash, right.manifestHash);
+}
+
+function sameAsset(left: AssetRef, right: AssetRef): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function sameWireExecution(left: HypercoreOrderWire, right: HypercoreOrderWire): boolean {
+  return left.a === right.a
+    && left.b === right.b
+    && left.p === right.p
+    && left.s === right.s
+    && left.r === right.r
+    && left.t.limit.tif === right.t.limit.tif;
+}
+
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
 }
 
 function checkedBinding(input: HyperliquidStrategyMarketBindingInput, index: number): HyperliquidStrategyMarketBinding {
@@ -261,5 +285,128 @@ export function compileHyperliquidStrategyPlan(input: Readonly<{
       maximumCostQuoteAtoms: slot.maximumCostQuoteAtoms,
     }))),
     maximumRecoveryCostQuoteAtoms: graph.maximumRecoveryCostQuoteAtoms,
+  });
+}
+
+export function bindHyperliquidStrategyPlanToCashCarrySource(input: Readonly<{
+  strategyPlan: HyperliquidStrategyExecutionPlan;
+  sourcePlan: HyperliquidExecutionPlan;
+  sourceAdmission: PackageAdmission;
+}>): HyperliquidExecutionPlan {
+  const { strategyPlan, sourcePlan, sourceAdmission } = input;
+  requireCondition(strategyPlan.version === 1
+    && strategyPlan.guarantee === 'BATCHED_IOC_WITH_BOUNDED_RECOVERY', 'strategy plan guarantee is unsupported');
+  requireCondition(sourcePlan.version === 1
+    && sourcePlan.guarantee === 'BATCHED_IOC_WITH_BOUNDED_RECOVERY', 'source plan guarantee is unsupported');
+  requireCondition(sourceAdmission.order.environment === 'testnet'
+    && sourceAdmission.order.action === 'ENTRY'
+    && sourceAdmission.order.settlementClass === 'BATCHED_IOC_WITH_RECOVERY', 'source admission must be a Hyperliquid Testnet entry');
+  requireCondition(sameDomain(strategyPlan.domain, sourcePlan.domain)
+    && sameDomain(sourcePlan.domain, sourceAdmission.order.domain)
+    && sameDomain(sourcePlan.domain, sourceAdmission.quote.domain)
+    && sameDomain(sourcePlan.domain, sourceAdmission.route.domain), 'strategy and source domains differ');
+  requireCondition(bytesEqual(sourcePlan.commitments.orderHash, sourceAdmission.orderHash)
+    && bytesEqual(sourcePlan.commitments.quoteHash, sourceAdmission.quoteHash)
+    && bytesEqual(sourcePlan.commitments.routeHash, sourceAdmission.routeHash), 'source plan commitments differ from the source admission');
+  requireCondition(strategyPlan.requestExpiryMs > 0n
+    && strategyPlan.requestExpiryMs <= BigInt(Number.MAX_SAFE_INTEGER)
+    && strategyPlan.requestExpiryMs < sourceAdmission.order.expiryValue
+    && strategyPlan.requestExpiryMs < sourcePlan.recoveryPolicy.maxActionExpiryValue, 'strategy request expiry exceeds source authorization');
+  requireCondition(strategyPlan.orders.length === 2 && strategyPlan.batches.length === 1, 'strategy plan must contain one two-order batch');
+  const batch = strategyPlan.batches[0]!;
+  requireCondition(batch.stage === 0
+    && strategyPlan.orders.every((order) => order.stage === 0)
+    && batch.action.type === 'order'
+    && batch.action.grouping === 'na'
+    && batch.action.orders.length === 2
+    && batch.legIds.length === 2, 'strategy plan batch shape is unsupported');
+  for (let index = 0; index < strategyPlan.orders.length; index += 1) {
+    const order = strategyPlan.orders[index]!;
+    requireCondition(batch.legIds[index] === order.legId
+      && sameWireExecution(batch.action.orders[index]!, order.wire)
+      && batch.action.orders[index]!.c === order.wire.c
+      && /^0x[0-9a-f]{32}$/.test(order.clientOrderId)
+      && order.clientOrderId === order.wire.c, 'strategy batch does not bind its planned orders');
+  }
+  requireCondition(new Set(strategyPlan.orders.map((order) => order.legId)).size === 2, 'strategy leg ids must be unique');
+
+  const usedSourceRoles = new Set<HyperliquidPlannedLeg['role']>();
+  const boundLegs = strategyPlan.orders.map((strategyOrder): HyperliquidPlannedLeg => {
+    const candidates = sourcePlan.legs.filter((sourceLeg) =>
+      !usedSourceRoles.has(sourceLeg.role)
+      && sameAsset(strategyOrder.baseAsset, sourceLeg.baseAsset)
+      && sameAsset(strategyOrder.quoteAsset, sourceLeg.quoteAsset)
+      && strategyOrder.signedBaseDeltaAtoms === sourceLeg.signedBaseDeltaAtoms
+      && sameWireExecution(strategyOrder.wire, sourceLeg.order));
+    requireCondition(candidates.length === 1, `strategy leg ${strategyOrder.legId} does not match one source execution leg`);
+    const sourceLeg = candidates[0]!;
+    usedSourceRoles.add(sourceLeg.role);
+    return Object.freeze({
+      role: sourceLeg.role,
+      legIndex: sourceLeg.legIndex,
+      adapter: sourceLeg.adapter,
+      venue: sourceLeg.venue,
+      market: sourceLeg.market,
+      baseAsset: sourceLeg.baseAsset,
+      quoteAsset: sourceLeg.quoteAsset,
+      side: sourceLeg.side,
+      quantityAtoms: sourceLeg.quantityAtoms,
+      sizeDecimals: sourceLeg.sizeDecimals,
+      maxPriceDecimals: sourceLeg.maxPriceDecimals,
+      signedBaseDeltaAtoms: sourceLeg.signedBaseDeltaAtoms,
+      clientOrderId: strategyOrder.clientOrderId,
+      order: strategyOrder.wire,
+    });
+  });
+  requireCondition(usedSourceRoles.size === 2, 'strategy plan does not bind every source execution leg');
+
+  const recoveryQuoteAsset = sourcePlan.legs[0].quoteAsset;
+  requireCondition(sourcePlan.legs.every((leg) => sameAsset(leg.quoteAsset, recoveryQuoteAsset))
+    && sameAsset(sourcePlan.recoveryPolicy.maxAggregateRecoveryLoss.asset, recoveryQuoteAsset)
+    && strategyPlan.maximumRecoveryCostQuoteAtoms === sourcePlan.recoveryPolicy.maxAggregateRecoveryLoss.atoms,
+  'strategy aggregate recovery cost differs from the source authorization');
+  const matchingRecoveryCaps = sourcePlan.recoveryPolicy.maxRecoveryCostCaps.filter((cap) =>
+    sameAsset(cap.asset, recoveryQuoteAsset));
+  requireCondition(matchingRecoveryCaps.length === 1, 'source recovery quote cap is missing');
+  const recoveryCap = matchingRecoveryCaps[0]!.maxAtoms;
+  requireCondition(strategyPlan.recoveryAuthorizations.length === 2, 'strategy recovery must cover exactly two legs');
+  for (const authorization of strategyPlan.recoveryAuthorizations) {
+    const planned = strategyPlan.orders.find((order) => order.legId === authorization.legId);
+    requireCondition(planned !== undefined
+      && authorization.action === 'COMPLETE'
+      && authorization.maximumQuantityAtoms === absolute(planned.signedBaseDeltaAtoms)
+      && authorization.maximumCostQuoteAtoms === recoveryCap,
+    `strategy recovery authorization for ${authorization.legId} differs from the source authorization`);
+  }
+  requireCondition(new Set(strategyPlan.recoveryAuthorizations.map((authorization) => authorization.legId)).size === 2,
+    'strategy recovery leg ids must be unique');
+
+  const legs = Object.freeze([boundLegs[0]!, boundLegs[1]!]) as readonly [HyperliquidPlannedLeg, HyperliquidPlannedLeg];
+  const action = Object.freeze({
+    type: 'order' as const,
+    orders: Object.freeze([legs[0].order, legs[1].order]) as readonly [HypercoreOrderWire, HypercoreOrderWire],
+    grouping: 'na' as const,
+  });
+  return Object.freeze({
+    version: 1,
+    guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+    domain: sourcePlan.domain,
+    commitments: Object.freeze({
+      seriesManifestHash: sourcePlan.commitments.seriesManifestHash,
+      executionClassManifestHash: sourcePlan.commitments.executionClassManifestHash,
+      orderHash: strategyPlan.orderHash,
+      quoteHash: strategyPlan.quoteHash,
+      routeHash: strategyPlan.routeHash,
+    }),
+    requestExpiryMs: strategyPlan.requestExpiryMs,
+    unsignedRequestFields: Object.freeze({ action, expiresAfter: Number(strategyPlan.requestExpiryMs) }),
+    legs,
+    grossSpotQuantityAtoms: sourcePlan.grossSpotQuantityAtoms,
+    prePerpPositionAtoms: sourcePlan.prePerpPositionAtoms,
+    signedPerpDeltaAtoms: sourcePlan.signedPerpDeltaAtoms,
+    signedPerpTargetAtoms: sourcePlan.signedPerpTargetAtoms,
+    terminalResidualPolicy: sourcePlan.terminalResidualPolicy,
+    recoveryPolicy: sourcePlan.recoveryPolicy,
+    recoveryDeadlineMs: sourcePlan.recoveryDeadlineMs,
   });
 }

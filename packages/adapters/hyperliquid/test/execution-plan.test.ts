@@ -4,6 +4,7 @@ import {
   adapterRef,
   assetAmount,
   assetRef,
+  commitmentHash,
   domainRef,
   exactPrice,
   hash32,
@@ -15,6 +16,9 @@ import {
   HYPERCORE_EXECUTION_GUARANTEE,
   HYPERCORE_IOC_ORDER_ACTION_CLASS_ID,
   HyperliquidExecutionPlanner,
+  bindHyperliquidStrategyPlanToCashCarrySource,
+  type HyperliquidExecutionPlan,
+  type HyperliquidStrategyExecutionPlan,
 } from '../src/index.js';
 
 const domain = domainRef('hypercore:testnet', 1, '11'.repeat(32));
@@ -289,6 +293,57 @@ function admission(options: AdmissionOptions = {}): PackageAdmission {
   } as unknown as PackageAdmission;
 }
 
+function strategyPlan(
+  source: HyperliquidExecutionPlan,
+  sourceAdmission: PackageAdmission,
+): HyperliquidStrategyExecutionPlan {
+  const orders = source.legs.map((leg, index) => {
+    const clientOrderId = `0x${(index === 0 ? 'a' : 'b').repeat(32)}` as `0x${string}`;
+    const routeLeg = sourceAdmission.route.legs.find((candidate) => candidate.legIndex === leg.legIndex)!;
+    return Object.freeze({
+      legId: leg.role === 'SPOT' ? 'spot' : 'perp',
+      stage: 0,
+      baseAsset: leg.baseAsset,
+      quoteAsset: leg.quoteAsset,
+      signedBaseDeltaAtoms: leg.signedBaseDeltaAtoms,
+      limitPrice: routeLeg.limitPrice,
+      clientOrderId,
+      wire: Object.freeze({ ...leg.order, c: clientOrderId }),
+    });
+  });
+  const recoveryCap = source.recoveryPolicy.maxRecoveryCostCaps.find((cap) =>
+    cap.asset.assetId === quoteAsset.assetId)!.maxAtoms;
+  return Object.freeze({
+    version: 1,
+    guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+    domain,
+    orderHash: commitmentHash('d1'.repeat(32)),
+    graphHash: commitmentHash('d2'.repeat(32)),
+    quoteHash: commitmentHash('d3'.repeat(32)),
+    routeHash: commitmentHash('d4'.repeat(32)),
+    requestExpiryMs: 940n,
+    orders: Object.freeze(orders),
+    batches: Object.freeze([Object.freeze({
+      stage: 0,
+      action: Object.freeze({
+        type: 'order' as const,
+        orders: Object.freeze(orders.map((order) => order.wire)),
+        grouping: 'na' as const,
+      }),
+      legIds: Object.freeze(orders.map((order) => order.legId)),
+    })]),
+    recoveryAuthorizations: Object.freeze(orders.map((order) => Object.freeze({
+      legId: order.legId,
+      action: 'COMPLETE' as const,
+      maximumQuantityAtoms: order.signedBaseDeltaAtoms < 0n
+        ? -order.signedBaseDeltaAtoms
+        : order.signedBaseDeltaAtoms,
+      maximumCostQuoteAtoms: recoveryCap,
+    }))),
+    maximumRecoveryCostQuoteAtoms: source.recoveryPolicy.maxAggregateRecoveryLoss.atoms,
+  });
+}
+
 test('compiles one deterministic official-shape batch with separate IOC orders', () => {
   const compiler = planner();
   const first = compiler.compile(admission());
@@ -330,6 +385,72 @@ test('compiles one deterministic official-shape batch with separate IOC orders',
     maxTerminalResidualBaseAtoms: 0n,
     maxTerminalResidualQuoteAtoms: 0n,
   });
+});
+
+test('binds generalized commitments and client ids to the exact authorized source execution', () => {
+  const sourceAdmission = admission();
+  const source = planner().compile(sourceAdmission, { accountPrePerpPositionAtoms: -30_000n });
+  const strategy = strategyPlan(source, sourceAdmission);
+  const bound = bindHyperliquidStrategyPlanToCashCarrySource({
+    strategyPlan: strategy,
+    sourcePlan: source,
+    sourceAdmission,
+  });
+
+  assert.deepEqual(bound.commitments.orderHash, strategy.orderHash);
+  assert.deepEqual(bound.commitments.quoteHash, strategy.quoteHash);
+  assert.deepEqual(bound.commitments.routeHash, strategy.routeHash);
+  assert.equal(bound.requestExpiryMs, 940n);
+  assert.deepEqual(bound.unsignedRequestFields.action.orders, strategy.orders.map((order) => order.wire));
+  assert.deepEqual(bound.legs.map((leg) => leg.role), ['SPOT', 'PERPETUAL']);
+  assert.deepEqual(bound.legs.map((leg) => leg.clientOrderId), strategy.orders.map((order) => order.clientOrderId));
+  assert.equal(bound.prePerpPositionAtoms, -30_000n);
+  assert.equal(bound.signedPerpTargetAtoms, -40_000n);
+  assert.equal(bound.recoveryPolicy, source.recoveryPolicy);
+});
+
+test('rejects generalized execution changes and recovery authority expansion', () => {
+  const sourceAdmission = admission();
+  const source = planner().compile(sourceAdmission);
+  const strategy = strategyPlan(source, sourceAdmission);
+  const changedWire = Object.freeze({ ...strategy.orders[0]!.wire, p: '60001' });
+  const changedOrder = Object.freeze({ ...strategy.orders[0]!, wire: changedWire });
+  const changedOrders = Object.freeze([changedOrder, strategy.orders[1]!]);
+  const changedExecution = Object.freeze({
+    ...strategy,
+    orders: changedOrders,
+    batches: Object.freeze([Object.freeze({
+      ...strategy.batches[0]!,
+      action: Object.freeze({
+        ...strategy.batches[0]!.action,
+        orders: Object.freeze(changedOrders.map((order) => order.wire)),
+      }),
+    })]),
+  });
+  assert.throws(
+    () => bindHyperliquidStrategyPlanToCashCarrySource({
+      strategyPlan: changedExecution,
+      sourcePlan: source,
+      sourceAdmission,
+    }),
+    /does not match one source execution leg/,
+  );
+
+  const expandedRecovery = Object.freeze({
+    ...strategy,
+    recoveryAuthorizations: Object.freeze(strategy.recoveryAuthorizations.map((authorization, index) =>
+      index === 0
+        ? Object.freeze({ ...authorization, maximumCostQuoteAtoms: authorization.maximumCostQuoteAtoms + 1n })
+        : authorization)),
+  });
+  assert.throws(
+    () => bindHyperliquidStrategyPlanToCashCarrySource({
+      strategyPlan: expandedRecovery,
+      sourcePlan: source,
+      sourceAdmission,
+    }),
+    /differs from the source authorization/,
+  );
 });
 
 test('keeps gross spot size independent and exposes bounded terminal residuals', () => {
