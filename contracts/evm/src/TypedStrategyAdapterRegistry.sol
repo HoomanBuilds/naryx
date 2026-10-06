@@ -367,7 +367,8 @@ contract TypedStrategyAdapterRegistry {
             || classId == keccak256("naryx.evm.erc4626-exact")
             || classId == keccak256("naryx.evm.aave-v3-lending-exact")
             || classId == keccak256("naryx.evm.future-exact")
-            || classId == keccak256("naryx.evm.premia-v3-option-exact");
+            || classId == keccak256("naryx.evm.premia-v3-option-exact")
+            || classId == keccak256("naryx.evm.inventory-custody-exact");
     }
 
     function _validateDomain(DomainRef memory domain) private view {

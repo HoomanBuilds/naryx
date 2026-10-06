@@ -11,6 +11,7 @@ const FUTURE_CLASS_ID = 'naryx.evm.future-exact';
 const ERC4626_CLASS_ID = 'naryx.evm.erc4626-exact';
 const AAVE_V3_LENDING_CLASS_ID = 'naryx.evm.aave-v3-lending-exact';
 const PREMIA_V3_OPTION_CLASS_ID = 'naryx.evm.premia-v3-option-exact';
+const INVENTORY_CUSTODY_CLASS_ID = 'naryx.evm.inventory-custody-exact';
 const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MIN = -(1n << 127n);
@@ -65,6 +66,13 @@ export interface EvmPremiaV3OptionLegBounds {
   readonly expectedPostShorts: bigint;
   readonly minimumAccountTokenDelta: bigint;
   readonly maximumAccountTokenDelta: bigint;
+}
+
+export interface EvmExactInventoryLegBounds {
+  readonly legId: string;
+  readonly action: 'LOCK' | 'RELEASE';
+  readonly expectedPreInventoryAtoms: bigint;
+  readonly expectedPostInventoryAtoms: bigint;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -511,6 +519,64 @@ export function createEvmPremiaV3OptionMaterializer(input: Readonly<{
             expectedPostShorts: bounds.expectedPostShorts,
             minimumAccountTokenDelta: bounds.minimumAccountTokenDelta,
             maximumAccountTokenDelta: bounds.maximumAccountTokenDelta,
+          }],
+        ),
+        gasLimit: input.binding.maximumGasLimit,
+      });
+    },
+  });
+}
+
+export function createEvmExactInventoryMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  inventoryAsset: AssetRef;
+  bounds: readonly EvmExactInventoryLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  requireCondition(input.binding.materializationClassId === INVENTORY_CUSTODY_CLASS_ID, 'inventory materializer class mismatch');
+  const checked = input.bounds.map((value) => {
+    unsigned(value.expectedPreInventoryAtoms, UINT256_MAX, `leg ${value.legId} pre inventory`);
+    unsigned(value.expectedPostInventoryAtoms, UINT256_MAX, `leg ${value.legId} post inventory`);
+    return value;
+  });
+  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'inventory leg bounds repeat');
+  return Object.freeze({
+    ...input.binding,
+    adapterAddress: getAddress(input.binding.adapterAddress),
+    materialize(context: EvmStrategyLegMaterializationContext) {
+      const leg = graphLeg(context);
+      requireCondition(leg.legFamily === 'INVENTORY_TRANSFER', `leg ${leg.legId} is not an inventory transfer`);
+      requireCondition(sameAsset(leg.quantityAsset, input.inventoryAsset), `inventory leg ${leg.legId} asset mismatch`);
+      const matches = checked.filter((value) => value.legId === leg.legId);
+      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact inventory bounds`);
+      const bounds = matches[0]!;
+      const expectedDifference = bounds.action === 'LOCK'
+        ? bounds.expectedPostInventoryAtoms - bounds.expectedPreInventoryAtoms
+        : bounds.expectedPreInventoryAtoms - bounds.expectedPostInventoryAtoms;
+      requireCondition(expectedDifference === leg.quantityAtoms, `leg ${leg.legId} inventory change differs from quantity`);
+      return Object.freeze({
+        data: encodeAbiParameters(
+          [{
+            type: 'tuple',
+            components: [
+              { name: 'packageId', type: 'bytes32' },
+              { name: 'orderHash', type: 'bytes32' },
+              { name: 'quoteHash', type: 'bytes32' },
+              { name: 'routeHash', type: 'bytes32' },
+              { name: 'action', type: 'uint8' },
+              { name: 'inputAtoms', type: 'uint256' },
+              { name: 'expectedPreInventoryAtoms', type: 'uint256' },
+              { name: 'expectedPostInventoryAtoms', type: 'uint256' },
+            ],
+          }],
+          [{
+            packageId: context.packageId,
+            orderHash: context.orderHash,
+            quoteHash: context.quoteHash,
+            routeHash: context.routeHash,
+            action: bounds.action === 'LOCK' ? 1 : 2,
+            inputAtoms: leg.quantityAtoms,
+            expectedPreInventoryAtoms: bounds.expectedPreInventoryAtoms,
+            expectedPostInventoryAtoms: bounds.expectedPostInventoryAtoms,
           }],
         ),
         gasLimit: input.binding.maximumGasLimit,

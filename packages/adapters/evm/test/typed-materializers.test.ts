@@ -13,6 +13,7 @@ import {
   createEvmAaveV3LendingMaterializer,
   createEvmExactPerpMaterializer,
   createEvmExactFutureMaterializer,
+  createEvmExactInventoryMaterializer,
   createEvmExactSpotMaterializer,
   createEvmExactVaultMaterializer,
   createEvmPremiaV3OptionMaterializer,
@@ -284,6 +285,46 @@ test('materializes exact Premia V3 option position bounds', () => {
   assert.equal(decoded.isBuy, true);
   assert.equal(decoded.expectedPostLongs, 100n);
   assert.equal(decoded.minimumAccountTokenDelta, -10n);
+});
+
+test('materializes exact package inventory custody changes', () => {
+  const inventoryAsset = base;
+  const materializer = createEvmExactInventoryMaterializer({
+    binding: binding('INVENTORY_TRANSFER', 'naryx.evm.inventory-custody-exact'),
+    inventoryAsset,
+    bounds: [{
+      legId: 'leg',
+      action: 'LOCK',
+      expectedPreInventoryAtoms: 0n,
+      expectedPostInventoryAtoms: 25n,
+    }],
+  });
+  const result = materializer.materialize(context({
+    legFamily: 'INVENTORY_TRANSFER',
+    side: 'NONE',
+    quantityAsset: inventoryAsset,
+    quantityAtoms: 25n,
+    marginDeltaAtoms: 0n,
+  }));
+  const [decoded] = decodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'packageId', type: 'bytes32' },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'quoteHash', type: 'bytes32' },
+        { name: 'routeHash', type: 'bytes32' },
+        { name: 'action', type: 'uint8' },
+        { name: 'inputAtoms', type: 'uint256' },
+        { name: 'expectedPreInventoryAtoms', type: 'uint256' },
+        { name: 'expectedPostInventoryAtoms', type: 'uint256' },
+      ],
+    }],
+    result.data,
+  );
+  assert.equal(decoded.action, 1);
+  assert.equal(decoded.inputAtoms, 25n);
+  assert.equal(decoded.expectedPostInventoryAtoms, 25n);
 });
 
 test('materializes exact perpetual observations and enforces the quoted margin input', () => {
