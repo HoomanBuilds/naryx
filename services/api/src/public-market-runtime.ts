@@ -57,7 +57,10 @@ export interface PublicMarketRuntime {
   /** Immutable provenance for strategy orders derived from an owner-authorized canonical order. */
   readonly strategyPackageSources?: Pick<SqliteStrategyPackageStore, "bindSourceOrder" | "sourceBinding">;
   /** Durable selection and lookup for generalized Hyperliquid Testnet execution attempts. */
-  readonly strategyPackageExecutions?: Pick<SqliteStrategyPackageStore, "selectHyperliquidExecution" | "strategyExecutionAttempt">;
+  readonly strategyPackageExecutions?: Pick<
+    SqliteStrategyPackageStore,
+    "selectHyperliquidExecution" | "strategyExecutionAttempt" | "admissionByQuote" | "recordReceipt"
+  >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */

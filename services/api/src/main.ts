@@ -538,6 +538,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         orders: orderStore,
         ...(publicMarket?.strategyPackageExecutions === undefined ? {} : {
           strategyAttempts: publicMarket.strategyPackageExecutions,
+          strategyReceipts: publicMarket.strategyPackageExecutions,
         }),
         tradingAccount: orderContext.tradingAccount,
         limits: hyperliquidConfig?.omnibus,

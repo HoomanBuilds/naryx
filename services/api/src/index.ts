@@ -18,6 +18,10 @@ export {
   type StrategyPackageAuthorizationPort,
 } from "./strategy-package-authorization.js";
 export {
+  buildHyperliquidStrategyPackageReceipt,
+  HyperliquidStrategyReceiptError,
+} from "./hyperliquid-strategy-receipt.js";
+export {
   HttpStrategyPreparationClient,
   StrategyPreparationClientError,
   type GeneralizedStrategyPreparation,

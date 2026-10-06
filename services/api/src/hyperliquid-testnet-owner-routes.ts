@@ -39,6 +39,8 @@ import type {
   HyperliquidTestnetExecutionGuard,
 } from "./hyperliquid-testnet-terminal-execution.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
+import { buildHyperliquidStrategyPackageReceipt } from "./hyperliquid-strategy-receipt.js";
+import type { SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import type { InternalOrderClockPort } from "./terminal-orders.js";
 
 export const HYPERLIQUID_TESTNET_ACCOUNT_PATH = "/internal/terminal/hyperliquid-testnet/account";
@@ -192,6 +194,10 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   intents: Pick<ExecutionIntentStore, "getAttempt" | "getSelectedQuote" | "getAttemptForOrder">;
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
   strategyAttempts?: StrategyAttemptLookup;
+  strategyReceipts?: Pick<
+    SqliteStrategyPackageStore,
+    "strategyExecutionAttempt" | "admissionByQuote" | "recordReceipt"
+  >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
   /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
@@ -260,12 +266,29 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     },
     settle(request: HyperliquidTestnetTerminalExecutionRequest, result: HyperliquidTestnetTerminalExecutionResult) {
       const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
+      const strategyAttempt = options.strategyReceipts?.strategyExecutionAttempt(request.attemptId);
+      let strategyReceipt: ReturnType<typeof buildHyperliquidStrategyPackageReceipt> = undefined;
+      if (strategyAttempt !== undefined) {
+        const admission = options.strategyReceipts?.admissionByQuote(strategyAttempt.quoteHashHex);
+        if (admission === undefined) {
+          throw new HyperliquidTestnetTerminalValidationError(
+            "STRATEGY_ADMISSION_NOT_FOUND",
+            "The selected strategy admission was not found.",
+          );
+        }
+        strategyReceipt = buildHyperliquidStrategyPackageReceipt({
+          attemptId: request.attemptId,
+          admission,
+          result,
+        });
+      }
       const { order } = binding;
       if (order.action === "ENTRY") {
         options.ledger.settleEntry(request.attemptId, result, entryNotional(binding.selectedQuoteAttemptId));
       } else {
         options.ledger.settleExit(request.attemptId, result);
       }
+      if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
     },
   });
 }
