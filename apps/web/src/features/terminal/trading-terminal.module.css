@@ -1081,6 +1081,27 @@
   padding-top: 9px;
 }
 
+.quoteReview {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 9px;
+}
+
+.quoteMetrics {
+  color: var(--text-secondary);
+  font-size: 10.5px;
+}
+
+.quoteMetrics summary {
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.quoteMetrics[open] summary {
+  margin-bottom: 6px;
+}
+
 .reviewEconomics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

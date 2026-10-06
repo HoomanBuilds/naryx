@@ -1319,7 +1319,7 @@ function Ticket({
         />
       ) : null}
 
-      {!nativeCashFlow ? (
+      {!nativeCashFlow || selectedDomain === "hyperliquid" ? (
         <GeneralizedStrategyPreparationPanel
           privateApiBaseUrl={privateApiBaseUrl}
           publicApiBaseUrl={publicApiBaseUrl}

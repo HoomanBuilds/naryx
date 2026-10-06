@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { formatAtomicAmount, formatMetricValue } from "./format";
 import styles from "./trading-terminal.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -51,6 +52,34 @@ type AdmissionSummary = Readonly<{
   validUntilValue: string;
 }>;
 
+type QuoteMetric = Readonly<{
+  metricId: string;
+  value: string;
+  scale: number;
+  unitId: string;
+}>;
+
+type PackageQuoteReview = Readonly<{
+  orderHash: string;
+  quoteHash: string;
+  routeHash: string;
+  solverId: string;
+  seriesId: string;
+  quoteMode: string;
+  settlementClass: string;
+  quoteAsset: string;
+  quoteDecimals: number;
+  netOutcomeAtoms: string;
+  grossNotionalAtoms: string;
+  marginDeltaAtoms: string;
+  residualValueAtoms: string;
+  serviceFeeAtoms: string;
+  passThroughCostAtoms: string;
+  validUntilUnit: string;
+  validUntilValue: string;
+  metrics: readonly QuoteMetric[];
+}>;
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value as Record<string, unknown>;
@@ -64,6 +93,17 @@ function text(value: unknown, context: string): string {
 function integer(value: unknown, context: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error(`${context} is invalid.`);
   return value;
+}
+
+function unsignedInteger(value: unknown, context: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${context} is invalid.`);
+  return value;
+}
+
+function decimalInteger(value: unknown, context: string): string {
+  const result = text(value, context);
+  if (!/^-?(?:0|[1-9][0-9]*)$/.test(result)) throw new Error(`${context} is invalid.`);
+  return result;
 }
 
 function hash(value: unknown, context: string): string {
@@ -86,7 +126,7 @@ function decode(value: Json): unknown {
     if (value.$naryxType === "bytes" && typeof value.value === "string" && /^(?:[0-9a-f]{2})*$/.test(value.value)) {
       return value.value;
     }
-    if ("$naryxType" in value) throw new Error("Strategy preparation contains an invalid tagged value.");
+    if ("$naryxType" in value) throw new Error("Protocol response contains an invalid tagged value.");
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, decode(entry)]));
   }
   return value;
@@ -183,6 +223,71 @@ function parseAdmissions(payload: unknown): readonly AdmissionSummary[] {
   });
 }
 
+function parseAmount(value: unknown, context: string, assetId: string, decimals: number): string {
+  const amount = record(value, context);
+  const asset = record(amount.asset, `${context} asset`);
+  if (text(asset.assetId, `${context} asset id`) !== assetId || unsignedInteger(asset.decimals, `${context} asset decimals`) !== decimals) {
+    throw new Error(`${context} uses another quote asset.`);
+  }
+  return decimalInteger(amount.atoms, `${context} atoms`);
+}
+
+function sumCosts(value: unknown, context: string, assetId: string, decimals: number): string {
+  return list(value, context).reduce<bigint>((total, entry, index) => {
+    const cost = record(entry, `${context} ${index}`);
+    text(cost.category, `${context} ${index} category`);
+    const atoms = BigInt(parseAmount(cost.amount, `${context} ${index} amount`, assetId, decimals));
+    if (atoms < BigInt(0)) throw new Error(`${context} ${index} is negative.`);
+    return total + atoms;
+  }, BigInt(0)).toString();
+}
+
+function parseQuoteReview(payload: unknown, requestedOrderHash: string): PackageQuoteReview {
+  const root = record(decode(payload as Json), "Strategy quote response");
+  if (root.version !== 1 || root.status !== "SIGNED_AND_STORED") throw new Error("Strategy quote was not signed and stored.");
+  const orderHash = hash(root.orderHash, "Order hash");
+  if (orderHash !== requestedOrderHash) throw new Error("Strategy quote does not bind the requested order.");
+  const quoteHash = hash(root.quoteHash, "Quote hash");
+  const routeHash = hash(root.routeHash, "Route hash");
+  const quote = record(root.quote, "Strategy quote");
+  if (hash(quote.orderHash, "Quoted order hash") !== orderHash || hash(quote.routeHash, "Quoted route hash") !== routeHash) {
+    throw new Error("Strategy quote commitments do not match the response.");
+  }
+  const quoteAsset = record(quote.quoteAsset, "Quote asset");
+  const assetId = text(quoteAsset.assetId, "Quote asset id");
+  const decimals = unsignedInteger(quoteAsset.decimals, "Quote asset decimals");
+  if (decimals > 255) throw new Error("Quote asset decimals are invalid.");
+  const metrics = list(quote.metrics, "Quote metrics").map((entry, index): QuoteMetric => {
+    const metric = record(entry, `Quote metric ${index}`);
+    return Object.freeze({
+      metricId: text(metric.metricId, `Quote metric ${index} id`),
+      value: decimalInteger(metric.value, `Quote metric ${index} value`),
+      scale: unsignedInteger(metric.scale, `Quote metric ${index} scale`),
+      unitId: text(metric.unitId, `Quote metric ${index} unit`),
+    });
+  });
+  return Object.freeze({
+    orderHash,
+    quoteHash,
+    routeHash,
+    solverId: text(quote.solverId, "Solver id"),
+    seriesId: text(quote.seriesId, "Series id"),
+    quoteMode: text(quote.quoteMode, "Quote mode"),
+    settlementClass: text(quote.settlementClass, "Settlement class"),
+    quoteAsset: assetId.toUpperCase(),
+    quoteDecimals: decimals,
+    netOutcomeAtoms: parseAmount(quote.netPackageOutcome, "Net package outcome", assetId, decimals),
+    grossNotionalAtoms: parseAmount(quote.totalGrossNotional, "Gross notional", assetId, decimals),
+    marginDeltaAtoms: parseAmount(quote.totalMarginDelta, "Margin delta", assetId, decimals),
+    residualValueAtoms: parseAmount(quote.totalResidualValue, "Residual value", assetId, decimals),
+    serviceFeeAtoms: sumCosts(quote.serviceCharges, "Service charges", assetId, decimals),
+    passThroughCostAtoms: sumCosts(quote.passThroughCosts, "Pass-through costs", assetId, decimals),
+    validUntilUnit: text(quote.validUntilUnit, "Quote validity unit"),
+    validUntilValue: decimalInteger(quote.validUntilValue, "Quote validity value"),
+    metrics: Object.freeze(metrics),
+  });
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -191,10 +296,26 @@ async function failureMessage(response: Response): Promise<string> {
   try {
     const body = record(await response.json(), "Error response");
     const error = record(body.error, "Error");
-    return typeof error.message === "string" && error.message.length > 0 ? error.message : `Preparation failed with HTTP ${response.status}.`;
+    return typeof error.message === "string" && error.message.length > 0 ? error.message : `Request failed with HTTP ${response.status}.`;
   } catch {
-    return `Preparation failed with HTTP ${response.status}.`;
+    return `Request failed with HTTP ${response.status}.`;
   }
+}
+
+function expiryText(unit: string, value: string): string {
+  if (unit === "HYPERLIQUID_UNIX_MILLISECONDS" || unit === "UNIX_MILLISECONDS") {
+    const milliseconds = Number(value);
+    if (Number.isSafeInteger(milliseconds)) return new Date(milliseconds).toLocaleString("en-US", {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+  }
+  if (unit === "EVM_UNIX_SECONDS") {
+    const seconds = Number(value);
+    if (Number.isSafeInteger(seconds)) return new Date(seconds * 1_000).toLocaleString("en-US", {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    });
+  }
+  return `${value} ${unit}`;
 }
 
 export function GeneralizedStrategyPreparationPanel({
@@ -208,11 +329,15 @@ export function GeneralizedStrategyPreparationPanel({
   templateId: string;
   lifecycleAction: string;
 }) {
+  const [orderHash, setOrderHash] = useState("");
+  const [quoteRequestKey, setQuoteRequestKey] = useState("");
+  const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [prepareBusy, setPrepareBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -237,9 +362,36 @@ export function GeneralizedStrategyPreparationPanel({
 
   const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
 
+  async function requestQuote() {
+    if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
+    setQuoteBusy(true);
+    setError(null);
+    const idempotencyKey = quoteRequestKey || crypto.randomUUID();
+    if (quoteRequestKey === "") setQuoteRequestKey(idempotencyKey);
+    try {
+      const response = await fetch(`${publicApiBaseUrl}/v1/strategy-quotes/request`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderHash, idempotencyKey }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const parsed = parseQuoteReview(await response.json(), orderHash);
+      setQuoteReview(parsed);
+      setQuoteHash(parsed.quoteHash);
+      setReview(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
+    } finally {
+      setQuoteBusy(false);
+    }
+  }
+
   async function prepare() {
     if (privateApiBaseUrl === null || !HASH.test(quoteHash)) return;
-    setBusy(true);
+    setPrepareBusy(true);
     setError(null);
     try {
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/prepare`, {
@@ -255,19 +407,74 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
     } finally {
-      setBusy(false);
+      setPrepareBusy(false);
     }
   }
 
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
-        <h3 id="generalized-strategy-review-title">Admitted package execution</h3>
-        <span>{review ? "UNSIGNED PLAN" : "QUOTE REQUIRED"}</span>
+        <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
+        <span>{review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
-        Load a solver-signed quote already admitted by the package market. Naryx recompiles its typed graph and route before returning any plan.
+        Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
       </p>
+      <div className={styles.strategyPrepareForm}>
+        <label htmlFor="generalized-strategy-order">Stored order hash</label>
+        <input
+          id="generalized-strategy-order"
+          value={orderHash}
+          inputMode="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="64 lowercase hex characters"
+          onChange={(event) => {
+            setOrderHash(event.target.value.trim());
+            setQuoteRequestKey("");
+            setQuoteReview(null);
+            setReview(null);
+            setError(null);
+          }}
+        />
+        <button type="button" className={styles.primaryAction} disabled={publicApiBaseUrl === null || quoteBusy || !HASH.test(orderHash)} onClick={() => void requestQuote()}>
+          {quoteBusy ? "Requesting package quote" : "Request signed package quote"}
+        </button>
+      </div>
+      {quoteReview ? (
+        <div className={styles.quoteReview}>
+          <div className={styles.reviewEconomics}>
+            <div><span>Net outcome</span><strong>{formatAtomicAmount(quoteReview.netOutcomeAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Gross notional</span><strong>{formatAtomicAmount(quoteReview.grossNotionalAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Margin delta</span><strong>{formatAtomicAmount(quoteReview.marginDeltaAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Venue costs</span><strong>{formatAtomicAmount(quoteReview.passThroughCostAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Service fees</span><strong>{formatAtomicAmount(quoteReview.serviceFeeAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Residual value</span><strong>{formatAtomicAmount(quoteReview.residualValueAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+          </div>
+          <div className={styles.reviewGrid}>
+            <span>Series</span><strong>{quoteReview.seriesId}</strong>
+            <span>Solver</span><strong>{quoteReview.solverId}</strong>
+            <span>Quote mode</span><strong>{quoteReview.quoteMode}</strong>
+            <span>Settlement</span><strong>{quoteReview.settlementClass}</strong>
+            <span>Valid until</span><strong>{expiryText(quoteReview.validUntilUnit, quoteReview.validUntilValue)}</strong>
+            <span>Quote</span><strong title={quoteReview.quoteHash}>{compact(quoteReview.quoteHash)}</strong>
+            <span>Route</span><strong title={quoteReview.routeHash}>{compact(quoteReview.routeHash)}</strong>
+          </div>
+          {quoteReview.metrics.length > 0 ? (
+            <details className={styles.quoteMetrics}>
+              <summary>Package economics</summary>
+              <div className={styles.reviewGrid}>
+                {quoteReview.metrics.map((metric) => (
+                  <Fragment key={metric.metricId}>
+                    <span>{metric.metricId.replaceAll("-", " ")}</span>
+                    <strong>{formatMetricValue(metric.value, metric.scale, metric.unitId, quoteReview.quoteAsset, quoteReview.quoteDecimals)}</strong>
+                  </Fragment>
+                ))}
+              </div>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
       <div className={styles.strategyPrepareForm}>
         {matchingAdmissions.length > 0 ? (
           <>
@@ -304,14 +511,15 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
-        <button type="button" className={styles.secondaryAction} disabled={privateApiBaseUrl === null || busy || !HASH.test(quoteHash)} onClick={() => void prepare()}>
-          {busy ? "Preparing" : "Prepare unsigned plan"}
+        <button type="button" className={styles.secondaryAction} disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)} onClick={() => void prepare()}>
+          {prepareBusy ? "Preparing unsigned plan" : "Prepare unsigned plan"}
         </button>
       </div>
       <p className={styles.fieldContext} role="status">
         {error ?? (privateApiBaseUrl === null
           ? "Configure the private terminal API to prepare an admitted package."
           : review ? "Compilation passed. Nothing has been signed or submitted."
+            : quoteReview ? "The signed quote is admitted and ready for unsigned execution preparation."
             : admissionError ?? (publicApiBaseUrl === null
               ? "Preparation is read-only. Paste an admitted quote hash from the package API."
               : matchingAdmissions.length === 0
