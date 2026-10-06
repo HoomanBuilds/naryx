@@ -22,6 +22,7 @@ import {
 } from './hyperliquid-testnet-market-preflight.js';
 import {
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntimeInput,
@@ -175,7 +176,7 @@ export function loadHyperliquidTestnetQuoteRuntime(
   });
 }
 
-export function loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+export function loadHyperliquidTestnetGeneralizedQuoteLane(
   env: NodeJS.ProcessEnv,
   preparationLanes: readonly HyperliquidStrategyPreparationLane[],
   dependencies: HyperliquidTestnetGeneralizedQuoteConfigDependencies,
@@ -203,8 +204,9 @@ export function loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
   if (matchingLanes.length !== 1) {
     throw new Error('generalized Hyperliquid quote config must match exactly one preparation lane');
   }
-  if (configured.templateId !== 'cash-and-carry-v1') {
-    throw new Error('generalized Hyperliquid quote lane currently supports cash-and-carry-v1 only');
+  if (configured.templateId !== 'cash-and-carry-v1'
+    && configured.templateId !== 'treasury-inventory-hedge-v1') {
+    throw new Error('generalized Hyperliquid quote lane does not support the configured template');
   }
   const executionClassVersionValue = positiveInteger(
     env,
@@ -214,6 +216,24 @@ export function loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
     throw new Error('NARYX_HYPERLIQUID_GENERALIZED_EXECUTION_CLASS_VERSION is too large');
   }
   const clock = dependencies.currentTimeMs ?? (() => BigInt(Date.now()));
+  const liveMarket = dependencies.market ?? new HyperliquidSdkTestnetMarketReadClient();
+  const commonPricing = {
+    domain: configured.domain,
+    baseAsset: configured.baseAsset,
+    quoteAsset: configured.quoteAsset,
+    tradingAccount,
+    market: liveMarket,
+    maxBookAgeMs: configured.maxBookAgeMs,
+    maxBookSpreadBps: configured.maxBookSpreadBps,
+    marginBps: configured.marginBps,
+    routeTtlMs: configured.routeTtlMs,
+    quoteTtlMs: configured.quoteTtlMs,
+    feePolicyVersion: configured.feePolicyVersion,
+    feePolicyManifestHash: configured.feePolicyManifestHash,
+    nonceSource: dependencies.nonceSource,
+    perpetual: configured.perpetual,
+  } as const;
+  const cashCarry = configured.templateId === 'cash-and-carry-v1';
   return Object.freeze({
     laneId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_LANE_ID'),
     environment: matchingLanes[0]!.environment,
@@ -226,47 +246,49 @@ export function loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
     ),
     activeRegistryRecords: matchingLanes[0]!.activeRegistryRecords,
     resourceLimits: matchingLanes[0]!.resourceLimits,
-    adapterSupport: Object.freeze([Object.freeze({
-      domain: configured.domain,
-      adapter: configured.spot.adapter,
-      legFamily: 'SPOT_SWAP' as const,
-      supportedSides: Object.freeze(['BUY' as const]),
-      materializationClassId: 'hypercore-spot-ioc-v1',
-      executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
-      supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
-    }), Object.freeze({
-      domain: configured.domain,
-      adapter: configured.perpetual.adapter,
-      legFamily: 'PERP_OPEN' as const,
-      supportedSides: Object.freeze(['SELL' as const]),
-      materializationClassId: 'hypercore-perpetual-ioc-v1',
-      executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
-      supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
-    })]),
+    adapterSupport: cashCarry
+      ? Object.freeze([Object.freeze({
+        domain: configured.domain,
+        adapter: configured.spot.adapter,
+        legFamily: 'SPOT_SWAP' as const,
+        supportedSides: Object.freeze(['BUY' as const]),
+        materializationClassId: 'hypercore-spot-ioc-v1',
+        executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+        supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+      }), Object.freeze({
+        domain: configured.domain,
+        adapter: configured.perpetual.adapter,
+        legFamily: 'PERP_OPEN' as const,
+        supportedSides: Object.freeze(['SELL' as const]),
+        materializationClassId: 'hypercore-perpetual-ioc-v1',
+        executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+        supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+      })])
+      : Object.freeze([Object.freeze({
+        domain: configured.domain,
+        adapter: configured.perpetual.adapter,
+        legFamily: 'PERP_OPEN' as const,
+        supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+        materializationClassId: 'hypercore-perpetual-ioc-v1',
+        executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+        supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+      })]),
     solverId: configured.solverId,
     solverCapabilityManifestHash: configured.solverCapabilityManifestHash,
-    pricing: createHyperliquidTestnetGeneralizedCashCarryPricing({
-      domain: configured.domain,
-      baseAsset: configured.baseAsset,
-      quoteAsset: configured.quoteAsset,
-      tradingAccount,
-      market: dependencies.market ?? new HyperliquidSdkTestnetMarketReadClient(),
-      maxBookAgeMs: configured.maxBookAgeMs,
-      maxBookSpreadBps: configured.maxBookSpreadBps,
-      marginBps: configured.marginBps,
-      holdingDurationMs: positiveInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS'),
-      expectedExitBasisBps: signedInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS'),
-      routeTtlMs: configured.routeTtlMs,
-      quoteTtlMs: configured.quoteTtlMs,
-      feePolicyVersion: configured.feePolicyVersion,
-      feePolicyManifestHash: configured.feePolicyManifestHash,
-      nonceSource: dependencies.nonceSource,
-      spot: configured.spot,
-      perpetual: configured.perpetual,
-    }),
+    pricing: cashCarry
+      ? createHyperliquidTestnetGeneralizedCashCarryPricing({
+        ...commonPricing,
+        holdingDurationMs: positiveInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS'),
+        expectedExitBasisBps: signedInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS'),
+        spot: configured.spot,
+      })
+      : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
     currentTime: async () => Object.freeze({
       unit: 'HYPERLIQUID_UNIX_MILLISECONDS' as const,
       value: clock(),
     }),
   });
 }
+
+export const loadHyperliquidTestnetGeneralizedCashCarryQuoteLane =
+  loadHyperliquidTestnetGeneralizedQuoteLane;

@@ -44,9 +44,10 @@ import {
   SqliteInternalAtomicQuoteStore,
   composeQuoteProviders,
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
-  loadHyperliquidTestnetGeneralizedCashCarryQuoteLane,
+  loadHyperliquidTestnetGeneralizedQuoteLane,
   loadHyperliquidTestnetQuoteRuntime,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
@@ -826,7 +827,7 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
         marginBps: 1_000,
       },
     }));
-    const loaded = loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+    const loaded = loadHyperliquidTestnetGeneralizedQuoteLane(
       laneEnvironment,
       [preparationLane],
       { nonceSource: { next: () => 2n }, market, currentTimeMs: () => 1_000n },
@@ -835,7 +836,7 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
     assert.deepEqual(loaded?.adapterSupport.map((support) => support.legFamily), [
       'SPOT_SWAP', 'PERP_OPEN',
     ]);
-    assert.equal(loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+    assert.equal(loadHyperliquidTestnetGeneralizedQuoteLane(
       {},
       [preparationLane],
       { nonceSource: { next: () => 2n }, market },
@@ -866,4 +867,152 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
       && error.code === 'QUOTE_DECLINED'
       && /stale or future-dated/.test(error.message),
   );
+});
+
+test('prices a native Hyperliquid treasury hedge from executable perpetual depth', async () => {
+  const graph = packageGraph({
+    graphVersion: 1,
+    environment: 'testnet',
+    templateId: 'treasury-inventory-hedge-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: hash('1'),
+    seriesId: 'btc-treasury-hedge-testnet',
+    seriesVersion: 1,
+    seriesManifestHash: hash('2'),
+    executionClassId: 'hypercore-treasury-hedge-ioc-v1',
+    executionClassVersion: 1,
+    executionClassManifestHash: hash('3'),
+    lifecycleAction: 'ENTRY',
+    owner: 'testnet-treasury',
+    strategyAccountRefs: ['testnet-treasury-account'],
+    legs: [{
+      legId: 'hedge',
+      legFamily: 'PERP_OPEN',
+      legTypeId: 'treasury-hedge',
+      domain,
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assets: [base, quote],
+      side: 'SELL',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(600n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }],
+    dependencyEdges: [],
+    executionGroups: [{ groupId: 'hedge-ioc', kind: 'EXACT_FILL', legIds: ['hedge'] }],
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    policyHashes: {
+      netting: hash('4'),
+      privacy: hash('5'),
+      solver: hash('6'),
+      delivery: hash('7'),
+      resource: hash('8'),
+      portfolioRiskLimits: hash('9'),
+    },
+    recoverySlots: [{
+      legId: 'hedge',
+      action: 'COMPLETE',
+      maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }],
+    maximumRecoveryCostQuoteAtoms: 1_000_000n,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    packageExpiryValue: 2_000n,
+    nonce: 2n,
+  });
+  const order = strategyPackageOrder({
+    version: 1,
+    environment: graph.environment,
+    templateId: graph.templateId,
+    templateVersion: graph.templateVersion,
+    packageTemplateManifestHash: graph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(graph),
+    seriesId: graph.seriesId,
+    seriesVersion: graph.seriesVersion,
+    seriesManifestHash: graph.seriesManifestHash,
+    executionClassId: graph.executionClassId,
+    executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.HEDGE_COST,
+    riskClassId: STRATEGY_RISK_CLASS_ID.TREASURY_HEDGE,
+    owner: graph.owner,
+    settlementAccount: 'testnet-treasury-account',
+    lifecycleAction: 'ENTRY',
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    packageOrderType: 'MARKETABLE_LIMIT',
+    packageTimeInForce: 'IOC',
+    economicQuantity: assetAmount(base, 2_000_000n),
+    quoteAsset: quote,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 1_000_000n }],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [{ asset: quote, maxAtoms: 1_000_000n }],
+    maximumMarginIncrease: assetAmount(quote, 100_000_000n),
+    maximumResidualValue: assetAmount(quote, 0n),
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    expiryValue: 2_000n,
+    nonce: 2n,
+  });
+  const requests: string[] = [];
+  const market: HyperliquidTestnetGeneralizedMarketReadPort = {
+    ...fakeMarket({ requests }),
+    perpetualContext: async () => ({ funding: '0' }),
+  };
+  const terms = await createHyperliquidTestnetGeneralizedTreasuryHedgePricing({
+    domain,
+    baseAsset: base,
+    quoteAsset: quote,
+    tradingAccount,
+    market,
+    maxBookAgeMs: 500,
+    maxBookSpreadBps: 50,
+    marginBps: 1_000,
+    routeTtlMs: 100n,
+    quoteTtlMs: 200n,
+    feePolicyVersion: 1,
+    feePolicyManifestHash: hash('a'),
+    nonceSource: { next: () => 2n },
+    perpetual: {
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      coin: 'BTC',
+      sizeDecimals: 5,
+    },
+  }).quote({
+    documents: {
+      orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
+      graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
+      order,
+      graph,
+      recordedAtMs: 1,
+    },
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+
+  assert.deepEqual(requests, [`l2Book:BTC`, `userFees:${tradingAccount}`]);
+  assert.equal(terms.economics.templateId, 'treasury-inventory-hedge-v1');
+  assert.ok('values' in terms.economics);
+  if ('values' in terms.economics) {
+    assert.equal(terms.economics.values.inventoryAtoms, 2_000_000n);
+    assert.equal(terms.economics.values.hedgeAtoms, -1_000_000n);
+    assert.equal(terms.economics.values.hedgeCostAtoms, 270_423n);
+    assert.equal(terms.economics.values.maximumLossAtoms, 60_093_940n);
+    assert.equal(terms.economics.values.liquidationDistanceBps, 1_000n);
+  }
+  assert.equal(terms.legEconomics.length, 1);
+  assert.equal(terms.legEconomics[0]?.grossNotional.atoms, 600_939_400n);
+  assert.equal(terms.legEconomics[0]?.marginDelta.atoms, 60_093_940n);
+  assert.equal(terms.netPackageOutcomeAtoms, -270_423n);
+  assert.equal(terms.routeExpiryValue, 1_100n);
+  assert.equal(terms.validUntilValue, 1_200n);
+  assert.equal(terms.quoteNonce, 2n);
 });

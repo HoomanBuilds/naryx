@@ -31,7 +31,7 @@ import {
   requireArbitrumSepoliaChain,
   loadHyperliquidTestnetAgentSigner,
   loadHyperliquidTestnetExecutorRuntime,
-  loadHyperliquidTestnetGeneralizedCashCarryQuoteLane,
+  loadHyperliquidTestnetGeneralizedQuoteLane,
   loadHyperliquidTestnetQuoteRuntime,
   type LoadedHyperliquidTestnetExecutorRuntime,
   createStrategyPreparationInternalHandler,
@@ -203,7 +203,7 @@ const strategyPreparationService = strategyPreparationLanes.length === 0
 const strategyPreparationHandler = strategyPreparationService === undefined
   ? undefined
   : createStrategyPreparationInternalHandler(strategyPreparationService);
-const generalizedStrategyLane = loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
+const generalizedStrategyLane = loadHyperliquidTestnetGeneralizedQuoteLane(
   process.env,
   strategyPreparationLanes,
   { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
