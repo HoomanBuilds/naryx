@@ -9,6 +9,7 @@ import type {
   SubAccountsResponse,
   UserRoleResponse,
   UserAbstractionResponse,
+  UserDexAbstractionResponse,
 } from '@nktkas/hyperliquid/api/info';
 import type { PackageAdmission } from '@naryx/protocol-types';
 import type { HyperliquidSubmissionAccount } from './index.js';
@@ -62,10 +63,15 @@ export interface HyperliquidTestnetAuthoritySnapshot {
   readonly tradingRole: UserRoleResponse;
   readonly subAccounts: SubAccountsResponse;
   readonly perpetualState: ClearinghouseStateResponse;
+  readonly perpetualDexStates: readonly Readonly<{
+    dex: string;
+    state: ClearinghouseStateResponse;
+  }>[];
   readonly spotState: SpotClearinghouseStateResponse;
   readonly assetModes: readonly ActiveAssetDataResponse[];
   /** The trading account's abstraction state; `disabled` is Standard mode with separate spot and perp ledgers. */
   readonly abstraction: UserAbstractionResponse;
+  readonly dexAbstraction: UserDexAbstractionResponse;
 }
 
 export interface HyperliquidTestnetAuthorityReadPort {
@@ -117,6 +123,14 @@ function isNonZeroDecimal(value: string, name: string): boolean {
   const match = DECIMAL.exec(value);
   requireCondition(match !== null, `${name} is not an exact decimal`);
   return BigInt(`${value.startsWith('-') ? '-' : ''}${match[1]}${match[2] ?? ''}`) !== 0n;
+}
+
+function perpetualDex(coin: string): string {
+  const separator = coin.indexOf(':');
+  if (separator === -1) return '';
+  requireCondition(separator > 0 && separator <= 6 && coin.indexOf(':', separator + 1) === -1,
+    `perpetual coin ${coin} has an invalid DEX namespace`);
+  return coin.slice(0, separator);
 }
 
 function validState(value: string): HyperliquidAuthorityFenceState {
@@ -293,18 +307,31 @@ export class HyperliquidSdkTestnetAuthorityReader implements HyperliquidTestnetA
     perpetualCoins: readonly string[],
   ): Promise<HyperliquidTestnetAuthoritySnapshot> {
     const requestedAtMs = this.#currentTimeMs();
-    const [agents, agentRole, masterRole, tradingRole, subAccounts, perpetualState, spotState, abstraction] = await Promise.all([
+    const dexes = [...new Set(perpetualCoins.map(perpetualDex))].sort();
+    const [
+      agents, agentRole, masterRole, tradingRole, subAccounts, spotState, abstraction,
+      dexAbstraction, perpetualDexStates, assetModes,
+    ] = await Promise.all([
       this.#client.extraAgents({ user: account.masterAccount }),
       this.#client.userRole({ user: approvedAgent }),
       this.#client.userRole({ user: account.masterAccount }),
       this.#client.userRole({ user: account.tradingAccount }),
       this.#client.subAccounts({ user: account.masterAccount }),
-      this.#client.clearinghouseState({ user: account.tradingAccount }),
       this.#client.spotClearinghouseState({ user: account.tradingAccount }),
       this.#client.userAbstraction({ user: account.tradingAccount }),
+      this.#client.userDexAbstraction({ user: account.tradingAccount }),
+      Promise.all(dexes.map(async (dex) => Object.freeze({
+        dex,
+        state: await this.#client.clearinghouseState(
+          dex === '' ? { user: account.tradingAccount } : { user: account.tradingAccount, dex },
+        ),
+      }))),
+      Promise.all(perpetualCoins.map((coin) =>
+        this.#client.activeAssetData({ user: account.tradingAccount, coin }))),
     ]);
-    const assetModes = await Promise.all(perpetualCoins.map((coin) =>
-      this.#client.activeAssetData({ user: account.tradingAccount, coin })));
+    const perpetualState = perpetualDexStates.find((entry) => entry.dex === '')?.state;
+    requireCondition(perpetualState !== undefined,
+      'default perpetual clearinghouse state is missing from the approved scope');
     return Object.freeze({
       environment: this.environment,
       apiUrl: this.apiUrl,
@@ -316,9 +343,11 @@ export class HyperliquidSdkTestnetAuthorityReader implements HyperliquidTestnetA
       tradingRole,
       subAccounts,
       perpetualState,
+      perpetualDexStates: Object.freeze(perpetualDexStates),
       spotState,
       assetModes: Object.freeze(assetModes),
       abstraction,
+      dexAbstraction,
     });
   }
 }
@@ -475,6 +504,8 @@ export class HyperliquidTestnetAuthorityPreflight {
     // separately; unified accounts share collateral in ways v1 accounting does not model.
     requireCondition(snapshot.abstraction === (this.#config.expectedPortfolioMarginEnabled ? 'portfolioMargin' : 'disabled'),
       `account abstraction ${String(snapshot.abstraction)} is not the configured account mode`);
+    requireCondition(snapshot.dexAbstraction !== true,
+      'legacy HIP-3 DEX abstraction is outside the configured Standard account mode');
     const allowedTokens = new Set(this.#config.allowedSpotTokenIndices);
     for (const balance of snapshot.spotState.balances) {
       if (!('token' in balance)) {
@@ -497,6 +528,25 @@ export class HyperliquidTestnetAuthorityPreflight {
         'EVM escrow balance is outside the approved account scope');
     }
     const allowedCoins = new Set(this.#config.allowedPerpetualCoins);
+    const allowedDexes = new Set(this.#config.allowedPerpetualCoins.map(perpetualDex));
+    requireCondition(snapshot.perpetualDexStates.length === allowedDexes.size,
+      'perpetual DEX clearinghouse inventory is incomplete');
+    const observedDexes = new Set<string>();
+    for (const dexState of snapshot.perpetualDexStates) {
+      requireCondition(allowedDexes.has(dexState.dex) && !observedDexes.has(dexState.dex),
+        'perpetual DEX clearinghouse inventory is unexpected or duplicated');
+      observedDexes.add(dexState.dex);
+      for (const entry of dexState.state.assetPositions) {
+        const position = entry.position;
+        const nonZero = isNonZeroDecimal(position.szi, `perpetual position ${position.coin}`);
+        requireCondition(!nonZero || allowedCoins.has(position.coin),
+          `perpetual ${position.coin} is outside the approved account scope`);
+        requireCondition(!nonZero || perpetualDex(position.coin) === dexState.dex,
+          `perpetual ${position.coin} is reported by the wrong DEX clearinghouse`);
+        requireCondition(!nonZero || position.leverage.type === this.#config.expectedPerpetualLeverageMode,
+          `perpetual ${position.coin} leverage mode is outside the approved account scope`);
+      }
+    }
     requireCondition(snapshot.assetModes.length === allowedCoins.size,
       'perpetual account mode inventory is incomplete');
     const observedModes = new Set<string>();
@@ -509,14 +559,6 @@ export class HyperliquidTestnetAuthorityPreflight {
       requireCondition(asset.leverage.type === this.#config.expectedPerpetualLeverageMode,
         `perpetual ${asset.coin} leverage mode is outside the approved account scope`);
       observedModes.add(asset.coin);
-    }
-    for (const entry of snapshot.perpetualState.assetPositions) {
-      const position = entry.position;
-      const nonZero = isNonZeroDecimal(position.szi, `perpetual position ${position.coin}`);
-      requireCondition(!nonZero || allowedCoins.has(position.coin),
-        `perpetual ${position.coin} is outside the approved account scope`);
-      requireCondition(!nonZero || position.leverage.type === this.#config.expectedPerpetualLeverageMode,
-        `perpetual ${position.coin} leverage mode is outside the approved account scope`);
     }
   }
 }

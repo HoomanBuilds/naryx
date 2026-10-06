@@ -896,6 +896,7 @@ export {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
   HyperliquidSdkTestnetMarketReadClient,
   HyperliquidTestnetMarketPreflight,
+  qualifyHyperliquidPerpetualStrategyMarkets,
   type HyperliquidTestnetMarketQualificationConfig,
   type HyperliquidTestnetMarketQualificationInput,
   type HyperliquidTestnetMarketReadPort,

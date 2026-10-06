@@ -79,6 +79,15 @@ function snapshot(
         position: { coin: 'BTC', szi: '0.01', leverage: { type: 'cross', value: 1 } },
       }],
     } as HyperliquidTestnetAuthoritySnapshot['perpetualState'],
+    perpetualDexStates: [{
+      dex: '',
+      state: {
+        assetPositions: [{
+          type: 'oneWay',
+          position: { coin: 'BTC', szi: '0.01', leverage: { type: 'cross', value: 1 } },
+        }],
+      } as HyperliquidTestnetAuthoritySnapshot['perpetualState'],
+    }],
     spotState: {
       portfolioMarginEnabled: false,
       balances: [
@@ -95,6 +104,7 @@ function snapshot(
       markPx: '100000',
     }],
     abstraction: 'disabled',
+    dexAbstraction: false,
   };
 }
 
@@ -177,6 +187,48 @@ test('a unified or default abstraction account never qualifies', async () => {
       );
     });
   }
+});
+
+test('qualifies every approved HIP-3 clearinghouse and rejects legacy DEX abstraction', async () => {
+  const hip3Config = {
+    ...config,
+    allowedPerpetualCoins: Object.freeze(['BTC', 'xyz:BTC']),
+  };
+  const hip3Snapshot = snapshot();
+  const value: HyperliquidTestnetAuthoritySnapshot = {
+    ...hip3Snapshot,
+    perpetualDexStates: [...hip3Snapshot.perpetualDexStates, {
+      dex: 'xyz',
+      state: {
+        assetPositions: [{
+          type: 'oneWay',
+          position: { coin: 'xyz:BTC', szi: '-0.01', leverage: { type: 'cross', value: 1 } },
+        }],
+      } as HyperliquidTestnetAuthoritySnapshot['perpetualState'],
+    }],
+    assetModes: [...hip3Snapshot.assetModes, {
+      user: trading,
+      coin: 'xyz:BTC',
+      leverage: { type: 'cross', value: 1 },
+      maxTradeSzs: ['0', '1'],
+      availableToTrade: ['0', '1'],
+      markPx: '100000',
+    }],
+  };
+  await withStore(async (store) => {
+    await new HyperliquidTestnetAuthorityPreflight(
+      reader(value), store, hip3Config, () => nowMs,
+    ).qualify(admission());
+    assert.equal(store.state(), 'ACTIVE');
+  });
+  await withStore(async (store) => {
+    await assert.rejects(
+      new HyperliquidTestnetAuthorityPreflight(
+        reader({ ...value, dexAbstraction: true }), store, hip3Config, () => nowMs,
+      ).qualify(admission()),
+      /legacy HIP-3 DEX abstraction/,
+    );
+  });
 });
 
 test('incident lock cannot auto-reopen after a later exact inventory', async () => {

@@ -59,6 +59,7 @@ import {
 import {
   HyperliquidSdkTestnetMarketReadClient,
   HyperliquidTestnetMarketPreflight,
+  qualifyHyperliquidPerpetualStrategyMarkets,
   type HyperliquidTestnetMarketQualificationConfig,
   type HyperliquidTestnetMarketReadPort,
 } from './hyperliquid-testnet-market-preflight.js';
@@ -453,6 +454,13 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function hypercoreAssetRole(assetId: number): 'SPOT' | 'PERPETUAL' {
+  if (Number.isSafeInteger(assetId) && assetId >= 0 && assetId < 10_000) return 'PERPETUAL';
+  if (Number.isSafeInteger(assetId) && assetId >= 10_000 && assetId < 100_000) return 'SPOT';
+  if (Number.isSafeInteger(assetId) && assetId >= 110_000 && assetId < 100_000_000) return 'PERPETUAL';
+  throw new Error('generalized strategy references a reserved or unsupported HyperCore asset ID');
+}
+
 function qualifyStrategyShape(
   attempt: HyperliquidTestnetAttemptHandoff,
   inventory: HyperliquidTestnetAccountInventory,
@@ -499,11 +507,7 @@ function qualifyStrategyShape(
       throw new Error(`generalized strategy stage ${batch.stage} is inconsistent`);
     }
   }
-  const allowed = new Map<number, 'SPOT' | 'PERPETUAL'>([
-    [attempt.market.spot.assetId, 'SPOT'],
-    [attempt.market.perpetual.assetId, 'PERPETUAL'],
-  ]);
-  if (allowed.size !== 2) {
+  if (attempt.market.spot.assetId === attempt.market.perpetual.assetId) {
     throw new Error('qualified HyperCore market identifiers are invalid');
   }
   const baseAssetDecimals = 'authority' in attempt
@@ -511,9 +515,10 @@ function qualifyStrategyShape(
     : attempt.admission.order.quantity.asset.decimals;
   const assetIdentities = new Map<number, typeof strategy.orders[number]>();
   for (const order of strategy.orders) {
-    const role = allowed.get(order.wire.a);
+    const role = hypercoreAssetRole(order.wire.a);
     const known = assetIdentities.get(order.wire.a);
-    if (role === undefined || order.baseAsset.decimals !== baseAssetDecimals
+    if ((role === 'SPOT' && order.wire.a !== attempt.market.spot.assetId)
+      || order.baseAsset.decimals !== baseAssetDecimals
       || (known !== undefined && (order.baseAsset.assetId !== known.baseAsset.assetId
         || order.baseAsset.decimals !== known.baseAsset.decimals
         || !sameBytes(order.baseAsset.assetManifestHash, known.baseAsset.assetManifestHash)
@@ -529,7 +534,7 @@ function qualifyStrategyShape(
     .sort((left, right) => left - right);
   for (const stage of stages) {
     const spotOrders = strategy.orders.filter((order) =>
-      order.stage === stage && order.wire.a === attempt.market.spot.assetId);
+      order.stage === stage && hypercoreAssetRole(order.wire.a) === 'SPOT');
     const requiredSellAtoms = spotOrders.reduce((sum, order) =>
       order.signedBaseDeltaAtoms < 0n ? sum - order.signedBaseDeltaAtoms : sum, 0n);
     if (requiredSellAtoms > availableSpotAtoms) {
@@ -554,8 +559,7 @@ function qualifyStrategyShape(
       ...restrictive,
       s: sumRuntimeDecimals(orders.map((order) => order.s)),
     });
-    const role = allowed.get(aggregateOrder.a);
-    if (role === undefined) throw new Error('generalized strategy qualification market is invalid');
+    const role = hypercoreAssetRole(aggregateOrder.a);
     return Object.freeze({
       legs: Object.freeze([Object.freeze({ role, order: aggregateOrder })]),
     });
@@ -598,6 +602,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   const signerLeaseId = required(environment, 'NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID');
   const keeperOrigin = required(environment, 'NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN');
   const qualificationConfig = marketQualificationConfig(environment);
+  const allowedPerpetualCoins = nameList(
+    environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS',
+  );
   const attempts = dependencies.attempts;
   const signer = dependencies.signer;
   if (attempts === undefined || typeof attempts.resolve !== 'function') {
@@ -650,9 +657,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         allowedSpotTokenIndices: integerList(
           environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_SPOT_TOKEN_INDICES',
         ),
-        allowedPerpetualCoins: nameList(
-          environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS',
-        ),
+        allowedPerpetualCoins,
         maxSnapshotAgeMs: positiveInteger(
           environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_AUTHORITY_SNAPSHOT_AGE_MS', 60_000,
         ),
@@ -663,8 +668,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       currentTimeMs,
       dependencies.authorityClearance,
     );
+    const marketReader = dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient();
     const marketPreflight = new HyperliquidTestnetMarketPreflight(
-      dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient(),
+      marketReader,
       qualificationConfig,
       currentTimeMs,
     );
@@ -725,8 +731,26 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           await marketPreflight.qualify({ plan, binding });
         } else {
           const qualificationPlans = qualifyStrategyShape(attempt, inventory);
-          for (const qualificationPlan of qualificationPlans) {
-            await marketPreflight.qualify({ plan: qualificationPlan, binding });
+          if (qualificationPlans.every((plan) => plan.legs.every((leg) => leg.role === 'PERPETUAL'))) {
+            await qualifyHyperliquidPerpetualStrategyMarkets({
+              reader: marketReader,
+              plans: qualificationPlans,
+              allowedCoins: allowedPerpetualCoins,
+              quoteTokenIndex: attempt.market.quoteTokenIndex,
+              minimumDepth: qualificationConfig.minimumPerpetualDepth,
+              maxBookAgeMs: qualificationConfig.maxBookAgeMs,
+              maxSnapshotSkewMs: qualificationConfig.maxSnapshotSkewMs,
+              maxReferenceDivergenceBps: qualificationConfig.maxReferenceDivergenceBps,
+              currentTimeMs,
+            });
+          } else {
+            for (const qualificationPlan of qualificationPlans) {
+              if (qualificationPlan.legs.some((leg) =>
+                leg.role === 'PERPETUAL' && leg.order.a !== attempt.market.perpetual.assetId)) {
+                throw new Error('mixed spot strategy references an unqualified perpetual market');
+              }
+              await marketPreflight.qualify({ plan: qualificationPlan, binding });
+            }
           }
         }
         return inventory;
@@ -797,6 +821,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
             evidenceBinding: {
               spotAssetId: attempt.market.spot.assetId,
               perpetualAssetId: attempt.market.perpetual.assetId,
+              additionalPerpetualAssetIds: Object.freeze([...new Set(
+                attempt.strategy.plan.orders
+                  .filter((order) => hypercoreAssetRole(order.wire.a) === 'PERPETUAL'
+                    && order.wire.a !== attempt.market.perpetual.assetId)
+                  .map((order) => order.wire.a),
+              )].sort((left, right) => left - right)),
               baseFeeToken: qualificationConfig.spotTokenName,
               quoteFeeToken: qualificationConfig.quoteTokenName,
             },

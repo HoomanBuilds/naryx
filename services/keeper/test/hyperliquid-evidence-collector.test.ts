@@ -428,17 +428,17 @@ test('accounts for a spot buy fee charged in the base token at the token precisi
   assert.ok(perpResult.reasons.includes('UNCERTAIN_FEE_EVIDENCE'));
 });
 
-function strategyEvidenceFixture(partial = false): Readonly<{
+function strategyEvidenceFixture(partial = false, additionalPerpetual = false): Readonly<{
   client: FixtureClient;
   request: Parameters<HyperliquidStrategyAuthoritativeEvidenceCollector['collect']>[0];
 }> {
   const client = new FixtureClient();
   client.stamp = 9_950;
   const cloids = [spotCloid, perpCloid, recoveryCloid];
-  const coins = ['@7', 'BTC', '@7'];
+  const coins = ['@7', 'BTC', additionalPerpetual ? 'xyz:BTC' : '@7'];
   const sides = ['B', 'A', 'B'] as const;
   const wires = cloids.map((cloid, index) => ({
-    a: index === 1 ? 3 : 10_007,
+    a: index === 1 ? 3 : additionalPerpetual && index === 2 ? 110_000 : 10_007,
     b: sides[index] === 'B',
     p: '60000',
     s: '0.000001',
@@ -485,7 +485,7 @@ function strategyEvidenceFixture(partial = false): Readonly<{
     coins[index]!,
     sides[index]!,
     partial && index === 2 ? '0.0000005' : '0.000001',
-    index === 1 ? 'USDC' : 'UBTC',
+    index === 1 || additionalPerpetual && index === 2 ? 'USDC' : 'UBTC',
   ));
   return Object.freeze({
     client,
@@ -496,6 +496,7 @@ function strategyEvidenceFixture(partial = false): Readonly<{
       binding: {
         spotAssetId: 10_007,
         perpetualAssetId: 3,
+        additionalPerpetualAssetIds: additionalPerpetual ? [110_000] : [],
         baseFeeToken: 'UBTC',
         quoteFeeToken: 'USDC',
       },
@@ -529,4 +530,16 @@ test('classifies complete and partial generalized HyperCore packages from author
   assert.equal(partialResult.outcome, 'RECOVERY_REQUIRED');
   assert.deepEqual(partialResult.reasons, ['PARTIAL_PACKAGE_FILL']);
   assert.equal(partialResult.legs[2]?.grossQuoteAtoms, 3_000_013n);
+});
+
+test('reconciles a bound HIP-3 perpetual leg in a generalized package', async () => {
+  const fixture = strategyEvidenceFixture(false, true);
+  const result = await new HyperliquidStrategyAuthoritativeEvidenceCollector(fixture.client)
+    .collect(fixture.request);
+
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(result.outcome, 'COMPLETED');
+  assert.equal(result.legs[2]?.legId, 'leg-2');
+  assert.equal(result.legs[2]?.feeAssetId, 'usdc');
+  assert.equal(result.legs[2]?.venueFeeQuoteAtoms, 1n);
 });

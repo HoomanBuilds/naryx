@@ -48,6 +48,7 @@ export interface HyperliquidStrategyRuntimeEvidencePort {
 export interface HyperliquidStrategyEvidenceBinding {
   readonly spotAssetId: number;
   readonly perpetualAssetId: number;
+  readonly additionalPerpetualAssetIds?: readonly number[];
   readonly baseFeeToken: string;
   readonly quoteFeeToken: string;
 }

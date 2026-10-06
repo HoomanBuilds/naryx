@@ -2,6 +2,7 @@ import { HttpTransport, InfoClient, TESTNET_API_URL } from '@nktkas/hyperliquid'
 import type {
   L2BookResponse,
   MetaResponse,
+  PerpDexsResponse,
   SpotMetaResponse,
   UserFeesResponse,
 } from '@nktkas/hyperliquid/api/info';
@@ -27,6 +28,9 @@ export interface HyperliquidTestnetMarketReadPort {
   readonly environment: 'testnet';
   readonly apiUrl: typeof HYPERLIQUID_TESTNET_MARKET_INFO_URL;
   read(spotCoin: string, perpetualCoin: string): Promise<HyperliquidTestnetMarketSnapshot>;
+  perpetualDexs?(): Promise<PerpDexsResponse>;
+  perpetualMeta?(dex: string): Promise<MetaResponse>;
+  l2Book?(coin: string): Promise<L2BookResponse>;
 }
 
 export type HyperliquidTestnetUserFeeRates = Pick<UserFeesResponse, 'userCrossRate' | 'userSpotCrossRate'>;
@@ -280,6 +284,14 @@ implements HyperliquidTestnetMarketReadPort, HyperliquidTestnetQuoteMarketReadPo
     return this.#client.l2Book({ coin });
   }
 
+  perpetualDexs(): Promise<PerpDexsResponse> {
+    return this.#client.perpDexs();
+  }
+
+  perpetualMeta(dex: string): Promise<MetaResponse> {
+    return this.#client.meta(dex === '' ? {} : { dex });
+  }
+
   userFees(user: `0x${string}`): Promise<UserFeesResponse> {
     return this.#client.userFees({ user });
   }
@@ -291,6 +303,110 @@ implements HyperliquidTestnetMarketReadPort, HyperliquidTestnetQuoteMarketReadPo
     requireCondition(context !== undefined && typeof context.funding === 'string',
       `perpetual context ${coin} is unavailable`);
     return Object.freeze({ funding: context.funding });
+  }
+}
+
+export async function qualifyHyperliquidPerpetualStrategyMarkets(input: Readonly<{
+  reader: HyperliquidTestnetMarketReadPort;
+  plans: readonly Readonly<{
+    legs: readonly Readonly<{ role: 'SPOT' | 'PERPETUAL'; order: HypercoreOrderWire }>[];
+  }>[];
+  allowedCoins: readonly string[];
+  quoteTokenIndex: number;
+  minimumDepth: string;
+  maxBookAgeMs: number;
+  maxSnapshotSkewMs: number;
+  maxReferenceDivergenceBps: number;
+  currentTimeMs: () => number;
+}>): Promise<void> {
+  requireCondition(input.reader.environment === 'testnet'
+    && input.reader.apiUrl === HYPERLIQUID_TESTNET_MARKET_INFO_URL
+    && typeof input.reader.perpetualDexs === 'function'
+    && typeof input.reader.perpetualMeta === 'function'
+    && typeof input.reader.l2Book === 'function',
+  'generalized perpetual read port is not exact Hyperliquid Testnet');
+  const orders = input.plans.flatMap((plan) => plan.legs.map((leg) => {
+    requireCondition(leg.role === 'PERPETUAL',
+      'perpetual-only qualification received a non-perpetual leg');
+    return leg.order;
+  }));
+  requireCondition(orders.length > 0 && orders.length <= 16,
+    'perpetual strategy must contain one to sixteen orders');
+  const allowedCoins = new Set(input.allowedCoins.map((coin) => checkedName(coin, 'allowed coin')));
+  requireCondition(allowedCoins.size === input.allowedCoins.length && allowedCoins.size > 0,
+    'allowed perpetual coins are empty or duplicated');
+  safeNonNegativeInteger(input.quoteTokenIndex, 'quoteTokenIndex', Number.MAX_SAFE_INTEGER);
+  const minimumDepth = positiveDecimal(input.minimumDepth, 'minimumPerpetualDepth');
+  safePositiveInteger(input.maxBookAgeMs, 'maxBookAgeMs');
+  safePositiveInteger(input.maxSnapshotSkewMs, 'maxSnapshotSkewMs');
+  safePositiveInteger(input.maxReferenceDivergenceBps, 'maxReferenceDivergenceBps', 10_000);
+
+  const dexes = await input.reader.perpetualDexs();
+  requireCondition(Array.isArray(dexes) && dexes[0] === null,
+    'perpetual DEX inventory is invalid');
+  const decoded = [...new Set(orders.map((order) => order.a))].map((assetId) => {
+    requireCondition(Number.isSafeInteger(assetId) && assetId >= 0 && assetId < 100_000_000,
+      'compiled perpetual asset ID is invalid');
+    if (assetId < 10_000) return Object.freeze({ assetId, dexIndex: 0, marketIndex: assetId, dex: '' });
+    requireCondition(assetId >= 110_000,
+      'compiled strategy uses a spot, reserved, or outcome asset as a perpetual');
+    const offset = assetId - 100_000;
+    const dexIndex = Math.floor(offset / 10_000);
+    const marketIndex = offset % 10_000;
+    const dex = dexes[dexIndex];
+    requireCondition(dex !== null && dex !== undefined && checkedName(dex.name, 'perpetual DEX name') === dex.name,
+      'compiled HIP-3 asset references an unknown DEX');
+    return Object.freeze({ assetId, dexIndex, marketIndex, dex: dex.name });
+  });
+  const metas = new Map<number, MetaResponse>();
+  await Promise.all([...new Set(decoded.map((market) => market.dexIndex))].map(async (dexIndex) => {
+    const market = decoded.find((candidate) => candidate.dexIndex === dexIndex)!;
+    metas.set(dexIndex, await input.reader.perpetualMeta!(market.dex));
+  }));
+  const markets = decoded.map((market) => {
+    const meta = metas.get(market.dexIndex);
+    const universe = meta?.universe[market.marketIndex];
+    requireCondition(meta !== undefined && meta.collateralToken === input.quoteTokenIndex,
+      'perpetual collateral token does not match the qualified quote asset');
+    requireCondition(universe !== undefined && universe.isDelisted !== true
+      && allowedCoins.has(universe.name)
+      && (market.dex === '' || universe.name.startsWith(`${market.dex}:`)),
+    'perpetual market is inactive or outside the approved account scope');
+    return Object.freeze({ ...market, universe });
+  });
+  const books = await Promise.all(markets.map(async (market) => Object.freeze({
+    market,
+    book: checkedBook(await input.reader.l2Book!(market.universe.name), market.universe.name,
+      `perpetual book ${market.universe.name}`),
+  })));
+  const nowMs = input.currentTimeMs();
+  requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
+  for (const { market, book } of books) {
+    requireCondition(book.time <= nowMs && nowMs - book.time <= input.maxBookAgeMs,
+      `perpetual book ${market.universe.name} is stale or future-dated`);
+    const matching = orders.filter((order) => order.a === market.assetId);
+    for (const order of matching) {
+      requireCondition(decimal(order.s, 'perpetual planned quantity').scale <= market.universe.szDecimals,
+        `perpetual ${market.universe.name} size precision exceeds metadata`);
+      const required = compare(positiveDecimal(order.s, 'perpetual planned quantity'), minimumDepth) >= 0
+        ? positiveDecimal(order.s, 'perpetual planned quantity') : minimumDepth;
+      requireCondition(compare(executableDepth(
+        book, order.b, order.p, `perpetual ${market.universe.name}`,
+      ), required) >= 0, `perpetual ${market.universe.name} executable depth is insufficient`);
+    }
+  }
+  const times = books.map(({ book }) => book.time);
+  requireCondition(Math.max(...times) - Math.min(...times) <= input.maxSnapshotSkewMs,
+    'perpetual book snapshots exceed maximum skew');
+  const reference = books[0];
+  requireCondition(reference !== undefined, 'perpetual strategy has no qualified market');
+  const referenceMidpoint = midpoint(reference.book, `perpetual ${reference.market.universe.name}`);
+  for (const { market, book } of books.slice(1)) {
+    requireCondition(divergenceWithin(
+      referenceMidpoint,
+      midpoint(book, `perpetual ${market.universe.name}`),
+      input.maxReferenceDivergenceBps,
+    ), 'perpetual reference divergence exceeds the configured maximum');
   }
 }
 

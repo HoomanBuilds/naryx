@@ -70,6 +70,7 @@ export interface HyperliquidStrategyEvidenceWindow {
 export interface HyperliquidStrategyEvidenceBinding {
   readonly spotAssetId: number;
   readonly perpetualAssetId: number;
+  readonly additionalPerpetualAssetIds?: readonly number[];
   readonly baseFeeToken: string;
   readonly quoteFeeToken: string;
 }
@@ -230,6 +231,12 @@ function validateBinding(binding: HyperliquidStrategyEvidenceBinding): void {
     && Number.isSafeInteger(binding.perpetualAssetId) && binding.perpetualAssetId >= 0
     && binding.spotAssetId !== binding.perpetualAssetId,
   'strategy evidence asset binding is invalid');
+  const additional = binding.additionalPerpetualAssetIds ?? [];
+  requireCondition(Array.isArray(additional) && additional.length <= 15
+    && additional.every((assetId) => Number.isSafeInteger(assetId) && assetId >= 0
+      && assetId !== binding.spotAssetId && assetId !== binding.perpetualAssetId)
+    && new Set(additional).size === additional.length,
+  'strategy evidence additional perpetual bindings are invalid');
   requireCondition(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(binding.baseFeeToken)
     && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(binding.quoteFeeToken)
     && binding.baseFeeToken !== binding.quoteFeeToken,
@@ -266,6 +273,7 @@ function expectedOrders(input: HyperliquidStrategyEvidenceRequest): readonly Exp
     const role = order.wire.a === input.binding.spotAssetId
       ? 'SPOT' as const
       : order.wire.a === input.binding.perpetualAssetId
+          || (input.binding.additionalPerpetualAssetIds ?? []).includes(order.wire.a)
         ? 'PERPETUAL' as const
         : null;
     requireCondition(role !== null, 'strategy leg references an unbound market');

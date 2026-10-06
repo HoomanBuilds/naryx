@@ -4,6 +4,7 @@ import type { HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
 import {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
   HyperliquidTestnetMarketPreflight,
+  qualifyHyperliquidPerpetualStrategyMarkets,
   type HyperliquidTestnetMarketQualificationConfig,
   type HyperliquidTestnetMarketReadPort,
   type HyperliquidTestnetMarketSnapshot,
@@ -151,4 +152,69 @@ test('rejects excessive spot-perpetual reference divergence', async () => {
       ],
     },
   })).qualify({ plan: plan(), binding }), /reference divergence exceeds/);
+});
+
+test('qualifies main and HIP-3 perpetual markets from their canonical asset IDs', async () => {
+  const books = new Map<string, NonNullable<HyperliquidTestnetMarketSnapshot['perpetualBook']>>([
+    ['BTC', {
+      coin: 'BTC', time: 999_900,
+      levels: [
+        [{ px: '59990', sz: '0.01', n: 2 }],
+        [{ px: '60010', sz: '0.01', n: 2 }],
+      ],
+    }],
+    ['xyz:BTC', {
+      coin: 'xyz:BTC', time: 999_950,
+      levels: [
+        [{ px: '59980', sz: '0.01', n: 2 }],
+        [{ px: '60020', sz: '0.01', n: 2 }],
+      ],
+    }],
+  ]);
+  const marketReader: HyperliquidTestnetMarketReadPort = {
+    environment: 'testnet',
+    apiUrl: HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+    read: async () => snapshot(),
+    perpetualDexs: async () => [null, {
+      name: 'xyz', fullName: 'XYZ Markets', deployer: `0x${'33'.repeat(20)}`,
+      oracleUpdater: null, feeRecipient: null, assetToStreamingOiCap: [], subDeployers: [],
+      deployerFeeScale: '1', lastDeployerFeeScaleChangeTime: '2026-10-06T00:00:00',
+      assetToFundingMultiplier: [], assetToFundingInterestRate: [],
+    }],
+    perpetualMeta: async (dex) => dex === 'xyz'
+      ? {
+          universe: [{ name: 'xyz:BTC', szDecimals: 5, maxLeverage: 20, marginTableId: 1 }],
+          marginTables: [], collateralToken: 0,
+        }
+      : {
+          universe: ['A', 'B', 'C', 'BTC'].map((name) => ({
+            name, szDecimals: 5, maxLeverage: 40, marginTableId: 1,
+          })),
+          marginTables: [], collateralToken: 0,
+        },
+    l2Book: async (coin) => {
+      const book = books.get(coin);
+      assert.ok(book);
+      return book;
+    },
+  };
+
+  await qualifyHyperliquidPerpetualStrategyMarkets({
+    reader: marketReader,
+    plans: [{
+      legs: [
+        { role: 'PERPETUAL', order: {
+          a: 3, b: true, p: '60010', s: '0.002', r: false,
+          t: { limit: { tif: 'Ioc' } }, c: `0x${'41'.repeat(16)}`,
+        } },
+        { role: 'PERPETUAL', order: {
+          a: 110_000, b: false, p: '59980', s: '0.002', r: false,
+          t: { limit: { tif: 'Ioc' } }, c: `0x${'42'.repeat(16)}`,
+        } },
+      ],
+    }],
+    allowedCoins: ['BTC', 'xyz:BTC'], quoteTokenIndex: 0, minimumDepth: '0.001',
+    maxBookAgeMs: 1_000, maxSnapshotSkewMs: 500, maxReferenceDivergenceBps: 50,
+    currentTimeMs: () => 1_000_000,
+  });
 });
