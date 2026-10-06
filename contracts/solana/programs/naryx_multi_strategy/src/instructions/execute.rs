@@ -9,8 +9,8 @@ use anchor_lang::{
 use naryx_core::{
     instructions::program_identity::program_data_header_identity,
     state::{
-        supports_adapter_class, supports_template, ProtocolConfig, ResourceIndex, ResourceKind,
-        ResourceRecord, SolverRegistry,
+        supports_multi_strategy_adapter_class, supports_template, ProtocolConfig, ResourceIndex,
+        ResourceKind, ResourceRecord, SolverRegistry,
     },
     ADAPTER_RESOURCE_SEED, PROTOCOL_CONFIG_SEED, RESOURCE_INDEX_SEED, RESOURCE_RECORD_SEED,
     SOLVER_REGISTRY_SEED,
@@ -622,7 +622,9 @@ fn validate_adapter(
                 .manifest
                 .adapter_class
                 .as_ref()
-                .is_some_and(|descriptor| supports_adapter_class(record.manifest.role, descriptor)),
+                .is_some_and(|descriptor| {
+                    supports_multi_strategy_adapter_class(record.manifest.role, descriptor)
+                }),
         ErrorCode::InvalidAdapterRecord
     );
     if call.risk_increasing {

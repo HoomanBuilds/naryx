@@ -109,6 +109,22 @@ pub fn supports_adapter_class(role: ExecutionRole, descriptor: &DescriptorRef) -
     }
 }
 
+pub fn supports_multi_strategy_adapter_class(
+    role: ExecutionRole,
+    descriptor: &DescriptorRef,
+) -> bool {
+    if descriptor.version != SUPPORTED_ADAPTER_CLASS_VERSION
+        || descriptor.manifest_hash == [0u8; HASH_BYTE_LENGTH]
+    {
+        return false;
+    }
+    matches!(
+        (role, descriptor.id.as_str()),
+        (ExecutionRole::Spot, SPOT_ADAPTER_CLASS_ID)
+            | (ExecutionRole::Perp, PERP_ADAPTER_CLASS_ID)
+    )
+}
+
 pub fn supports_template(template: &DescriptorRef) -> bool {
     if template.version != SUPPORTED_TEMPLATE_VERSION
         || template.manifest_hash == [0u8; HASH_BYTE_LENGTH]
@@ -167,6 +183,35 @@ pub struct DescriptorRef {
     pub id: ProtocolId,
     pub version: u32,
     pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descriptor(id: &str) -> DescriptorRef {
+        DescriptorRef::new(id, 1, [1u8; HASH_BYTE_LENGTH]).unwrap()
+    }
+
+    #[test]
+    fn multi_strategy_accepts_only_implemented_adapter_classes() {
+        assert!(supports_multi_strategy_adapter_class(
+            ExecutionRole::Spot,
+            &descriptor(SPOT_ADAPTER_CLASS_ID)
+        ));
+        assert!(supports_multi_strategy_adapter_class(
+            ExecutionRole::Perp,
+            &descriptor(PERP_ADAPTER_CLASS_ID)
+        ));
+        assert!(!supports_multi_strategy_adapter_class(
+            ExecutionRole::Option,
+            &descriptor(OPTION_ADAPTER_CLASS_ID)
+        ));
+        assert!(!supports_multi_strategy_adapter_class(
+            ExecutionRole::Spot,
+            &descriptor(FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID)
+        ));
+    }
 }
 
 impl DescriptorRef {
