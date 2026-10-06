@@ -40,6 +40,7 @@ import {
 } from './abi.js';
 
 export * from './strategy-plan.js';
+export * from './multi-strategy-account.js';
 
 const UINT32_MAX = (1n << 32n) - 1n;
 const UINT128_MAX = (1n << 128n) - 1n;
