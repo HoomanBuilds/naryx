@@ -34,6 +34,7 @@ export * from './deployment-identity.js';
 export * from './mainnet-shadow.js';
 export * from './authority-qualification.js';
 export * from './strategy-plan.js';
+export * from './multi-strategy-account.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 const EXECUTION_DIGEST_DOMAIN = 'NARYX/conformance-execution/v1';
