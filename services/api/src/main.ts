@@ -111,6 +111,7 @@ import {
   type ReferenceLane,
 } from "./reference-history.js";
 import type { DomainId } from "./terminal-types.js";
+import type { StrategyExecutionLaneCapability } from "./strategy-program-view.js";
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -714,6 +715,36 @@ const ownerPackageOutcomes: OwnerPackageOutcomeReader = (attemptId) =>
   basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId)
   ?? hyperliquidOwnerLedger?.attemptOutcome(attemptId);
 
+function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneCapability[] {
+  if (executionGate === undefined || executionScopes === undefined) return [];
+  const capabilities: StrategyExecutionLaneCapability[] = [];
+  const addCashCarry = (
+    laneId: string,
+    domain: string,
+    settlementClass: "ATOMIC_POSTCONDITION" | "ASYNC_BONDED_SOLVER" | "BATCHED_IOC_WITH_RECOVERY",
+  ) => capabilities.push(Object.freeze({
+    laneId,
+    templateId: "cash-and-carry-v1",
+    templateVersion: 1,
+    actions: Object.freeze(["ENTRY", "EXIT"] as const),
+    settlementClasses: Object.freeze([settlementClass]),
+    domains: Object.freeze([domain]),
+  }));
+  if (runtime.health.solanaDevnet.available && runtime.solanaDevnet.preparation !== undefined && solanaDevnetOrderRuntime !== undefined) {
+    addCashCarry("solana-devnet-cash-carry", "solana", "ATOMIC_POSTCONDITION");
+  }
+  if (runtime.health.baseTestnetAtomic.available && runtime.evmTestnet.preparation !== undefined && baseOrderRuntime !== undefined) {
+    addCashCarry("base-sepolia-cash-carry", "base", "ATOMIC_POSTCONDITION");
+  }
+  if (runtime.health.arbitrumTestnetAsync.available && runtime.evmTestnet.asyncObservation !== undefined && arbitrumOrderRuntime !== undefined) {
+    addCashCarry("arbitrum-sepolia-cash-carry", "arbitrum", "ASYNC_BONDED_SOLVER");
+  }
+  if (runtime.health.hyperliquidTestnet.available && runtime.hyperliquidTestnet !== undefined && hyperliquidOrderRuntime !== undefined) {
+    addCashCarry("hyperliquid-testnet-cash-carry", "hyperliquid", "BATCHED_IOC_WITH_RECOVERY");
+  }
+  return Object.freeze(capabilities);
+}
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -748,6 +779,7 @@ const server = createPrivateTerminalServer(
   ),
   terminalMarketSources,
   ownerPackageOutcomes,
+  currentStrategyExecutionCapabilities,
 );
 
 const publicServer = publicMarket?.listener === undefined

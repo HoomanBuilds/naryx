@@ -308,6 +308,11 @@ export {
   type PrivateTerminalServerConfig,
 } from "./http-server.js";
 export {
+  strategyProgramView,
+  type StrategyExecutionLaneCapability,
+  type StrategyProgramActivation,
+} from "./strategy-program-view.js";
+export {
   ExecutionReadinessError,
   FileExecutionReadinessPolicyProvider,
   ManifestExecutionReadinessGate,

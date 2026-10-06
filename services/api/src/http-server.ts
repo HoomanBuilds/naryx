@@ -7,7 +7,7 @@ import {
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { strategyTemplateDefinitions, toProtocolJson } from "@naryx/protocol-types";
+import { toProtocolJson } from "@naryx/protocol-types";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
@@ -86,6 +86,10 @@ import {
   type ExecutionReadinessScopeIdentity,
   type ExecutionReadinessScopeResolver,
 } from "./execution-readiness-gate.js";
+import {
+  strategyProgramView,
+  type StrategyExecutionLaneCapability,
+} from "./strategy-program-view.js";
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -252,6 +256,7 @@ export function createPrivateTerminalRequestHandler(
   terminalMarkets: TerminalMarketSources = {},
   currentTimeMs: () => number = Date.now,
   attemptOutcomes?: OwnerPackageOutcomeReader,
+  strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -488,34 +493,11 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
         return;
       }
-      sendJson(response, 200, {
-        version: 1,
-        templates: strategyTemplateDefinitions().map((template) => ({
-          templateId: template.templateId,
-          templateVersion: template.templateVersion,
-          displayName: template.displayName,
-          quoteConventionId: template.quoteConventionId,
-          riskClassId: template.riskClassId,
-          lifecycleConventionId: template.lifecycleConventionId,
-          metricIds: template.metricIds,
-          actions: template.actionSpecs.map((action) => ({
-            action: action.action,
-            minimumLegs: action.minimumLegs,
-            maximumLegs: action.maximumLegs,
-            settlementClasses: action.allowedSettlementClasses,
-            legRoles: action.legRules.map((leg) => ({
-              legTypeId: leg.legTypeId,
-              allowedFamilies: leg.allowedFamilies,
-              allowedSides: leg.allowedSides,
-              minimumCount: leg.minimumCount,
-              maximumCount: leg.maximumCount,
-            })),
-          })),
-          activation: template.templateId === "cash-and-carry-v1"
-            ? "EXECUTABLE_BY_QUALIFIED_LANE"
-            : "ADAPTER_ACTIVATION_REQUIRED",
-        })),
-      });
+      try {
+        sendJson(response, 200, strategyProgramView(strategyExecutionCapabilities()));
+      } catch {
+        reject(response, 503, "STRATEGY_CAPABILITY_UNAVAILABLE", "Strategy execution capability is unavailable.");
+      }
       return;
     }
 
@@ -1264,6 +1246,7 @@ export function createPrivateTerminalServer(
   publicRoutes?: (request: IncomingMessage, response: ServerResponse) => boolean,
   terminalMarkets: TerminalMarketSources = {},
   attemptOutcomes?: OwnerPackageOutcomeReader,
+  strategyExecutionCapabilities: () => readonly StrategyExecutionLaneCapability[] = () => [],
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1285,6 +1268,7 @@ export function createPrivateTerminalServer(
     terminalMarkets,
     Date.now,
     attemptOutcomes,
+    strategyExecutionCapabilities,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

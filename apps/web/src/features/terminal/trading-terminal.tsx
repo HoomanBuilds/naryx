@@ -76,10 +76,11 @@ const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
   lifecycleConventionId: "paired-basis-lifecycle-v1",
   metricIds: Object.freeze([]),
   actions: Object.freeze([
-    Object.freeze({ action: "ENTRY", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]) }),
-    Object.freeze({ action: "EXIT", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]) }),
+    Object.freeze({ action: "ENTRY", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "ADAPTER_ACTIVATION_REQUIRED", qualifiedLanes: Object.freeze([]) }),
+    Object.freeze({ action: "EXIT", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "ADAPTER_ACTIVATION_REQUIRED", qualifiedLanes: Object.freeze([]) }),
   ]),
-  activation: "EXECUTABLE_BY_QUALIFIED_LANE",
+  activation: "ADAPTER_ACTIVATION_REQUIRED",
+  qualifiedLanes: Object.freeze([]),
 });
 
 /** "0.100000000000000000" becomes "0.1"; a whole number is kept as is. */
@@ -1144,8 +1145,8 @@ function Ticket({
           ))}
         </select>
         {selectedTemplate ? (
-          <span data-active={selectedTemplate.activation === "EXECUTABLE_BY_QUALIFIED_LANE"}>
-            {selectedTemplate.activation === "EXECUTABLE_BY_QUALIFIED_LANE" ? "Qualified lane execution" : "Protocol ready, adapter activation required"}
+          <span data-active={selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"}>
+            {selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE" ? "Qualified lane execution" : "Protocol ready, adapter activation required"}
           </span>
         ) : null}
       </div>

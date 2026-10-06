@@ -10,6 +10,8 @@ export type StrategyProgramAction = Readonly<{
     minimumCount: number;
     maximumCount: number;
   }>[];
+  activation: "EXECUTABLE_BY_QUALIFIED_LANE" | "ADAPTER_ACTIVATION_REQUIRED";
+  qualifiedLanes: readonly string[];
 }>;
 
 export type StrategyProgramTemplate = Readonly<{
@@ -22,6 +24,7 @@ export type StrategyProgramTemplate = Readonly<{
   metricIds: readonly string[];
   actions: readonly StrategyProgramAction[];
   activation: "EXECUTABLE_BY_QUALIFIED_LANE" | "ADAPTER_ACTIVATION_REQUIRED";
+  qualifiedLanes: readonly string[];
 }>;
 
 export type StrategyProgram = Readonly<{
@@ -46,7 +49,9 @@ function parseTemplate(value: unknown): StrategyProgramTemplate {
     if (!isRecord(action) || typeof action.action !== "string" ||
         typeof action.minimumLegs !== "number" || typeof action.maximumLegs !== "number" ||
         !Array.isArray(action.settlementClasses) || !action.settlementClasses.every((item) => typeof item === "string") ||
-        !Array.isArray(action.legRoles)) {
+        !Array.isArray(action.legRoles) ||
+        (action.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && action.activation !== "ADAPTER_ACTIVATION_REQUIRED") ||
+        !Array.isArray(action.qualifiedLanes) || !action.qualifiedLanes.every((item) => typeof item === "string")) {
       throw new Error("Strategy program action is invalid.");
     }
     const legRoles = action.legRoles.map((leg) => {
@@ -70,8 +75,13 @@ function parseTemplate(value: unknown): StrategyProgramTemplate {
       maximumLegs: action.maximumLegs,
       settlementClasses: Object.freeze([...action.settlementClasses]),
       legRoles: Object.freeze(legRoles),
+      activation: action.activation,
+      qualifiedLanes: Object.freeze([...action.qualifiedLanes]),
     });
   });
+  if (!Array.isArray(value.qualifiedLanes) || !value.qualifiedLanes.every((item) => typeof item === "string")) {
+    throw new Error("Strategy program qualified lanes are invalid.");
+  }
   return Object.freeze({
     templateId: value.templateId,
     templateVersion: 1,
@@ -82,6 +92,7 @@ function parseTemplate(value: unknown): StrategyProgramTemplate {
     metricIds: Object.freeze([...value.metricIds]),
     actions: Object.freeze(actions),
     activation: value.activation,
+    qualifiedLanes: Object.freeze([...value.qualifiedLanes]),
   });
 }
 
