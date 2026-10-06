@@ -78,7 +78,7 @@ export interface HypercoreOrderWire {
 
 export interface HypercoreBatchedOrderAction {
   readonly type: 'order';
-  readonly orders: readonly [HypercoreOrderWire, HypercoreOrderWire];
+  readonly orders: readonly HypercoreOrderWire[];
   readonly grouping: 'na';
 }
 
