@@ -62,6 +62,7 @@ import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
 import { solanaDevnetSizeAtoms, solanaDevnetSizeFromAtoms, useSolanaDevnetOnboarding } from "./solana-devnet-onboarding";
 import { usePositions } from "./pages/use-positions";
 import { fetchStrategyProgram, type StrategyProgramTemplate } from "./strategy-program";
+import { GeneralizedStrategyPreparationPanel } from "./generalized-strategy-preparation";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -1047,6 +1048,7 @@ function Ticket({
   strategyTemplates,
   selectedStrategyTemplateId,
   selectedLifecycleAction,
+  privateApiBaseUrl,
   canRefreshReview,
   onModeChange,
   onSizeChange,
@@ -1088,6 +1090,7 @@ function Ticket({
   strategyTemplates: readonly StrategyProgramTemplate[];
   selectedStrategyTemplateId: string;
   selectedLifecycleAction: string;
+  privateApiBaseUrl: string | null;
   canRefreshReview: boolean;
   onModeChange: (mode: PackageMode) => void;
   onSizeChange: (size: string) => void;
@@ -1313,6 +1316,8 @@ function Ticket({
           onRetryObservation={onRetryObservation}
         />
       ) : null}
+
+      {!nativeCashFlow ? <GeneralizedStrategyPreparationPanel baseUrl={privateApiBaseUrl} /> : null}
 
       <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
@@ -3383,6 +3388,7 @@ export function TradingTerminal({
             strategyTemplates={strategyTemplates}
             selectedStrategyTemplateId={selectedStrategyTemplateId}
             selectedLifecycleAction={selectedLifecycleAction}
+            privateApiBaseUrl={privateApiBaseUrl}
             canRefreshReview={primaryAction.kind === "sign" && currentExecutionReview !== null}
             onModeChange={setMode}
             onSizeChange={setSize}
