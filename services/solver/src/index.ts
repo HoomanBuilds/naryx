@@ -788,10 +788,15 @@ export {
   type NotSubmittedSubmission,
 } from './hyperliquid-testnet-runtime.js';
 export {
+  HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
+  type HyperliquidStrategyEvidenceCollectInput,
+  type HyperliquidStrategyEvidenceLeg,
+  type HyperliquidStrategyEvidenceResult,
   type HyperliquidTestnetEvidenceHttpOptions,
   type HyperliquidTestnetLoopbackCoordinatorOptions,
 } from './hyperliquid-testnet-evidence-http.js';

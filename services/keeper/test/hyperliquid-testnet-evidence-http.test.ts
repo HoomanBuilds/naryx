@@ -6,6 +6,7 @@ import {
   createHyperliquidTestnetEvidenceServer,
   KEEPER_TESTNET_PREPARE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
+  KEEPER_TESTNET_STRATEGY_RECONCILE_PATH,
   type HyperliquidTestnetPrepareResult,
 } from '../src/index.js';
 
@@ -192,6 +193,62 @@ test('reconcile handoff rejection is returned without an evidence read', async (
     assert.equal(decoded.status, 'HANDOFF_REJECTED');
     assert.equal(decoded.reason, 'ACTION_HASH_MISMATCH');
     assert.equal(reconcileCalls, 1);
+  } finally {
+    await close(server);
+  }
+});
+
+test('strategy reconcile forwards the exact generalized evidence request', async () => {
+  let seenAttempt = '';
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('must not be called'); },
+      reconcile: async () => { throw new Error('must not be called'); },
+    },
+    strategy: {
+      collect: async (input) => {
+        seenAttempt = input.attemptId;
+        return {
+          status: 'COMPLETE', outcome: 'COMPLETED', reasons: [],
+          legs: [{
+            legId: 'leg-1', clientOrderId: `0x${'21'.repeat(16)}`,
+            plannedSignedBaseAtoms: 100n, filledSignedBaseAtoms: 100n,
+            terminalStatus: 'FILLED', openOrderStatus: 'NONE', orderId: 1, fillCount: 1,
+          }],
+          rawResponseCommitments: [],
+        };
+      },
+    },
+  });
+  const url = await listen(server);
+  try {
+    const body = stringifyProtocolJson({
+      account,
+      actionHash: `0x${'aa'.repeat(32)}`,
+      attemptId: 'strategy-attempt-1',
+      batchStage: 0,
+      clientOrderIds: [`0x${'21'.repeat(16)}`],
+      durableRevision: 'sqlite-strategy-v1:1',
+      legIds: ['leg-1'],
+      plan: planFixture(),
+      requestCommitment: `0x${'bb'.repeat(32)}`,
+      window,
+    }, 'keeper.test.strategy.reconcile');
+    const response = await fetch(`${url}${KEEPER_TESTNET_STRATEGY_RECONCILE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(response.status, 200);
+    const decoded = (await response.json()) as {
+      status: string;
+      legs: readonly [{ filledSignedBaseAtoms: unknown }];
+    };
+    assert.equal(decoded.status, 'COMPLETE');
+    assert.equal(seenAttempt, 'strategy-attempt-1');
+    assert.deepEqual(decoded.legs[0].filledSignedBaseAtoms, {
+      $naryxType: 'bigint', value: '100',
+    });
   } finally {
     await close(server);
   }

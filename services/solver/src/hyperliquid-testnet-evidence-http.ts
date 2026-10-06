@@ -4,7 +4,9 @@ import {
 } from '@naryx/protocol-types';
 import type {
   HyperliquidReconciliationHandoff,
+  HyperliquidStrategyReconciliationHandoff,
 } from './index.js';
+import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
 import {
   HyperliquidTestnetRuntimeCoordinator,
   type HyperliquidTestnetPackageSubmissionPort,
@@ -22,6 +24,8 @@ export const SOLVER_TESTNET_EVIDENCE_PREPARE_PATH =
   '/internal/keeper/hyperliquid-testnet/prepare';
 export const SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/reconcile';
+export const SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
 
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -36,6 +40,38 @@ export interface HyperliquidTestnetEvidenceHttpOptions {
 export interface HyperliquidTestnetLoopbackCoordinatorOptions
   extends HyperliquidTestnetEvidenceHttpOptions {
   readonly enabled: boolean;
+}
+
+export interface HyperliquidStrategyEvidenceLeg {
+  readonly legId: string;
+  readonly clientOrderId: `0x${string}`;
+  readonly plannedSignedBaseAtoms: bigint;
+  readonly filledSignedBaseAtoms: bigint;
+  readonly terminalStatus: 'FILLED' | 'UNFILLED_IOC_CANCELLED'
+    | 'PARTIALLY_FILLED_IOC_CANCELLED' | 'REJECTED' | 'UNKNOWN';
+  readonly openOrderStatus: 'NONE' | 'OPEN' | 'UNKNOWN';
+  readonly orderId: number | null;
+  readonly fillCount: number;
+}
+
+export type HyperliquidStrategyEvidenceResult = Readonly<{
+  status: 'COMPLETE';
+  outcome: 'COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED' | 'MANUAL_INTERVENTION';
+  reasons: readonly string[];
+  legs: readonly HyperliquidStrategyEvidenceLeg[];
+  rawResponseCommitments: readonly unknown[];
+}> | Readonly<{
+  status: 'INCOMPLETE';
+  outcome: null;
+  reasons: readonly string[];
+  legs: readonly HyperliquidStrategyEvidenceLeg[];
+  rawResponseCommitments: readonly unknown[];
+}>;
+
+export interface HyperliquidStrategyEvidenceCollectInput {
+  readonly handoff: HyperliquidStrategyReconciliationHandoff;
+  readonly plan: HyperliquidStrategyExecutionPlan;
+  readonly window: HyperliquidTestnetRuntimeEvidenceWindow;
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -163,6 +199,35 @@ function decodeReconcileResult(value: unknown): unknown {
   return value;
 }
 
+function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvidenceResult {
+  if (!isRecord(value) || (value.status !== 'COMPLETE' && value.status !== 'INCOMPLETE')
+    || !Array.isArray(value.reasons) || !Array.isArray(value.legs)
+    || !Array.isArray(value.rawResponseCommitments)) {
+    throw new Error('keeper strategy evidence result is invalid');
+  }
+  if (value.status === 'COMPLETE'
+    && value.outcome !== 'COMPLETED' && value.outcome !== 'NO_EFFECT'
+    && value.outcome !== 'RECOVERY_REQUIRED' && value.outcome !== 'MANUAL_INTERVENTION') {
+    throw new Error('keeper strategy evidence result is invalid');
+  }
+  if (value.status === 'INCOMPLETE' && value.outcome !== null) {
+    throw new Error('keeper strategy evidence result is invalid');
+  }
+  for (const leg of value.legs) {
+    if (!isRecord(leg) || typeof leg.legId !== 'string'
+      || typeof leg.clientOrderId !== 'string'
+      || typeof leg.plannedSignedBaseAtoms !== 'bigint'
+      || typeof leg.filledSignedBaseAtoms !== 'bigint'
+      || typeof leg.terminalStatus !== 'string'
+      || typeof leg.openOrderStatus !== 'string'
+      || (leg.orderId !== null && typeof leg.orderId !== 'number')
+      || typeof leg.fillCount !== 'number') {
+      throw new Error('keeper strategy evidence result is invalid');
+    }
+  }
+  return value as unknown as HyperliquidStrategyEvidenceResult;
+}
+
 async function postProtocolJson(
   origin: string,
   path: string,
@@ -282,6 +347,52 @@ implements HyperliquidTestnetStructuralEvidencePort<unknown, unknown> {
       return decodeReconcileResult(decoded);
     } catch {
       throw new Error('keeper evidence request failed');
+    }
+  }
+}
+
+export class HyperliquidStrategyTestnetHttpEvidence {
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: HyperliquidTestnetEvidenceHttpOptions) {
+    this.#origin = requireLoopbackKeeperOrigin(options.keeperOrigin);
+    this.#fetch = options.fetchImplementation ?? fetch;
+    this.#timeoutMs = checkedTimeout(options.timeoutMs);
+  }
+
+  async collect(input: HyperliquidStrategyEvidenceCollectInput):
+  Promise<HyperliquidStrategyEvidenceResult> {
+    const body = {
+      account: input.handoff.account,
+      actionHash: input.handoff.actionHash,
+      attemptId: input.handoff.attemptId,
+      batchStage: input.handoff.batchStage,
+      clientOrderIds: input.handoff.clientOrderIds,
+      durableRevision: input.handoff.durableRevision,
+      legIds: input.handoff.legIds,
+      plan: input.plan,
+      requestCommitment: input.handoff.requestCommitment,
+      window: input.window,
+    };
+    let decoded: unknown;
+    try {
+      decoded = await postProtocolJson(
+        this.#origin,
+        SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
+        body,
+        'solver.strategy.evidence.reconcile',
+        this.#timeoutMs,
+        this.#fetch,
+      );
+    } catch {
+      throw new Error('keeper strategy evidence request failed');
+    }
+    try {
+      return decodeStrategyReconcileResult(decoded);
+    } catch {
+      throw new Error('keeper strategy evidence request failed');
     }
   }
 }

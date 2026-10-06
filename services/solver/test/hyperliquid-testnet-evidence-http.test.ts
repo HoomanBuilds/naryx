@@ -4,9 +4,11 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
+  HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
 } from '../src/hyperliquid-testnet-evidence-http.js';
 
@@ -350,4 +352,56 @@ test('loopback coordinator factory stays disabled unless explicitly enabled', as
     enabled: true,
   });
   assert.ok(enabled !== null);
+});
+
+test('generalized strategy evidence preserves canonical leg fill atoms', async () => {
+  const server = await startServer((captured, request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH);
+    const decoded = parseProtocolJson(captured.rawBody,
+      'test.strategy.reconcile.request') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(decoded).sort(), [
+      'account', 'actionHash', 'attemptId', 'batchStage', 'clientOrderIds',
+      'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
+    ]);
+    jsonResponse(response, 200, stringifyProtocolJson({
+      status: 'COMPLETE',
+      outcome: 'COMPLETED',
+      reasons: [],
+      legs: [{
+        legId: 'leg-1',
+        clientOrderId: `0x${'21'.repeat(16)}`,
+        plannedSignedBaseAtoms: 100n,
+        filledSignedBaseAtoms: 100n,
+        terminalStatus: 'FILLED',
+        openOrderStatus: 'NONE',
+        orderId: 1,
+        fillCount: 1,
+      }],
+      rawResponseCommitments: [],
+    }, 'test.strategy.reconcile.response'));
+  });
+  try {
+    const client = new HyperliquidStrategyTestnetHttpEvidence({ keeperOrigin: server.origin });
+    const result = await client.collect({
+      handoff: {
+        collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
+        attemptId: 'strategy-attempt-1',
+        batchStage: 0,
+        account: account as never,
+        actionHash: `0x${'aa'.repeat(32)}`,
+        actionCommitmentScheme: 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+        requestCommitment: `0x${'bb'.repeat(32)}`,
+        durableRevision: 'sqlite-strategy-v1:1',
+        legIds: ['leg-1'],
+        clientOrderIds: [`0x${'21'.repeat(16)}`],
+      },
+      plan: planFixture() as never,
+      window,
+    });
+    assert.equal(result.status, 'COMPLETE');
+    assert.equal(result.legs[0]?.filledSignedBaseAtoms, 100n);
+  } finally {
+    await server.close();
+  }
 });

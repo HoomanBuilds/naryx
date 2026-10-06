@@ -1,6 +1,7 @@
 import { createHyperliquidTestnetEvidenceServer, loadKeeperServerConfig } from './hyperliquid-testnet-evidence-http.js';
 import { HyperliquidAuthoritativeEvidenceCollector, HyperliquidSdkTestnetReadClient } from './hyperliquid-evidence-collector.js';
 import { HyperliquidTestnetEvidenceRuntime } from './hyperliquid-testnet-evidence-runtime.js';
+import { HyperliquidStrategyAuthoritativeEvidenceCollector } from './hyperliquid-strategy-evidence.js';
 import { readFileSync } from 'node:fs';
 import { parseProtocolJson } from '@naryx/protocol-types';
 import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './code-hash-monitor.js';
@@ -52,7 +53,8 @@ const config = loadKeeperServerConfig();
 const client = new HyperliquidSdkTestnetReadClient();
 const collector = new HyperliquidAuthoritativeEvidenceCollector(client);
 const runtime = new HyperliquidTestnetEvidenceRuntime(collector);
-const server = createHyperliquidTestnetEvidenceServer({ runtime });
+const strategy = new HyperliquidStrategyAuthoritativeEvidenceCollector(client);
+const server = createHyperliquidTestnetEvidenceServer({ runtime, strategy });
 
 // The code-hash monitor only reads chain state; it quarantines a scope in its incident journal
 // when reviewed code drifts or disappears.

@@ -10,9 +10,15 @@ import type {
   HyperliquidTestnetEvidenceRuntimeState,
   HyperliquidTestnetSubmissionHandoff,
 } from './hyperliquid-testnet-evidence-runtime.js';
+import type {
+  HyperliquidStrategyAuthoritativeEvidenceCollector,
+  HyperliquidStrategyEvidenceRequest,
+} from './hyperliquid-strategy-evidence.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
 export const KEEPER_TESTNET_RECONCILE_PATH = '/internal/keeper/hyperliquid-testnet/reconcile';
+export const KEEPER_TESTNET_STRATEGY_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
 
 const MAX_BODY_BYTES = 65_536;
 
@@ -23,6 +29,7 @@ export interface KeeperServerConfig {
 
 export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
+  readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
 }
 
 class KeeperRequestError extends Error {
@@ -149,6 +156,20 @@ function parseReconcileRequest(value: unknown): {
   return typed;
 }
 
+function parseStrategyReconcileRequest(value: unknown): HyperliquidStrategyEvidenceRequest {
+  const keys = [
+    'account', 'actionHash', 'attemptId', 'batchStage', 'clientOrderIds',
+    'durableRevision', 'legIds', 'plan', 'requestCommitment', 'window',
+  ];
+  if (!isRecord(value) || !hasExactKeys(value, keys)) {
+    throw new KeeperRequestError(
+      'INVALID_REQUEST',
+      'Strategy reconcile request fields are invalid.',
+    );
+  }
+  return value as unknown as HyperliquidStrategyEvidenceRequest;
+}
+
 export function createHyperliquidTestnetEvidenceRequestHandler(
   ports: HyperliquidTestnetEvidenceHttpPorts,
 ) {
@@ -224,6 +245,35 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
           return;
         }
         reject(response, 400, 'INVALID_REQUEST', 'Reconcile request failed closed.');
+      }
+      return;
+    }
+    if (url.pathname === KEEPER_TESTNET_STRATEGY_RECONCILE_PATH) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (ports.strategy === undefined) {
+        reject(response, 503, 'STRATEGY_EVIDENCE_DISABLED', 'Strategy evidence is unavailable.');
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await readProtocolJson(request, 'keeper.strategy.reconcile.request');
+      } catch (error) {
+        if (error instanceof KeeperRequestError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, 'INVALID_JSON', 'Request body must be strict protocol JSON.');
+        return;
+      }
+      try {
+        const result = await ports.strategy.collect(parseStrategyReconcileRequest(raw));
+        sendJson(response, 200, toProtocolJson(result, 'keeper.strategy.reconcile.result'));
+      } catch {
+        reject(response, 400, 'INVALID_REQUEST', 'Strategy reconcile request failed closed.');
       }
       return;
     }
