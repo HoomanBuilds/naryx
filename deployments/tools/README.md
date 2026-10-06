@@ -93,9 +93,9 @@ node deployments/tools/release-manifests.mjs --out /srv/naryx/hyperliquid --data
 | `api/base-sepolia-order-context.json` | `loadBaseSepoliaOrderContextConfig` |
 | `api/arbitrum-sepolia-runtime.json`, `api/arbitrum-sepolia-order-context.json` | `loadArbitrumSepoliaRuntimeManifest`, `loadArbitrumSepoliaOrderContextConfig` |
 | `api/solana-devnet-runtime.json`, `api/solana-devnet-order-context.json` | `loadSolanaDevnetRuntimeManifest` (API) and `loadSolanaDevnetSharedManifest` (solver), `loadSolanaDevnetOrderContextConfig` |
-| `api/hyperliquid-testnet-runtime.json` | `loadHyperliquidTestnetRuntimeConfig` |
+| `api/hyperliquid-testnet-runtime.json`, `api/hyperliquid-native-strategy-order-profiles.json` | Hyperliquid runtime and native strategy-order profile loaders |
 | `api/testnet-execution-policy.json` | `loadTestnetExecutionPolicy` |
-| `solver/base-sepolia-quote.json`, `solver/arbitrum-sepolia-quote.json`, `solver/arbitrum-sepolia-executor.json`, `solver/solana-devnet-solver.json`, `solver/hyperliquid-testnet-quote.json` | the solver's quote, executor, and binding loaders |
+| `solver/base-sepolia-quote.json`, `solver/arbitrum-sepolia-quote.json`, `solver/arbitrum-sepolia-executor.json`, `solver/solana-devnet-solver.json`, `solver/hyperliquid-*.json` | the solver's quote, preparation, executor, and binding loaders |
 | `keeper/code-watchlist.json`, `keeper/funding-mirror.json` | `loadCodeHashMonitorConfig`, `loadFundingMirrorConfig` |
 | `env/api.env`, `env/solver.env`, `env/keeper.env`, `env/indexer-<network>.env` | each service process (`node --env-file=<file> dist/main.js`, or a systemd `EnvironmentFile`) |
 | `web/.env.production` | copy to `apps/web/.env.production` (ignored by Git) before `next build` |
@@ -110,7 +110,7 @@ Env files carry RPC URLs, which can hold a provider key; keep the output directo
 Before it finishes, the generator loads every output through the services' own code, with the generated env files as each process environment:
 
 - API: `loadPrivateTerminalServerConfig` and `loadPrivateTerminalStartupConfig`; `createBaseSepoliaRuntime` and `createArbitrumSepoliaRuntime` with live read clients (chain id, every code hash, factory and coordinator bindings); `createBaseSepoliaOrderRuntime`, `createArbitrumSepoliaOrderRuntime`, and `createSolanaDevnetOrderRuntime` with one live price read and no timer started; `verifySolanaDevnetDeploymentIdentity`; `loadHyperliquidTestnetRuntimeConfig` plus a check of asset indexes, order asset ids, and size decimals against the testnet `meta` and `spotMeta`; `loadTestnetExecutionPolicy`.
-- Solver: `loadSolverProcessConfig`, `loadBaseSepoliaQuoteRuntime`, `loadArbitrumSepoliaQuoteRuntime`, `loadArbitrumSepoliaExecutorConfig`, `loadSolanaDevnetSolverConfig` with `loadSolanaDevnetSharedManifest`, `loadHyperliquidTestnetQuoteRuntime` and a check that its spot and perpetual books are the API's configured markets.
+- Solver: `loadSolverProcessConfig`, `loadBaseSepoliaQuoteRuntime`, `loadArbitrumSepoliaQuoteRuntime`, `loadArbitrumSepoliaExecutorConfig`, `loadSolanaDevnetSolverConfig` with `loadSolanaDevnetSharedManifest`, the Hyperliquid preparation and quote loaders, and checks that every native strategy profile matches one preparation template and one generalized quote lane.
 - Keeper: `loadKeeperRpcUrls`, `loadCodeHashMonitorConfig` followed by one `observeCode` pass that must report every target `MATCH`, and `loadFundingMirrorConfig`.
 - Indexer: `loadEvmIndexerConfig` for each `indexer-<network>.env`.
 - Web: every `NEXT_PUBLIC_` value is well formed.

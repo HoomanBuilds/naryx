@@ -43,6 +43,21 @@
     "perpetualAdapterRef": { "adapterId": { "$def": "perpetual.adapterId" }, "adapterManifestVersion": { "$def": "perpetual.adapterManifestVersion" }, "adapterManifestHash": { "$def": "perpetual.adapterManifestHash" } },
     "packageTemplateManifestHash": { "$hex": { "$operator": "reviewed cash-and-carry template manifest hash for hypercore:testnet" } },
     "quoteTokenIndex": { "$number": { "$operator": "quote token index (spotMeta tokens index of USDC, normally 0)" } },
+    "cashCarryGeneralized": {
+      "laneId": { "$operator": "reviewed cash-and-carry generalized quote lane id" },
+      "executionClassId": { "$operator": "reviewed cash-and-carry execution class id" },
+      "executionClassVersion": { "$number": { "$operator": "reviewed cash-and-carry execution class version" } },
+      "executionClassManifestHash": { "$bytes": { "$operator": "reviewed cash-and-carry execution class manifest hash" } },
+      "holdingDurationMs": { "$bigint": { "$operator": "cash-and-carry pricing horizon in milliseconds" } },
+      "expectedExitBasisBps": { "$bigint": { "$operator": "cash-and-carry expected exit basis in signed bps" } },
+      "reversalThresholdPpm": 1
+    },
+    "cashCarryStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet cash-and-carry strategy preparation config" },
+    "treasuryStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet treasury inventory hedge strategy preparation config" },
+    "fundingStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet perpetual funding spread strategy preparation config" },
+    "treasuryStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet treasury inventory hedge quote config with embedded generalized settings" },
+    "fundingStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet perpetual funding spread quote config with embedded generalized settings" },
+    "nativeStrategyOrderProfiles": { "$operator": "reviewed version 1 Testnet native strategy order profile file containing treasury hedge and funding spread profiles" },
     "executionEnabled": { "$operator": "true to execute Hyperliquid Testnet packages (needs the approved agent key and a funded trading account), false for quotes only" },
     "executor": {
       "agentAddress": { "$lower": { "$operator": "approved Hyperliquid Testnet API (agent) wallet address, lowercase 0x + 40 hex" } },
@@ -143,6 +158,7 @@
       "format": "protocol-json",
       "content": {
         "version": 2,
+        "generalized": { "$def": "cashCarryGeneralized" },
         "market": {
           "domain": { "$release": "domainRef" },
           "templateId": "cash-and-carry-v1",
@@ -193,6 +209,30 @@
         }
       }
     },
+    "api/hyperliquid-native-strategy-order-profiles.json": {
+      "format": "protocol-json",
+      "content": { "$def": "nativeStrategyOrderProfiles" }
+    },
+    "solver/hyperliquid-cash-carry-strategy-preparation.json": {
+      "format": "protocol-json",
+      "content": { "$def": "cashCarryStrategyPreparation" }
+    },
+    "solver/hyperliquid-treasury-strategy-preparation.json": {
+      "format": "protocol-json",
+      "content": { "$def": "treasuryStrategyPreparation" }
+    },
+    "solver/hyperliquid-funding-strategy-preparation.json": {
+      "format": "protocol-json",
+      "content": { "$def": "fundingStrategyPreparation" }
+    },
+    "solver/hyperliquid-treasury-quote.json": {
+      "format": "protocol-json",
+      "content": { "$def": "treasuryStrategyQuote" }
+    },
+    "solver/hyperliquid-funding-quote.json": {
+      "format": "protocol-json",
+      "content": { "$def": "fundingStrategyQuote" }
+    },
     "api/testnet-execution-policy.json": {
       "format": "json",
       "content": {
@@ -214,7 +254,9 @@
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_CLIENT_ENABLED": { "$def": "executionEnabled" },
         "NARYX_HYPERLIQUID_TESTNET_EVIDENCE_ORIGIN": "http://127.0.0.1:8789",
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN": "http://127.0.0.1:8792",
-        "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB": { "$data": "api/hyperliquid-testnet-execution.db" }
+        "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB": { "$data": "api/hyperliquid-testnet-execution.db" },
+        "NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED": "true",
+        "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES": { "$out": "api/hyperliquid-native-strategy-order-profiles.json" }
       }
     },
     "env/solver.env": {
@@ -222,6 +264,17 @@
       "content": {
         "NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED": "true",
         "NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG": { "$out": "solver/hyperliquid-testnet-quote.json" },
+        "NARYX_HYPERLIQUID_STRATEGY_PREPARATION_CONFIGS": { "$join": [
+          { "$out": "solver/hyperliquid-cash-carry-strategy-preparation.json" },
+          { "$out": "solver/hyperliquid-treasury-strategy-preparation.json" },
+          { "$out": "solver/hyperliquid-funding-strategy-preparation.json" }
+        ], "separator": "," },
+        "NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED": "true",
+        "NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS": { "$join": [
+          { "$out": "solver/hyperliquid-testnet-quote.json" },
+          { "$out": "solver/hyperliquid-treasury-quote.json" },
+          { "$out": "solver/hyperliquid-funding-quote.json" }
+        ], "separator": "," },
         "NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT": { "$def": "tradingAccount" },
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED": { "$def": "executionEnabled" },
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_PORT": "8792",

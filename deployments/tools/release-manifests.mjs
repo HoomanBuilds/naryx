@@ -551,6 +551,8 @@ async function validate(written, envs, liveEnv, log) {
   const readText = (path) => readFileSync(path, 'utf8');
   const nonceSource = { next: () => 1n };
   let hyperliquidMarkets;
+  let hyperliquidRuntimeDomain;
+  let hyperliquidNativeStrategyProfiles;
   try {
     const api = envs['api.env'];
     if (api !== undefined) {
@@ -615,8 +617,16 @@ async function validate(written, envs, liveEnv, log) {
         if (api.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== 'TESTNET') fail('api.env: NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT must be TESTNET.');
         const hyperliquid = await dist('services/api', 'hyperliquid-testnet-runtime-client.js');
         const config = hyperliquid.loadHyperliquidTestnetRuntimeConfig(api.NARYX_HYPERLIQUID_TESTNET_RUNTIME_CONFIG);
+        hyperliquidRuntimeDomain = config.domain;
         hyperliquidMarkets = await hyperliquidMetadataCheck(config);
         log('api: Hyperliquid Testnet runtime config loads and matches live testnet metadata');
+      }
+      if (api.NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES !== undefined) {
+        const native = await dist('services/api', 'hyperliquid-native-strategy-order.js');
+        hyperliquidNativeStrategyProfiles = native.loadHyperliquidNativeStrategyProfiles(
+          api.NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES,
+        );
+        log(`api: ${hyperliquidNativeStrategyProfiles.length} native HyperCore strategy order profiles load`);
       }
       if (api.NARYX_EXECUTION_POLICY_FILE !== undefined) {
         const policy = await dist('services/api', 'testnet-execution-policy.js');
@@ -627,6 +637,14 @@ async function validate(written, envs, liveEnv, log) {
     const solver = envs['solver.env'];
     if (solver !== undefined) {
       (await dist('services/solver', 'solver-process-config.js')).loadSolverProcessConfig(solver);
+      let hyperliquidStrategyPreparationLanes = [];
+      if (solver.NARYX_HYPERLIQUID_STRATEGY_PREPARATION_CONFIGS !== undefined) {
+        const preparation = await dist('services/solver', 'hyperliquid-strategy-preparation.js');
+        const paths = solver.NARYX_HYPERLIQUID_STRATEGY_PREPARATION_CONFIGS.split(',')
+          .map((value) => value.trim()).filter((value) => value !== '');
+        hyperliquidStrategyPreparationLanes = paths.map(preparation.loadHyperliquidStrategyPreparationLane);
+        log(`solver: ${hyperliquidStrategyPreparationLanes.length} HyperCore strategy preparation lanes load`);
+      }
       if (solver.NARYX_BASE_SEPOLIA_QUOTE_ENABLED === 'true') {
         const base = await dist('services/solver', 'base-sepolia-quote-runtime.js');
         const deployment = base.loadBaseSepoliaSolverDeployment(solver.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST);
@@ -665,6 +683,46 @@ async function validate(written, envs, liveEnv, log) {
           }
         }
         log('solver: Hyperliquid Testnet quote config loads and prices the configured testnet books');
+      }
+      if (solver.NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED === 'true') {
+        const quote = await dist('services/solver', 'hyperliquid-testnet-quote-config.js');
+        const lanes = quote.loadHyperliquidTestnetGeneralizedQuoteLanes(
+          solver,
+          hyperliquidStrategyPreparationLanes,
+          { nonceSource, currentTimeMs: () => BigInt(Date.now()) },
+        );
+        if (lanes.length !== hyperliquidStrategyPreparationLanes.length) {
+          fail('solver: every HyperCore strategy preparation lane needs one generalized quote lane.');
+        }
+        if (hyperliquidNativeStrategyProfiles !== undefined) {
+          const p = await protocol();
+          const domainKey = (domain) => `${domain.domainId}:${domain.domainManifestVersion}:${Buffer.from(domain.domainManifestHash).toString('hex')}`;
+          const byTemplate = new Map(hyperliquidStrategyPreparationLanes.map((lane) => [
+            lane.templateManifest.templateId,
+            lane,
+          ]));
+          if (hyperliquidRuntimeDomain === undefined
+            || hyperliquidStrategyPreparationLanes.some((lane) => domainKey(lane.domain) !== domainKey(hyperliquidRuntimeDomain))
+            || hyperliquidNativeStrategyProfiles.some((profile) => domainKey(profile.domain) !== domainKey(hyperliquidRuntimeDomain))) {
+            fail('HyperCore strategy preparation and order profiles must bind the generated runtime domain.');
+          }
+          for (const profile of hyperliquidNativeStrategyProfiles) {
+            const preparation = byTemplate.get(profile.templateId);
+            if (preparation === undefined
+              || Buffer.from(p.packageTemplateManifestHash(preparation.templateManifest)).toString('hex')
+                !== Buffer.from(profile.packageTemplateManifestHash).toString('hex')) {
+              fail(`HyperCore native strategy profile ${profile.profileId} does not match its preparation template.`);
+            }
+            const lane = lanes.find((candidate) => candidate.templateManifest.templateId === profile.templateId);
+            if (lane === undefined || lane.executionClassId !== profile.executionClassId
+              || lane.executionClassVersion !== profile.executionClassVersion
+              || Buffer.from(lane.executionClassManifestHash).toString('hex')
+                !== Buffer.from(profile.executionClassManifestHash).toString('hex')) {
+              fail(`HyperCore native strategy profile ${profile.profileId} does not match its quote lane.`);
+            }
+          }
+        }
+        log(`solver: ${lanes.length} generalized HyperCore quote lanes match their preparation and order profiles`);
       }
     }
     const keeper = envs['keeper.env'];
