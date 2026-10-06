@@ -114,8 +114,33 @@ export interface EvmMultiStrategyAccountEnvelope {
   readonly calls: readonly EvmMultiStrategyCall[];
   readonly executionHash: Hex;
   readonly callsHash: Hex;
+  readonly ownerTypedData: EvmMultiStrategyOwnerTypedData;
+  readonly solverTypedData: EvmMultiStrategySolverTypedData;
   readonly ownerDigest: Hex;
   readonly solverDigest: Hex;
+}
+
+export interface EvmMultiStrategyOwnerTypedData {
+  readonly domain: Readonly<{
+    name: 'Naryx Multi Strategy Account';
+    version: '1';
+    chainId: number;
+    verifyingContract: Address;
+  }>;
+  readonly types: Readonly<{
+    OwnerExecution: readonly Readonly<{ name: 'executionHash' | 'callsHash'; type: 'bytes32' }>[];
+  }>;
+  readonly primaryType: 'OwnerExecution';
+  readonly message: Readonly<{ executionHash: Hex; callsHash: Hex }>;
+}
+
+export interface EvmMultiStrategySolverTypedData {
+  readonly domain: EvmMultiStrategyOwnerTypedData['domain'];
+  readonly types: Readonly<{
+    SolverExecution: readonly Readonly<{ name: 'executionHash' | 'callsHash'; type: 'bytes32' }>[];
+  }>;
+  readonly primaryType: 'SolverExecution';
+  readonly message: Readonly<{ executionHash: Hex; callsHash: Hex }>;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -264,19 +289,32 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
   const executionHash = keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
   const callsHash = keccak256(encodeAbiParameters(CALL_PARAMETERS, [calls]));
   const domain = Object.freeze({ name: 'Naryx Multi Strategy Account', version: '1', chainId: input.chainId, verifyingContract: account });
-  const ownerDigest = hashTypedData({
+  const message = Object.freeze({ executionHash, callsHash });
+  const ownerTypedData: EvmMultiStrategyOwnerTypedData = Object.freeze({
     domain,
     primaryType: 'OwnerExecution',
-    types: { OwnerExecution: [{ name: 'executionHash', type: 'bytes32' }, { name: 'callsHash', type: 'bytes32' }] },
-    message: { executionHash, callsHash },
+    types: Object.freeze({ OwnerExecution: Object.freeze([{ name: 'executionHash', type: 'bytes32' }, { name: 'callsHash', type: 'bytes32' }] as const) }),
+    message,
   });
-  const solverDigest = hashTypedData({
+  const solverTypedData: EvmMultiStrategySolverTypedData = Object.freeze({
     domain,
     primaryType: 'SolverExecution',
-    types: { SolverExecution: [{ name: 'executionHash', type: 'bytes32' }, { name: 'callsHash', type: 'bytes32' }] },
-    message: { executionHash, callsHash },
+    types: Object.freeze({ SolverExecution: Object.freeze([{ name: 'executionHash', type: 'bytes32' }, { name: 'callsHash', type: 'bytes32' }] as const) }),
+    message,
   });
-  return Object.freeze({ account, execution, calls: Object.freeze(calls), executionHash, callsHash, ownerDigest, solverDigest });
+  const ownerDigest = hashTypedData(ownerTypedData);
+  const solverDigest = hashTypedData(solverTypedData);
+  return Object.freeze({
+    account,
+    execution,
+    calls: Object.freeze(calls),
+    executionHash,
+    callsHash,
+    ownerTypedData,
+    solverTypedData,
+    ownerDigest,
+    solverDigest,
+  });
 }
 
 export function encodeEvmMultiStrategyAccountExecution(input: Readonly<{

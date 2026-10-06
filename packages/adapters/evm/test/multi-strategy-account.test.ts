@@ -9,6 +9,7 @@ import {
 } from '@naryx/protocol-types';
 import {
   decodeFunctionData,
+  hashTypedData,
   hexToBytes,
   keccak256,
   stringToHex,
@@ -130,6 +131,8 @@ test('binds a compiled atomic strategy plan to the multi-strategy account signat
   assert.equal(envelope.calls[0]?.riskIncreasing, true);
   assert.equal(envelope.calls[0]?.payload, '0x12345678abcdef');
   assert.notEqual(envelope.ownerDigest, envelope.solverDigest);
+  assert.equal(envelope.ownerDigest, hashTypedData(envelope.ownerTypedData));
+  assert.equal(envelope.solverDigest, hashTypedData(envelope.solverTypedData));
 
   const encoded = encodeEvmMultiStrategyAccountExecution({
     envelope,
