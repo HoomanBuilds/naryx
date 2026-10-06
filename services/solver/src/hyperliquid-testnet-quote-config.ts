@@ -22,6 +22,7 @@ import {
 } from './hyperliquid-testnet-market-preflight.js';
 import {
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedFundingSpreadPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntime,
@@ -73,7 +74,7 @@ function normalizedMarket(market: Record<string, unknown>): Record<string, unkno
   });
   const reference = (name: string, value: VersionedManifestRef) =>
     field(name, () => versionedManifestRef(value.subjectId, value.manifestVersion, value.manifestHash));
-  const leg = (name: 'spot' | 'perpetual') => {
+  const leg = (name: 'spot' | 'perpetual' | 'counterPerpetual') => {
     const value = field(name, () => {
       const candidate = market[name] as QuoteLegInput;
       if (typeof candidate !== 'object' || candidate === null) throw new Error('missing');
@@ -87,6 +88,9 @@ function normalizedMarket(market: Record<string, unknown>): Record<string, unkno
       action: { ...value.action, adapter: field(`${name}.action.adapter`, () => adapterRef(value.action.adapter)) },
     };
   };
+  const counterPerpetual = market.counterPerpetual === undefined
+    ? undefined
+    : leg('counterPerpetual');
   return {
     ...market,
     domain: field('domain', () => {
@@ -97,6 +101,7 @@ function normalizedMarket(market: Record<string, unknown>): Record<string, unkno
     quoteAsset: asset('quoteAsset'),
     spot: leg('spot'),
     perpetual: leg('perpetual'),
+    ...(counterPerpetual === undefined ? {} : { counterPerpetual }),
   };
 }
 
@@ -205,7 +210,8 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     throw new Error('generalized Hyperliquid quote config must match exactly one preparation lane');
   }
   if (configured.templateId !== 'cash-and-carry-v1'
-    && configured.templateId !== 'treasury-inventory-hedge-v1') {
+    && configured.templateId !== 'treasury-inventory-hedge-v1'
+    && configured.templateId !== 'perpetual-funding-spread-v1') {
     throw new Error('generalized Hyperliquid quote lane does not support the configured template');
   }
   const executionClassVersionValue = positiveInteger(
@@ -234,6 +240,13 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     perpetual: configured.perpetual,
   } as const;
   const cashCarry = configured.templateId === 'cash-and-carry-v1';
+  const fundingSpread = configured.templateId === 'perpetual-funding-spread-v1';
+  const counterPerpetual = (configured as typeof configured & Readonly<{
+    counterPerpetual?: typeof configured.perpetual;
+  }>).counterPerpetual;
+  if (fundingSpread && counterPerpetual === undefined) {
+    throw new Error('generalized Hyperliquid funding spread quote config requires counterPerpetual');
+  }
   return Object.freeze({
     laneId: required(env, 'NARYX_HYPERLIQUID_GENERALIZED_LANE_ID'),
     environment: matchingLanes[0]!.environment,
@@ -264,15 +277,33 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
         executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
         supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
       })])
-      : Object.freeze([Object.freeze({
-        domain: configured.domain,
-        adapter: configured.perpetual.adapter,
-        legFamily: 'PERP_OPEN' as const,
-        supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
-        materializationClassId: 'hypercore-perpetual-ioc-v1',
-        executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
-        supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
-      })]),
+      : fundingSpread
+        ? Object.freeze([Object.freeze({
+          domain: configured.domain,
+          adapter: configured.perpetual.adapter,
+          legFamily: 'PERP_OPEN' as const,
+          supportedSides: Object.freeze(['BUY' as const]),
+          materializationClassId: 'hypercore-perpetual-ioc-v1',
+          executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+          supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+        }), Object.freeze({
+          domain: configured.domain,
+          adapter: counterPerpetual!.adapter,
+          legFamily: 'PERP_OPEN' as const,
+          supportedSides: Object.freeze(['SELL' as const]),
+          materializationClassId: 'hypercore-perpetual-ioc-v1',
+          executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+          supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+        })])
+        : Object.freeze([Object.freeze({
+          domain: configured.domain,
+          adapter: configured.perpetual.adapter,
+          legFamily: 'PERP_OPEN' as const,
+          supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+          materializationClassId: 'hypercore-perpetual-ioc-v1',
+          executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+          supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+        })]),
     solverId: configured.solverId,
     solverCapabilityManifestHash: configured.solverCapabilityManifestHash,
     pricing: cashCarry
@@ -282,7 +313,21 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
         expectedExitBasisBps: signedInteger(env, 'NARYX_HYPERLIQUID_GENERALIZED_EXPECTED_EXIT_BASIS_BPS'),
         spot: configured.spot,
       })
-      : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
+      : fundingSpread
+        ? createHyperliquidTestnetGeneralizedFundingSpreadPricing({
+          ...commonPricing,
+          expectedHoldingDurationMs: positiveInteger(
+            env,
+            'NARYX_HYPERLIQUID_GENERALIZED_HOLDING_DURATION_MS',
+          ),
+          reversalThresholdPpm: positiveInteger(
+            env,
+            'NARYX_HYPERLIQUID_GENERALIZED_REVERSAL_THRESHOLD_PPM',
+          ),
+          longPerpetual: configured.perpetual,
+          shortPerpetual: counterPerpetual!,
+        })
+        : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
     currentTime: async () => Object.freeze({
       unit: 'HYPERLIQUID_UNIX_MILLISECONDS' as const,
       value: clock(),

@@ -44,6 +44,7 @@ import {
   SqliteInternalAtomicQuoteStore,
   composeQuoteProviders,
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedFundingSpreadPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
@@ -1015,4 +1016,212 @@ test('prices a native Hyperliquid treasury hedge from executable perpetual depth
   assert.equal(terms.routeExpiryValue, 1_100n);
   assert.equal(terms.validUntilValue, 1_200n);
   assert.equal(terms.quoteNonce, 2n);
+});
+
+test('prices a native two-market Hyperliquid funding spread from both books and funding contexts', async () => {
+  const counterVenue = versionedManifestRef('hip3-testnet', 1, hash('b'));
+  const counterMarket = versionedManifestRef('btc-usdc-hip3-perp', 1, hash('c'));
+  const graph = packageGraph({
+    graphVersion: 1,
+    environment: 'testnet',
+    templateId: 'perpetual-funding-spread-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: hash('1'),
+    seriesId: 'btc-funding-spread-testnet',
+    seriesVersion: 1,
+    seriesManifestHash: hash('2'),
+    executionClassId: 'hypercore-funding-spread-ioc-v1',
+    executionClassVersion: 1,
+    executionClassManifestHash: hash('3'),
+    lifecycleAction: 'ENTRY',
+    owner: 'testnet-funding-spread-owner',
+    strategyAccountRefs: ['testnet-funding-spread-account'],
+    legs: [{
+      legId: 'funding-long',
+      legFamily: 'PERP_OPEN',
+      legTypeId: 'funding-long',
+      domain,
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assets: [base, quote],
+      side: 'BUY',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(602n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }, {
+      legId: 'funding-short',
+      legFamily: 'PERP_OPEN',
+      legTypeId: 'funding-short',
+      domain,
+      adapter: perpetualAdapter,
+      venue: counterVenue,
+      market: counterMarket,
+      assets: [base, quote],
+      side: 'SELL',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(600n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }],
+    dependencyEdges: [],
+    executionGroups: [{
+      groupId: 'funding-spread-ioc',
+      kind: 'EXACT_FILL',
+      legIds: ['funding-long', 'funding-short'],
+    }],
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    policyHashes: {
+      netting: hash('4'),
+      privacy: hash('5'),
+      solver: hash('6'),
+      delivery: hash('7'),
+      resource: hash('8'),
+      portfolioRiskLimits: hash('9'),
+    },
+    recoverySlots: [{
+      legId: 'funding-long',
+      action: 'COMPLETE',
+      maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }, {
+      legId: 'funding-short',
+      action: 'COMPLETE',
+      maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }],
+    maximumRecoveryCostQuoteAtoms: 2_000_000n,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    packageExpiryValue: 2_000n,
+    nonce: 3n,
+  });
+  const order = strategyPackageOrder({
+    version: 1,
+    environment: graph.environment,
+    templateId: graph.templateId,
+    templateVersion: graph.templateVersion,
+    packageTemplateManifestHash: graph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(graph),
+    seriesId: graph.seriesId,
+    seriesVersion: graph.seriesVersion,
+    seriesManifestHash: graph.seriesManifestHash,
+    executionClassId: graph.executionClassId,
+    executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.FUNDING_DIFFERENTIAL,
+    riskClassId: STRATEGY_RISK_CLASS_ID.FUNDING_SPREAD,
+    owner: graph.owner,
+    settlementAccount: 'testnet-funding-spread-account',
+    lifecycleAction: 'ENTRY',
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    packageOrderType: 'MARKETABLE_LIMIT',
+    packageTimeInForce: 'IOC',
+    economicQuantity: assetAmount(base, 1_000_000n),
+    quoteAsset: quote,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 2_000_000n }],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [{ asset: quote, maxAtoms: 2_000_000n }],
+    maximumMarginIncrease: assetAmount(quote, 130_000_000n),
+    maximumResidualValue: assetAmount(quote, 0n),
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    expiryValue: 2_000n,
+    nonce: 3n,
+  });
+  const requests: string[] = [];
+  const books: Record<string, BookShape> = {
+    'LONG:BTC': book('LONG:BTC', 950, [['60000', '1']], [['60020', '0.004'], ['60030', '0.02']]),
+    'SHORT:BTC': book('SHORT:BTC', 960, [['60120', '0.004'], ['60110', '0.02']], [['60130', '1']]),
+  };
+  const market: HyperliquidTestnetGeneralizedMarketReadPort = {
+    environment: 'testnet',
+    apiUrl: HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+    l2Book: async (coin) => {
+      requests.push(`l2Book:${coin}`);
+      return books[coin] ?? null;
+    },
+    userFees: async (user) => {
+      requests.push(`userFees:${user}`);
+      return liveFees;
+    },
+    perpetualContext: async (coin) => {
+      requests.push(`perpetualContext:${coin}`);
+      return { funding: coin === 'LONG:BTC' ? '0.00001' : '0.00004' };
+    },
+  };
+  const terms = await createHyperliquidTestnetGeneralizedFundingSpreadPricing({
+    domain,
+    baseAsset: base,
+    quoteAsset: quote,
+    tradingAccount,
+    market,
+    maxBookAgeMs: 500,
+    maxBookSpreadBps: 50,
+    marginBps: 1_000,
+    expectedHoldingDurationMs: 3_600_000n,
+    reversalThresholdPpm: 10n,
+    routeTtlMs: 100n,
+    quoteTtlMs: 200n,
+    feePolicyVersion: 1,
+    feePolicyManifestHash: hash('d'),
+    nonceSource: { next: () => 3n },
+    longPerpetual: {
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      coin: 'LONG:BTC',
+      sizeDecimals: 5,
+    },
+    shortPerpetual: {
+      adapter: perpetualAdapter,
+      venue: counterVenue,
+      market: counterMarket,
+      coin: 'SHORT:BTC',
+      sizeDecimals: 5,
+    },
+  }).quote({
+    documents: {
+      orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
+      graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
+      order,
+      graph,
+      recordedAtMs: 1,
+    },
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+
+  assert.deepEqual(requests, [
+    'l2Book:LONG:BTC',
+    'l2Book:SHORT:BTC',
+    `userFees:${tradingAccount}`,
+    'perpetualContext:LONG:BTC',
+    'perpetualContext:SHORT:BTC',
+  ]);
+  assert.equal(terms.economics.templateId, 'perpetual-funding-spread-v1');
+  assert.ok('values' in terms.economics);
+  if ('values' in terms.economics) {
+    assert.equal(terms.economics.values.longFundingPpm, 10n);
+    assert.equal(terms.economics.values.shortFundingPpm, 40n);
+    assert.equal(terms.economics.values.totalMarginAtoms, 120_140_000n);
+    assert.equal(terms.economics.values.longLiquidationDistanceBps, 0n);
+    assert.equal(terms.economics.values.shortLiquidationDistanceBps, 0n);
+  }
+  assert.equal(terms.legEconomics[0]?.grossNotional.atoms, 600_260_000n);
+  assert.equal(terms.legEconomics[1]?.grossNotional.atoms, 601_140_000n);
+  assert.equal(terms.netPackageOutcomeAtoms, -522_588n);
+  assert.equal(terms.routeExpiryValue, 1_100n);
+  assert.equal(terms.validUntilValue, 1_200n);
+  assert.equal(terms.quoteNonce, 3n);
 });

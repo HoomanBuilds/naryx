@@ -155,6 +155,26 @@ export interface HyperliquidTestnetGeneralizedTreasuryHedgePricingInput {
   readonly perpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
 }
 
+export interface HyperliquidTestnetGeneralizedFundingSpreadPricingInput {
+  readonly domain: DomainRef;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly tradingAccount: `0x${string}`;
+  readonly market: HyperliquidTestnetGeneralizedMarketReadPort;
+  readonly maxBookAgeMs: number;
+  readonly maxBookSpreadBps: number;
+  readonly marginBps: number;
+  readonly expectedHoldingDurationMs: bigint;
+  readonly reversalThresholdPpm: bigint;
+  readonly routeTtlMs: bigint;
+  readonly quoteTtlMs: bigint;
+  readonly feePolicyVersion: number;
+  readonly feePolicyManifestHash: Uint8Array | string;
+  readonly nonceSource: AtomicQuoteNonceSource;
+  readonly longPerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
+  readonly shortPerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
+}
+
 export interface QuoteProviders {
   readonly candidates: InternalAtomicQuoteCandidateProvider;
   readonly terms: InternalAtomicQuoteTermsProvider;
@@ -286,6 +306,18 @@ function requireBps(value: number, name: string): bigint {
 function ceilDiv(numerator: bigint, denominator: bigint): bigint {
   if (numerator < 0n || denominator <= 0n) throw new Error('invalid unsigned division');
   return (numerator + denominator - 1n) / denominator;
+}
+
+function floorSignedDiv(numerator: bigint, denominator: bigint): bigint {
+  if (denominator <= 0n) throw new Error('invalid signed division');
+  const quotient = numerator / denominator;
+  return numerator < 0n && numerator % denominator !== 0n ? quotient - 1n : quotient;
+}
+
+function ceilSignedDiv(numerator: bigint, denominator: bigint): bigint {
+  if (denominator <= 0n) throw new Error('invalid signed division');
+  const quotient = numerator / denominator;
+  return numerator > 0n && numerator % denominator !== 0n ? quotient + 1n : quotient;
 }
 
 function gcd(left: bigint, right: bigint): bigint {
@@ -1278,6 +1310,249 @@ export function createHyperliquidTestnetGeneralizedTreasuryHedgePricing(
         throw new GeneralizedStrategyQuoteError(
           'QUOTE_DECLINED',
           `Hyperliquid testnet treasury hedge quote declined: ${reason}`,
+        );
+      }
+    },
+  };
+  return Object.freeze(pricing);
+}
+
+function validateGeneralizedFundingSpreadPricing(
+  input: HyperliquidTestnetGeneralizedFundingSpreadPricingInput,
+): void {
+  try {
+    domainRef(input.domain.domainId, input.domain.domainManifestVersion, input.domain.domainManifestHash);
+    assetRef(input.baseAsset.assetId, input.baseAsset.assetManifestHash, input.baseAsset.decimals);
+    assetRef(input.quoteAsset.assetId, input.quoteAsset.assetManifestHash, input.quoteAsset.decimals);
+    manifestHash(input.feePolicyManifestHash, 'feePolicyManifestHash');
+    if (input.domain.domainId !== 'hypercore:testnet'
+      || sameAsset(input.baseAsset, input.quoteAsset)
+      || input.market.environment !== 'testnet'
+      || input.market.apiUrl !== HYPERLIQUID_TESTNET_MARKET_INFO_URL
+      || typeof input.market.l2Book !== 'function'
+      || typeof input.market.userFees !== 'function'
+      || typeof input.market.perpetualContext !== 'function'
+      || !ADDRESS.test(input.tradingAccount)
+      || !Number.isSafeInteger(input.maxBookAgeMs) || input.maxBookAgeMs <= 0
+      || !Number.isSafeInteger(input.feePolicyVersion) || input.feePolicyVersion <= 0
+      || typeof input.nonceSource?.next !== 'function') {
+      throw new Error('missing required configuration');
+    }
+    requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
+    requireBps(input.marginBps, 'marginBps');
+    requirePositive(input.expectedHoldingDurationMs, 'expectedHoldingDurationMs');
+    if (input.reversalThresholdPpm < 0n || input.reversalThresholdPpm > U256_MAX) {
+      throw new Error('reversalThresholdPpm must be a nonnegative u256');
+    }
+    requirePositive(input.routeTtlMs, 'routeTtlMs');
+    requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+    for (const leg of [input.longPerpetual, input.shortPerpetual]) {
+      adapterRef(leg.adapter);
+      versionedManifestRef(leg.venue.subjectId, leg.venue.manifestVersion, leg.venue.manifestHash);
+      versionedManifestRef(leg.market.subjectId, leg.market.manifestVersion, leg.market.manifestHash);
+      if (!/^[A-Za-z0-9@._:/-]{1,64}$/.test(leg.coin)
+        || !Number.isSafeInteger(leg.sizeDecimals) || leg.sizeDecimals < 0
+        || leg.sizeDecimals > 6) throw new Error('perpetual market identity is invalid');
+    }
+    if (input.longPerpetual.coin === input.shortPerpetual.coin
+      || sameVersionedRef(input.longPerpetual.market, input.shortPerpetual.market)) {
+      throw new Error('funding spread requires two distinct perpetual markets');
+    }
+  } catch (error) {
+    throw new Error(`Hyperliquid Testnet generalized funding spread pricing is incomplete or invalid: ${
+      error instanceof Error ? error.message : 'invalid value'}`);
+  }
+}
+
+async function generalizedFundingSpreadTerms(
+  documents: StoredStrategyPackageOrderDocuments,
+  currentTime: Readonly<{ unit: string; value: bigint }>,
+  input: HyperliquidTestnetGeneralizedFundingSpreadPricingInput,
+): Promise<GeneralizedStrategyQuoteTerms> {
+  const { order, graph } = documents;
+  if (order.templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
+    || order.lifecycleAction !== 'ENTRY'
+    || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
+    || graph.legs.length !== 2
+    || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+    || order.expiryUnit !== currentTime.unit) {
+    throw new Error('committed package is not a supported Hyperliquid funding spread entry');
+  }
+  const long = graph.legs.find((leg) => leg.legTypeId === 'funding-long');
+  const short = graph.legs.find((leg) => leg.legTypeId === 'funding-short');
+  if (long === undefined || short === undefined
+    || long.legFamily !== 'PERP_OPEN' || long.side !== 'BUY'
+    || short.legFamily !== 'PERP_OPEN' || short.side !== 'SELL'
+    || !sameDomain(long.domain, input.domain) || !sameDomain(short.domain, input.domain)
+    || !sameAdapter(long.adapter, input.longPerpetual.adapter)
+    || !sameAdapter(short.adapter, input.shortPerpetual.adapter)
+    || !sameVersionedRef(long.venue, input.longPerpetual.venue)
+    || !sameVersionedRef(short.venue, input.shortPerpetual.venue)
+    || !sameVersionedRef(long.market, input.longPerpetual.market)
+    || !sameVersionedRef(short.market, input.shortPerpetual.market)
+    || !sameAsset(long.quantityAsset, input.baseAsset)
+    || !sameAsset(short.quantityAsset, input.baseAsset)
+    || long.limitPrice === undefined || short.limitPrice === undefined
+    || !sameAsset(long.limitPrice.baseAsset, input.baseAsset)
+    || !sameAsset(short.limitPrice.baseAsset, input.baseAsset)
+    || !sameAsset(long.limitPrice.quoteAsset, input.quoteAsset)
+    || !sameAsset(short.limitPrice.quoteAsset, input.quoteAsset)
+    || !sameAsset(order.economicQuantity.asset, input.baseAsset)
+    || order.economicQuantity.atoms !== long.quantityAtoms
+    || order.economicQuantity.atoms !== short.quantityAtoms
+    || !sameAsset(order.quoteAsset, input.quoteAsset)) {
+    throw new Error('committed package does not match the configured Hyperliquid funding markets');
+  }
+  formatHypercoreSize(long.quantityAtoms, input.baseAsset.decimals, input.longPerpetual.sizeDecimals);
+  formatHypercoreSize(short.quantityAtoms, input.baseAsset.decimals, input.shortPerpetual.sizeDecimals);
+  const longWire = formatHypercorePrice(long.limitPrice, 6 - input.longPerpetual.sizeDecimals);
+  const shortWire = formatHypercorePrice(short.limitPrice, 6 - input.shortPerpetual.sizeDecimals);
+  if (compareHypercoreWirePriceToExact(longWire, long.limitPrice) > 0) {
+    throw new Error('signed long perpetual limit is not safely representable on HyperCore');
+  }
+  if (compareHypercoreWirePriceToExact(shortWire, short.limitPrice) < 0) {
+    throw new Error('signed short perpetual limit is not safely representable on HyperCore');
+  }
+  const [longBookValue, shortBookValue, fees, longContext, shortContext] = await Promise.all([
+    input.market.l2Book(input.longPerpetual.coin),
+    input.market.l2Book(input.shortPerpetual.coin),
+    input.market.userFees(input.tradingAccount),
+    input.market.perpetualContext(input.longPerpetual.coin),
+    input.market.perpetualContext(input.shortPerpetual.coin),
+  ]);
+  const now = requirePositive(currentTime.value, 'currentTime');
+  if (now >= order.expiryValue) throw new Error('order is expired');
+  const longBook = liveBook(longBookValue, input.longPerpetual.coin, 'long perpetual book', now, input);
+  const shortBook = liveBook(shortBookValue, input.shortPerpetual.coin, 'short perpetual book', now, input);
+  const longExecution = sweep(
+    longBook, 'BUY', long.quantityAtoms, longWire,
+    input.baseAsset, input.quoteAsset, 'long perpetual book',
+  );
+  const shortExecution = sweep(
+    shortBook, 'SELL', short.quantityAtoms, shortWire,
+    input.baseAsset, input.quoteAsset, 'short perpetual book',
+  );
+  const longNotionalAtoms = ceilDiv(longExecution.numerator, longExecution.denominator);
+  const shortNotionalAtoms = shortExecution.numerator / shortExecution.denominator;
+  const takerFee = feeRate(fees.userCrossRate, 'userCrossRate');
+  const longFeeAtoms = ceilDiv(
+    longExecution.numerator * takerFee.numerator,
+    longExecution.denominator * takerFee.denominator,
+  );
+  const shortFeeAtoms = ceilDiv(
+    shortExecution.numerator * takerFee.numerator,
+    shortExecution.denominator * takerFee.denominator,
+  );
+  const marginBps = requireBps(input.marginBps, 'marginBps');
+  const longMarginAtoms = ceilDiv(longNotionalAtoms * marginBps, BPS_SCALE);
+  const shortMarginAtoms = ceilDiv(shortNotionalAtoms * marginBps, BPS_SCALE);
+  const totalMarginAtoms = longMarginAtoms + shortMarginAtoms;
+  if (totalMarginAtoms > order.maximumMarginIncrease.atoms) {
+    throw new Error('required margin exceeds the signed cap');
+  }
+  const longFunding = signedDecimal(longContext.funding, 'long perpetual funding');
+  const shortFunding = signedDecimal(shortContext.funding, 'short perpetual funding');
+  const longFundingDenominator = pow10(longFunding.scale);
+  const shortFundingDenominator = pow10(shortFunding.scale);
+  const longFundingPpm = ceilSignedDiv(longFunding.atoms * 1_000_000n, longFundingDenominator);
+  const shortFundingPpm = floorSignedDiv(shortFunding.atoms * 1_000_000n, shortFundingDenominator);
+  const holdingDurationMs = requirePositive(
+    input.expectedHoldingDurationMs,
+    'expectedHoldingDurationMs',
+  );
+  const longFundingCostAtoms = ceilSignedDiv(
+    longNotionalAtoms * longFunding.atoms * holdingDurationMs,
+    longFundingDenominator * 3_600_000n,
+  );
+  const shortFundingIncomeAtoms = floorSignedDiv(
+    shortNotionalAtoms * shortFunding.atoms * holdingDurationMs,
+    shortFundingDenominator * 3_600_000n,
+  );
+  const totalFeesAtoms = longFeeAtoms + shortFeeAtoms;
+  const expectedFundingAtoms = shortFundingIncomeAtoms - longFundingCostAtoms;
+  const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  const routeExpiryValue = [
+    order.expiryValue - 1n,
+    now + requirePositive(input.routeTtlMs, 'routeTtlMs'),
+    now + quoteTtl - 1n,
+  ].reduce((left, right) => left < right ? left : right);
+  const validUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
+  if (routeExpiryValue <= now || validUntilValue <= routeExpiryValue) {
+    throw new Error('configured quote freshness window is empty');
+  }
+  const quoteNonce = input.nonceSource.next();
+  if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
+  return Object.freeze({
+    quoteMode: 'EXECUTION_COMMITMENT',
+    economics: Object.freeze({
+      templateId: STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD,
+      values: Object.freeze({
+        longFundingPpm,
+        shortFundingPpm,
+        expectedHoldingDurationMs: holdingDurationMs,
+        reversalThresholdPpm: input.reversalThresholdPpm,
+        // Shared cross-margin state cannot support an attributable nonzero package liquidation claim.
+        longLiquidationDistanceBps: 0n,
+        shortLiquidationDistanceBps: 0n,
+        totalMarginAtoms,
+      }),
+    }),
+    legEconomics: Object.freeze([Object.freeze({
+      legId: long.legId,
+      quantity: assetAmount(input.baseAsset, long.quantityAtoms),
+      executionPrice: reducedPrice(
+        input.baseAsset,
+        input.quoteAsset,
+        longExecution.numerator,
+        longExecution.denominator * long.quantityAtoms,
+      ),
+      grossNotional: assetAmount(input.quoteAsset, longNotionalAtoms),
+      marginDelta: assetAmount(input.quoteAsset, longMarginAtoms),
+      venueFee: assetAmount(input.quoteAsset, longFeeAtoms),
+      builderFee: assetAmount(input.quoteAsset, 0n),
+      residualValue: assetAmount(input.quoteAsset, 0n),
+    }), Object.freeze({
+      legId: short.legId,
+      quantity: assetAmount(input.baseAsset, short.quantityAtoms),
+      executionPrice: reducedPrice(
+        input.baseAsset,
+        input.quoteAsset,
+        shortExecution.numerator,
+        shortExecution.denominator * short.quantityAtoms,
+      ),
+      grossNotional: assetAmount(input.quoteAsset, shortNotionalAtoms),
+      marginDelta: assetAmount(input.quoteAsset, shortMarginAtoms),
+      venueFee: assetAmount(input.quoteAsset, shortFeeAtoms),
+      builderFee: assetAmount(input.quoteAsset, 0n),
+      residualValue: assetAmount(input.quoteAsset, 0n),
+    })]),
+    netPackageOutcomeAtoms: expectedFundingAtoms - totalFeesAtoms,
+    serviceCharges: Object.freeze([]),
+    passThroughCosts: Object.freeze([Object.freeze({
+      category: 'VENUE' as const,
+      amount: assetAmount(input.quoteAsset, totalFeesAtoms),
+    })]),
+    feePolicyVersion: input.feePolicyVersion,
+    feePolicyManifestHash: input.feePolicyManifestHash,
+    routeExpiryValue,
+    validUntilValue,
+    quoteNonce,
+  });
+}
+
+export function createHyperliquidTestnetGeneralizedFundingSpreadPricing(
+  input: HyperliquidTestnetGeneralizedFundingSpreadPricingInput,
+): GeneralizedStrategyPricingPort {
+  validateGeneralizedFundingSpreadPricing(input);
+  const pricing: GeneralizedStrategyPricingPort = {
+    quote: async ({ documents, currentTime }) => {
+      try {
+        return await generalizedFundingSpreadTerms(documents, currentTime, input);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n', 1)[0]!.slice(0, 200) : 'pricing failed';
+        throw new GeneralizedStrategyQuoteError(
+          'QUOTE_DECLINED',
+          `Hyperliquid testnet funding spread quote declined: ${reason}`,
         );
       }
     },
