@@ -80,6 +80,12 @@ type PackageQuoteReview = Readonly<{
   metrics: readonly QuoteMetric[];
 }>;
 
+type StagedStrategyOrder = Readonly<{
+  sourceOrderHash: string;
+  orderHash: string;
+  graphHash: string;
+}>;
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value as Record<string, unknown>;
@@ -288,6 +294,20 @@ function parseQuoteReview(payload: unknown, requestedOrderHash: string): Package
   });
 }
 
+function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: string): StagedStrategyOrder {
+  const root = record(payload, "Strategy order staging response");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || typeof root.created !== "boolean") {
+    throw new Error("Strategy order staging response is invalid.");
+  }
+  const sourceOrderHash = hash(root.sourceOrderHash, "Source order hash");
+  if (sourceOrderHash !== requestedSourceOrderHash) throw new Error("Staged strategy order does not bind the source order.");
+  return Object.freeze({
+    sourceOrderHash,
+    orderHash: hash(root.orderHash, "Strategy order hash"),
+    graphHash: hash(root.graphHash, "Strategy graph hash"),
+  });
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -323,19 +343,23 @@ export function GeneralizedStrategyPreparationPanel({
   publicApiBaseUrl,
   templateId,
   lifecycleAction,
+  sourceOrderHash = null,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   templateId: string;
   lifecycleAction: string;
+  sourceOrderHash?: string | null;
 }) {
   const [orderHash, setOrderHash] = useState("");
+  const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [admissions, setAdmissions] = useState<readonly AdmissionSummary[]>([]);
   const [admissionError, setAdmissionError] = useState<string | null>(null);
+  const [stageBusy, setStageBusy] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [prepareBusy, setPrepareBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,6 +385,34 @@ export function GeneralizedStrategyPreparationPanel({
   }, [publicApiBaseUrl]);
 
   const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
+
+  async function stageStrategyOrder() {
+    if (privateApiBaseUrl === null || sourceOrderHash === null || !HASH.test(sourceOrderHash)) return;
+    setStageBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-orders/stage`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceOrderHash }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const result = parseStagedStrategyOrder(await response.json(), sourceOrderHash);
+      setStaged(result);
+      setOrderHash(result.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Strategy order staging failed closed.");
+    } finally {
+      setStageBusy(false);
+    }
+  }
 
   async function requestQuote() {
     if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
@@ -420,6 +472,16 @@ export function GeneralizedStrategyPreparationPanel({
       <p className={styles.reviewNotice}>
         Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
       </p>
+      {sourceOrderHash !== null ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="generalized-strategy-source">Selected canonical order</label>
+          <input id="generalized-strategy-source" value={sourceOrderHash} readOnly spellCheck={false} />
+          <button type="button" className={styles.primaryAction} disabled={privateApiBaseUrl === null || stageBusy || !HASH.test(sourceOrderHash)} onClick={() => void stageStrategyOrder()}>
+            {stageBusy ? "Staging typed strategy order" : staged?.sourceOrderHash === sourceOrderHash ? "Restage typed strategy order" : "Stage typed strategy order"}
+          </button>
+          {staged ? <p className={styles.fieldContext}>Graph {compact(staged.graphHash)} is stored for solver quoting.</p> : null}
+        </div>
+      ) : null}
       <div className={styles.strategyPrepareForm}>
         <label htmlFor="generalized-strategy-order">Stored order hash</label>
         <input
