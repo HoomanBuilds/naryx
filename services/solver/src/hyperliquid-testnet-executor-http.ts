@@ -52,6 +52,7 @@ export type HyperliquidTestnetLaneReleaseRequest = Readonly<{
 }>;
 
 export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
+  legId: string;
   role: 'SPOT' | 'PERPETUAL';
   clientOrderId: `0x${string}`;
   requestedSignedBaseAtoms: string;
@@ -515,6 +516,8 @@ function executionEvidence(
     const acceptedLeg = role === 'SPOT' ? accepted.spot : accepted.perpetual;
     requireCondition(isRecord(acceptedLeg), 'INVALID_RESULT', `${role} accepted evidence is invalid`);
     requireCondition(isRecord(leg) && isRecord(leg.baseAsset) && isRecord(leg.quoteAsset)
+      && typeof leg.legId === 'string'
+      && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(leg.legId)
       && typeof leg.clientOrderId === 'string' && /^0x[0-9a-f]{32}$/.test(leg.clientOrderId),
     'INVALID_RESULT', `${role} execution plan evidence is invalid`);
     const baseAsset = leg.baseAsset;
@@ -559,6 +562,7 @@ function executionEvidence(
     const key = `${feeAssetId}\u0000${feeAssetDecimals}`;
     normalizedFees.set(key, (normalizedFees.get(key) ?? 0n) - feeAtoms);
     const normalized = Object.freeze({
+      legId: leg.legId as string,
       role,
       clientOrderId: leg.clientOrderId as `0x${string}`,
       requestedSignedBaseAtoms: requested.toString(),

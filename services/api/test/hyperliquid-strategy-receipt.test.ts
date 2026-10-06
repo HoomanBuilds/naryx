@@ -88,6 +88,7 @@ function completed(): ReconciledResult {
       terminalResidualBaseAtoms: "1",
       terminalResidualQuoteAtoms: "50",
       legs: [{
+        legId: "spot",
         role: "SPOT",
         clientOrderId: `0x${"44".repeat(16)}`,
         requestedSignedBaseAtoms: "100",
@@ -99,6 +100,7 @@ function completed(): ReconciledResult {
         venueFeeQuoteAtoms: "10",
         evidenceCommitment: `0x${"45".repeat(32)}`,
       }, {
+        legId: "perp",
         role: "PERPETUAL",
         clientOrderId: `0x${"46".repeat(16)}`,
         requestedSignedBaseAtoms: "-100",

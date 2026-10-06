@@ -69,8 +69,8 @@ function plan(): HyperliquidExecutionPlan {
       expiresAfter: Number(expiry),
     },
     legs: [
-      { role: 'SPOT', clientOrderId: spotClientOrderId, order: spot },
-      { role: 'PERPETUAL', clientOrderId: perpetualClientOrderId, order: perpetual },
+      { legId: 'spot', role: 'SPOT', clientOrderId: spotClientOrderId, order: spot },
+      { legId: 'perp', role: 'PERPETUAL', clientOrderId: perpetualClientOrderId, order: perpetual },
     ],
   } as unknown as HyperliquidExecutionPlan;
 }

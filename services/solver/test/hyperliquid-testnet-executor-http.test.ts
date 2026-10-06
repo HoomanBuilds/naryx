@@ -70,9 +70,9 @@ function plan(): HyperliquidExecutionPlan {
       expiresAfter: 1_005_000,
     },
     legs: [
-      { role: 'SPOT', legIndex: 0, clientOrderId: SPOT_CLOID, order: spot,
+      { legId: 'spot', role: 'SPOT', legIndex: 0, clientOrderId: SPOT_CLOID, order: spot,
         baseAsset: BASE_ASSET, quoteAsset: QUOTE_ASSET, signedBaseDeltaAtoms: 1_000n },
-      { role: 'PERPETUAL', legIndex: 1, clientOrderId: PERP_CLOID, order: perpetual,
+      { legId: 'perp', role: 'PERPETUAL', legIndex: 1, clientOrderId: PERP_CLOID, order: perpetual,
         baseAsset: BASE_ASSET, quoteAsset: QUOTE_ASSET, signedBaseDeltaAtoms: -999n },
     ],
     terminalResidualPolicy: {
@@ -304,6 +304,7 @@ test('executor exposes commitment-bound normalized fills and fees', async () => 
     assert.equal(evidence.terminalResidualBaseAtoms, '0');
     assert.equal(evidence.terminalResidualQuoteAtoms, '0');
     assert.deepEqual(evidence.legs.map((leg) => ({
+      legId: leg.legId,
       role: leg.role,
       requested: leg.requestedSignedBaseAtoms,
       filled: leg.filledSignedBaseAtoms,
@@ -312,9 +313,9 @@ test('executor exposes commitment-bound normalized fills and fees', async () => 
       fee: leg.feeAtoms,
       quoteFee: leg.venueFeeQuoteAtoms,
     })), [
-      { role: 'SPOT', requested: '1000', filled: '1000', gross: '6000',
+      { legId: 'spot', role: 'SPOT', requested: '1000', filled: '1000', gross: '6000',
         feeAsset: 'btc', fee: '1', quoteFee: '6' },
-      { role: 'PERPETUAL', requested: '-999', filled: '-999', gross: '5994',
+      { legId: 'perp', role: 'PERPETUAL', requested: '-999', filled: '-999', gross: '5994',
         feeAsset: 'usdc', fee: '3', quoteFee: '3' },
     ]);
     assert.ok(evidence.legs.every((leg) =>

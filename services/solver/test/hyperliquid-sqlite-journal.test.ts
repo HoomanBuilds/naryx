@@ -60,8 +60,8 @@ function plan(routeByte = 6, order = 0): HyperliquidExecutionPlan {
       expiresAfter: Number(expiry),
     },
     legs: [
-      { role: 'SPOT', clientOrderId: spotId, order: spot },
-      { role: 'PERPETUAL', clientOrderId: perpId, order: perpetual },
+      { legId: 'spot', role: 'SPOT', clientOrderId: spotId, order: spot },
+      { legId: 'perp', role: 'PERPETUAL', clientOrderId: perpId, order: perpetual },
     ],
   } as unknown as HyperliquidExecutionPlan;
 }

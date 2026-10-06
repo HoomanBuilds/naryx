@@ -50,24 +50,12 @@ function receiptNonce(
   return nonce === 0n ? 1n : nonce;
 }
 
-function evidenceByRole(
+function evidenceByLegId(
   evidence: HyperliquidTestnetExecutionEvidence,
-  role: HyperliquidTestnetLegExecutionEvidence["role"],
+  legId: string,
 ): HyperliquidTestnetLegExecutionEvidence {
-  const matches = evidence.legs.filter((leg) => leg.role === role);
-  requireCondition(matches.length === 1, "INVALID_EVIDENCE", `Execution evidence must contain one ${role} leg.`);
-  return matches[0]!;
-}
-
-function graphLeg(
-  admission: StoredStrategyPackageAdmission,
-  role: HyperliquidTestnetLegExecutionEvidence["role"],
-) {
-  const matches = admission.graph.legs.filter((leg) => role === "SPOT"
-    ? leg.legFamily === "SPOT_SWAP"
-    : leg.legFamily === "PERP_OPEN" || leg.legFamily === "PERP_CLOSE"
-      || leg.legFamily === "PERP_INCREASE" || leg.legFamily === "PERP_DECREASE");
-  requireCondition(matches.length === 1, "UNSUPPORTED_GRAPH", `The strategy graph must contain one ${role} leg.`);
+  const matches = evidence.legs.filter((leg) => leg.legId === legId);
+  requireCondition(matches.length === 1, "INVALID_EVIDENCE", `Execution evidence must contain leg ${legId}.`);
   return matches[0]!;
 }
 
@@ -79,11 +67,13 @@ function signedRequestedQuantity(side: "BUY" | "SELL" | "NONE", atoms: bigint): 
 function checkedLegOutcome(
   admission: StoredStrategyPackageAdmission,
   evidence: HyperliquidTestnetExecutionEvidence,
-  role: HyperliquidTestnetLegExecutionEvidence["role"],
+  legId: string,
   residualValueAtoms: bigint,
 ) {
-  const leg = graphLeg(admission, role);
-  const observed = evidenceByRole(evidence, role);
+  const leg = admission.graph.legs.find((candidate) => candidate.legId === legId);
+  requireCondition(leg !== undefined, "UNSUPPORTED_GRAPH", `The strategy graph does not contain leg ${legId}.`);
+  const observed = evidenceByLegId(evidence, legId);
+  const role = observed.role;
   const requested = BigInt(observed.requestedSignedBaseAtoms);
   const filled = BigInt(observed.filledSignedBaseAtoms);
   const grossQuoteAtoms = BigInt(observed.grossQuoteAtoms);
@@ -142,6 +132,8 @@ export function buildHyperliquidStrategyPackageReceipt(input: Readonly<{
   requireCondition(admission.graph.legs.length === 2,
     "UNSUPPORTED_GRAPH", "The Hyperliquid receipt path supports exactly two execution legs.");
   const evidence = result.executionEvidence;
+  requireCondition(new Set(evidence.legs.map((leg) => leg.legId)).size === evidence.legs.length,
+    "INVALID_EVIDENCE", "Execution evidence leg identifiers must be unique.");
   const terminalResidualBaseAtoms = BigInt(evidence.terminalResidualBaseAtoms);
   const terminalResidualQuoteAtoms = BigInt(evidence.terminalResidualQuoteAtoms);
   const observedSpot = BigInt(result.observedNetSpotDeltaAtoms!);
@@ -153,9 +145,14 @@ export function buildHyperliquidStrategyPackageReceipt(input: Readonly<{
   requireCondition(result.packageStatus !== "COMPLETED_EXACT" || terminalResidualQuoteAtoms === 0n,
     "RESIDUAL_MISMATCH", "An exact completion cannot carry a terminal residual.");
 
-  const spot = checkedLegOutcome(admission, evidence, "SPOT", terminalResidualQuoteAtoms);
-  const perpetual = checkedLegOutcome(admission, evidence, "PERPETUAL", 0n);
-  const legOutcomes = [spot, perpetual];
+  const residualLegId = evidence.legs.find((leg) => leg.role === "SPOT")?.legId
+    ?? evidence.legs[0]!.legId;
+  const legOutcomes = evidence.legs.map((leg) => checkedLegOutcome(
+    admission,
+    evidence,
+    leg.legId,
+    leg.legId === residualLegId ? terminalResidualQuoteAtoms : 0n,
+  ));
   const venueFeeAtoms = legOutcomes.reduce((sum, outcome) => sum + outcome.venueFee.atoms, 0n);
   const quotedVenueFeeAtoms = admission.quote.passThroughCosts
     .find((cost) => cost.category === "VENUE")?.amount.atoms ?? 0n;

@@ -342,6 +342,7 @@ export function bindHyperliquidStrategyPlanToCashCarrySource(input: Readonly<{
     const sourceLeg = candidates[0]!;
     usedSourceRoles.add(sourceLeg.role);
     return Object.freeze({
+      legId: strategyOrder.legId,
       role: sourceLeg.role,
       legIndex: sourceLeg.legIndex,
       adapter: sourceLeg.adapter,

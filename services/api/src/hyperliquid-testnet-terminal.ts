@@ -3,6 +3,7 @@ export const HYPERLIQUID_TESTNET_ENVIRONMENT = "TESTNET" as const;
 
 const REQUEST_KEYS = ["attemptId", "idempotencyKey"] as const;
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const LEG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMMITMENT_PATTERN = /^0x[0-9a-f]{64}$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SIGNED_ATOMS_PATTERN = /^(?:0|-?[1-9][0-9]{0,77})$/;
@@ -24,6 +25,7 @@ export type HyperliquidTestnetFinalPackageStatus =
   | "MANUAL_INTERVENTION";
 
 export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
+  legId: string;
   role: "SPOT" | "PERPETUAL";
   clientOrderId: string;
   requestedSignedBaseAtoms: string;
@@ -178,6 +180,13 @@ function requireBrowserId(value: unknown, name: string): string {
   return value;
 }
 
+function requireLegId(value: unknown, name: string): string {
+  if (typeof value !== "string" || !LEG_ID_PATTERN.test(value)) {
+    throw new Error(`${name} must be a bounded protocol identifier`);
+  }
+  return value;
+}
+
 export function parseHyperliquidTestnetTerminalExecutionRequest(
   value: unknown,
 ): HyperliquidTestnetTerminalExecutionRequest {
@@ -268,7 +277,7 @@ function requireLegExecutionEvidence(
 ): HyperliquidTestnetLegExecutionEvidence {
   if (!isRecord(value) || !hasExactKeys(value, [
     "clientOrderId", "evidenceCommitment", "feeAssetDecimals", "feeAssetId", "feeAtoms",
-    "filledSignedBaseAtoms", "grossQuoteAtoms", "requestedSignedBaseAtoms", "role",
+    "filledSignedBaseAtoms", "grossQuoteAtoms", "legId", "requestedSignedBaseAtoms", "role",
     "venueFeeQuoteAtoms",
   ])) throw new Error(`${role} execution evidence has invalid fields`);
   if (value.role !== role) throw new Error(`${role} execution evidence role is invalid`);
@@ -284,6 +293,7 @@ function requireLegExecutionEvidence(
     throw new Error(`${role} feeAssetDecimals is invalid`);
   }
   return Object.freeze({
+    legId: requireLegId(value.legId, `${role}.legId`),
     role,
     clientOrderId: value.clientOrderId,
     requestedSignedBaseAtoms: requireSignedAtoms(

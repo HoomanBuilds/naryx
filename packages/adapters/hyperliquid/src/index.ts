@@ -96,6 +96,7 @@ export interface HyperliquidPlanCommitments {
 }
 
 export interface HyperliquidPlannedLeg {
+  readonly legId: string;
   readonly role: 'SPOT' | 'PERPETUAL';
   readonly legIndex: number;
   readonly adapter: AdapterRef;
@@ -559,6 +560,7 @@ export class HyperliquidExecutionPlanner {
     });
     const orderedLegs = [
       Object.freeze({
+        legId: 'spot',
         role: 'SPOT' as const,
         legIndex: spotLeg.legIndex,
         adapter: spotLeg.adapter,
@@ -576,6 +578,7 @@ export class HyperliquidExecutionPlanner {
         actionSequence: spotLeg.actionSequence,
       }),
       Object.freeze({
+        legId: 'perpetual',
         role: 'PERPETUAL' as const,
         legIndex: perpetualLeg.legIndex,
         adapter: perpetualLeg.adapter,
@@ -598,6 +601,7 @@ export class HyperliquidExecutionPlanner {
     requireCondition(first !== undefined && second !== undefined, 'two planned legs are required');
     const legs: readonly [HyperliquidPlannedLeg, HyperliquidPlannedLeg] = Object.freeze([
       Object.freeze({
+        legId: first.legId,
         role: first.role,
         legIndex: first.legIndex,
         adapter: first.adapter,
@@ -614,6 +618,7 @@ export class HyperliquidExecutionPlanner {
         order: first.order,
       }),
       Object.freeze({
+        legId: second.legId,
         role: second.role,
         legIndex: second.legIndex,
         adapter: second.adapter,

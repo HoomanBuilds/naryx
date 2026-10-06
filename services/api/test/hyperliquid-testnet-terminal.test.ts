@@ -37,13 +37,13 @@ const EXECUTION_EVIDENCE = Object.freeze({
   terminalResidualQuoteAtoms: "0",
   legs: Object.freeze([
     Object.freeze({
-      role: "SPOT", clientOrderId: `0x${"51".repeat(16)}`,
+      legId: "spot", role: "SPOT", clientOrderId: `0x${"51".repeat(16)}`,
       requestedSignedBaseAtoms: "1000", filledSignedBaseAtoms: "1000",
       grossQuoteAtoms: "6000", feeAssetId: "btc", feeAssetDecimals: 3,
       feeAtoms: "1", venueFeeQuoteAtoms: "6", evidenceCommitment: LEG_EVIDENCE,
     }),
     Object.freeze({
-      role: "PERPETUAL", clientOrderId: `0x${"52".repeat(16)}`,
+      legId: "perp", role: "PERPETUAL", clientOrderId: `0x${"52".repeat(16)}`,
       requestedSignedBaseAtoms: "-999", filledSignedBaseAtoms: "-999",
       grossQuoteAtoms: "5994", feeAssetId: "usdc", feeAssetDecimals: 2,
       feeAtoms: "3", venueFeeQuoteAtoms: "3", evidenceCommitment: LEG_EVIDENCE,

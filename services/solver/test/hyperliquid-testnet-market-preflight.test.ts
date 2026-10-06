@@ -19,8 +19,8 @@ const binding = {
 function plan(): HyperliquidExecutionPlan {
   return {
     legs: [
-      { role: 'SPOT', order: { a: 10_007, b: true, p: '60100', s: '0.002', r: false } },
-      { role: 'PERPETUAL', order: { a: 3, b: false, p: '58000', s: '0.002', r: false } },
+      { legId: 'spot', role: 'SPOT', order: { a: 10_007, b: true, p: '60100', s: '0.002', r: false } },
+      { legId: 'perp', role: 'PERPETUAL', order: { a: 3, b: false, p: '58000', s: '0.002', r: false } },
     ],
   } as unknown as HyperliquidExecutionPlan;
 }
