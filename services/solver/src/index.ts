@@ -740,7 +740,9 @@ export {
 export {
   buildHyperliquidTestnetExit,
   composeQuoteProviders,
+  createHyperliquidTestnetGeneralizedCashCarryPricing,
   createHyperliquidTestnetQuoteRuntime,
+  type HyperliquidTestnetGeneralizedCashCarryPricingInput,
   type HyperliquidTestnetExitQuoter,
   type HyperliquidTestnetQuoteLeg,
   type HyperliquidTestnetQuoteRuntime,
@@ -854,6 +856,8 @@ export {
   type HyperliquidTestnetMarketReadPort,
   type HyperliquidTestnetMarketSnapshot,
   type HyperliquidTestnetQuoteMarketReadPort,
+  type HyperliquidTestnetGeneralizedMarketReadPort,
+  type HyperliquidTestnetPerpetualContext,
   type HyperliquidTestnetUserFeeRates,
 } from './hyperliquid-testnet-market-preflight.js';
 export {

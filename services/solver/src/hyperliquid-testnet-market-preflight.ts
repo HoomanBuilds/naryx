@@ -38,6 +38,14 @@ export interface HyperliquidTestnetQuoteMarketReadPort {
   userFees(user: `0x${string}`): Promise<HyperliquidTestnetUserFeeRates>;
 }
 
+export interface HyperliquidTestnetPerpetualContext {
+  readonly funding: string;
+}
+
+export interface HyperliquidTestnetGeneralizedMarketReadPort extends HyperliquidTestnetQuoteMarketReadPort {
+  perpetualContext(coin: string): Promise<HyperliquidTestnetPerpetualContext>;
+}
+
 export interface HyperliquidTestnetMarketQualificationConfig {
   readonly spotUniverseName: string;
   readonly spotTokenName: string;
@@ -266,6 +274,15 @@ implements HyperliquidTestnetMarketReadPort, HyperliquidTestnetQuoteMarketReadPo
 
   userFees(user: `0x${string}`): Promise<UserFeesResponse> {
     return this.#client.userFees({ user });
+  }
+
+  async perpetualContext(coin: string): Promise<HyperliquidTestnetPerpetualContext> {
+    const [meta, contexts] = await this.#client.metaAndAssetCtxs();
+    const index = meta.universe.findIndex((asset) => asset.name === coin);
+    const context = index < 0 ? undefined : contexts[index];
+    requireCondition(context !== undefined && typeof context.funding === 'string',
+      `perpetual context ${coin} is unavailable`);
+    return Object.freeze({ funding: context.funding });
   }
 }
 

@@ -14,12 +14,21 @@ import {
   fromHex,
   fromProtocolJson,
   hash32,
+  packageGraph,
+  packageGraphHash,
   packageOrderHash,
+  packageTemplateManifestHash,
   routeHash,
   routePayload,
   solverQuote,
+  strategyPackageOrder,
+  strategyPackageOrderHash,
+  STRATEGY_QUOTE_CONVENTION_ID,
+  STRATEGY_RISK_CLASS_ID,
   stringifyProtocolJson,
   type PackageAdmission,
+  type PackageGraphInput,
+  type PackageTemplateManifestInput,
   type RoutePayloadInput,
   type SolverQuoteInput,
   payloadTemplateHash,
@@ -33,11 +42,14 @@ import {
   SqliteAtomicQuoteNonceSource,
   SqliteInternalAtomicQuoteStore,
   composeQuoteProviders,
+  createHyperliquidTestnetGeneralizedCashCarryPricing,
   createHyperliquidTestnetQuoteRuntime,
+  GeneralizedStrategyQuoteError,
   loadHyperliquidTestnetQuoteRuntime,
   planAtomicEntryRoute,
   signAtomicEntryQuote,
   type HyperliquidTestnetQuoteMarketReadPort,
+  type HyperliquidTestnetGeneralizedMarketReadPort,
   type HyperliquidTestnetQuoteRuntimeInput,
   type HyperliquidTestnetUserFeeRates,
 } from '../src/index.js';
@@ -557,4 +569,225 @@ test('quotes a complete-package exit that sells the package spot and buys back i
   await assert.rejects(runtime.exit({
     order: validatePackageOrderProfile(orderInput()), orderHash, signer: quoteSigner(),
   }), /outside the configured Hyperliquid Testnet quote domain/);
+});
+
+test('prices a generalized Hyperliquid cash-and-carry package from live fee and funding state', async () => {
+  const template: PackageTemplateManifestInput = {
+    manifestVersion: 1,
+    environment: 'testnet',
+    templateId: 'cash-and-carry-v1',
+    templateVersion: 1,
+    supportedDomains: [domain],
+    orderSchemaHash: hash('1'),
+    quoteSchemaHash: hash('2'),
+    routeSchemaHash: hash('3'),
+    receiptSchemaHash: hash('4'),
+    entryCompilerVersion: 1,
+    exitCompilerVersion: 1,
+    legCount: 2,
+    legTypes: ['spot-purchase', 'perp-sale'],
+    supportedDirections: ['LONG_SPOT_SHORT_PERP'],
+    supportedSettlementClasses: ['BATCHED_IOC_WITH_RECOVERY'],
+    allowedSpotAdapterIds: [spotAdapter.adapterId],
+    allowedPerpAdapterIds: [perpetualAdapter.adapterId],
+    riskPolicyHash: hash('5'),
+  };
+  const templateHash = packageTemplateManifestHash(template);
+  const graphInput: PackageGraphInput = {
+    graphVersion: 1,
+    environment: 'testnet',
+    templateId: template.templateId,
+    templateVersion: 1,
+    packageTemplateManifestHash: templateHash,
+    seriesId: 'btc-carry-testnet',
+    seriesVersion: 1,
+    seriesManifestHash: hash('6'),
+    executionClassId: 'hypercore-batched-ioc-v1',
+    executionClassVersion: 1,
+    executionClassManifestHash: hash('7'),
+    lifecycleAction: 'ENTRY',
+    owner: 'testnet-trader',
+    strategyAccountRefs: ['testnet-strategy-account'],
+    legs: [{
+      legId: 'spot',
+      legFamily: 'SPOT_SWAP',
+      legTypeId: 'spot-purchase',
+      domain,
+      adapter: spotAdapter,
+      venue,
+      market: spotMarket,
+      assets: [base, quote],
+      side: 'BUY',
+      quantityAsset: base,
+      quantityAtoms: 1_001_000n,
+      minimumQuantityAtoms: 1_001_000n,
+      limitPrice: exactPrice({
+        baseAsset: base, quoteAsset: quote, quoteAtoms: 700n, baseAtoms: 1n,
+        roundingDirection: 'FLOOR',
+      }),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }, {
+      legId: 'perp',
+      legFamily: 'PERP_OPEN',
+      legTypeId: 'perp-sale',
+      domain,
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assets: [base, quote],
+      side: 'SELL',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: exactPrice({
+        baseAsset: base, quoteAsset: quote, quoteAtoms: 600n, baseAtoms: 1n,
+        roundingDirection: 'CEIL',
+      }),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }],
+    dependencyEdges: [],
+    executionGroups: [{ groupId: 'batched', kind: 'EXACT_FILL', legIds: ['spot', 'perp'] }],
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    policyHashes: {
+      netting: hash('8'),
+      privacy: hash('9'),
+      solver: hash('a'),
+      delivery: hash('b'),
+      resource: hash('c'),
+      portfolioRiskLimits: hash('d'),
+    },
+    recoverySlots: [{
+      legId: 'spot', action: 'ROLLBACK', maximumQuantityAtoms: 1_001_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }, {
+      legId: 'perp', action: 'COMPLETE', maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }],
+    maximumRecoveryCostQuoteAtoms: 2_000_000n,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    packageExpiryValue: 2_000n,
+    nonce: 1n,
+  };
+  const graph = packageGraph(graphInput);
+  const order = strategyPackageOrder({
+    version: 1,
+    environment: graph.environment,
+    templateId: graph.templateId,
+    templateVersion: graph.templateVersion,
+    packageTemplateManifestHash: graph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(graph),
+    seriesId: graph.seriesId,
+    seriesVersion: graph.seriesVersion,
+    seriesManifestHash: graph.seriesManifestHash,
+    executionClassId: graph.executionClassId,
+    executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.ANNUALIZED_NET_YIELD,
+    riskClassId: STRATEGY_RISK_CLASS_ID.DELTA_NEUTRAL_BASIS,
+    owner: graph.owner,
+    settlementAccount: 'testnet-strategy-account',
+    lifecycleAction: 'ENTRY',
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    packageOrderType: 'MARKETABLE_LIMIT',
+    packageTimeInForce: 'IOC',
+    economicQuantity: assetAmount(base, 1_000_000n),
+    quoteAsset: quote,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 1_000_000n }],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [{ asset: quote, maxAtoms: 2_000_000n }],
+    maximumMarginIncrease: assetAmount(quote, 100_000_000n),
+    maximumResidualValue: assetAmount(quote, 1_000_000n),
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    expiryValue: 2_000n,
+    nonce: 1n,
+  });
+  const documents = {
+    orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
+    graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
+    order,
+    graph,
+    recordedAtMs: 1,
+  };
+  const requests: string[] = [];
+  const market: HyperliquidTestnetGeneralizedMarketReadPort = {
+    ...fakeMarket({ requests }),
+    perpetualContext: async (coin) => {
+      requests.push(`perpetualContext:${coin}`);
+      return { funding: '0.0000125' };
+    },
+  };
+  const pricingInput = {
+    domain,
+    baseAsset: base,
+    quoteAsset: quote,
+    tradingAccount,
+    market,
+    maxBookAgeMs: 500,
+    maxBookSpreadBps: 50,
+    marginBps: 1_000,
+    holdingDurationMs: 3_600_000n,
+    expectedExitBasisBps: 0n,
+    routeTtlMs: 100n,
+    quoteTtlMs: 200n,
+    feePolicyVersion: 1,
+    feePolicyManifestHash: hash('e'),
+    nonceSource: { next: () => 1n },
+    spot: { adapter: spotAdapter, venue, market: spotMarket, coin: '@1', sizeDecimals: 5 },
+    perpetual: {
+      adapter: perpetualAdapter, venue, market: perpetualMarket, coin: 'BTC', sizeDecimals: 5,
+    },
+  } as const;
+  const terms = await createHyperliquidTestnetGeneralizedCashCarryPricing(pricingInput).quote({
+    documents,
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+
+  assert.deepEqual(requests, [
+    'l2Book:@1', `l2Book:BTC`, `userFees:${tradingAccount}`, 'perpetualContext:BTC',
+  ]);
+  assert.equal(terms.quoteMode, 'EXECUTION_COMMITMENT');
+  assert.equal(terms.economics.templateId, 'cash-and-carry-v1');
+  assert.equal(terms.economics.expectedFundingAtoms, 7_511n);
+  assert.equal(terms.economics.totalFeesAtoms, 691_053n);
+  assert.equal(terms.economics.capitalRequiredAtoms, 660_736_246n);
+  assert.equal(terms.legEconomics.length, 2);
+  assert.deepEqual(terms.passThroughCosts, [{
+    category: 'VENUE', amount: assetAmount(quote, 691_053n),
+  }]);
+  assert.equal(terms.routeExpiryValue, 1_100n);
+  assert.equal(terms.validUntilValue, 1_200n);
+  assert.equal(terms.quoteNonce, 1n);
+
+  const staleMarket: HyperliquidTestnetGeneralizedMarketReadPort = {
+    ...market,
+    l2Book: async (coin) => {
+      const value = await market.l2Book(coin);
+      assert.ok(value !== null);
+      return {
+        coin: value.coin,
+        levels: value.levels,
+        ...(value.spread === undefined ? {} : { spread: value.spread }),
+        time: 499,
+      };
+    },
+  };
+  await assert.rejects(
+    createHyperliquidTestnetGeneralizedCashCarryPricing({ ...pricingInput, market: staleMarket }).quote({
+      documents,
+      currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+    }),
+    (error) => error instanceof GeneralizedStrategyQuoteError
+      && error.code === 'QUOTE_DECLINED'
+      && /stale or future-dated/.test(error.message),
+  );
 });
