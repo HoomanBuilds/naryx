@@ -7,6 +7,7 @@ import type {
 
 const SPOT_CLASS_ID = 'naryx.evm.spot-exact';
 const PERP_CLASS_ID = 'naryx.evm.perp-exact';
+const ERC4626_CLASS_ID = 'naryx.evm.erc4626-exact';
 const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MIN = -(1n << 127n);
@@ -31,6 +32,12 @@ export interface EvmExactPerpLegBounds {
   readonly withdrawAll: boolean;
   readonly minimumCollateralOutAtoms: bigint;
   readonly maximumCollateralOutAtoms: bigint;
+}
+
+export interface EvmExactVaultLegBounds {
+  readonly legId: string;
+  readonly minimumOutputAtoms: bigint;
+  readonly maximumOutputAtoms: bigint;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -238,6 +245,66 @@ export function createEvmExactPerpMaterializer(input: Readonly<{
             withdrawAll: bounds.withdrawAll,
             minimumCollateralOutAtoms: bounds.minimumCollateralOutAtoms,
             maximumCollateralOutAtoms: bounds.maximumCollateralOutAtoms,
+          }],
+        ),
+        gasLimit: input.binding.maximumGasLimit,
+      });
+    },
+  });
+}
+
+export function createEvmExactVaultMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  asset: AssetRef;
+  shares: AssetRef;
+  bounds: readonly EvmExactVaultLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  requireCondition(input.binding.materializationClassId === ERC4626_CLASS_ID, 'ERC-4626 materializer class mismatch');
+  requireCondition(!sameAsset(input.asset, input.shares), 'ERC-4626 asset and share identities must differ');
+  const checked = input.bounds.map((value) => {
+    unsigned(value.minimumOutputAtoms, UINT256_MAX, `leg ${value.legId} minimum output`);
+    unsigned(value.maximumOutputAtoms, UINT256_MAX, `leg ${value.legId} maximum output`);
+    requireCondition(value.minimumOutputAtoms > 0n, `leg ${value.legId} minimum output must be positive`);
+    requireCondition(value.minimumOutputAtoms <= value.maximumOutputAtoms, `leg ${value.legId} output range is inverted`);
+    return value;
+  });
+  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'ERC-4626 leg bounds repeat');
+  return Object.freeze({
+    ...input.binding,
+    adapterAddress: getAddress(input.binding.adapterAddress),
+    materialize(context: EvmStrategyLegMaterializationContext) {
+      const leg = graphLeg(context);
+      requireCondition(leg.legFamily === 'LEND' || leg.legFamily === 'WITHDRAW', `leg ${leg.legId} is not an ERC-4626 action`);
+      requireCondition(leg.side === 'NONE', `ERC-4626 leg ${leg.legId} must not carry a trading side`);
+      const expectedInput = leg.legFamily === 'LEND' ? input.asset : input.shares;
+      requireCondition(sameAsset(leg.quantityAsset, expectedInput), `ERC-4626 leg ${leg.legId} input asset mismatch`);
+      const matches = checked.filter((value) => value.legId === leg.legId);
+      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact ERC-4626 output bounds`);
+      const bounds = matches[0]!;
+      return Object.freeze({
+        data: encodeAbiParameters(
+          [{
+            type: 'tuple',
+            components: [
+              { name: 'packageId', type: 'bytes32' },
+              { name: 'orderHash', type: 'bytes32' },
+              { name: 'quoteHash', type: 'bytes32' },
+              { name: 'routeHash', type: 'bytes32' },
+              { name: 'action', type: 'uint8' },
+              { name: 'inputAtoms', type: 'uint256' },
+              { name: 'minimumOutputAtoms', type: 'uint256' },
+              { name: 'maximumOutputAtoms', type: 'uint256' },
+            ],
+          }],
+          [{
+            packageId: context.packageId,
+            orderHash: context.orderHash,
+            quoteHash: context.quoteHash,
+            routeHash: context.routeHash,
+            action: leg.legFamily === 'LEND' ? 1 : 2,
+            inputAtoms: leg.quantityAtoms,
+            minimumOutputAtoms: bounds.minimumOutputAtoms,
+            maximumOutputAtoms: bounds.maximumOutputAtoms,
           }],
         ),
         gasLimit: input.binding.maximumGasLimit,

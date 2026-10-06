@@ -12,6 +12,7 @@ import { decodeAbiParameters, hexToBytes, type Address, type Hex } from 'viem';
 import {
   createEvmExactPerpMaterializer,
   createEvmExactSpotMaterializer,
+  createEvmExactVaultMaterializer,
   type EvmStrategyLegMaterializationContext,
   type EvmTypedAdapterMaterializerBinding,
 } from '../src/index.js';
@@ -51,9 +52,10 @@ function binding(
 
 function context(input: Readonly<{
   legFamily: EvmTypedAdapterMaterializerBinding['legFamily'];
-  side: 'BUY' | 'SELL';
+  side: 'BUY' | 'SELL' | 'NONE';
   quantityAtoms: bigint;
   marginDeltaAtoms: bigint;
+  quantityAsset?: AssetRef;
   limitPrice?: Readonly<{ baseAsset: AssetRef; quoteAsset: AssetRef; baseAtoms: bigint; quoteAtoms: bigint }>;
 }>): EvmStrategyLegMaterializationContext {
   return {
@@ -67,7 +69,7 @@ function context(input: Readonly<{
         legId: 'leg',
         legFamily: input.legFamily,
         side: input.side,
-        quantityAsset: base,
+        quantityAsset: input.quantityAsset ?? base,
         quantityAtoms: input.quantityAtoms,
         ...(input.limitPrice === undefined ? {} : { limitPrice: input.limitPrice }),
       }],
@@ -112,6 +114,72 @@ test('materializes a signed spot limit into the exact typed adapter payload', ()
   assert.equal(decoded.action, 1);
   assert.equal(decoded.baseAtoms, 3n);
   assert.equal(decoded.quoteBoundAtoms, 6n);
+});
+
+test('materializes exact ERC-4626 deposit and redemption bounds', () => {
+  const lend = createEvmExactVaultMaterializer({
+    binding: binding('LEND', 'naryx.evm.erc4626-exact'),
+    asset: base,
+    shares: quote,
+    bounds: [{ legId: 'leg', minimumOutputAtoms: 90n, maximumOutputAtoms: 100n }],
+  });
+  const materialized = lend.materialize(context({
+    legFamily: 'LEND',
+    side: 'NONE',
+    quantityAtoms: 100n,
+    marginDeltaAtoms: 0n,
+  }));
+  const [deposit] = decodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'packageId', type: 'bytes32' },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'quoteHash', type: 'bytes32' },
+        { name: 'routeHash', type: 'bytes32' },
+        { name: 'action', type: 'uint8' },
+        { name: 'inputAtoms', type: 'uint256' },
+        { name: 'minimumOutputAtoms', type: 'uint256' },
+        { name: 'maximumOutputAtoms', type: 'uint256' },
+      ],
+    }],
+    materialized.data,
+  );
+  assert.equal(deposit.action, 1);
+  assert.equal(deposit.inputAtoms, 100n);
+  assert.equal(deposit.minimumOutputAtoms, 90n);
+
+  const redeem = createEvmExactVaultMaterializer({
+    binding: binding('WITHDRAW', 'naryx.evm.erc4626-exact'),
+    asset: base,
+    shares: quote,
+    bounds: [{ legId: 'leg', minimumOutputAtoms: 80n, maximumOutputAtoms: 110n }],
+  });
+  const redeemed = redeem.materialize(context({
+    legFamily: 'WITHDRAW',
+    side: 'NONE',
+    quantityAtoms: 100n,
+    quantityAsset: quote,
+    marginDeltaAtoms: 0n,
+  }));
+  const [withdrawal] = decodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'packageId', type: 'bytes32' },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'quoteHash', type: 'bytes32' },
+        { name: 'routeHash', type: 'bytes32' },
+        { name: 'action', type: 'uint8' },
+        { name: 'inputAtoms', type: 'uint256' },
+        { name: 'minimumOutputAtoms', type: 'uint256' },
+        { name: 'maximumOutputAtoms', type: 'uint256' },
+      ],
+    }],
+    redeemed.data,
+  );
+  assert.equal(withdrawal.action, 2);
+  assert.equal(withdrawal.inputAtoms, 100n);
 });
 
 test('materializes exact perpetual observations and enforces the quoted margin input', () => {
