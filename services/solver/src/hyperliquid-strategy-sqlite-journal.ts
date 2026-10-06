@@ -145,6 +145,39 @@ export interface HyperliquidStrategySqliteJournalOptions {
   readonly databasePath: string;
 }
 
+export interface HyperliquidStrategyDurableSubmissionJournalPort {
+  prepare(input: HyperliquidStrategyJournalPrepareInput): Promise<HyperliquidStrategyJournalReceipt>;
+  confirmDurable(input: Readonly<{
+    expectedVersion: bigint;
+    attemptId: string;
+    batchStage: number;
+    recordHash: `0x${string}`;
+  }>): Promise<HyperliquidStrategyJournalReceipt>;
+  markSubmittedUnknown(input: Readonly<{
+    expectedVersion: bigint;
+    attemptId: string;
+    batchStage: number;
+    nowMs: bigint;
+  }>): Promise<HyperliquidStrategyJournalReceipt>;
+  acknowledge(input: Readonly<{
+    expectedVersion: bigint;
+    attemptId: string;
+    batchStage: number;
+    acknowledgementId: string;
+  }>): Promise<HyperliquidStrategyJournalReceipt>;
+  reject(input: Readonly<{
+    expectedVersion: bigint;
+    attemptId: string;
+    batchStage: number;
+    rejectionId: string;
+  }>): Promise<HyperliquidStrategyJournalReceipt>;
+  beginReconciliation(input: Readonly<{
+    expectedVersion: bigint;
+    attemptId: string;
+    batchStage: number;
+  }>): Promise<HyperliquidStrategyJournalReceipt>;
+}
+
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -484,7 +517,8 @@ function timestampNow(): bigint {
   return BigInt(Date.now());
 }
 
-export class HyperliquidStrategySqliteDurableJournal {
+export class HyperliquidStrategySqliteDurableJournal
+implements HyperliquidStrategyDurableSubmissionJournalPort {
   readonly databasePath: string;
   readonly #database: Database.Database;
   #closed = false;

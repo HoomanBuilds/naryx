@@ -664,12 +664,19 @@ export {
 } from './hyperliquid-sqlite-journal.js';
 export {
   HyperliquidStrategySqliteDurableJournal,
+  type HyperliquidStrategyDurableSubmissionJournalPort,
   type HyperliquidStrategyJournalCommitments,
   type HyperliquidStrategyJournalPrepareInput,
   type HyperliquidStrategyJournalReceipt,
   type HyperliquidStrategyJournalRecord,
   type HyperliquidStrategySqliteJournalOptions,
 } from './hyperliquid-strategy-sqlite-journal.js';
+export {
+  HyperliquidStrategyTestnetSubmissionService,
+  type HyperliquidStrategyReconciliationHandoff,
+  type HyperliquidStrategySubmissionInput,
+  type HyperliquidStrategySubmissionResult,
+} from './hyperliquid-strategy-testnet-submission.js';
 export {
   AtomicRouteDecisionError,
   planAtomicEntryRoute,
