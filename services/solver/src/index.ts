@@ -911,3 +911,14 @@ export {
   type CompiledStrategyDomainExecution,
   type CompiledStrategyRouteExecution,
 } from './strategy-execution-router.js';
+export {
+  prepareCompiledStrategyExecution,
+  type StrategyExecutionIdentity,
+  type SolanaStrategyAccountBinding,
+  type EvmStrategyAccountBinding,
+  type EvmAsyncExecutorBinding,
+  type HypercoreExecutorBinding,
+  type StrategyExecutionDomainBinding,
+  type PreparedStrategyDomainExecution,
+  type PreparedStrategyExecution,
+} from './strategy-execution-preparer.js';
