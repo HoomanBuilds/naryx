@@ -130,6 +130,7 @@ test("only the owner wallet's typed-data signature authorizes its package", with
     ledger,
     intents: {
       getAttempt: () => ({ status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED", orderHash: input.orderHash }) as never,
+      getAttemptForOrder: () => undefined,
       getSelectedQuote: () => undefined,
     },
     orders: { getCanonicalOrderByHash: () => order },
@@ -143,6 +144,44 @@ test("only the owner wallet's typed-data signature authorizes its package", with
   assert.throws(() => ledger.recordAuthorization(input.orderHash, BOB, "0x00"), refused("LEDGER_CONFLICT"));
   guard.admit(request);
   assert.equal(ledger.packages(input.owner)[0]?.state, "PENDING_ENTRY");
+}));
+
+test("a generalized strategy attempt reuses its exact source order authorization", withLedger((ledger) => {
+  const sourceOrderHash = "0c".repeat(32);
+  const sourceAttemptId = `hyperliquid-testnet-${"cd".repeat(24)}`;
+  const strategyAttemptId = `strategy-hl-${"ef".repeat(24)}`;
+  const order = {
+    owner: ALICE, settlementAccount: TRADING, action: "ENTRY",
+    maxSpotQuoteIn: { atoms: 1_000n }, quantity: { atoms: 100n },
+  } as unknown as PackageOrder;
+  const guard = createHyperliquidTestnetExecutionGuard({
+    ledger,
+    intents: {
+      getAttempt: () => undefined,
+      getAttemptForOrder: (orderHash) => orderHash === sourceOrderHash ? ({
+        attemptId: sourceAttemptId,
+        orderHash: sourceOrderHash,
+        status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED",
+        domainId: "hypercore:testnet",
+      }) as never : undefined,
+      getSelectedQuote: () => undefined,
+    },
+    orders: { getCanonicalOrderByHash: (orderHash) => orderHash === sourceOrderHash ? order : undefined },
+    strategyAttempts: {
+      strategyExecutionAttempt: (attemptId) => attemptId === strategyAttemptId ? { sourceOrderHashHex: sourceOrderHash } : undefined,
+    },
+    tradingAccount: TRADING,
+    limits: LIMITS,
+    spotLotAtoms: 1n,
+  });
+  const request = { attemptId: strategyAttemptId, idempotencyKey: KEY };
+  assert.throws(() => guard.admit(request), /OWNER_AUTHORIZATION_REQUIRED|must sign/);
+  ledger.recordAuthorization(sourceOrderHash, ALICE, "0x00");
+  guard.admit(request);
+  assert.deepEqual(
+    [ledger.packages(ALICE)[0]?.entryAttemptId, ledger.packages(ALICE)[0]?.entryOrderHash],
+    [strategyAttemptId, sourceOrderHash],
+  );
 }));
 
 test("an UNRESOLVED entry or exit takes its later final outcome, and a later unresolved one changes nothing", withLedger((ledger) => {

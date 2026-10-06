@@ -13,6 +13,7 @@ import {
 } from "./execution-readiness-gate.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
+import type { SqliteStrategyPackageStore } from "./strategy-package-store.js";
 
 /**
  * Automatic testnet execution approval within operator caps.
@@ -222,13 +223,16 @@ export function scopeFromOrder(
 export class DurableAttemptScopeResolver implements ExecutionReadinessScopeResolver<TestnetExecutionScope> {
   readonly #orders: Pick<InternalOrderStore, "getByIdempotencyKey" | "getCanonicalOrderByHash">;
   readonly #intents: Pick<ExecutionIntentStore, "getAttempt" | "getAttemptForOrder">;
+  readonly #strategyAttempts: Pick<SqliteStrategyPackageStore, "strategyExecutionAttempt"> | undefined;
 
   constructor(
     orders: Pick<InternalOrderStore, "getByIdempotencyKey" | "getCanonicalOrderByHash">,
     intents: Pick<ExecutionIntentStore, "getAttempt" | "getAttemptForOrder">,
+    strategyAttempts?: Pick<SqliteStrategyPackageStore, "strategyExecutionAttempt">,
   ) {
     this.#orders = orders;
     this.#intents = intents;
+    this.#strategyAttempts = strategyAttempts;
   }
 
   resolve(handoff: ExecutionHandoff, request: Readonly<{ attemptId?: string; idempotencyKey: string }>): TestnetExecutionScope {
@@ -245,9 +249,15 @@ export class DurableAttemptScopeResolver implements ExecutionReadinessScopeResol
     } else {
       if (request.attemptId === undefined) rejectScope("The handoff does not name an attempt.");
       const attempt = this.#intents.getAttempt(request.attemptId);
-      if (attempt === undefined) rejectScope("The named attempt does not exist.");
-      attemptId = attempt.attemptId;
-      orderHash = attempt.orderHash;
+      if (attempt !== undefined) {
+        attemptId = attempt.attemptId;
+        orderHash = attempt.orderHash;
+      } else {
+        const strategyAttempt = this.#strategyAttempts?.strategyExecutionAttempt(request.attemptId);
+        if (strategyAttempt === undefined) rejectScope("The named attempt does not exist.");
+        attemptId = strategyAttempt.attemptId;
+        orderHash = strategyAttempt.sourceOrderHashHex;
+      }
     }
     const order = this.#orders.getCanonicalOrderByHash(orderHash);
     if (order === undefined) rejectScope("The attempt's canonical order is missing.");

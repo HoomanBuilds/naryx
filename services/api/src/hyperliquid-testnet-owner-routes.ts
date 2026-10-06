@@ -49,6 +49,7 @@ export const HYPERLIQUID_TESTNET_ATTEMPT_STATUS_PATH = "/internal/terminal/hyper
 
 const MAX_BODY_BYTES = 2_048;
 const ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
+const STRATEGY_ATTEMPT_ID = /^strategy-hl-[0-9a-f]{48}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 const U64_MAX = 18446744073709551615n;
@@ -123,24 +124,55 @@ export async function verifyHyperliquidTestnetAuthorization(
   }
 }
 
-type AttemptBinding = Readonly<{ attemptId: string; orderHash: string; order: PackageOrder }>;
+type StrategyAttemptLookup = Readonly<{
+  strategyExecutionAttempt(attemptId: string): Readonly<{ sourceOrderHashHex: string }> | undefined;
+}>;
+
+type AttemptBinding = Readonly<{
+  attemptId: string;
+  orderHash: string;
+  order: PackageOrder;
+  selectedQuoteAttemptId: string;
+}>;
 
 function attemptBinding(
   attemptId: string,
-  intents: Pick<ExecutionIntentStore, "getAttempt">,
+  intents: Pick<ExecutionIntentStore, "getAttempt"> & Partial<Pick<ExecutionIntentStore, "getAttemptForOrder">>,
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">,
+  strategyAttempts?: StrategyAttemptLookup,
 ): AttemptBinding {
-  let attempt;
+  let attempt: ReturnType<ExecutionIntentStore["getAttempt"]>;
   try {
     attempt = ATTEMPT_ID.test(attemptId) ? intents.getAttempt(attemptId) : undefined;
   } catch {
     attempt = undefined;
   }
-  const order = attempt === undefined ? undefined : orders.getCanonicalOrderByHash(attempt.orderHash);
-  if (attempt === undefined || attempt.status !== "HYPERLIQUID_TESTNET_QUOTE_SELECTED" || order === undefined) {
+  if (attempt !== undefined && attempt.status === "HYPERLIQUID_TESTNET_QUOTE_SELECTED") {
+    const order = orders.getCanonicalOrderByHash(attempt.orderHash);
+    if (order !== undefined) {
+      return Object.freeze({ attemptId, orderHash: attempt.orderHash, order, selectedQuoteAttemptId: attempt.attemptId });
+    }
+  }
+  const strategyAttempt = STRATEGY_ATTEMPT_ID.test(attemptId)
+    ? strategyAttempts?.strategyExecutionAttempt(attemptId)
+    : undefined;
+  const sourceAttempt = strategyAttempt === undefined
+    ? undefined
+    : intents.getAttemptForOrder?.(strategyAttempt.sourceOrderHashHex);
+  const sourceOrderHash = strategyAttempt?.sourceOrderHashHex;
+  const sourceOrder = sourceAttempt?.status === "HYPERLIQUID_TESTNET_QUOTE_SELECTED"
+    && sourceAttempt.domainId === HYPERLIQUID_TESTNET_DOMAIN && sourceOrderHash !== undefined
+    ? orders.getCanonicalOrderByHash(sourceOrderHash)
+    : undefined;
+  if (strategyAttempt === undefined || sourceAttempt === undefined || sourceOrder === undefined) {
     throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid attempt was not found.");
   }
-  return Object.freeze({ attemptId, orderHash: attempt.orderHash, order });
+  return Object.freeze({
+    attemptId,
+    orderHash: strategyAttempt.sourceOrderHashHex,
+    order: sourceOrder,
+    selectedQuoteAttemptId: sourceAttempt.attemptId,
+  });
 }
 
 function ledgerRefusal(error: unknown): never {
@@ -157,8 +189,9 @@ function ledgerRefusal(error: unknown): never {
  */
 export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   ledger: HyperliquidTestnetOwnerLedger;
-  intents: Pick<ExecutionIntentStore, "getAttempt" | "getSelectedQuote">;
+  intents: Pick<ExecutionIntentStore, "getAttempt" | "getSelectedQuote" | "getAttemptForOrder">;
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
+  strategyAttempts?: StrategyAttemptLookup;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
   /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
@@ -175,7 +208,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     }
   };
   const authorized = (request: HyperliquidTestnetTerminalExecutionRequest): AttemptBinding => {
-    const binding = attemptBinding(request.attemptId, options.intents, options.orders);
+    const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
     if (binding.order.settlementAccount !== options.tradingAccount) {
       throw new HyperliquidTestnetTerminalValidationError(
         "SETTLEMENT_ACCOUNT_MISMATCH",
@@ -226,9 +259,10 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       }
     },
     settle(request: HyperliquidTestnetTerminalExecutionRequest, result: HyperliquidTestnetTerminalExecutionResult) {
-      const { order } = attemptBinding(request.attemptId, options.intents, options.orders);
+      const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
+      const { order } = binding;
       if (order.action === "ENTRY") {
-        options.ledger.settleEntry(request.attemptId, result, entryNotional(request.attemptId));
+        options.ledger.settleEntry(request.attemptId, result, entryNotional(binding.selectedQuoteAttemptId));
       } else {
         options.ledger.settleExit(request.attemptId, result);
       }
@@ -458,8 +492,9 @@ export type HyperliquidTestnetOwnerRoutesOptions = Readonly<{
   baseDecimals: number;
   quoteDecimals: number;
   ledger: HyperliquidTestnetOwnerLedger;
-  intents: Pick<ExecutionIntentStore, "getAttempt">;
+  intents: Pick<ExecutionIntentStore, "getAttempt"> & Partial<Pick<ExecutionIntentStore, "getAttemptForOrder">>;
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
+  strategyAttempts?: StrategyAttemptLookup;
   createExitOrder?: ReturnType<typeof createHyperliquidTestnetExitOrderFactory>;
   attemptStatus?: (request: HyperliquidTestnetTerminalExecutionRequest) => Promise<HyperliquidTestnetAttemptState>;
 }>;
@@ -503,14 +538,14 @@ export function createHyperliquidTestnetOwnerRoutes(
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
       const body = await readJson(request);
       exactKeys(body, ["attemptId"]);
-      const binding = attemptBinding(String(body.attemptId), options.intents, options.orders);
+      const binding = attemptBinding(String(body.attemptId), options.intents, options.orders, options.strategyAttempts);
       return { attemptId: binding.attemptId, orderHash: binding.orderHash, typedData: typedDataFor(binding) };
     },
     [HYPERLIQUID_TESTNET_AUTHORIZE_PATH]: async (request) => {
       if (request.method !== "POST") throw new OwnerRouteError(405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
       const body = await readJson(request);
       exactKeys(body, ["attemptId", "signature"]);
-      const binding = attemptBinding(String(body.attemptId), options.intents, options.orders);
+      const binding = attemptBinding(String(body.attemptId), options.intents, options.orders, options.strategyAttempts);
       const signature = String(body.signature).toLowerCase();
       if (!await verifyHyperliquidTestnetAuthorization({
         orderHash: binding.orderHash, action: binding.order.action,

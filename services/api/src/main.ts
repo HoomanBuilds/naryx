@@ -535,6 +535,9 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         ledger: hyperliquidOwnerLedger,
         intents: executionIntentStore,
         orders: orderStore,
+        ...(publicMarket?.strategyPackageExecutions === undefined ? {} : {
+          strategyAttempts: publicMarket.strategyPackageExecutions,
+        }),
         tradingAccount: orderContext.tradingAccount,
         limits: hyperliquidConfig?.omnibus,
         spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
@@ -605,6 +608,9 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
     ledger: hyperliquidOwnerLedger,
     intents: executionIntentStore,
     orders: orderStore,
+    ...(publicMarket?.strategyPackageExecutions === undefined ? {} : {
+      strategyAttempts: publicMarket.strategyPackageExecutions,
+    }),
     ...(hyperliquidOrderRuntime === undefined || hyperliquidPriceFeed === undefined ? {} : {
       createExitOrder: createHyperliquidTestnetExitOrderFactory({
         config: hyperliquidOrderContext,
@@ -690,7 +696,11 @@ if (executionPolicyFile !== undefined || executionPolicyDb !== undefined) {
     policy: () => loadTestnetExecutionPolicy(executionPolicyFile),
     databasePath: executionPolicyDb,
   });
-  executionScopes = new DurableAttemptScopeResolver(orderStore, executionIntentStore);
+  executionScopes = new DurableAttemptScopeResolver(
+    orderStore,
+    executionIntentStore,
+    publicMarket?.strategyPackageExecutions,
+  );
 }
 
 const terminalMarketSources: TerminalMarketSources = {

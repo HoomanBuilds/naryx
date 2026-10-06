@@ -238,3 +238,27 @@ test("the resolver binds handoffs to durable orders and selected attempts only",
   rejected(() => resolver.resolve("SOLANA_DEVNET_PREPARE", { idempotencyKey: "unknown" }), /No durable order/);
   rejected(() => resolver.resolve("SOLANA_LOCAL_SUBMIT", { attemptId: "x", idempotencyKey: "x" }), /not a testnet handoff/);
 });
+
+test("the resolver applies source-order caps to a generalized strategy attempt", () => {
+  const sourceOrderHash = "source-hash";
+  const strategyAttemptId = `strategy-hl-${"ab".repeat(24)}`;
+  const resolver = new DurableAttemptScopeResolver(
+    {
+      getByIdempotencyKey: () => undefined,
+      getCanonicalOrderByHash: (hash: Uint8Array | string) => hash === sourceOrderHash ? order({ spot: 900n, margin: 100n }) : undefined,
+    },
+    { getAttempt: () => undefined, getAttemptForOrder: () => undefined },
+    {
+      strategyExecutionAttempt: (attemptId: string) => attemptId === strategyAttemptId
+        ? ({ attemptId: strategyAttemptId, sourceOrderHashHex: sourceOrderHash }) as never
+        : undefined,
+    },
+  );
+  const scope = resolver.resolve("HYPERLIQUID_TESTNET_EXECUTE", {
+    attemptId: strategyAttemptId,
+    idempotencyKey: "strategy-execution-key",
+  });
+  assert.equal(scope.attemptId, strategyAttemptId);
+  assert.equal(scope.orderHash, sourceOrderHash);
+  assert.equal(scope.principalAtoms, 1_000n);
+});
