@@ -11,6 +11,9 @@ import type {
   HyperliquidTestnetRuntimeCoordinatorResult,
   HyperliquidTestnetRuntimeRawCommitment,
 } from './hyperliquid-testnet-runtime.js';
+import type {
+  HyperliquidStrategyRuntimeResult,
+} from './hyperliquid-strategy-testnet-runtime.js';
 import {
   HYPERLIQUID_LANE_RELEASE_REASON,
   HyperliquidTestnetLane,
@@ -71,6 +74,32 @@ export type HyperliquidTestnetExecutionEvidence = Readonly<{
   terminalResidualBaseAtoms: string;
   terminalResidualQuoteAtoms: string;
   legs: readonly [HyperliquidTestnetLegExecutionEvidence, HyperliquidTestnetLegExecutionEvidence];
+}>;
+
+export type HyperliquidTestnetStrategyLegEvidence = Readonly<{
+  legId: string;
+  clientOrderId: `0x${string}`;
+  plannedSignedBaseAtoms: string;
+  filledSignedBaseAtoms: string;
+  terminalStatus: 'FILLED' | 'UNFILLED_IOC_CANCELLED'
+    | 'PARTIALLY_FILLED_IOC_CANCELLED' | 'REJECTED' | 'UNKNOWN';
+  openOrderStatus: 'NONE' | 'OPEN' | 'UNKNOWN';
+  orderId: number | null;
+  fillCount: number;
+}>;
+
+export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
+  batchStage: number;
+  submissionStatus: 'NOT_SUBMITTED' | 'ACKNOWLEDGED' | 'REJECTED' | 'AMBIGUOUS';
+  actionCommitment: string | null;
+  requestCommitment: string | null;
+  evidence: null | Readonly<{
+    status: 'COMPLETE' | 'INCOMPLETE';
+    outcome: 'COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED' | 'MANUAL_INTERVENTION' | null;
+    reasons: readonly string[];
+    legs: readonly HyperliquidTestnetStrategyLegEvidence[];
+    rawEvidenceCommitments: readonly string[];
+  }>;
 }>;
 
 /** The operator actions of a loaded executor runtime that the loopback route exposes. */
@@ -168,6 +197,16 @@ export type HyperliquidTestnetExecutorResult =
       reason: string;
       actionCommitment: string | null;
       requestCommitment: string | null;
+    }>
+  | Readonly<{
+      attemptId: string;
+      idempotencyKey: string;
+      domain: 'hypercore:testnet';
+      environment: 'TESTNET';
+      status: 'STRATEGY_EXECUTION';
+      packageStatus: HyperliquidStrategyRuntimeResult['status'];
+      completedStages: readonly number[];
+      stages: readonly HyperliquidTestnetStrategyStageEvidence[];
     }>;
 
 type SubmissionStatus = 'ACKNOWLEDGED' | 'REJECTED' | 'AMBIGUOUS';
@@ -221,6 +260,7 @@ export type HyperliquidTestnetExecutorRuntime = Readonly<{
     inventory?: HyperliquidTestnetAccountInventory,
   ): HyperliquidTestnetRuntimeCoordinatorInput;
   coordinator: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
+  executeStrategy?(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidStrategyRuntimeResult>;
   /** The durable lane; absent, the executor serializes in memory for this process only. */
   lane?: HyperliquidTestnetLane;
 }>;
@@ -727,6 +767,151 @@ function sanitizeResult(
   });
 }
 
+const STRATEGY_PACKAGE_STATUSES = new Set<HyperliquidStrategyRuntimeResult['status']>([
+  'COMPLETED',
+  'NO_EFFECT',
+  'RECOVERY_REQUIRED',
+  'MANUAL_INTERVENTION',
+  'EVIDENCE_INCOMPLETE',
+  'SUBMISSION_FAILED',
+]);
+
+function strategySubmissionStatus(value: unknown):
+HyperliquidTestnetStrategyStageEvidence['submissionStatus'] {
+  if (value === 'NOT_SUBMITTED') return 'NOT_SUBMITTED';
+  if (value === 'SUBMISSION_ACKNOWLEDGED') return 'ACKNOWLEDGED';
+  if (value === 'SUBMISSION_REJECTED') return 'REJECTED';
+  if (value === 'SUBMISSION_AMBIGUOUS') return 'AMBIGUOUS';
+  throw new HyperliquidTestnetExecutorError('INVALID_RESULT', 'strategy submission status is invalid');
+}
+
+function strategyStageEvidence(value: HyperliquidStrategyRuntimeResult['stages'][number]):
+HyperliquidTestnetStrategyStageEvidence {
+  const submission = value.submission;
+  requireCondition(submission.batchStage === value.batchStage,
+    'INVALID_RESULT', 'strategy submission stage is invalid');
+  const actionCommitment = nullableCommitment(submission.actionCommitment, 'strategy actionCommitment');
+  const requestCommitment = nullableCommitment(submission.requestCommitment, 'strategy requestCommitment');
+  const submissionState = strategySubmissionStatus(submission.status);
+  if (value.evidence === null) {
+    requireCondition(submissionState === 'NOT_SUBMITTED' && submission.reconciliation === null,
+      'INVALID_RESULT', 'strategy submission without evidence is invalid');
+    return Object.freeze({
+      batchStage: value.batchStage,
+      submissionStatus: submissionState,
+      actionCommitment,
+      requestCommitment,
+      evidence: null,
+    });
+  }
+  const evidence = value.evidence;
+  const reconciliation = submission.reconciliation;
+  requireCondition(submission.reconciliation !== null && evidence.legs.length > 0
+    && evidence.legs.length <= 16, 'INVALID_RESULT', 'strategy evidence legs are invalid');
+  requireCondition(reconciliation !== null
+    && reconciliation.batchStage === value.batchStage
+    && reconciliation.actionHash === actionCommitment
+    && reconciliation.requestCommitment === requestCommitment
+    && reconciliation.legIds.length === evidence.legs.length
+    && reconciliation.clientOrderIds.length === evidence.legs.length,
+  'INVALID_RESULT', 'strategy reconciliation handoff is invalid');
+  requireCondition((evidence.status === 'COMPLETE' && evidence.outcome !== null)
+    || (evidence.status === 'INCOMPLETE' && evidence.outcome === null),
+  'INVALID_RESULT', 'strategy evidence status is invalid');
+  const legIds = new Set<string>();
+  const clientOrderIds = new Set<string>();
+  const legs = evidence.legs.map((leg, index): HyperliquidTestnetStrategyLegEvidence => {
+    requireCondition(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(leg.legId)
+      && /^0x[0-9a-f]{32}$/.test(leg.clientOrderId)
+      && !legIds.has(leg.legId) && !clientOrderIds.has(leg.clientOrderId),
+    'INVALID_RESULT', `strategy evidence leg ${index} identity is invalid`);
+    requireCondition(reconciliation.legIds[index] === leg.legId
+      && reconciliation.clientOrderIds[index] === leg.clientOrderId,
+    'INVALID_RESULT', `strategy evidence leg ${index} does not match its handoff`);
+    requireCondition(typeof leg.plannedSignedBaseAtoms === 'bigint'
+      && typeof leg.filledSignedBaseAtoms === 'bigint'
+      && (leg.terminalStatus === 'FILLED' || leg.terminalStatus === 'UNFILLED_IOC_CANCELLED'
+        || leg.terminalStatus === 'PARTIALLY_FILLED_IOC_CANCELLED'
+        || leg.terminalStatus === 'REJECTED' || leg.terminalStatus === 'UNKNOWN')
+      && (leg.openOrderStatus === 'NONE' || leg.openOrderStatus === 'OPEN'
+        || leg.openOrderStatus === 'UNKNOWN')
+      && (leg.orderId === null || Number.isSafeInteger(leg.orderId) && leg.orderId > 0)
+      && Number.isSafeInteger(leg.fillCount) && leg.fillCount >= 0,
+    'INVALID_RESULT', `strategy evidence leg ${index} is invalid`);
+    legIds.add(leg.legId);
+    clientOrderIds.add(leg.clientOrderId);
+    return Object.freeze({
+      legId: leg.legId,
+      clientOrderId: leg.clientOrderId,
+      plannedSignedBaseAtoms: leg.plannedSignedBaseAtoms.toString(),
+      filledSignedBaseAtoms: leg.filledSignedBaseAtoms.toString(),
+      terminalStatus: leg.terminalStatus,
+      openOrderStatus: leg.openOrderStatus,
+      orderId: leg.orderId,
+      fillCount: leg.fillCount,
+    });
+  });
+  return Object.freeze({
+    batchStage: value.batchStage,
+    submissionStatus: submissionState,
+    actionCommitment,
+    requestCommitment,
+    evidence: Object.freeze({
+      status: evidence.status,
+      outcome: evidence.outcome,
+      reasons: reasons(evidence.reasons, evidence.status === 'COMPLETE'
+        && evidence.outcome === 'COMPLETED'),
+      legs: Object.freeze(legs),
+      rawEvidenceCommitments: evidenceCommitments(evidence.rawResponseCommitments),
+    }),
+  });
+}
+
+function sanitizeStrategyResult(
+  request: HyperliquidTestnetExecutorRequest,
+  result: HyperliquidStrategyRuntimeResult,
+): HyperliquidTestnetExecutorResult {
+  requireCondition(result.attemptId === request.attemptId
+    && STRATEGY_PACKAGE_STATUSES.has(result.status)
+    && result.stages.length > 0
+    && result.stages.every((stage) => stage.submission.attemptId === request.attemptId),
+  'INVALID_RESULT', 'strategy result is invalid');
+  const completedStages = result.completedStages.map((stage) =>
+    nonnegativeSafeInteger(stage, 'completed strategy stage'));
+  requireCondition(new Set(completedStages).size === completedStages.length,
+    'INVALID_RESULT', 'completed strategy stages repeat');
+  const stages = result.stages.map((stage) => strategyStageEvidence(stage));
+  requireCondition(new Set(stages.map((stage) => stage.batchStage)).size === stages.length,
+    'INVALID_RESULT', 'strategy result stages repeat');
+  requireCondition(stages.every((stage, index) => index === 0
+    || stages[index - 1]!.batchStage < stage.batchStage)
+    && completedStages.every((stage, index) => stage === stages[index]?.batchStage
+      && stages[index]?.evidence?.outcome === 'COMPLETED'),
+  'INVALID_RESULT', 'strategy result stage progression is invalid');
+  if (result.status === 'COMPLETED') {
+    requireCondition(completedStages.length === stages.length
+      && stages.every((stage) => stage.evidence?.outcome === 'COMPLETED'),
+    'INVALID_RESULT', 'completed strategy result is inconsistent');
+  }
+  if (result.status === 'NO_EFFECT') {
+    requireCondition(completedStages.length === 0 && stages.length === 1
+      && stages.at(-1)?.evidence?.outcome === 'NO_EFFECT',
+    'INVALID_RESULT', 'no-effect strategy result is inconsistent');
+  }
+  if (result.status === 'SUBMISSION_FAILED') {
+    requireCondition(completedStages.length === 0 && stages.length === 1
+      && stages[0]?.submissionStatus === 'NOT_SUBMITTED' && stages[0].evidence === null,
+    'INVALID_RESULT', 'failed strategy submission is inconsistent');
+  }
+  return Object.freeze({
+    ...base(request),
+    status: 'STRATEGY_EXECUTION' as const,
+    packageStatus: result.status,
+    completedStages: Object.freeze(completedStages),
+    stages: Object.freeze(stages),
+  });
+}
+
 const SUBMISSION_STATUS_NAMES: Readonly<Record<SubmissionStatus, HyperliquidPackageSubmissionResult['status']>> = {
   ACKNOWLEDGED: 'SUBMISSION_ACKNOWLEDGED',
   REJECTED: 'SUBMISSION_REJECTED',
@@ -790,6 +975,12 @@ export function createHyperliquidTestnetExecutor(
           }
           const handoff = validateHyperliquidTestnetRuntimeAttempt(request.attemptId, resolved);
           const inventory = await runtime.preflight(handoff);
+          if (handoff.strategy !== undefined) {
+            requireCondition(typeof runtime.executeStrategy === 'function', 'INVALID_ATTEMPT',
+              'executor runtime does not support generalized strategy plans');
+            enterSubmission();
+            return sanitizeStrategyResult(request, await runtime.executeStrategy(handoff));
+          }
           const input = runtime.prepareAttempt(handoff, inventory ?? undefined);
           enterSubmission();
           return sanitizeResult(request, await runtime.coordinator.execute(input));

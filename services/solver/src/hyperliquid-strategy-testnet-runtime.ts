@@ -163,7 +163,12 @@ export class HyperliquidStrategyTestnetRuntime {
       });
       if (submission.reconciliation === null) {
         results.push(Object.freeze({ batchStage: batch.stage, submission, evidence: null }));
-        return this.#result(attemptId, 'SUBMISSION_FAILED', completedStages, results);
+        return this.#result(
+          attemptId,
+          completedStages.length === 0 ? 'SUBMISSION_FAILED' : 'RECOVERY_REQUIRED',
+          completedStages,
+          results,
+        );
       }
       const deadline = Math.min(
         startedAtMs + this.#options.maxEvidenceAgeMs,
@@ -186,7 +191,14 @@ export class HyperliquidStrategyTestnetRuntime {
         return this.#result(attemptId, 'EVIDENCE_INCOMPLETE', completedStages, results);
       }
       if (evidence.outcome !== 'COMPLETED') {
-        return this.#result(attemptId, evidence.outcome, completedStages, results);
+        return this.#result(
+          attemptId,
+          evidence.outcome === 'NO_EFFECT' && completedStages.length > 0
+            ? 'RECOVERY_REQUIRED'
+            : evidence.outcome,
+          completedStages,
+          results,
+        );
       }
       completedStages.push(batch.stage);
     }

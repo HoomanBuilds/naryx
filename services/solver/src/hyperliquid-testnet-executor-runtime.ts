@@ -1,10 +1,11 @@
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
   HyperliquidExecutionPlanner,
-  bindHyperliquidStrategyPlanToCashCarrySource,
   decimalToAtoms,
+  type HypercoreOrderWire,
   type HyperliquidExecutionPlan,
   type HyperliquidExecutionPlannerOptions,
+  type HyperliquidStrategyExecutionPlan,
 } from '@naryx/adapter-hyperliquid';
 import {
   adapterRef,
@@ -24,8 +25,12 @@ import {
 } from './index.js';
 import {
   HyperliquidTestnetHttpStructuralEvidence,
+  HyperliquidStrategyTestnetHttpEvidence,
   type HyperliquidTestnetEvidenceHttpOptions,
 } from './hyperliquid-testnet-evidence-http.js';
+import { HyperliquidStrategySqliteDurableJournal } from './hyperliquid-strategy-sqlite-journal.js';
+import { HyperliquidStrategyTestnetSubmissionService } from './hyperliquid-strategy-testnet-submission.js';
+import { HyperliquidStrategyTestnetRuntime } from './hyperliquid-strategy-testnet-runtime.js';
 import {
   hyperliquidLaneNotSubmitted,
   hyperliquidReconciledExecutorResult,
@@ -394,20 +399,173 @@ function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidE
   };
 }
 
-function executionPlan(
+function sourceExecutionPlan(
   attempt: HyperliquidTestnetAttemptHandoff,
   inventory: HyperliquidTestnetAccountInventory,
 ): HyperliquidExecutionPlan {
-  const sourcePlan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
+  return new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
     accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
   });
-  return attempt.strategy === undefined
-    ? sourcePlan
-    : bindHyperliquidStrategyPlanToCashCarrySource({
-        strategyPlan: attempt.strategy.plan,
-        sourcePlan,
-        sourceAdmission: attempt.admission,
-      });
+}
+
+type RuntimeDecimal = Readonly<{ atoms: bigint; scale: number }>;
+
+function runtimeDecimal(value: string): RuntimeDecimal {
+  if (value.length > 80) throw new Error('generalized strategy decimal is invalid');
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]+))?$/.exec(value);
+  if (match === null) throw new Error('generalized strategy decimal is invalid');
+  const fraction = match[2] ?? '';
+  const atoms = BigInt(`${match[1]}${fraction}`);
+  if (atoms <= 0n) throw new Error('generalized strategy decimal is invalid');
+  return Object.freeze({ atoms, scale: fraction.length });
+}
+
+function runtimePow10(value: number): bigint {
+  return 10n ** BigInt(value);
+}
+
+function compareRuntimeDecimals(left: RuntimeDecimal, right: RuntimeDecimal): number {
+  const scale = Math.max(left.scale, right.scale);
+  const a = left.atoms * runtimePow10(scale - left.scale);
+  const b = right.atoms * runtimePow10(scale - right.scale);
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function sumRuntimeDecimals(values: readonly string[]): string {
+  const parsed = values.map(runtimeDecimal);
+  const scale = Math.max(...parsed.map((value) => value.scale));
+  const total = parsed.reduce(
+    (sum, value) => sum + value.atoms * runtimePow10(scale - value.scale),
+    0n,
+  );
+  const digits = total.toString().padStart(scale + 1, '0');
+  if (scale === 0) return digits;
+  const fraction = digits.slice(-scale).replace(/0+$/, '');
+  return fraction.length === 0 ? digits.slice(0, -scale) : `${digits.slice(0, -scale)}.${fraction}`;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function qualifyStrategyShape(
+  attempt: HyperliquidTestnetAttemptHandoff,
+  sourcePlan: HyperliquidExecutionPlan,
+  inventory: HyperliquidTestnetAccountInventory,
+): readonly HyperliquidExecutionPlan[] {
+  const strategy = attempt.strategy?.plan;
+  if (strategy === undefined) throw new Error('generalized strategy plan is missing');
+  const spot = sourcePlan.legs.find((leg) => leg.role === 'SPOT');
+  const perpetual = sourcePlan.legs.find((leg) => leg.role === 'PERPETUAL');
+  if (spot === undefined || perpetual === undefined
+    || strategy.domain.domainId !== sourcePlan.domain.domainId
+    || strategy.domain.domainManifestVersion !== sourcePlan.domain.domainManifestVersion
+    || !sameBytes(strategy.domain.domainManifestHash, sourcePlan.domain.domainManifestHash)
+    || strategy.orders.length < 1 || strategy.orders.length > 16
+    || strategy.batches.length < 1 || strategy.batches.length > 16
+    || strategy.requestExpiryMs <= 0n
+    || strategy.requestExpiryMs > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('generalized strategy does not match the qualified HyperCore domain');
+  }
+  const legIds = new Set(strategy.orders.map((order) => order.legId));
+  const clientOrderIds = new Set(strategy.orders.map((order) => order.clientOrderId));
+  const batchStages = new Set(strategy.batches.map((batch) => batch.stage));
+  if (legIds.size !== strategy.orders.length || clientOrderIds.size !== strategy.orders.length
+    || batchStages.size !== strategy.batches.length
+    || strategy.batches.reduce((sum, batch) => sum + batch.legIds.length, 0)
+      !== strategy.orders.length) {
+    throw new Error('generalized strategy plan identities are invalid');
+  }
+  for (const batch of strategy.batches) {
+    const planned = strategy.orders.filter((order) => order.stage === batch.stage);
+    if (batch.action.type !== 'order' || batch.action.grouping !== 'na'
+      || planned.length < 1 || planned.length !== batch.legIds.length
+      || planned.length !== batch.action.orders.length
+      || planned.some((order, index) => batch.legIds[index] !== order.legId
+        || batch.action.orders[index]?.a !== order.wire.a
+        || batch.action.orders[index]?.b !== order.wire.b
+        || batch.action.orders[index]?.p !== order.wire.p
+        || batch.action.orders[index]?.s !== order.wire.s
+        || batch.action.orders[index]?.r !== order.wire.r
+        || batch.action.orders[index]?.t.limit.tif !== order.wire.t.limit.tif
+        || batch.action.orders[index]?.c !== order.wire.c)) {
+      throw new Error(`generalized strategy stage ${batch.stage} is inconsistent`);
+    }
+  }
+  const allowed = new Map<number, typeof spot>([
+    [attempt.market.spot.assetId, spot],
+    [attempt.market.perpetual.assetId, perpetual],
+  ]);
+  if (spot.order.a !== attempt.market.spot.assetId
+    || perpetual.order.a !== attempt.market.perpetual.assetId
+    || allowed.size !== 2) {
+    throw new Error('qualified HyperCore market identifiers are invalid');
+  }
+  for (const order of strategy.orders) {
+    const source = allowed.get(order.wire.a);
+    if (source === undefined
+      || order.baseAsset.assetId !== source.baseAsset.assetId
+      || order.baseAsset.decimals !== source.baseAsset.decimals
+      || !sameBytes(order.baseAsset.assetManifestHash, source.baseAsset.assetManifestHash)
+      || order.quoteAsset.assetId !== source.quoteAsset.assetId
+      || order.quoteAsset.decimals !== source.quoteAsset.decimals
+      || !sameBytes(order.quoteAsset.assetManifestHash, source.quoteAsset.assetManifestHash)) {
+      throw new Error(`generalized strategy leg ${order.legId} uses an unqualified market or asset`);
+    }
+  }
+  let availableSpotAtoms = inventory.spotBalanceAtoms;
+  const stages = [...new Set(strategy.orders.map((order) => order.stage))]
+    .sort((left, right) => left - right);
+  for (const stage of stages) {
+    const spotOrders = strategy.orders.filter((order) =>
+      order.stage === stage && order.wire.a === attempt.market.spot.assetId);
+    const requiredSellAtoms = spotOrders.reduce((sum, order) =>
+      order.signedBaseDeltaAtoms < 0n ? sum - order.signedBaseDeltaAtoms : sum, 0n);
+    if (requiredSellAtoms > availableSpotAtoms) {
+      throw new Error(`generalized strategy stage ${stage} exceeds qualified spot inventory`);
+    }
+    availableSpotAtoms += spotOrders.reduce((sum, order) => sum + order.signedBaseDeltaAtoms, 0n);
+  }
+  const groups = new Map<string, HypercoreOrderWire[]>();
+  for (const order of strategy.orders) {
+    const key = `${order.wire.a}:${order.wire.b ? 'BUY' : 'SELL'}`;
+    const group = groups.get(key) ?? [];
+    group.push(order.wire);
+    groups.set(key, group);
+  }
+  return Object.freeze([...groups.values()].map((orders) => {
+    const first = orders[0]!;
+    const restrictive = orders.reduce((selected, order) => {
+      const comparison = compareRuntimeDecimals(runtimeDecimal(order.p), runtimeDecimal(selected.p));
+      return first.b ? comparison < 0 ? order : selected : comparison > 0 ? order : selected;
+    }, first);
+    const aggregateOrder = Object.freeze({
+      ...restrictive,
+      s: sumRuntimeDecimals(orders.map((order) => order.s)),
+    });
+    const role = aggregateOrder.a === attempt.market.spot.assetId ? 'SPOT' : 'PERPETUAL';
+    const legs = sourcePlan.legs.map((leg) => leg.role === role
+      ? Object.freeze({
+          ...leg,
+          signedBaseDeltaAtoms: aggregateOrder.b
+            ? leg.signedBaseDeltaAtoms < 0n ? -leg.signedBaseDeltaAtoms : leg.signedBaseDeltaAtoms
+            : leg.signedBaseDeltaAtoms > 0n ? -leg.signedBaseDeltaAtoms : leg.signedBaseDeltaAtoms,
+          order: aggregateOrder,
+        })
+      : leg) as unknown as HyperliquidExecutionPlan['legs'];
+    return Object.freeze({
+      ...sourcePlan,
+      unsignedRequestFields: Object.freeze({
+        ...sourcePlan.unsignedRequestFields,
+        action: Object.freeze({
+          ...sourcePlan.unsignedRequestFields.action,
+          orders: Object.freeze(legs.map((leg) => leg.order)) as
+            HyperliquidExecutionPlan['unsignedRequestFields']['action']['orders'],
+        }),
+      }),
+      legs: Object.freeze(legs),
+    });
+  }));
 }
 
 /** How often a blocked shared lane is re-reconciled for automatic release. */
@@ -464,9 +622,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   }
 
   const journal = new HyperliquidSqliteDurableJournal({ databasePath: journalPath });
+  let strategyJournal: HyperliquidStrategySqliteDurableJournal | undefined;
   const authorityStore = new HyperliquidAuthorityFenceStore(journalPath);
   let lane: HyperliquidTestnetLane | undefined;
   try {
+    strategyJournal = new HyperliquidStrategySqliteDurableJournal({ databasePath: journalPath });
+    const generalizedJournal = strategyJournal;
     lane = new HyperliquidTestnetLane({
       databasePath: journalPath,
       notSubmitted: hyperliquidLaneNotSubmitted,
@@ -520,6 +681,11 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     }
     const submitter = new HyperliquidSdkTestnetOrderSubmitter(signer, transport);
     const submission = new HyperliquidTestnetPackageSubmissionService(journal, submitter);
+    const strategySubmission = new HyperliquidStrategyTestnetSubmissionService(
+      generalizedJournal,
+      submitter,
+    );
+    const strategyEvidence = new HyperliquidStrategyTestnetHttpEvidence(evidenceOptions);
     const lanePort = lane;
     const alignedEvidence = hyperliquidTestnetAlignedEvidence(evidence, {
       currentTimeMs,
@@ -547,17 +713,22 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           attempt.market.spot.tokenIndex,
           attempt.admission.order.quantity.asset.decimals,
         );
-        const plan = executionPlan(attempt, inventory);
-        requireExitInventory(plan, inventory);
-        await marketPreflight.qualify({
-          plan,
-          binding: {
-            spotUniverseIndex: attempt.market.spot.universeIndex,
-            spotTokenIndex: attempt.market.spot.tokenIndex,
-            perpetualAssetIndex: attempt.market.perpetual.assetIndex,
-            quoteTokenIndex: attempt.market.quoteTokenIndex,
-          },
-        });
+        const plan = sourceExecutionPlan(attempt, inventory);
+        const binding = {
+          spotUniverseIndex: attempt.market.spot.universeIndex,
+          spotTokenIndex: attempt.market.spot.tokenIndex,
+          perpetualAssetIndex: attempt.market.perpetual.assetIndex,
+          quoteTokenIndex: attempt.market.quoteTokenIndex,
+        };
+        if (attempt.strategy === undefined) {
+          requireExitInventory(plan, inventory);
+          await marketPreflight.qualify({ plan, binding });
+        } else {
+          const qualificationPlans = qualifyStrategyShape(attempt, plan, inventory);
+          for (const qualificationPlan of qualificationPlans) {
+            await marketPreflight.qualify({ plan: qualificationPlan, binding });
+          }
+        }
         return inventory;
       },
       prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff, inventory?: HyperliquidTestnetAccountInventory) {
@@ -565,7 +736,10 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         const now = currentTimeMs();
         if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');
         const nowMs = BigInt(now);
-        const plan = executionPlan(attempt, inventory);
+        if (attempt.strategy !== undefined) {
+          throw new Error('generalized strategy plans use the strategy runtime');
+        }
+        const plan = sourceExecutionPlan(attempt, inventory);
         requireExitInventory(plan, inventory);
         const context = journal.submissionContext({
           account: expectedAccount,
@@ -606,6 +780,24 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         });
       },
       coordinator,
+      async executeStrategy(attempt: HyperliquidTestnetAttemptHandoff) {
+        if (attempt.strategy === undefined) throw new Error('generalized strategy plan is missing');
+        const strategyRuntime = new HyperliquidStrategyTestnetRuntime(
+          generalizedJournal,
+          strategySubmission,
+          strategyEvidence,
+          {
+            account: expectedAccount,
+            agentWallet: expectedAgent,
+            signerLeaseId,
+            maxEvidenceAgeMs: attempt.limits.maxEvidenceAgeMs,
+            maxSnapshotSkewMs: attempt.limits.maxSnapshotSkewMs,
+            maxFillPages: attempt.limits.maxFillPages,
+            currentTimeMs,
+          },
+        );
+        return strategyRuntime.execute(attempt.attemptId, attempt.strategy.plan);
+      },
     });
     // Automatic reconciliation of a blocked lane, as the operator's FINAL release does it: while the
     // shared account is blocked by a holder with a stored result, fresh authoritative evidence is
@@ -679,12 +871,14 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
         lane?.close();
         authorityStore.close();
+        strategyJournal?.close();
         journal.close();
       },
     });
   } catch (error) {
     lane?.close();
     authorityStore.close();
+    strategyJournal?.close();
     journal.close();
     throw error;
   }

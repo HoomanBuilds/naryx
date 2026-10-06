@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
   type HyperliquidExecutionPlan,
+  type HyperliquidStrategyExecutionPlan,
 } from '@naryx/adapter-hyperliquid';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
@@ -11,6 +12,7 @@ import {
   HyperliquidTestnetRuntimeCoordinator,
   createHyperliquidTestnetExecutorServer,
   type HyperliquidPackageSubmissionResult,
+  type HyperliquidStrategyRuntimeResult,
   type HyperliquidTestnetExecutorRequest,
   type HyperliquidTestnetRuntimeCoordinatorInput,
   type HyperliquidTestnetAttemptHandoff,
@@ -247,6 +249,116 @@ test('executor returns sanitized authoritative reconciled evidence', async () =>
     assert.equal(server.calls(), 1);
   } finally {
     await server.close();
+  }
+});
+
+test('executor exposes generalized strategy stages without using the cash coordinator', async () => {
+  const strategyPlan = {
+    version: 1,
+    guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+    domain: { domainId: 'hypercore:testnet', domainManifestVersion: 1, domainManifestHash: hash(1) },
+    batches: [{ stage: 0 }],
+  } as unknown as HyperliquidStrategyExecutionPlan;
+  const handoff = {
+    attemptId: ATTEMPT_ID,
+    admission: {},
+    seriesManifestHash: '11'.repeat(32),
+    executionClassManifestHash: '12'.repeat(32),
+    market: {},
+    limits: { maxEvidenceAgeMs: 1, maxSnapshotSkewMs: 1, maxFillPages: 1 },
+    selectedAtMs: 1,
+    strategy: {
+      sourceAttemptId: `hyperliquid-testnet-${'ab'.repeat(24)}`,
+      graphHash: hash(9),
+      plan: strategyPlan,
+    },
+  } as unknown as HyperliquidTestnetAttemptHandoff;
+  const runtimeResult: HyperliquidStrategyRuntimeResult = {
+    attemptId: ATTEMPT_ID,
+    status: 'COMPLETED',
+    completedStages: [0],
+    stages: [{
+      batchStage: 0,
+      submission: {
+        attemptId: ATTEMPT_ID,
+        batchStage: 0,
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+        status: 'SUBMISSION_ACKNOWLEDGED',
+        evidenceStatus: 'SUBMISSION_EVIDENCE_ONLY',
+        settlementStatus: 'RECONCILIATION_REQUIRED',
+        responseCommitment: `0x${'ee'.repeat(32)}`,
+        reconciliation: {
+          collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
+          attemptId: ATTEMPT_ID,
+          batchStage: 0,
+          account: { masterAccount: MASTER, tradingAccount: TRADING, accountKind: 'SUBACCOUNT' },
+          actionHash: ACTION,
+          actionCommitmentScheme: 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+          requestCommitment: REQUEST,
+          durableRevision: 'strategy-revision-1',
+          legIds: ['leg-0'],
+          clientOrderIds: [SPOT_CLOID],
+        },
+      },
+      evidence: {
+        status: 'COMPLETE',
+        outcome: 'COMPLETED',
+        reasons: [],
+        legs: [{
+          legId: 'leg-0',
+          clientOrderId: SPOT_CLOID,
+          plannedSignedBaseAtoms: 100n,
+          filledSignedBaseAtoms: 100n,
+          terminalStatus: 'FILLED',
+          openOrderStatus: 'NONE',
+          orderId: 7,
+          fillCount: 1,
+        }],
+        rawResponseCommitments: [{ sha256: EVIDENCE }],
+      },
+    }],
+  };
+  let cashCalls = 0;
+  let strategyCalls = 0;
+  const server = createHyperliquidTestnetExecutorServer(() => ({
+    attempts: { resolve: () => handoff },
+    preflight: async () => {},
+    prepareAttempt: () => { throw new Error('cash preparation must not run'); },
+    coordinator: {
+      execute: async () => {
+        cashCalls += 1;
+        throw new Error('cash coordinator must not run');
+      },
+    } as unknown as HyperliquidTestnetRuntimeCoordinator<unknown, unknown>,
+    executeStrategy: async () => {
+      strategyCalls += 1;
+      return runtimeResult;
+    },
+  }));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const address = server.address() as AddressInfo;
+    const response = await execute(
+      `http://127.0.0.1:${address.port}${SOLVER_TESTNET_EXECUTE_PATH}`,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.body.status, 'STRATEGY_EXECUTION');
+    assert.equal(response.body.packageStatus, 'COMPLETED');
+    assert.deepEqual(response.body.completedStages, [0]);
+    const stages = response.body.stages as Array<Record<string, unknown>>;
+    assert.equal(stages[0]?.submissionStatus, 'ACKNOWLEDGED');
+    assert.equal(((stages[0]?.evidence as Record<string, unknown>).legs as Array<Record<string, unknown>>)[0]
+      ?.filledSignedBaseAtoms, '100');
+    assert.equal(cashCalls, 0);
+    assert.equal(strategyCalls, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error === undefined ? resolve() : reject(error));
+    });
   }
 });
 

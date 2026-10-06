@@ -100,6 +100,10 @@ const RELEASING_PACKAGE_STATUSES = new Set(['NO_EFFECT', 'COMPLETED_EXACT', 'COM
 export function hyperliquidLaneReleases(result: HyperliquidTestnetExecutorResult): boolean {
   if (result.status === 'CHECKPOINT_INCOMPLETE' || result.status === 'CHECKPOINT_FAILED'
     || result.status === 'NOT_SUBMITTED') return true;
+  if (result.status === 'STRATEGY_EXECUTION') {
+    return result.packageStatus === 'COMPLETED' || result.packageStatus === 'NO_EFFECT'
+      || result.packageStatus === 'SUBMISSION_FAILED';
+  }
   return result.status === 'RECONCILED' && RELEASING_PACKAGE_STATUSES.has(result.packageStatus);
 }
 

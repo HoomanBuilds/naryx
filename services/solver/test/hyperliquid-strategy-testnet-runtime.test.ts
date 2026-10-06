@@ -69,18 +69,21 @@ function submission(input: HyperliquidStrategySubmissionInput): HyperliquidStrat
   };
 }
 
-function evidence(outcome: 'COMPLETED' | 'RECOVERY_REQUIRED', stage: number):
+function evidence(outcome: 'COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED', stage: number):
 HyperliquidStrategyEvidenceResult {
   return {
     status: 'COMPLETE',
     outcome,
-    reasons: outcome === 'COMPLETED' ? [] : ['PARTIAL_PACKAGE_FILL'],
+    reasons: outcome === 'COMPLETED' ? []
+      : outcome === 'NO_EFFECT' ? ['PACKAGE_UNFILLED'] : ['PARTIAL_PACKAGE_FILL'],
     legs: [{
       legId: `leg-${stage}`,
       clientOrderId: `0x${(0x51 + stage).toString(16).repeat(16)}`,
       plannedSignedBaseAtoms: 100n,
-      filledSignedBaseAtoms: outcome === 'COMPLETED' ? 100n : 50n,
-      terminalStatus: outcome === 'COMPLETED' ? 'FILLED' : 'PARTIALLY_FILLED_IOC_CANCELLED',
+      filledSignedBaseAtoms: outcome === 'COMPLETED' ? 100n
+        : outcome === 'NO_EFFECT' ? 0n : 50n,
+      terminalStatus: outcome === 'COMPLETED' ? 'FILLED'
+        : outcome === 'NO_EFFECT' ? 'UNFILLED_IOC_CANCELLED' : 'PARTIALLY_FILLED_IOC_CANCELLED',
       openOrderStatus: 'NONE',
       orderId: stage + 1,
       fillCount: 1,
@@ -89,7 +92,7 @@ HyperliquidStrategyEvidenceResult {
   };
 }
 
-function runtime(outcomes: readonly ('COMPLETED' | 'RECOVERY_REQUIRED')[]): Readonly<{
+function runtime(outcomes: readonly ('COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUIRED')[]): Readonly<{
   runtime: HyperliquidStrategyTestnetRuntime;
   submittedStages: number[];
   evidencedStages: number[];
@@ -145,4 +148,13 @@ test('stops the package before a later stage when recovery is required', async (
   assert.deepEqual(result.completedStages, []);
   assert.deepEqual(fixture.submittedStages, [0]);
   assert.deepEqual(fixture.evidencedStages, [0]);
+});
+
+test('treats a later no-effect stage as package recovery required', async () => {
+  const fixture = runtime(['COMPLETED', 'NO_EFFECT']);
+  const result = await fixture.runtime.execute('strategy-attempt-1', plan());
+  assert.equal(result.status, 'RECOVERY_REQUIRED');
+  assert.deepEqual(result.completedStages, [0]);
+  assert.deepEqual(fixture.submittedStages, [0, 1]);
+  assert.deepEqual(fixture.evidencedStages, [0, 1]);
 });

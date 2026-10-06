@@ -38,6 +38,34 @@ HyperliquidTestnetExecutorResult {
   };
 }
 
+function strategyResult(
+  attemptId: string,
+  packageStatus: 'COMPLETED' | 'RECOVERY_REQUIRED',
+): HyperliquidTestnetExecutorResult {
+  return {
+    attemptId,
+    idempotencyKey: KEY,
+    domain: 'hypercore:testnet',
+    environment: 'TESTNET',
+    status: 'STRATEGY_EXECUTION',
+    packageStatus,
+    completedStages: packageStatus === 'COMPLETED' ? [0] : [],
+    stages: [{
+      batchStage: 0,
+      submissionStatus: 'ACKNOWLEDGED',
+      actionCommitment: HASH,
+      requestCommitment: HASH,
+      evidence: {
+        status: 'COMPLETE',
+        outcome: packageStatus,
+        reasons: packageStatus === 'COMPLETED' ? [] : ['PARTIAL_PACKAGE_FILL'],
+        legs: [],
+        rawEvidenceCommitments: [],
+      },
+    }],
+  };
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -108,6 +136,22 @@ test('blocks the lane after an unresolved outcome and refuses later attempts wit
   assert.equal(resumed.status, 'RECONCILED');
   assert.equal(calls, 1);
   subject.close();
+});
+
+test('releases completed generalized strategies and blocks recovery-required strategies', async () => {
+  const completedLane = lane();
+  await completedLane.run('attempt-strategy-done', KEY, async () =>
+    strategyResult('attempt-strategy-done', 'COMPLETED'));
+  assert.equal(completedLane.laneState().state, 'FREE');
+  completedLane.close();
+
+  const recoveryLane = lane();
+  await recoveryLane.run('attempt-strategy-risk', KEY, async () =>
+    strategyResult('attempt-strategy-risk', 'RECOVERY_REQUIRED'));
+  assert.deepEqual(recoveryLane.laneState(), {
+    state: 'BLOCKED', holderAttemptId: 'attempt-strategy-risk', queueLength: 0,
+  });
+  recoveryLane.close();
 });
 
 test('replays a completed attempt and fences an attempt the lane never received', async () => {
