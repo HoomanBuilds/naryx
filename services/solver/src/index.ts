@@ -1048,3 +1048,4 @@ export {
   createViemEvmOptionSpreadReadPort,
   loadEvmOptionSpreadRuntime,
 } from './evm-option-spread-config.js';
+export { SqliteEvmStrategyPackageIdStore } from './evm-strategy-package-id-store.js';

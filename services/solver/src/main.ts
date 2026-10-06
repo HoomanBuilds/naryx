@@ -48,6 +48,7 @@ import {
   EvmOptionSpreadProvisioningService,
   createEvmOptionSpreadProvisioningInternalHandler,
   loadEvmOptionSpreadRuntime,
+  SqliteEvmStrategyPackageIdStore,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -200,6 +201,9 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
 const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
 const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
+const evmStrategyPackageIds = evmOptionRuntimePath === undefined || evmOptionRuntimePath === ''
+  ? undefined
+  : new SqliteEvmStrategyPackageIdStore(config.quoteDbPath);
 const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimePath === ''
   ? undefined
   : loadEvmOptionSpreadRuntime(absolutePath(
@@ -210,7 +214,7 @@ const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimeP
         const source = new SqliteAtomicQuoteNonceSource(store, `evm-option:${laneId}`);
         return Object.freeze({ nextNonce: () => source.next() });
       },
-      packageIds: { resolvePackageId: async () => undefined },
+      packageIds: evmStrategyPackageIds!,
     });
 const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
   ? undefined
@@ -378,6 +382,7 @@ function shutdown(): void {
     arbitrumJournal?.close();
     store.close();
     generalizedQuoteStore?.close();
+    evmStrategyPackageIds?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {
@@ -406,6 +411,7 @@ try {
   arbitrumJournal?.close();
   store.close();
   generalizedQuoteStore?.close();
+  evmStrategyPackageIds?.close();
   authorizationStore?.close();
   throw error;
 }

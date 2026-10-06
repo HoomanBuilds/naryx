@@ -102,6 +102,7 @@ export interface EvmOptionSpreadAdapterFactoryBinding {
 
 export interface EvmOptionSpreadPackageIdPort {
   resolvePackageId(expectedStateHash: Hex): Promise<Hex | undefined>;
+  rememberPackageId?(stateHash: Hex, packageId: Hex): Promise<void>;
 }
 
 export interface EvmOptionSpreadPreparationLane {
@@ -439,6 +440,7 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
       longQuantity: longPost,
       shortQuantity: shortPost,
     });
+    if (nextStateHash !== undefined) await lane.packageIds.rememberPackageId?.(nextStateHash, checkedPackageId);
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, value) => value < minimum ? value : minimum);
     requireCondition(currentTime < deadline, 'order, quote, or route has expired');
