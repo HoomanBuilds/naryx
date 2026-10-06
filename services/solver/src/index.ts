@@ -933,3 +933,14 @@ export {
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,
 } from './strategy-domain-compilers.js';
+export {
+  HttpStrategyPackageProvider,
+  type StoredStrategyPackageDocuments,
+  type StrategyPackageProvider,
+} from './http-strategy-package-provider.js';
+export {
+  StrategyPreparationService,
+  type StrategyPreparationContext,
+  type StrategyPreparationContextResolver,
+} from './strategy-preparation-service.js';
+export { createStrategyPreparationInternalHandler } from './strategy-preparation-server.js';
