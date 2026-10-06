@@ -364,7 +364,8 @@ contract TypedStrategyAdapterRegistry {
     function _implementedAdapterClass(bytes32 classId, uint32 version) private pure returns (bool) {
         if (version != 1) return false;
         return classId == keccak256("naryx.evm.spot-exact") || classId == keccak256("naryx.evm.perp-exact")
-            || classId == keccak256("naryx.evm.erc4626-exact");
+            || classId == keccak256("naryx.evm.erc4626-exact")
+            || classId == keccak256("naryx.evm.aave-v3-lending-exact");
     }
 
     function _validateDomain(DomainRef memory domain) private view {

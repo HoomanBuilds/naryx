@@ -10,6 +10,7 @@ import {
 } from '@naryx/protocol-types';
 import { decodeAbiParameters, hexToBytes, type Address, type Hex } from 'viem';
 import {
+  createEvmAaveV3LendingMaterializer,
   createEvmExactPerpMaterializer,
   createEvmExactSpotMaterializer,
   createEvmExactVaultMaterializer,
@@ -180,6 +181,57 @@ test('materializes exact ERC-4626 deposit and redemption bounds', () => {
   );
   assert.equal(withdrawal.action, 2);
   assert.equal(withdrawal.inputAtoms, 100n);
+});
+
+test('materializes package-isolated Aave V3 lending actions', () => {
+  const materializer = createEvmAaveV3LendingMaterializer({
+    binding: binding('BORROW', 'naryx.evm.aave-v3-lending-exact'),
+    collateralAsset: base,
+    debtAsset: quote,
+    bounds: [{
+      legId: 'leg',
+      expectedPreAccountDataHash: HASH_E,
+      minimumOutputAtoms: 100n,
+      maximumOutputAtoms: 100n,
+      minimumPostCollateralBase: 1_000n,
+      maximumPostCollateralBase: 1_000n,
+      minimumPostDebtBase: 100n,
+      maximumPostDebtBase: 100n,
+      minimumPostHealthFactor: 2_000n,
+    }],
+  });
+  const materialized = materializer.materialize(context({
+    legFamily: 'BORROW',
+    side: 'NONE',
+    quantityAtoms: 100n,
+    quantityAsset: quote,
+    marginDeltaAtoms: 0n,
+  }));
+  const [decoded] = decodeAbiParameters(
+    [{
+      type: 'tuple',
+      components: [
+        { name: 'packageId', type: 'bytes32' },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'quoteHash', type: 'bytes32' },
+        { name: 'routeHash', type: 'bytes32' },
+        { name: 'expectedPreAccountDataHash', type: 'bytes32' },
+        { name: 'action', type: 'uint8' },
+        { name: 'inputAtoms', type: 'uint256' },
+        { name: 'minimumOutputAtoms', type: 'uint256' },
+        { name: 'maximumOutputAtoms', type: 'uint256' },
+        { name: 'minimumPostCollateralBase', type: 'uint256' },
+        { name: 'maximumPostCollateralBase', type: 'uint256' },
+        { name: 'minimumPostDebtBase', type: 'uint256' },
+        { name: 'maximumPostDebtBase', type: 'uint256' },
+        { name: 'minimumPostHealthFactor', type: 'uint256' },
+      ],
+    }],
+    materialized.data,
+  );
+  assert.equal(decoded.action, 3);
+  assert.equal(decoded.inputAtoms, 100n);
+  assert.equal(decoded.minimumPostHealthFactor, 2_000n);
 });
 
 test('materializes exact perpetual observations and enforces the quoted margin input', () => {

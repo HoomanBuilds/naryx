@@ -8,6 +8,7 @@ import type {
 const SPOT_CLASS_ID = 'naryx.evm.spot-exact';
 const PERP_CLASS_ID = 'naryx.evm.perp-exact';
 const ERC4626_CLASS_ID = 'naryx.evm.erc4626-exact';
+const AAVE_V3_LENDING_CLASS_ID = 'naryx.evm.aave-v3-lending-exact';
 const UINT128_MAX = (1n << 128n) - 1n;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MIN = -(1n << 127n);
@@ -38,6 +39,18 @@ export interface EvmExactVaultLegBounds {
   readonly legId: string;
   readonly minimumOutputAtoms: bigint;
   readonly maximumOutputAtoms: bigint;
+}
+
+export interface EvmAaveV3LendingLegBounds {
+  readonly legId: string;
+  readonly expectedPreAccountDataHash: Hex;
+  readonly minimumOutputAtoms: bigint;
+  readonly maximumOutputAtoms: bigint;
+  readonly minimumPostCollateralBase: bigint;
+  readonly maximumPostCollateralBase: bigint;
+  readonly minimumPostDebtBase: bigint;
+  readonly maximumPostDebtBase: bigint;
+  readonly minimumPostHealthFactor: bigint;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -305,6 +318,95 @@ export function createEvmExactVaultMaterializer(input: Readonly<{
             inputAtoms: leg.quantityAtoms,
             minimumOutputAtoms: bounds.minimumOutputAtoms,
             maximumOutputAtoms: bounds.maximumOutputAtoms,
+          }],
+        ),
+        gasLimit: input.binding.maximumGasLimit,
+      });
+    },
+  });
+}
+
+export function createEvmAaveV3LendingMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  collateralAsset: AssetRef;
+  debtAsset: AssetRef;
+  bounds: readonly EvmAaveV3LendingLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  requireCondition(input.binding.materializationClassId === AAVE_V3_LENDING_CLASS_ID, 'Aave V3 materializer class mismatch');
+  requireCondition(!sameAsset(input.collateralAsset, input.debtAsset), 'Aave V3 collateral and debt identities must differ');
+  const checked = input.bounds.map((value) => {
+    nonzeroHash(value.expectedPreAccountDataHash, `leg ${value.legId} pre-account data hash`);
+    unsigned(value.minimumOutputAtoms, UINT256_MAX, `leg ${value.legId} minimum output`);
+    unsigned(value.maximumOutputAtoms, UINT256_MAX, `leg ${value.legId} maximum output`);
+    unsigned(value.minimumPostCollateralBase, UINT256_MAX, `leg ${value.legId} minimum collateral`);
+    unsigned(value.maximumPostCollateralBase, UINT256_MAX, `leg ${value.legId} maximum collateral`);
+    unsigned(value.minimumPostDebtBase, UINT256_MAX, `leg ${value.legId} minimum debt`);
+    unsigned(value.maximumPostDebtBase, UINT256_MAX, `leg ${value.legId} maximum debt`);
+    unsigned(value.minimumPostHealthFactor, UINT256_MAX, `leg ${value.legId} minimum health factor`);
+    requireCondition(value.minimumOutputAtoms > 0n, `leg ${value.legId} minimum output must be positive`);
+    requireCondition(value.minimumOutputAtoms <= value.maximumOutputAtoms, `leg ${value.legId} output range is inverted`);
+    requireCondition(value.minimumPostCollateralBase <= value.maximumPostCollateralBase, `leg ${value.legId} collateral range is inverted`);
+    requireCondition(value.minimumPostDebtBase <= value.maximumPostDebtBase, `leg ${value.legId} debt range is inverted`);
+    return value;
+  });
+  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'Aave V3 leg bounds repeat');
+  return Object.freeze({
+    ...input.binding,
+    adapterAddress: getAddress(input.binding.adapterAddress),
+    materialize(context: EvmStrategyLegMaterializationContext) {
+      const leg = graphLeg(context);
+      const actions = Object.freeze({
+        LEND: 1,
+        MARGIN_DEPOSIT: 1,
+        WITHDRAW: 2,
+        MARGIN_RELEASE: 2,
+        BORROW: 3,
+        REPAY: 4,
+      } as const);
+      const action = actions[leg.legFamily as keyof typeof actions];
+      requireCondition(action !== undefined, `leg ${leg.legId} is not an Aave V3 lending action`);
+      requireCondition(leg.side === 'NONE', `Aave V3 leg ${leg.legId} must not carry a trading side`);
+      const expectedInput = action === 1 || action === 2 ? input.collateralAsset : input.debtAsset;
+      requireCondition(sameAsset(leg.quantityAsset, expectedInput), `Aave V3 leg ${leg.legId} input asset mismatch`);
+      const matches = checked.filter((value) => value.legId === leg.legId);
+      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact Aave V3 bounds`);
+      const bounds = matches[0]!;
+      return Object.freeze({
+        data: encodeAbiParameters(
+          [{
+            type: 'tuple',
+            components: [
+              { name: 'packageId', type: 'bytes32' },
+              { name: 'orderHash', type: 'bytes32' },
+              { name: 'quoteHash', type: 'bytes32' },
+              { name: 'routeHash', type: 'bytes32' },
+              { name: 'expectedPreAccountDataHash', type: 'bytes32' },
+              { name: 'action', type: 'uint8' },
+              { name: 'inputAtoms', type: 'uint256' },
+              { name: 'minimumOutputAtoms', type: 'uint256' },
+              { name: 'maximumOutputAtoms', type: 'uint256' },
+              { name: 'minimumPostCollateralBase', type: 'uint256' },
+              { name: 'maximumPostCollateralBase', type: 'uint256' },
+              { name: 'minimumPostDebtBase', type: 'uint256' },
+              { name: 'maximumPostDebtBase', type: 'uint256' },
+              { name: 'minimumPostHealthFactor', type: 'uint256' },
+            ],
+          }],
+          [{
+            packageId: context.packageId,
+            orderHash: context.orderHash,
+            quoteHash: context.quoteHash,
+            routeHash: context.routeHash,
+            expectedPreAccountDataHash: bounds.expectedPreAccountDataHash,
+            action,
+            inputAtoms: leg.quantityAtoms,
+            minimumOutputAtoms: bounds.minimumOutputAtoms,
+            maximumOutputAtoms: bounds.maximumOutputAtoms,
+            minimumPostCollateralBase: bounds.minimumPostCollateralBase,
+            maximumPostCollateralBase: bounds.maximumPostCollateralBase,
+            minimumPostDebtBase: bounds.minimumPostDebtBase,
+            maximumPostDebtBase: bounds.maximumPostDebtBase,
+            minimumPostHealthFactor: bounds.minimumPostHealthFactor,
           }],
         ),
         gasLimit: input.binding.maximumGasLimit,
