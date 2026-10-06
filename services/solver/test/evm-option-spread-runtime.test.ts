@@ -475,9 +475,13 @@ test('prepares account and package adapter creation before option entry', async 
     graph,
     recordedAtMs: 1,
   };
+  const resolver = new EvmOptionSpreadProvisioningResolver([lane]);
+  const resolved = await resolver.resolveAccount({ chainId: 84_532, factory: ACCOUNT_FACTORY, owner: OWNER });
+  assert.equal(resolved.account, ACCOUNT);
+  assert.equal(resolved.deployed, false);
   const service = new EvmOptionSpreadProvisioningService(
     { getByOrder: async (requested) => protocolHex(requested) === protocolHex(orderHash) ? documents : undefined },
-    new EvmOptionSpreadProvisioningResolver([lane]),
+    resolver,
   );
   const plan = await service.provisionByOrder(orderHash);
   assert.equal(plan?.packageId, `0x${protocolHex(orderHash)}`);

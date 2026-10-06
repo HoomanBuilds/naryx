@@ -4,11 +4,19 @@ import {
   toHex,
 } from '@naryx/protocol-types';
 import type { EvmStrategyProvisioningPlan } from '@naryx/adapter-evm';
+import { getAddress, type Address } from 'viem';
 
 const MAX_RESPONSE_BYTES = 262_144;
 
 export interface EvmOptionSpreadProvisioningPort {
   provision(orderHashHex: string): Promise<EvmStrategyProvisioningPlan>;
+  resolveAccount(input: Readonly<{ chainId: number; factory: string; owner: string }>): Promise<Readonly<{
+    chainId: number;
+    factory: Address;
+    owner: Address;
+    account: Address;
+    deployed: boolean;
+  }>>;
 }
 
 export class EvmOptionSpreadProvisioningClientError extends Error {
@@ -126,5 +134,48 @@ export class HttpEvmOptionSpreadProvisioningClient implements EvmOptionSpreadPro
     if (response.status === 404) throw new EvmOptionSpreadProvisioningClientError('NOT_FOUND', 'Strategy order was not found');
     if (!response.ok) throw new EvmOptionSpreadProvisioningClientError('UPSTREAM_REJECTED', `provisioning failed with HTTP ${response.status}`);
     return plan(await responseJson(response), orderHashHex);
+  }
+
+  async resolveAccount(input: Readonly<{ chainId: number; factory: string; owner: string }>) {
+    if (!Number.isSafeInteger(input.chainId) || input.chainId <= 0) {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_REQUEST', 'chainId is invalid');
+    }
+    let factory: Address;
+    let owner: Address;
+    try {
+      factory = getAddress(input.factory);
+      owner = getAddress(input.owner);
+    } catch {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_REQUEST', 'factory or owner is invalid');
+    }
+    const response = await this.#fetch(`${this.#origin}/internal/strategy-accounts/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chainId: input.chainId, factory, owner }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new EvmOptionSpreadProvisioningClientError('UPSTREAM_REJECTED', `account resolution failed with HTTP ${response.status}`);
+    const value = await responseJson(response);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_RESPONSE', 'account response must be an object');
+    }
+    const root = value as Record<string, unknown>;
+    if (Object.keys(root).sort().join(',') !== 'account,version' || root.version !== 1
+      || typeof root.account !== 'object' || root.account === null || Array.isArray(root.account)) {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_RESPONSE', 'account response fields are invalid');
+    }
+    const accountValue = root.account as Record<string, unknown>;
+    let account: Address;
+    try {
+      account = getAddress(String(accountValue.account));
+    } catch {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_RESPONSE', 'resolved strategy account is invalid');
+    }
+    if (accountValue.chainId !== input.chainId || getAddress(String(accountValue.factory)) !== factory
+      || getAddress(String(accountValue.owner)) !== owner || typeof accountValue.deployed !== 'boolean') {
+      throw new EvmOptionSpreadProvisioningClientError('INVALID_RESPONSE', 'account response identity differs from the request');
+    }
+    return Object.freeze({ chainId: input.chainId, factory, owner, account, deployed: accountValue.deployed });
   }
 }

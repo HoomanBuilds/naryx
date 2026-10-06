@@ -855,7 +855,28 @@ export function createPrivateTerminalRequestHandler(
         return;
       }
       try {
-        const created = evmOptionSpreadOrders.create(await readJson(request));
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || typeof (requestBody as { profileId?: unknown }).profileId !== 'string'
+          || typeof (requestBody as { owner?: unknown }).owner !== 'string') {
+          throw new EvmOptionSpreadOrderError('INVALID_REQUEST', 'EVM option spread order request is invalid.');
+        }
+        if (evmOptionSpreadProvisioning === undefined) {
+          throw new EvmOptionSpreadOrderError('INVALID_CONFIGURATION', 'EVM strategy account resolution is unavailable.');
+        }
+        const profile = evmOptionSpreadOrders.profiles().find((candidate) =>
+          candidate.profileId === (requestBody as { profileId: string }).profileId);
+        if (profile === undefined) throw new EvmOptionSpreadOrderError('PROFILE_NOT_FOUND', 'EVM option spread profile was not found.');
+        const resolved = await evmOptionSpreadProvisioning.resolveAccount({
+          chainId: profile.chainId,
+          factory: profile.accountFactory,
+          owner: (requestBody as { owner: string }).owner,
+        });
+        const supplied = (requestBody as { settlementAccount?: unknown }).settlementAccount;
+        if (supplied !== undefined && (typeof supplied !== 'string' || supplied.toLowerCase() !== resolved.account.toLowerCase())) {
+          throw new EvmOptionSpreadOrderError('INVALID_REQUEST', 'Settlement account differs from the owner factory account.');
+        }
+        const created = evmOptionSpreadOrders.create({ ...requestBody, settlementAccount: resolved.account.toLowerCase() });
         sendJson(response, 200, {
           version: 1,
           status: created.intake.status,
@@ -869,6 +890,10 @@ export function createPrivateTerminalRequestHandler(
           executionClassId: created.order.executionClassId,
         });
       } catch (error) {
+        if (error instanceof EvmOptionSpreadProvisioningClientError) {
+          reject(response, error.code === 'INVALID_REQUEST' ? 400 : 502, error.code, error.message);
+          return;
+        }
         if (error instanceof EvmOptionSpreadOrderError) {
           const status = error.code === "PROFILE_NOT_FOUND" ? 404
             : error.code === "LIMIT_EXCEEDED" ? 409

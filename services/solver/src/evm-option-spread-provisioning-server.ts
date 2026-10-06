@@ -41,15 +41,30 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 export function createEvmOptionSpreadProvisioningInternalHandler(
-  service: Pick<EvmOptionSpreadProvisioningService, 'provisionByOrder'>,
+  service: Pick<EvmOptionSpreadProvisioningService, 'provisionByOrder' | 'resolveAccount'>,
 ): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://solver.internal');
-    if (url.pathname !== '/internal/strategy-executions/provision' || url.search !== '') return false;
+    const accountRequest = url.pathname === '/internal/strategy-accounts/resolve';
+    const provisionRequest = url.pathname === '/internal/strategy-executions/provision';
+    if ((!accountRequest && !provisionRequest) || url.search !== '') return false;
     if (!internal(request)) return send(response, 403, { error: { code: 'FORBIDDEN', message: 'Provisioning answers direct loopback callers only.' } });
     if (request.method !== 'POST') return send(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Only POST is allowed.' } });
     try {
       const requestBody = await body(request);
+      if (accountRequest) {
+        if (Object.keys(requestBody).sort().join(',') !== 'chainId,factory,owner'
+          || !Number.isSafeInteger(requestBody.chainId) || Number(requestBody.chainId) <= 0
+          || typeof requestBody.factory !== 'string' || typeof requestBody.owner !== 'string') {
+          throw new Error('request must contain chainId, factory, and owner');
+        }
+        const account = await service.resolveAccount({
+          chainId: Number(requestBody.chainId),
+          factory: requestBody.factory as `0x${string}`,
+          owner: requestBody.owner as `0x${string}`,
+        });
+        return send(response, 200, { version: 1, account });
+      }
       if (Object.keys(requestBody).length !== 1 || typeof requestBody.orderHash !== 'string') throw new Error('request must contain only orderHash');
       const plan = await service.provisionByOrder(commitmentHash(requestBody.orderHash, 'orderHash'));
       if (plan === undefined) return send(response, 404, { error: { code: 'NOT_FOUND', message: 'Strategy order was not found.' } });

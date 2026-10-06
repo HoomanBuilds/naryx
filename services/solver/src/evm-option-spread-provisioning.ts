@@ -91,6 +91,40 @@ export class EvmOptionSpreadProvisioningResolver {
     this.#lanes = Object.freeze([...lanes]);
   }
 
+  async resolveAccount(input: Readonly<{ chainId: number; factory: Address; owner: Address }>): Promise<Readonly<{
+    chainId: number;
+    factory: Address;
+    owner: Address;
+    account: Address;
+    deployed: boolean;
+  }>> {
+    const factory = getAddress(input.factory);
+    const owner = getAddress(input.owner);
+    const matches = this.#lanes.filter((lane) => Number(lane.pricing.chainId) === input.chainId
+      && getAddress(lane.accountFactory.address) === factory);
+    requireCondition(matches.length === 1, 'account request must resolve to exactly one lane');
+    const lane = matches[0]!;
+    const chain = lane.pricing.chain;
+    requireCondition(await chain.chainId() === lane.pricing.chainId, 'RPC chain identity differs from the lane');
+    const [factoryCode, accountValue, factoryAccountCodeHash] = await Promise.all([
+      chain.codeHash(factory),
+      chain.readContract({ address: factory, abi: ACCOUNT_FACTORY_ABI, functionName: 'accountOf', args: [owner] }),
+      chain.readContract({ address: factory, abi: ACCOUNT_FACTORY_ABI, functionName: 'accountCodeHash' }),
+    ]);
+    requireCondition(factoryCode !== undefined
+      && checkedHash(factoryCode, 'account factory code hash') === checkedHash(lane.accountFactory.expectedCodeHash, 'expected factory code hash'),
+    'account factory code changed');
+    requireCondition(checkedHash(factoryAccountCodeHash, 'factory account code hash')
+      === checkedHash(lane.expectedStrategyAccountCodeHash, 'expected account code hash'), 'factory account code identity changed');
+    const account = getAddress(String(accountValue));
+    const accountCode = await chain.codeHash(account);
+    if (accountCode !== undefined) {
+      requireCondition(checkedHash(accountCode, 'strategy account code hash')
+        === checkedHash(lane.expectedStrategyAccountCodeHash, 'expected account code hash'), 'strategy account code changed');
+    }
+    return Object.freeze({ chainId: input.chainId, factory, owner, account, deployed: accountCode !== undefined });
+  }
+
   async resolve(documents: StoredStrategyPackageOrderDocuments): Promise<EvmStrategyProvisioningPlan> {
     const matches = this.#lanes.filter((lane) => matchesLane(documents, lane));
     requireCondition(matches.length === 1, 'entry order must resolve to exactly one lane');
@@ -177,5 +211,9 @@ export class EvmOptionSpreadProvisioningService {
   async provisionByOrder(orderHash: Hash32): Promise<EvmStrategyProvisioningPlan | undefined> {
     const documents = await this.#packages.getByOrder(orderHash);
     return documents === undefined ? undefined : this.#resolver.resolve(documents);
+  }
+
+  resolveAccount(input: Readonly<{ chainId: number; factory: Address; owner: Address }>) {
+    return this.#resolver.resolveAccount(input);
   }
 }
