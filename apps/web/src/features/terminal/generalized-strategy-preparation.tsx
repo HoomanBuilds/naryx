@@ -130,6 +130,22 @@ type NativeStrategyProfile = Readonly<{
   }>;
 }>;
 
+type NativeStrategyPositionReview = Readonly<{
+  strategyId: string;
+  owner: string;
+  templateId: string;
+  seriesId: string;
+  executionClassId: string;
+  settlementAccount: string;
+  economicQuantityAtoms: string;
+  stateHash: string;
+  status: "OPEN" | "EXITING" | "CLOSED" | "UNRESOLVED";
+  legs: readonly Readonly<{
+    legId: string;
+    signedQuantityAtoms: string;
+  }>[];
+}>;
+
 type CreatedNativeStrategyOrder = Readonly<{
   profileId: string;
   orderHash: string;
@@ -459,6 +475,51 @@ function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyP
   });
 }
 
+function parseNativeStrategyPositions(payload: unknown, requestedOwner: string): readonly NativeStrategyPositionReview[] {
+  const root = record(decode(payload as Json), "Native strategy positions");
+  if (root.version !== 1 || root.owner !== requestedOwner) {
+    throw new Error("Native strategy positions do not bind the connected owner.");
+  }
+  return list(root.positions, "Native strategy positions").map((candidate, index) => {
+    const position = record(candidate, `Native strategy position ${index}`);
+    const state = record(position.state, `Native strategy position ${index} state`);
+    const status = text(position.status, `Native strategy position ${index} status`);
+    if (status !== "OPEN" && status !== "EXITING" && status !== "CLOSED" && status !== "UNRESOLVED") {
+      throw new Error(`Native strategy position ${index} status is invalid.`);
+    }
+    const owner = text(position.owner, `Native strategy position ${index} owner`);
+    if (owner !== requestedOwner || state.ownerId !== requestedOwner || state.open !== (status !== "CLOSED")) {
+      throw new Error(`Native strategy position ${index} owner or state is invalid.`);
+    }
+    const legs = list(state.legs, `Native strategy position ${index} legs`).map((candidateLeg, legIndex) => {
+      const leg = record(candidateLeg, `Native strategy position ${index} leg ${legIndex}`);
+      return Object.freeze({
+        legId: text(leg.legId, `Native strategy position ${index} leg ${legIndex} id`),
+        signedQuantityAtoms: decimalInteger(
+          leg.signedQuantityAtoms,
+          `Native strategy position ${index} leg ${legIndex} quantity`,
+        ),
+      });
+    });
+    if (legs.length === 0) throw new Error(`Native strategy position ${index} has no legs.`);
+    return Object.freeze({
+      strategyId: text(position.strategyId, `Native strategy position ${index} id`),
+      owner,
+      templateId: text(position.templateId, `Native strategy position ${index} template`),
+      seriesId: text(state.seriesId, `Native strategy position ${index} series`),
+      executionClassId: text(state.executionClassId, `Native strategy position ${index} execution class`),
+      settlementAccount: text(state.subaccountId, `Native strategy position ${index} settlement account`),
+      economicQuantityAtoms: decimalInteger(
+        position.economicQuantityAtoms,
+        `Native strategy position ${index} economic quantity`,
+      ),
+      stateHash: hash(position.stateHashHex, `Native strategy position ${index} state hash`),
+      status,
+      legs: Object.freeze(legs),
+    });
+  });
+}
+
 function parseCreatedNativeStrategyOrder(
   payload: unknown,
   expected: Readonly<{ profileId: string; templateId: string; lifecycleAction: string }>,
@@ -484,6 +545,26 @@ function amountToAtoms(value: string, decimals: number, context: string): bigint
     + BigInt((fraction + "0".repeat(decimals)).slice(0, decimals) || "0");
   if (atoms <= BigInt(0)) throw new Error(`${context} must be greater than zero.`);
   return atoms;
+}
+
+function atomsToInput(atoms: string, decimals: number): string {
+  const negative = atoms.startsWith("-");
+  const digits = negative ? atoms.slice(1) : atoms;
+  const padded = digits.padStart(decimals + 1, "0");
+  const whole = decimals === 0 ? padded : padded.slice(0, -decimals);
+  const fraction = decimals === 0 ? "" : padded.slice(-decimals).replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${fraction === "" ? "" : `.${fraction}`}`;
+}
+
+function nativePositionQuantityAtoms(position: NativeStrategyPositionReview): bigint {
+  const quantities = position.legs.map((leg) => {
+    const value = BigInt(leg.signedQuantityAtoms);
+    return value < BigInt(0) ? -value : value;
+  });
+  if (quantities[0] === undefined || quantities.some((quantity) => quantity !== quantities[0])) {
+    throw new Error("The selected strategy does not use one executable package quantity.");
+  }
+  return quantities[0];
 }
 
 function greatestCommonDivisor(left: bigint, right: bigint): bigint {
@@ -764,11 +845,13 @@ export function GeneralizedStrategyPreparationPanel({
   const [admissionError, setAdmissionError] = useState<string | null>(null);
   const [nativeProfiles, setNativeProfiles] = useState<readonly NativeStrategyProfile[] | null>(null);
   const [nativeProfileError, setNativeProfileError] = useState<string | null>(null);
+  const [nativePositions, setNativePositions] = useState<readonly NativeStrategyPositionReview[] | null>(null);
+  const [nativePositionError, setNativePositionError] = useState<string | null>(null);
   const [selectedNativeProfileId, setSelectedNativeProfileId] = useState("");
+  const [selectedNativeStrategyId, setSelectedNativeStrategyId] = useState("");
   const [nativeQuantity, setNativeQuantity] = useState("");
   const [nativeEconomicQuantity, setNativeEconomicQuantity] = useState("");
   const [nativeLimitPrices, setNativeLimitPrices] = useState<Record<string, string>>({});
-  const [expectedStrategyStateHash, setExpectedStrategyStateHash] = useState("");
   const [createdNativeOrder, setCreatedNativeOrder] = useState<CreatedNativeStrategyOrder | null>(null);
   const [nativeCreateBusy, setNativeCreateBusy] = useState(false);
   const [stageBusy, setStageBusy] = useState(false);
@@ -824,10 +907,48 @@ export function GeneralizedStrategyPreparationPanel({
     return () => controller.abort();
   }, [privateApiBaseUrl, sourceOrderHash, templateId]);
 
+  useEffect(() => {
+    if (privateApiBaseUrl === null || sourceOrderHash !== null || lifecycleAction !== "EXIT"
+      || strategyOwner === null || !OWNER.test(strategyOwner)
+      || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/native-strategies?owner=${encodeURIComponent(strategyOwner)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseNativeStrategyPositions(await response.json(), strategyOwner);
+    }).then((positions) => {
+      setNativePositions(positions);
+      setNativePositionError(null);
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setNativePositions([]);
+      setNativePositionError(cause instanceof Error ? cause.message : "Native strategy positions are unavailable.");
+    });
+    return () => controller.abort();
+  }, [privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
+
   const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
   const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
+    ?? null;
+  const matchingNativePositions = (nativePositions ?? []).filter((position) =>
+    position.status === "OPEN"
+    && position.owner === strategyOwner
+    && position.templateId === templateId
+    && selectedNativeProfile !== null
+    && position.seriesId === selectedNativeProfile.seriesId
+    && position.executionClassId === selectedNativeProfile.executionClassId
+    && position.settlementAccount === selectedNativeProfile.settlementAccount);
+  const selectedNativePosition = matchingNativePositions.find((position) => position.strategyId === selectedNativeStrategyId)
+    ?? matchingNativePositions[0]
     ?? null;
 
   async function createNativeStrategyOrder() {
@@ -841,18 +962,17 @@ export function GeneralizedStrategyPreparationPanel({
       if (lifecycleAction !== "ENTRY" && lifecycleAction !== "EXIT") {
         throw new Error("This native strategy profile supports entry and exit only.");
       }
-      const quantityAtoms = amountToAtoms(
-        nativeQuantity,
-        selectedNativeProfile.baseAsset.decimals,
-        "Package quantity",
-      );
-      const economicQuantityAtoms = selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
-        ? quantityAtoms
-        : amountToAtoms(
-          nativeEconomicQuantity,
-          selectedNativeProfile.baseAsset.decimals,
-          "Inventory exposure",
-        );
+      if (lifecycleAction === "EXIT" && selectedNativePosition === null) {
+        throw new Error("Select an authoritative open strategy before creating its exit.");
+      }
+      const quantityAtoms = lifecycleAction === "EXIT"
+        ? nativePositionQuantityAtoms(selectedNativePosition!)
+        : amountToAtoms(nativeQuantity, selectedNativeProfile.baseAsset.decimals, "Package quantity");
+      const economicQuantityAtoms = lifecycleAction === "EXIT"
+        ? BigInt(selectedNativePosition!.economicQuantityAtoms)
+        : selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
+          ? quantityAtoms
+          : amountToAtoms(nativeEconomicQuantity, selectedNativeProfile.baseAsset.decimals, "Inventory exposure");
       const limitPrices = selectedNativeProfile.markets.map((market) => ({
         legId: market.role,
         ...priceToAtomicRatio(
@@ -881,7 +1001,7 @@ export function GeneralizedStrategyPreparationPanel({
           limitPrices,
           expiryValue: (unixTimeMs() + ttlMs).toString(),
           nonce: randomNonce(),
-          ...(lifecycleAction === "EXIT" ? { expectedStrategyStateHash } : {}),
+          ...(lifecycleAction === "EXIT" ? { expectedStrategyStateHash: selectedNativePosition!.stateHash } : {}),
         }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
@@ -1174,11 +1294,12 @@ export function GeneralizedStrategyPreparationPanel({
   const nativeOrderFieldsReady = selectedNativeProfile !== null
     && strategyOwner !== null
     && OWNER.test(strategyOwner)
-    && nativeQuantity.trim() !== ""
-    && (selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
+    && (lifecycleAction === "EXIT" ? selectedNativePosition !== null : nativeQuantity.trim() !== "")
+    && (lifecycleAction === "EXIT"
+      || selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
-    && (lifecycleAction !== "EXIT" || HASH.test(expectedStrategyStateHash));
+    && (lifecycleAction !== "EXIT" || HASH.test(selectedNativePosition?.stateHash ?? ""));
 
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
@@ -1208,9 +1329,9 @@ export function GeneralizedStrategyPreparationPanel({
             disabled={nativeProfiles === null || matchingNativeProfiles.length === 0}
             onChange={(event) => {
               setSelectedNativeProfileId(event.target.value);
+              setSelectedNativeStrategyId("");
               setNativeQuantity("");
               setNativeEconomicQuantity("");
-              setExpectedStrategyStateHash("");
               setCreatedNativeOrder(null);
               setOrderHash("");
               setError(null);
@@ -1223,13 +1344,48 @@ export function GeneralizedStrategyPreparationPanel({
           </select>
           {selectedNativeProfile ? (
             <>
+              {lifecycleAction === "EXIT" ? (
+                <>
+                  <label htmlFor="native-strategy-position">Open strategy package</label>
+                  <select
+                    id="native-strategy-position"
+                    value={selectedNativePosition?.strategyId ?? ""}
+                    disabled={nativePositions === null || matchingNativePositions.length === 0}
+                    onChange={(event) => {
+                      setSelectedNativeStrategyId(event.target.value);
+                      setCreatedNativeOrder(null);
+                      setOrderHash("");
+                      setError(null);
+                    }}
+                  >
+                    {matchingNativePositions.length === 0 ? <option value="">No open package matches this market</option> : null}
+                    {matchingNativePositions.map((position) => (
+                      <option key={position.strategyId} value={position.strategyId}>
+                        {compact(position.strategyId, 18, 8)} / {compact(position.stateHash, 8, 6)}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedNativePosition ? (
+                    <p className={styles.fieldContext}>
+                      Exit is bound to state {compact(selectedNativePosition.stateHash)}. The quantity and market identity come from its finalized entry receipt.
+                    </p>
+                  ) : (
+                    <p className={styles.fieldContext} role="status">
+                      {nativePositions === null ? "Loading authoritative open strategies." : nativePositionError ?? "No open strategy matches this reviewed market."}
+                    </p>
+                  )}
+                </>
+              ) : null}
               <label htmlFor="native-strategy-quantity">Package quantity</label>
               <input
                 id="native-strategy-quantity"
-                value={nativeQuantity}
+                value={lifecycleAction === "EXIT" && selectedNativePosition !== null
+                  ? atomsToInput(nativePositionQuantityAtoms(selectedNativePosition).toString(), selectedNativeProfile.baseAsset.decimals)
+                  : nativeQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
+                readOnly={lifecycleAction === "EXIT"}
                 onChange={(event) => {
                   setNativeQuantity(event.target.value.trim());
                   setCreatedNativeOrder(null);
@@ -1252,10 +1408,13 @@ export function GeneralizedStrategyPreparationPanel({
                   <label htmlFor="native-strategy-economic-quantity">Inventory exposure to hedge</label>
                   <input
                     id="native-strategy-economic-quantity"
-                    value={nativeEconomicQuantity}
+                    value={lifecycleAction === "EXIT" && selectedNativePosition !== null
+                      ? atomsToInput(selectedNativePosition.economicQuantityAtoms, selectedNativeProfile.baseAsset.decimals)
+                      : nativeEconomicQuantity}
                     inputMode="decimal"
                     autoComplete="off"
                     placeholder="0.00"
+                    readOnly={lifecycleAction === "EXIT"}
                     onChange={(event) => {
                       setNativeEconomicQuantity(event.target.value.trim());
                       setCreatedNativeOrder(null);
@@ -1283,24 +1442,6 @@ export function GeneralizedStrategyPreparationPanel({
                   />
                 </Fragment>
               ))}
-              {lifecycleAction === "EXIT" ? (
-                <>
-                  <label htmlFor="native-strategy-state-hash">Expected open strategy state</label>
-                  <input
-                    id="native-strategy-state-hash"
-                    value={expectedStrategyStateHash}
-                    inputMode="text"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="64 lowercase hex characters"
-                    onChange={(event) => {
-                      setExpectedStrategyStateHash(event.target.value.trim());
-                      setCreatedNativeOrder(null);
-                      setError(null);
-                    }}
-                  />
-                </>
-              ) : null}
               <button
                 type="button"
                 className={styles.primaryAction}

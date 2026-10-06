@@ -158,6 +158,7 @@ test("private terminal stages a reviewed Hyperliquid order for generalized quoti
 });
 
 test("private terminal selects exactly the reviewed generalized Hyperliquid quote", async (context) => {
+  const nativeOwner = "0x1111111111111111111111111111111111111111";
   const sourceOrderHash = "11".repeat(32);
   const orderHash = "22".repeat(32);
   const quoteHash = "33".repeat(32);
@@ -230,6 +231,22 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
       nativeStrategyExecutionAttempt: (requested) => requested === nativeAttempt.attemptId ? nativeAttempt : undefined,
       anyStrategyExecutionAttempt: (requested) => requested === nativeAttempt.attemptId
         ? nativeAttempt : requested === attemptId ? selectedAttempt : undefined,
+      nativeStrategyPositionsByOwner: (requested) => {
+        assert.equal(requested, nativeOwner);
+        return [{
+          strategyId: "native-hl-position",
+          owner: nativeOwner,
+          templateId: "treasury-inventory-hedge-v1",
+          economicQuantityAtoms: 200_000n,
+          entryOrderHashHex: "12".repeat(32),
+          entryReceiptHashHex: "13".repeat(32),
+          stateHashHex: "14".repeat(32),
+          state: { ownerId: nativeOwner, stateVersion: 1n },
+          status: "OPEN",
+          recordedAtMs: 1_000,
+          updatedAtMs: 1_000,
+        }] as never;
+      },
     },
   );
   context.after(() => server.close());
@@ -259,6 +276,26 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
   });
   assert.equal(native.status, 200);
   assert.deepEqual(await native.json(), { version: 2, ...nativeAttempt });
+  const positions = await fetch(`${origin}/internal/terminal/native-strategies?owner=${nativeOwner}`);
+  assert.equal(positions.status, 200);
+  assert.deepEqual(parseProtocolJson(await positions.text()), {
+    version: 1,
+    owner: nativeOwner,
+    positions: [{
+      strategyId: "native-hl-position",
+      owner: nativeOwner,
+      templateId: "treasury-inventory-hedge-v1",
+      economicQuantityAtoms: 200_000n,
+      entryOrderHashHex: "12".repeat(32),
+      entryReceiptHashHex: "13".repeat(32),
+      stateHashHex: "14".repeat(32),
+      state: { ownerId: nativeOwner, stateVersion: 1n },
+      status: "OPEN",
+      recordedAtMs: 1_000,
+      updatedAtMs: 1_000,
+    }],
+  });
+  assert.equal((await fetch(`${origin}/internal/terminal/native-strategies?owner=${nativeOwner}&extra=1`)).status, 400);
   assert.equal((await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

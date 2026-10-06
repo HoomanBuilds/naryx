@@ -106,6 +106,7 @@ import {
   type SelectedStrategyPackageAttempt,
   type SelectNativeHyperliquidStrategyExecutionRequest,
   type SelectHyperliquidStrategyExecutionRequest,
+  type StoredNativeStrategyPosition,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 import {
@@ -131,6 +132,7 @@ interface GeneralizedStrategyExecutionPort {
   strategyExecutionAttempt(attemptId: string): SelectedStrategyPackageAttempt | undefined;
   nativeStrategyExecutionAttempt(attemptId: string): SelectedNativeStrategyPackageAttempt | undefined;
   anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined;
+  nativeStrategyPositionsByOwner?(owner: string): readonly StoredNativeStrategyPosition[];
 }
 
 type NativeHyperliquidStrategyRuntime = Pick<
@@ -868,6 +870,36 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "STRATEGY_PREPARATION_FAILED", "Generalized strategy preparation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/native-strategies") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (generalizedStrategyExecutions?.nativeStrategyPositionsByOwner === undefined) {
+        reject(response, 503, "NATIVE_STRATEGIES_UNAVAILABLE", "Native strategy positions are unavailable.");
+        return;
+      }
+      const keys = [...url.searchParams.keys()];
+      const owner = url.searchParams.get("owner");
+      if (keys.length !== 1 || keys[0] !== "owner"
+        || owner === null || !/^0x(?!0{40}$)[0-9a-f]{40}$/.test(owner)) {
+        reject(response, 400, "INVALID_REQUEST", "Request must contain one lowercase EVM owner.");
+        return;
+      }
+      try {
+        const positions = generalizedStrategyExecutions.nativeStrategyPositionsByOwner(owner);
+        sendJson(response, 200, toProtocolJson({ version: 1, owner, positions }, "nativeStrategies"));
+      } catch (error) {
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "NATIVE_STRATEGIES_FAILED", "Native strategy retrieval failed closed.");
       }
       return;
     }
