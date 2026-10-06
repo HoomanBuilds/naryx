@@ -261,10 +261,13 @@ contract TypedStrategyAdapterRegistry {
         ) revert AdapterCodeMismatch();
         uint8 permission = riskIncreasing ? 1 : 2;
         if (_permissions(control.state) & permission == 0) revert ActionNotAllowed(control.state);
+        if (grossNotionalAtoms == 0 || gasLimit == 0 || gasLimit > binding.maximumGasLimit) {
+            revert AdapterMismatch();
+        }
         if (
-            approvalAtoms > control.maximumApprovalAtoms || grossNotionalAtoms == 0
-                || grossNotionalAtoms > control.maximumGrossNotionalAtoms || gasLimit == 0
-                || gasLimit > binding.maximumGasLimit
+            riskIncreasing
+                && (approvalAtoms > control.maximumApprovalAtoms
+                    || grossNotionalAtoms > control.maximumGrossNotionalAtoms)
         ) revert AdapterMismatch();
         if (
             (approvalAtoms == 0 && approvalToken != address(0))
@@ -285,7 +288,7 @@ contract TypedStrategyAdapterRegistry {
             binding.identity.subjectId == bytes32(0) || binding.identity.manifestVersion == 0
                 || binding.identity.manifestHash == bytes32(0) || binding.adapter == address(0)
                 || binding.adapter.code.length == 0 || binding.adapter.codehash != binding.expectedCodeHash
-                || binding.adapterClassId == bytes32(0) || binding.adapterClassVersion == 0
+                || !_implementedAdapterClass(binding.adapterClassId, binding.adapterClassVersion)
                 || !_implementedTemplate(binding.template.templateId, binding.template.templateVersion)
                 || binding.template.templateManifestHash == bytes32(0)
                 || binding.settlementClass.classId != ATOMIC_POSTCONDITION_ID
@@ -309,6 +312,16 @@ contract TypedStrategyAdapterRegistry {
             || templateId == keccak256("option-spread-v1") || templateId == keccak256("collateral-conversion-hedge-v1")
             || templateId == keccak256("fixed-rate-refinance-v1") || templateId == keccak256("sol-structured-hedge-v1")
             || templateId == keccak256("session-aware-tokenized-asset-v1");
+    }
+
+    function _implementedAdapterClass(bytes32 classId, uint32 version) private pure returns (bool) {
+        if (version != 1) return false;
+        return classId == keccak256("naryx.evm.spot-exact") || classId == keccak256("naryx.evm.inventory-transfer")
+            || classId == keccak256("naryx.evm.perp-exact") || classId == keccak256("naryx.evm.future-exact")
+            || classId == keccak256("naryx.evm.option-exact") || classId == keccak256("naryx.evm.lending-exact")
+            || classId == keccak256("naryx.evm.collateral-transfer")
+            || classId == keccak256("naryx.evm.margin-transfer") || classId == keccak256("naryx.evm.account-transfer")
+            || classId == keccak256("naryx.evm.cross-domain-escrow");
     }
 
     function _validateDomain(DomainRef memory domain) private view {

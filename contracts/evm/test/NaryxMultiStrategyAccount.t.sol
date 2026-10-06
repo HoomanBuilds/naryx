@@ -190,7 +190,7 @@ contract NaryxMultiStrategyAccountTest is Test {
         account.execute(increase, increaseCalls, increaseOwnerSignature, increaseSolverSignature);
 
         vm.prank(PAUSER);
-        adapters.tightenControl(_adapterRef(), TypedStrategyAdapterRegistry.Lifecycle.DEPRECATED, 50 ether, 1_000 ether);
+        adapters.tightenControl(_adapterRef(), TypedStrategyAdapterRegistry.Lifecycle.DEPRECATED, 1 ether, 1 ether);
         quote.mint(address(adapter), 10 ether);
         NaryxMultiStrategyAccount.Execution memory exit = _execution(account.EXIT(), STATE_ONE, bytes32(0), 1);
         NaryxMultiStrategyAccount.AdapterCall[] memory exitCalls = _calls(
@@ -241,7 +241,7 @@ contract NaryxMultiStrategyAccountTest is Test {
             identity: _adapterRef(),
             adapter: address(adapter),
             expectedCodeHash: address(adapter).codehash,
-            adapterClassId: keccak256("test-funding-adapter-v1"),
+            adapterClassId: keccak256("naryx.evm.perp-exact"),
             adapterClassVersion: 1,
             template: _template(),
             settlementClass: _settlement(),
