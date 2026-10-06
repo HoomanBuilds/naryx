@@ -74,7 +74,7 @@ test("runtime composition exposes only explicitly enabled complete boundaries", 
     },
     hyperliquidTestnet: () => hyperliquidPort,
     hyperliquidTestnetEvidence: () => ({
-      preparation: { prepare: () => ({}) },
+      preparation: { prepare: () => ({}), prepareSelectedSource: () => ({}) },
       evidence: { prepare: async () => ({}), reconcile: async () => ({}) },
       readiness: {
         preparationAvailable: true,

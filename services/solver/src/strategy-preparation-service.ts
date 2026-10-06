@@ -51,6 +51,12 @@ export class StrategyPreparationService {
     if (!bytesEqual(strategyPackageQuoteHash(documents.quote), quoteHash)) {
       throw new Error('strategy package provider returned another quote');
     }
+    return this.prepareDocuments(documents);
+  }
+
+  async prepareDocuments(
+    documents: StoredStrategyPackageDocuments,
+  ): Promise<PreparedStrategyExecutionTransport> {
     const context = await this.#contexts.resolve(documents);
     const admission = validateStrategyPackageRouteAdmission(
       documents.order,

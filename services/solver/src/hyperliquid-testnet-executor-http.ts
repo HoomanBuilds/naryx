@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
 import { parseProtocolJson, stringifyProtocolJson, type PackageAdmission } from '@naryx/protocol-types';
 import type {
   HyperliquidPackageSubmissionResult,
@@ -171,6 +172,11 @@ export interface HyperliquidTestnetAttemptHandoff {
     maxFillPages: number;
   }>;
   readonly selectedAtMs: number;
+  readonly strategy?: Readonly<{
+    sourceAttemptId: string;
+    graphHash: Uint8Array;
+    plan: HyperliquidStrategyExecutionPlan;
+  }>;
 }
 
 export interface HyperliquidTestnetExecutorPort {
@@ -294,10 +300,13 @@ export function validateHyperliquidTestnetRuntimeAttempt(
   value: unknown,
 ): HyperliquidTestnetAttemptHandoff {
   requireCondition(isRecord(value), 'INVALID_ATTEMPT', 'attempt provider returned an invalid attempt');
-  requireCondition(hasExactKeys(value, [
+  const baseKeys = [
     'admission', 'attemptId', 'executionClassManifestHash', 'limits', 'market',
     'selectedAtMs', 'seriesManifestHash',
-  ]), 'INVALID_ATTEMPT', 'attempt provider fields are invalid');
+  ];
+  const strategyShape = 'strategy' in value;
+  requireCondition(hasExactKeys(value, strategyShape ? [...baseKeys, 'strategy'] : baseKeys),
+    'INVALID_ATTEMPT', 'attempt provider fields are invalid');
   const input = value as unknown as HyperliquidTestnetAttemptHandoff;
   requireCondition(input.attemptId === expectedAttemptId, 'ATTEMPT_IDENTITY_MISMATCH',
     'resolved attempt identity does not match the request');
@@ -311,6 +320,21 @@ export function validateHyperliquidTestnetRuntimeAttempt(
   safeInteger(input.selectedAtMs, 'selectedAtMs', true);
   for (const field of ['maxEvidenceAgeMs', 'maxSnapshotSkewMs', 'maxFillPages'] as const) {
     safeInteger(input.limits[field], `limits.${field}`, true);
+  }
+  if (strategyShape) {
+    requireCondition(isRecord(input.strategy)
+      && hasExactKeys(input.strategy, ['graphHash', 'plan', 'sourceAttemptId']),
+    'INVALID_ATTEMPT', 'strategy attempt fields are invalid');
+    requireCondition(/^hyperliquid-testnet-[0-9a-f]{48}$/.test(input.strategy.sourceAttemptId),
+      'INVALID_ATTEMPT', 'strategy source attempt identity is invalid');
+    requireCondition(input.strategy.graphHash instanceof Uint8Array
+      && input.strategy.graphHash.length === 32
+      && input.strategy.graphHash.some((byte) => byte !== 0),
+    'INVALID_ATTEMPT', 'strategy graph hash is invalid');
+    requireCondition(isRecord(input.strategy.plan)
+      && input.strategy.plan.version === 1
+      && input.strategy.plan.guarantee === 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+    'INVALID_ATTEMPT', 'strategy plan is invalid');
   }
   return input;
 }

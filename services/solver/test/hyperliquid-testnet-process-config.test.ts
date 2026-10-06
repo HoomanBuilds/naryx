@@ -7,10 +7,13 @@ import { randomBytes } from 'node:crypto';
 import test from 'node:test';
 import { privateKeyToAccount } from 'viem/accounts';
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
-import { stringifyProtocolJson } from '@naryx/protocol-types';
+import { commitmentHash, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   API_HYPERLIQUID_TESTNET_ATTEMPT_PATH,
+  API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH,
   HYPERLIQUID_SERVER_SIGNER_SCOPE,
+  HttpHyperliquidTestnetCompositeAttemptProvider,
+  HttpHyperliquidTestnetSelectedSourceProvider,
   HttpHyperliquidTestnetTrustedAttemptProvider,
   loadHyperliquidTestnetAgentSigner,
   type HyperliquidTestnetAttemptHandoff,
@@ -64,6 +67,85 @@ test('fetches one exact attempt from the loopback API contract', async () => {
   assert.equal(resolved?.attemptId, attemptId);
   assert.equal(resolved?.attemptId, attemptId);
   assert.equal('plan' in (resolved as unknown as Record<string, unknown>), false);
+});
+
+test('fetches selected source evidence from its non-live loopback route', async () => {
+  let observedUrl = '';
+  const provider = new HttpHyperliquidTestnetSelectedSourceProvider({
+    apiOrigin: 'http://127.0.0.1:8787',
+    fetchImplementation: async (input) => {
+      observedUrl = String(input);
+      return jsonResponse({ version: 1, attempt: attempt() });
+    },
+  });
+  assert.equal((await provider.resolve(attemptId))?.attemptId, attemptId);
+  assert.equal(observedUrl,
+    `http://127.0.0.1:8787${API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH}${attemptId}`);
+});
+
+test('composes a generalized strategy attempt from exact package and source commitments', async () => {
+  const strategyAttemptId = `strategy-hl-${'10'.repeat(24)}`;
+  const sourceAttemptId = `hyperliquid-testnet-${'20'.repeat(24)}`;
+  const orderHash = '31'.repeat(32);
+  const graphHash = '32'.repeat(32);
+  const quoteHash = '33'.repeat(32);
+  const routeHash = '34'.repeat(32);
+  const sourceOrderHash = '35'.repeat(32);
+  const source = {
+    ...attempt(),
+    attemptId: sourceAttemptId,
+    admission: { orderHash: commitmentHash(sourceOrderHash) },
+  } as unknown as HyperliquidTestnetAttemptHandoff;
+  const strategyPlan = {
+    version: 1,
+    guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
+  } as const;
+  const provider = new HttpHyperliquidTestnetCompositeAttemptProvider({
+    apiOrigin: 'http://127.0.0.1:8787',
+    fetchImplementation: async () => jsonResponse({
+      version: 1,
+      attempt: {
+        attemptId: strategyAttemptId,
+        idempotencyKey: 'strategy-attempt-test-0001',
+        orderHashHex: orderHash,
+        graphHashHex: graphHash,
+        quoteHashHex: quoteHash,
+        routeHashHex: routeHash,
+        sourceOrderHashHex: sourceOrderHash,
+        status: 'HYPERLIQUID_TESTNET_QUOTE_SELECTED',
+        selectedAtMs: 901_000,
+      },
+      sourceAttemptId,
+    }),
+    sourceAttempts: { resolve: async (requested) => requested === sourceAttemptId ? source : undefined },
+    liveAttempts: { resolve: async () => undefined },
+    packages: {
+      getByQuote: async (requested) => {
+        assert.deepEqual(requested, commitmentHash(quoteHash));
+        return {
+          orderHashHex: orderHash,
+          graphHashHex: graphHash,
+          quoteHashHex: quoteHash,
+          routeHashHex: routeHash,
+        } as never;
+      },
+    },
+    preparations: {
+      prepareDocuments: async () => ({
+        orderHash: commitmentHash(orderHash),
+        graphHash: commitmentHash(graphHash),
+        quoteHash: commitmentHash(quoteHash),
+        routeHash: commitmentHash(routeHash),
+        domains: [{ kind: 'HYPERCORE_EXECUTOR', plan: strategyPlan }],
+      }) as never,
+    },
+  });
+
+  const resolved = await provider.resolve(strategyAttemptId);
+  assert.equal(resolved?.attemptId, strategyAttemptId);
+  assert.equal(resolved?.strategy?.sourceAttemptId, sourceAttemptId);
+  assert.equal(resolved?.strategy?.plan, strategyPlan);
+  assert.deepEqual(resolved?.strategy?.graphHash, commitmentHash(graphHash));
 });
 
 test('rejects non-loopback origins, malformed envelopes, and oversized responses', async () => {

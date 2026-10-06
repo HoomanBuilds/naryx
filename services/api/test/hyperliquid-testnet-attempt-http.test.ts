@@ -36,7 +36,7 @@ test("private Hyperliquid attempt endpoint returns only the canonical prepared h
     { prepare: (attemptId) => {
       assert.equal(attemptId, ATTEMPT_ID);
       return HANDOFF;
-    } },
+    }, prepareSelectedSource: () => HANDOFF },
   );
   context.after(() => server.close());
   const origin = await listen(server);
@@ -56,6 +56,16 @@ test("private Hyperliquid attempt endpoint returns only the canonical prepared h
   );
   assert.equal(method.status, 405);
   assert.equal(method.headers.get("allow"), "GET");
+
+  const sourceAttemptId = `hyperliquid-testnet-${"11".repeat(24)}`;
+  const sourceResponse = await fetch(
+    `${origin}/internal/solver/hyperliquid-testnet/source-attempts/${sourceAttemptId}`,
+  );
+  assert.equal(sourceResponse.status, 200);
+  assert.deepEqual(
+    parseProtocolJson(await sourceResponse.text(), "test.sourceHandoff"),
+    { version: 1, attempt: HANDOFF },
+  );
 });
 
 test("private Hyperliquid attempt endpoint stays unavailable and maps missing attempts", async (context) => {
@@ -73,6 +83,8 @@ test("private Hyperliquid attempt endpoint stays unavailable and maps missing at
     {}, undefined, undefined, {}, undefined, undefined, undefined, undefined,
     undefined, "PHASE4_FIXTURE", undefined,
     { prepare: () => {
+      throw new HyperliquidTestnetRuntimeClientError("ATTEMPT_NOT_FOUND", "missing");
+    }, prepareSelectedSource: () => {
       throw new HyperliquidTestnetRuntimeClientError("ATTEMPT_NOT_FOUND", "missing");
     } },
   );

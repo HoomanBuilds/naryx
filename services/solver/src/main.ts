@@ -6,6 +6,7 @@ import { LOCAL_ATOMIC_MARKET_CATALOG_V1, localConformanceSlot } from '@naryx/ada
 import { SolanaConformanceAdapter, createBoundedSolanaConnection } from '@naryx/adapter-solana';
 import {
   HttpSelectedSolanaAdmissionProvider,
+  HttpHyperliquidTestnetCompositeAttemptProvider,
   HttpHyperliquidTestnetTrustedAttemptProvider,
   HttpInternalOrderProvider,
   SolanaExecutionAuthorizationService,
@@ -193,12 +194,15 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
   .filter((value) => value !== '');
 const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
-const strategyPreparationHandler = strategyPreparationLanes.length === 0
+const strategyPreparationService = strategyPreparationLanes.length === 0
   ? undefined
-  : createStrategyPreparationInternalHandler(new StrategyPreparationService(
-    strategyPackageProvider,
-    new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes),
-  ));
+  : new StrategyPreparationService(
+      strategyPackageProvider,
+      new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes),
+    );
+const strategyPreparationHandler = strategyPreparationService === undefined
+  ? undefined
+  : createStrategyPreparationInternalHandler(strategyPreparationService);
 const generalizedStrategyLane = loadHyperliquidTestnetGeneralizedCashCarryQuoteLane(
   process.env,
   strategyPreparationLanes,
@@ -257,7 +261,13 @@ if (executorEnabled) {
     ...process.env,
     NARYX_HYPERLIQUID_TESTNET_EXECUTION_ENABLED: 'true',
   }, {
-    attempts: new HttpHyperliquidTestnetTrustedAttemptProvider({ apiOrigin }),
+    attempts: strategyPreparationService === undefined
+      ? new HttpHyperliquidTestnetTrustedAttemptProvider({ apiOrigin })
+      : new HttpHyperliquidTestnetCompositeAttemptProvider({
+          apiOrigin,
+          packages: strategyPackageProvider,
+          preparations: strategyPreparationService,
+        }),
     signer: hyperliquidSigner,
   });
   if (executorRuntime.runtimeFactory === undefined) {

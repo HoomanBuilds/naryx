@@ -460,6 +460,40 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const hyperliquidSourceAttemptMatch = url.search === ""
+      ? /^\/internal\/solver\/hyperliquid-testnet\/source-attempts\/(hyperliquid-testnet-[0-9a-f]{48})$/.exec(url.pathname)
+      : null;
+    if (hyperliquidSourceAttemptMatch !== null) {
+      if (!isDirectLoopbackRequest(request)) {
+        reject(response, 403, "LOOPBACK_REQUIRED", "Hyperliquid source attempt access is loopback-only.");
+        return;
+      }
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (hyperliquidTestnetPreparationPort === undefined) {
+        reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Hyperliquid source attempt retrieval is unavailable.");
+        return;
+      }
+      try {
+        const attempt = hyperliquidTestnetPreparationPort.prepareSelectedSource(hyperliquidSourceAttemptMatch[1]!);
+        sendJson(response, 200, {
+          version: 1,
+          attempt: toProtocolJson(attempt, "hyperliquidTestnet.sourceAttempt"),
+        });
+      } catch (error) {
+        if (error instanceof HyperliquidTestnetRuntimeClientError
+          && error.code === "ATTEMPT_NOT_FOUND") {
+          reject(response, 404, "ATTEMPT_NOT_FOUND", "Hyperliquid source attempt was not found.");
+          return;
+        }
+        reject(response, 502, "ATTEMPT_RETRIEVAL_FAILED", "Hyperliquid source attempt retrieval failed closed.");
+      }
+      return;
+    }
+
     const generalizedHyperliquidAttemptMatch = url.search === ""
       ? /^\/internal\/solver\/hyperliquid-testnet\/strategy-attempts\/(strategy-hl-[0-9a-f]{48})$/.exec(url.pathname)
       : null;

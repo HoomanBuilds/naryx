@@ -76,6 +76,7 @@ export type HyperliquidTestnetAttemptPreparation = Readonly<{
 
 export interface HyperliquidTestnetPreparationPort {
   prepare(attemptId: string): HyperliquidTestnetAttemptPreparation;
+  prepareSelectedSource(attemptId: string): HyperliquidTestnetAttemptPreparation;
 }
 
 export interface HyperliquidTestnetEvidencePort {
@@ -620,70 +621,81 @@ export function createHyperliquidTestnetAttemptPreparationPort(
   const market = marketMetadata(options.market);
   const bounds = executionBounds(options.bounds);
 
+  const prepareAt = (
+    attemptId: string,
+    timeMode: "LIVE" | "SELECTED_SOURCE",
+  ): HyperliquidTestnetAttemptPreparation => {
+    let attempt;
+    try {
+      attempt = options.intents.getAttempt(attemptId);
+    } catch {
+      fail("ATTEMPT_NOT_FOUND", "selected execution attempt was not found");
+    }
+    if (attempt === undefined) {
+      fail("ATTEMPT_NOT_FOUND", "selected execution attempt was not found");
+    }
+    const record = options.orders.getByOrderHash(attempt.orderHash);
+    const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
+    const selected = options.intents.getSelectedQuote(attemptId);
+    if (record === undefined || order === undefined || selected === undefined) {
+      fail("ATTEMPT_EVIDENCE_MISSING", "selected order or quote evidence is missing");
+    }
+    const verificationTimeMs = timeMode === "LIVE"
+      ? requirePositiveInteger(options.currentTimeMs(), "currentTimeMs")
+      : requirePositiveInteger(attempt.selectedAtMs, "selectedAtMs");
+    let verified;
+    try {
+      verified = verifySolverAtomicQuoteResponse(selected, order, BigInt(verificationTimeMs));
+    } catch {
+      fail("ATTEMPT_EVIDENCE_MISMATCH", "selected solver evidence failed verification");
+    }
+    const orderDomainHash = toHex(order.domain.domainManifestHash);
+    const solverKey = toHex(verified.quote.solverVerificationKey);
+    const spotLeg = verified.route.legs.find((leg) => leg.legRole === "SPOT");
+    const perpetualLeg = verified.route.legs.find((leg) => leg.legRole === "PERPETUAL");
+    if (selected.orderHash !== attempt.orderHash
+      || selected.quoteHash !== attempt.quoteHash
+      || selected.routeHash !== attempt.routeHash
+      || record.orderHashHex !== attempt.orderHash
+      || record.domainId !== expectedDomain.domainId
+      || record.domainManifestVersion !== expectedDomain.domainManifestVersion
+      || record.domainManifestHashHex !== expectedDomain.domainManifestHash
+      || order.domain.domainId !== expectedDomain.domainId
+      || order.domain.domainManifestVersion !== expectedDomain.domainManifestVersion
+      || orderDomainHash !== expectedDomain.domainManifestHash
+      || verified.route.solver !== expectedSolverId
+      || solverKey !== expectedSolver
+      || !matchesLeg(spotLeg, market.spot)
+      || !matchesLeg(perpetualLeg, market.perpetual)) {
+      fail("ATTEMPT_EVIDENCE_MISMATCH", "selected attempt bindings are inconsistent");
+    }
+    const expiresAt = verified.quote.validUntilValue;
+    if (expiresAt > BigInt(Number.MAX_SAFE_INTEGER) || expiresAt <= BigInt(verificationTimeMs)) {
+      fail("ATTEMPT_EXPIRED", "selected Hyperliquid quote is expired or has an unsafe expiry");
+    }
+    return Object.freeze({
+      attemptId,
+      admission: Object.freeze({
+        order,
+        route: verified.route,
+        quote: verified.quote,
+        orderHash: fromHex(attempt.orderHash, "orderHash"),
+        routeHash: fromHex(attempt.routeHash, "routeHash"),
+        quoteHash: fromHex(attempt.quoteHash, "quoteHash"),
+      }) as PackageAdmission,
+      seriesManifestHash,
+      executionClassManifestHash,
+      market,
+      limits: bounds,
+      selectedAtMs: attempt.selectedAtMs,
+    });
+  };
   return Object.freeze({
     prepare(attemptId: string): HyperliquidTestnetAttemptPreparation {
-      let attempt;
-      try {
-        attempt = options.intents.getAttempt(attemptId);
-      } catch {
-        fail("ATTEMPT_NOT_FOUND", "selected execution attempt was not found");
-      }
-      if (attempt === undefined) {
-        fail("ATTEMPT_NOT_FOUND", "selected execution attempt was not found");
-      }
-      const record = options.orders.getByOrderHash(attempt.orderHash);
-      const order = options.orders.getCanonicalOrderByHash(attempt.orderHash);
-      const selected = options.intents.getSelectedQuote(attemptId);
-      if (record === undefined || order === undefined || selected === undefined) {
-        fail("ATTEMPT_EVIDENCE_MISSING", "selected order or quote evidence is missing");
-      }
-      const currentTimeMs = requirePositiveInteger(options.currentTimeMs(), "currentTimeMs");
-      let verified;
-      try {
-        verified = verifySolverAtomicQuoteResponse(selected, order, BigInt(currentTimeMs));
-      } catch {
-        fail("ATTEMPT_EVIDENCE_MISMATCH", "selected solver evidence failed verification");
-      }
-      const orderDomainHash = toHex(order.domain.domainManifestHash);
-      const solverKey = toHex(verified.quote.solverVerificationKey);
-      const spotLeg = verified.route.legs.find((leg) => leg.legRole === "SPOT");
-      const perpetualLeg = verified.route.legs.find((leg) => leg.legRole === "PERPETUAL");
-      if (selected.orderHash !== attempt.orderHash
-        || selected.quoteHash !== attempt.quoteHash
-        || selected.routeHash !== attempt.routeHash
-        || record.orderHashHex !== attempt.orderHash
-        || record.domainId !== expectedDomain.domainId
-        || record.domainManifestVersion !== expectedDomain.domainManifestVersion
-        || record.domainManifestHashHex !== expectedDomain.domainManifestHash
-        || order.domain.domainId !== expectedDomain.domainId
-        || order.domain.domainManifestVersion !== expectedDomain.domainManifestVersion
-        || orderDomainHash !== expectedDomain.domainManifestHash
-        || verified.route.solver !== expectedSolverId
-        || solverKey !== expectedSolver
-        || !matchesLeg(spotLeg, market.spot)
-        || !matchesLeg(perpetualLeg, market.perpetual)) {
-        fail("ATTEMPT_EVIDENCE_MISMATCH", "selected attempt bindings are inconsistent");
-      }
-      const expiresAt = verified.quote.validUntilValue;
-      if (expiresAt > BigInt(Number.MAX_SAFE_INTEGER) || expiresAt <= BigInt(currentTimeMs)) {
-        fail("ATTEMPT_EXPIRED", "selected Hyperliquid quote is expired or has an unsafe expiry");
-      }
-      return Object.freeze({
-        attemptId,
-        admission: Object.freeze({
-          order,
-          route: verified.route,
-          quote: verified.quote,
-          orderHash: fromHex(attempt.orderHash, "orderHash"),
-          routeHash: fromHex(attempt.routeHash, "routeHash"),
-          quoteHash: fromHex(attempt.quoteHash, "quoteHash"),
-        }) as PackageAdmission,
-        seriesManifestHash,
-        executionClassManifestHash,
-        market,
-        limits: bounds,
-        selectedAtMs: attempt.selectedAtMs,
-      });
+      return prepareAt(attemptId, "LIVE");
+    },
+    prepareSelectedSource(attemptId: string): HyperliquidTestnetAttemptPreparation {
+      return prepareAt(attemptId, "SELECTED_SOURCE");
     },
   });
 }

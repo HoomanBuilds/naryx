@@ -1,6 +1,7 @@
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
   HyperliquidExecutionPlanner,
+  bindHyperliquidStrategyPlanToCashCarrySource,
   decimalToAtoms,
   type HyperliquidExecutionPlan,
   type HyperliquidExecutionPlannerOptions,
@@ -393,6 +394,22 @@ function plannerOptions(attempt: HyperliquidTestnetAttemptHandoff): HyperliquidE
   };
 }
 
+function executionPlan(
+  attempt: HyperliquidTestnetAttemptHandoff,
+  inventory: HyperliquidTestnetAccountInventory,
+): HyperliquidExecutionPlan {
+  const sourcePlan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
+    accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
+  });
+  return attempt.strategy === undefined
+    ? sourcePlan
+    : bindHyperliquidStrategyPlanToCashCarrySource({
+        strategyPlan: attempt.strategy.plan,
+        sourcePlan,
+        sourceAdmission: attempt.admission,
+      });
+}
+
 /** How often a blocked shared lane is re-reconciled for automatic release. */
 const LANE_RECONCILE_INTERVAL_MS = 30_000;
 
@@ -530,9 +547,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           attempt.market.spot.tokenIndex,
           attempt.admission.order.quantity.asset.decimals,
         );
-        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
-          accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
-        });
+        const plan = executionPlan(attempt, inventory);
         requireExitInventory(plan, inventory);
         await marketPreflight.qualify({
           plan,
@@ -550,9 +565,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         const now = currentTimeMs();
         if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');
         const nowMs = BigInt(now);
-        const plan = new HyperliquidExecutionPlanner(plannerOptions(attempt)).compile(attempt.admission, {
-          accountPrePerpPositionAtoms: inventory.perpetualPositionAtoms,
-        });
+        const plan = executionPlan(attempt, inventory);
         requireExitInventory(plan, inventory);
         const context = journal.submissionContext({
           account: expectedAccount,

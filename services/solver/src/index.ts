@@ -822,7 +822,11 @@ export {
 } from './hyperliquid-testnet-lane.js';
 export {
   API_HYPERLIQUID_TESTNET_ATTEMPT_PATH,
+  API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH,
+  HttpHyperliquidTestnetCompositeAttemptProvider,
+  HttpHyperliquidTestnetSelectedSourceProvider,
   HttpHyperliquidTestnetTrustedAttemptProvider,
+  type HyperliquidTestnetCompositeAttemptOptions,
   type HyperliquidTestnetAttemptHttpOptions,
 } from './hyperliquid-testnet-attempt-http.js';
 export {
