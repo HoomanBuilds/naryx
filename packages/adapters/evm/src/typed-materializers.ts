@@ -7,6 +7,7 @@ import type {
 
 const SPOT_CLASS_ID = 'naryx.evm.spot-exact';
 const PERP_CLASS_ID = 'naryx.evm.perp-exact';
+const FUTURE_CLASS_ID = 'naryx.evm.future-exact';
 const ERC4626_CLASS_ID = 'naryx.evm.erc4626-exact';
 const AAVE_V3_LENDING_CLASS_ID = 'naryx.evm.aave-v3-lending-exact';
 const UINT128_MAX = (1n << 128n) - 1n;
@@ -190,21 +191,21 @@ function checkedPerpBounds(value: EvmExactPerpLegBounds): EvmExactPerpLegBounds 
   return value;
 }
 
-export function createEvmExactPerpMaterializer(input: Readonly<{
+function createEvmExactDerivativeMaterializer(input: Readonly<{
   binding: EvmTypedAdapterMaterializerBinding;
   bounds: readonly EvmExactPerpLegBounds[];
-}>): EvmStrategyLegMaterializer {
-  requireCondition(input.binding.materializationClassId === PERP_CLASS_ID, 'perpetual materializer class mismatch');
+}>, classId: string, familyPrefix: 'PERP_' | 'FUTURE_'): EvmStrategyLegMaterializer {
+  requireCondition(input.binding.materializationClassId === classId, 'derivative materializer class mismatch');
   const checked = input.bounds.map(checkedPerpBounds);
-  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'perpetual leg bounds repeat');
+  requireCondition(new Set(checked.map((value) => value.legId)).size === checked.length, 'derivative leg bounds repeat');
   return Object.freeze({
     ...input.binding,
     adapterAddress: getAddress(input.binding.adapterAddress),
     materialize(context: EvmStrategyLegMaterializationContext) {
       const leg = graphLeg(context);
-      requireCondition(leg.legFamily.startsWith('PERP_'), `leg ${leg.legId} is not a perpetual action`);
+      requireCondition(leg.legFamily.startsWith(familyPrefix), `leg ${leg.legId} is not a supported derivative action`);
       const matches = checked.filter((value) => value.legId === leg.legId);
-      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact perpetual bounds`);
+      requireCondition(matches.length === 1, `leg ${leg.legId} must have exact derivative bounds`);
       const bounds = matches[0]!;
       const economics = legEconomics(context);
       const requiredInput = economics.marginDelta.atoms > 0n ? economics.marginDelta.atoms : 0n;
@@ -264,6 +265,20 @@ export function createEvmExactPerpMaterializer(input: Readonly<{
       });
     },
   });
+}
+
+export function createEvmExactPerpMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  bounds: readonly EvmExactPerpLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  return createEvmExactDerivativeMaterializer(input, PERP_CLASS_ID, 'PERP_');
+}
+
+export function createEvmExactFutureMaterializer(input: Readonly<{
+  binding: EvmTypedAdapterMaterializerBinding;
+  bounds: readonly EvmExactPerpLegBounds[];
+}>): EvmStrategyLegMaterializer {
+  return createEvmExactDerivativeMaterializer(input, FUTURE_CLASS_ID, 'FUTURE_');
 }
 
 export function createEvmExactVaultMaterializer(input: Readonly<{

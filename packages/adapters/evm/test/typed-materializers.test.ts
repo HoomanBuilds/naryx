@@ -12,6 +12,7 @@ import { decodeAbiParameters, hexToBytes, type Address, type Hex } from 'viem';
 import {
   createEvmAaveV3LendingMaterializer,
   createEvmExactPerpMaterializer,
+  createEvmExactFutureMaterializer,
   createEvmExactSpotMaterializer,
   createEvmExactVaultMaterializer,
   type EvmStrategyLegMaterializationContext,
@@ -303,4 +304,41 @@ test('materializes exact perpetual observations and enforces the quoted margin i
     })),
     /collateral input differs from quoted margin/,
   );
+});
+
+test('keeps dated futures in a distinct materialization class', () => {
+  const materializer = createEvmExactFutureMaterializer({
+    binding: binding('FUTURE_OPEN', 'naryx.evm.future-exact'),
+    bounds: [{
+      legId: 'leg',
+      expectedPrePositionHash: HASH_E,
+      tradeArgs: [HASH_A, HASH_B],
+      expectedPostSizeWad: 10n,
+      minimumPostBalanceWad: 50n,
+      maximumPostBalanceWad: 60n,
+      minimumPostEntryNotionalWad: 100n,
+      maximumPostEntryNotionalWad: 110n,
+      expectedReserveBeforeAtoms: 0n,
+      minimumReserveAfterAtoms: 40n,
+      maximumReserveAfterAtoms: 50n,
+      collateralInAtoms: 100n,
+      collateralOutAtoms: 0n,
+      withdrawAll: false,
+      minimumCollateralOutAtoms: 0n,
+      maximumCollateralOutAtoms: 0n,
+    }],
+  });
+  const result = materializer.materialize(context({
+    legFamily: 'FUTURE_OPEN',
+    side: 'BUY',
+    quantityAtoms: 10n,
+    marginDeltaAtoms: 100n,
+  }));
+  assert.equal(result.gasLimit, 400_000n);
+  assert.throws(() => materializer.materialize(context({
+    legFamily: 'PERP_OPEN',
+    side: 'BUY',
+    quantityAtoms: 10n,
+    marginDeltaAtoms: 100n,
+  })), /supported derivative action/);
 });

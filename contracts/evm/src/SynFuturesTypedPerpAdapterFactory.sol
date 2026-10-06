@@ -12,10 +12,12 @@ import {ITypedStrategyAdapterFactory} from "./interfaces/ITypedStrategyAdapterFa
 
 contract SynFuturesTypedPerpAdapterFactory is ITypedStrategyAdapterFactory {
     bytes32 public constant ADAPTER_CLASS_ID = keccak256("naryx.evm.perp-exact");
+    bytes32 public constant FUTURE_ADAPTER_CLASS_ID = keccak256("naryx.evm.future-exact");
     uint32 public constant ADAPTER_CLASS_VERSION = 1;
 
     struct Deployment {
         uint256 chainId;
+        bool datedFuture;
         INaryxMultiStrategyAccountFactory accountFactory;
         IERC20 baseToken;
         IERC20 collateralToken;
@@ -46,6 +48,7 @@ contract SynFuturesTypedPerpAdapterFactory is ITypedStrategyAdapterFactory {
     event InstanceCreated(address indexed strategyAccount, bytes32 indexed packageId, address indexed instance);
 
     uint256 public immutable deploymentChainId;
+    bytes32 public immutable adapterClassId;
     INaryxMultiStrategyAccountFactory public immutable accountFactory;
     IERC20 public immutable baseToken;
     IERC20 public immutable collateralToken;
@@ -77,6 +80,7 @@ contract SynFuturesTypedPerpAdapterFactory is ITypedStrategyAdapterFactory {
                 || deployment.marginGateCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         deploymentChainId = deployment.chainId;
+        adapterClassId = deployment.datedFuture ? FUTURE_ADAPTER_CLASS_ID : ADAPTER_CLASS_ID;
         accountFactory = deployment.accountFactory;
         baseToken = deployment.baseToken;
         collateralToken = deployment.collateralToken;
@@ -95,7 +99,7 @@ contract SynFuturesTypedPerpAdapterFactory is ITypedStrategyAdapterFactory {
     }
 
     function factoryMetadata() external view returns (bytes32, uint32, address, address) {
-        return (ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(baseToken), address(collateralToken));
+        return (adapterClassId, ADAPTER_CLASS_VERSION, address(baseToken), address(collateralToken));
     }
 
     function adapterOf(address strategyAccount, bytes32 packageId) public view returns (address) {
@@ -151,6 +155,7 @@ contract SynFuturesTypedPerpAdapterFactory is ITypedStrategyAdapterFactory {
     {
         return SynFuturesTypedPerpAdapter.Deployment({
             chainId: deploymentChainId,
+            adapterClassId: adapterClassId,
             strategyAccount: strategyAccount,
             packageId: packageId,
             baseToken: baseToken,

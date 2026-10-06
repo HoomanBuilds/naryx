@@ -304,6 +304,7 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
         function _perpDeployment() private view returns (SynFuturesTypedPerpAdapter.Deployment memory) {
             return SynFuturesTypedPerpAdapter.Deployment({
                 chainId: block.chainid,
+                adapterClassId: keccak256("naryx.evm.perp-exact"),
                 strategyAccount: address(account),
                 packageId: PACKAGE_ID,
                 baseToken: base,
@@ -466,6 +467,17 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             adapters.proposeRegistration(binding, _control());
         }
 
+        function testFactoryPublishesADistinctDatedFutureClass() public {
+            SynFuturesTypedPerpAdapterFactory.Deployment memory deployment = _perpFactoryDeployment();
+            deployment.datedFuture = true;
+            SynFuturesTypedPerpAdapterFactory futureFactory = new SynFuturesTypedPerpAdapterFactory(deployment);
+            SynFuturesTypedPerpAdapter futureAdapter = futureFactory.create(address(account), PACKAGE_ID);
+            (, bytes32 classId, uint32 classVersion,,) = futureAdapter.adapterMetadata();
+            assertEq(classId, keccak256("naryx.evm.future-exact"));
+            assertEq(classVersion, 1);
+            assertTrue(futureFactory.validateInstance(address(futureAdapter), address(account), PACKAGE_ID));
+        }
+
         function _spotFactoryDeployment() private view returns (UniswapV3TypedSpotAdapterFactory.Deployment memory) {
             return UniswapV3TypedSpotAdapterFactory.Deployment({
                 chainId: block.chainid,
@@ -489,6 +501,7 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
         function _perpFactoryDeployment() private view returns (SynFuturesTypedPerpAdapterFactory.Deployment memory) {
             return SynFuturesTypedPerpAdapterFactory.Deployment({
                 chainId: block.chainid,
+                datedFuture: false,
                 accountFactory: INaryxMultiStrategyAccountFactory(address(accountFactory)),
                 baseToken: base,
                 collateralToken: quote,

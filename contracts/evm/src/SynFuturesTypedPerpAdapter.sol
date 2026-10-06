@@ -13,10 +13,12 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant ADAPTER_CLASS_ID = keccak256("naryx.evm.perp-exact");
+    bytes32 public constant FUTURE_ADAPTER_CLASS_ID = keccak256("naryx.evm.future-exact");
     uint32 public constant ADAPTER_CLASS_VERSION = 1;
 
     struct Deployment {
         uint256 chainId;
+        bytes32 adapterClassId;
         address strategyAccount;
         bytes32 packageId;
         IERC20 baseToken;
@@ -65,6 +67,7 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     address public immutable strategyAccount;
     bytes32 public immutable packageId;
     uint256 public immutable deploymentChainId;
+    bytes32 public immutable adapterClassId;
     IERC20 public immutable baseToken;
     IERC20 public immutable collateralToken;
     ISynFuturesInstrument public immutable instrument;
@@ -80,7 +83,10 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
 
     constructor(Deployment memory deployment) {
         if (
-            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
+            deployment.chainId == 0
+                || (deployment.adapterClassId != ADAPTER_CLASS_ID
+                    && deployment.adapterClassId != FUTURE_ADAPTER_CLASS_ID)
+                || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
                 || address(deployment.baseToken).code.length == 0
                 || address(deployment.collateralToken).code.length == 0
                 || address(deployment.baseToken) == address(deployment.collateralToken)
@@ -95,6 +101,7 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         strategyAccount = deployment.strategyAccount;
         packageId = deployment.packageId;
         deploymentChainId = deployment.chainId;
+        adapterClassId = deployment.adapterClassId;
         baseToken = deployment.baseToken;
         collateralToken = deployment.collateralToken;
         instrument = deployment.instrument;
@@ -111,7 +118,7 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     }
 
     function adapterMetadata() external view returns (address, bytes32, uint32, address, address) {
-        return (strategyAccount, ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(baseToken), address(collateralToken));
+        return (strategyAccount, adapterClassId, ADAPTER_CLASS_VERSION, address(baseToken), address(collateralToken));
     }
 
     function executeLeg(bytes calldata payload) external nonReentrant returns (bytes32 evidenceHash) {
