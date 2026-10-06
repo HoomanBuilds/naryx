@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   adapterRef,
@@ -23,6 +26,7 @@ import {
   createGeneralizedStrategyQuoteInternalHandler,
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,
+  SqliteGeneralizedStrategyQuoteStore,
 } from '../src/index.js';
 
 const domain = domainRef('eip155:84532', 1, '11'.repeat(32));
@@ -303,6 +307,25 @@ test('generalized RFQ prices, compiles, signs, validates, and replays one commit
   assert.deepEqual(first.route.legs.map((leg) => leg.materializationClassId), ['evm-perp', 'evm-spot']);
   assert.equal(replay.quoteHash, first.quoteHash);
   assert.equal(pricingCalls, 1);
+  const scratch = mkdtempSync(join(tmpdir(), 'naryx-strategy-quotes-'));
+  const path = join(scratch, 'quotes.db');
+  const durable = new SqliteGeneralizedStrategyQuoteStore(path);
+  try {
+    assert.equal(durable.save({ orderHash: request.orderHash, response: first }).response.quoteHash, first.quoteHash);
+  } finally {
+    durable.close();
+  }
+  const reopened = new SqliteGeneralizedStrategyQuoteStore(path);
+  try {
+    assert.equal(reopened.get(request.idempotencyKey)?.response.quoteHash, first.quoteHash);
+    assert.throws(
+      () => reopened.save({ orderHash: 'ff'.repeat(32), response: { ...first, orderHash: 'ff'.repeat(32) } }),
+      (error: unknown) => error instanceof Error,
+    );
+  } finally {
+    reopened.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
   await assert.rejects(
     () => service.quote({ orderHash: 'ff'.repeat(32), idempotencyKey: request.idempotencyKey }),
     (error: unknown) => error instanceof GeneralizedStrategyQuoteError && error.code === 'IDEMPOTENCY_CONFLICT',

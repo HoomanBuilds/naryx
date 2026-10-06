@@ -41,6 +41,7 @@ export {
   type StoredGeneralizedStrategyQuote,
 } from './strategy-quote-service.js';
 export { createGeneralizedStrategyQuoteInternalHandler } from './strategy-quote-server.js';
+export { SqliteGeneralizedStrategyQuoteStore } from './strategy-quote-sqlite-store.js';
 export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
