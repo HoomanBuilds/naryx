@@ -284,6 +284,10 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     assert.equal((await get("/v1/strategy-packages/recent?limit=0")).status, 400);
     assert.equal((await get("/v1/strategy-packages/recent?limit=51")).status, 400);
     assert.equal((await get("/v1/strategy-packages/recent?other=1")).status, 400);
+    const receipt = await get(`/v1/strategy-receipts/${"44".repeat(32)}`);
+    assert.equal(receipt.status, 200);
+    assert.deepEqual(receipt.body, { version: 1, receiptHash: "44".repeat(32), receipt: { version: 1, receiptNonce: 7n } });
+    assert.equal((await get(`/v1/strategy-receipts/${"55".repeat(32)}`)).status, 404);
   }, {
     strategyPackages: {
       registerOrder: () => { throw new Error("not used"); },
@@ -292,6 +296,7 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
         requestedLimit = limit;
         return [summary];
       },
+      receipt: (hash) => hash === "44".repeat(32) ? ({ version: 1, receiptNonce: 7n } as never) : undefined,
     },
   });
 });

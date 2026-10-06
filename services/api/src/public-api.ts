@@ -170,7 +170,7 @@ export interface PublicApiOptions {
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
-  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions">;
+  readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
@@ -744,6 +744,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
       }
       return { version: 1, admissions: requireStrategyPackages().recentAdmissions(Number(rawLimit)) };
+    }
+    if ((match = /^\/v1\/strategy-receipts\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const receiptHash = match[1] as string;
+      const receipt = requireStrategyPackages().receipt(receiptHash);
+      if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No such strategy package receipt.");
+      return { version: 1, receiptHash, receipt };
     }
     if (path === "/v1/package-templates") {
       onlyParams(url, []);

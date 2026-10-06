@@ -25,7 +25,7 @@ import {
   type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
-import { internalCaller, sendError, sendJson } from "./internal-http.js";
+import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS strategy_package_orders (
@@ -356,16 +356,40 @@ export class SqliteStrategyPackageStore {
 }
 
 export function createStrategyPackageInternalHandler(
-  store: Pick<SqliteStrategyPackageStore, "admissionByQuote">,
+  store: Pick<SqliteStrategyPackageStore, "admissionByQuote" | "recordReceipt">,
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
-    const path = new URL(request.url ?? "/", "http://internal.local").pathname;
-    const match = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(path);
-    if (match === null) return false;
+    const url = new URL(request.url ?? "/", "http://internal.local");
+    const match = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(url.pathname);
+    const recordsReceipt = url.pathname === "/internal/strategy-packages/receipts";
+    if (match === null && !recordsReceipt) return false;
     if (!internalCaller(request)) return sendError(response, 403, "FORBIDDEN", "Strategy package routes answer loopback callers only.");
+    if (url.search !== "") return sendError(response, 400, "INVALID_REQUEST", "Strategy package routes accept no query parameters.");
+    if (recordsReceipt) {
+      if (request.method !== "POST") return sendError(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+      if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/json") {
+        return sendError(response, 415, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.");
+      }
+      readInternalBody(request, response, (body) => {
+        try {
+          if (Object.keys(body).length !== 1 || body.receipt === undefined) {
+            sendError(response, 400, "INVALID_REQUEST", "The body must contain only receipt.");
+            return;
+          }
+          sendJson(response, 200, { version: 1, ...store.recordReceipt(body.receipt as StrategyPackageReceiptInput) });
+        } catch (error) {
+          if (error instanceof StrategyPackageStoreError) {
+            sendError(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+            return;
+          }
+          sendError(response, 400, "RECEIPT_REJECTED", "The strategy package receipt was rejected.");
+        }
+      });
+      return true;
+    }
     if (request.method !== "GET") return sendError(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
     try {
-      const admission = store.admissionByQuote(match[1]!);
+      const admission = store.admissionByQuote(match![1]!);
       if (admission === undefined) return sendError(response, 404, "NOT_FOUND", "No admitted strategy package exists for this quote.");
       return sendJson(response, 200, { version: 1, ...admission });
     } catch (error) {
