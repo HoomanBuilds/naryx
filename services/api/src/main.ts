@@ -727,7 +727,11 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
     templateId: "cash-and-carry-v1",
     templateVersion: 1,
     actions: Object.freeze(["ENTRY", "EXIT"] as const),
-    legFamilies: Object.freeze(["SPOT_SWAP", "PERP_OPEN", "PERP_CLOSE"] as const),
+    legs: Object.freeze([
+      Object.freeze({ legFamily: "SPOT_SWAP" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
+      Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+      Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+    ]),
     settlementClasses: Object.freeze([settlementClass]),
     domains: Object.freeze([domain]),
   }));
