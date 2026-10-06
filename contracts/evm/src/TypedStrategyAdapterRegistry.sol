@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {ITypedStrategyAdapter} from "./interfaces/ITypedStrategyAdapter.sol";
 
 contract TypedStrategyAdapterRegistry {
     bytes32 public constant ATOMIC_POSTCONDITION_ID = keccak256("ATOMIC_POSTCONDITION");
@@ -300,6 +301,19 @@ contract TypedStrategyAdapterRegistry {
                 || binding.quoteAsset.token.codehash != binding.quoteAsset.expectedCodeHash
                 || binding.maximumGasLimit == 0 || control.maximumApprovalAtoms == 0
                 || control.maximumGrossNotionalAtoms == 0
+        ) revert InvalidBinding();
+
+        (
+            address strategyAccount,
+            bytes32 adapterClassId,
+            uint32 adapterClassVersion,
+            address baseAsset,
+            address quoteAsset
+        ) = ITypedStrategyAdapter(binding.adapter).adapterMetadata();
+        if (
+            strategyAccount == address(0) || adapterClassId != binding.adapterClassId
+                || adapterClassVersion != binding.adapterClassVersion || baseAsset != binding.baseAsset.token
+                || quoteAsset != binding.quoteAsset.token
         ) revert InvalidBinding();
     }
 

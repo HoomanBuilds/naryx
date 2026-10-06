@@ -22,6 +22,20 @@ contract MultiStrategyToken is ERC20 {
 contract MultiStrategyAdapter is ITypedStrategyAdapter {
     using SafeERC20 for IERC20;
 
+    address public immutable strategyAccount;
+    IERC20 public immutable base;
+    IERC20 public immutable quote;
+
+    constructor(address strategyAccount_, IERC20 base_, IERC20 quote_) {
+        strategyAccount = strategyAccount_;
+        base = base_;
+        quote = quote_;
+    }
+
+    function adapterMetadata() external view returns (address, bytes32, uint32, address, address) {
+        return (strategyAccount, keccak256("naryx.evm.perp-exact"), 1, address(base), address(quote));
+    }
+
     function executeLeg(bytes calldata payload) external returns (bytes32 evidenceHash) {
         (uint8 mode, IERC20 token, address recipient, uint256 amount, bytes32 expectedEvidence) =
             abi.decode(payload, (uint8, IERC20, address, uint256, bytes32));
@@ -68,8 +82,8 @@ contract NaryxMultiStrategyAccountTest is Test {
         adapters = new TypedStrategyAdapterRegistry(config);
         base = new MultiStrategyToken("Base", "BASE");
         quote = new MultiStrategyToken("Quote", "QUOTE");
-        adapter = new MultiStrategyAdapter();
         account = new NaryxMultiStrategyAccount(owner, config, solvers, adapters);
+        adapter = new MultiStrategyAdapter(address(account), base, quote);
 
         vm.prank(PROPOSER);
         adapters.proposeRegistration(_binding(), _control());
@@ -233,6 +247,17 @@ contract NaryxMultiStrategyAccountTest is Test {
         assertFalse(account.packageState(entry.packageId).active);
         assertEq(account.nextNonce(), 2);
         assertEq(quote.balanceOf(address(account)), 1_000 ether);
+    }
+
+    function testRegistryRejectsAdapterMetadataMismatch() public {
+        TypedStrategyAdapterRegistry.AdapterBinding memory binding = _binding();
+        binding.identity = TypedStrategyAdapterRegistry.ManifestRef(
+            keccak256("mismatched-adapter"), 1, keccak256("mismatched-adapter-v1")
+        );
+        binding.adapterClassId = keccak256("naryx.evm.spot-exact");
+        vm.prank(PROPOSER);
+        vm.expectRevert(TypedStrategyAdapterRegistry.InvalidBinding.selector);
+        adapters.proposeRegistration(binding, _control());
     }
 
     function _binding() private view returns (TypedStrategyAdapterRegistry.AdapterBinding memory) {
