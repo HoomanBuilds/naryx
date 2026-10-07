@@ -25,6 +25,7 @@ import type {
   EvmOptionSpreadPreparationLane,
 } from './evm-option-spread-preparation.js';
 import type { EvmTreasuryHedgePreparationLane } from './evm-treasury-hedge-preparation.js';
+import type { EvmCollateralConversionPreparationLane } from './evm-collateral-conversion-preparation.js';
 
 const ACCOUNT_FACTORY_ABI = [{
   type: 'function', name: 'accountOf', stateMutability: 'view',
@@ -72,15 +73,25 @@ function sameAdapter(left: AdapterRef, right: AdapterRef): boolean {
     && bytesEqual(left.adapterManifestHash, right.adapterManifestHash);
 }
 
-type EvmStrategyProvisioningLane = EvmOptionSpreadPreparationLane | EvmTreasuryHedgePreparationLane;
+type EvmStrategyProvisioningLane = EvmOptionSpreadPreparationLane
+  | EvmTreasuryHedgePreparationLane
+  | EvmCollateralConversionPreparationLane;
 
 function legBindings(lane: EvmStrategyProvisioningLane): readonly Readonly<{ role: string; adapter: AdapterRef }>[] {
-  return 'pools' in lane.pricing
-    ? lane.pricing.pools.map((pool) => Object.freeze({ role: pool.role, adapter: pool.adapter }))
-    : Object.freeze([
+  if ('pools' in lane.pricing) {
+    return lane.pricing.pools.map((pool) => Object.freeze({ role: pool.role, adapter: pool.adapter }));
+  }
+  if ('collateralTransfer' in lane.pricing) {
+    return Object.freeze([
+      Object.freeze({ role: 'collateral-swap', adapter: lane.pricing.swap.adapter }),
+      Object.freeze({ role: 'collateral-transfer', adapter: lane.pricing.collateralTransfer.adapter }),
+      Object.freeze({ role: 'conversion-hedge', adapter: lane.pricing.hedge.adapter }),
+    ]);
+  }
+  return Object.freeze([
         Object.freeze({ role: 'inventory-position', adapter: lane.pricing.inventory.adapter }),
         Object.freeze({ role: 'treasury-hedge', adapter: lane.pricing.hedge.adapter }),
-      ]);
+  ]);
 }
 
 function matchesLane(documents: StoredStrategyPackageOrderDocuments, lane: EvmStrategyProvisioningLane): boolean {

@@ -1080,3 +1080,19 @@ export {
   createEvmTreasuryHedgePreparationResolver,
   loadEvmTreasuryHedgeRuntime,
 } from './evm-treasury-hedge-config.js';
+export {
+  createEvmCollateralConversionGeneralizedPricing,
+  readEvmCollateralConversionSpotSnapshot,
+  type EvmCollateralConversionLegBinding,
+  type EvmCollateralConversionPricingInput,
+  type EvmCollateralConversionSpotSnapshot,
+} from './evm-collateral-conversion-quote.js';
+export {
+  EvmCollateralConversionPreparationContextResolver,
+  type EvmCollateralConversionAdapterFactoryBinding,
+  type EvmCollateralConversionPreparationLane,
+} from './evm-collateral-conversion-preparation.js';
+export {
+  createEvmCollateralConversionPreparationResolver,
+  loadEvmCollateralConversionRuntime,
+} from './evm-collateral-conversion-config.js';

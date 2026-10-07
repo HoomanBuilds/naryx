@@ -45,11 +45,13 @@ import {
   SqliteGeneralizedStrategyQuoteStore,
   EvmOptionSpreadPreparationContextResolver,
   EvmTreasuryHedgePreparationContextResolver,
+  EvmCollateralConversionPreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
   createEvmOptionSpreadProvisioningInternalHandler,
   loadEvmOptionSpreadRuntime,
   loadEvmTreasuryHedgeRuntime,
+  loadEvmCollateralConversionRuntime,
   SqliteEvmStrategyPackageIdStore,
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
@@ -209,8 +211,10 @@ const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStr
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
 const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
 const evmTreasuryRuntimePath = process.env.NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG;
+const evmCollateralConversionRuntimePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_RUNTIME_CONFIG;
 const evmRuntimeConfigured = (evmOptionRuntimePath !== undefined && evmOptionRuntimePath !== '')
-  || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '');
+  || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '')
+  || (evmCollateralConversionRuntimePath !== undefined && evmCollateralConversionRuntimePath !== '');
 const evmStrategyPackageIds = !evmRuntimeConfigured
   ? undefined
   : new SqliteEvmStrategyPackageIdStore(config.quoteDbPath);
@@ -238,6 +242,19 @@ const evmTreasuryRuntime = evmTreasuryRuntimePath === undefined || evmTreasuryRu
       },
       packageIds: evmStrategyPackageIds!,
     });
+const evmCollateralConversionRuntime = evmCollateralConversionRuntimePath === undefined
+    || evmCollateralConversionRuntimePath === ''
+  ? undefined
+  : loadEvmCollateralConversionRuntime(absolutePath(
+      evmCollateralConversionRuntimePath,
+      'NARYX_EVM_COLLATERAL_CONVERSION_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `evm-collateral-conversion:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: evmStrategyPackageIds!,
+    });
 const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
   ? undefined
   : new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes);
@@ -247,9 +264,13 @@ const evmOptionPreparationResolver = evmOptionRuntime === undefined
 const evmTreasuryPreparationResolver = evmTreasuryRuntime === undefined
   ? undefined
   : new EvmTreasuryHedgePreparationContextResolver(evmTreasuryRuntime.preparationLanes);
+const evmCollateralConversionPreparationResolver = evmCollateralConversionRuntime === undefined
+  ? undefined
+  : new EvmCollateralConversionPreparationContextResolver(evmCollateralConversionRuntime.preparationLanes);
 const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
     && evmOptionPreparationResolver === undefined
     && evmTreasuryPreparationResolver === undefined
+    && evmCollateralConversionPreparationResolver === undefined
   ? undefined
   : Object.freeze({
       resolve: (documents: Parameters<HyperliquidStrategyPreparationContextResolver['resolve']>[0]) => {
@@ -264,6 +285,14 @@ const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
         if (evmTreasury) {
           if (evmTreasuryPreparationResolver === undefined) throw new Error('EVM treasury hedge preparation is not configured');
           return evmTreasuryPreparationResolver.resolve(documents);
+        }
+        const evmCollateralConversion = documents.order.templateId === 'collateral-conversion-hedge-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
+        if (evmCollateralConversion) {
+          if (evmCollateralConversionPreparationResolver === undefined) {
+            throw new Error('EVM collateral conversion preparation is not configured');
+          }
+          return evmCollateralConversionPreparationResolver.resolve(documents);
         }
         if (hyperliquidPreparationResolver === undefined) throw new Error('Hyperliquid strategy preparation is not configured');
         return hyperliquidPreparationResolver.resolve(documents);
@@ -287,6 +316,7 @@ const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
   ...(evmTreasuryRuntime?.quoteLanes ?? []),
+  ...(evmCollateralConversionRuntime?.quoteLanes ?? []),
 ]);
 const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
@@ -302,6 +332,7 @@ const generalizedStrategyQuoteHandler = allGeneralizedStrategyLanes.length === 0
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmTreasuryRuntime?.preparationLanes ?? []),
+  ...(evmCollateralConversionRuntime?.preparationLanes ?? []),
 ]);
 const evmOptionProvisioningHandler = evmPreparationLanes.length === 0
   ? undefined
@@ -322,6 +353,7 @@ const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPrepara
 const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
   ...(evmTreasuryRuntime?.observationLanes ?? []),
+  ...(evmCollateralConversionRuntime?.observationLanes ?? []),
 ].map((lane) => [lane.chainId, lane])).values()];
 const evmOptionObservationHandler = evmObservationLanes.length === 0 || strategyPreparationService === undefined
   ? undefined
