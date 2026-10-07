@@ -57,6 +57,19 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         uint256 minimumPostHealthFactor;
     }
 
+    struct CollateralManagement {
+        bytes32 packageId;
+        bytes32 intentHash;
+        bytes32 expectedPreAccountDataHash;
+        uint8 action;
+        uint256 inputAtoms;
+        uint256 minimumOutputAtoms;
+        uint256 maximumOutputAtoms;
+        uint256 minimumPostCollateralBase;
+        uint256 maximumPostCollateralBase;
+        uint256 minimumPostHealthFactor;
+    }
+
     error InvalidConfiguration();
     error UnauthorizedCaller();
     error InvalidLeg();
@@ -74,12 +87,12 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     bytes32 public immutable poolCodeHash;
     bytes32 public immutable collateralTokenCodeHash;
     bytes32 public immutable debtTokenCodeHash;
+    uint256 public managedCollateralPrincipalAtoms;
 
     constructor(Deployment memory deployment) {
         if (
-            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0
-                || deployment.packageId == bytes32(0) || address(deployment.pool).code.length == 0
-                || address(deployment.collateralToken).code.length == 0
+            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
+                || address(deployment.pool).code.length == 0 || address(deployment.collateralToken).code.length == 0
                 || address(deployment.debtToken).code.length == 0
                 || address(deployment.collateralToken) == address(deployment.debtToken)
                 || deployment.strategyAccountCodeHash == bytes32(0) || deployment.poolCodeHash == bytes32(0)
@@ -99,13 +112,7 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
     }
 
     function adapterMetadata() external view returns (address, bytes32, uint32, address, address) {
-        return (
-            strategyAccount,
-            ADAPTER_CLASS_ID,
-            ADAPTER_CLASS_VERSION,
-            address(collateralToken),
-            address(debtToken)
-        );
+        return (strategyAccount, ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(collateralToken), address(debtToken));
     }
 
     function executeLeg(bytes calldata payload) external nonReentrant returns (bytes32 evidenceHash) {
@@ -145,6 +152,63 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         );
     }
 
+    function manageCollateral(bytes calldata payload)
+        external
+        nonReentrant
+        returns (bytes32 evidenceHash, uint256 outputAtoms)
+    {
+        if (msg.sender != strategyAccount) revert UnauthorizedCaller();
+        CollateralManagement memory management = abi.decode(payload, (CollateralManagement));
+        if (
+            management.packageId != packageId || management.intentHash == bytes32(0)
+                || management.expectedPreAccountDataHash == bytes32(0)
+                || (management.action != SUPPLY_COLLATERAL && management.action != WITHDRAW_COLLATERAL)
+                || management.inputAtoms == 0 || management.minimumOutputAtoms == 0
+                || management.minimumOutputAtoms > management.maximumOutputAtoms
+                || management.minimumPostCollateralBase > management.maximumPostCollateralBase
+        ) revert InvalidLeg();
+        _assertDeployment();
+        AccountData memory pre = _accountData();
+        if (pre.totalDebtBase != 0 || keccak256(abi.encode(pre)) != management.expectedPreAccountDataHash) {
+            revert PreconditionFailed();
+        }
+        if (management.action == SUPPLY_COLLATERAL) {
+            if (
+                managedCollateralPrincipalAtoms != 0 || management.inputAtoms != management.minimumOutputAtoms
+                    || management.inputAtoms != management.maximumOutputAtoms
+            ) revert PreconditionFailed();
+            outputAtoms = _supply(management.inputAtoms);
+        } else {
+            if (
+                managedCollateralPrincipalAtoms == 0 || management.inputAtoms != type(uint256).max
+                    || management.minimumOutputAtoms < managedCollateralPrincipalAtoms
+            ) revert PreconditionFailed();
+            outputAtoms = _withdraw(management.inputAtoms);
+        }
+        AccountData memory post = _accountData();
+        if (
+            post.totalDebtBase != 0 || outputAtoms < management.minimumOutputAtoms
+                || outputAtoms > management.maximumOutputAtoms
+                || post.totalCollateralBase < management.minimumPostCollateralBase
+                || post.totalCollateralBase > management.maximumPostCollateralBase
+                || post.healthFactor < management.minimumPostHealthFactor
+        ) revert PostconditionFailed();
+        evidenceHash = keccak256(
+            abi.encode(
+                "NARYX_AAVE_COLLATERAL_MANAGEMENT_V1",
+                address(this),
+                deploymentChainId,
+                management.packageId,
+                management.intentHash,
+                management.action,
+                management.inputAtoms,
+                outputAtoms,
+                keccak256(abi.encode(pre)),
+                keccak256(abi.encode(post))
+            )
+        );
+    }
+
     function accountData() external view returns (AccountData memory) {
         return _accountData();
     }
@@ -165,10 +229,13 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
             collateralToken.balanceOf(strategyAccount) != accountBefore - amount
                 || collateralToken.balanceOf(address(this)) != adapterBefore
         ) revert PostconditionFailed();
+        managedCollateralPrincipalAtoms += amount;
         return amount;
     }
 
     function _withdraw(uint256 amount) private returns (uint256 withdrawn) {
+        uint256 principalBefore = managedCollateralPrincipalAtoms;
+        if (principalBefore == 0 || (amount != type(uint256).max && amount > principalBefore)) revert InvalidLeg();
         uint256 accountBefore = collateralToken.balanceOf(strategyAccount);
         uint256 adapterBefore = collateralToken.balanceOf(address(this));
         withdrawn = pool.withdraw(address(collateralToken), amount, address(this));
@@ -180,6 +247,7 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
             collateralToken.balanceOf(strategyAccount) != accountBefore + withdrawn
                 || collateralToken.balanceOf(address(this)) != adapterBefore
         ) revert PostconditionFailed();
+        managedCollateralPrincipalAtoms = amount == type(uint256).max ? 0 : principalBefore - amount;
     }
 
     function _borrow(uint256 amount) private returns (uint256) {

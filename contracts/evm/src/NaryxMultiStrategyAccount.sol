@@ -11,6 +11,7 @@ import {SolverRegistry} from "./SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "./StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
 import {ITypedStrategyAdapter} from "./interfaces/ITypedStrategyAdapter.sol";
+import {IPackageCollateralAdapter} from "./interfaces/IPackageCollateralAdapter.sol";
 import {OwnerSignature} from "./libraries/OwnerSignature.sol";
 
 contract NaryxMultiStrategyAccount is ReentrancyGuard {
@@ -100,6 +101,27 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         address solver;
     }
 
+    struct CollateralManagement {
+        bytes32 packageId;
+        bytes32 intentHash;
+        TypedStrategyAdapterRegistry.TemplateRef template;
+        TypedStrategyAdapterRegistry.SettlementClassRef settlementClass;
+        TypedStrategyAdapterRegistry.ManifestRef adapter;
+        address target;
+        uint8 action;
+        address assetToken;
+        uint256 inputAtoms;
+        uint256 minimumOutputAtoms;
+        uint256 maximumOutputAtoms;
+        address approvalToken;
+        uint256 approvalAtoms;
+        uint256 grossNotionalAtoms;
+        uint256 gasLimit;
+        bytes32 payloadHash;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
     error InvalidConfiguration();
     error InvalidExecution();
     error DomainMismatch();
@@ -113,6 +135,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     error AdapterExecutionFailed(uint256 callIndex, bytes returnData);
     error AdapterEvidenceInvalid(uint256 callIndex);
     error InsufficientGas(uint256 callIndex);
+    error UnauthorizedOwner();
 
     event StrategyExecuted(
         bytes32 indexed receiptHash,
@@ -138,6 +161,15 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         uint256 protocolFeeAtoms,
         uint256 solverFeeAtoms
     );
+    event PackageCollateralManaged(
+        bytes32 indexed packageId,
+        bytes32 indexed intentHash,
+        address indexed adapter,
+        uint8 action,
+        uint256 approvalAtoms,
+        uint256 outputAtoms,
+        bytes32 evidenceHash
+    );
 
     address public owner;
     address public immutable accountFactory;
@@ -154,6 +186,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     bytes32 public immutable feePolicyRegistryCodeHash;
 
     uint256 public nextNonce;
+    uint256 public nextCollateralNonce;
     mapping(bytes32 packageId => PackageState state) private _packages;
     mapping(bytes32 receiptHash => Receipt receipt) private _receipts;
 
@@ -238,6 +271,86 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         bytes32 callCommitment = callsHash(calls);
         _validate(execution, calls, callCommitment, ownerSignature, false);
         return _settle(execution, calls, callCommitment);
+    }
+
+    function managePackageCollateral(CollateralManagement calldata management, bytes calldata payload)
+        external
+        nonReentrant
+        returns (bytes32 evidenceHash)
+    {
+        if (msg.sender != owner) revert UnauthorizedOwner();
+        if (
+            block.chainid != deploymentChainId || address(config).codehash != configCodeHash
+                || address(adapterRegistry).codehash != adapterRegistryCodeHash
+        ) revert InvalidConfiguration();
+        if (
+            management.packageId == bytes32(0) || management.intentHash == bytes32(0)
+                || management.template.templateId == bytes32(0) || management.template.templateVersion == 0
+                || management.template.templateManifestHash == bytes32(0)
+                || management.settlementClass.classId != adapterRegistry.ATOMIC_POSTCONDITION_ID()
+                || management.settlementClass.classVersion != adapterRegistry.ATOMIC_POSTCONDITION_VERSION()
+                || management.target == address(0) || management.action < 1 || management.action > 2
+                || management.assetToken == address(0) || management.inputAtoms == 0
+                || management.minimumOutputAtoms == 0 || management.minimumOutputAtoms > management.maximumOutputAtoms
+                || management.grossNotionalAtoms == 0 || management.gasLimit == 0
+                || management.payloadHash != keccak256(payload) || management.nonce != nextCollateralNonce
+                || block.timestamp >= management.deadline || _packages[management.packageId].active
+        ) revert InvalidExecution();
+        bool supplying = management.action == 1;
+        if (supplying
+                ? management.approvalToken != management.assetToken || management.approvalAtoms != management.inputAtoms
+                : management.approvalToken != address(0) || management.approvalAtoms != 0) revert InvalidExecution();
+        address adapter = adapterRegistry.validateCall(
+            management.adapter,
+            management.template,
+            management.settlementClass,
+            TypedStrategyAdapterRegistry.CallContext({
+                target: management.target,
+                packageId: management.packageId,
+                riskIncreasing: supplying,
+                approvalToken: management.approvalToken,
+                approvalAtoms: management.approvalAtoms,
+                grossNotionalAtoms: management.grossNotionalAtoms,
+                gasLimit: management.gasLimit
+            })
+        );
+        nextCollateralNonce = management.nonce + 1;
+        IERC20 asset = IERC20(management.assetToken);
+        uint256 balanceBefore = asset.balanceOf(address(this));
+        if (supplying) {
+            asset.safeTransferFrom(owner, address(this), management.inputAtoms);
+            if (asset.balanceOf(address(this)) != balanceBefore + management.inputAtoms) revert InvalidExecution();
+            asset.forceApprove(adapter, management.approvalAtoms);
+        }
+        if (gasleft() <= management.gasLimit + POST_CALL_GAS_RESERVE) revert InsufficientGas(0);
+        (bool success, bytes memory result) = adapter.call{gas: management.gasLimit}(
+            abi.encodeCall(IPackageCollateralAdapter.manageCollateral, (payload))
+        );
+        if (!success) revert AdapterExecutionFailed(0, result);
+        if (supplying) asset.forceApprove(adapter, 0);
+        if (result.length != 64) revert AdapterEvidenceInvalid(0);
+        uint256 outputAtoms;
+        (evidenceHash, outputAtoms) = abi.decode(result, (bytes32, uint256));
+        if (
+            evidenceHash == bytes32(0) || outputAtoms < management.minimumOutputAtoms
+                || outputAtoms > management.maximumOutputAtoms
+        ) revert AdapterEvidenceInvalid(0);
+        if (supplying) {
+            if (asset.balanceOf(address(this)) != balanceBefore) revert InvalidExecution();
+        } else {
+            if (asset.balanceOf(address(this)) != balanceBefore + outputAtoms) revert InvalidExecution();
+            asset.safeTransfer(owner, outputAtoms);
+            if (asset.balanceOf(address(this)) != balanceBefore) revert InvalidExecution();
+        }
+        emit PackageCollateralManaged(
+            management.packageId,
+            management.intentHash,
+            adapter,
+            management.action,
+            management.approvalAtoms,
+            outputAtoms,
+            evidenceHash
+        );
     }
 
     function _settle(Execution calldata execution, AdapterCall[] calldata calls, bytes32 callCommitment)

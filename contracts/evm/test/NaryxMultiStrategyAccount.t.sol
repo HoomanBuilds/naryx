@@ -45,6 +45,14 @@ contract MultiStrategyAdapter is ITypedStrategyAdapter {
         else token.safeTransfer(msg.sender, amount);
         return expectedEvidence;
     }
+
+    function manageCollateral(bytes calldata payload) external returns (bytes32 evidenceHash, uint256 outputAtoms) {
+        (uint8 mode, IERC20 token, uint256 amount, bytes32 expectedEvidence) =
+            abi.decode(payload, (uint8, IERC20, uint256, bytes32));
+        if (mode == 1) token.safeTransferFrom(msg.sender, address(this), amount);
+        else token.safeTransfer(msg.sender, amount);
+        return (expectedEvidence, amount);
+    }
 }
 
 contract NaryxMultiStrategyAccountTest is Test {
@@ -312,6 +320,36 @@ contract NaryxMultiStrategyAccountTest is Test {
         adapters.proposeRegistration(binding, _control());
     }
 
+    function testOwnerFundsAndWithdrawsInactivePackageCollateral() public {
+        bytes32 packageId = keccak256("funding-spread-package");
+        quote.mint(owner, 10 ether);
+        vm.startPrank(owner);
+        quote.approve(address(account), 10 ether);
+        account.managePackageCollateral(
+            _collateralManagement(packageId, 1, 10 ether, 10 ether, 10 ether, address(quote), 10 ether, 0),
+            abi.encode(uint8(1), IERC20(address(quote)), 10 ether, EVIDENCE_ONE)
+        );
+        vm.stopPrank();
+
+        assertEq(quote.balanceOf(address(adapter)), 10 ether);
+        assertEq(quote.allowance(address(account), address(adapter)), 0);
+        assertEq(account.nextCollateralNonce(), 1);
+
+        vm.prank(owner);
+        account.managePackageCollateral(
+            _collateralManagement(packageId, 2, type(uint256).max, 10 ether, 10 ether, address(0), 0, 1),
+            abi.encode(uint8(0), IERC20(address(quote)), 10 ether, EVIDENCE_TWO)
+        );
+
+        assertEq(quote.balanceOf(owner), 10 ether);
+        assertEq(account.nextCollateralNonce(), 2);
+        vm.expectRevert(NaryxMultiStrategyAccount.UnauthorizedOwner.selector);
+        account.managePackageCollateral(
+            _collateralManagement(packageId, 2, type(uint256).max, 10 ether, 10 ether, address(0), 0, 2),
+            abi.encode(uint8(0), IERC20(address(quote)), 10 ether, EVIDENCE_TWO)
+        );
+    }
+
     function _binding() private view returns (TypedStrategyAdapterRegistry.AdapterBinding memory) {
         return TypedStrategyAdapterRegistry.AdapterBinding({
             domain: TypedStrategyAdapterRegistry.DomainRef(keccak256(bytes(DOMAIN_ID)), 1, DOMAIN_HASH),
@@ -326,6 +364,44 @@ contract NaryxMultiStrategyAccountTest is Test {
             baseAsset: TypedStrategyAdapterRegistry.AssetBinding(address(base), address(base).codehash),
             quoteAsset: TypedStrategyAdapterRegistry.AssetBinding(address(quote), address(quote).codehash),
             maximumGasLimit: 700_000
+        });
+    }
+
+    function _collateralManagement(
+        bytes32 packageId,
+        uint8 action,
+        uint256 inputAtoms,
+        uint256 minimumOutputAtoms,
+        uint256 maximumOutputAtoms,
+        address approvalToken,
+        uint256 approvalAtoms,
+        uint256 nonce
+    ) private view returns (NaryxMultiStrategyAccount.CollateralManagement memory) {
+        bytes memory payload = abi.encode(
+            action == 1 ? uint8(1) : uint8(0),
+            IERC20(address(quote)),
+            uint256(10 ether),
+            action == 1 ? EVIDENCE_ONE : EVIDENCE_TWO
+        );
+        return NaryxMultiStrategyAccount.CollateralManagement({
+            packageId: packageId,
+            intentHash: keccak256(abi.encode(packageId, action, nonce)),
+            template: _template(),
+            settlementClass: _settlement(),
+            adapter: _adapterRef(),
+            target: address(adapter),
+            action: action,
+            assetToken: address(quote),
+            inputAtoms: inputAtoms,
+            minimumOutputAtoms: minimumOutputAtoms,
+            maximumOutputAtoms: maximumOutputAtoms,
+            approvalToken: approvalToken,
+            approvalAtoms: approvalAtoms,
+            grossNotionalAtoms: 10 ether,
+            gasLimit: 500_000,
+            payloadHash: keccak256(payload),
+            nonce: nonce,
+            deadline: block.timestamp + 1 hours
         });
     }
 

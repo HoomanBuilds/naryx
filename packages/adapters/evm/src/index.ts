@@ -43,6 +43,7 @@ export * from './strategy-plan.js';
 export * from './multi-strategy-account.js';
 export * from './typed-materializers.js';
 export * from './strategy-provisioning.js';
+export * from './package-collateral-management.js';
 
 const UINT32_MAX = (1n << 32n) - 1n;
 const UINT128_MAX = (1n << 128n) - 1n;

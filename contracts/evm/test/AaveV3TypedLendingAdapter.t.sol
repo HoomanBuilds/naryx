@@ -29,6 +29,16 @@ contract LendingAdapterAccount {
         if (approvalAtoms != 0) token.forceApprove(address(adapter), 0);
         return evidence;
     }
+
+    function manage(AaveV3TypedLendingAdapter adapter, IERC20 token, uint256 approvalAtoms, bytes calldata payload)
+        external
+        returns (bytes32, uint256)
+    {
+        if (approvalAtoms != 0) token.forceApprove(address(adapter), approvalAtoms);
+        (bytes32 evidence, uint256 outputAtoms) = adapter.manageCollateral(payload);
+        if (approvalAtoms != 0) token.forceApprove(address(adapter), 0);
+        return (evidence, outputAtoms);
+    }
 }
 
 contract LendingAdapterPool is IAaveV3Pool {
@@ -51,10 +61,17 @@ contract LendingAdapterPool is IAaveV3Pool {
     }
 
     function withdraw(address asset, uint256 amount, address to) external returns (uint256) {
-        require(asset == address(collateral) && amount <= collateralOf[msg.sender]);
-        collateralOf[msg.sender] -= amount;
-        IERC20(address(collateral)).safeTransfer(to, amount);
-        return amount;
+        require(asset == address(collateral));
+        uint256 withdrawn = amount == type(uint256).max ? collateralOf[msg.sender] : amount;
+        require(withdrawn <= collateralOf[msg.sender]);
+        collateralOf[msg.sender] -= withdrawn;
+        IERC20(address(collateral)).safeTransfer(to, withdrawn);
+        return withdrawn;
+    }
+
+    function accrue(address user, uint256 amount) external {
+        collateralOf[user] += amount;
+        collateral.mint(address(this), amount);
     }
 
     function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16, address onBehalfOf) external {
@@ -141,13 +158,28 @@ contract AaveV3TypedLendingAdapterTest is Test {
 
     function testRejectsAStaleSignedPrecondition() public {
         bytes memory payload = _leg(1, 10 ether, 10 ether, 10 ether, 10 ether, 0);
-        AaveV3TypedLendingAdapter.ExactLendingLeg memory leg = abi.decode(
-            payload, (AaveV3TypedLendingAdapter.ExactLendingLeg)
-        );
+        AaveV3TypedLendingAdapter.ExactLendingLeg memory leg =
+            abi.decode(payload, (AaveV3TypedLendingAdapter.ExactLendingLeg));
         leg.expectedPreAccountDataHash = keccak256("stale");
         vm.expectRevert(AaveV3TypedLendingAdapter.PreconditionFailed.selector);
         account.execute(adapter, collateral, 10 ether, abi.encode(leg));
         assertEq(collateral.balanceOf(address(account)), 100 ether);
+    }
+
+    function testManagesCollateralOutsideTheActivePackageAndReturnsYield() public {
+        (bytes32 supplyEvidence, uint256 supplied) =
+            account.manage(adapter, collateral, 100 ether, _management(1, 100 ether, 100 ether, 100 ether, 100 ether));
+        assertTrue(supplyEvidence != bytes32(0));
+        assertEq(supplied, 100 ether);
+        assertEq(adapter.managedCollateralPrincipalAtoms(), 100 ether);
+
+        pool.accrue(address(adapter), 5 ether);
+        (bytes32 withdrawEvidence, uint256 withdrawn) =
+            account.manage(adapter, collateral, 0, _management(2, type(uint256).max, 100 ether, type(uint256).max, 0));
+        assertTrue(withdrawEvidence != bytes32(0));
+        assertEq(withdrawn, 105 ether);
+        assertEq(collateral.balanceOf(address(account)), 105 ether);
+        assertEq(adapter.managedCollateralPrincipalAtoms(), 0);
     }
 
     function _leg(
@@ -175,6 +207,30 @@ contract AaveV3TypedLendingAdapterTest is Test {
                 minimumPostDebtBase: expectedDebt,
                 maximumPostDebtBase: expectedDebt,
                 minimumPostHealthFactor: expectedDebt == 0 ? type(uint256).max : 1e18
+            })
+        );
+    }
+
+    function _management(
+        uint8 action,
+        uint256 inputAtoms,
+        uint256 minimumOutputAtoms,
+        uint256 maximumOutputAtoms,
+        uint256 expectedCollateral
+    ) private view returns (bytes memory) {
+        AaveV3TypedLendingAdapter.AccountData memory pre = adapter.accountData();
+        return abi.encode(
+            AaveV3TypedLendingAdapter.CollateralManagement({
+                packageId: PACKAGE_ID,
+                intentHash: keccak256(abi.encode(action, inputAtoms)),
+                expectedPreAccountDataHash: keccak256(abi.encode(pre)),
+                action: action,
+                inputAtoms: inputAtoms,
+                minimumOutputAtoms: minimumOutputAtoms,
+                maximumOutputAtoms: maximumOutputAtoms,
+                minimumPostCollateralBase: expectedCollateral,
+                maximumPostCollateralBase: expectedCollateral,
+                minimumPostHealthFactor: type(uint256).max
             })
         );
     }
