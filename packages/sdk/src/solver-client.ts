@@ -248,6 +248,12 @@ export class NaryxSolverClient {
     return this.#call('POST', '/v1/solver/reservations/release', { ...scope, commitmentId });
   }
 
+  observeSourceVersion(sourceId: string, sourceVersion: bigint) {
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(sourceId)) throw new TypeError('source id is malformed');
+    if (sourceVersion < 0n || sourceVersion > 18_446_744_073_709_551_615n) throw new TypeError('source version is outside u64');
+    return this.#call('PUT', `/v1/solver/sources/${sourceId}/version`, { sourceVersion });
+  }
+
   /** Posts implied liquidity; the server derives the quote from its sources and binds this solver. */
   postQuote(packageMarketId: string, quote: ImpliedPackageQuoteInput, expiresAtValue?: bigint) {
     return this.#call('POST', '/v1/solver/quotes', { packageMarketId, quote, ...(expiresAtValue === undefined ? {} : { expiresAtValue }) });

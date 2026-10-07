@@ -59,7 +59,7 @@ export interface SolverApiOptions {
   readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity" | "shardFills">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
-  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "cancelEntry">;
+  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "observeSourceVersion" | "cancelEntry">;
   /** Optional: the open order feed answers 503 without it. */
   readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote" | "recordRouteDecision">;
   /** Optional: route simulation answers 503 without the admission context of the package's domain. */
@@ -228,6 +228,13 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     );
   }
 
+  function ownedSourceId(solverId: string, value: unknown): string {
+    if (typeof value !== "string" || !ID.test(value) || !value.startsWith(`${solverId}:`)) {
+      throw new SolverRequestError(403, "SOURCE_NOT_OWNED", "An implied source id must be namespaced to the authenticated solver.");
+    }
+    return value;
+  }
+
   /** A shard's own signature must come from one of the solver's currently valid quote keys. */
   function verifiedShard(manifest: SolverCapabilityManifestInput, input: unknown, shardId: string): PackageQuoteShardInput {
     const shard = packageQuoteShard(input as PackageQuoteShardInput);
@@ -356,6 +363,15 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       store.releaseCapacity(solverId, { domain: requireObject(body.domain, "domain") as unknown as DomainRef, asset: requireObject(body.asset, "asset") as unknown as AssetRef }, body.commitmentId as string);
       return { released: true };
     }
+    if (method === "PUT" && (match = /^\/v1\/solver\/sources\/([^/]+)\/version$/.exec(path)) !== null) {
+      const sourceId = ownedSourceId(solverId, match[1]);
+      const sourceVersion = decodeBody(raw).sourceVersion;
+      if (typeof sourceVersion !== "bigint" || sourceVersion < 0n || sourceVersion > 18_446_744_073_709_551_615n) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "sourceVersion must be an unsigned 64-bit integer.");
+      }
+      const invalidated = requireExchange().observeSourceVersion(sourceId, sourceVersion);
+      return { sourceId, sourceVersion, invalidatedEntryIds: invalidated.map(toHex) };
+    }
     if (method === "POST" && (path === "/v1/solver/quotes" || path === "/v1/solver/quotes/batch")) {
       const body = decodeBody(raw);
       const classId = typeof body.packageMarketId === "string" && ID.test(body.packageMarketId) ? body.packageMarketId : undefined;
@@ -384,8 +400,15 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       );
       const inputs = items.map((item: unknown) => {
         const entry = requireObject(item, "quote entry");
+        const quoteInput = requireObject(entry.quote, "quote");
+        if (!Array.isArray(quoteInput.legSources)) {
+          throw new SolverRequestError(400, "INVALID_REQUEST", "quote.legSources must be an array.");
+        }
+        for (const source of quoteInput.legSources) {
+          ownedSourceId(solverId, requireObject(source, "quote leg source").sourceId);
+        }
         // The quote is derived here from its sources, so a solver cannot post a price its sources do not imply.
-        const quote = deriveImpliedPackageQuote(policy, entry.quote as ImpliedPackageQuoteInput);
+        const quote = deriveImpliedPackageQuote(policy, quoteInput as unknown as ImpliedPackageQuoteInput);
         if (typeof entry.expiresAtValue !== "bigint" || entry.expiresAtValue <= now) {
           throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
         }

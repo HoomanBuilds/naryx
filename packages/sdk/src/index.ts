@@ -65,6 +65,14 @@ export {
 } from '@naryx/protocol-types';
 export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy } from './maker-automation.js';
 export {
+  createImpliedLiquidityAutomation,
+  type ImpliedLegBookSnapshot,
+  type ImpliedLegLevel,
+  type ImpliedLiquidityAutomation,
+  type ImpliedLiquidityAutomationAction,
+  type ImpliedLiquidityAutomationPolicy,
+} from './implied-liquidity-automation.js';
+export {
   NARYX_RFQ_HPKE_SUITE_ID,
   NARYX_RFQ_HPKE_PUBLIC_KEY_BYTES,
   NARYX_RFQ_HPKE_PRIVATE_KEY_BYTES,
