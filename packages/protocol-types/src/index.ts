@@ -329,6 +329,22 @@ export {
 } from './package-matching.js';
 
 export {
+  PACKAGE_REOPENING_RESULT_VERSION,
+  packageReopeningSnapshotBytes,
+  packageReopeningSnapshotHash,
+  queuePackageReopeningOrder,
+  packageReopeningResult,
+  packageReopeningResultBytes,
+  packageReopeningResultHash,
+  clearPackageReopeningAuction,
+  verifyPackageReopeningResult,
+  type PackageReopeningAdmission,
+  type PackageReopeningFill,
+  type PackageReopeningResult,
+  type PackageReopeningClearance,
+} from './package-reopening.js';
+
+export {
   PACKAGE_SETTLEMENT_COMMITMENT_VERSION,
   PACKAGE_SETTLEMENT_HANDOFF_VERSION,
   PACKAGE_SETTLEMENT_READINESS_VERSION,

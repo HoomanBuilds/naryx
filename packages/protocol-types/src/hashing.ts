@@ -56,6 +56,8 @@ export const HASH_DOMAIN = Object.freeze({
   PACKAGE_QUOTE_EXECUTION_BINDING: 'CON/v1/package-quote-execution-binding',
   IMPLIED_PACKAGE_QUOTE: 'CON/v1/implied-package-quote',
   PACKAGE_ALLOCATION: 'CON/v1/package-allocation',
+  PACKAGE_REOPENING_SNAPSHOT: 'CON/v1/package-reopening-snapshot',
+  PACKAGE_REOPENING_RESULT: 'CON/v1/package-reopening-result',
   SOLVER_CAPACITY_RECORD: 'CON/v1/solver-capacity-record',
   SOLVER_COMMITMENT_ROOT: 'CON/v1/solver-commitment-root',
   RFQ_DECISION: 'CON/v1/rfq-decision',
