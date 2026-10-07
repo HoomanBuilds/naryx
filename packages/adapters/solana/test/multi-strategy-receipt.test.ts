@@ -16,7 +16,7 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
   const callsHash = bytes(10);
   const evidenceRoot = bytes(11);
   const receiptHash = solanaMultiStrategyReceiptHash({ executionHash, callsHash, evidenceRoot });
-  const data = Buffer.alloc(379);
+  const data = Buffer.alloc(500);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   let offset = 8;
   data[offset++] = 1;
@@ -29,6 +29,21 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
     Buffer.from(value).copy(data, offset);
     offset += 32;
   }
+  data[offset++] = 0;
+  Buffer.from(bytes(16)).copy(data, offset);
+  offset += 32;
+  data.writeUInt32LE(2, offset);
+  offset += 4;
+  Buffer.from(bytes(17)).copy(data, offset);
+  offset += 32;
+  data.writeUInt32LE(3, offset);
+  offset += 4;
+  Buffer.from(bytes(18)).copy(data, offset);
+  offset += 32;
+  data.writeBigUInt64LE(19n, offset);
+  offset += 8;
+  data.writeBigUInt64LE(20n, offset);
+  offset += 8;
   data.writeBigUInt64LE(12n, offset);
   offset += 8;
   const solver = new PublicKey(bytes(13));
@@ -45,11 +60,16 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
   assert.equal(receipt.executionSlot, 14n);
   assert.equal(receipt.solver.toBase58(), solver.toBase58());
   assert.deepEqual(receipt.receiptHash, receiptHash);
+  assert.equal(receipt.fees.direction, 'ENTRY');
+  assert.equal(receipt.fees.quoteAssetManifestVersion, 2);
+  assert.equal(receipt.fees.policyVersion, 3);
+  assert.equal(receipt.fees.protocolFeeAtoms, 19n);
+  assert.equal(receipt.fees.solverFeeAtoms, 20n);
 });
 
 test('rejects another account type and an unsupported operation', () => {
-  assert.throws(() => decodeSolanaMultiStrategyReceipt(new Uint8Array(379)), /discriminator/);
-  const data = Buffer.alloc(379);
+  assert.throws(() => decodeSolanaMultiStrategyReceipt(new Uint8Array(500)), /discriminator/);
+  const data = Buffer.alloc(500);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   data[8] = 1;
   data[8 + 1 + (32 * 5)] = 8;

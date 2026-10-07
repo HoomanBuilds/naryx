@@ -94,6 +94,17 @@ function baseInput() {
     settlementManifestHash: hash(18),
     nextStateHash: hash(19),
     totalGrossNotionalAtoms: 100n,
+    fees: {
+      quoteAssetSubjectId: hash(20),
+      quoteAssetManifestVersion: 1,
+      quoteAssetManifestHash: hash(21),
+      policyVersion: 1,
+      policyManifestHash: hash(22),
+      mint: address(23),
+      protocolRecipient: address(24),
+      protocolFeeAtoms: 1n,
+      solverFeeAtoms: 2n,
+    },
     nonce: 1n,
     deadlineSlot: 500n,
     policies: [policy(true)],
@@ -109,14 +120,15 @@ test('compiles a solver-authorized typed strategy instruction', () => {
   assert.equal(envelope.instruction.programId.toBase58(), multiStrategyProgram.toBase58());
   assert.equal(envelope.instruction.data.subarray(0, 8).toString('hex'), '4ca9b2623392f612');
   assert.deepEqual(envelope.requiredSignerPubkeys, [owner.toBase58(), solver.toBase58()].sort());
-  assert.equal(envelope.instruction.keys[12]?.pubkey.toBase58(), strategyAccount.toBase58());
-  assert.equal(envelope.instruction.keys[12]?.isSigner, false);
+  assert.equal(envelope.instruction.keys[20]?.pubkey.toBase58(), strategyAccount.toBase58());
+  assert.equal(envelope.instruction.keys[20]?.isSigner, false);
+  assert.equal(envelope.fees?.protocolFeeAtoms, 1n);
   assert.equal(envelope.executionHash.length, 32);
   assert.equal(envelope.callsHash.length, 32);
 });
 
 test('compiles owner-only recovery and rejects malformed economic bounds', () => {
-  const { solver: _solver, ...recoveryInput } = baseInput();
+  const { solver: _solver, fees: _fees, ...recoveryInput } = baseInput();
   const recovery = compileSolanaMultiStrategyAccountEnvelope({
     ...recoveryInput,
     operation: 'EXIT',

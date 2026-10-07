@@ -39,3 +39,13 @@ pub struct StrategyAdapterLegExecuted {
     pub stage: u8,
     pub evidence_hash: [u8; 32],
 }
+
+#[event]
+pub struct StrategyFeesCollected {
+    pub receipt: Pubkey,
+    pub mint: Pubkey,
+    pub protocol_recipient: Pubkey,
+    pub solver_recipient: Pubkey,
+    pub protocol_fee_atoms: u64,
+    pub solver_fee_atoms: u64,
+}

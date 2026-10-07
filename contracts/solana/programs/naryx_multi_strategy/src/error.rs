@@ -38,4 +38,8 @@ pub enum ErrorCode {
     ArithmeticOverflow,
     #[msg("Strategy serialization failed")]
     SerializationFailed,
+    #[msg("Strategy fee policy is invalid")]
+    InvalidFeePolicy,
+    #[msg("Strategy fee token accounts are invalid")]
+    InvalidFeeAccounts,
 }

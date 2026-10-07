@@ -11,7 +11,7 @@ const LEG_EVENT_DISCRIMINATOR = createHash('sha256')
   .update('event:StrategyAdapterLegExecuted', 'ascii')
   .digest()
   .subarray(0, 8);
-const ACCOUNT_BYTES = 379;
+const ACCOUNT_BYTES = 500;
 const LEG_EVENT_BYTES = 106;
 
 export type SolanaStrategyReceiptOperation =
@@ -48,6 +48,16 @@ export interface DecodedSolanaStrategyReceipt {
   readonly callsHash: Uint8Array;
   readonly evidenceRoot: Uint8Array;
   readonly receiptHash: Uint8Array;
+  readonly fees: Readonly<{
+    direction: 'ENTRY' | 'EXIT';
+    quoteAssetSubjectId: Uint8Array;
+    quoteAssetManifestVersion: number;
+    quoteAssetManifestHash: Uint8Array;
+    policyVersion: number;
+    policyManifestHash: Uint8Array;
+    protocolFeeAtoms: bigint;
+    solverFeeAtoms: bigint;
+  }>;
   readonly nonce: bigint;
   readonly solver: PublicKey;
   readonly executionSlot: bigint;
@@ -137,6 +147,19 @@ export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSola
   const callsHash = takeHash();
   const evidenceRoot = takeHash();
   const receiptHash = takeHash();
+  const feeDirectionDiscriminant = data[offset++]!;
+  if (feeDirectionDiscriminant > 1) fail('fee direction is unsupported');
+  const quoteAssetSubjectId = takeHash();
+  const quoteAssetManifestVersion = data.readUInt32LE(offset);
+  offset += 4;
+  const quoteAssetManifestHash = takeHash();
+  const policyVersion = data.readUInt32LE(offset);
+  offset += 4;
+  const policyManifestHash = takeHash();
+  const protocolFeeAtoms = data.readBigUInt64LE(offset);
+  offset += 8;
+  const solverFeeAtoms = data.readBigUInt64LE(offset);
+  offset += 8;
   const nonce = data.readBigUInt64LE(offset);
   offset += 8;
   const solver = new PublicKey(data.subarray(offset, offset + 32));
@@ -158,6 +181,16 @@ export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSola
     callsHash,
     evidenceRoot,
     receiptHash,
+    fees: Object.freeze({
+      direction: feeDirectionDiscriminant === 0 ? 'ENTRY' : 'EXIT',
+      quoteAssetSubjectId,
+      quoteAssetManifestVersion,
+      quoteAssetManifestHash,
+      policyVersion,
+      policyManifestHash,
+      protocolFeeAtoms,
+      solverFeeAtoms,
+    }),
     nonce,
     solver,
     executionSlot,

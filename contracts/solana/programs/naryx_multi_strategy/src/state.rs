@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use naryx_core::{
-    state::{DescriptorRef, ManifestRef, SettlementRef},
+    state::{DescriptorRef, FeePolicyDirection, ManifestRef, SettlementRef},
     wire::DomainRef,
 };
 
@@ -44,9 +44,32 @@ pub struct StrategyExecutionArgs {
     pub previous_state_hash: [u8; 32],
     pub next_state_hash: [u8; 32],
     pub total_gross_notional_atoms: u64,
+    pub fees: StrategyFeeTerms,
     pub solver: Pubkey,
     pub nonce: u64,
     pub deadline_slot: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
+pub struct StrategyFeeTerms {
+    pub direction: FeePolicyDirection,
+    pub quote_asset: ManifestRef,
+    pub policy_version: u32,
+    pub policy_manifest_hash: [u8; 32],
+    pub protocol_fee_atoms: u64,
+    pub solver_fee_atoms: u64,
+}
+
+impl StrategyFeeTerms {
+    pub fn is_zero(&self) -> bool {
+        self.quote_asset.subject_id == [0u8; 32]
+            && self.quote_asset.manifest_version == 0
+            && self.quote_asset.manifest_hash == [0u8; 32]
+            && self.policy_version == 0
+            && self.policy_manifest_hash == [0u8; 32]
+            && self.protocol_fee_atoms == 0
+            && self.solver_fee_atoms == 0
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -97,6 +120,7 @@ pub struct StrategyReceipt {
     pub calls_hash: [u8; 32],
     pub evidence_root: [u8; 32],
     pub receipt_hash: [u8; 32],
+    pub fees: StrategyFeeTerms,
     pub nonce: u64,
     pub solver: Pubkey,
     pub execution_slot: u64,

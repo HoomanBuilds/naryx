@@ -6,14 +6,16 @@ use anchor_lang::{
         program::{get_return_data, invoke_signed},
     },
 };
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use naryx_core::{
     instructions::program_identity::program_data_header_identity,
     state::{
-        supports_multi_strategy_adapter_class, supports_template, ProtocolConfig, ResourceIndex,
-        ResourceKind, ResourceRecord, SolverRegistry,
+        supports_multi_strategy_adapter_class, supports_template, FeePolicyDirection,
+        FeePolicyRecord, ProtocolConfig, ResourceIndex, ResourceKind, ResourceRecord,
+        SolverRegistry,
     },
-    ADAPTER_RESOURCE_SEED, PROTOCOL_CONFIG_SEED, RESOURCE_INDEX_SEED, RESOURCE_RECORD_SEED,
-    SOLVER_REGISTRY_SEED,
+    ADAPTER_RESOURCE_SEED, ASSET_RESOURCE_SEED, FEE_POLICY_SEED, PROTOCOL_CONFIG_SEED,
+    RESOURCE_INDEX_SEED, RESOURCE_RECORD_SEED, SOLVER_REGISTRY_SEED,
 };
 use solana_sdk_ids::bpf_loader_upgradeable;
 use solana_sha256_hasher::hashv;
@@ -25,7 +27,7 @@ use crate::{
         STRATEGY_POSITION_SEED, STRATEGY_RECEIPT_SEED, TYPED_ADAPTER_DISCRIMINATOR,
     },
     error::ErrorCode,
-    events::{MultiStrategyExecuted, StrategyAdapterLegExecuted},
+    events::{MultiStrategyExecuted, StrategyAdapterLegExecuted, StrategyFeesCollected},
     state::{
         MultiStrategyAccount, StrategyCallArgs, StrategyExecutionArgs, StrategyPosition,
         StrategyReceipt,
@@ -51,6 +53,45 @@ pub struct ExecuteMultiStrategy<'info> {
     )]
     pub solver_registry: Box<Account<'info, SolverRegistry>>,
     #[account(
+        seeds = [
+            FEE_POLICY_SEED,
+            fee_policy.domain_identity_hash.as_ref(),
+            fee_policy.direction.seed().as_ref(),
+            fee_policy.quote_asset.subject_id.as_ref()
+        ],
+        bump = fee_policy.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub fee_policy: Box<Account<'info, FeePolicyRecord>>,
+    #[account(
+        seeds = [
+            RESOURCE_INDEX_SEED,
+            ASSET_RESOURCE_SEED,
+            execution.fees.quote_asset.subject_id.as_ref()
+        ],
+        bump = quote_asset_index.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub quote_asset_index: Box<Account<'info, ResourceIndex>>,
+    #[account(
+        seeds = [
+            RESOURCE_RECORD_SEED,
+            ASSET_RESOURCE_SEED,
+            execution.fees.quote_asset.subject_id.as_ref(),
+            execution.fees.quote_asset.manifest_version.to_be_bytes().as_ref()
+        ],
+        bump = quote_asset_record.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub quote_asset_record: Box<Account<'info, ResourceRecord>>,
+    pub quote_mint: Box<Account<'info, Mint>>,
+    #[account(mut)]
+    pub owner_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub protocol_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub solver_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(
         mut,
         seeds = [MULTI_STRATEGY_ACCOUNT_SEED, owner.key().as_ref()],
         bump = strategy_account.bump,
@@ -74,6 +115,7 @@ pub struct ExecuteMultiStrategy<'info> {
         bump
     )]
     pub receipt: Box<Account<'info, StrategyReceipt>>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -135,6 +177,16 @@ pub fn execute_handler<'info>(
         &mut ctx.accounts.strategy_account,
         &mut ctx.accounts.position,
         &mut ctx.accounts.receipt,
+        Some(FeeCollectionAccounts {
+            policy: &ctx.accounts.fee_policy,
+            asset_index: &ctx.accounts.quote_asset_index,
+            asset_record: &ctx.accounts.quote_asset_record,
+            mint: &ctx.accounts.quote_mint,
+            source: &ctx.accounts.owner_fee_token,
+            protocol_recipient: &ctx.accounts.protocol_fee_token,
+            solver_recipient: &ctx.accounts.solver_fee_token,
+            token_program: &ctx.accounts.token_program,
+        }),
         &ctx.remaining_accounts,
         &execution,
         &calls,
@@ -156,6 +208,7 @@ pub fn recovery_handler<'info>(
         &mut ctx.accounts.strategy_account,
         &mut ctx.accounts.position,
         &mut ctx.accounts.receipt,
+        None,
         &ctx.remaining_accounts,
         &execution,
         &calls,
@@ -172,6 +225,7 @@ fn execute<'info>(
     strategy_account: &mut Account<'info, MultiStrategyAccount>,
     position: &mut Account<'info, StrategyPosition>,
     receipt: &mut Account<'info, StrategyReceipt>,
+    fee_accounts: Option<FeeCollectionAccounts<'_, 'info>>,
     remaining_accounts: &[AccountInfo<'info>],
     execution: &StrategyExecutionArgs,
     calls: &[StrategyCallArgs],
@@ -208,6 +262,7 @@ fn execute<'info>(
         remaining_accounts,
         signer_seeds,
     )?;
+    let collected_fee_identity = collect_fees(owner, execution, fee_accounts)?;
     let evidence_root = evidence_root(&evidence);
     let receipt_hash = hashv(&[
         RECEIPT_HASH_DOMAIN,
@@ -238,6 +293,7 @@ fn execute<'info>(
         calls,
         &evidence,
         &proofs,
+        collected_fee_identity,
     )?;
     Ok(())
 }
@@ -248,6 +304,111 @@ struct ExecutionProofs {
     evidence_root: [u8; 32],
     receipt_hash: [u8; 32],
     execution_slot: u64,
+}
+
+struct FeeCollectionAccounts<'a, 'info> {
+    policy: &'a Account<'info, FeePolicyRecord>,
+    asset_index: &'a Account<'info, ResourceIndex>,
+    asset_record: &'a Account<'info, ResourceRecord>,
+    mint: &'a Account<'info, Mint>,
+    source: &'a Account<'info, TokenAccount>,
+    protocol_recipient: &'a Account<'info, TokenAccount>,
+    solver_recipient: &'a Account<'info, TokenAccount>,
+    token_program: &'a Program<'info, Token>,
+}
+
+#[inline(never)]
+fn collect_fees<'info>(
+    owner: &Signer<'info>,
+    execution: &StrategyExecutionArgs,
+    accounts: Option<FeeCollectionAccounts<'_, 'info>>,
+) -> Result<Option<(Pubkey, Pubkey)>> {
+    let Some(accounts) = accounts else {
+        require!(execution.fees.is_zero(), ErrorCode::InvalidFeePolicy);
+        return Ok(None);
+    };
+    execution.fees.quote_asset.validate()?;
+    require!(
+        execution.fees.direction == fee_direction(execution.operation),
+        ErrorCode::InvalidFeePolicy
+    );
+    accounts.policy.validate_identity(
+        &execution.domain,
+        execution.fees.direction,
+        &execution.fees.quote_asset,
+    )?;
+    accounts.policy.validate_fees(
+        execution.fees.policy_version,
+        execution.fees.policy_manifest_hash,
+        execution.total_gross_notional_atoms,
+        execution.fees.protocol_fee_atoms,
+        execution.fees.solver_fee_atoms,
+    )?;
+    require!(
+        accounts.asset_index.kind == ResourceKind::Asset
+            && accounts.asset_index.subject_id == execution.fees.quote_asset.subject_id
+            && accounts.asset_index.active_record == accounts.asset_record.key()
+            && accounts.asset_index.active_identity.as_ref() == Some(&execution.fees.quote_asset)
+            && accounts.asset_record.active
+            && accounts.asset_record.manifest.kind == ResourceKind::Asset
+            && accounts.asset_record.manifest.domain == execution.domain
+            && accounts.asset_record.manifest.identity == execution.fees.quote_asset
+            && accounts.asset_record.manifest.subject_address == accounts.mint.key()
+            && accounts.asset_record.manifest.program_id == token::ID
+            && match execution.fees.direction {
+                FeePolicyDirection::Entry => accounts.asset_record.control.lifecycle.allows_entry(),
+                FeePolicyDirection::Exit => accounts.asset_record.control.lifecycle.allows_exit(),
+            },
+        ErrorCode::InvalidFeePolicy
+    );
+    require!(
+        accounts.source.mint == accounts.mint.key()
+            && accounts.source.owner == owner.key()
+            && accounts.protocol_recipient.mint == accounts.mint.key()
+            && accounts.protocol_recipient.owner == accounts.policy.protocol_fee_recipient
+            && accounts.solver_recipient.mint == accounts.mint.key()
+            && accounts.solver_recipient.owner == execution.solver,
+        ErrorCode::InvalidFeeAccounts
+    );
+    if execution.fees.protocol_fee_atoms != 0 {
+        token::transfer(
+            CpiContext::new(
+                accounts.token_program.key(),
+                Transfer {
+                    from: accounts.source.to_account_info(),
+                    to: accounts.protocol_recipient.to_account_info(),
+                    authority: owner.to_account_info(),
+                },
+            ),
+            execution.fees.protocol_fee_atoms,
+        )?;
+    }
+    if execution.fees.solver_fee_atoms != 0 {
+        token::transfer(
+            CpiContext::new(
+                accounts.token_program.key(),
+                Transfer {
+                    from: accounts.source.to_account_info(),
+                    to: accounts.solver_recipient.to_account_info(),
+                    authority: owner.to_account_info(),
+                },
+            ),
+            execution.fees.solver_fee_atoms,
+        )?;
+    }
+    Ok(Some((
+        accounts.mint.key(),
+        accounts.policy.protocol_fee_recipient,
+    )))
+}
+
+fn fee_direction(operation: crate::state::StrategyOperation) -> FeePolicyDirection {
+    match operation {
+        crate::state::StrategyOperation::Enter | crate::state::StrategyOperation::Increase => {
+            FeePolicyDirection::Entry
+        }
+        _ => FeePolicyDirection::Exit,
+    }
 }
 
 #[inline(never)]
@@ -286,6 +447,7 @@ fn finalize_state(
     receipt.calls_hash = proofs.calls_hash;
     receipt.evidence_root = proofs.evidence_root;
     receipt.receipt_hash = proofs.receipt_hash;
+    receipt.fees = execution.fees.clone();
     receipt.nonce = execution.nonce;
     receipt.solver = execution.solver;
     receipt.execution_slot = proofs.execution_slot;
@@ -302,6 +464,7 @@ fn emit_execution_events(
     calls: &[StrategyCallArgs],
     evidence: &[[u8; 32]],
     proofs: &ExecutionProofs,
+    collected_fee_identity: Option<(Pubkey, Pubkey)>,
 ) -> Result<()> {
     emit!(MultiStrategyExecuted {
         strategy_account,
@@ -322,6 +485,18 @@ fn emit_execution_events(
         nonce: execution.nonce,
         execution_slot: proofs.execution_slot,
     });
+    if execution.fees.protocol_fee_atoms != 0 || execution.fees.solver_fee_atoms != 0 {
+        let (mint, protocol_recipient) =
+            collected_fee_identity.ok_or_else(|| error!(ErrorCode::InvalidFeePolicy))?;
+        emit!(StrategyFeesCollected {
+            receipt,
+            mint,
+            protocol_recipient,
+            solver_recipient: execution.solver,
+            protocol_fee_atoms: execution.fees.protocol_fee_atoms,
+            solver_fee_atoms: execution.fees.solver_fee_atoms,
+        });
+    }
     for (index, (call, leg_evidence)) in calls.iter().zip(evidence.iter()).enumerate() {
         emit!(StrategyAdapterLegExecuted {
             receipt,
@@ -377,10 +552,17 @@ fn validate_execution(
     if recovery {
         require!(
             execution.solver == Pubkey::default()
-                && execution.operation.requires_only_risk_reduction(),
+                && execution.operation.requires_only_risk_reduction()
+                && execution.fees.is_zero(),
             ErrorCode::InvalidExecution
         );
     } else {
+        require!(
+            execution.fees.quote_asset.subject_id != [0u8; 32]
+                && execution.fees.policy_version != 0
+                && execution.fees.policy_manifest_hash != [0u8; 32],
+            ErrorCode::InvalidFeePolicy
+        );
         require!(
             execution.solver != Pubkey::default(),
             ErrorCode::InvalidSolver

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
-import type { DomainRef } from '@naryx/protocol-types';
+import { domainRefIdentityHash, type DomainRef } from '@naryx/protocol-types';
 import {
   PublicKey,
   SystemProgram,
@@ -15,6 +15,8 @@ const EXECUTION_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.execution
 const CALLS_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.calls.v1', 'ascii');
 const ZERO_HASH = new Uint8Array(32);
 const U64_MAX = (1n << 64n) - 1n;
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
 export type SolanaStrategyOperation =
   | 'ENTRY'
@@ -48,6 +50,18 @@ export interface SolanaStrategyAdapterPolicy {
   readonly grossNotionalAtoms: bigint;
 }
 
+export interface SolanaStrategyFeeTerms {
+  readonly quoteAssetSubjectId: Uint8Array;
+  readonly quoteAssetManifestVersion: number;
+  readonly quoteAssetManifestHash: Uint8Array;
+  readonly policyVersion: number;
+  readonly policyManifestHash: Uint8Array;
+  readonly mint: PublicKey | string;
+  readonly protocolRecipient: PublicKey | string;
+  readonly protocolFeeAtoms: bigint;
+  readonly solverFeeAtoms: bigint;
+}
+
 export interface SolanaMultiStrategyEnvelope {
   readonly instruction: TransactionInstruction;
   readonly executionHash: Uint8Array;
@@ -55,6 +69,17 @@ export interface SolanaMultiStrategyEnvelope {
   readonly strategyAccount: PublicKey;
   readonly position: PublicKey;
   readonly receipt: PublicKey;
+  readonly fees?: Readonly<{
+    quoteAssetSubjectId: Uint8Array;
+    quoteAssetManifestVersion: number;
+    quoteAssetManifestHash: Uint8Array;
+    policyVersion: number;
+    policyManifestHash: Uint8Array;
+    mint: PublicKey;
+    protocolRecipient: PublicKey;
+    protocolFeeAtoms: bigint;
+    solverFeeAtoms: bigint;
+  }>;
   readonly requiredSignerPubkeys: readonly string[];
 }
 
@@ -79,6 +104,14 @@ class Encoder {
 
   u32(value: number, context: string): this {
     requireCondition(Number.isInteger(value) && value > 0 && value <= 0xffff_ffff, `${context} must fit nonzero u32`);
+    const encoded = Buffer.allocUnsafe(4);
+    encoded.writeUInt32LE(value);
+    this.#parts.push(encoded);
+    return this;
+  }
+
+  nullableU32(value: number, context: string): this {
+    requireCondition(Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff, `${context} must fit u32`);
     const encoded = Buffer.allocUnsafe(4);
     encoded.writeUInt32LE(value);
     this.#parts.push(encoded);
@@ -159,6 +192,10 @@ function pda(program: PublicKey, seeds: readonly Uint8Array[]): PublicKey {
   return PublicKey.findProgramAddressSync(seeds.map((seed) => Buffer.from(seed)), program)[0];
 }
 
+function associatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
+  return pda(ASSOCIATED_TOKEN_PROGRAM_ID, [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()]);
+}
+
 export function deriveSolanaMultiStrategyAccount(input: Readonly<{
   programId: PublicKey | string;
   owner: PublicKey | string;
@@ -209,6 +246,7 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
   previousStateHash?: Uint8Array;
   nextStateHash?: Uint8Array;
   totalGrossNotionalAtoms: bigint;
+  fees?: SolanaStrategyFeeTerms;
   nonce: bigint;
   deadlineSlot: bigint;
   policies: readonly SolanaStrategyAdapterPolicy[];
@@ -230,6 +268,30 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     ? PublicKey.default
     : key(input.solver ?? PublicKey.default, 'solver');
   requireCondition(recovery || !solver.equals(PublicKey.default), 'normal execution requires a solver');
+  requireCondition(recovery ? input.fees === undefined : input.fees !== undefined,
+    recovery ? 'owner recovery cannot collect fees' : 'normal execution requires fee policy terms');
+  const feeDirection = operation === 'ENTRY' || operation === 'INCREASE' ? 0 : 1;
+  const feeSubjectId = input.fees === undefined
+    ? ZERO_HASH
+    : hash32(input.fees.quoteAssetSubjectId, 'quote asset subject');
+  const feeManifestVersion = input.fees?.quoteAssetManifestVersion ?? 0;
+  const feeManifestHash = input.fees === undefined
+    ? ZERO_HASH
+    : hash32(input.fees.quoteAssetManifestHash, 'quote asset manifest');
+  const feePolicyVersion = input.fees?.policyVersion ?? 0;
+  const feePolicyManifestHash = input.fees === undefined
+    ? ZERO_HASH
+    : hash32(input.fees.policyManifestHash, 'fee policy manifest');
+  const protocolFeeAtoms = input.fees?.protocolFeeAtoms ?? 0n;
+  const solverFeeAtoms = input.fees?.solverFeeAtoms ?? 0n;
+  requireCondition(input.fees === undefined
+    ? feeManifestVersion === 0
+    : Number.isInteger(feeManifestVersion) && feeManifestVersion > 0 && feeManifestVersion <= 0xffff_ffff,
+  'quote asset manifest version must be zero for recovery or fit nonzero u32');
+  requireCondition(input.fees === undefined
+    ? feePolicyVersion === 0
+    : Number.isInteger(feePolicyVersion) && feePolicyVersion > 0 && feePolicyVersion <= 0xffff_ffff,
+  'fee policy version must be zero for recovery or fit nonzero u32');
   const strategyAccount = deriveSolanaMultiStrategyAccount({ programId: program, owner });
   requireCondition(key(plan.feePayer, 'plan fee payer').equals(owner), 'plan fee payer must be the strategy owner');
   const packageId = hash32(input.packageId, 'package id');
@@ -299,11 +361,46 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     .bytes(previousStateHash)
     .bytes(nextStateHash)
     .u64(input.totalGrossNotionalAtoms, 'total gross notional')
+    .u8(feeDirection, 'fee direction')
+    .bytes(feeSubjectId)
+    .nullableU32(feeManifestVersion, 'quote asset manifest version')
+    .bytes(feeManifestHash)
+    .nullableU32(feePolicyVersion, 'fee policy version')
+    .bytes(feePolicyManifestHash)
+    .u64(protocolFeeAtoms, 'protocol fee')
+    .u64(solverFeeAtoms, 'solver fee')
     .bytes(solver.toBuffer())
     .u64(input.nonce, 'nonce')
     .u64(input.deadlineSlot, 'deadline slot');
   const executionBytes = executionEncoder.finish();
   const callsBytes = callsEncoder.finish();
+  const normalFeeKeys = (() => {
+    if (input.fees === undefined) return [];
+    const mint = key(input.fees.mint, 'fee mint');
+    const protocolRecipient = key(input.fees.protocolRecipient, 'protocol fee recipient');
+    const feePolicy = pda(coreProgram, [
+      Buffer.from('fee-policy'),
+      domainRefIdentityHash(plan.domain),
+      Buffer.from([feeDirection === 0 ? 1 : 2]),
+      feeSubjectId,
+    ]);
+    const assetIndex = pda(coreProgram, [Buffer.from('naryx-resource-index'), Buffer.from('asset'), feeSubjectId]);
+    const assetRecord = pda(coreProgram, [
+      Buffer.from('naryx-resource-record'),
+      Buffer.from('asset'),
+      feeSubjectId,
+      u32be(feeManifestVersion),
+    ]);
+    return [
+      { pubkey: feePolicy, isSigner: false, isWritable: false },
+      { pubkey: assetIndex, isSigner: false, isWritable: false },
+      { pubkey: assetRecord, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: associatedTokenAddress(owner, mint), isSigner: false, isWritable: true },
+      { pubkey: associatedTokenAddress(protocolRecipient, mint), isSigner: false, isWritable: true },
+      { pubkey: associatedTokenAddress(solver, mint), isSigner: false, isWritable: true },
+    ] satisfies AccountMeta[];
+  })();
   const baseKeys: AccountMeta[] = recovery
     ? [
         { pubkey: owner, isSigner: true, isWritable: true },
@@ -318,9 +415,11 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
         { pubkey: solver, isSigner: true, isWritable: false },
         { pubkey: config, isSigner: false, isWritable: false },
         { pubkey: solverRegistry, isSigner: false, isWritable: false },
+        ...normalFeeKeys,
         { pubkey: strategyAccount, isSigner: false, isWritable: true },
         { pubkey: position, isSigner: false, isWritable: true },
         { pubkey: receipt, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ];
   const instruction = new TransactionInstruction({
@@ -335,6 +434,19 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     strategyAccount,
     position,
     receipt,
+    ...(input.fees === undefined ? {} : {
+      fees: Object.freeze({
+        quoteAssetSubjectId: Uint8Array.from(feeSubjectId),
+        quoteAssetManifestVersion: feeManifestVersion,
+        quoteAssetManifestHash: Uint8Array.from(feeManifestHash),
+        policyVersion: feePolicyVersion,
+        policyManifestHash: Uint8Array.from(feePolicyManifestHash),
+        mint: key(input.fees.mint, 'fee mint'),
+        protocolRecipient: key(input.fees.protocolRecipient, 'protocol fee recipient'),
+        protocolFeeAtoms,
+        solverFeeAtoms,
+      }),
+    }),
     requiredSignerPubkeys: Object.freeze(recovery ? [owner.toBase58()] : [owner.toBase58(), solver.toBase58()].sort()),
   });
 }
