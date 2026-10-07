@@ -65,6 +65,9 @@ import {
   loadSolanaTreasuryHedgeRuntime,
   SolanaTreasuryHedgePreparationContextResolver,
   SqliteSolanaStrategyPackageIdStore,
+  SolanaTreasuryHedgeProvisioningResolver,
+  SolanaTreasuryHedgeProvisioningService,
+  createSolanaTreasuryHedgeProvisioningInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -404,6 +407,12 @@ const evmOptionProvisioningHandler = evmPreparationLanes.length === 0
       strategyPackageProvider,
       new EvmOptionSpreadProvisioningResolver(evmPreparationLanes),
     ));
+const solanaTreasuryProvisioningHandler = solanaTreasuryRuntime === undefined
+  ? undefined
+  : createSolanaTreasuryHedgeProvisioningInternalHandler(new SolanaTreasuryHedgeProvisioningService(
+      strategyPackageProvider,
+      new SolanaTreasuryHedgeProvisioningResolver(solanaTreasuryRuntime.preparationLanes),
+    ));
 const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
   ? undefined
   : createEvmReverseBasisCollateralInternalHandler(new EvmReverseBasisCollateralService(
@@ -437,6 +446,7 @@ const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
   evmOptionProvisioningHandler,
+  solanaTreasuryProvisioningHandler,
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,

@@ -246,6 +246,7 @@ function lane(
     hedgeAdapter: byRole('treasury-hedge'),
     testPerpProgramId,
     testPerpStrategyId: bytes32(input.testPerpStrategyId, 'lane.testPerpStrategyId'),
+    testPerpMaximumBaseLots: positive(input.testPerpMaximumBaseLots, 'lane.testPerpMaximumBaseLots'),
     maximumTransactionComputeUnits: integer(input.maximumTransactionComputeUnits, 'lane.maximumTransactionComputeUnits'),
     packageIds,
   });

@@ -69,6 +69,7 @@ export interface SolanaTreasuryHedgePreparationLane {
   readonly hedgeAdapter: SolanaTreasuryHedgeAdapterBinding;
   readonly testPerpProgramId: string;
   readonly testPerpStrategyId: Uint8Array;
+  readonly testPerpMaximumBaseLots: bigint;
   readonly maximumTransactionComputeUnits: number;
   readonly packageIds: SolanaTreasuryHedgePackageIdPort;
 }
@@ -274,6 +275,8 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       key(lane.testPerpProgramId, 'test perp program');
       hash32(lane.settlementManifestHash, 'settlement manifest hash');
       hash32(lane.testPerpStrategyId, 'test perp strategy id');
+      requireCondition(lane.testPerpMaximumBaseLots > 0n && lane.testPerpMaximumBaseLots <= (1n << 63n) - 1n,
+        'test perp strategy limit is invalid');
       role(lane.inventoryAdapter, 'inventory-position');
       role(lane.hedgeAdapter, 'treasury-hedge');
       requireCondition(Number.isInteger(lane.maximumTransactionComputeUnits)

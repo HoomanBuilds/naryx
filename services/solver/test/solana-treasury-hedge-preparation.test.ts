@@ -23,6 +23,7 @@ import {
 } from '@naryx/protocol-types';
 import { PublicKey } from '@solana/web3.js';
 import {
+  SolanaTreasuryHedgeProvisioningResolver,
   SolanaTreasuryHedgePreparationContextResolver,
   type SolanaTreasuryHedgePricingInput,
   type StoredStrategyPackageDocuments,
@@ -343,6 +344,7 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
     },
     testPerpProgramId: TEST_PERP_PROGRAM,
     testPerpStrategyId: STRATEGY_ID,
+    testPerpMaximumBaseLots: 10_000n,
     maximumTransactionComputeUnits: 600_000,
     packageIds: {
       resolvePackageId: async () => undefined,
@@ -360,4 +362,39 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
     ['treasury-hedge', true],
   ]);
   assert.equal(remembered?.[1], packageDocuments.orderHashHex);
+});
+
+test('reports the exact remaining Devnet collateral before Solana treasury hedge execution', async () => {
+  const packageDocuments = documents();
+  const rpc = setupRpc(packageDocuments);
+  const plan = await new SolanaTreasuryHedgeProvisioningResolver([{
+    environment: 'devnet',
+    templateManifest: template,
+    activeRegistryRecords: [],
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    pricing: pricing(),
+    rpc,
+    coreProgramId: CORE_PROGRAM,
+    multiStrategyProgramId: MULTI_PROGRAM,
+    settlementManifestHash: bytes(19),
+    solver: SOLVER,
+    inventoryAdapter: {
+      role: 'inventory-position', programId: INVENTORY_PROGRAM, programDataAddress: INVENTORY_PROGRAM_DATA,
+      expectedProgramDataHash: bytes(20), adapterSubjectId: bytes(21), maximumComputeUnitLimit: 200_000,
+    },
+    hedgeAdapter: {
+      role: 'treasury-hedge', programId: HEDGE_PROGRAM, programDataAddress: HEDGE_PROGRAM_DATA,
+      expectedProgramDataHash: bytes(22), adapterSubjectId: bytes(23), maximumComputeUnitLimit: 300_000,
+    },
+    testPerpProgramId: TEST_PERP_PROGRAM,
+    testPerpStrategyId: STRATEGY_ID,
+    testPerpMaximumBaseLots: 10_000n,
+    maximumTransactionComputeUnits: 600_000,
+    packageIds: { resolvePackageId: async () => undefined },
+  }]).resolve(packageDocuments);
+  assert.equal(plan.packageId, packageDocuments.orderHashHex);
+  assert.equal(plan.inventoryFundingRequiredAtoms, 0n);
+  assert.equal(plan.quoteFundingRequiredAtoms, 850_045n);
+  assert.equal(plan.ready, false);
+  assert.deepEqual(plan.steps.map((step) => step.kind), ['CREATE_TOKEN_ACCOUNTS']);
 });
