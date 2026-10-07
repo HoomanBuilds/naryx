@@ -81,7 +81,7 @@ const intake: StrategyOrderIntakePort = Object.freeze({
   },
 });
 
-function request(lifecycleAction: "ENTRY" | "EXIT") {
+function request(lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT") {
   return {
     profileId: profile().profileId,
     owner: OWNER,
@@ -96,7 +96,7 @@ function request(lifecycleAction: "ENTRY" | "EXIT") {
   };
 }
 
-test("creates ordered atomic collateral conversion entry and exit orders", () => {
+test("creates ordered atomic collateral conversion lifecycle orders", () => {
   const port = createEvmCollateralConversionOrderPort({ profiles: [profile()], intake, currentTimeSeconds: () => NOW });
   const entry = port.create(request("ENTRY"));
   assert.deepEqual(entry.graph.legs.map((leg) => leg.legId), [
@@ -106,6 +106,18 @@ test("creates ordered atomic collateral conversion entry and exit orders", () =>
     ["collateral-swap", "collateral-transfer"], ["collateral-transfer", "conversion-hedge"],
   ]);
   assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
+
+  const increase = port.create(request("INCREASE"));
+  assert.equal(increase.graph.legs.find((leg) => leg.legId === "collateral-transfer")?.legFamily, "MARGIN_DEPOSIT");
+  assert.equal(increase.graph.legs.find((leg) => leg.legId === "conversion-hedge")?.legFamily, "PERP_INCREASE");
+  assert.equal(increase.order.maximumMarginIncrease.atoms, 1_000_000n);
+  assert.equal(validateStrategyTemplateGraph(increase.graph).valid, true);
+
+  const decrease = port.create(request("DECREASE"));
+  assert.equal(decrease.graph.legs.find((leg) => leg.legId === "collateral-transfer")?.legFamily, "MARGIN_RELEASE");
+  assert.equal(decrease.graph.legs.find((leg) => leg.legId === "conversion-hedge")?.legFamily, "PERP_DECREASE");
+  assert.equal(decrease.order.maximumMarginIncrease.atoms, 0n);
+  assert.equal(validateStrategyTemplateGraph(decrease.graph).valid, true);
 
   const exit = port.create(request("EXIT"));
   assert.deepEqual(exit.graph.dependencyEdges.map((edge) => [edge.fromLegId, edge.toLegId]), [

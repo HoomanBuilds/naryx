@@ -287,7 +287,8 @@ export function createEvmCollateralConversionGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'EVM_UNIX_SECONDS' && graph.expiryUnit === 'EVM_UNIX_SECONDS',
       'package is not a testnet atomic EVM collateral conversion');
-      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'EXIT'
+      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE'
+        || order.lifecycleAction === 'DECREASE' || order.lifecycleAction === 'EXIT'
         || order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 3 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain))
         && sameAsset(order.economicQuantity.asset, input.collateralAsset)
@@ -296,17 +297,20 @@ export function createEvmCollateralConversionGeneralizedPricing(
       const swap = matchLeg(documents, 'collateral-swap', input.swap);
       const transfer = matchLeg(documents, 'collateral-transfer', input.collateralTransfer);
       const hedge = matchLeg(documents, 'conversion-hedge', input.hedge);
-      const opening = order.lifecycleAction === 'ENTRY';
+      const increasing = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
       const quantity = order.economicQuantity.atoms;
       requireCondition(quantity > 0n && [swap, transfer, hedge].every((leg) => leg.quantityAtoms === quantity),
         'leg quantities differ from the package quantity');
-      requireCondition(swap.legFamily === 'SPOT_SWAP' && swap.side === (opening ? 'BUY' : 'SELL')
-        && transfer.legFamily === (opening ? 'MARGIN_DEPOSIT' : 'MARGIN_RELEASE') && transfer.side === 'NONE'
-        && hedge.legFamily === (opening ? 'PERP_OPEN' : 'PERP_CLOSE') && hedge.side === (opening ? 'SELL' : 'BUY'),
+      requireCondition(swap.legFamily === 'SPOT_SWAP' && swap.side === (increasing ? 'BUY' : 'SELL')
+        && transfer.legFamily === (increasing ? 'MARGIN_DEPOSIT' : 'MARGIN_RELEASE') && transfer.side === 'NONE'
+        && hedge.legFamily === (order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+          : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+            : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE' : 'PERP_CLOSE')
+        && hedge.side === (increasing ? 'SELL' : 'BUY'),
       'legs do not match the lifecycle action');
       const [chainId, observedAt, spot, perp] = await Promise.all([
-        input.chain.chainId(), input.chain.latestBlockTimestamp(), readSpot(input, quantity, opening),
-        readEvmTreasuryHedgeMarketSnapshot(perpPricing, opening ? -quantity : quantity),
+        input.chain.chainId(), input.chain.latestBlockTimestamp(), readSpot(input, quantity, increasing),
+        readEvmTreasuryHedgeMarketSnapshot(perpPricing, increasing ? -quantity : quantity),
       ]);
       requireCondition(chainId === input.chainId && observedAt >= currentTime.value && observedAt - currentTime.value <= 30n,
         'RPC identity or quote clock is invalid');
@@ -314,21 +318,21 @@ export function createEvmCollateralConversionGeneralizedPricing(
       const swapLimit = swap.limitPrice;
       const hedgeLimit = hedge.limitPrice;
       requireCondition(swapLimit !== undefined && hedgeLimit !== undefined, 'signed price limits are missing');
-      const swapBound = quoteBound(quantity, swapLimit.quoteAtoms, swapLimit.baseAtoms, opening);
-      requireCondition(opening ? spot.quoteAtoms <= swapBound : spot.quoteAtoms >= swapBound,
+      const swapBound = quoteBound(quantity, swapLimit.quoteAtoms, swapLimit.baseAtoms, increasing);
+      requireCondition(increasing ? spot.quoteAtoms <= swapBound : spot.quoteAtoms >= swapBound,
         'executable collateral price violates the signed limit');
       const baseScale = 10n ** BigInt(input.collateralAsset.decimals);
       const quoteScale = 10n ** BigInt(input.quoteAsset.decimals);
       const hedgeAtLimitScale = perp.fillPriceWad * hedgeLimit.baseAtoms * quoteScale;
       const signedHedgeAtWadScale = hedgeLimit.quoteAtoms * baseScale * WAD;
-      requireCondition(opening ? hedgeAtLimitScale >= signedHedgeAtWadScale : hedgeAtLimitScale <= signedHedgeAtWadScale,
+      requireCondition(increasing ? hedgeAtLimitScale >= signedHedgeAtWadScale : hedgeAtLimitScale <= signedHedgeAtWadScale,
         'executable hedge price violates the signed limit');
       const oracleNotionalWad = quantity * perp.oraclePriceWad / baseScale;
       const oracleNotionalAtoms = ceilDiv(oracleNotionalWad, perp.collateralScale);
-      const conversionDeviation = opening
+      const conversionDeviation = increasing
         ? (spot.quoteAtoms > oracleNotionalAtoms ? spot.quoteAtoms - oracleNotionalAtoms : 0n)
         : (oracleNotionalAtoms > spot.quoteAtoms ? oracleNotionalAtoms - spot.quoteAtoms : 0n);
-      const estimatedSpotFee = ceilDiv((opening ? spot.quoteAtoms : oracleNotionalAtoms) * BigInt(input.spotPoolFee), UNISWAP_FEE_DENOMINATOR);
+      const estimatedSpotFee = ceilDiv((increasing ? spot.quoteAtoms : oracleNotionalAtoms) * BigInt(input.spotPoolFee), UNISWAP_FEE_DENOMINATOR);
       const spotFee = estimatedSpotFee < conversionDeviation ? estimatedSpotFee : conversionDeviation;
       const conversionImpact = conversionDeviation - spotFee;
       const hedgeNotionalAtoms = ceilDiv(perp.notionalWad, perp.collateralScale);
@@ -336,9 +340,9 @@ export function createEvmCollateralConversionGeneralizedPricing(
         ? ceilDiv(perp.notionalWad - oracleNotionalWad, perp.collateralScale)
         : ceilDiv(oracleNotionalWad - perp.notionalWad, perp.collateralScale);
       const perpFee = ceilDiv(perp.feeWad, perp.collateralScale);
-      const requiredMarginWad = opening
+      const requiredMarginWad = increasing
         ? ceilDiv(perp.notionalWad * perp.initialMarginBps, BPS) + perp.feeWad : 0n;
-      const requiredMarginAtoms = opening ? ceilDiv(requiredMarginWad, perp.collateralScale) : 0n;
+      const requiredMarginAtoms = increasing ? ceilDiv(requiredMarginWad, perp.collateralScale) : 0n;
       const protocolFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalCost = conversionImpact + spotFee + hedgeDeviation + perpFee
@@ -349,7 +353,7 @@ export function createEvmCollateralConversionGeneralizedPricing(
         quoteAsset: input.quoteAsset,
         quoteAtoms: spot.priceQuoteAtoms,
         baseAtoms: spot.priceBaseAtoms,
-        roundingDirection: opening ? 'CEIL' : 'FLOOR',
+        roundingDirection: increasing ? 'CEIL' : 'FLOOR',
       });
       const hedgeNumerator = perp.fillPriceWad * quoteScale;
       const hedgeDenominator = WAD * baseScale;
@@ -359,7 +363,7 @@ export function createEvmCollateralConversionGeneralizedPricing(
           legId: swap.legId,
           quantity: assetAmount(input.collateralAsset, quantity),
           executionPrice: spotPrice,
-          grossNotional: assetAmount(input.quoteAsset, opening ? spot.quoteAtoms : oracleNotionalAtoms),
+          grossNotional: assetAmount(input.quoteAsset, increasing ? spot.quoteAtoms : oracleNotionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, 0n),
           venueFee: assetAmount(input.quoteAsset, spotFee),
           builderFee: assetAmount(input.quoteAsset, 0n),
@@ -382,7 +386,7 @@ export function createEvmCollateralConversionGeneralizedPricing(
             quoteAsset: input.quoteAsset,
             quoteAtoms: hedgeNumerator / hedgeDivisor,
             baseAtoms: hedgeDenominator / hedgeDivisor,
-            roundingDirection: opening ? 'FLOOR' : 'CEIL',
+            roundingDirection: increasing ? 'FLOOR' : 'CEIL',
           }),
           grossNotional: assetAmount(input.quoteAsset, hedgeNotionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, requiredMarginAtoms),
@@ -408,7 +412,7 @@ export function createEvmCollateralConversionGeneralizedPricing(
         economics: Object.freeze({
           templateId: STRATEGY_TEMPLATE_ID.COLLATERAL_CONVERSION_HEDGE,
           values: Object.freeze({
-            conversionOutputAtoms: opening ? quantity : spot.quoteAtoms,
+            conversionOutputAtoms: increasing ? quantity : spot.quoteAtoms,
             hedgeNotionalAtoms,
             conversionCostAtoms: conversionImpact + spotFee,
             hedgeCostAtoms: hedgeDeviation + perpFee,

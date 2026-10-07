@@ -2086,7 +2086,7 @@ export function GeneralizedStrategyPreparationPanel({
     ?? null;
   const evmLifecycleSupported = lifecycleAction === "ENTRY"
     || ((templateId === "option-spread-v1" || templateId === "calendar-spread-v1"
-      || templateId === "treasury-inventory-hedge-v1")
+      || templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1")
       && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
     || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
@@ -2453,7 +2453,8 @@ export function GeneralizedStrategyPreparationPanel({
     setEvmCreateBusy(true);
     setError(null);
     try {
-      const resizing = selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+      const resizing = (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION")
         && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE");
       if (!evmLifecycleSupported || (lifecycleAction !== "ENTRY" && !fullEvmUnwind && !resizing)) {
         throw new Error("This lifecycle action is not active for the selected EVM strategy lane.");
@@ -2468,7 +2469,7 @@ export function GeneralizedStrategyPreparationPanel({
         ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
         : amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals, "Package quantity");
       if (lifecycleAction === "DECREASE" && quantityAtoms >= BigInt(selectedEvmPosition!.economicQuantityAtoms)) {
-        throw new Error("A treasury hedge decrease must retain an open package quantity. Use exit to close it.");
+        throw new Error("A decrease must retain an open package quantity. Use exit to close it.");
       }
       const hedgeLimit = priceToAtomicRatio(evmHedgePrice, selectedEvmDirectionalProfile.baseAsset.decimals,
         selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Hedge limit price");
@@ -3080,7 +3081,8 @@ export function GeneralizedStrategyPreparationPanel({
   const evmDirectionalFieldsReady = selectedEvmDirectionalProfile !== null
     && evmLifecycleSupported
     && (lifecycleAction === "ENTRY" || fullEvmUnwind
-      || (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+      || ((selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION")
         && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE")))
     && strategyOwner !== null
     && OWNER.test(strategyOwner.toLowerCase())

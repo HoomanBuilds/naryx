@@ -33,7 +33,7 @@ const U256_MAX = (1n << 256n) - 1n;
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 
-type SupportedAction = "ENTRY" | "EXIT" | "EMERGENCY_UNWIND";
+type SupportedAction = "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
 type LegRole = "collateral-swap" | "collateral-transfer" | "conversion-hedge";
 
 export class EvmCollateralConversionOrderError extends Error {
@@ -311,7 +311,8 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         || typeof fields.profileId !== "string" || typeof fields.owner !== "string"
         || typeof fields.settlementAccount !== "string" || typeof fields.quantityAtoms !== "string"
         || typeof fields.expiryValue !== "string" || typeof fields.nonce !== "string"
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT"
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
         fail("INVALID_REQUEST", "EVM collateral conversion order request fields are invalid.");
@@ -338,10 +339,11 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         || expiryValue <= BigInt(now) + 15n || expiryValue > BigInt(now) + profile.bounds.maximumExpiryTtlSeconds) {
         fail("LIMIT_EXCEEDED", "EVM collateral conversion quantity or expiry is outside the reviewed profile bounds.");
       }
-      const opening = request.lifecycleAction === "ENTRY";
-      const swapSide = opening ? "BUY" as const : "SELL" as const;
-      const hedgeSide = opening ? "SELL" as const : "BUY" as const;
-      const leg = (role: LegRole, legFamily: "SPOT_SWAP" | "MARGIN_DEPOSIT" | "MARGIN_RELEASE" | "PERP_OPEN" | "PERP_CLOSE") => {
+      const increasing = request.lifecycleAction === "ENTRY" || request.lifecycleAction === "INCREASE";
+      const swapSide = increasing ? "BUY" as const : "SELL" as const;
+      const hedgeSide = increasing ? "SELL" as const : "BUY" as const;
+      const leg = (role: LegRole, legFamily: "SPOT_SWAP" | "MARGIN_DEPOSIT" | "MARGIN_RELEASE"
+        | "PERP_OPEN" | "PERP_INCREASE" | "PERP_DECREASE" | "PERP_CLOSE") => {
         const binding = role === "collateral-swap" ? profile.swap
           : role === "collateral-transfer" ? profile.collateralTransfer : profile.hedge;
         const side = role === "collateral-swap" ? swapSide : role === "conversion-hedge" ? hedgeSide : "NONE" as const;
@@ -372,9 +374,11 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         });
       };
       const swapLeg = leg("collateral-swap", "SPOT_SWAP");
-      const transferLeg = leg("collateral-transfer", opening ? "MARGIN_DEPOSIT" : "MARGIN_RELEASE");
-      const hedgeLeg = leg("conversion-hedge", opening ? "PERP_OPEN" : "PERP_CLOSE");
-      const legs = Object.freeze(opening ? [swapLeg, transferLeg, hedgeLeg] : [hedgeLeg, transferLeg, swapLeg]);
+      const transferLeg = leg("collateral-transfer", increasing ? "MARGIN_DEPOSIT" : "MARGIN_RELEASE");
+      const hedgeLeg = leg("conversion-hedge", request.lifecycleAction === "ENTRY" ? "PERP_OPEN"
+        : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE"
+          : request.lifecycleAction === "DECREASE" ? "PERP_DECREASE" : "PERP_CLOSE");
+      const legs = Object.freeze(increasing ? [swapLeg, transferLeg, hedgeLeg] : [hedgeLeg, transferLeg, swapLeg]);
       const graph = packageGraph({
         graphVersion: 1,
         environment: "testnet",
@@ -391,7 +395,7 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         owner: request.owner,
         strategyAccountRefs: [request.settlementAccount],
         legs,
-        dependencyEdges: opening
+        dependencyEdges: increasing
           ? [{ fromLegId: "collateral-swap", toLegId: "collateral-transfer" }, { fromLegId: "collateral-transfer", toLegId: "conversion-hedge" }]
           : [{ fromLegId: "conversion-hedge", toLegId: "collateral-transfer" }, { fromLegId: "collateral-transfer", toLegId: "collateral-swap" }],
         executionGroups: [{ groupId: "evm-collateral-conversion", kind: "ALL_OR_NONE", legIds: legs.map((item) => item.legId) }],
@@ -440,7 +444,7 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         maximumVenueFeesByAsset: cap(profile.bounds.maximumVenueFeeQuoteAtoms),
         maximumNetworkFeesByAsset: cap(profile.bounds.maximumNetworkFeeQuoteAtoms),
         maximumRecoveryCostByAsset: [],
-        maximumMarginIncrease: assetAmount(profile.quoteAsset, opening ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
+        maximumMarginIncrease: assetAmount(profile.quoteAsset, increasing ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
         maximumResidualValue: assetAmount(profile.quoteAsset, 0n),
         ...(request.expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash: request.expectedStrategyStateHash }),
         expiryUnit: "EVM_UNIX_SECONDS",

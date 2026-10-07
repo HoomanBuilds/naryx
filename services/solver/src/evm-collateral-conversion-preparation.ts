@@ -84,6 +84,9 @@ const LENDING_ADAPTER_ABI = [{
     { name: 'availableBorrowsBase', type: 'uint256' }, { name: 'currentLiquidationThreshold', type: 'uint256' },
     { name: 'ltv', type: 'uint256' }, { name: 'healthFactor', type: 'uint256' },
   ] }],
+}, {
+  type: 'function', name: 'managedCollateralPrincipalAtoms', stateMutability: 'view',
+  inputs: [], outputs: [{ name: '', type: 'uint256' }],
 }] as const satisfies Abi;
 const PERP_ADAPTER_ABI = [{
   type: 'function', name: 'position', stateMutability: 'view', inputs: [],
@@ -103,6 +106,35 @@ const PERP_MARKET_ABI = [{
     { name: 'funding', type: 'int256' }, { name: 'charged', type: 'uint256' },
     { name: 'payout', type: 'uint256' }, { name: 'badDebt', type: 'uint256' },
   ] }],
+}, {
+  type: 'function', name: 'previewIncrease', stateMutability: 'view',
+  inputs: [
+    { name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' },
+    { name: 'balanceWad', type: 'uint256' },
+  ],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' }, { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' }, { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'fillPriceWad', type: 'uint256' }, { name: 'feeWad', type: 'uint256' },
+  ],
+}, {
+  type: 'function', name: 'previewDecrease', stateMutability: 'view',
+  inputs: [{ name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' }],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' }, { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' }, { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'settlement', type: 'tuple', components: [
+      { name: 'exitNotional', type: 'uint256' }, { name: 'realizedPnl', type: 'int256' },
+      { name: 'funding', type: 'int256' }, { name: 'charged', type: 'uint256' },
+      { name: 'payout', type: 'uint256' }, { name: 'badDebt', type: 'uint256' },
+    ] },
+  ],
 }] as const satisfies Abi;
 
 type AdapterRole = 'collateral-swap' | 'collateral-transfer' | 'conversion-hedge';
@@ -225,12 +257,15 @@ function strategyStateHash(input: Readonly<{
   packageId: Hex;
   account: Address;
   adapters: readonly [AdapterState, AdapterState, AdapterState];
+  managedCollateralPrincipalAtoms: bigint;
   lendingBounds: EvmAaveV3LendingLegBounds;
   hedgePosition: Position;
 }>): Hex {
   return keccak256(encodeAbiParameters(
-    [{ type: 'bytes32' }, { type: 'address' }, { type: 'address[3]' }, { type: 'bytes32' }, { type: 'bytes32' }],
+    [{ type: 'bytes32' }, { type: 'address' }, { type: 'address[3]' }, { type: 'uint256' },
+      { type: 'bytes32' }, { type: 'bytes32' }],
     [input.packageId, input.account, input.adapters.map((item) => item.address) as [Address, Address, Address],
+      input.managedCollateralPrincipalAtoms,
       keccak256(encodeAbiParameters([
         { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' },
       ], [input.lendingBounds.minimumPostCollateralBase, input.lendingBounds.maximumPostCollateralBase,
@@ -361,24 +396,39 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
       requireCondition(accountActive && accountStateHash === toHex(documents.order.expectedStrategyStateHash!),
         'onchain package state differs from the signed expected state');
     }
-    const [lendingValue, positionValue, reserveValue] = await Promise.all([
+    const [lendingValue, principalValue, positionValue, reserveValue] = await Promise.all([
       chain.readContract({ address: lendingAdapter.address, abi: LENDING_ADAPTER_ABI, functionName: 'accountData' }),
+      chain.readContract({
+        address: lendingAdapter.address,
+        abi: LENDING_ADAPTER_ABI,
+        functionName: 'managedCollateralPrincipalAtoms',
+      }),
       chain.readContract({ address: hedgeAdapter.address, abi: PERP_ADAPTER_ABI, functionName: 'position' }),
       chain.readContract({ address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI, functionName: 'reserveOf', args: [hedgeAdapter.address] }),
     ]);
     const preLending = accountData(lendingValue);
+    const managedCollateralPrincipalAtoms = natural(principalValue, 'managed collateral principal');
     const prePosition = position(positionValue);
     const reserveBefore = natural(reserveValue, 'perpetual reserve');
     const quantity = documents.order.economicQuantity.atoms;
-    const opening = documents.order.lifecycleAction === 'ENTRY';
-    requireCondition(opening || documents.order.lifecycleAction === 'EXIT'
-      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
-    requireCondition(preLending.totalDebtBase === 0n && (opening
-      ? preLending.totalCollateralBase === 0n && prePosition.size === 0n && reserveBefore === 0n
-      : preLending.totalCollateralBase > 0n && prePosition.size === -quantity),
-    opening ? 'entry adapters are not flat' : 'exit state differs from the open package');
+    const increasing = documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'INCREASE';
+    const decreasing = documents.order.lifecycleAction === 'DECREASE';
+    const terminal = documents.order.lifecycleAction === 'EXIT'
+      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND';
+    requireCondition(increasing || decreasing || terminal, 'lifecycle action is unsupported');
+    requireCondition(preLending.totalDebtBase === 0n && (documents.order.lifecycleAction === 'ENTRY'
+      ? preLending.totalCollateralBase === 0n && managedCollateralPrincipalAtoms === 0n
+        && prePosition.size === 0n && reserveBefore === 0n
+      : preLending.totalCollateralBase > 0n && managedCollateralPrincipalAtoms > 0n
+        && prePosition.size === -managedCollateralPrincipalAtoms && reserveBefore === 0n),
+    documents.order.lifecycleAction === 'ENTRY' ? 'entry adapters are not flat' : 'open package state is inconsistent');
+    requireCondition(!decreasing || quantity < managedCollateralPrincipalAtoms,
+      'decrease quantity must retain an open collateral conversion');
+    requireCondition(!terminal || quantity === managedCollateralPrincipalAtoms,
+      'terminal quantity differs from the open collateral conversion');
+    const sizeDelta = increasing ? -quantity : quantity;
     const [spot, snapshot] = await Promise.all([
-      readEvmCollateralConversionSpotSnapshot(lane.pricing, quantity, opening),
+      readEvmCollateralConversionSpotSnapshot(lane.pricing, quantity, increasing),
       readEvmTreasuryHedgeMarketSnapshot({
         chainId: lane.pricing.chainId, domain: lane.pricing.domain, inventoryAsset: lane.pricing.collateralAsset,
         quoteAsset: lane.pricing.quoteAsset, inventoryToken: lane.pricing.collateralToken,
@@ -388,7 +438,7 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
         feePolicyVersion: lane.pricing.feePolicyVersion, feePolicyManifestHash: lane.pricing.feePolicyManifestHash,
         routeTtlSeconds: lane.pricing.routeTtlSeconds, quoteTtlSeconds: lane.pricing.quoteTtlSeconds,
         chain, nonceSource: lane.pricing.nonceSource,
-      }, opening ? -quantity : quantity),
+      }, sizeDelta),
     ]);
     const quotedSwap = documents.quote.legEconomics.find((leg) => leg.legId === 'collateral-swap');
     const quotedTransfer = documents.quote.legEconomics.find((leg) => leg.legId === 'collateral-transfer');
@@ -402,38 +452,75 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
     requireCondition(quotedHedge.executionPrice.quoteAtoms * baseScale * WAD
       === snapshot.fillPriceWad * quoteScale * quotedHedge.executionPrice.baseAtoms,
     'current hedge price differs from the signed quote');
-    const marginAtoms = opening ? quotedHedge.marginDelta.atoms : 0n;
+    const marginAtoms = increasing ? quotedHedge.marginDelta.atoms : 0n;
     const marginWad = marginAtoms * snapshot.collateralScale;
-    const postPosition: Position = opening ? Object.freeze({
-      balance: marginWad - snapshot.feeWad, size: -quantity, entryNotional: snapshot.notionalWad,
-      entrySocialLossIndex: 0n, entryFundingIndex: snapshot.currentFundingIndex,
-    }) : Object.freeze({ balance: 0n, size: 0n, entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n });
+    let postPosition: Position;
     let collateralOutAtoms = 0n;
-    if (!opening) {
+    if (documents.order.lifecycleAction === 'ENTRY') {
+      postPosition = Object.freeze({
+        balance: marginWad - snapshot.feeWad, size: -quantity, entryNotional: snapshot.notionalWad,
+        entrySocialLossIndex: 0n, entryFundingIndex: snapshot.currentFundingIndex,
+      });
+    } else if (documents.order.lifecycleAction === 'INCREASE') {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
+        functionName: 'previewIncrease', args: [hedgeAdapter.address, sizeDelta, marginWad],
+      });
+      requireCondition(natural(structField(value, 1, 'fill price'), 'increase fill price') === snapshot.fillPriceWad
+        && natural(structField(value, 2, 'fee'), 'increase fee') === snapshot.feeWad,
+      'increase preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post position'));
+    } else if (decreasing) {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
+        functionName: 'previewDecrease', args: [hedgeAdapter.address, sizeDelta],
+      });
+      const settlement = structField(value, 1, 'settlement');
+      requireCondition(natural(structField(settlement, 0, 'exit notional'), 'decrease exit notional')
+        === snapshot.notionalWad, 'decrease preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post position'));
+      collateralOutAtoms = natural(structField(settlement, 4, 'payout'), 'decrease payout')
+        / snapshot.collateralScale;
+    } else {
       const closeValue = await chain.readContract({
         address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
         functionName: 'previewClose', args: [hedgeAdapter.address],
       });
-      collateralOutAtoms = natural(structField(closeValue, 4, 'payout'), 'close payout') / snapshot.collateralScale;
+      collateralOutAtoms = natural(structField(closeValue, 4, 'payout'), 'close payout')
+        / snapshot.collateralScale;
+      postPosition = Object.freeze({
+        balance: 0n, size: 0n, entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n,
+      });
     }
     const projectedCollateral = quantity * lane.collateralBaseAtomsPerWholeToken / baseScale;
     const tolerance = projectedCollateral * lane.collateralBaseToleranceBps / 10_000n;
+    requireCondition(increasing || preLending.totalCollateralBase + tolerance >= projectedCollateral,
+      'collateral release exceeds the current account value');
+    const expectedPostCollateral = increasing
+      ? preLending.totalCollateralBase + projectedCollateral
+      : preLending.totalCollateralBase > projectedCollateral ? preLending.totalCollateralBase - projectedCollateral : 0n;
+    const minimumPostCollateral = expectedPostCollateral > tolerance ? expectedPostCollateral - tolerance : 0n;
+    const maximumPostCollateral = expectedPostCollateral + tolerance;
+    const nextPrincipalAtoms = increasing
+      ? managedCollateralPrincipalAtoms + quantity
+      : managedCollateralPrincipalAtoms - quantity;
     const lendingBounds: EvmAaveV3LendingLegBounds = Object.freeze({
       legId: 'collateral-transfer', expectedPreAccountDataHash: accountDataHash(preLending),
       minimumOutputAtoms: quantity, maximumOutputAtoms: quantity,
-      minimumPostCollateralBase: opening ? projectedCollateral - (tolerance < projectedCollateral ? tolerance : projectedCollateral) : 0n,
-      maximumPostCollateralBase: opening ? projectedCollateral + tolerance : 0n,
+      minimumPostCollateralBase: minimumPostCollateral,
+      maximumPostCollateralBase: maximumPostCollateral,
       minimumPostDebtBase: 0n, maximumPostDebtBase: 0n,
       minimumPostHealthFactor: lane.pricing.minimumPostHealthFactor,
     });
     const perpBounds: EvmExactPerpLegBounds = Object.freeze({
       legId: 'conversion-hedge', expectedPrePositionHash: positionHash(prePosition),
-      tradeArgs: tradeArgs(snapshot.expiry, documents.order.expiryValue, opening ? -quantity : quantity, opening ? marginWad : 0n),
+      tradeArgs: tradeArgs(snapshot.expiry, documents.order.expiryValue, sizeDelta, increasing ? marginWad : 0n),
       expectedPostSizeWad: postPosition.size, minimumPostBalanceWad: postPosition.balance,
       maximumPostBalanceWad: postPosition.balance, minimumPostEntryNotionalWad: postPosition.entryNotional,
       maximumPostEntryNotionalWad: postPosition.entryNotional, expectedReserveBeforeAtoms: reserveBefore,
       minimumReserveAfterAtoms: 0n, maximumReserveAfterAtoms: 0n, collateralInAtoms: marginAtoms,
-      collateralOutAtoms: 0n, withdrawAll: !opening, minimumCollateralOutAtoms: collateralOutAtoms,
+      collateralOutAtoms: decreasing ? collateralOutAtoms : 0n, withdrawAll: terminal,
+      minimumCollateralOutAtoms: collateralOutAtoms,
       maximumCollateralOutAtoms: collateralOutAtoms,
     });
     const graphLeg = (legId: AdapterRole) => {
@@ -463,7 +550,14 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
       }),
     ]);
     const adapters = [swapAdapter, lendingAdapter, hedgeAdapter] as const;
-    const nextStateHash = opening ? strategyStateHash({ packageId: checkedPackageId, account, adapters, lendingBounds, hedgePosition: postPosition }) : undefined;
+    const nextStateHash = !terminal ? strategyStateHash({
+      packageId: checkedPackageId,
+      account,
+      adapters,
+      managedCollateralPrincipalAtoms: nextPrincipalAtoms,
+      lendingBounds,
+      hedgePosition: postPosition,
+    }) : undefined;
     if (nextStateHash !== undefined) await lane.packageIds.rememberPackageId?.(nextStateHash, checkedPackageId);
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, candidate) => candidate < minimum ? candidate : minimum);
@@ -475,11 +569,11 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
         legId: adapter.role,
         adapter: Object.freeze({ subjectId: keccak256(stringToHex(binding.adapter.adapterId)),
           manifestVersion: binding.adapter.adapterManifestVersion, manifestHash: toHex(binding.adapter.adapterManifestHash) }),
-        expectedAdapterAddress: adapter.address, expectedAdapterCodeHash: adapter.codeHash, riskIncreasing: opening,
+        expectedAdapterAddress: adapter.address, expectedAdapterCodeHash: adapter.codeHash, riskIncreasing: increasing,
         ...(approvalToken === undefined ? {} : { approvalToken }), approvalAtoms, grossNotionalAtoms,
       });
     };
-    const swapApproval = opening
+    const swapApproval = increasing
       ? documents.graph.legs.find((leg) => leg.legId === 'collateral-swap')!.limitPrice!.quoteAtoms * quantity
         / documents.graph.legs.find((leg) => leg.legId === 'collateral-swap')!.limitPrice!.baseAtoms
         + (documents.graph.legs.find((leg) => leg.legId === 'collateral-swap')!.limitPrice!.quoteAtoms * quantity
@@ -504,11 +598,11 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
         feeToken: getAddress(lane.pricing.quoteToken.address), protocolFeeAtoms: charge(documents, 'PROTOCOL'),
         solverFeeAtoms: charge(documents, 'SOLVER'), nonce: natural(nonceValue, 'account nonce'), deadline,
         callPolicies: Object.freeze([
-          policy(swapAdapter, getAddress(opening ? lane.pricing.quoteToken.address : lane.pricing.collateralToken.address),
+          policy(swapAdapter, getAddress(increasing ? lane.pricing.quoteToken.address : lane.pricing.collateralToken.address),
             swapApproval, quotedSwap.grossNotional.atoms),
-          policy(lendingAdapter, opening ? getAddress(lane.pricing.collateralToken.address) : undefined,
-            opening ? quantity : 0n, quotedTransfer.grossNotional.atoms),
-          policy(hedgeAdapter, opening ? getAddress(lane.pricing.quoteToken.address) : undefined,
+          policy(lendingAdapter, increasing ? getAddress(lane.pricing.collateralToken.address) : undefined,
+            increasing ? quantity : 0n, quotedTransfer.grossNotional.atoms),
+          policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
             marginAtoms, quotedHedge.grossNotional.atoms),
         ]),
       }]),
