@@ -86,7 +86,7 @@ const intake: StrategyOrderIntakePort = Object.freeze({
   },
 });
 
-function request(lifecycleAction: "ENTRY" | "EXIT") {
+function request(lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT") {
   return {
     profileId: profile().profileId,
     owner: OWNER,
@@ -101,7 +101,7 @@ function request(lifecycleAction: "ENTRY" | "EXIT") {
   };
 }
 
-test("creates dependency-ordered atomic reverse basis entry and exit orders", () => {
+test("creates dependency-ordered atomic reverse basis lifecycle orders", () => {
   const directory = mkdtempSync(join(tmpdir(), "naryx-evm-reverse-basis-"));
   const path = join(directory, "profiles.json");
   try {
@@ -118,6 +118,18 @@ test("creates dependency-ordered atomic reverse basis entry and exit orders", ()
     ]);
     assert.equal(entry.order.maximumMarginIncrease.atoms, 1_000_000n);
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
+
+    const increase = port.create(request("INCREASE"));
+    assert.equal(increase.graph.legs.find((leg) => leg.legId === "base-borrow")?.legFamily, "BORROW");
+    assert.equal(increase.graph.legs.find((leg) => leg.legId === "perp-purchase")?.legFamily, "PERP_INCREASE");
+    assert.equal(increase.order.maximumMarginIncrease.atoms, 1_000_000n);
+    assert.equal(validateStrategyTemplateGraph(increase.graph).valid, true);
+
+    const decrease = port.create(request("DECREASE"));
+    assert.equal(decrease.graph.legs.find((leg) => leg.legId === "base-borrow")?.legFamily, "REPAY");
+    assert.equal(decrease.graph.legs.find((leg) => leg.legId === "perp-purchase")?.legFamily, "PERP_DECREASE");
+    assert.equal(decrease.order.maximumMarginIncrease.atoms, 0n);
+    assert.equal(validateStrategyTemplateGraph(decrease.graph).valid, true);
 
     const exit = port.create(request("EXIT"));
     assert.deepEqual(exit.graph.dependencyEdges.map((edge) => [edge.fromLegId, edge.toLegId]), [

@@ -2086,7 +2086,8 @@ export function GeneralizedStrategyPreparationPanel({
     ?? null;
   const evmLifecycleSupported = lifecycleAction === "ENTRY"
     || ((templateId === "option-spread-v1" || templateId === "calendar-spread-v1"
-      || templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1")
+      || templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1"
+      || templateId === "reverse-cash-and-carry-v1")
       && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
     || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
@@ -2454,7 +2455,8 @@ export function GeneralizedStrategyPreparationPanel({
     setError(null);
     try {
       const resizing = (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
-        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION")
+        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION"
+        || selectedEvmDirectionalProfile.kind === "REVERSE_BASIS")
         && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE");
       if (!evmLifecycleSupported || (lifecycleAction !== "ENTRY" && !fullEvmUnwind && !resizing)) {
         throw new Error("This lifecycle action is not active for the selected EVM strategy lane.");
@@ -3082,7 +3084,8 @@ export function GeneralizedStrategyPreparationPanel({
     && evmLifecycleSupported
     && (lifecycleAction === "ENTRY" || fullEvmUnwind
       || ((selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
-        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION")
+        || selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION"
+        || selectedEvmDirectionalProfile.kind === "REVERSE_BASIS")
         && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE")))
     && strategyOwner !== null
     && OWNER.test(strategyOwner.toLowerCase())

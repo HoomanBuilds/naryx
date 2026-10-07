@@ -33,7 +33,7 @@ const U256_MAX = (1n << 256n) - 1n;
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 
-type SupportedAction = "ENTRY" | "EXIT" | "EMERGENCY_UNWIND";
+type SupportedAction = "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
 type LegRole = "base-borrow" | "spot-sale" | "perp-purchase";
 
 export class EvmReverseBasisOrderError extends Error {
@@ -330,7 +330,8 @@ export function createEvmReverseBasisOrderPort(input: Readonly<{
         || typeof fields.profileId !== "string" || typeof fields.owner !== "string"
         || typeof fields.settlementAccount !== "string" || typeof fields.quantityAtoms !== "string"
         || typeof fields.expiryValue !== "string" || typeof fields.nonce !== "string"
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT"
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
         fail("INVALID_REQUEST", "EVM reverse basis order request fields are invalid.");
@@ -357,12 +358,13 @@ export function createEvmReverseBasisOrderPort(input: Readonly<{
         || expiryValue <= BigInt(now) + 15n || expiryValue > BigInt(now) + profile.bounds.maximumExpiryTtlSeconds) {
         fail("LIMIT_EXCEEDED", "EVM reverse basis quantity or expiry is outside the reviewed profile bounds.");
       }
-      const opening = request.lifecycleAction === "ENTRY";
-      const spotSide = opening ? "SELL" as const : "BUY" as const;
-      const hedgeSide = opening ? "BUY" as const : "SELL" as const;
+      const increasing = request.lifecycleAction === "ENTRY" || request.lifecycleAction === "INCREASE";
+      const spotSide = increasing ? "SELL" as const : "BUY" as const;
+      const hedgeSide = increasing ? "BUY" as const : "SELL" as const;
       const binding = (role: LegRole) => role === "base-borrow" ? profile.lending
         : role === "spot-sale" ? profile.spot : profile.hedge;
-      const leg = (role: LegRole, legFamily: "BORROW" | "REPAY" | "SPOT_SWAP" | "PERP_OPEN" | "PERP_CLOSE") =>
+      const leg = (role: LegRole, legFamily: "BORROW" | "REPAY" | "SPOT_SWAP"
+        | "PERP_OPEN" | "PERP_INCREASE" | "PERP_DECREASE" | "PERP_CLOSE") =>
         Object.freeze({
           legId: role, legFamily, legTypeId: role, domain: profile.domain, adapter: binding(role).adapter,
           venue: binding(role).venue, market: binding(role).market,
@@ -378,10 +380,12 @@ export function createEvmReverseBasisOrderPort(input: Readonly<{
           preconditionHashes: Object.freeze([]), postconditionHashes: Object.freeze([]),
           timeInForce: "IOC" as const, legExpiryValue: expiryValue,
         });
-      const lendingLeg = leg("base-borrow", opening ? "BORROW" : "REPAY");
+      const lendingLeg = leg("base-borrow", increasing ? "BORROW" : "REPAY");
       const spotLeg = leg("spot-sale", "SPOT_SWAP");
-      const hedgeLeg = leg("perp-purchase", opening ? "PERP_OPEN" : "PERP_CLOSE");
-      const legs = Object.freeze(opening ? [lendingLeg, spotLeg, hedgeLeg] : [hedgeLeg, spotLeg, lendingLeg]);
+      const hedgeLeg = leg("perp-purchase", request.lifecycleAction === "ENTRY" ? "PERP_OPEN"
+        : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE"
+          : request.lifecycleAction === "DECREASE" ? "PERP_DECREASE" : "PERP_CLOSE");
+      const legs = Object.freeze(increasing ? [lendingLeg, spotLeg, hedgeLeg] : [hedgeLeg, spotLeg, lendingLeg]);
       const graph = packageGraph({
         graphVersion: 1, environment: "testnet", templateId: profile.templateId, templateVersion: 1,
         packageTemplateManifestHash: profile.packageTemplateManifestHash, seriesId: profile.seriesId,
@@ -389,7 +393,7 @@ export function createEvmReverseBasisOrderPort(input: Readonly<{
         executionClassId: profile.executionClassId, executionClassVersion: profile.executionClassVersion,
         executionClassManifestHash: profile.executionClassManifestHash, lifecycleAction: request.lifecycleAction,
         owner: request.owner, strategyAccountRefs: [request.settlementAccount], legs,
-        dependencyEdges: opening
+        dependencyEdges: increasing
           ? [{ fromLegId: "base-borrow", toLegId: "spot-sale" }, { fromLegId: "spot-sale", toLegId: "perp-purchase" }]
           : [{ fromLegId: "perp-purchase", toLegId: "spot-sale" }, { fromLegId: "spot-sale", toLegId: "base-borrow" }],
         executionGroups: [{ groupId: "evm-reverse-basis", kind: "ALL_OR_NONE", legIds: legs.map((item) => item.legId) }],
@@ -418,7 +422,8 @@ export function createEvmReverseBasisOrderPort(input: Readonly<{
         metricLimits: profile.metricLimits, maximumServiceFeesByAsset: cap(profile.bounds.maximumServiceFeeQuoteAtoms),
         maximumVenueFeesByAsset: cap(profile.bounds.maximumVenueFeeQuoteAtoms),
         maximumNetworkFeesByAsset: cap(profile.bounds.maximumNetworkFeeQuoteAtoms), maximumRecoveryCostByAsset: [],
-        maximumMarginIncrease: assetAmount(profile.quoteAsset, opening ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
+        maximumMarginIncrease: assetAmount(profile.quoteAsset,
+          increasing ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
         maximumResidualValue: assetAmount(profile.quoteAsset, 0n),
         ...(request.expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash: request.expectedStrategyStateHash }),
         expiryUnit: "EVM_UNIX_SECONDS", expiryValue, nonce,

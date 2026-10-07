@@ -105,6 +105,35 @@ const PERP_MARKET_ABI = [{
     { name: 'funding', type: 'int256' }, { name: 'charged', type: 'uint256' },
     { name: 'payout', type: 'uint256' }, { name: 'badDebt', type: 'uint256' },
   ] }],
+}, {
+  type: 'function', name: 'previewIncrease', stateMutability: 'view',
+  inputs: [
+    { name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' },
+    { name: 'balanceWad', type: 'uint256' },
+  ],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' }, { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' }, { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'fillPriceWad', type: 'uint256' }, { name: 'feeWad', type: 'uint256' },
+  ],
+}, {
+  type: 'function', name: 'previewDecrease', stateMutability: 'view',
+  inputs: [{ name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' }],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' }, { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' }, { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'settlement', type: 'tuple', components: [
+      { name: 'exitNotional', type: 'uint256' }, { name: 'realizedPnl', type: 'int256' },
+      { name: 'funding', type: 'int256' }, { name: 'charged', type: 'uint256' },
+      { name: 'payout', type: 'uint256' }, { name: 'badDebt', type: 'uint256' },
+    ] },
+  ],
 }] as const satisfies Abi;
 
 type AdapterRole = 'base-borrow' | 'spot-sale' | 'perp-purchase';
@@ -406,24 +435,38 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
     const prePosition = position(positionValue);
     const reserveBefore = natural(reserveValue, 'perpetual reserve');
     const quantity = documents.order.economicQuantity.atoms;
-    const opening = documents.order.lifecycleAction === 'ENTRY';
-    requireCondition(opening || documents.order.lifecycleAction === 'EXIT'
-      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
+    const increasing = documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'INCREASE';
+    const decreasing = documents.order.lifecycleAction === 'DECREASE';
+    const terminal = documents.order.lifecycleAction === 'EXIT'
+      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND';
+    requireCondition(increasing || decreasing || terminal, 'lifecycle action is unsupported');
     const baseScale = 10n ** BigInt(lane.pricing.baseAsset.decimals);
-    const projectedDebt = quantity * lane.debtBaseAtomsPerWholeBaseToken / baseScale;
-    const debtTolerance = projectedDebt * lane.debtBaseToleranceBps / BPS;
-    const minimumProjectedDebt = projectedDebt - (debtTolerance < projectedDebt ? debtTolerance : projectedDebt);
-    const maximumProjectedDebt = projectedDebt + debtTolerance;
+    const currentQuantity = prePosition.size > 0n ? prePosition.size : 0n;
+    const currentProjectedDebt = currentQuantity * lane.debtBaseAtomsPerWholeBaseToken / baseScale;
+    const currentDebtTolerance = currentProjectedDebt * lane.debtBaseToleranceBps / BPS;
+    const minimumCurrentDebt = currentProjectedDebt > currentDebtTolerance
+      ? currentProjectedDebt - currentDebtTolerance : 0n;
+    const maximumCurrentDebt = currentProjectedDebt + currentDebtTolerance;
+    const projectedDebtDelta = quantity * lane.debtBaseAtomsPerWholeBaseToken / baseScale;
+    const debtDeltaTolerance = projectedDebtDelta * lane.debtBaseToleranceBps / BPS;
     requireCondition(preLending.totalCollateralBase > 0n && preLending.healthFactor >= lane.pricing.minimumPostHealthFactor
-      && (opening
-        ? preLending.totalDebtBase === 0n && preLending.availableBorrowsBase >= maximumProjectedDebt
+      && (documents.order.lifecycleAction === 'ENTRY'
+        ? preLending.totalDebtBase === 0n && preLending.availableBorrowsBase >= projectedDebtDelta + debtDeltaTolerance
           && prePosition.size === 0n && reserveBefore === 0n
-        : preLending.totalDebtBase >= minimumProjectedDebt && preLending.totalDebtBase <= maximumProjectedDebt
-          && prePosition.size === quantity),
-    opening ? 'entry lending or hedge state is not ready' : 'exit state differs from the open reverse basis package');
+        : preLending.totalDebtBase >= minimumCurrentDebt && preLending.totalDebtBase <= maximumCurrentDebt
+          && currentQuantity > 0n && reserveBefore === 0n),
+    documents.order.lifecycleAction === 'ENTRY'
+      ? 'entry lending or hedge state is not ready' : 'open reverse basis state is inconsistent');
+    requireCondition(!increasing || preLending.availableBorrowsBase >= projectedDebtDelta + debtDeltaTolerance,
+      'available borrow capacity is below the requested increase');
+    requireCondition(!decreasing || quantity < currentQuantity,
+      'decrease quantity must retain an open reverse basis package');
+    requireCondition(!terminal || quantity === currentQuantity,
+      'terminal quantity differs from the open reverse basis package');
+    const sizeDelta = increasing ? quantity : -quantity;
     const [spotSnapshot, derivative] = await Promise.all([
-      readEvmCollateralConversionSpotSnapshot(spotPricing(lane.pricing), quantity, !opening),
-      readEvmTreasuryHedgeMarketSnapshot(hedgePricing(lane.pricing), opening ? quantity : -quantity),
+      readEvmCollateralConversionSpotSnapshot(spotPricing(lane.pricing), quantity, !increasing),
+      readEvmTreasuryHedgeMarketSnapshot(hedgePricing(lane.pricing), sizeDelta),
     ]);
     const quotedLending = documents.quote.legEconomics.find((leg) => leg.legId === 'base-borrow');
     const quotedSpot = documents.quote.legEconomics.find((leg) => leg.legId === 'spot-sale');
@@ -437,23 +480,54 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
     requireCondition(quotedHedge.executionPrice.quoteAtoms * baseScale * WAD
       === derivative.fillPriceWad * quoteScale * quotedHedge.executionPrice.baseAtoms,
     'current hedge price differs from the signed quote');
-    const marginAtoms = opening ? quotedHedge.marginDelta.atoms : 0n;
+    const marginAtoms = increasing ? quotedHedge.marginDelta.atoms : 0n;
     const marginWad = marginAtoms * derivative.collateralScale;
-    const postPosition: Position = opening ? Object.freeze({
-      balance: marginWad - derivative.feeWad,
-      size: quantity,
-      entryNotional: derivative.notionalWad,
-      entrySocialLossIndex: 0n,
-      entryFundingIndex: derivative.currentFundingIndex,
-    }) : Object.freeze({ balance: 0n, size: 0n, entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n });
+    let postPosition: Position;
     let collateralOutAtoms = 0n;
-    if (!opening) {
+    if (documents.order.lifecycleAction === 'ENTRY') {
+      postPosition = Object.freeze({
+        balance: marginWad - derivative.feeWad,
+        size: quantity,
+        entryNotional: derivative.notionalWad,
+        entrySocialLossIndex: 0n,
+        entryFundingIndex: derivative.currentFundingIndex,
+      });
+    } else if (documents.order.lifecycleAction === 'INCREASE') {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
+        functionName: 'previewIncrease', args: [hedgeAdapter.address, sizeDelta, marginWad],
+      });
+      requireCondition(natural(structField(value, 1, 'fill price'), 'increase fill price') === derivative.fillPriceWad
+        && natural(structField(value, 2, 'fee'), 'increase fee') === derivative.feeWad,
+      'increase preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post position'));
+    } else if (decreasing) {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
+        functionName: 'previewDecrease', args: [hedgeAdapter.address, sizeDelta],
+      });
+      const settlement = structField(value, 1, 'settlement');
+      requireCondition(natural(structField(settlement, 0, 'exit notional'), 'decrease exit notional')
+        === derivative.notionalWad, 'decrease preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post position'));
+      collateralOutAtoms = natural(structField(settlement, 4, 'payout'), 'decrease payout')
+        / derivative.collateralScale;
+    } else {
       const closeValue = await chain.readContract({
         address: getAddress(lane.pricing.perpetualMarket.address), abi: PERP_MARKET_ABI,
         functionName: 'previewClose', args: [hedgeAdapter.address],
       });
       collateralOutAtoms = natural(structField(closeValue, 4, 'payout'), 'close payout') / derivative.collateralScale;
+      postPosition = Object.freeze({
+        balance: 0n, size: 0n, entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n,
+      });
     }
+    const expectedPostDebt = increasing
+      ? preLending.totalDebtBase + projectedDebtDelta
+      : preLending.totalDebtBase > projectedDebtDelta ? preLending.totalDebtBase - projectedDebtDelta : 0n;
+    const minimumPostDebt = terminal ? 0n
+      : expectedPostDebt > debtDeltaTolerance ? expectedPostDebt - debtDeltaTolerance : 0n;
+    const maximumPostDebt = terminal ? 0n : expectedPostDebt + debtDeltaTolerance;
     const lendingBounds: EvmAaveV3LendingLegBounds = Object.freeze({
       legId: 'base-borrow',
       expectedPreAccountDataHash: accountDataHash(preLending),
@@ -461,19 +535,20 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
       maximumOutputAtoms: quantity,
       minimumPostCollateralBase: preLending.totalCollateralBase,
       maximumPostCollateralBase: preLending.totalCollateralBase,
-      minimumPostDebtBase: opening ? minimumProjectedDebt : 0n,
-      maximumPostDebtBase: opening ? maximumProjectedDebt : 0n,
+      minimumPostDebtBase: minimumPostDebt,
+      maximumPostDebtBase: maximumPostDebt,
       minimumPostHealthFactor: lane.pricing.minimumPostHealthFactor,
     });
     const perpBounds: EvmExactPerpLegBounds = Object.freeze({
       legId: 'perp-purchase', expectedPrePositionHash: positionHash(prePosition),
       tradeArgs: tradeArgs(derivative.expiry, documents.order.expiryValue,
-        opening ? quantity : -quantity, opening ? marginWad : 0n),
+        sizeDelta, increasing ? marginWad : 0n),
       expectedPostSizeWad: postPosition.size, minimumPostBalanceWad: postPosition.balance,
       maximumPostBalanceWad: postPosition.balance, minimumPostEntryNotionalWad: postPosition.entryNotional,
       maximumPostEntryNotionalWad: postPosition.entryNotional, expectedReserveBeforeAtoms: reserveBefore,
       minimumReserveAfterAtoms: 0n, maximumReserveAfterAtoms: 0n, collateralInAtoms: marginAtoms,
-      collateralOutAtoms: 0n, withdrawAll: !opening, minimumCollateralOutAtoms: collateralOutAtoms,
+      collateralOutAtoms: decreasing ? collateralOutAtoms : 0n, withdrawAll: terminal,
+      minimumCollateralOutAtoms: collateralOutAtoms,
       maximumCollateralOutAtoms: collateralOutAtoms,
     });
     const graphLeg = (legId: AdapterRole) => {
@@ -503,7 +578,7 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
       }),
     ]);
     const adapters = [lendingAdapter, spotAdapter, hedgeAdapter] as const;
-    const nextStateHash = opening
+    const nextStateHash = !terminal
       ? strategyStateHash({ packageId: checkedPackageId, account, adapters, lendingBounds, hedgePosition: postPosition })
       : undefined;
     if (nextStateHash !== undefined) await lane.packageIds.rememberPackageId?.(nextStateHash, checkedPackageId);
@@ -518,12 +593,12 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
         adapter: Object.freeze({ subjectId: keccak256(stringToHex(binding.adapter.adapterId)),
           manifestVersion: binding.adapter.adapterManifestVersion, manifestHash: toHex(binding.adapter.adapterManifestHash) }),
         expectedAdapterAddress: adapter.address, expectedAdapterCodeHash: adapter.codeHash,
-        riskIncreasing: opening, ...(approvalToken === undefined ? {} : { approvalToken }),
+        riskIncreasing: increasing, ...(approvalToken === undefined ? {} : { approvalToken }),
         approvalAtoms, grossNotionalAtoms,
       });
     };
     const spotLeg = graphLeg('spot-sale');
-    const spotApproval = opening ? quantity : (spotLeg.limitPrice!.quoteAtoms * quantity
+    const spotApproval = increasing ? quantity : (spotLeg.limitPrice!.quoteAtoms * quantity
       + spotLeg.limitPrice!.baseAtoms - 1n) / spotLeg.limitPrice!.baseAtoms;
     return Object.freeze({
       compileContext: Object.freeze({ templateManifest: lane.templateManifest,
@@ -546,11 +621,11 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
         feeToken: getAddress(lane.pricing.quoteToken.address), protocolFeeAtoms: charge(documents, 'PROTOCOL'),
         solverFeeAtoms: charge(documents, 'SOLVER'), nonce: natural(nonceValue, 'account nonce'), deadline,
         callPolicies: Object.freeze([
-          policy(lendingAdapter, opening ? undefined : getAddress(lane.pricing.baseToken.address),
-            opening ? 0n : quantity, quotedLending.grossNotional.atoms),
-          policy(spotAdapter, getAddress(opening ? lane.pricing.baseToken.address : lane.pricing.quoteToken.address),
+          policy(lendingAdapter, increasing ? undefined : getAddress(lane.pricing.baseToken.address),
+            increasing ? 0n : quantity, quotedLending.grossNotional.atoms),
+          policy(spotAdapter, getAddress(increasing ? lane.pricing.baseToken.address : lane.pricing.quoteToken.address),
             spotApproval, quotedSpot.grossNotional.atoms),
-          policy(hedgeAdapter, opening ? getAddress(lane.pricing.quoteToken.address) : undefined,
+          policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
             marginAtoms, quotedHedge.grossNotional.atoms),
         ]),
       }]),

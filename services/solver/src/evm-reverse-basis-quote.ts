@@ -232,7 +232,8 @@ export function createEvmReverseBasisGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'EVM_UNIX_SECONDS' && graph.expiryUnit === 'EVM_UNIX_SECONDS',
       'package is not a testnet atomic EVM reverse basis strategy');
-      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'EXIT'
+      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE'
+        || order.lifecycleAction === 'DECREASE' || order.lifecycleAction === 'EXIT'
         || order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 3 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain))
         && sameAsset(order.economicQuantity.asset, input.baseAsset)
@@ -241,19 +242,21 @@ export function createEvmReverseBasisGeneralizedPricing(
       const lending = matchLeg(documents, 'base-borrow', input.lending);
       const spot = matchLeg(documents, 'spot-sale', input.spot);
       const hedge = matchLeg(documents, 'perp-purchase', input.hedge);
-      const opening = order.lifecycleAction === 'ENTRY';
+      const increasing = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
       const quantity = order.economicQuantity.atoms;
       requireCondition(quantity > 0n && [lending, spot, hedge].every((leg) => leg.quantityAtoms === quantity),
         'leg quantities differ from the package quantity');
-      requireCondition(lending.legFamily === (opening ? 'BORROW' : 'REPAY') && lending.side === 'NONE'
-        && spot.legFamily === 'SPOT_SWAP' && spot.side === (opening ? 'SELL' : 'BUY')
-        && hedge.legFamily === (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
-        && hedge.side === (opening ? 'BUY' : 'SELL'), 'legs do not match the lifecycle action');
+      requireCondition(lending.legFamily === (increasing ? 'BORROW' : 'REPAY') && lending.side === 'NONE'
+        && spot.legFamily === 'SPOT_SWAP' && spot.side === (increasing ? 'SELL' : 'BUY')
+        && hedge.legFamily === (order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+          : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+            : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE' : 'PERP_CLOSE')
+        && hedge.side === (increasing ? 'BUY' : 'SELL'), 'legs do not match the lifecycle action');
       const [chainId, observedAt, spotSnapshot, derivative, fundingRateValue] = await Promise.all([
         input.chain.chainId(),
         input.chain.latestBlockTimestamp(),
-        readEvmCollateralConversionSpotSnapshot(spotInput, quantity, !opening),
-        readEvmTreasuryHedgeMarketSnapshot(derivativeInput, opening ? quantity : -quantity),
+        readEvmCollateralConversionSpotSnapshot(spotInput, quantity, !increasing),
+        readEvmTreasuryHedgeMarketSnapshot(derivativeInput, increasing ? quantity : -quantity),
         input.chain.readContract({
           address: getAddress(input.perpetualMarket.address),
           abi: FUNDING_ABI,
@@ -267,41 +270,41 @@ export function createEvmReverseBasisGeneralizedPricing(
       const spotLimit = spot.limitPrice;
       const hedgeLimit = hedge.limitPrice;
       requireCondition(spotLimit !== undefined && hedgeLimit !== undefined, 'signed price limits are missing');
-      const spotBound = quoteBound(quantity, spotLimit.quoteAtoms, spotLimit.baseAtoms, !opening);
-      requireCondition(opening ? spotSnapshot.quoteAtoms >= spotBound : spotSnapshot.quoteAtoms <= spotBound,
+      const spotBound = quoteBound(quantity, spotLimit.quoteAtoms, spotLimit.baseAtoms, !increasing);
+      requireCondition(increasing ? spotSnapshot.quoteAtoms >= spotBound : spotSnapshot.quoteAtoms <= spotBound,
         'executable spot price violates the signed limit');
       const baseScale = 10n ** BigInt(input.baseAsset.decimals);
       const quoteScale = 10n ** BigInt(input.quoteAsset.decimals);
       const hedgeAtLimitScale = derivative.fillPriceWad * hedgeLimit.baseAtoms * quoteScale;
       const signedHedgeAtWadScale = hedgeLimit.quoteAtoms * baseScale * WAD;
-      requireCondition(opening ? hedgeAtLimitScale <= signedHedgeAtWadScale : hedgeAtLimitScale >= signedHedgeAtWadScale,
+      requireCondition(increasing ? hedgeAtLimitScale <= signedHedgeAtWadScale : hedgeAtLimitScale >= signedHedgeAtWadScale,
         'executable hedge price violates the signed limit');
       const oracleNotionalWad = quantity * derivative.oraclePriceWad / baseScale;
       const oracleNotionalAtoms = ceilDiv(oracleNotionalWad, derivative.collateralScale);
-      const spotDeviation = opening
+      const spotDeviation = increasing
         ? (oracleNotionalAtoms > spotSnapshot.quoteAtoms ? oracleNotionalAtoms - spotSnapshot.quoteAtoms : 0n)
         : (spotSnapshot.quoteAtoms > oracleNotionalAtoms ? spotSnapshot.quoteAtoms - oracleNotionalAtoms : 0n);
-      const estimatedSpotFee = ceilDiv((opening ? oracleNotionalAtoms : spotSnapshot.quoteAtoms)
+      const estimatedSpotFee = ceilDiv((increasing ? oracleNotionalAtoms : spotSnapshot.quoteAtoms)
         * BigInt(input.spotPoolFee), UNISWAP_FEE_DENOMINATOR);
       const spotFee = estimatedSpotFee < spotDeviation ? estimatedSpotFee : spotDeviation;
       const hedgeNotionalAtoms = ceilDiv(derivative.notionalWad, derivative.collateralScale);
       const perpFee = ceilDiv(derivative.feeWad, derivative.collateralScale);
-      const requiredMarginWad = opening
+      const requiredMarginWad = increasing
         ? ceilDiv(derivative.notionalWad * derivative.initialMarginBps, BPS) + derivative.feeWad
         : 0n;
-      const requiredMarginAtoms = opening ? ceilDiv(requiredMarginWad, derivative.collateralScale) : 0n;
-      const projectedBorrowCost = opening
+      const requiredMarginAtoms = increasing ? ceilDiv(requiredMarginWad, derivative.collateralScale) : 0n;
+      const projectedBorrowCost = increasing
         ? ceilDiv(oracleNotionalAtoms * input.annualBorrowRatePpm * input.holdingDurationSeconds,
           PPM * YEAR_SECONDS)
         : 0n;
-      const expectedFundingWad = opening
+      const expectedFundingWad = increasing
         ? -quantity * fundingRateValue * input.holdingDurationSeconds / WAD
         : 0n;
       const expectedFundingAtoms = signedWadToAtoms(expectedFundingWad, derivative.collateralScale);
       const protocolFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalFees = spotFee + perpFee + protocolFee + solverFee + input.networkFeeQuoteAtoms;
-      const borrowCollateralAtoms = opening
+      const borrowCollateralAtoms = increasing
         ? ceilDiv(oracleNotionalAtoms * input.borrowCollateralRatioBps, BPS)
         : 0n;
       const capitalRequiredAtoms = borrowCollateralAtoms + requiredMarginAtoms;
@@ -310,7 +313,7 @@ export function createEvmReverseBasisGeneralizedPricing(
         quoteAsset: input.quoteAsset,
         quoteAtoms: spotSnapshot.priceQuoteAtoms,
         baseAtoms: spotSnapshot.priceBaseAtoms,
-        roundingDirection: opening ? 'FLOOR' : 'CEIL',
+        roundingDirection: increasing ? 'FLOOR' : 'CEIL',
       });
       const hedgeNumerator = derivative.fillPriceWad * quoteScale;
       const hedgeDenominator = WAD * baseScale;
@@ -343,7 +346,7 @@ export function createEvmReverseBasisGeneralizedPricing(
             quoteAsset: input.quoteAsset,
             quoteAtoms: hedgeNumerator / hedgeDivisor,
             baseAtoms: hedgeDenominator / hedgeDivisor,
-            roundingDirection: opening ? 'FLOOR' : 'CEIL',
+            roundingDirection: increasing ? 'FLOOR' : 'CEIL',
           }),
           grossNotional: assetAmount(input.quoteAsset, hedgeNotionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, requiredMarginAtoms),
