@@ -193,6 +193,23 @@ export interface HyperliquidTestnetGeneralizedHedgeMigrationPricingInput {
   readonly destinationPerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
 }
 
+export interface HyperliquidTestnetGeneralizedDeltaRebalancePricingInput {
+  readonly domain: DomainRef;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly tradingAccount: `0x${string}`;
+  readonly market: HyperliquidTestnetGeneralizedMarketReadPort;
+  readonly maxBookAgeMs: number;
+  readonly maxBookSpreadBps: number;
+  readonly marginBps: number;
+  readonly routeTtlMs: bigint;
+  readonly quoteTtlMs: bigint;
+  readonly feePolicyVersion: number;
+  readonly feePolicyManifestHash: Uint8Array | string;
+  readonly nonceSource: AtomicQuoteNonceSource;
+  readonly perpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
+}
+
 export interface QuoteProviders {
   readonly candidates: InternalAtomicQuoteCandidateProvider;
   readonly terms: InternalAtomicQuoteTermsProvider;
@@ -1845,6 +1862,215 @@ export function createHyperliquidTestnetGeneralizedHedgeMigrationPricing(
         throw new GeneralizedStrategyQuoteError(
           'QUOTE_DECLINED',
           `Hyperliquid testnet hedge migration quote declined: ${reason}`,
+        );
+      }
+    },
+  };
+  return Object.freeze(pricing);
+}
+
+function validateGeneralizedDeltaRebalancePricing(
+  input: HyperliquidTestnetGeneralizedDeltaRebalancePricingInput,
+): void {
+  try {
+    domainRef(input.domain.domainId, input.domain.domainManifestVersion, input.domain.domainManifestHash);
+    assetRef(input.baseAsset.assetId, input.baseAsset.assetManifestHash, input.baseAsset.decimals);
+    assetRef(input.quoteAsset.assetId, input.quoteAsset.assetManifestHash, input.quoteAsset.decimals);
+    manifestHash(input.feePolicyManifestHash, 'feePolicyManifestHash');
+    adapterRef(input.perpetual.adapter);
+    versionedManifestRef(
+      input.perpetual.venue.subjectId,
+      input.perpetual.venue.manifestVersion,
+      input.perpetual.venue.manifestHash,
+    );
+    versionedManifestRef(
+      input.perpetual.market.subjectId,
+      input.perpetual.market.manifestVersion,
+      input.perpetual.market.manifestHash,
+    );
+    if (input.domain.domainId !== 'hypercore:testnet'
+      || sameAsset(input.baseAsset, input.quoteAsset)
+      || input.market.environment !== 'testnet'
+      || input.market.apiUrl !== HYPERLIQUID_TESTNET_MARKET_INFO_URL
+      || typeof input.market.l2Book !== 'function'
+      || typeof input.market.userFees !== 'function'
+      || !ADDRESS.test(input.tradingAccount)
+      || !Number.isSafeInteger(input.maxBookAgeMs) || input.maxBookAgeMs <= 0
+      || !Number.isSafeInteger(input.feePolicyVersion) || input.feePolicyVersion <= 0
+      || !/^[A-Za-z0-9@._:/-]{1,64}$/.test(input.perpetual.coin)
+      || !Number.isSafeInteger(input.perpetual.sizeDecimals)
+      || input.perpetual.sizeDecimals < 0 || input.perpetual.sizeDecimals > 6
+      || typeof input.nonceSource?.next !== 'function') {
+      throw new Error('missing required configuration');
+    }
+    requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
+    requireBps(input.marginBps, 'marginBps');
+    requirePositive(input.routeTtlMs, 'routeTtlMs');
+    requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  } catch (error) {
+    throw new Error(`Hyperliquid Testnet generalized delta rebalance pricing is incomplete or invalid: ${
+      error instanceof Error ? error.message : 'invalid value'}`);
+  }
+}
+
+async function generalizedDeltaRebalanceTerms(
+  documents: StoredStrategyPackageOrderDocuments,
+  currentTime: Readonly<{ unit: string; value: bigint }>,
+  input: HyperliquidTestnetGeneralizedDeltaRebalancePricingInput,
+): Promise<GeneralizedStrategyQuoteTerms> {
+  const { order, graph } = documents;
+  if (order.templateId !== STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE
+    || order.lifecycleAction !== 'REBALANCE'
+    || order.expectedStrategyStateHash === undefined
+    || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
+    || graph.legs.length !== 1
+    || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+    || order.expiryUnit !== currentTime.unit) {
+    throw new Error('committed package is not a supported Hyperliquid delta rebalance');
+  }
+  const adjustment = graph.legs[0]!;
+  const increasing = adjustment.legFamily === 'PERP_INCREASE';
+  if (adjustment.legId !== 'perp-adjustment'
+    || (!increasing && adjustment.legFamily !== 'PERP_DECREASE')
+    || adjustment.side === 'NONE'
+    || !sameDomain(adjustment.domain, input.domain)
+    || !sameAdapter(adjustment.adapter, input.perpetual.adapter)
+    || !sameVersionedRef(adjustment.venue, input.perpetual.venue)
+    || !sameVersionedRef(adjustment.market, input.perpetual.market)
+    || !sameAsset(adjustment.quantityAsset, input.baseAsset)
+    || adjustment.limitPrice === undefined
+    || !sameAsset(adjustment.limitPrice.baseAsset, input.baseAsset)
+    || !sameAsset(adjustment.limitPrice.quoteAsset, input.quoteAsset)
+    || !sameAsset(order.economicQuantity.asset, input.baseAsset)
+    || !sameAsset(order.quoteAsset, input.quoteAsset)) {
+    throw new Error('committed package does not match the configured Hyperliquid rebalance market');
+  }
+  const preDeltaLimit = order.metricLimits.find((limit) => limit.metricId === 'pre-delta-atoms');
+  if (preDeltaLimit === undefined || preDeltaLimit.comparator !== 'EQ'
+    || preDeltaLimit.scale !== 0 || preDeltaLimit.unitId !== 'base-atoms') {
+    throw new Error('rebalance order does not commit its authoritative pre-delta');
+  }
+  const adjustmentDelta = adjustment.side === 'BUY'
+    ? adjustment.quantityAtoms
+    : -adjustment.quantityAtoms;
+  const postDeltaAtoms = preDeltaLimit.value + adjustmentDelta;
+  const absolute = (value: bigint) => value < 0n ? -value : value;
+  if (preDeltaLimit.value === 0n || absolute(postDeltaAtoms) >= absolute(preDeltaLimit.value)) {
+    throw new Error('rebalance does not reduce absolute portfolio delta');
+  }
+  formatHypercoreSize(adjustment.quantityAtoms, input.baseAsset.decimals, input.perpetual.sizeDecimals);
+  const wireLimit = formatHypercorePrice(adjustment.limitPrice, 6 - input.perpetual.sizeDecimals);
+  const comparison = compareHypercoreWirePriceToExact(wireLimit, adjustment.limitPrice);
+  if ((adjustment.side === 'BUY' && comparison > 0)
+    || (adjustment.side === 'SELL' && comparison < 0)) {
+    throw new Error('signed rebalance limit is not safely representable on HyperCore');
+  }
+  const [bookValue, fees] = await Promise.all([
+    input.market.l2Book(input.perpetual.coin),
+    input.market.userFees(input.tradingAccount),
+  ]);
+  const now = requirePositive(currentTime.value, 'currentTime');
+  if (now >= order.expiryValue) throw new Error('order is expired');
+  const book = liveBook(bookValue, input.perpetual.coin, 'rebalance perpetual book', now, input);
+  const execution = sweep(
+    book,
+    adjustment.side,
+    adjustment.quantityAtoms,
+    wireLimit,
+    input.baseAsset,
+    input.quoteAsset,
+    'rebalance perpetual book',
+  );
+  const notionalAtoms = adjustment.side === 'BUY'
+    ? ceilDiv(execution.numerator, execution.denominator)
+    : execution.numerator / execution.denominator;
+  const midpointAtoms = midpointNotionalAtoms(
+    book,
+    adjustment.quantityAtoms,
+    input.baseAsset,
+    input.quoteAsset,
+  );
+  const slippageAtoms = adjustment.side === 'BUY'
+    ? notionalAtoms > midpointAtoms ? notionalAtoms - midpointAtoms : 0n
+    : midpointAtoms > notionalAtoms ? midpointAtoms - notionalAtoms : 0n;
+  const takerFee = feeRate(fees.userCrossRate, 'userCrossRate');
+  const venueFeeAtoms = ceilDiv(
+    execution.numerator * takerFee.numerator,
+    execution.denominator * takerFee.denominator,
+  );
+  const marginAtoms = increasing
+    ? ceilDiv(notionalAtoms * requireBps(input.marginBps, 'marginBps'), BPS_SCALE)
+    : 0n;
+  if (marginAtoms > order.maximumMarginIncrease.atoms) {
+    throw new Error('required rebalance margin exceeds the signed cap');
+  }
+  const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  const routeExpiryValue = [
+    order.expiryValue - 1n,
+    now + requirePositive(input.routeTtlMs, 'routeTtlMs'),
+    now + quoteTtl - 1n,
+  ].reduce((left, right) => left < right ? left : right);
+  const validUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
+  if (routeExpiryValue <= now || validUntilValue <= routeExpiryValue) {
+    throw new Error('configured quote freshness window is empty');
+  }
+  const quoteNonce = input.nonceSource.next();
+  if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
+  const rebalanceCostAtoms = slippageAtoms + venueFeeAtoms;
+  return Object.freeze({
+    quoteMode: 'EXECUTION_COMMITMENT',
+    economics: Object.freeze({
+      templateId: STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE,
+      values: Object.freeze({
+        preDeltaAtoms: preDeltaLimit.value,
+        postDeltaAtoms,
+        rebalanceCostAtoms,
+        maximumSlippageAtoms: slippageAtoms,
+        postLiquidationDistanceBps: 0n,
+      }),
+    }),
+    legEconomics: Object.freeze([Object.freeze({
+      legId: adjustment.legId,
+      quantity: assetAmount(input.baseAsset, adjustment.quantityAtoms),
+      executionPrice: reducedPrice(
+        input.baseAsset,
+        input.quoteAsset,
+        execution.numerator,
+        execution.denominator * adjustment.quantityAtoms,
+      ),
+      grossNotional: assetAmount(input.quoteAsset, notionalAtoms),
+      marginDelta: assetAmount(input.quoteAsset, marginAtoms),
+      venueFee: assetAmount(input.quoteAsset, venueFeeAtoms),
+      builderFee: assetAmount(input.quoteAsset, 0n),
+      residualValue: assetAmount(input.quoteAsset, 0n),
+    })]),
+    netPackageOutcomeAtoms: -rebalanceCostAtoms,
+    serviceCharges: Object.freeze([]),
+    passThroughCosts: Object.freeze([Object.freeze({
+      category: 'VENUE' as const,
+      amount: assetAmount(input.quoteAsset, venueFeeAtoms),
+    })]),
+    feePolicyVersion: input.feePolicyVersion,
+    feePolicyManifestHash: input.feePolicyManifestHash,
+    routeExpiryValue,
+    validUntilValue,
+    quoteNonce,
+  });
+}
+
+export function createHyperliquidTestnetGeneralizedDeltaRebalancePricing(
+  input: HyperliquidTestnetGeneralizedDeltaRebalancePricingInput,
+): GeneralizedStrategyPricingPort {
+  validateGeneralizedDeltaRebalancePricing(input);
+  const pricing: GeneralizedStrategyPricingPort = {
+    quote: async ({ documents, currentTime }) => {
+      try {
+        return await generalizedDeltaRebalanceTerms(documents, currentTime, input);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n', 1)[0]!.slice(0, 200) : 'pricing failed';
+        throw new GeneralizedStrategyQuoteError(
+          'QUOTE_DECLINED',
+          `Hyperliquid testnet delta rebalance quote declined: ${reason}`,
         );
       }
     },

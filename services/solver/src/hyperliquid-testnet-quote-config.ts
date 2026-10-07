@@ -22,6 +22,7 @@ import {
 } from './hyperliquid-testnet-market-preflight.js';
 import {
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedDeltaRebalancePricing,
   createHyperliquidTestnetGeneralizedFundingSpreadPricing,
   createHyperliquidTestnetGeneralizedHedgeMigrationPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
@@ -289,7 +290,8 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
   if (configured.templateId !== 'cash-and-carry-v1'
     && configured.templateId !== 'treasury-inventory-hedge-v1'
     && configured.templateId !== 'perpetual-funding-spread-v1'
-    && configured.templateId !== 'hedge-migration-v1') {
+    && configured.templateId !== 'hedge-migration-v1'
+    && configured.templateId !== 'delta-neutral-rebalance-v1') {
     throw new Error('generalized Hyperliquid quote lane does not support the configured template');
   }
   const laneSettings = generalizedLaneSettings(env, generalized);
@@ -314,6 +316,7 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
   const cashCarry = configured.templateId === 'cash-and-carry-v1';
   const fundingSpread = configured.templateId === 'perpetual-funding-spread-v1';
   const hedgeMigration = configured.templateId === 'hedge-migration-v1';
+  const deltaRebalance = configured.templateId === 'delta-neutral-rebalance-v1';
   const counterPerpetual = (configured as typeof configured & Readonly<{
     counterPerpetual?: typeof configured.perpetual;
   }>).counterPerpetual;
@@ -399,6 +402,24 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
             executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
             supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
           })])
+          : deltaRebalance
+            ? Object.freeze([Object.freeze({
+              domain: configured.domain,
+              adapter: configured.perpetual.adapter,
+              legFamily: 'PERP_INCREASE' as const,
+              supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+              materializationClassId: 'hypercore-perpetual-ioc-v1',
+              executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+              supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+            }), Object.freeze({
+              domain: configured.domain,
+              adapter: configured.perpetual.adapter,
+              legFamily: 'PERP_DECREASE' as const,
+              supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+              materializationClassId: 'hypercore-perpetual-ioc-v1',
+              executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+              supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+            })])
           : Object.freeze([Object.freeze({
           domain: configured.domain,
           adapter: configured.perpetual.adapter,
@@ -439,6 +460,8 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
             sourcePerpetual: configured.perpetual,
             destinationPerpetual: counterPerpetual!,
           })
+          : deltaRebalance
+            ? createHyperliquidTestnetGeneralizedDeltaRebalancePricing(commonPricing)
           : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
     currentTime: async () => Object.freeze({
       unit: 'HYPERLIQUID_UNIX_MILLISECONDS' as const,

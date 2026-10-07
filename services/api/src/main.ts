@@ -800,6 +800,7 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
     const templates = new Set(hyperliquidNativeStrategyProfiles.map((profile) => profile.templateId));
     for (const templateId of templates) {
       const hedgeMigration = templateId === "hedge-migration-v1";
+      const deltaRebalance = templateId === "delta-neutral-rebalance-v1";
       const maximumLegs = templateId === "perpetual-funding-spread-v1" || hedgeMigration ? 2 : 1;
       capabilities.push(Object.freeze({
         laneId: `hyperliquid-testnet-${templateId}`,
@@ -807,12 +808,19 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
         templateVersion: 1,
         actions: hedgeMigration
           ? Object.freeze(["MIGRATE"] as const)
+          : deltaRebalance
+            ? Object.freeze(["REBALANCE"] as const)
           : Object.freeze(["ENTRY", "INCREASE", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const),
         legs: hedgeMigration
           ? Object.freeze([
             Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
             Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
           ])
+          : deltaRebalance
+            ? Object.freeze([
+              Object.freeze({ legFamily: "PERP_INCREASE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
+              Object.freeze({ legFamily: "PERP_DECREASE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
+            ])
           : Object.freeze([
             Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),
             Object.freeze({ legFamily: "PERP_INCREASE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs }),

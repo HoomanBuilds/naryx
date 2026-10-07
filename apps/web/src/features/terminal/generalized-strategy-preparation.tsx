@@ -29,6 +29,7 @@ const NATIVE_HYPERCORE_TEMPLATES = new Set([
   "treasury-inventory-hedge-v1",
   "perpetual-funding-spread-v1",
   "hedge-migration-v1",
+  "delta-neutral-rebalance-v1",
 ]);
 const EVM_STRATEGY_TEMPLATES = new Set([
   "option-spread-v1",
@@ -1258,6 +1259,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [selectedNativeStrategyId, setSelectedNativeStrategyId] = useState("");
   const [nativeQuantity, setNativeQuantity] = useState("");
   const [nativeEconomicQuantity, setNativeEconomicQuantity] = useState("");
+  const [nativeAdjustmentKind, setNativeAdjustmentKind] = useState<"INCREASE" | "DECREASE">("INCREASE");
   const [nativeLimitPrices, setNativeLimitPrices] = useState<Record<string, string>>({});
   const [createdNativeOrder, setCreatedNativeOrder] = useState<CreatedNativeStrategyOrder | null>(null);
   const [evmOptionProfiles, setEvmOptionProfiles] = useState<readonly EvmOptionProfile[] | null>(null);
@@ -1417,6 +1419,7 @@ export function GeneralizedStrategyPreparationPanel({
     if (privateApiBaseUrl === null || sourceOrderHash !== null
       || (lifecycleAction !== "INCREASE" && lifecycleAction !== "DECREASE"
         && lifecycleAction !== "EXIT" && lifecycleAction !== "MIGRATE"
+        && lifecycleAction !== "REBALANCE"
         && lifecycleAction !== "EMERGENCY_UNWIND")
       || strategyOwner === null || !OWNER.test(strategyOwner)
       || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
@@ -1477,6 +1480,9 @@ export function GeneralizedStrategyPreparationPanel({
   const migrationSource = selectedNativeProfile?.templateId === "hedge-migration-v1"
     ? selectedNativeProfile.markets.find((market) => market.role === "source-hedge") ?? null
     : null;
+  const rebalanceMarket = selectedNativeProfile?.templateId === "delta-neutral-rebalance-v1"
+    ? selectedNativeProfile.markets.find((market) => market.role === "perp-adjustment") ?? null
+    : null;
   const matchingNativePositions = (nativePositions ?? []).filter((position) =>
     (position.status === "OPEN" || (lifecycleAction === "EMERGENCY_UNWIND" && position.status === "UNRESOLVED"))
     && position.owner === strategyOwner
@@ -1489,6 +1495,14 @@ export function GeneralizedStrategyPreparationPanel({
         && position.legs[0]?.venueId === migrationSource.venueId
         && (BigInt(position.legs[0]?.signedQuantityAtoms ?? "0") > BigInt(0)
           ? migrationSource.entrySide === "BUY" : migrationSource.entrySide === "SELL")
+      : lifecycleAction === "REBALANCE"
+        ? rebalanceMarket !== null && position.templateId === "treasury-inventory-hedge-v1"
+          && position.legs.length === 1
+          && position.legs[0]?.underlyingId === selectedNativeProfile.baseAsset.assetId
+          && position.legs[0]?.instrumentId === rebalanceMarket.marketId
+          && position.legs[0]?.venueId === rebalanceMarket.venueId
+          && (BigInt(position.legs[0]?.signedQuantityAtoms ?? "0") > BigInt(0)
+            ? rebalanceMarket.entrySide === "BUY" : rebalanceMarket.entrySide === "SELL")
       : position.templateId === templateId
         && position.seriesId === selectedNativeProfile.seriesId
         && position.executionClassId === selectedNativeProfile.executionClassId));
@@ -1497,7 +1511,8 @@ export function GeneralizedStrategyPreparationPanel({
     ?? null;
   const nativeLifecycleSupported = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
     || lifecycleAction === "DECREASE" || lifecycleAction === "EXIT"
-    || lifecycleAction === "MIGRATE" || lifecycleAction === "EMERGENCY_UNWIND";
+    || lifecycleAction === "MIGRATE" || lifecycleAction === "REBALANCE"
+    || lifecycleAction === "EMERGENCY_UNWIND";
 
   async function createEvmOptionOrder() {
     if (privateApiBaseUrl === null || selectedEvmOptionProfile === null) return;
@@ -1788,6 +1803,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (lifecycleAction !== "ENTRY" && lifecycleAction !== "INCREASE"
         && lifecycleAction !== "DECREASE" && lifecycleAction !== "EXIT"
         && lifecycleAction !== "MIGRATE"
+        && lifecycleAction !== "REBALANCE"
         && lifecycleAction !== "EMERGENCY_UNWIND") {
         throw new Error("This native strategy profile does not support the selected lifecycle action yet.");
       }
@@ -1801,6 +1817,8 @@ export function GeneralizedStrategyPreparationPanel({
         : amountToAtoms(nativeQuantity, selectedNativeProfile.baseAsset.decimals, "Package quantity");
       const economicQuantityAtoms = lifecycleAction === "MIGRATE"
         ? quantityAtoms
+        : lifecycleAction === "REBALANCE"
+          ? BigInt(selectedNativePosition!.economicQuantityAtoms)
         : fullPosition
         ? BigInt(selectedNativePosition!.economicQuantityAtoms)
         : selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
@@ -1839,6 +1857,11 @@ export function GeneralizedStrategyPreparationPanel({
           lifecycleAction,
           quantityAtoms: quantityAtoms.toString(),
           economicQuantityAtoms: economicQuantityAtoms.toString(),
+          ...(lifecycleAction === "REBALANCE" ? {
+            adjustmentKind: nativeAdjustmentKind,
+            preDeltaAtoms: (BigInt(selectedNativePosition!.economicQuantityAtoms)
+              + BigInt(selectedNativePosition!.legs[0]!.signedQuantityAtoms)).toString(),
+          } : {}),
           limitPrices,
           expiryValue: (unixTimeMs() + ttlMs).toString(),
           nonce: randomNonce(),
@@ -2144,6 +2167,7 @@ export function GeneralizedStrategyPreparationPanel({
     && ((lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
       || lifecycleAction === "EMERGENCY_UNWIND")
       || selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
+      || selectedNativeProfile.templateId === "delta-neutral-rebalance-v1"
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
     && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
@@ -2197,6 +2221,7 @@ export function GeneralizedStrategyPreparationPanel({
               setSelectedNativeStrategyId("");
               setNativeQuantity("");
               setNativeEconomicQuantity("");
+              setNativeAdjustmentKind("INCREASE");
               setCreatedNativeOrder(null);
               setOrderHash("");
               setError(null);
@@ -2239,6 +2264,24 @@ export function GeneralizedStrategyPreparationPanel({
                       {nativePositions === null ? "Loading authoritative open strategies." : nativePositionError ?? "No open strategy matches this reviewed market."}
                     </p>
                   )}
+                </>
+              ) : null}
+              {selectedNativeProfile.templateId === "delta-neutral-rebalance-v1" ? (
+                <>
+                  <label htmlFor="native-strategy-adjustment-kind">Hedge adjustment</label>
+                  <select
+                    id="native-strategy-adjustment-kind"
+                    value={nativeAdjustmentKind}
+                    onChange={(event) => {
+                      setNativeAdjustmentKind(event.target.value as "INCREASE" | "DECREASE");
+                      setCreatedNativeOrder(null);
+                      setOrderHash("");
+                      setError(null);
+                    }}
+                  >
+                    <option value="INCREASE">Increase hedge</option>
+                    <option value="DECREASE">Decrease hedge</option>
+                  </select>
                 </>
               ) : null}
               <label htmlFor="native-strategy-quantity">Package quantity</label>
@@ -2297,6 +2340,9 @@ export function GeneralizedStrategyPreparationPanel({
                       ? market.role === "source-hedge"
                         ? market.entrySide === "BUY" ? "SELL" : "BUY"
                         : market.entrySide
+                      : lifecycleAction === "REBALANCE"
+                        ? nativeAdjustmentKind === "INCREASE"
+                          ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY"
                       : lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
                         ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY")} limit price
                   </label>

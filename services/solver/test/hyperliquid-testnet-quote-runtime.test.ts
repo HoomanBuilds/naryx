@@ -44,6 +44,7 @@ import {
   SqliteInternalAtomicQuoteStore,
   composeQuoteProviders,
   createHyperliquidTestnetGeneralizedCashCarryPricing,
+  createHyperliquidTestnetGeneralizedDeltaRebalancePricing,
   createHyperliquidTestnetGeneralizedFundingSpreadPricing,
   createHyperliquidTestnetGeneralizedHedgeMigrationPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
@@ -1460,4 +1461,141 @@ test('prices a native Hyperliquid hedge migration with bounded overlap and repla
   assert.ok(terms.netPackageOutcomeAtoms < 0n);
   assert.equal(terms.routeExpiryValue, 1_100n);
   assert.equal(terms.quoteNonce, 21n);
+});
+
+test('prices a state-bound Hyperliquid delta rebalance that reduces exposure', async () => {
+  const graph = packageGraph({
+    graphVersion: 1,
+    environment: 'testnet',
+    templateId: 'delta-neutral-rebalance-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: hash('9'),
+    seriesId: 'btc-delta-rebalance',
+    seriesVersion: 1,
+    seriesManifestHash: hash('a'),
+    executionClassId: 'hypercore-delta-rebalance',
+    executionClassVersion: 1,
+    executionClassManifestHash: hash('b'),
+    lifecycleAction: 'REBALANCE',
+    owner: 'testnet-treasury',
+    strategyAccountRefs: ['testnet-treasury-account'],
+    legs: [{
+      legId: 'perp-adjustment',
+      legFamily: 'PERP_INCREASE',
+      legTypeId: 'perp-adjustment',
+      domain,
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assets: [base, quote],
+      side: 'SELL',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(600n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }],
+    dependencyEdges: [],
+    executionGroups: [{ groupId: 'rebalance-ioc', kind: 'EXACT_FILL', legIds: ['perp-adjustment'] }],
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    policyHashes: {
+      netting: hash('4'), privacy: hash('5'), solver: hash('6'), delivery: hash('7'),
+      resource: hash('8'), portfolioRiskLimits: hash('9'),
+    },
+    recoverySlots: [{
+      legId: 'perp-adjustment', action: 'COMPLETE', maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }],
+    maximumRecoveryCostQuoteAtoms: 1_000_000n,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    packageExpiryValue: 2_000n,
+    nonce: 22n,
+  });
+  const order = strategyPackageOrder({
+    version: 1,
+    environment: graph.environment,
+    templateId: graph.templateId,
+    templateVersion: graph.templateVersion,
+    packageTemplateManifestHash: graph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(graph),
+    seriesId: graph.seriesId,
+    seriesVersion: graph.seriesVersion,
+    seriesManifestHash: graph.seriesManifestHash,
+    executionClassId: graph.executionClassId,
+    executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.DELTA_DEVIATION,
+    riskClassId: STRATEGY_RISK_CLASS_ID.REBALANCE,
+    owner: graph.owner,
+    settlementAccount: 'testnet-treasury-account',
+    lifecycleAction: 'REBALANCE',
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    packageOrderType: 'MARKETABLE_LIMIT',
+    packageTimeInForce: 'IOC',
+    economicQuantity: assetAmount(base, 2_000_000n),
+    quoteAsset: quote,
+    metricLimits: [{
+      metricId: 'pre-delta-atoms', comparator: 'EQ', value: 1_000_000n,
+      scale: 0, unitId: 'base-atoms',
+    }],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 1_000_000n }],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [{ asset: quote, maxAtoms: 1_000_000n }],
+    maximumMarginIncrease: assetAmount(quote, 100_000_000n),
+    maximumResidualValue: assetAmount(quote, 0n),
+    expectedStrategyStateHash: hash('f'),
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    expiryValue: 2_000n,
+    nonce: 22n,
+  });
+  const market: HyperliquidTestnetGeneralizedMarketReadPort = {
+    environment: 'testnet',
+    apiUrl: HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+    l2Book: async () => livePerpBook,
+    userFees: async () => liveFees,
+    perpetualContext: async () => ({ funding: '0' }),
+  };
+  const terms = await createHyperliquidTestnetGeneralizedDeltaRebalancePricing({
+    domain,
+    baseAsset: base,
+    quoteAsset: quote,
+    tradingAccount,
+    market,
+    maxBookAgeMs: 500,
+    maxBookSpreadBps: 50,
+    marginBps: 1_000,
+    routeTtlMs: 100n,
+    quoteTtlMs: 200n,
+    feePolicyVersion: 1,
+    feePolicyManifestHash: hash('d'),
+    nonceSource: { next: () => 23n },
+    perpetual: {
+      adapter: perpetualAdapter, venue, market: perpetualMarket, coin: 'BTC', sizeDecimals: 5,
+    },
+  }).quote({
+    documents: {
+      orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
+      graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
+      order,
+      graph,
+      recordedAtMs: 1,
+    },
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+  assert.equal(terms.economics.templateId, 'delta-neutral-rebalance-v1');
+  assert.ok('values' in terms.economics);
+  if ('values' in terms.economics) {
+    assert.equal(terms.economics.values.preDeltaAtoms, 1_000_000n);
+    assert.equal(terms.economics.values.postDeltaAtoms, 0n);
+    assert.equal(terms.economics.values.postLiquidationDistanceBps, 0n);
+  }
+  assert.ok((terms.legEconomics[0]?.marginDelta.atoms ?? 0n) > 0n);
+  assert.ok(terms.netPackageOutcomeAtoms < 0n);
+  assert.equal(terms.routeExpiryValue, 1_100n);
+  assert.equal(terms.quoteNonce, 23n);
 });
