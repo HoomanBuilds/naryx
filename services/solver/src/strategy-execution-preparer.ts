@@ -97,6 +97,7 @@ export type PreparedStrategyDomainExecution =
       domain: DomainRef;
       routeSettlementClass: CompiledStrategyRouteExecution['settlementClass'];
       localGuarantee: 'ATOMIC_POSTCONDITION';
+      legIds: readonly string[];
       envelope: EvmMultiStrategyAccountEnvelope;
     }>
   | Readonly<{
@@ -206,6 +207,8 @@ function prepareEvmAccount(
 ): PreparedStrategyDomainExecution {
   requireCondition(execution.domainPlan.executionPlanKind === 'EVM_ATOMIC_BATCH' && payloadPlanKind(execution) === 'EVM_ATOMIC_BATCH', 'EVM strategy account requires an atomic batch plan');
   requireCondition(compiled.settlementClass === 'ATOMIC_POSTCONDITION' || compiled.settlementClass === 'CROSS_DOMAIN_PREPOSITIONED', 'EVM strategy account cannot enforce this route settlement class');
+  const plan = execution.execution.payload as EvmStrategyExecutionPlan;
+  const legIds = Object.freeze(plan.stages.flatMap((stage) => stage.calls.map((call) => call.legId)));
   const envelope = compileEvmMultiStrategyAccountEnvelope({
     compiled: execution.execution as CompiledStrategyExecution<EvmStrategyExecutionPlan>,
     account: binding.account,
@@ -235,6 +238,7 @@ function prepareEvmAccount(
     domain: execution.domainPlan.domain,
     routeSettlementClass: compiled.settlementClass,
     localGuarantee: 'ATOMIC_POSTCONDITION',
+    legIds,
     envelope,
   });
 }

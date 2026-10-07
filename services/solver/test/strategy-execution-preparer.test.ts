@@ -132,6 +132,7 @@ test('prepares an exact EVM account signature envelope from a compiled package r
   assert.equal(execution.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
   if (execution.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('unexpected prepared execution kind');
   assert.equal(execution.localGuarantee, 'ATOMIC_POSTCONDITION');
+  assert.deepEqual(execution.legIds, ['spot-leg']);
   assert.equal(execution.envelope.execution.packageId, HASH_F);
   assert.equal(execution.envelope.calls[0]?.payload, '0x12345678abcdef');
   assert.notEqual(execution.envelope.ownerDigest, execution.envelope.solverDigest);

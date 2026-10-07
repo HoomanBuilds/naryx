@@ -16,7 +16,6 @@ import {
   http,
   keccak256,
   parseAbi,
-  stringToHex,
   type Address,
   type Hex,
 } from 'viem';
@@ -51,10 +50,12 @@ export interface EvmStrategyObservationReadPort {
   accountReceipt(account: Address, receiptHash: Hex, blockNumber: bigint): Promise<unknown>;
 }
 
-export interface EvmOptionSpreadObservationLane {
+export interface EvmStrategyObservationLane {
   readonly chainId: number;
   readonly chain: EvmStrategyObservationReadPort;
 }
+
+export type EvmOptionSpreadObservationLane = EvmStrategyObservationLane;
 
 export type EvmStrategyExecutionObservation = Readonly<
   | { version: 1; status: 'PENDING' | 'PENDING_FINALITY'; transactionHash: Hex }
@@ -68,7 +69,7 @@ export type EvmStrategyExecutionObservation = Readonly<
 >;
 
 function requireCondition(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new Error(`EVM option execution observation refused: ${message}`);
+  if (!condition) throw new Error(`EVM strategy execution observation refused: ${message}`);
 }
 
 function record(value: unknown, context: string): Record<string, unknown> {
@@ -84,9 +85,29 @@ function sameHex(left: unknown, right: Hex): boolean {
   return typeof left === 'string' && left.toLowerCase() === right.toLowerCase();
 }
 
-function signedQuantity(side: 'BUY' | 'SELL' | 'NONE', atoms: bigint): bigint {
-  requireCondition(side !== 'NONE', 'an executable option leg cannot have side NONE');
-  return side === 'BUY' ? atoms : -atoms;
+function signedQuantity(
+  side: 'BUY' | 'SELL' | 'NONE',
+  legFamily: string,
+  lifecycleAction: string,
+  atoms: bigint,
+): bigint {
+  if (side === 'BUY') return atoms;
+  if (side === 'SELL') return -atoms;
+  if (legFamily === 'WITHDRAW' || legFamily === 'MARGIN_RELEASE' || legFamily === 'REPAY') return -atoms;
+  if (legFamily === 'INVENTORY_TRANSFER' || legFamily === 'COLLATERAL_TRANSFER') {
+    return lifecycleAction === 'DECREASE' || lifecycleAction === 'EXIT' || lifecycleAction === 'EMERGENCY_UNWIND'
+      ? -atoms
+      : atoms;
+  }
+  return atoms;
+}
+
+function positionIdentity(legFamily: string, legId: string): Readonly<{ positionLegId?: string; liabilityId?: string }> {
+  if (legFamily === 'BORROW' || legFamily === 'REPAY') return Object.freeze({ liabilityId: legId });
+  if (legFamily === 'MARGIN_DEPOSIT' || legFamily === 'MARGIN_RELEASE' || legFamily === 'COLLATERAL_TRANSFER') {
+    return Object.freeze({});
+  }
+  return Object.freeze({ positionLegId: legId });
 }
 
 function serviceCharge(
@@ -136,15 +157,15 @@ export function createViemEvmStrategyObservationReadPort(rpcUrl: string): EvmStr
   });
 }
 
-export class EvmOptionSpreadExecutionObservationService {
+export class EvmStrategyExecutionObservationService {
   readonly #packages: StrategyPackageProvider;
   readonly #preparations: StrategyPreparationService;
-  readonly #lanes: readonly EvmOptionSpreadObservationLane[];
+  readonly #lanes: readonly EvmStrategyObservationLane[];
 
   constructor(input: Readonly<{
     packages: StrategyPackageProvider;
     preparations: StrategyPreparationService;
-    lanes: readonly EvmOptionSpreadObservationLane[];
+    lanes: readonly EvmStrategyObservationLane[];
   }>) {
     this.#packages = input.packages;
     this.#preparations = input.preparations;
@@ -156,7 +177,6 @@ export class EvmOptionSpreadExecutionObservationService {
     const documents = await this.#packages.getByQuote(input.quoteHash);
     if (documents === undefined) return undefined;
     requireCondition(bytesEqual(strategyPackageQuoteHash(documents.quote), input.quoteHash), 'quote provider returned another package');
-    requireCondition(documents.order.templateId === 'option-spread-v1', 'package is not an option spread');
     const prepared = await this.#preparations.prepareDocuments(documents);
     requireCondition(prepared.settlementClass === 'ATOMIC_POSTCONDITION'
       && prepared.coordination === 'SINGLE_DOMAIN_ATOMIC'
@@ -164,6 +184,8 @@ export class EvmOptionSpreadExecutionObservationService {
     const domain = prepared.domains[0]!;
     requireCondition(domain.kind === 'EVM_MULTI_STRATEGY_ACCOUNT', 'prepared package is not an EVM strategy account execution');
     const envelope = domain.envelope;
+    requireCondition(domain.legIds.length === envelope.calls.length
+      && new Set(domain.legIds).size === domain.legIds.length, 'prepared leg attribution is invalid');
     const chainId = envelope.ownerTypedData.domain.chainId;
     requireCondition(TEST_CHAIN_IDS.has(chainId), 'execution chain is not an allowed test chain');
     const matches = this.#lanes.filter((lane) => lane.chainId === chainId);
@@ -202,7 +224,7 @@ export class EvmOptionSpreadExecutionObservationService {
     'strategy event differs from the prepared execution');
 
     const orderedEvidence: Hex[] = [];
-    const evidenceBySubject = new Map<Hex, Hex>();
+    const evidenceByLegId = new Map<string, Hex>();
     for (const event of legEvents) {
       const args = record(event.args, 'adapter evidence event');
       const index = args.callIndex;
@@ -217,8 +239,9 @@ export class EvmOptionSpreadExecutionObservationService {
       requireCondition(orderedEvidence[Number(index)] === undefined, 'adapter call evidence appears twice');
       const evidenceHash = args.evidenceHash as Hex;
       orderedEvidence[Number(index)] = evidenceHash;
-      requireCondition(!evidenceBySubject.has(call.adapter.subjectId), 'adapter subjects must be unique for option receipt attribution');
-      evidenceBySubject.set(call.adapter.subjectId, evidenceHash);
+      const legId = domain.legIds[Number(index)]!;
+      requireCondition(!evidenceByLegId.has(legId), 'adapter call leg appears twice');
+      evidenceByLegId.set(legId, evidenceHash);
     }
     requireCondition(orderedEvidence.length === envelope.calls.length && orderedEvidence.every(Boolean), 'adapter evidence sequence is incomplete');
     const evidenceRoot = keccak256(encodeAbiParameters([{ type: 'bytes32[]' }], [orderedEvidence]));
@@ -258,18 +281,20 @@ export class EvmOptionSpreadExecutionObservationService {
     'stored account receipt differs from the prepared execution');
 
     const legOutcomes = documents.graph.legs.map((leg) => {
-      const subject = keccak256(stringToHex(leg.adapter.adapterId));
-      const evidenceHash = evidenceBySubject.get(subject);
+      const evidenceHash = evidenceByLegId.get(leg.legId);
       requireCondition(evidenceHash !== undefined, `missing onchain evidence for ${leg.legId}`);
       const economics = documents.quote.legEconomics.find((candidate) => candidate.legId === leg.legId);
       requireCondition(economics !== undefined, `quote economics are missing for ${leg.legId}`);
       return Object.freeze({
         legId: leg.legId,
-        positionLegId: leg.legId,
+        ...positionIdentity(leg.legFamily, leg.legId),
         domain: leg.domain,
         status: 'EXECUTED' as const,
         requestedQuantity: assetAmount(leg.quantityAsset, leg.quantityAtoms),
-        settledQuantity: assetAmount(leg.quantityAsset, signedQuantity(leg.side, leg.quantityAtoms)),
+        settledQuantity: assetAmount(
+          leg.quantityAsset,
+          signedQuantity(leg.side, leg.legFamily, documents.order.lifecycleAction, leg.quantityAtoms),
+        ),
         grossNotional: economics.grossNotional,
         venueFee: economics.venueFee,
         residualValue: assetAmount(documents.order.quoteAsset, 0n),
@@ -327,3 +352,5 @@ export class EvmOptionSpreadExecutionObservationService {
     });
   }
 }
+
+export { EvmStrategyExecutionObservationService as EvmOptionSpreadExecutionObservationService };
