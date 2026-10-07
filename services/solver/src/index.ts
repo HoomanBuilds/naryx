@@ -1055,3 +1055,11 @@ export {
   type AuthorizedEvmStrategyExecution,
 } from './evm-strategy-execution-authorization.js';
 export { createEvmStrategyExecutionAuthorizationInternalHandler } from './evm-strategy-execution-authorization-server.js';
+export {
+  EvmOptionSpreadExecutionObservationService,
+  createViemEvmStrategyObservationReadPort,
+  type EvmOptionSpreadObservationLane,
+  type EvmStrategyExecutionObservation,
+  type EvmStrategyObservationReadPort,
+} from './evm-option-spread-observation.js';
+export { createEvmOptionSpreadObservationInternalHandler } from './evm-option-spread-observation-server.js';

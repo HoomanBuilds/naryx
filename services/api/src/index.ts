@@ -1,4 +1,10 @@
 export {
+  EvmStrategyExecutionObservationClientError,
+  HttpEvmStrategyExecutionObservationClient,
+  type EvmStrategyExecutionObservationPort,
+  type ObservedEvmStrategyExecution,
+} from './evm-strategy-execution-observation-client.js';
+export {
   createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,

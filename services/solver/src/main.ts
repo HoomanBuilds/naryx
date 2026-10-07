@@ -52,6 +52,8 @@ import {
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
   loadEvmStrategySolverKey,
+  EvmOptionSpreadExecutionObservationService,
+  createEvmOptionSpreadObservationInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -284,11 +286,19 @@ const evmStrategyAuthorizationHandler = evmOptionRuntime === undefined || strate
         process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
       ),
     }));
+const evmOptionObservationHandler = evmOptionRuntime === undefined || strategyPreparationService === undefined
+  ? undefined
+  : createEvmOptionSpreadObservationInternalHandler(new EvmOptionSpreadExecutionObservationService({
+      packages: strategyPackageProvider,
+      preparations: strategyPreparationService,
+      lanes: evmOptionRuntime.observationLanes,
+    }));
 const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
   evmOptionProvisioningHandler,
   evmStrategyAuthorizationHandler,
+  evmOptionObservationHandler,
 ]
   .filter((handler) => handler !== undefined);
 const strategyRouteHandler = strategyRouteHandlers.length === 0

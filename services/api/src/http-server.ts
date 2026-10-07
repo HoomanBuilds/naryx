@@ -129,6 +129,10 @@ import {
   EvmStrategyExecutionAuthorizationClientError,
   type EvmStrategyExecutionAuthorizationPort,
 } from './evm-strategy-execution-authorization-client.js';
+import {
+  EvmStrategyExecutionObservationClientError,
+  type EvmStrategyExecutionObservationPort,
+} from './evm-strategy-execution-observation-client.js';
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -145,6 +149,7 @@ interface GeneralizedStrategyExecutionPort {
   nativeStrategyExecutionAttempt(attemptId: string): SelectedNativeStrategyPackageAttempt | undefined;
   anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined;
   nativeStrategyPositionsByOwner?(owner: string): readonly StoredNativeStrategyPosition[];
+  recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
 }
 
 type NativeHyperliquidStrategyRuntime = Pick<
@@ -322,6 +327,7 @@ export function createPrivateTerminalRequestHandler(
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
+  evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -1051,6 +1057,53 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, 'EVM_STRATEGY_AUTHORIZATION_FAILED', 'EVM strategy authorization failed closed.');
+      }
+      return;
+    }
+
+    if (url.pathname === '/internal/terminal/strategy-executions/observe-evm') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (evmStrategyExecutionObservation === undefined || generalizedStrategyExecutions?.recordReceipt === undefined) {
+        reject(response, 503, 'EVM_STRATEGY_OBSERVATION_UNAVAILABLE', 'EVM strategy observation is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).sort().join(',') !== 'quoteHash,transactionHash'
+          || typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string'
+          || typeof (requestBody as { transactionHash?: unknown }).transactionHash !== 'string') {
+          throw new EvmStrategyExecutionObservationClientError('INVALID_REQUEST', 'Request must contain only quoteHash and transactionHash.');
+        }
+        const values = requestBody as { quoteHash: string; transactionHash: string };
+        const observation = await evmStrategyExecutionObservation.observe(values.quoteHash, values.transactionHash);
+        if (observation.status !== 'FINALIZED') {
+          sendJson(response, 202, { status: observation.status, transactionHash: observation.transactionHash });
+          return;
+        }
+        const stored = generalizedStrategyExecutions.recordReceipt(observation.receipt);
+        sendJson(response, 200, {
+          status: 'FINALIZED',
+          transactionHash: observation.transactionHash,
+          onchainReceiptHash: observation.onchainReceiptHash,
+          receiptHash: stored.receiptHashHex,
+          created: stored.created,
+        });
+      } catch (error) {
+        if (error instanceof EvmStrategyExecutionObservationClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === 'RECEIPT_CONFLICT' ? 409 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'EVM_STRATEGY_OBSERVATION_FAILED', 'EVM strategy observation failed closed.');
       }
       return;
     }
@@ -1909,6 +1962,7 @@ export function createPrivateTerminalServer(
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
+  evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -1940,6 +1994,7 @@ export function createPrivateTerminalServer(
     evmOptionSpreadOrders,
     evmOptionSpreadProvisioning,
     evmStrategyExecutionAuthorization,
+    evmStrategyExecutionObservation,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

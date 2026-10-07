@@ -25,6 +25,10 @@ import { createEvmOptionSpreadGeneralizedPricing } from './evm-option-spread-quo
 import type { EvmOptionSpreadPreparationLane, EvmOptionSpreadPackageIdPort } from './evm-option-spread-preparation.js';
 import type { GeneralizedStrategyQuoteLane } from './strategy-quote-context-registry.js';
 import type { EvmOptionSpreadQuoteNonceSource, EvmOptionSpreadReadPort } from './evm-option-spread-quote.js';
+import {
+  createViemEvmStrategyObservationReadPort,
+  type EvmOptionSpreadObservationLane,
+} from './evm-option-spread-observation.js';
 
 const MAX_CONFIG_BYTES = 2_097_152;
 const TEST_CHAIN_IDS = new Set([84_532n, 421_614n, 31_337n, 31_338n]);
@@ -233,7 +237,11 @@ export function loadEvmOptionSpreadRuntime(
     nonceSource: (laneId: string) => EvmOptionSpreadQuoteNonceSource;
     packageIds: EvmOptionSpreadPackageIdPort;
   }>,
-): Readonly<{ quoteLanes: readonly GeneralizedStrategyQuoteLane[]; preparationLanes: readonly EvmOptionSpreadPreparationLane[] }> {
+): Readonly<{
+  quoteLanes: readonly GeneralizedStrategyQuoteLane[];
+  preparationLanes: readonly EvmOptionSpreadPreparationLane[];
+  observationLanes: readonly EvmOptionSpreadObservationLane[];
+}> {
   const root = record(absoluteJson(path), 'root');
   if (root.version !== 1 || root.environment !== 'testnet' || typeof root.rpcUrl !== 'string'
     || !Array.isArray(root.lanes) || root.lanes.length === 0 || root.lanes.length > 8) {
@@ -241,8 +249,13 @@ export function loadEvmOptionSpreadRuntime(
   }
   const chain = createViemEvmOptionSpreadReadPort(root.rpcUrl);
   const lanes = root.lanes.map((item) => lane(item, chain, dependencies.nonceSource, dependencies.packageIds));
+  const observation = createViemEvmStrategyObservationReadPort(root.rpcUrl);
   return Object.freeze({
     quoteLanes: Object.freeze(lanes.map((item) => item.quote)),
     preparationLanes: Object.freeze(lanes.map((item) => item.preparation)),
+    observationLanes: Object.freeze(lanes.map((item) => Object.freeze({
+      chainId: Number(item.preparation.pricing.chainId),
+      chain: observation,
+    }))),
   });
 }

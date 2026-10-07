@@ -1287,10 +1287,49 @@ export function GeneralizedStrategyPreparationPanel({
       const transactionHash = await sendEvmTransaction(transaction.chainId, transaction);
       setEvmExecutionHash(transactionHash);
       const confirmed = await waitForEvmReceipt(transaction.chainId, transactionHash);
-      setEvmExecutionConfirmed(confirmed);
       if (!confirmed) throw new Error("The option package transaction reverted on the testnet.");
+      await observeEvmStrategy(transactionHash, review.quoteHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM strategy execution failed closed.");
+    } finally {
+      setEvmExecutionBusy(false);
+    }
+  }
+
+  async function observeEvmStrategy(transactionHash = evmExecutionHash ?? "", observedQuoteHash = review?.quoteHash ?? "") {
+    if (privateApiBaseUrl === null || !/^0x[0-9a-f]{64}$/.test(transactionHash) || !HASH.test(observedQuoteHash)) return;
+    const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/observe-evm`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quoteHash: observedQuoteHash, transactionHash }),
+    });
+    if (response.status === 202) {
+      setEvmExecutionConfirmed(false);
+      return;
+    }
+    if (!response.ok) throw new Error(await failureMessage(response));
+    if (publicApiBaseUrl === null) throw new Error("Execution finalized, but the public receipt API is unavailable.");
+    const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${observedQuoteHash}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+    });
+    if (!receiptResponse.ok) throw new Error("Execution finalized, but its canonical strategy receipt is unavailable.");
+    setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), observedQuoteHash));
+    setEvmExecutionConfirmed(true);
+  }
+
+  async function refreshEvmObservation() {
+    setEvmExecutionBusy(true);
+    setError(null);
+    try {
+      await observeEvmStrategy();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM strategy observation failed closed.");
     } finally {
       setEvmExecutionBusy(false);
     }
@@ -2084,14 +2123,24 @@ export function GeneralizedStrategyPreparationPanel({
               <button
                 type="button"
                 className={styles.primaryAction}
-                disabled={privateApiBaseUrl === null || evmExecutionBusy || evmExecutionConfirmed}
+                disabled={privateApiBaseUrl === null || evmExecutionBusy || evmExecutionHash !== null}
                 onClick={() => void executeEvmStrategy()}
               >
-                {evmExecutionBusy ? "Confirming atomic option package" : evmExecutionConfirmed ? "Atomic option package confirmed" : "Sign and execute atomic option package"}
+                {evmExecutionBusy ? "Confirming atomic option package" : evmExecutionConfirmed ? "Atomic option package finalized" : evmExecutionHash ? "Atomic option package submitted" : "Sign and execute atomic option package"}
               </button>
+              {evmExecutionHash !== null && !evmExecutionConfirmed ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={privateApiBaseUrl === null || evmExecutionBusy}
+                  onClick={() => void refreshEvmObservation()}
+                >
+                  {evmExecutionBusy ? "Checking finalized evidence" : "Refresh finalized receipt"}
+                </button>
+              ) : null}
               <p className={styles.fieldContext} role="status">
                 {evmExecutionHash
-                  ? `${evmExecutionConfirmed ? "Confirmed" : "Submitted"} transaction ${compact(evmExecutionHash, 12, 10)} on chain ${evmReview.chainId}.`
+                  ? `${evmExecutionConfirmed ? "Finalized with canonical receipt" : "Submitted and awaiting finality"} transaction ${compact(evmExecutionHash, 12, 10)} on chain ${evmReview.chainId}.`
                   : `The owner and solver sign the same ${review.domains[0]?.summary ?? "atomic package"}. The wallet submits one transaction.`}
               </p>
             </>

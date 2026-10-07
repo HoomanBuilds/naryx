@@ -18,19 +18,30 @@ import {
   type Hash32,
   type PackageTemplateManifestInput,
 } from '@naryx/protocol-types';
-import { hexToBytes, type Abi, type Address, type Hex } from 'viem';
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  hexToBytes,
+  keccak256,
+  parseAbi,
+  type Abi,
+  type Address,
+  type Hex,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   EvmStrategyExecutionAuthorizationService,
   EvmOptionSpreadPreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
+  EvmOptionSpreadExecutionObservationService,
   GeneralizedStrategyQuoteContextRegistry,
   GeneralizedStrategyQuoteService,
   StrategyPreparationService,
   createEvmOptionSpreadGeneralizedPricing,
   type EvmOptionSpreadPricingInput,
   type EvmOptionSpreadReadPort,
+  type EvmStrategyObservationReadPort,
   type StoredStrategyPackageDocuments,
   type StoredStrategyPackageOrderDocuments,
 } from '../src/index.js';
@@ -57,6 +68,13 @@ const LONG_FACTORY = address('a');
 const SHORT_FACTORY = address('b');
 const LONG_ADAPTER = address('c');
 const SHORT_ADAPTER = address('d');
+const TRANSACTION_HASH = evmHash('e');
+const ONCHAIN_RECEIPT_HASH = evmHash('f');
+const ACCOUNT_EVENTS = parseAbi([
+  'event StrategyExecuted(bytes32 indexed receiptHash,bytes32 indexed packageId,uint8 indexed operation,address solver,bytes32 evidenceRoot,bytes32 nextStateHash)',
+  'event AdapterLegExecuted(bytes32 indexed receiptHash,bytes32 indexed packageId,uint256 indexed callIndex,bytes32 adapterSubjectId,uint8 stage,bytes32 evidenceHash)',
+  'event StrategyFeesCollected(bytes32 indexed receiptHash,address indexed token,address indexed protocolRecipient,address solverRecipient,uint256 protocolFeeAtoms,uint256 solverFeeAtoms)',
+]);
 
 const domain = domainRef('eip155:84532', 1, hash('1'));
 const baseAsset = assetRef('base-sepolia:ntbase', hash('2'), 18);
@@ -448,6 +466,85 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
       ownerSignature: wrongOwnerSignature,
     }),
     /owner signature does not authorize/,
+  );
+
+  const evidence = [evmHash('1'), evmHash('2')] as const;
+  const evidenceRoot = keccak256(encodeAbiParameters([{ type: 'bytes32[]' }], [evidence]));
+  let storedQuoteHash = envelope.execution.quoteHash;
+  const observationChain: EvmStrategyObservationReadPort = {
+    chainId: async () => 84_532,
+    finalizedBlockNumber: async () => 77n,
+    blockTimestamp: async () => 1_050n,
+    transactionReceipt: async () => ({
+      status: 'success',
+      blockNumber: 77n,
+      logs: [{
+        address: ACCOUNT,
+        topics: encodeEventTopics({
+          abi: ACCOUNT_EVENTS,
+          eventName: 'StrategyExecuted',
+          args: { receiptHash: ONCHAIN_RECEIPT_HASH, packageId: envelope.execution.packageId, operation: envelope.execution.operation },
+        }) as unknown as readonly Hex[],
+        data: encodeAbiParameters(
+          [{ type: 'address' }, { type: 'bytes32' }, { type: 'bytes32' }],
+          [SOLVER, evidenceRoot, envelope.execution.nextStateHash],
+        ),
+      }, ...envelope.calls.map((call, index) => ({
+        address: ACCOUNT,
+        topics: encodeEventTopics({
+          abi: ACCOUNT_EVENTS,
+          eventName: 'AdapterLegExecuted',
+          args: { receiptHash: ONCHAIN_RECEIPT_HASH, packageId: envelope.execution.packageId, callIndex: BigInt(index) },
+        }) as unknown as readonly Hex[],
+        data: encodeAbiParameters(
+          [{ type: 'bytes32' }, { type: 'uint8' }, { type: 'bytes32' }],
+          [call.adapter.subjectId, call.stage, evidence[index]!],
+        ),
+      })), {
+        address: ACCOUNT,
+        topics: encodeEventTopics({
+          abi: ACCOUNT_EVENTS,
+          eventName: 'StrategyFeesCollected',
+          args: { receiptHash: ONCHAIN_RECEIPT_HASH, token: QUOTE_TOKEN, protocolRecipient: address('e') },
+        }) as unknown as readonly Hex[],
+        data: encodeAbiParameters(
+          [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }],
+          [SOLVER, envelope.execution.fees.protocolFeeAtoms, envelope.execution.fees.solverFeeAtoms],
+        ),
+      }],
+    }),
+    accountReceipt: async () => ({
+      packageId: envelope.execution.packageId,
+      orderHash: envelope.execution.orderHash,
+      graphHash: envelope.execution.graphHash,
+      quoteHash: storedQuoteHash,
+      routeHash: envelope.execution.routeHash,
+      operation: envelope.execution.operation,
+      previousStateHash: envelope.execution.previousStateHash,
+      nextStateHash: envelope.execution.nextStateHash,
+      callsHash: envelope.callsHash,
+      evidenceRoot,
+      fees: envelope.execution.fees,
+      nonce: envelope.execution.nonce,
+      solver: envelope.execution.solver,
+    }),
+  };
+  const observer = new EvmOptionSpreadExecutionObservationService({
+    packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
+    preparations: preparation,
+    lanes: [{ chainId: 84_532, chain: observationChain }],
+  });
+  const observed = await observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH });
+  assert.equal(observed?.status, 'FINALIZED');
+  if (observed?.status !== 'FINALIZED') throw new Error('missing finalized receipt');
+  assert.equal(observed.onchainReceiptHash, ONCHAIN_RECEIPT_HASH);
+  assert.deepEqual(observed.receipt.legOutcomes.map((leg) => leg.settledQuantity.atoms), [QUANTITY, -QUANTITY]);
+  assert.equal(observed.receipt.serviceFee.atoms, envelope.execution.fees.protocolFeeAtoms);
+  assert.equal(observed.receipt.solverFee.atoms, envelope.execution.fees.solverFeeAtoms);
+  storedQuoteHash = evmHash('0');
+  await assert.rejects(
+    () => observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH }),
+    /stored account receipt differs from the prepared execution/,
   );
 
   const replayChain = new ReplayedEntryChain();

@@ -129,6 +129,7 @@ import {
 } from "./evm-option-spread-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
+import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -874,6 +875,9 @@ const evmStrategyAuthorizationEnabled = explicitlyEnabled('NARYX_EVM_STRATEGY_AU
 const evmStrategyExecutionAuthorization = evmStrategyAuthorizationEnabled
   ? new HttpEvmStrategyExecutionAuthorizationClient(solverOrigin)
   : undefined;
+const evmStrategyExecutionObservation = evmStrategyAuthorizationEnabled
+  ? new HttpEvmStrategyExecutionObservationClient(solverOrigin)
+  : undefined;
 
 const server = createPrivateTerminalServer(
   config,
@@ -927,6 +931,7 @@ const server = createPrivateTerminalServer(
   evmOptionSpreadOrders,
   evmOptionSpreadProvisioning,
   evmStrategyExecutionAuthorization,
+  evmStrategyExecutionObservation,
 );
 
 const publicServer = publicMarket?.listener === undefined
