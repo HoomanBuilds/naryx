@@ -1157,6 +1157,14 @@ export {
   type EvmTreasuryHedgePricingInput,
 } from './evm-treasury-hedge-quote.js';
 export {
+  createEvmCalendarSpreadGeneralizedPricing,
+  readEvmCalendarFutureSnapshot,
+  type EvmCalendarFutureSnapshot,
+  type EvmCalendarSpreadLegBinding,
+  type EvmCalendarSpreadPricingInput,
+  type EvmCalendarSpreadRole,
+} from './evm-calendar-spread-quote.js';
+export {
   EvmTreasuryHedgePreparationContextResolver,
   type EvmTreasuryHedgeAdapterFactoryBinding,
   type EvmTreasuryHedgePreparationLane,
