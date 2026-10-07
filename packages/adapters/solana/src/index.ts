@@ -35,6 +35,7 @@ export * from './mainnet-shadow.js';
 export * from './authority-qualification.js';
 export * from './strategy-plan.js';
 export * from './multi-strategy-account.js';
+export * from './multi-strategy-materializer.js';
 export * from './inventory-materializer.js';
 export * from './venue-materializers.js';
 
