@@ -70,6 +70,8 @@ import {
   createSolanaTreasuryHedgeProvisioningInternalHandler,
   SolanaStrategyExecutionAuthorizationService,
   createSolanaStrategyExecutionAuthorizationInternalHandler,
+  SolanaStrategyExecutionObservationService,
+  createSolanaStrategyExecutionObservationInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -446,6 +448,16 @@ const solanaStrategyAuthorizationHandler = !solanaStrategyExecutionEnabled
         signer: solanaDevnetSolver.strategySigner,
       }),
     );
+const solanaStrategyObservationHandler = !solanaStrategyExecutionEnabled
+    || solanaTreasuryRuntime === undefined
+    || strategyPreparationService === undefined
+  ? undefined
+  : createSolanaStrategyExecutionObservationInternalHandler(
+      new SolanaStrategyExecutionObservationService({
+        preparations: strategyPreparationService,
+        lanes: solanaTreasuryRuntime.executionLanes,
+      }),
+    );
 const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
   ? undefined
   : createEvmReverseBasisCollateralInternalHandler(new EvmReverseBasisCollateralService(
@@ -481,6 +493,7 @@ const strategyRouteHandlers = [
   evmOptionProvisioningHandler,
   solanaTreasuryProvisioningHandler,
   solanaStrategyAuthorizationHandler,
+  solanaStrategyObservationHandler,
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,

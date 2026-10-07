@@ -101,6 +101,13 @@ function lane(expectedSolver = solver.publicKey.toBase58()): SolanaTreasuryHedge
     domain,
     solver: expectedSolver,
     computeUnitLimit: 600_000,
+    reader: {
+      getGenesisHash: async () => SOLANA_DEVNET_GENESIS_HASH,
+      getFinalizedSlot: async () => 100n,
+      getBlockTime: async () => 1_000n,
+      getAccounts: async () => [],
+      getTransactionObservation: async () => Object.freeze({ status: 'PENDING' as const }),
+    },
     materializer: new SolanaMultiStrategyTransactionMaterializer(rpc, {
       environment: 'devnet',
       domain,

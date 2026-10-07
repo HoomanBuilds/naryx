@@ -1,5 +1,7 @@
 import { SOLANA_DEVNET_GENESIS_HASH } from '@naryx/adapter-solana';
+import bs58 from 'bs58';
 import {
+  PublicKey,
   TransactionMessage,
   VersionedTransaction,
   type Keypair,
@@ -8,12 +10,27 @@ import {
 
 export type SolanaDevnetAccount = Readonly<{ owner: string; data: Uint8Array }>;
 
+export interface SolanaObservedInstruction {
+  readonly programId: string;
+  readonly accounts: readonly string[];
+  readonly data: Uint8Array;
+}
+
+export type SolanaTransactionObservation = Readonly<
+  | { status: 'PENDING' | 'FAILED' }
+  | { status: 'FINALIZED'; slot: bigint; instructions: readonly SolanaObservedInstruction[] }
+>;
+
 /** Signerless Devnet reads. Network identity always comes from getGenesisHash, never the URL. */
 export interface SolanaDevnetSolverReadPort {
   getGenesisHash(): Promise<string>;
   getFinalizedSlot(): Promise<bigint>;
   getBlockTime(slot: bigint): Promise<bigint>;
   getAccounts(addresses: readonly string[], minContextSlot: bigint): Promise<readonly (SolanaDevnetAccount | null)[]>;
+}
+
+export interface SolanaDevnetObservationReadPort extends SolanaDevnetSolverReadPort {
+  getTransactionObservation(signature: string): Promise<SolanaTransactionObservation>;
 }
 
 /** The only write path: sign with the external solver key and wait for finalization. */
@@ -25,11 +42,32 @@ function fail(message: string): never {
   throw new Error(`Solana Devnet RPC: ${message}`);
 }
 
+function record(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(`${context} is malformed`);
+  return value as Record<string, unknown>;
+}
+
+function address(value: unknown, context: string): string {
+  if (typeof value !== 'string') fail(`${context} is malformed`);
+  try {
+    const checked = new PublicKey(value);
+    if (checked.toBase58() !== value) fail(`${context} is not canonical`);
+    return value;
+  } catch {
+    return fail(`${context} is invalid`);
+  }
+}
+
+function addressList(value: unknown, context: string): readonly string[] {
+  if (!Array.isArray(value)) fail(`${context} is malformed`);
+  return Object.freeze(value.map((item, index) => address(item, `${context}[${index}]`)));
+}
+
 export async function requireSolanaDevnet(port: Pick<SolanaDevnetSolverReadPort, 'getGenesisHash'>): Promise<void> {
   if (await port.getGenesisHash() !== SOLANA_DEVNET_GENESIS_HASH) fail('genesis hash is not Solana Devnet');
 }
 
-export class HttpSolanaDevnetSolverRpc implements SolanaDevnetSolverReadPort, SolanaDevnetSolverWritePort {
+export class HttpSolanaDevnetSolverRpc implements SolanaDevnetObservationReadPort, SolanaDevnetSolverWritePort {
   readonly #url: string;
   readonly #writesEnabled: boolean;
 
@@ -92,6 +130,72 @@ export class HttpSolanaDevnetSolverRpc implements SolanaDevnetSolverReadPort, So
       }
     }
     return output;
+  }
+
+  async getTransactionObservation(signature: string): Promise<SolanaTransactionObservation> {
+    const statusResult = record(await this.#call('getSignatureStatuses', [
+      [signature], { searchTransactionHistory: true },
+    ]), 'signature status');
+    if (!Array.isArray(statusResult.value) || statusResult.value.length !== 1) fail('signature status is malformed');
+    const statusValue = statusResult.value[0];
+    if (statusValue === null) return Object.freeze({ status: 'PENDING' });
+    const status = record(statusValue, 'signature status value');
+    if (!('err' in status)) fail('signature status has no result');
+    if (status.err !== null && status.err !== undefined) return Object.freeze({ status: 'FAILED' });
+    if (status.confirmationStatus !== 'finalized') return Object.freeze({ status: 'PENDING' });
+    if (typeof status.slot !== 'number' || !Number.isSafeInteger(status.slot) || status.slot <= 0) {
+      fail('finalized signature slot is invalid');
+    }
+    const transactionValue = await this.#call('getTransaction', [signature, {
+      commitment: 'finalized',
+      encoding: 'json',
+      maxSupportedTransactionVersion: 0,
+    }]);
+    if (transactionValue === null) return Object.freeze({ status: 'PENDING' });
+    const result = record(transactionValue, 'finalized transaction');
+    if (result.slot !== status.slot) fail('transaction and signature status slots differ');
+    const meta = record(result.meta, 'transaction metadata');
+    if (!('err' in meta)) fail('transaction metadata has no result');
+    if (meta.err !== null) return Object.freeze({ status: 'FAILED' });
+    const transaction = record(result.transaction, 'transaction');
+    const message = record(transaction.message, 'transaction message');
+    const staticKeys = addressList(message.accountKeys, 'transaction account keys');
+    const loaded = meta.loadedAddresses === undefined
+      ? { writable: Object.freeze([]) as readonly string[], readonly: Object.freeze([]) as readonly string[] }
+      : record(meta.loadedAddresses, 'loaded addresses');
+    const writable = 'writable' in loaded
+      ? addressList(loaded.writable, 'loaded writable addresses')
+      : Object.freeze([]);
+    const readonly = 'readonly' in loaded
+      ? addressList(loaded.readonly, 'loaded readonly addresses')
+      : Object.freeze([]);
+    const keys = [...staticKeys, ...writable, ...readonly];
+    if (!Array.isArray(message.instructions)) fail('transaction instructions are malformed');
+    const instructions = message.instructions.map((value, instructionIndex) => {
+      const instruction = record(value, `transaction instruction ${instructionIndex}`);
+      if (!Number.isSafeInteger(instruction.programIdIndex)
+        || Number(instruction.programIdIndex) < 0
+        || Number(instruction.programIdIndex) >= keys.length
+        || !Array.isArray(instruction.accounts)
+        || instruction.accounts.some((index) => !Number.isSafeInteger(index)
+          || Number(index) < 0 || Number(index) >= keys.length)
+        || typeof instruction.data !== 'string') {
+        fail(`transaction instruction ${instructionIndex} is malformed`);
+      }
+      let data: Uint8Array;
+      try {
+        data = Uint8Array.from(bs58.decode(instruction.data));
+        if (bs58.encode(data) !== instruction.data) fail(`transaction instruction ${instructionIndex} data is not canonical`);
+      } catch {
+        return fail(`transaction instruction ${instructionIndex} data is invalid`);
+      }
+      return Object.freeze({
+        programId: keys[Number(instruction.programIdIndex)]!,
+        accounts: Object.freeze(instruction.accounts.map((index) => keys[Number(index)]!)),
+        data,
+      });
+    });
+    return Object.freeze({ status: 'FINALIZED', slot: BigInt(status.slot), instructions: Object.freeze(instructions) });
   }
 
   async sendAndFinalize(instructions: readonly TransactionInstruction[], signer: Keypair): Promise<string> {

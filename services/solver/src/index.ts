@@ -73,12 +73,20 @@ export {
 export { createSolanaTreasuryHedgeProvisioningInternalHandler } from './solana-treasury-hedge-provisioning-server.js';
 export {
   SolanaStrategyExecutionAuthorizationService,
+  solanaStrategyExecutionEnvelope,
   type AuthorizedSolanaStrategyExecution,
   type SolanaStrategyTransactionSigner,
 } from './solana-strategy-execution-authorization.js';
 export {
   createSolanaStrategyExecutionAuthorizationInternalHandler,
 } from './solana-strategy-execution-authorization-server.js';
+export {
+  SolanaStrategyExecutionObservationService,
+  type SolanaStrategyExecutionObservation,
+} from './solana-strategy-execution-observation.js';
+export {
+  createSolanaStrategyExecutionObservationInternalHandler,
+} from './solana-strategy-execution-observation-server.js';
 export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,

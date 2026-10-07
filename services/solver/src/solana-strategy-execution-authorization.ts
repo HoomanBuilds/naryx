@@ -6,6 +6,7 @@ import {
 import { bytesEqual, type DomainRef, type Hash32 } from '@naryx/protocol-types';
 import type { SolanaMultiStrategyEnvelope } from '@naryx/adapter-solana';
 import type { SolanaTreasuryHedgeExecutionLane } from './solana-treasury-hedge-config.js';
+import type { PreparedStrategyExecutionTransport } from './strategy-execution-transport.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
 
 export interface SolanaStrategyTransactionSigner {
@@ -73,8 +74,8 @@ function hex(value: Uint8Array): string {
   return Buffer.from(value).toString('hex');
 }
 
-function envelopeFromTransport(
-  prepared: Awaited<ReturnType<StrategyPreparationService['prepareByQuote']>>,
+export function solanaStrategyExecutionEnvelope(
+  prepared: PreparedStrategyExecutionTransport | undefined,
 ): Readonly<{ domain: DomainRef; envelope: SolanaMultiStrategyEnvelope }> {
   requireCondition(prepared !== undefined, 'prepared package is missing');
   requireCondition(prepared.identity.templateId === 'treasury-inventory-hedge-v1',
@@ -131,7 +132,7 @@ export class SolanaStrategyExecutionAuthorizationService {
     const prepared = await this.#preparations.prepareByQuote(quoteHash);
     if (prepared === undefined) return undefined;
     requireCondition(bytesEqual(prepared.quoteHash, quoteHash), 'preparation returned another quote');
-    const compiled = envelopeFromTransport(prepared);
+    const compiled = solanaStrategyExecutionEnvelope(prepared);
     const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
     requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');
     const lane = lanes[0]!;

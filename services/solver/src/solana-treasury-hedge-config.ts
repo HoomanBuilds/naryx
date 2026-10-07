@@ -20,7 +20,11 @@ import {
   type TypedAdapterActionSupportInput,
 } from '@naryx/protocol-types';
 import { PublicKey } from '@solana/web3.js';
-import { HttpSolanaDevnetSolverRpc, requireSolanaDevnet } from './solana-devnet-rpc.js';
+import {
+  HttpSolanaDevnetSolverRpc,
+  requireSolanaDevnet,
+  type SolanaDevnetObservationReadPort,
+} from './solana-devnet-rpc.js';
 import {
   PYTH_RECEIVER_PROGRAM_ID,
   SOLANA_DEVNET_SOL_USD_FEED_ID_HEX,
@@ -45,6 +49,7 @@ export interface SolanaTreasuryHedgeExecutionLane {
   readonly solver: string;
   readonly computeUnitLimit: number;
   readonly materializer: SolanaMultiStrategyTransactionMaterializer;
+  readonly reader: SolanaDevnetObservationReadPort;
 }
 
 function fail(message: string): never {
@@ -319,6 +324,7 @@ function lane(
             domain,
             solver: preparation.solver,
             computeUnitLimit: maximumTransactionComputeUnits,
+            reader: rpc,
             materializer: new SolanaMultiStrategyTransactionMaterializer(materializationRpc, {
               environment: 'devnet',
               domain,
