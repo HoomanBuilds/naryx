@@ -10,12 +10,14 @@ import bs58 from "bs58";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   fromProtocolJson,
+  commitmentHash,
   toProtocolJson,
   packageAllocationHash,
   packageMatchingPolicy,
   packageTakerOrderHash,
   packageSettlementCommitment,
   packageSettlementCommitmentBytes,
+  packageSettlementCommitmentHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
   toHex,
@@ -286,6 +288,16 @@ test("signed public package orders create durable settlement handoffs and replay
       scheme: "ED25519",
       signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(settlementCommitment)), keys.privateKey)),
     };
+    const authorizationChallenge = await get("/v1/package-book/orders/authorization", post({ order: signed, settlementCommitment }));
+    assert.equal(authorizationChallenge.status, 200, authorizationChallenge.text);
+    assert.deepEqual(authorizationChallenge.body, {
+      version: 1,
+      scheme: "ED25519",
+      participantId,
+      packageOrderId: orderId,
+      settlementCommitmentHash: toHex(packageSettlementCommitmentHash(settlementCommitment)),
+      messageHex: toHex(packageSettlementCommitmentBytes(settlementCommitment)),
+    });
     const first = await get("/v1/package-book/orders", post({ order: signed, settlementCommitment, authorization }));
     assert.equal(first.status, 200, first.text);
     const accepted = first.body as {
@@ -395,46 +407,40 @@ test("EVM owners authorize and cancel native package-book orders with chainless 
   const strategies = new Map<string, unknown>();
   await withMarket(async (get, store) => {
     registerAll(store);
-    const draft = order(10, {
-      orderId: "00".repeat(32),
-      participantId,
-      commonControlGroupId: participantId,
-      timeInForce: "GTD",
-      expiresAtValue: 2_000n,
-    });
-    const orderId = toHex(packageTakerOrderHash(draft));
-    const packageOrder = { ...draft, orderId };
-    const settlementCommitment = packageSettlementCommitment({
-      version: 1,
-      environment: "local",
-      executionClassId: CLASS,
-      packageOrderId: orderId,
-      strategyOrderHash: id(7_101),
-      graphHash: id(7_102),
-      participantId,
-      settlementAccount: participantId,
-      quantity: packageOrder.quantity,
-      validUntilUnit: "SOLANA_SLOT",
-      validUntilValue: 2_000n,
-    });
     strategies.set(id(7_101), {
       orderHashHex: id(7_101),
       graphHashHex: id(7_102),
       order: {
         environment: "local",
         executionClassId: CLASS,
-        graphHash: settlementCommitment.graphHash,
+        graphHash: commitmentHash(id(7_102)),
         owner: participantId,
         settlementAccount: participantId,
-        economicQuantity: { atoms: packageOrder.quantity },
-        packageOrderType: packageOrder.orderType,
-        packageTimeInForce: packageOrder.timeInForce,
+        economicQuantity: { atoms: 10n },
+        packageOrderType: "LIMIT",
+        packageTimeInForce: "GTD",
         expiryUnit: "SOLANA_SLOT",
         expiryValue: 2_000n,
       },
       graph: {},
       recordedAtMs: 1,
     });
+
+    const preparedResponse = await get("/v1/package-book/orders/prepare", post({
+      strategyOrderHash: id(7_101),
+      side: "ASK",
+      limitPriceTicks: "101",
+    }));
+    assert.equal(preparedResponse.status, 200, preparedResponse.text);
+    const prepared = preparedResponse.body as {
+      packageOrderId: string;
+      order: ReturnType<typeof order>;
+      settlementCommitment: ReturnType<typeof packageSettlementCommitment>;
+    };
+    const { order: packageOrder, settlementCommitment } = prepared;
+    const orderId = prepared.packageOrderId;
+    assert.equal(orderId, toHex(packageTakerOrderHash(packageOrder)));
+    assert.equal(packageOrder.limitPriceTicks, 101n);
 
     const challengeResponse = await get("/v1/package-book/orders/authorization", post({
       order: packageOrder,

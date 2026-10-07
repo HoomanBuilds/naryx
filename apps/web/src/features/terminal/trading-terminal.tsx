@@ -64,6 +64,7 @@ import { usePositions } from "./pages/use-positions";
 import { fetchStrategyProgram, type StrategyProgramTemplate } from "./strategy-program";
 import {
   GeneralizedStrategyPreparationPanel,
+  type PackageBookAuthorizationChallenge,
   type StrategyOrderAuthorizationChallenge,
 } from "./generalized-strategy-preparation";
 import styles from "./trading-terminal.module.css";
@@ -1091,6 +1092,7 @@ function Ticket({
   connectedEvmAccount,
   sendSolanaTransaction,
   signStrategyOrder,
+  signPackageBookOrder,
   signEvmStrategyExecution,
   sendEvmStrategyTransaction,
   waitForEvmStrategyReceipt,
@@ -1141,6 +1143,7 @@ function Ticket({
   connectedEvmAccount: string | null;
   sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
+  signPackageBookOrder?: (challenge: PackageBookAuthorizationChallenge) => Promise<string>;
   signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
   sendEvmStrategyTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
   waitForEvmStrategyReceipt?: (chainId: number, hash: string) => Promise<boolean>;
@@ -1383,6 +1386,7 @@ function Ticket({
           solanaOwner={connectedSolanaAccount}
           sendSolanaTransaction={sendSolanaTransaction}
           signStrategyOrder={signStrategyOrder}
+          signPackageBookOrder={signPackageBookOrder}
           signEvmStrategyExecution={signEvmStrategyExecution}
           sendEvmTransaction={sendEvmStrategyTransaction}
           waitForEvmReceipt={waitForEvmStrategyReceipt}
@@ -3473,6 +3477,19 @@ export function TradingTerminal({
                 }
                 return evmWallet.signChainlessTypedData(challenge.typedData);
               }}
+            signPackageBookOrder={async (challenge) => {
+              if (challenge.scheme === "EIP712_SECP256K1") {
+                if (evmWallet.account?.toLowerCase() !== challenge.participantId || challenge.typedData === null) {
+                  throw new Error("Connect the EVM wallet that owns this package order.");
+                }
+                return evmWallet.signChainlessTypedData(challenge.typedData);
+              }
+              if (wallet.selectedAccount?.address !== challenge.participantId || challenge.message === null
+                || !wallet.canSignMessage) {
+                throw new Error("Connect the Solana wallet that owns this package order.");
+              }
+              return wallet.signMessage(challenge.message);
+            }}
             signEvmStrategyExecution={evmWallet.account === null
               ? undefined
               : async (chainId, typedData) => {

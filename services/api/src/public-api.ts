@@ -1213,6 +1213,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/replay-decision",
       "/v1/routes/compare",
       "/v1/clearing/simulate",
+      "/v1/package-book/orders/prepare",
       "/v1/package-book/orders",
       "/v1/package-book/orders/authorization",
       "/v1/package-book/cancellations",
@@ -1240,20 +1241,88 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (path === "/v1/package-book/orders/prepare") {
+      const keys = Object.keys(body).sort();
+      if (keys.length !== 3 || keys[0] !== "limitPriceTicks" || keys[1] !== "side" || keys[2] !== "strategyOrderHash"
+        || typeof body.strategyOrderHash !== "string" || !HASH_HEX.test(body.strategyOrderHash)
+        || (body.side !== "BID" && body.side !== "ASK")
+        || typeof body.limitPriceTicks !== "string" || !/^-?(?:0|[1-9][0-9]{0,38})$/.test(body.limitPriceTicks)) {
+        throw new RequestError(400, "INVALID_REQUEST", "Request must contain a strategyOrderHash, BID or ASK side, and signed integer limitPriceTicks.");
+      }
+      const strategyStore = requireStrategyPackages();
+      if (strategyStore.order === undefined) {
+        throw new RequestError(503, "SETTLEMENT_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
+      }
+      const storedStrategy = strategyStore.order(body.strategyOrderHash);
+      if (storedStrategy === undefined) {
+        throw new RequestError(404, "STRATEGY_ORDER_NOT_FOUND", "No admitted strategy order has this hash.");
+      }
+      const strategy = storedStrategy.order;
+      if (strategy.environment !== "local" && strategy.environment !== "testnet") {
+        throw new RequestError(409, "UNSUPPORTED_ENVIRONMENT", "Package-book order preparation is limited to local and testnet strategy orders.");
+      }
+      const draft: PackageTakerOrderInput = {
+        orderId: "00".repeat(32),
+        executionClassId: strategy.executionClassId,
+        side: body.side,
+        orderType: strategy.packageOrderType,
+        timeInForce: strategy.packageTimeInForce,
+        limitPriceTicks: BigInt(body.limitPriceTicks),
+        quantity: strategy.economicQuantity.atoms,
+        minimumQuantity: strategy.economicQuantity.atoms,
+        participantId: strategy.owner,
+        commonControlGroupId: strategy.owner,
+        ...(strategy.packageTimeInForce === "GTD" ? { expiresAtValue: strategy.expiryValue } : {}),
+      };
+      const packageOrderId = toHex(packageTakerOrderHash(draft));
+      const order = { ...draft, orderId: packageOrderId };
+      const settlementCommitment = packageSettlementCommitment({
+        version: 1,
+        environment: strategy.environment,
+        executionClassId: strategy.executionClassId,
+        packageOrderId,
+        strategyOrderHash: body.strategyOrderHash,
+        graphHash: strategy.graphHash,
+        participantId: strategy.owner,
+        settlementAccount: strategy.settlementAccount,
+        quantity: strategy.economicQuantity.atoms,
+        validUntilUnit: strategy.expiryUnit,
+        validUntilValue: strategy.expiryValue,
+      });
+      return {
+        version: 1,
+        status: "READY_FOR_OWNER_AUTHORIZATION",
+        strategyOrderHash: body.strategyOrderHash,
+        packageOrderId,
+        order,
+        settlementCommitment,
+        settlementCommitmentHash: toHex(packageSettlementCommitmentHash(settlementCommitment)),
+      };
+    }
     if (path === "/v1/package-book/cancellations" || path === "/v1/package-book/cancellations/authorization") {
       const cancellation = packageBookCancellation(
         object(body.cancellation, "cancellation") as unknown as PackageBookCancellationInput,
       );
       if (path.endsWith("/authorization")) {
-        if (!isEvmPackageBookParticipant(cancellation.participantId)) {
-          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "An EVM package participant is required for this authorization challenge.");
+        const participantKey = senderPublicKey(cancellation.participantId);
+        if (isEvmPackageBookParticipant(cancellation.participantId)) {
+          return {
+            version: 1,
+            scheme: "EIP712_SECP256K1",
+            participantId: cancellation.participantId,
+            cancellationHash: toHex(packageBookCancellationHash(cancellation)),
+            typedData: packageCancellationAuthorizationTypedData(cancellation),
+          };
+        }
+        if (participantKey === undefined) {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "The package participant has no supported wallet authorization.");
         }
         return {
           version: 1,
-          scheme: "EIP712_SECP256K1",
+          scheme: "ED25519",
           participantId: cancellation.participantId,
           cancellationHash: toHex(packageBookCancellationHash(cancellation)),
-          typedData: packageCancellationAuthorizationTypedData(cancellation),
+          messageHex: toHex(packageBookCancellationBytes(cancellation)),
         };
       }
       const authorization = object(body.authorization, "authorization");
@@ -1343,16 +1412,26 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         );
       }
       if (path.endsWith("/authorization")) {
-        if (!evmParticipant) {
-          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "An EVM package participant is required for this authorization challenge.");
+        if (evmParticipant) {
+          return {
+            version: 1,
+            scheme: "EIP712_SECP256K1",
+            participantId: commitment.participantId,
+            packageOrderId: toHex(orderHash),
+            settlementCommitmentHash: toHex(packageSettlementCommitmentHash(commitment)),
+            typedData: packageSettlementAuthorizationTypedData(commitment),
+          };
+        }
+        if (participantKey === undefined) {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "The package participant has no supported wallet authorization.");
         }
         return {
           version: 1,
-          scheme: "EIP712_SECP256K1",
+          scheme: "ED25519",
           participantId: commitment.participantId,
           packageOrderId: toHex(orderHash),
           settlementCommitmentHash: toHex(packageSettlementCommitmentHash(commitment)),
-          typedData: packageSettlementAuthorizationTypedData(commitment),
+          messageHex: toHex(packageSettlementCommitmentBytes(commitment)),
         };
       }
       const authorization = object(body.authorization, "authorization");

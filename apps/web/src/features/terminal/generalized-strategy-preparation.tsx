@@ -18,6 +18,7 @@ const EVM_ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/i;
 const EVM_HASH = /^0x[0-9a-f]{64}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
+const SIGNED_TICKS = /^-?(?:0|[1-9][0-9]{0,38})$/;
 const SOLANA_PACKET_LIMIT = 1232;
 const STRATEGY_AUTHORIZATION_FIELDS = [
   ["orderHash", "bytes32"],
@@ -137,6 +138,42 @@ type StagedStrategyOrder = Readonly<{
   sourceOrderHash: string;
   orderHash: string;
   graphHash: string;
+}>;
+
+type PreparedPackageBookOrder = Readonly<{
+  strategyOrderHash: string;
+  packageOrderId: string;
+  settlementCommitmentHash: string;
+  participantId: string;
+  quantity: string;
+  order: Json;
+  settlementCommitment: Json;
+}>;
+
+export type PackageBookAuthorizationChallenge = Readonly<{
+  scheme: "ED25519" | "EIP712_SECP256K1";
+  participantId: string;
+  packageOrderId: string;
+  settlementCommitmentHash: string;
+  typedData: unknown | null;
+  message: Uint8Array | null;
+}>;
+
+type PackageBookSubmission = Readonly<{
+  packageOrderId: string;
+  replayed: boolean;
+}>;
+
+type PackageSettlementReadiness = Readonly<{
+  packageOrderId: string;
+  strategyOrderHash: string;
+  status: "AWAITING_MATCH" | "PARTIALLY_ALLOCATED" | "PARTIAL_AUTHORIZATION_REQUIRED" | "READY_FOR_OWNER_AUTHORIZATION" | "CANCELLED_UNFILLED";
+  committedQuantity: string;
+  allocatedQuantity: string;
+  remainingQuantity: string;
+  acceptsFurtherMatches: boolean;
+  readinessHash: string;
+  obligationCount: number;
 }>;
 
 type NativeStrategyMarketProfile = Readonly<{
@@ -474,6 +511,12 @@ function bytes32(value: unknown, context: string): string {
   const result = text(value, context);
   if (!HASH.test(result)) throw new Error(`${context} is invalid.`);
   return result;
+}
+
+function hexBytes(value: unknown, context: string): Uint8Array {
+  const encoded = text(value, context);
+  if (!/^(?:[0-9a-f]{2})+$/.test(encoded)) throw new Error(`${context} is invalid.`);
+  return Uint8Array.from(encoded.match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16));
 }
 
 function list(value: unknown, context: string): readonly unknown[] {
@@ -959,6 +1002,137 @@ function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: st
     orderHash: hash(root.orderHash, "Strategy order hash"),
     graphHash: hash(root.graphHash, "Strategy graph hash"),
   });
+}
+
+function parsePreparedPackageBookOrder(payload: unknown, requestedStrategyOrderHash: string): PreparedPackageBookOrder {
+  const rawRoot = record(payload, "Prepared package order");
+  const root = record(decode(payload as Json), "Prepared package order");
+  if (root.version !== 1 || root.status !== "READY_FOR_OWNER_AUTHORIZATION") {
+    throw new Error("Package order preparation response is invalid.");
+  }
+  const strategyOrderHash = hash(root.strategyOrderHash, "Prepared strategy order hash");
+  if (strategyOrderHash !== requestedStrategyOrderHash) throw new Error("Prepared package order binds another strategy order.");
+  const packageOrderId = hash(root.packageOrderId, "Prepared package order id");
+  const settlementCommitmentHash = hash(root.settlementCommitmentHash, "Prepared settlement commitment hash");
+  const order = record(root.order, "Prepared package order body");
+  const commitment = record(root.settlementCommitment, "Prepared settlement commitment");
+  if (hash(order.orderId, "Prepared order id") !== packageOrderId
+    || hash(commitment.packageOrderId, "Committed package order id") !== packageOrderId
+    || hash(commitment.strategyOrderHash, "Committed strategy order hash") !== strategyOrderHash) {
+    throw new Error("Prepared package order commitments are inconsistent.");
+  }
+  const participantId = text(commitment.participantId, "Package participant");
+  if (text(order.participantId, "Package order participant") !== participantId) {
+    throw new Error("Prepared package order participant is inconsistent.");
+  }
+  return Object.freeze({
+    strategyOrderHash,
+    packageOrderId,
+    settlementCommitmentHash,
+    participantId,
+    quantity: decimalInteger(commitment.quantity, "Committed package quantity"),
+    order: rawRoot.order as Json,
+    settlementCommitment: rawRoot.settlementCommitment as Json,
+  });
+}
+
+function parsePackageBookAuthorization(
+  payload: unknown,
+  prepared: PreparedPackageBookOrder,
+): PackageBookAuthorizationChallenge {
+  const root = record(decode(payload as Json), "Package book authorization");
+  if (root.version !== 1
+    || root.participantId !== prepared.participantId
+    || hash(root.packageOrderId, "Authorized package order id") !== prepared.packageOrderId
+    || hash(root.settlementCommitmentHash, "Authorized settlement commitment") !== prepared.settlementCommitmentHash) {
+    throw new Error("Package book authorization does not bind the prepared order.");
+  }
+  if (root.scheme === "EIP712_SECP256K1") {
+    return Object.freeze({
+      scheme: root.scheme,
+      participantId: prepared.participantId,
+      packageOrderId: prepared.packageOrderId,
+      settlementCommitmentHash: prepared.settlementCommitmentHash,
+      typedData: record(root.typedData, "Package book typed data"),
+      message: null,
+    });
+  }
+  if (root.scheme === "ED25519") {
+    return Object.freeze({
+      scheme: root.scheme,
+      participantId: prepared.participantId,
+      packageOrderId: prepared.packageOrderId,
+      settlementCommitmentHash: prepared.settlementCommitmentHash,
+      typedData: null,
+      message: hexBytes(root.messageHex, "Package book signing message"),
+    });
+  }
+  throw new Error("Package book authorization scheme is unsupported.");
+}
+
+function parsePackageBookSubmission(payload: unknown, prepared: PreparedPackageBookOrder): PackageBookSubmission {
+  const root = record(decode(payload as Json), "Package book submission");
+  if (root.accepted !== true) {
+    const rejection = record(root.rejection, "Package book rejection");
+    throw new Error(`Package order was rejected: ${text(rejection.code, "Package book rejection code")}.`);
+  }
+  const packageOrderId = hash(root.orderId, "Submitted package order id");
+  if (packageOrderId !== prepared.packageOrderId || typeof root.replayed !== "boolean") {
+    throw new Error("Package book submission response does not bind the prepared order.");
+  }
+  return Object.freeze({ packageOrderId, replayed: root.replayed });
+}
+
+function parsePackageSettlementReadiness(
+  payload: unknown,
+  expectedPackageOrderId: string,
+  expectedStrategyOrderHash: string,
+): PackageSettlementReadiness {
+  const root = record(decode(payload as Json), "Package settlement readiness");
+  const readiness = record(root.readiness, "Package settlement readiness state");
+  const packageOrderId = hash(readiness.packageOrderId, "Settlement package order id");
+  const strategyOrderHash = hash(readiness.strategyOrderHash, "Settlement strategy order hash");
+  if (packageOrderId !== expectedPackageOrderId || strategyOrderHash !== expectedStrategyOrderHash) {
+    throw new Error("Settlement readiness does not bind the submitted package order.");
+  }
+  const statuses = new Set([
+    "AWAITING_MATCH",
+    "PARTIALLY_ALLOCATED",
+    "PARTIAL_AUTHORIZATION_REQUIRED",
+    "READY_FOR_OWNER_AUTHORIZATION",
+    "CANCELLED_UNFILLED",
+  ]);
+  const status = text(readiness.status, "Settlement readiness status");
+  if (!statuses.has(status) || typeof readiness.acceptsFurtherMatches !== "boolean") {
+    throw new Error("Settlement readiness state is invalid.");
+  }
+  return Object.freeze({
+    packageOrderId,
+    strategyOrderHash,
+    status: status as PackageSettlementReadiness["status"],
+    committedQuantity: decimalInteger(readiness.committedQuantity, "Committed package quantity"),
+    allocatedQuantity: decimalInteger(readiness.allocatedQuantity, "Allocated package quantity"),
+    remainingQuantity: decimalInteger(readiness.remainingQuantity, "Remaining package quantity"),
+    acceptsFurtherMatches: readiness.acceptsFurtherMatches,
+    readinessHash: hash(root.readinessHashHex, "Settlement readiness hash"),
+    obligationCount: list(root.obligations, "Settlement obligations").length,
+  });
+}
+
+function parseSettlementBoundQuote(
+  payload: unknown,
+  packageOrderId: string,
+  strategyOrderHash: string,
+): PackageQuoteReview {
+  const root = record(decode(payload as Json), "Settlement-bound quote response");
+  if (root.version !== 1 || hash(root.packageOrderId, "Settlement quote package order") !== packageOrderId) {
+    throw new Error("Settlement-bound quote response does not bind the package order.");
+  }
+  const settlement = parsePackageSettlementReadiness(root.settlement, packageOrderId, strategyOrderHash);
+  if (settlement.status !== "READY_FOR_OWNER_AUTHORIZATION") {
+    throw new Error("Package settlement is no longer ready for owner authorization.");
+  }
+  return parseQuoteReview(root.strategyQuote, strategyOrderHash);
 }
 
 function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyProfile[] {
@@ -1703,6 +1877,7 @@ export function GeneralizedStrategyPreparationPanel({
   strategyOwner = null,
   solanaOwner = null,
   signStrategyOrder,
+  signPackageBookOrder,
   signEvmStrategyExecution,
   sendEvmTransaction,
   waitForEvmReceipt,
@@ -1717,6 +1892,7 @@ export function GeneralizedStrategyPreparationPanel({
   strategyOwner?: string | null;
   solanaOwner?: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
+  signPackageBookOrder?: (challenge: PackageBookAuthorizationChallenge) => Promise<string>;
   signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
   sendEvmTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
   waitForEvmReceipt?: (chainId: number, hash: string) => Promise<boolean>;
@@ -1735,11 +1911,17 @@ export function GeneralizedStrategyPreparationPanel({
         ? templateId === "treasury-inventory-hedge-v1"
           && (lifecycleAction === "ENTRY" || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
         : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
-  const [orderHash, setOrderHash] = useState("");
+  const [orderHash, setOrderHashValue] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
+  const [packageSide, setPackageSide] = useState<"BID" | "ASK">("BID");
+  const [packageLimitTicks, setPackageLimitTicks] = useState("");
+  const [preparedPackageOrder, setPreparedPackageOrder] = useState<PreparedPackageBookOrder | null>(null);
+  const [packageSubmission, setPackageSubmission] = useState<PackageBookSubmission | null>(null);
+  const [settlementReadiness, setSettlementReadiness] = useState<PackageSettlementReadiness | null>(null);
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
+  const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | null>(null);
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
   const [authorizedOrderHash, setAuthorizedOrderHash] = useState<string | null>(null);
@@ -1803,12 +1985,22 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmExecutionConfirmed, setEvmExecutionConfirmed] = useState(false);
   const [nativeCreateBusy, setNativeCreateBusy] = useState(false);
   const [stageBusy, setStageBusy] = useState(false);
-  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [packageSubmitBusy, setPackageSubmitBusy] = useState(false);
+  const [packageRefreshBusy, setPackageRefreshBusy] = useState(false);
+  const [quoteBusyMode, setQuoteBusyMode] = useState<"DIRECT" | "SETTLEMENT" | null>(null);
   const [prepareBusy, setPrepareBusy] = useState(false);
   const [selectionBusy, setSelectionBusy] = useState(false);
   const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function setOrderHash(value: string) {
+    setOrderHashValue(value);
+    setPreparedPackageOrder(null);
+    setPackageSubmission(null);
+    setSettlementReadiness(null);
+    setQuoteOrigin(null);
+  }
 
   useEffect(() => {
     if (!solanaLane || privateApiBaseUrl === null || sourceOrderHash !== null
@@ -2199,6 +2391,7 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
+      setQuoteOrigin(null);
       setReview(null);
       setSolanaProvisioning(null);
       setSolanaExecutionSignature(null);
@@ -2357,6 +2550,7 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
+      setQuoteOrigin(null);
       setReview(null);
       setEvmProvisioning(null);
       setEvmCollateral(null);
@@ -2818,25 +3012,142 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
-  async function requestQuote() {
-    if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
-    setQuoteBusy(true);
+  async function refreshPackageSettlement(packageOrderId?: string, strategyOrderHash?: string) {
+    const expectedPackageOrderId = packageOrderId ?? packageSubmission?.packageOrderId;
+    const expectedStrategyOrderHash = strategyOrderHash ?? preparedPackageOrder?.strategyOrderHash;
+    if (publicApiBaseUrl === null || expectedPackageOrderId === undefined || expectedStrategyOrderHash === undefined) return;
+    setPackageRefreshBusy(true);
     setError(null);
-    const idempotencyKey = quoteRequestKey || crypto.randomUUID();
-    if (quoteRequestKey === "") setQuoteRequestKey(idempotencyKey);
     try {
-      const response = await fetch(`${publicApiBaseUrl}/v1/strategy-quotes/request`, {
+      const response = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/${expectedPackageOrderId}/settlement-readiness`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      setSettlementReadiness(parsePackageSettlementReadiness(
+        await response.json(),
+        expectedPackageOrderId,
+        expectedStrategyOrderHash,
+      ));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Package settlement readiness is unavailable.");
+    } finally {
+      setPackageRefreshBusy(false);
+    }
+  }
+
+  async function submitNativePackageOrder() {
+    if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
+    setPackageSubmitBusy(true);
+    setError(null);
+    try {
+      if (!SIGNED_TICKS.test(packageLimitTicks)) {
+        throw new Error("Enter a signed integer package-market limit in ticks.");
+      }
+      if (signPackageBookOrder === undefined) {
+        throw new Error("Connect the wallet that owns this strategy order.");
+      }
+      const preparationResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/prepare`, {
         method: "POST",
         cache: "no-store",
         credentials: "omit",
         referrerPolicy: "no-referrer",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderHash, idempotencyKey }),
+        body: JSON.stringify({ strategyOrderHash: orderHash, side: packageSide, limitPriceTicks: packageLimitTicks }),
+      });
+      if (!preparationResponse.ok) throw new Error(await failureMessage(preparationResponse));
+      const prepared = parsePreparedPackageBookOrder(await preparationResponse.json(), orderHash);
+      const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/authorization`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: prepared.order, settlementCommitment: prepared.settlementCommitment }),
+      });
+      if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
+      const challenge = parsePackageBookAuthorization(await challengeResponse.json(), prepared);
+      const signature = await signPackageBookOrder(challenge);
+      const submissionResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          order: prepared.order,
+          settlementCommitment: prepared.settlementCommitment,
+          authorization: { scheme: challenge.scheme, signature },
+        }),
+      });
+      if (!submissionResponse.ok) throw new Error(await failureMessage(submissionResponse));
+      const submission = parsePackageBookSubmission(await submissionResponse.json(), prepared);
+      setPreparedPackageOrder(prepared);
+      setPackageSubmission(submission);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setQuoteOrigin(null);
+      setReview(null);
+      setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
+      setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
+      setExecutionProgress(null);
+      setStrategyReceipt(null);
+      const readinessResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/${submission.packageOrderId}/settlement-readiness`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      if (!readinessResponse.ok) throw new Error(await failureMessage(readinessResponse));
+      setSettlementReadiness(parsePackageSettlementReadiness(
+        await readinessResponse.json(),
+        submission.packageOrderId,
+        prepared.strategyOrderHash,
+      ));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Native package order submission failed closed.");
+    } finally {
+      setPackageSubmitBusy(false);
+    }
+  }
+
+  async function requestQuote(settlementBound = false) {
+    if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
+    setQuoteBusyMode(settlementBound ? "SETTLEMENT" : "DIRECT");
+    setError(null);
+    const idempotencyKey = quoteRequestKey || crypto.randomUUID();
+    if (quoteRequestKey === "") setQuoteRequestKey(idempotencyKey);
+    try {
+      if (settlementBound && (packageSubmission === null
+        || settlementReadiness?.status !== "READY_FOR_OWNER_AUTHORIZATION")) {
+        throw new Error("The native package order is not fully allocated for settlement.");
+      }
+      const response = await fetch(`${publicApiBaseUrl}${settlementBound
+        ? "/v1/package-book/settlement-quotes/request"
+        : "/v1/strategy-quotes/request"}`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settlementBound
+          ? { packageOrderId: packageSubmission!.packageOrderId, idempotencyKey }
+          : { orderHash, idempotencyKey }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      const parsed = parseQuoteReview(await response.json(), orderHash);
+      const payload = await response.json();
+      const parsed = settlementBound
+        ? parseSettlementBoundQuote(payload, packageSubmission!.packageOrderId, orderHash)
+        : parseQuoteReview(payload, orderHash);
       setQuoteReview(parsed);
       setQuoteHash(parsed.quoteHash);
+      setQuoteOrigin(settlementBound ? "POST_MATCH" : "DIRECT");
       setSolanaExecutionSignature(null);
       setSolanaObservation(null);
       setEvmCollateral(null);
@@ -2852,7 +3163,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
-      setQuoteBusy(false);
+      setQuoteBusyMode(null);
     }
   }
 
@@ -2861,6 +3172,9 @@ export function GeneralizedStrategyPreparationPanel({
     setPrepareBusy(true);
     setError(null);
     try {
+      if (quoteOrigin === "POST_MATCH") {
+        throw new Error("Post-match execution remains disabled until the allocation and route quote are cryptographically bound.");
+      }
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/prepare`, {
         method: "POST",
         cache: "no-store",
@@ -3109,6 +3423,7 @@ export function GeneralizedStrategyPreparationPanel({
   const solanaReview = review?.domains.length === 1 && review.domains[0]?.kind === "SOLANA_MULTI_STRATEGY_ACCOUNT"
     ? review.domains[0]
     : null;
+  const packageStatusLabel = settlementReadiness?.status.replaceAll("_", " ") ?? null;
 
   if (!laneSupportsTemplate) {
     return (
@@ -3132,10 +3447,11 @@ export function GeneralizedStrategyPreparationPanel({
           : solanaObservation?.status === "FAILED" ? "FAILED"
           : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED"
           : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED"
-          : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
+          : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE"
+            : packageStatusLabel ?? "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
-        Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
+        Submit the stored strategy to the native package market or request a direct solver quote, inspect complete-package economics, then compile the admitted route into an unsigned execution plan.
       </p>
       {sourceOrderHash !== null ? (
         <div className={styles.strategyPrepareForm}>
@@ -3944,8 +4260,87 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
-        <button type="button" className={styles.primaryAction} disabled={publicApiBaseUrl === null || quoteBusy || !HASH.test(orderHash)} onClick={() => void requestQuote()}>
-          {quoteBusy ? "Requesting package quote" : "Request signed package quote"}
+        <label htmlFor="native-package-side">Native package side</label>
+        <select
+          id="native-package-side"
+          value={packageSide}
+          onChange={(event) => {
+            setPackageSide(event.target.value as "BID" | "ASK");
+            setPreparedPackageOrder(null);
+            setPackageSubmission(null);
+            setSettlementReadiness(null);
+            setError(null);
+          }}
+        >
+          <option value="BID">Bid for the complete package</option>
+          <option value="ASK">Offer the complete package</option>
+        </select>
+        <label htmlFor="native-package-limit">Package limit in market ticks</label>
+        <input
+          id="native-package-limit"
+          value={packageLimitTicks}
+          inputMode="numeric"
+          autoComplete="off"
+          placeholder="Signed integer"
+          onChange={(event) => {
+            const value = event.target.value.trim();
+            const sign = value.startsWith("-") ? "-" : "";
+            setPackageLimitTicks(`${sign}${value.replace(/[^0-9]/g, "")}`);
+            setPreparedPackageOrder(null);
+            setPackageSubmission(null);
+            setSettlementReadiness(null);
+            setError(null);
+          }}
+        />
+        <button
+          type="button"
+          className={styles.primaryAction}
+          disabled={publicApiBaseUrl === null || packageSubmitBusy || packageRefreshBusy || !HASH.test(orderHash)
+            || !SIGNED_TICKS.test(packageLimitTicks)}
+          onClick={() => void submitNativePackageOrder()}
+        >
+          {packageSubmitBusy ? "Submitting native package order" : "Sign and submit native package order"}
+        </button>
+        <p className={styles.fieldContext}>
+          One wallet signature binds the side, full strategy quantity, package limit, settlement account, and strategy-order hash. A match is not execution.
+        </p>
+        {packageSubmission && settlementReadiness ? (
+          <div className={styles.reviewGrid}>
+            <span>Matching state</span><strong>{packageStatusLabel}</strong>
+            <span>Allocated</span><strong>{settlementReadiness.allocatedQuantity} / {settlementReadiness.committedQuantity}</strong>
+            <span>Remaining</span><strong>{settlementReadiness.remainingQuantity}</strong>
+            <span>Settlement obligations</span><strong>{settlementReadiness.obligationCount}</strong>
+            <span>Package order</span><strong title={packageSubmission.packageOrderId}>{compact(packageSubmission.packageOrderId)}</strong>
+            <span>Readiness proof</span><strong title={settlementReadiness.readinessHash}>{compact(settlementReadiness.readinessHash)}</strong>
+          </div>
+        ) : null}
+        {packageSubmission ? (
+          <button
+            type="button"
+            className={styles.secondaryAction}
+            disabled={publicApiBaseUrl === null || packageRefreshBusy || packageSubmitBusy}
+            onClick={() => void refreshPackageSettlement()}
+          >
+            {packageRefreshBusy ? "Refreshing package settlement" : "Refresh matching state"}
+          </button>
+        ) : null}
+        {settlementReadiness?.status === "READY_FOR_OWNER_AUTHORIZATION" ? (
+          <button
+            type="button"
+            className={styles.primaryAction}
+            disabled={publicApiBaseUrl === null || quoteBusyMode !== null}
+            onClick={() => void requestQuote(true)}
+          >
+            {quoteBusyMode === "SETTLEMENT" ? "Requesting post-match route quote" : "Request solver route after full match"}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className={styles.secondaryAction}
+          disabled={publicApiBaseUrl === null || quoteBusyMode !== null || !HASH.test(orderHash)}
+          onClick={() => void requestQuote(false)}
+        >
+          {quoteBusyMode === "DIRECT" ? "Requesting direct solver quote" : "Request direct solver quote"}
         </button>
       </div>
       {quoteReview ? (
@@ -4011,6 +4406,7 @@ export function GeneralizedStrategyPreparationPanel({
               value={matchingAdmissions.some((admission) => admission.quoteHash === quoteHash) ? quoteHash : ""}
               onChange={(event) => {
                 setQuoteHash(event.target.value);
+                setQuoteOrigin(null);
                 setReview(null);
                 setExecutionAttempt(null);
                 setAuthorizedOrderHash(null);
@@ -4045,6 +4441,7 @@ export function GeneralizedStrategyPreparationPanel({
           placeholder="64 lowercase hex characters"
           onChange={(event) => {
             setQuoteHash(event.target.value.trim());
+            setQuoteOrigin(null);
             setReview(null);
             setExecutionAttempt(null);
             setAuthorizedOrderHash(null);
@@ -4064,6 +4461,7 @@ export function GeneralizedStrategyPreparationPanel({
           type="button"
           className={styles.secondaryAction}
           disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)
+            || quoteOrigin === "POST_MATCH"
             || (solanaLane && selectedSolanaProfile !== null && solanaProvisioning?.ready !== true)
             || (selectedEvmProfile !== null && lifecycleAction === "ENTRY" && evmProvisioning?.ready !== true)
             || (selectedEvmDirectionalProfile?.kind === "REVERSE_BASIS" && lifecycleAction === "ENTRY"
@@ -4076,6 +4474,8 @@ export function GeneralizedStrategyPreparationPanel({
       <p className={styles.fieldContext} role="status">
         {error ?? (privateApiBaseUrl === null
           ? "Configure the private terminal API to prepare an admitted package."
+          : quoteOrigin === "POST_MATCH"
+            ? "The post-match route quote is review-only until its allocation and readiness evidence are cryptographically bound for execution."
           : review ? "Compilation passed. Nothing has been signed or submitted."
             : quoteReview ? "The signed quote is admitted and ready for unsigned execution preparation."
             : admissionError ?? (publicApiBaseUrl === null
