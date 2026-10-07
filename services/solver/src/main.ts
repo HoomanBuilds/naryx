@@ -44,15 +44,17 @@ import {
   GeneralizedStrategyQuoteService,
   SqliteGeneralizedStrategyQuoteStore,
   EvmOptionSpreadPreparationContextResolver,
+  EvmTreasuryHedgePreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
   createEvmOptionSpreadProvisioningInternalHandler,
   loadEvmOptionSpreadRuntime,
+  loadEvmTreasuryHedgeRuntime,
   SqliteEvmStrategyPackageIdStore,
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
   loadEvmStrategySolverKey,
-  EvmOptionSpreadExecutionObservationService,
+  EvmStrategyExecutionObservationService,
   createEvmOptionSpreadObservationInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
@@ -206,7 +208,10 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
 const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
 const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
-const evmStrategyPackageIds = evmOptionRuntimePath === undefined || evmOptionRuntimePath === ''
+const evmTreasuryRuntimePath = process.env.NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG;
+const evmRuntimeConfigured = (evmOptionRuntimePath !== undefined && evmOptionRuntimePath !== '')
+  || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '');
+const evmStrategyPackageIds = !evmRuntimeConfigured
   ? undefined
   : new SqliteEvmStrategyPackageIdStore(config.quoteDbPath);
 const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimePath === ''
@@ -221,13 +226,30 @@ const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimeP
       },
       packageIds: evmStrategyPackageIds!,
     });
+const evmTreasuryRuntime = evmTreasuryRuntimePath === undefined || evmTreasuryRuntimePath === ''
+  ? undefined
+  : loadEvmTreasuryHedgeRuntime(absolutePath(
+      evmTreasuryRuntimePath,
+      'NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `evm-treasury:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: evmStrategyPackageIds!,
+    });
 const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
   ? undefined
   : new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes);
 const evmOptionPreparationResolver = evmOptionRuntime === undefined
   ? undefined
   : new EvmOptionSpreadPreparationContextResolver(evmOptionRuntime.preparationLanes);
-const strategyPreparationResolver = hyperliquidPreparationResolver === undefined && evmOptionPreparationResolver === undefined
+const evmTreasuryPreparationResolver = evmTreasuryRuntime === undefined
+  ? undefined
+  : new EvmTreasuryHedgePreparationContextResolver(evmTreasuryRuntime.preparationLanes);
+const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
+    && evmOptionPreparationResolver === undefined
+    && evmTreasuryPreparationResolver === undefined
   ? undefined
   : Object.freeze({
       resolve: (documents: Parameters<HyperliquidStrategyPreparationContextResolver['resolve']>[0]) => {
@@ -236,6 +258,12 @@ const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
         if (evmOption) {
           if (evmOptionPreparationResolver === undefined) throw new Error('EVM option spread preparation is not configured');
           return evmOptionPreparationResolver.resolve(documents);
+        }
+        const evmTreasury = documents.order.templateId === 'treasury-inventory-hedge-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
+        if (evmTreasury) {
+          if (evmTreasuryPreparationResolver === undefined) throw new Error('EVM treasury hedge preparation is not configured');
+          return evmTreasuryPreparationResolver.resolve(documents);
         }
         if (hyperliquidPreparationResolver === undefined) throw new Error('Hyperliquid strategy preparation is not configured');
         return hyperliquidPreparationResolver.resolve(documents);
@@ -258,6 +286,7 @@ const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
 const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
+  ...(evmTreasuryRuntime?.quoteLanes ?? []),
 ]);
 const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
@@ -270,13 +299,17 @@ const generalizedStrategyQuoteHandler = allGeneralizedStrategyLanes.length === 0
     signer: executionSigner,
     store: generalizedQuoteStore!,
   }));
-const evmOptionProvisioningHandler = evmOptionRuntime === undefined
+const evmPreparationLanes = Object.freeze([
+  ...(evmOptionRuntime?.preparationLanes ?? []),
+  ...(evmTreasuryRuntime?.preparationLanes ?? []),
+]);
+const evmOptionProvisioningHandler = evmPreparationLanes.length === 0
   ? undefined
   : createEvmOptionSpreadProvisioningInternalHandler(new EvmOptionSpreadProvisioningService(
       strategyPackageProvider,
-      new EvmOptionSpreadProvisioningResolver(evmOptionRuntime.preparationLanes),
+      new EvmOptionSpreadProvisioningResolver(evmPreparationLanes),
     ));
-const evmStrategyAuthorizationHandler = evmOptionRuntime === undefined || strategyPreparationService === undefined
+const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPreparationService === undefined
   ? undefined
   : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
       packages: strategyPackageProvider,
@@ -286,12 +319,16 @@ const evmStrategyAuthorizationHandler = evmOptionRuntime === undefined || strate
         process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
       ),
     }));
-const evmOptionObservationHandler = evmOptionRuntime === undefined || strategyPreparationService === undefined
+const evmObservationLanes = [...new Map([
+  ...(evmOptionRuntime?.observationLanes ?? []),
+  ...(evmTreasuryRuntime?.observationLanes ?? []),
+].map((lane) => [lane.chainId, lane])).values()];
+const evmOptionObservationHandler = evmObservationLanes.length === 0 || strategyPreparationService === undefined
   ? undefined
-  : createEvmOptionSpreadObservationInternalHandler(new EvmOptionSpreadExecutionObservationService({
+  : createEvmOptionSpreadObservationInternalHandler(new EvmStrategyExecutionObservationService({
       packages: strategyPackageProvider,
       preparations: strategyPreparationService,
-      lanes: evmOptionRuntime.observationLanes,
+      lanes: evmObservationLanes,
     }));
 const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,

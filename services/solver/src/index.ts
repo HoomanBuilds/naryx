@@ -1056,6 +1056,7 @@ export {
 } from './evm-strategy-execution-authorization.js';
 export { createEvmStrategyExecutionAuthorizationInternalHandler } from './evm-strategy-execution-authorization-server.js';
 export {
+  EvmStrategyExecutionObservationService,
   EvmOptionSpreadExecutionObservationService,
   createViemEvmStrategyObservationReadPort,
   type EvmOptionSpreadObservationLane,
@@ -1063,3 +1064,19 @@ export {
   type EvmStrategyObservationReadPort,
 } from './evm-option-spread-observation.js';
 export { createEvmOptionSpreadObservationInternalHandler } from './evm-option-spread-observation-server.js';
+export {
+  createEvmTreasuryHedgeGeneralizedPricing,
+  readEvmTreasuryHedgeMarketSnapshot,
+  type EvmTreasuryHedgeLegBinding,
+  type EvmTreasuryHedgeMarketSnapshot,
+  type EvmTreasuryHedgePricingInput,
+} from './evm-treasury-hedge-quote.js';
+export {
+  EvmTreasuryHedgePreparationContextResolver,
+  type EvmTreasuryHedgeAdapterFactoryBinding,
+  type EvmTreasuryHedgePreparationLane,
+} from './evm-treasury-hedge-preparation.js';
+export {
+  createEvmTreasuryHedgePreparationResolver,
+  loadEvmTreasuryHedgeRuntime,
+} from './evm-treasury-hedge-config.js';

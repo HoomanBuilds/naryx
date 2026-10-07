@@ -24,6 +24,7 @@ import type {
 import type {
   EvmOptionSpreadPreparationLane,
 } from './evm-option-spread-preparation.js';
+import type { EvmTreasuryHedgePreparationLane } from './evm-treasury-hedge-preparation.js';
 
 const ACCOUNT_FACTORY_ABI = [{
   type: 'function', name: 'accountOf', stateMutability: 'view',
@@ -71,22 +72,34 @@ function sameAdapter(left: AdapterRef, right: AdapterRef): boolean {
     && bytesEqual(left.adapterManifestHash, right.adapterManifestHash);
 }
 
-function matchesLane(documents: StoredStrategyPackageOrderDocuments, lane: EvmOptionSpreadPreparationLane): boolean {
+type EvmStrategyProvisioningLane = EvmOptionSpreadPreparationLane | EvmTreasuryHedgePreparationLane;
+
+function legBindings(lane: EvmStrategyProvisioningLane): readonly Readonly<{ role: string; adapter: AdapterRef }>[] {
+  return 'pools' in lane.pricing
+    ? lane.pricing.pools.map((pool) => Object.freeze({ role: pool.role, adapter: pool.adapter }))
+    : Object.freeze([
+        Object.freeze({ role: 'inventory-position', adapter: lane.pricing.inventory.adapter }),
+        Object.freeze({ role: 'treasury-hedge', adapter: lane.pricing.hedge.adapter }),
+      ]);
+}
+
+function matchesLane(documents: StoredStrategyPackageOrderDocuments, lane: EvmStrategyProvisioningLane): boolean {
+  const bindings = legBindings(lane);
   if (documents.order.environment !== lane.environment
     || documents.order.templateId !== lane.templateManifest.templateId
     || documents.order.templateVersion !== lane.templateManifest.templateVersion
     || documents.order.lifecycleAction !== 'ENTRY'
-    || documents.graph.legs.length !== 2) return false;
-  return lane.pricing.pools.every((pool) => {
-    const leg = documents.graph.legs.find((candidate) => candidate.legId === pool.role);
-    return leg !== undefined && sameDomain(leg.domain, lane.pricing.domain) && sameAdapter(leg.adapter, pool.adapter);
+    || documents.graph.legs.length !== bindings.length) return false;
+  return bindings.every((binding) => {
+    const leg = documents.graph.legs.find((candidate) => candidate.legId === binding.role);
+    return leg !== undefined && sameDomain(leg.domain, lane.pricing.domain) && sameAdapter(leg.adapter, binding.adapter);
   });
 }
 
 export class EvmOptionSpreadProvisioningResolver {
-  readonly #lanes: readonly EvmOptionSpreadPreparationLane[];
+  readonly #lanes: readonly EvmStrategyProvisioningLane[];
 
-  constructor(lanes: readonly EvmOptionSpreadPreparationLane[]) {
+  constructor(lanes: readonly EvmStrategyProvisioningLane[]) {
     requireCondition(lanes.length > 0, 'at least one lane is required');
     this.#lanes = Object.freeze([...lanes]);
   }
