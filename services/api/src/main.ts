@@ -135,6 +135,10 @@ import {
   createEvmCollateralConversionOrderPort,
   loadEvmCollateralConversionProfiles,
 } from "./evm-collateral-conversion-order.js";
+import {
+  createEvmReverseBasisOrderPort,
+  loadEvmReverseBasisProfiles,
+} from "./evm-reverse-basis-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
@@ -862,6 +866,23 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
       domains: Object.freeze([...new Set(evmCollateralConversionOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
     }));
   }
+  if (evmAtomicExecutionReady && evmReverseBasisOrders !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "evm-atomic-reverse-cash-and-carry",
+      templateId: "reverse-cash-and-carry-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "BORROW" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "REPAY" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "SPOT_SWAP" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(evmReverseBasisOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
   return Object.freeze(capabilities);
 }
 
@@ -959,6 +980,24 @@ if (evmCollateralConversionProfilePath !== undefined && evmCollateralConversionP
     reportRuntimeFailure("evmCollateralConversionOrders", error);
   }
 }
+let evmReverseBasisOrders: ReturnType<typeof createEvmReverseBasisOrderPort> | undefined;
+const evmReverseBasisProfilePath = process.env.NARYX_EVM_REVERSE_BASIS_ORDER_PROFILES;
+if (evmReverseBasisProfilePath !== undefined && evmReverseBasisProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("EVM reverse basis order creation requires the public strategy market.");
+    }
+    evmReverseBasisOrders = createEvmReverseBasisOrderPort({
+      profiles: loadEvmReverseBasisProfiles(absolutePath(
+        evmReverseBasisProfilePath,
+        "NARYX_EVM_REVERSE_BASIS_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    reportRuntimeFailure("evmReverseBasisOrders", error);
+  }
+}
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
   : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
@@ -1026,6 +1065,7 @@ const server = createPrivateTerminalServer(
   evmOptionSpreadOrders,
   evmTreasuryHedgeOrders,
   evmCollateralConversionOrders,
+  evmReverseBasisOrders,
   evmOptionSpreadProvisioning,
   evmStrategyExecutionAuthorization,
   evmStrategyExecutionObservation,
