@@ -88,6 +88,7 @@
     { "name": "shard-fill-shared-payload", "domain": "CON/v1/shard-fill", "payloadHex": "deadbeef", "digestHex": "4615533cbca74b288c2e6fcba2f003a5b6171feba804d6cae245470642670627" },
     { "name": "strategy-command-shared-payload", "domain": "CON/v1/strategy-command", "payloadHex": "deadbeef", "digestHex": "0a47f7561e69cdb3a0287afb1b300cde78e761b9bcf5ef93d4d077b3feb0cba1" },
     { "name": "cross-domain-plan-shared-payload", "domain": "CON/v1/cross-domain-plan", "payloadHex": "deadbeef", "digestHex": "6521c0b5bc3a0da4a65e7a953a31f323abe6764708e512c21fea7894f6c9ba43" },
+    { "name": "cross-domain-compensation-shared-payload", "domain": "CON/v1/cross-domain-compensation", "payloadHex": "deadbeef", "digestHex": "3aedef9c30a8391996a2376abc9c8daece1bba67c32a6c0dd69b6a8bc4b4de61" },
     { "name": "manual-recovery-incident-shared-payload", "domain": "CON/v1/manual-recovery-incident", "payloadHex": "deadbeef", "digestHex": "aa8780125276274ebd5f201e2f6a06045bb9687cc8e6d638387780b4c8000965" },
     { "name": "mainnet-funds-manifest-shared-payload", "domain": "CON/v1/mainnet-funds-manifest", "payloadHex": "deadbeef", "digestHex": "f6fb916af3ce8dfd3ea68612c8b60b47f889b256e321f2d1b2ba51dc54cffcd2" },
     { "name": "builder-manifest-shared-payload", "domain": "CON/v1/builder-manifest", "payloadHex": "deadbeef", "digestHex": "36aa561ced627568042a119ae642bf038f804b028c9fbf69135460b26e8589fa" },

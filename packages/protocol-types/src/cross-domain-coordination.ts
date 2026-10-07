@@ -6,9 +6,16 @@ import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
 import { domainRef, encodeDomainRef, encodeProtocolId, protocolId, type DomainRef, type ProtocolId } from './primitives.js';
-import { toHex } from './bytes.js';
+import { bytesEqual, toHex } from './bytes.js';
 
 export const CROSS_DOMAIN_PLAN_VERSION = 1;
+export const CROSS_DOMAIN_COMPENSATION_ACTION_VERSION = 1;
+export const CROSS_DOMAIN_COMPENSATION_KIND = Object.freeze({
+  RELEASE_RESERVED_INVENTORY: 1,
+  CANCEL_PENDING_EXECUTION: 2,
+  REVERSE_FILLED_LEGS: 3,
+} as const);
+export type CrossDomainCompensationKind = keyof typeof CROSS_DOMAIN_COMPENSATION_KIND;
 const MAX_DOMAINS = 8;
 const U64 = 64;
 const U128 = 128;
@@ -23,7 +30,7 @@ export interface CrossDomainLegInput {
   readonly inventoryReservationId: Uint8Array | string;
   /** Exposure while this domain is prepared and the package is not yet committed everywhere. */
   readonly interimExposureQuoteAtoms: bigint;
-  /** The pre-signed action that releases this domain's prepare if the package aborts. */
+  /** The pre-committed action that releases or reverses this domain if the package aborts. */
   readonly compensationActionHash: Uint8Array | string;
 }
 
@@ -66,6 +73,54 @@ export interface CrossDomainPlan {
     readonly interimExposureQuoteAtoms: bigint;
     readonly compensationActionHash: CommitmentHash;
   }[];
+}
+
+export interface CrossDomainCompensationActionInput {
+  readonly actionVersion: number;
+  readonly environment: string;
+  readonly orderHash: Uint8Array | string;
+  readonly quoteHash: Uint8Array | string;
+  readonly routeHash: Uint8Array | string;
+  readonly domain: DomainRef;
+  readonly legIds: readonly string[];
+  readonly inventoryReservationId: Uint8Array | string;
+  readonly actionKind: CrossDomainCompensationKind;
+  readonly executorClassId: string;
+  readonly executorClassVersion: number;
+  readonly executorClassManifestHash: Uint8Array | string;
+  readonly actionPayloadHash: Uint8Array | string;
+  readonly maximumCostQuoteAtoms: bigint;
+  readonly expiryUnit: ExpiryUnit;
+  readonly expiryValue: bigint;
+}
+
+export interface CrossDomainCompensationAction {
+  readonly actionVersion: 1;
+  readonly environment: ProtocolId;
+  readonly orderHash: CommitmentHash;
+  readonly quoteHash: CommitmentHash;
+  readonly routeHash: CommitmentHash;
+  readonly domain: DomainRef;
+  readonly legIds: readonly ProtocolId[];
+  readonly inventoryReservationId: CommitmentHash;
+  readonly actionKind: CrossDomainCompensationKind;
+  readonly executorClassId: ProtocolId;
+  readonly executorClassVersion: number;
+  readonly executorClassManifestHash: CommitmentHash;
+  readonly actionPayloadHash: CommitmentHash;
+  readonly maximumCostQuoteAtoms: bigint;
+  readonly expiryUnit: ExpiryUnit;
+  readonly expiryValue: bigint;
+}
+
+export interface CrossDomainExecutionBundleInput {
+  readonly plan: CrossDomainPlanInput;
+  readonly compensations: readonly CrossDomainCompensationActionInput[];
+}
+
+export interface CrossDomainExecutionBundle {
+  readonly plan: CrossDomainPlan;
+  readonly compensations: readonly CrossDomainCompensationAction[];
 }
 
 function u(value: bigint, bits: number, context: string): bigint {
@@ -146,6 +201,112 @@ export function crossDomainPlanHash(input: CrossDomainPlanInput): CommitmentHash
     }, 'legs');
   });
   return commitmentHash(domainHash(HASH_DOMAIN.CROSS_DOMAIN_PLAN, bytes), 'crossDomainPlanHash');
+}
+
+export function crossDomainCompensationAction(
+  input: CrossDomainCompensationActionInput,
+  context = 'crossDomainCompensationAction',
+): CrossDomainCompensationAction {
+  if (typeof input !== 'object' || input === null) throw new MalformedInputError(context, 'expected an object');
+  if (input.actionVersion !== CROSS_DOMAIN_COMPENSATION_ACTION_VERSION) {
+    throw new MalformedInputError(`${context}.actionVersion`, `version must equal ${CROSS_DOMAIN_COMPENSATION_ACTION_VERSION}`);
+  }
+  if (!Array.isArray(input.legIds) || input.legIds.length === 0 || input.legIds.length > 16) {
+    throw new MalformedInputError(`${context}.legIds`, 'expected 1 to 16 legs');
+  }
+  const legIds = input.legIds.map((value) => protocolId(value, `${context}.legIds`)).sort();
+  for (let index = 1; index < legIds.length; index += 1) {
+    if (legIds[index - 1] === legIds[index]) throw new DuplicateElementError(`${context}.legIds`, 'legs repeat');
+  }
+  enumDiscriminant(CROSS_DOMAIN_COMPENSATION_KIND, input.actionKind, `${context}.actionKind`);
+  enumDiscriminant(EXPIRY_UNIT, input.expiryUnit, `${context}.expiryUnit`);
+  const executorClassVersion = Number(input.executorClassVersion);
+  if (!Number.isSafeInteger(executorClassVersion) || executorClassVersion <= 0 || executorClassVersion > 0xffff_ffff) {
+    throw new MalformedInputError(`${context}.executorClassVersion`, 'expected a positive u32');
+  }
+  return Object.freeze({
+    actionVersion: 1 as const,
+    environment: protocolId(input.environment, `${context}.environment`),
+    orderHash: commitmentHash(input.orderHash, `${context}.orderHash`),
+    quoteHash: commitmentHash(input.quoteHash, `${context}.quoteHash`),
+    routeHash: commitmentHash(input.routeHash, `${context}.routeHash`),
+    domain: domainRef(input.domain.domainId, input.domain.domainManifestVersion, input.domain.domainManifestHash, `${context}.domain`),
+    legIds: Object.freeze(legIds),
+    inventoryReservationId: commitmentHash(input.inventoryReservationId, `${context}.inventoryReservationId`),
+    actionKind: input.actionKind,
+    executorClassId: protocolId(input.executorClassId, `${context}.executorClassId`),
+    executorClassVersion,
+    executorClassManifestHash: commitmentHash(input.executorClassManifestHash, `${context}.executorClassManifestHash`),
+    actionPayloadHash: commitmentHash(input.actionPayloadHash, `${context}.actionPayloadHash`),
+    maximumCostQuoteAtoms: u(input.maximumCostQuoteAtoms, U128, `${context}.maximumCostQuoteAtoms`),
+    expiryUnit: input.expiryUnit,
+    expiryValue: u(input.expiryValue, U64, `${context}.expiryValue`),
+  });
+}
+
+export function crossDomainCompensationActionHash(input: CrossDomainCompensationActionInput): CommitmentHash {
+  const action = crossDomainCompensationAction(input);
+  const bytes = canonicalBytes((writer) => {
+    writer.writeU32(action.actionVersion, 'actionVersion');
+    encodeProtocolId(writer, action.environment, 'environment');
+    encodeCommitmentHash(writer, action.orderHash, 'orderHash');
+    encodeCommitmentHash(writer, action.quoteHash, 'quoteHash');
+    encodeCommitmentHash(writer, action.routeHash, 'routeHash');
+    encodeDomainRef(writer, action.domain);
+    writer.writeArray(action.legIds, (inner, legId) => encodeProtocolId(inner, legId, 'legId'), 'legIds');
+    encodeCommitmentHash(writer, action.inventoryReservationId, 'inventoryReservationId');
+    writer.writeEnum(CROSS_DOMAIN_COMPENSATION_KIND, action.actionKind, 'actionKind');
+    encodeProtocolId(writer, action.executorClassId, 'executorClassId');
+    writer.writeU32(action.executorClassVersion, 'executorClassVersion');
+    encodeCommitmentHash(writer, action.executorClassManifestHash, 'executorClassManifestHash');
+    encodeCommitmentHash(writer, action.actionPayloadHash, 'actionPayloadHash');
+    writer.writeU128(action.maximumCostQuoteAtoms, 'maximumCostQuoteAtoms');
+    writer.writeEnum(EXPIRY_UNIT, action.expiryUnit, 'expiryUnit');
+    writer.writeU64(action.expiryValue, 'expiryValue');
+  });
+  return commitmentHash(domainHash(HASH_DOMAIN.CROSS_DOMAIN_COMPENSATION, bytes), 'crossDomainCompensationActionHash');
+}
+
+function sameDomain(left: DomainRef, right: DomainRef): boolean {
+  return left.domainId === right.domainId
+    && left.domainManifestVersion === right.domainManifestVersion
+    && bytesEqual(left.domainManifestHash, right.domainManifestHash);
+}
+
+export function crossDomainExecutionBundle(
+  input: CrossDomainExecutionBundleInput,
+  context = 'crossDomainExecutionBundle',
+): CrossDomainExecutionBundle {
+  if (typeof input !== 'object' || input === null || !Array.isArray(input.compensations)) {
+    throw new MalformedInputError(context, 'expected a plan and compensation actions');
+  }
+  const plan = crossDomainPlan(input.plan, `${context}.plan`);
+  if (input.compensations.length !== plan.legs.length) {
+    throw new MalformedInputError(`${context}.compensations`, 'every domain requires one compensation action');
+  }
+  const compensations = input.compensations
+    .map((value, index) => crossDomainCompensationAction(value, `${context}.compensations[${index}]`))
+    .sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  for (const leg of plan.legs) {
+    const matches = compensations.filter((action) => sameDomain(action.domain, leg.domain));
+    if (matches.length !== 1) throw new MalformedInputError(`${context}.compensations`, `domain ${leg.domain.domainId} must have exactly one action`);
+    const action = matches[0]!;
+    if (action.environment !== plan.environment || !bytesEqual(action.orderHash, plan.orderHash)
+      || !bytesEqual(action.quoteHash, plan.quoteHash) || !bytesEqual(action.routeHash, plan.routeHash)) {
+      throw new MalformedInputError(`${context}.compensations`, `action for ${leg.domain.domainId} binds another package`);
+    }
+    if (action.legIds.length !== leg.legIds.length || action.legIds.some((legId, index) => legId !== leg.legIds[index])
+      || !bytesEqual(action.inventoryReservationId, leg.inventoryReservationId)) {
+      throw new MalformedInputError(`${context}.compensations`, `action for ${leg.domain.domainId} binds another reservation or leg set`);
+    }
+    if (action.expiryUnit !== plan.timeUnit || action.expiryValue !== plan.compensationDeadline) {
+      throw new MalformedInputError(`${context}.compensations`, `action for ${leg.domain.domainId} has another compensation window`);
+    }
+    if (!bytesEqual(crossDomainCompensationActionHash(action), leg.compensationActionHash)) {
+      throw new MalformedInputError(`${context}.compensations`, `action for ${leg.domain.domainId} does not match its plan commitment`);
+    }
+  }
+  return Object.freeze({ plan, compensations: Object.freeze(compensations) });
 }
 
 export type CrossDomainEvent =

@@ -145,6 +145,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/shard-fill',
         'CON/v1/strategy-command',
         'CON/v1/cross-domain-plan',
+        'CON/v1/cross-domain-compensation',
         'CON/v1/manual-recovery-incident',
         'CON/v1/mainnet-funds-manifest',
         'CON/v1/builder-manifest',

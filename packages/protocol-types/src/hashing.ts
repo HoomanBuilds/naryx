@@ -91,6 +91,7 @@ export const HASH_DOMAIN = Object.freeze({
   SHARD_FILL: 'CON/v1/shard-fill',
   STRATEGY_COMMAND: 'CON/v1/strategy-command',
   CROSS_DOMAIN_PLAN: 'CON/v1/cross-domain-plan',
+  CROSS_DOMAIN_COMPENSATION: 'CON/v1/cross-domain-compensation',
   MANUAL_RECOVERY_INCIDENT: 'CON/v1/manual-recovery-incident',
   MAINNET_FUNDS_MANIFEST: 'CON/v1/mainnet-funds-manifest',
   BUILDER_MANIFEST: 'CON/v1/builder-manifest',

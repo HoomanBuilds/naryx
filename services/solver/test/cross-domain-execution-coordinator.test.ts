@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  crossDomainCompensationActionHash,
   crossDomainPlanHash,
   domainRef,
   hash32,
   replayCrossDomainCoordination,
   toHex,
   type CrossDomainEvent,
+  type CrossDomainCompensationActionInput,
+  type CrossDomainExecutionBundleInput,
   type CrossDomainPlanInput,
   type DomainRef,
 } from '@naryx/protocol-types';
@@ -24,23 +27,58 @@ import {
 const hash = (byte: string): string => byte.repeat(64);
 const base = domainRef('eip155:84532', 1, hash('1'));
 const arbitrum = domainRef('eip155:421614', 1, hash('2'));
+const orderHash = hash('3');
+const quoteHash = hash('b');
+const routeHash = hash('c');
+
+function compensation(
+  domain: DomainRef,
+  legIds: readonly string[],
+  inventoryReservationId: string,
+  payloadByte: string,
+): CrossDomainCompensationActionInput {
+  return Object.freeze({
+    actionVersion: 1,
+    environment: 'testnet',
+    orderHash,
+    quoteHash,
+    routeHash,
+    domain,
+    legIds,
+    inventoryReservationId,
+    actionKind: 'RELEASE_RESERVED_INVENTORY' as const,
+    executorClassId: 'evm-reservation-executor',
+    executorClassVersion: 1,
+    executorClassManifestHash: hash('d'),
+    actionPayloadHash: payloadByte.repeat(64),
+    maximumCostQuoteAtoms: 10n,
+    expiryUnit: 'EVM_UNIX_SECONDS' as const,
+    expiryValue: 300n,
+  });
+}
+
+const compensations = Object.freeze([
+  compensation(base, ['spot'], hash('4'), 'e'),
+  compensation(arbitrum, ['perp'], hash('6'), 'f'),
+]);
 
 const plan: CrossDomainPlanInput = {
   planVersion: 1,
   environment: 'testnet',
-  orderHash: hash('3'),
-  quoteHash: hash('b'),
-  routeHash: hash('c'),
+  orderHash,
+  quoteHash,
+  routeHash,
   timeUnit: 'EVM_UNIX_SECONDS',
   prepareDeadline: 100n,
   commitDeadline: 200n,
   compensationDeadline: 300n,
   maximumInterimExposureQuoteAtoms: 1_000n,
   legs: [
-    { domain: base, legIds: ['spot'], inventoryReservationId: hash('4'), interimExposureQuoteAtoms: 400n, compensationActionHash: hash('5') },
-    { domain: arbitrum, legIds: ['perp'], inventoryReservationId: hash('6'), interimExposureQuoteAtoms: 500n, compensationActionHash: hash('7') },
+    { domain: base, legIds: ['spot'], inventoryReservationId: hash('4'), interimExposureQuoteAtoms: 400n, compensationActionHash: crossDomainCompensationActionHash(compensations[0]!) },
+    { domain: arbitrum, legIds: ['perp'], inventoryReservationId: hash('6'), interimExposureQuoteAtoms: 500n, compensationActionHash: crossDomainCompensationActionHash(compensations[1]!) },
   ],
 };
+const bundle: CrossDomainExecutionBundleInput = Object.freeze({ plan, compensations });
 
 function domainExecution(domain: DomainRef): PreparedStrategyDomainTransport {
   return Object.freeze({
@@ -110,6 +148,7 @@ function driver(domain: DomainRef, events: CrossDomainEvent[]): CrossDomainExecu
   return Object.freeze({
     domain,
     async advance(input: CrossDomainDriverAdvanceInput) {
+      assert.equal(input.compensation.domain.domainId, domain.domainId);
       const event = events.shift();
       assert.ok(event, `missing event for ${input.action.kind} ${domain.domainId}`);
       return event;
@@ -133,10 +172,10 @@ test('drives a prepositioned package from prepare through finalized commit one a
   ]);
 
   for (let count = 0; count < 4; count += 1) {
-    const result = await coordinator.advance(plan, execution());
+    const result = await coordinator.advance(bundle, execution());
     assert.equal(result.status, 'ADVANCED');
   }
-  const done = await coordinator.advance(plan, execution());
+  const done = await coordinator.advance(bundle, execution());
   assert.equal(done.status, 'TERMINAL');
   assert.equal(done.state.terminalState, 'FINALIZED_COMPLETE');
 });
@@ -154,10 +193,10 @@ test('compensates prepared inventory after another domain reports a definitive p
     driver(base, [failed]),
   ]);
 
-  await coordinator.advance(plan, execution());
-  await coordinator.advance(plan, execution());
-  await coordinator.advance(plan, execution());
-  const done = await coordinator.advance(plan, execution());
+  await coordinator.advance(bundle, execution());
+  await coordinator.advance(bundle, execution());
+  await coordinator.advance(bundle, execution());
+  const done = await coordinator.advance(bundle, execution());
   assert.equal(done.status, 'TERMINAL');
   assert.equal(done.state.terminalState, 'RECOVERED_FLAT');
 });

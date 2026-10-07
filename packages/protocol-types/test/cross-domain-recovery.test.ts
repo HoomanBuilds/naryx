@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+  crossDomainCompensationActionHash,
+  crossDomainExecutionBundle,
   crossDomainPlanHash,
   domainRef,
   replayCrossDomainCoordination,
@@ -8,9 +10,34 @@ import {
   replayManualRecovery,
   toHex,
   type CrossDomainEvent,
+  type CrossDomainCompensationActionInput,
   type CrossDomainPlanInput,
   type ManualRecoveryIncidentInput,
 } from '../src/index.js';
+
+const compensation = (
+  domain: ReturnType<typeof domainRef>,
+  legIds: readonly string[],
+  inventoryReservationId: string,
+  payloadByte: string,
+): CrossDomainCompensationActionInput => ({
+  actionVersion: 1,
+  environment: 'testnet',
+  orderHash: '11'.repeat(32),
+  quoteHash: '12'.repeat(32),
+  routeHash: '13'.repeat(32),
+  domain,
+  legIds,
+  inventoryReservationId,
+  actionKind: 'RELEASE_RESERVED_INVENTORY',
+  executorClassId: 'testnet-reservation-executor',
+  executorClassVersion: 1,
+  executorClassManifestHash: '61'.repeat(32),
+  actionPayloadHash: payloadByte.repeat(32),
+  maximumCostQuoteAtoms: 10n,
+  expiryUnit: 'EVM_UNIX_SECONDS',
+  expiryValue: 300n,
+});
 
 const plan: CrossDomainPlanInput = {
   planVersion: 1,
@@ -31,6 +58,36 @@ const plan: CrossDomainPlanInput = {
 const ev = (kind: 'PREPARED' | 'COMMITTED' | 'COMPENSATED', domainId: string, atValue: bigint, evidence = '51', finality: 'OBSERVED' | 'FINALIZED' = 'FINALIZED'): CrossDomainEvent => ({ kind, domainId, evidenceHash: evidence.repeat(32), finality, atValue });
 
 describe('cross-domain prepositioned coordination', () => {
+  test('binds one exact compensation action to every planned domain', () => {
+    const actions = [
+      compensation(plan.legs[0]!.domain, plan.legs[0]!.legIds, '31'.repeat(32), '71'),
+      compensation(plan.legs[1]!.domain, plan.legs[1]!.legIds, '32'.repeat(32), '72'),
+    ];
+    const boundPlan: CrossDomainPlanInput = {
+      ...plan,
+      legs: plan.legs.map((leg, index) => ({
+        ...leg,
+        compensationActionHash: crossDomainCompensationActionHash(actions[index]!),
+      })),
+    };
+    const bundle = crossDomainExecutionBundle({ plan: boundPlan, compensations: actions });
+    assert.equal(bundle.compensations.length, 2);
+    assert.throws(
+      () => crossDomainExecutionBundle({
+        plan: boundPlan,
+        compensations: [{ ...actions[0]!, actionPayloadHash: '73'.repeat(32) }, actions[1]!],
+      }),
+      /does not match its plan commitment/,
+    );
+    assert.throws(
+      () => crossDomainExecutionBundle({
+        plan: boundPlan,
+        compensations: [{ ...actions[0]!, inventoryReservationId: '74'.repeat(32) }, actions[1]!],
+      }),
+      /another reservation or leg set/,
+    );
+  });
+
   test('commits only after every domain prepared with finalized evidence, then completes', () => {
     assert.throws(() => crossDomainPlanHash({ ...plan, maximumInterimExposureQuoteAtoms: 899n }), /interim exposure bound/);
     assert.throws(() => crossDomainPlanHash({ ...plan, legs: [plan.legs[0]!] }), /2 to 8 domains/);

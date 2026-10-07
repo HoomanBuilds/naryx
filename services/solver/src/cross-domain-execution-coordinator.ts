@@ -1,11 +1,13 @@
 import {
   bytesEqual,
-  crossDomainPlan,
+  crossDomainExecutionBundle,
   crossDomainPlanHash,
   replayCrossDomainCoordination,
   toHex,
   type CrossDomainAction,
+  type CrossDomainCompensationAction,
   type CrossDomainCoordination,
+  type CrossDomainExecutionBundleInput,
   type CrossDomainEvent,
   type CrossDomainLegInput,
   type CrossDomainPlanInput,
@@ -29,12 +31,13 @@ export interface CrossDomainCoordinationJournal {
 }
 
 export interface CrossDomainDriverAdvanceInput {
-    planHash: string;
-    action: Exclude<CrossDomainAction, Readonly<{ kind: 'ESCALATE' }>>;
-    plan: CrossDomainPlanInput;
-    planLeg: CrossDomainLegInput;
-    execution: PreparedStrategyDomainTransport;
-    events: readonly CrossDomainEvent[];
+  planHash: string;
+  action: Exclude<CrossDomainAction, Readonly<{ kind: 'ESCALATE' }>>;
+  plan: CrossDomainPlanInput;
+  planLeg: CrossDomainLegInput;
+  compensation: CrossDomainCompensationAction;
+  execution: PreparedStrategyDomainTransport;
+  events: readonly CrossDomainEvent[];
 }
 
 export interface CrossDomainExecutionDriver {
@@ -91,13 +94,13 @@ export class CrossDomainExecutionCoordinator {
   }
 
   async advance(
-    plan: CrossDomainPlanInput,
+    bundle: CrossDomainExecutionBundleInput,
     execution: PreparedStrategyExecutionTransport,
   ): Promise<CrossDomainAdvanceResult> {
-    const planHash = toHex(crossDomainPlanHash(plan));
+    const planHash = toHex(crossDomainPlanHash(bundle.plan));
     const pending = this.#pending.get(planHash);
     if (pending !== undefined) return pending;
-    const task = this.#advance(plan, execution, planHash);
+    const task = this.#advance(bundle, execution, planHash);
     this.#pending.set(planHash, task);
     try {
       return await task;
@@ -107,11 +110,13 @@ export class CrossDomainExecutionCoordinator {
   }
 
   async #advance(
-    planInput: CrossDomainPlanInput,
+    bundleInput: CrossDomainExecutionBundleInput,
     execution: PreparedStrategyExecutionTransport,
     planHash: string,
   ): Promise<CrossDomainAdvanceResult> {
-    const plan = crossDomainPlan(planInput);
+    const bundle = crossDomainExecutionBundle(bundleInput);
+    const planInput = bundleInput.plan;
+    const plan = bundle.plan;
     requireCondition(execution.coordination === 'CROSS_DOMAIN_PREPOSITIONED'
       && execution.settlementClass === 'CROSS_DOMAIN_PREPOSITIONED', 'prepared execution is not cross-domain prepositioned');
     requireCondition(execution.crossDomainPlanHash !== undefined
@@ -139,12 +144,14 @@ export class CrossDomainExecutionCoordinator {
     }
     const driver = this.#drivers.find((candidate) => candidate.domain.domainId === action.domainId)!;
     const planLeg = planInput.legs.find((candidate) => candidate.domain.domainId === action.domainId)!;
+    const compensation = bundle.compensations.find((candidate) => candidate.domain.domainId === action.domainId)!;
     const domainExecution = execution.domains.find((candidate) => candidate.domain.domainId === action.domainId)!;
     const event = await driver.advance({
       planHash,
       action,
       plan: planInput,
       planLeg,
+      compensation,
       execution: domainExecution,
       events: snapshot.events,
     });
