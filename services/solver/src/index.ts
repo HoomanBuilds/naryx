@@ -961,6 +961,7 @@ export {
   verifyArbitrumSepoliaAttempt,
   type ArbitrumSepoliaAttemptProvider,
   type ArbitrumSepoliaExecutionAttempt,
+  type ArbitrumSepoliaExecutionBinding,
   type ArbitrumSepoliaExecutionPlan,
   type ArbitrumSepoliaExecutionResult,
   type ArbitrumSepoliaExecutorConfig,
@@ -970,6 +971,14 @@ export {
   type ArbitrumSepoliaOwnerAuthorizationRequest,
   type ArbitrumSepoliaWritePort,
 } from './arbitrum-sepolia-executor.js';
+export {
+  ArbitrumAsyncCrossDomainLane,
+  arbitrumAsyncCancellationPayloadHash,
+  type ArbitrumAsyncCrossDomainAttemptProvider,
+  type ArbitrumAsyncCrossDomainClock,
+  type ArbitrumAsyncCrossDomainExecutor,
+  type ArbitrumAsyncCrossDomainLaneConfig,
+} from './arbitrum-async-cross-domain-lane.js';
 export {
   ARBITRUM_EXIT_CONTROLLER_ABI,
   arbitrumExitTypedData,

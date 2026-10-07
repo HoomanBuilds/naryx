@@ -399,7 +399,8 @@ function attempt(): ArbitrumSepoliaExecutionAttempt {
       quantity: { asset: base, atoms: QUANTITY }, maxSpotQuoteIn: { asset: quote, atoms: 26_000_000n },
     },
     route: {
-      executionPlanKind: 'EVM_ASYNC_REQUEST', settlementAccount: executorAccount, routeExpiryValue: NOW + 120n,
+      executionPlanKind: 'EVM_ASYNC_REQUEST', settlementClass: 'ASYNC_BONDED_SOLVER', action: 'ENTRY',
+      settlementAccount: executorAccount, routeExpiryValue: NOW + 120n,
       legs: [{ legRole: 'PERPETUAL', limitPrice: limit }],
       recoveryPlan: {
         maxActionExpiryValue: NOW + 720n, deadlineValue: NOW + 1_320n,
@@ -493,6 +494,8 @@ function fakeChain(journal: () => SqliteArbitrumSepoliaExecutionJournal, chainId
         packageRecord = { ...packageRecord, terms: args?.[0] };
         advanceState(1);
       }
+      if (functionName === 'cancelReserved') advanceState(10, hex('0'));
+      if (functionName === 'releaseCancelledFunding') state.fundedHash = hex('0');
       if (functionName === 'submitRequest') advanceState(2, hex('e'));
       if (functionName === 'markVenuePending') advanceState(3);
       if (functionName === 'finalizeUnfilledRequest') {
@@ -652,15 +655,21 @@ test('Arbitrum executor reserves only with the owner wallet signature and owner 
     assert.deepEqual(writes, []);
 
     ownerFunds();
+    const reserved = await executor(port, journal).instance.reserve(ATTEMPT_ID);
+    assert.equal(reserved.status, 'RESERVED');
+    assert.equal(reserved.coordinatorState, 'RESERVED');
+    assert.deepEqual(writes, ['approve', 'reserve']);
+    assert.deepEqual(reserveArgs, [signature]);
+    assert.deepEqual(reserved.transactions.map((entry) => entry.step), ['APPROVE_COORDINATOR', 'RESERVE']);
+    // The bond and recovery reserve are approved exactly, in collateral atoms.
+    assert.equal(journal.plan(ATTEMPT_ID)?.terms.bondAtoms, 5_000_000n);
+
     const first = await executor(port, journal).instance.advance(ATTEMPT_ID);
     assert.equal(first.status, 'VENUE_PENDING');
     assert.equal(first.coordinatorState, 'VENUE_PENDING');
     assert.deepEqual(writes, ['approve', 'reserve', 'submitRequest', 'markVenuePending']);
-    assert.deepEqual(reserveArgs, [signature]);
     assert.deepEqual(first.transactions.map((entry) => entry.step),
       ['APPROVE_COORDINATOR', 'RESERVE', 'SUBMIT', 'MARK_PENDING']);
-    // The bond and recovery reserve are approved exactly, in collateral atoms.
-    assert.equal(journal.plan(ATTEMPT_ID)?.terms.bondAtoms, 5_000_000n);
 
     journal.close();
     journal = new SqliteArbitrumSepoliaExecutionJournal(path);
@@ -670,6 +679,30 @@ test('Arbitrum executor reserves only with the owner wallet signature and owner 
     assert.equal(resolved(), 0);
     assert.equal(restarted.packageId, first.packageId);
     assert.equal(restarted.status, 'VENUE_PENDING');
+  } finally {
+    journal.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Arbitrum executor cancels a prepared reservation and releases owner funding before venue submission', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-arbitrum-executor-'));
+  const journal = new SqliteArbitrumSepoliaExecutionJournal(join(directory, 'journal.db'));
+  try {
+    const { port, writes, ownerFunds } = fakeChain(() => journal);
+    const { instance } = executor(port, journal);
+    const prepared = await instance.prepare(ATTEMPT_ID);
+    await instance.authorize(ATTEMPT_ID, await ownerAccount.signTypedData(prepared.typedData as never));
+    ownerFunds();
+    assert.equal((await instance.reserve(ATTEMPT_ID)).status, 'RESERVED');
+    const cancelled = await instance.cancelReserved(ATTEMPT_ID);
+    assert.equal(cancelled.status, 'COMPENSATED');
+    assert.equal(cancelled.coordinatorState, 'CLOSED');
+    assert.equal(cancelled.requestKey, null);
+    assert.deepEqual(writes, ['approve', 'reserve', 'cancelReserved', 'releaseCancelledFunding']);
+    assert.equal((await instance.observe(ATTEMPT_ID, 'finalized')).status, 'COMPENSATED');
+    assert.equal((await instance.cancelReserved(ATTEMPT_ID)).status, 'COMPENSATED');
+    assert.equal(writes.length, 4);
   } finally {
     journal.close();
     rmSync(directory, { recursive: true, force: true });

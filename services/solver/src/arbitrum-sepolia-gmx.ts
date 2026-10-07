@@ -67,6 +67,7 @@ export interface ArbitrumSepoliaReadRequest {
   readonly abi: Abi;
   readonly functionName: string;
   readonly args?: readonly unknown[];
+  readonly blockTag?: 'latest' | 'finalized';
 }
 
 /** Signerless Arbitrum Sepolia reads. Chain identity always comes from eth_chainId. */
@@ -508,6 +509,7 @@ export function createViemArbitrumSepoliaReadPort(rpcUrl: string): ArbitrumSepol
       abi: request.abi,
       functionName: request.functionName,
       ...(request.args === undefined ? {} : { args: request.args }),
+      ...(request.blockTag === undefined ? {} : { blockTag: request.blockTag }),
     } as never),
   });
 }

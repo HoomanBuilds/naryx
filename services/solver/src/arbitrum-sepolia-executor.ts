@@ -123,6 +123,7 @@ export const ARBITRUM_ASYNC_COORDINATOR_ABI = parseAbi([
   'function recoveryPolicyCommitment(Terms terms) view returns (bytes32)',
   'function packageState(bytes32 id) view returns (Package)',
   'function reserve(Terms terms, bytes ownerSignature) returns (bytes32)',
+  'function cancelReserved(bytes32 id, uint64 expectedVersion)',
   'function submitRequest(bytes32 id, uint64 expectedVersion, VenueRequest request) returns (bytes32)',
   'function markVenuePending(bytes32 id, uint64 expectedVersion)',
   'function beginRecovery(bytes32 id, uint64 expectedVersion)',
@@ -136,6 +137,7 @@ export const ARBITRUM_GMX_ADAPTER_ABI = parseAbi([
   'function funding(bytes32 packageId, address owner) view returns (address account, bytes32 requestPayloadHash, uint256 collateralAtoms, uint256 spotQuoteAtoms, uint256 executionFeeWei, uint64 submissionDeadline, bool consumed)',
   'function requestEvidence(bytes32 requestKey) view returns (uint8 status, bytes32 evidenceHash, uint256 positionSizeBefore, uint256 positionSizeAfter, uint64 revision)',
   'function fundRequest(bytes32 packageId, VenueRequest venueRequest) payable',
+  'function releaseCancelledFunding(bytes32 packageId, address owner)',
   'function relayEvidence(bytes32 requestKey, uint64 expectedVersion)',
   'function finalizeUnfilledRequest(bytes32 requestKey)',
   'function activePackageOf(address account) view returns (bytes32)',
@@ -243,6 +245,7 @@ export interface ArbitrumSepoliaWritePort extends ArbitrumSepoliaReadPort {
 
 export type ArbitrumSepoliaExecutionStep =
   | 'APPROVE_COORDINATOR' | 'RESERVE' | 'SUBMIT' | 'MARK_PENDING' | 'RELAY' | 'CLOSE'
+  | 'CANCEL_RESERVED' | 'RELEASE_CANCELLED_FUNDING'
   | 'ROLLBACK_SPOT' | 'BEGIN_RECOVERY' | 'SUBMIT_RECOVERY' | 'RELAY_RECOVERY'
   | 'SLASH_MISSED_RECOVERY' | 'SUBMIT_OVERDUE_RECOVERY'
   | 'SUBMIT_EXIT' | 'RECONCILE_EXIT' | 'PROCESS_RECONCILIATION' | 'FINALIZE_EXIT';
@@ -253,12 +256,32 @@ export interface ArbitrumSepoliaExecutionResult {
   /** CANCELLED: an exit's GMX close was cancelled or recovered, so the package stays open. */
   readonly status:
     | 'AWAITING_OWNER_SIGNATURE' | 'AWAITING_OWNER_FUNDING'
-    | 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'RECOVERY_REQUIRED' | 'FAILED' | 'CANCELLED';
+    | 'RESERVED' | 'IN_FLIGHT' | 'VENUE_PENDING' | 'SETTLED' | 'COMPENSATED'
+    | 'RECOVERY_REQUIRED' | 'FAILED' | 'CANCELLED';
   readonly packageId: Hex;
   readonly coordinatorState: string;
   readonly requestKey: Hex | null;
   readonly transactions: readonly Readonly<{ step: ArbitrumSepoliaExecutionStep; txHash: Hex; status: string }>[];
 }
+
+export interface ArbitrumSepoliaExecutionBinding {
+  readonly attemptId: string;
+  readonly packageId: Hex;
+  readonly account: Address;
+  readonly owner: Address;
+  readonly orderHash: Hex;
+  readonly quoteHash: Hex;
+  readonly routeHash: Hex;
+}
+
+type ArbitrumCoordinatorState = Readonly<{
+  state: number;
+  stateVersion: bigint;
+  requestKey: Hex;
+  recoveryActionSubmitted: boolean;
+  recoveryDutyActive: boolean;
+  evidenceConflict: boolean;
+}>;
 
 export class ArbitrumSepoliaExecutorError extends Error {
   readonly code: string;
@@ -827,6 +850,106 @@ export class ArbitrumSepoliaExecutor {
     return next;
   }
 
+  reserve(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      await this.#requireEntryContractCode();
+      const route = await this.#route(attemptId);
+      if (route.exit) fail('ATTEMPT_MISMATCH', 'an exit cannot be reserved as a cross-domain entry');
+      const plan = await this.#journaledPlan(attemptId, route.attempt);
+      try {
+        const result = await this.#ensureReserved(plan);
+        if (result.result !== undefined) return result.result;
+        if (result.state.state === STATE.RESERVED) return this.#result(attemptId, plan, 'RESERVED', result.state);
+        if (result.state.state === STATE.CLOSED && result.state.requestKey === ZERO_HASH) {
+          return this.#result(attemptId, plan, 'COMPENSATED', result.state);
+        }
+        fail('INVALID_STATE', 'package cannot enter the cross-domain reserved phase from its current state');
+      } catch (error) {
+        if (error instanceof InFlight) return this.#result(attemptId, plan, 'IN_FLIGHT', undefined);
+        if (error instanceof ArbitrumSepoliaExecutorError && error.code === 'TRANSACTION_REVERTED') {
+          this.#options.journal.markFailed(attemptId, error.message);
+          return this.#result(attemptId, plan, 'FAILED', undefined);
+        }
+        throw error;
+      }
+    });
+  }
+
+  binding(attemptId: string): Promise<ArbitrumSepoliaExecutionBinding> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      const route = await this.#route(attemptId);
+      if (route.exit) fail('ATTEMPT_MISMATCH', 'an exit has no cross-domain entry binding');
+      const plan = await this.#journaledPlan(attemptId, route.attempt);
+      return Object.freeze({
+        attemptId,
+        packageId: plan.packageId,
+        account: plan.account,
+        owner: plan.terms.owner,
+        orderHash: plan.terms.orderHash,
+        quoteHash: plan.terms.quoteHash,
+        routeHash: plan.terms.routeHash,
+      });
+    });
+  }
+
+  observe(attemptId: string, blockTag: 'latest' | 'finalized' = 'latest'): Promise<ArbitrumSepoliaExecutionResult> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      await this.#requireEntryContractCode();
+      const plan = this.#options.journal.plan(attemptId);
+      if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared entry plan');
+      const state = await this.#state(plan, blockTag);
+      const cancelledFundingReleased = state.state === STATE.CLOSED && state.requestKey === ZERO_HASH
+        ? (await this.#funding(plan, blockTag)).requestPayloadHash === ZERO_HASH
+        : false;
+      const status = state.state === STATE.RESERVED ? 'RESERVED'
+        : state.state === STATE.CLOSED && state.requestKey === ZERO_HASH
+          ? cancelledFundingReleased ? 'COMPENSATED' : 'IN_FLIGHT'
+          : state.state === STATE.CLOSED ? 'SETTLED'
+            : state.state === STATE.VENUE_PENDING ? 'VENUE_PENDING'
+              : state.state === STATE.NONE ? 'AWAITING_OWNER_SIGNATURE' : 'RECOVERY_REQUIRED';
+      return this.#result(attemptId, plan, status, state);
+    });
+  }
+
+  cancelReserved(attemptId: string): Promise<ArbitrumSepoliaExecutionResult> {
+    return this.#enqueue(attemptId, async () => {
+      await this.#requireChain();
+      await this.#requireEntryContractCode();
+      const plan = this.#options.journal.plan(attemptId);
+      if (plan === undefined) fail('NOT_PREPARED', 'attempt has no prepared entry plan');
+      try {
+        let state = await this.#state(plan);
+        if (state.state === STATE.RESERVED) {
+          await this.#send(plan, 'CANCEL_RESERVED', {
+            address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI,
+            functionName: 'cancelReserved', args: [plan.packageId, state.stateVersion],
+          });
+          state = await this.#state(plan);
+        }
+        if (state.state !== STATE.CLOSED || state.requestKey !== ZERO_HASH) {
+          fail('INVALID_STATE', 'only a reserved package with no submitted venue request can be cancelled');
+        }
+        const funding = await this.#funding(plan);
+        if (funding.requestPayloadHash !== ZERO_HASH) {
+          if (funding.requestPayloadHash !== plan.terms.requestPayloadHash || funding.consumed) {
+            fail('CHAIN_MISMATCH', 'cancelled package funding differs from the journaled request');
+          }
+          await this.#send(plan, 'RELEASE_CANCELLED_FUNDING', {
+            address: plan.terms.adapter, abi: ARBITRUM_GMX_ADAPTER_ABI,
+            functionName: 'releaseCancelledFunding', args: [plan.packageId, plan.terms.owner],
+          });
+        }
+        return this.#result(attemptId, plan, 'COMPENSATED', state);
+      } catch (error) {
+        if (error instanceof InFlight) return this.#result(attemptId, plan, 'IN_FLIGHT', undefined);
+        throw error;
+      }
+    });
+  }
+
   /** Builds and journals the unsigned full close, then returns what the owner's wallet must sign. */
   prepareExit(attemptId: string): Promise<ArbitrumSepoliaExitAuthorizationRequest> {
     return this.#enqueue(attemptId, async () => {
@@ -983,34 +1106,14 @@ export class ArbitrumSepoliaExecutor {
   async #advance(attemptId: string, resolved?: ArbitrumSepoliaExecutionAttempt): Promise<ArbitrumSepoliaExecutionResult> {
     const { chain, journal } = this.#options;
     await this.#requireChain();
+    await this.#requireEntryContractCode();
     const failure = journal.failed(attemptId);
     if (failure !== undefined) return this.#result(attemptId, journal.plan(attemptId)!, 'FAILED', undefined);
     const plan = await this.#journaledPlan(attemptId, resolved);
     try {
-      let state = await this.#state(plan);
-      if (state.state === STATE.NONE) {
-        // The service holds no owner key: nothing is reserved until the owner has signed the
-        // reservation and funded the request from its own wallet.
-        const ownerSignature = journal.ownerSignature(attemptId);
-        if (ownerSignature === undefined) return this.#result(attemptId, plan, 'AWAITING_OWNER_SIGNATURE', state);
-        if (await chain.latestBlockTimestamp() >= plan.terms.submissionDeadline) {
-          journal.markFailed(attemptId, 'submission deadline passed before the owner signed and funded');
-          return this.#result(attemptId, plan, 'FAILED', state);
-        }
-        const funded = await this.#read(plan.terms.adapter, ARBITRUM_GMX_ADAPTER_ABI, 'funding', [plan.packageId, plan.terms.owner]) as readonly unknown[];
-        const fundedHash = hashValue(funded[1], 'funding request hash');
-        if (fundedHash === ZERO_HASH) return this.#result(attemptId, plan, 'AWAITING_OWNER_FUNDING', state);
-        if (fundedHash !== plan.terms.requestPayloadHash || !sameAddress(funded[0], plan.account) || funded[6] !== false) {
-          fail('CHAIN_MISMATCH', 'owner funding belongs to another request or account');
-        }
-        await this.#ensureAllowance(plan, 'APPROVE_COORDINATOR', this.#coordinator(),
-          plan.terms.bondAtoms + plan.terms.recoveryReserveAtoms);
-        await this.#send(plan, 'RESERVE', {
-          address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'reserve',
-          args: [plan.terms, ownerSignature],
-        });
-        state = await this.#state(plan);
-      }
+      const reserved = await this.#ensureReserved(plan);
+      if (reserved.result !== undefined) return reserved.result;
+      let state = reserved.state;
       if (state.state === STATE.RESERVED) {
         await this.#send(plan, 'SUBMIT', {
           address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'submitRequest',
@@ -1107,7 +1210,9 @@ export class ArbitrumSepoliaExecutor {
         });
         state = await this.#state(plan);
       }
-      if (state.state === STATE.CLOSED) return this.#result(attemptId, plan, 'SETTLED', state);
+      if (state.state === STATE.CLOSED) {
+        return this.#result(attemptId, plan, state.requestKey === ZERO_HASH ? 'COMPENSATED' : 'SETTLED', state);
+      }
       // Conflicting evidence, a changed adapter, or a request GMX has not yet released needs the operator
       // or a later poll.
       return this.#result(attemptId, plan, 'RECOVERY_REQUIRED', state);
@@ -1502,12 +1607,25 @@ export class ArbitrumSepoliaExecutor {
     }
   }
 
+  async #requireEntryContractCode(): Promise<void> {
+    await Promise.all([
+      requireArbitrumSepoliaCode(this.#options.chain, this.#options.config.coordinator, 'coordinator'),
+      requireArbitrumSepoliaCode(this.#options.chain, this.#options.config.adapter, 'adapter'),
+    ]);
+  }
+
   #read(address: Address, abi: ArbitrumSepoliaReadRequest['abi'], functionName: string, args?: readonly unknown[]) {
     return this.#options.chain.readContract({ address, abi, functionName, ...(args === undefined ? {} : { args }) });
   }
 
-  async #state(plan: ArbitrumSepoliaExecutionPlan) {
-    const record = await this.#read(this.#coordinator(), ARBITRUM_ASYNC_COORDINATOR_ABI, 'packageState', [plan.packageId]) as Record<string, unknown>;
+  async #state(
+    plan: ArbitrumSepoliaExecutionPlan,
+    blockTag?: 'latest' | 'finalized',
+  ): Promise<ArbitrumCoordinatorState> {
+    const record = await this.#options.chain.readContract({
+      address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI,
+      functionName: 'packageState', args: [plan.packageId], ...(blockTag === undefined ? {} : { blockTag }),
+    }) as Record<string, unknown>;
     const state = Number(record.state);
     if (!Number.isSafeInteger(state) || state < 0 || state >= STATE_NAMES.length) fail('CHAIN_MISMATCH', 'package state is invalid');
     if (state !== STATE.NONE && arbitrumAsyncTermsHash(record.terms as Terms) !== arbitrumAsyncTermsHash(plan.terms)) {
@@ -1521,6 +1639,54 @@ export class ArbitrumSepoliaExecutor {
       recoveryDutyActive: record.recoveryDutyActive === true,
       evidenceConflict: record.evidenceConflict === true,
     });
+  }
+
+  async #funding(plan: ArbitrumSepoliaExecutionPlan, blockTag?: 'latest' | 'finalized') {
+    const funded = await this.#options.chain.readContract({
+      address: plan.terms.adapter,
+      abi: ARBITRUM_GMX_ADAPTER_ABI,
+      functionName: 'funding',
+      args: [plan.packageId, plan.terms.owner],
+      ...(blockTag === undefined ? {} : { blockTag }),
+    }) as readonly unknown[];
+    return Object.freeze({
+      account: funded[0],
+      requestPayloadHash: hashValue(funded[1], 'funding request hash'),
+      consumed: funded[6] === true,
+    });
+  }
+
+  async #ensureReserved(plan: ArbitrumSepoliaExecutionPlan): Promise<Readonly<{
+    state: ArbitrumCoordinatorState;
+    result?: ArbitrumSepoliaExecutionResult;
+  }>> {
+    const { chain, journal } = this.#options;
+    let state = await this.#state(plan);
+    if (state.state !== STATE.NONE) return Object.freeze({ state });
+    const ownerSignature = journal.ownerSignature(plan.attemptId);
+    if (ownerSignature === undefined) {
+      return Object.freeze({ state, result: this.#result(plan.attemptId, plan, 'AWAITING_OWNER_SIGNATURE', state) });
+    }
+    if (await chain.latestBlockTimestamp() >= plan.terms.submissionDeadline) {
+      journal.markFailed(plan.attemptId, 'submission deadline passed before the owner signed and funded');
+      return Object.freeze({ state, result: this.#result(plan.attemptId, plan, 'FAILED', state) });
+    }
+    const funding = await this.#funding(plan);
+    if (funding.requestPayloadHash === ZERO_HASH) {
+      return Object.freeze({ state, result: this.#result(plan.attemptId, plan, 'AWAITING_OWNER_FUNDING', state) });
+    }
+    if (funding.requestPayloadHash !== plan.terms.requestPayloadHash
+      || !sameAddress(funding.account, plan.account) || funding.consumed) {
+      fail('CHAIN_MISMATCH', 'owner funding belongs to another request or account');
+    }
+    await this.#ensureAllowance(plan, 'APPROVE_COORDINATOR', this.#coordinator(),
+      plan.terms.bondAtoms + plan.terms.recoveryReserveAtoms);
+    await this.#send(plan, 'RESERVE', {
+      address: this.#coordinator(), abi: ARBITRUM_ASYNC_COORDINATOR_ABI, functionName: 'reserve',
+      args: [plan.terms, ownerSignature],
+    });
+    state = await this.#state(plan);
+    return Object.freeze({ state });
   }
 
   async #requestStatus(plan: ArbitrumSepoliaExecutionPlan, requestKey: Hex): Promise<number> {
@@ -1595,7 +1761,9 @@ export class ArbitrumSepoliaExecutor {
     if (order.domain.domainId !== ARBITRUM_SEPOLIA_DOMAIN_ID
       || order.domain.domainManifestVersion !== config.domain.domainManifestVersion
       || !bytesEqual(order.domain.domainManifestHash, config.domain.domainManifestHash)
-      || order.settlementClass !== 'ASYNC_BONDED_SOLVER' || order.action !== 'ENTRY'
+      || (order.settlementClass !== 'ASYNC_BONDED_SOLVER'
+        && order.settlementClass !== 'CROSS_DOMAIN_PREPOSITIONED')
+      || route.settlementClass !== order.settlementClass || order.action !== 'ENTRY' || route.action !== 'ENTRY'
       || route.executionPlanKind !== 'EVM_ASYNC_REQUEST' || route.recoveryPlan === undefined) {
       fail('ATTEMPT_MISMATCH', 'attempt is not a reviewed Arbitrum Sepolia async entry');
     }
