@@ -28,7 +28,8 @@ const domain = { domainId: 'svm:devnet', domainManifestVersion: 1, domainManifes
 const market: TestPerpMarketState = {
   oracle: 'o', feedIdHex: 'f', collateralMint: 'c', collateralVault: 'v', feeVault: 'fv', insuranceVault: 'iv',
   collateralDecimals: 6, baseDecimals: 9, maxPriceAgeSeconds: 60, maxConfidenceBps: 50, takerFeeBps: 5, halfSpreadBps: 2,
-  impactBpsPerUnit: 1, maxSlippageBps: 100, initialMarginBps: 1000, impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n,
+  impactBpsPerUnit: 1, maxSlippageBps: 100, initialMarginBps: 1000, maintenanceMarginBps: 500,
+  impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n,
   quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n, pauseOpens: false,
 };
 

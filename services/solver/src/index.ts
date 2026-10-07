@@ -47,6 +47,12 @@ export {
   type GeneralizedStrategyQuoteLane,
 } from './strategy-quote-context-registry.js';
 export {
+  createSolanaTreasuryHedgeGeneralizedPricing,
+  type SolanaTreasuryHedgeLegBinding,
+  type SolanaTreasuryHedgePricingInput,
+  type SolanaTreasuryHedgeQuoteState,
+} from './solana-treasury-hedge-quote.js';
+export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
 } from './strategy-receipt-builder.js';

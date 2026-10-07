@@ -371,6 +371,7 @@ export type TestPerpMarketState = Readonly<{
   impactBpsPerUnit: number;
   maxSlippageBps: number;
   initialMarginBps: number;
+  maintenanceMarginBps: number;
   impactUnitLots: bigint;
   baseLotAtoms: bigint;
   quoteTickAtomsPerBaseLot: bigint;
@@ -396,7 +397,8 @@ export function decodeTestPerpMarket(data: Uint8Array): TestPerpMarketState {
   const impactBpsPerUnit = r.u16();
   const maxSlippageBps = r.u16();
   const initialMarginBps = r.u16();
-  r.u16(); r.u16();
+  const maintenanceMarginBps = r.u16();
+  r.u16();
   const impactUnitLots = r.u64();
   const baseLotAtoms = r.u64();
   const quoteTickAtomsPerBaseLot = r.u64();
@@ -407,7 +409,7 @@ export function decodeTestPerpMarket(data: Uint8Array): TestPerpMarketState {
   return Object.freeze({
     oracle, feedIdHex, collateralMint, collateralVault, feeVault, insuranceVault, collateralDecimals, baseDecimals,
     maxPriceAgeSeconds, maxConfidenceBps, takerFeeBps, halfSpreadBps, impactBpsPerUnit, maxSlippageBps,
-    initialMarginBps, impactUnitLots, baseLotAtoms, quoteTickAtomsPerBaseLot, maxPositionLots, pauseOpens,
+    initialMarginBps, maintenanceMarginBps, impactUnitLots, baseLotAtoms, quoteTickAtomsPerBaseLot, maxPositionLots, pauseOpens,
   });
 }
 

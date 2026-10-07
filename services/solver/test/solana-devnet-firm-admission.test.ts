@@ -148,7 +148,8 @@ const market: TestPerpMarketState = {
   oracle: SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT, feedIdHex: SOLANA_DEVNET_SOL_USD_FEED_ID_HEX, collateralMint: quoteMint.toBase58(),
   collateralVault: key().toBase58(), feeVault: key().toBase58(), insuranceVault: key().toBase58(), collateralDecimals: 6, baseDecimals: 9,
   maxPriceAgeSeconds: 60, maxConfidenceBps: 50, takerFeeBps: 5, halfSpreadBps: 2, impactBpsPerUnit: 1, maxSlippageBps: 100,
-  initialMarginBps: 1_000, impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n, quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n, pauseOpens: false,
+  initialMarginBps: 1_000, maintenanceMarginBps: 500, impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n,
+  quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n, pauseOpens: false,
 };
 // 150 USD per SOL with exponent -8: 150_000 quote atoms per 0.001 SOL lot.
 const ORACLE_PRICE_PER_LOT = 150_000n;
