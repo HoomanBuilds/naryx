@@ -131,6 +131,10 @@ import {
   createEvmTreasuryHedgeOrderPort,
   loadEvmTreasuryHedgeProfiles,
 } from "./evm-treasury-hedge-order.js";
+import {
+  createEvmCollateralConversionOrderPort,
+  loadEvmCollateralConversionProfiles,
+} from "./evm-collateral-conversion-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
@@ -886,6 +890,24 @@ if (evmTreasuryHedgeProfilePath !== undefined && evmTreasuryHedgeProfilePath !==
     reportRuntimeFailure("evmTreasuryHedgeOrders", error);
   }
 }
+let evmCollateralConversionOrders: ReturnType<typeof createEvmCollateralConversionOrderPort> | undefined;
+const evmCollateralConversionProfilePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_ORDER_PROFILES;
+if (evmCollateralConversionProfilePath !== undefined && evmCollateralConversionProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("EVM collateral conversion order creation requires the public strategy market.");
+    }
+    evmCollateralConversionOrders = createEvmCollateralConversionOrderPort({
+      profiles: loadEvmCollateralConversionProfiles(absolutePath(
+        evmCollateralConversionProfilePath,
+        "NARYX_EVM_COLLATERAL_CONVERSION_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    reportRuntimeFailure("evmCollateralConversionOrders", error);
+  }
+}
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
   : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
@@ -952,6 +974,7 @@ const server = createPrivateTerminalServer(
   hyperliquidNativeStrategyOrders,
   evmOptionSpreadOrders,
   evmTreasuryHedgeOrders,
+  evmCollateralConversionOrders,
   evmOptionSpreadProvisioning,
   evmStrategyExecutionAuthorization,
   evmStrategyExecutionObservation,

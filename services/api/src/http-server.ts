@@ -126,6 +126,10 @@ import {
   type EvmTreasuryHedgeOrderPort,
 } from "./evm-treasury-hedge-order.js";
 import {
+  EvmCollateralConversionOrderError,
+  type EvmCollateralConversionOrderPort,
+} from "./evm-collateral-conversion-order.js";
+import {
   EvmOptionSpreadProvisioningClientError,
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
@@ -330,6 +334,7 @@ export function createPrivateTerminalRequestHandler(
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmTreasuryHedgeOrders?: EvmTreasuryHedgeOrderPort,
+  evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
@@ -658,6 +663,7 @@ export function createPrivateTerminalRequestHandler(
         hyperliquidNativeStrategyOrderAvailable: hyperliquidNativeStrategyOrders !== undefined,
         evmOptionSpreadOrderAvailable: evmOptionSpreadOrders !== undefined,
         evmTreasuryHedgeOrderAvailable: evmTreasuryHedgeOrders !== undefined,
+        evmCollateralConversionOrderAvailable: evmCollateralConversionOrders !== undefined,
         evmOptionSpreadProvisioningAvailable: evmOptionSpreadProvisioning !== undefined,
         strategyPackageAuthorizationAvailable: strategyPackageAuthorization !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
@@ -1026,6 +1032,107 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "EVM_TREASURY_HEDGE_CREATION_FAILED", "EVM treasury hedge order creation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-collateral-conversion-profiles") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (evmCollateralConversionOrders === undefined) {
+        reject(response, 503, "EVM_COLLATERAL_CONVERSION_UNAVAILABLE", "EVM collateral conversion order creation is unavailable.");
+        return;
+      }
+      sendJson(response, 200, {
+        version: 1,
+        profiles: evmCollateralConversionOrders.profiles().map((profile) => ({
+          profileId: profile.profileId,
+          displayName: profile.displayName,
+          templateId: profile.templateId,
+          templateVersion: profile.templateVersion,
+          seriesId: profile.seriesId,
+          executionClassId: profile.executionClassId,
+          chainId: profile.chainId,
+          domainId: profile.domain.domainId,
+          accountFactory: profile.accountFactory,
+          collateralAsset: { assetId: profile.collateralAsset.assetId, decimals: profile.collateralAsset.decimals },
+          quoteAsset: { assetId: profile.quoteAsset.assetId, decimals: profile.quoteAsset.decimals },
+          bounds: Object.fromEntries(Object.entries(profile.bounds).map(([name, value]) => [name, value.toString()])),
+        })),
+      });
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-collateral-conversion-orders/create") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmCollateralConversionOrders === undefined) {
+        reject(response, 503, "EVM_COLLATERAL_CONVERSION_UNAVAILABLE", "EVM collateral conversion order creation is unavailable.");
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== "object" || requestBody === null || Array.isArray(requestBody)
+          || typeof (requestBody as { profileId?: unknown }).profileId !== "string"
+          || typeof (requestBody as { owner?: unknown }).owner !== "string") {
+          throw new EvmCollateralConversionOrderError("INVALID_REQUEST", "EVM collateral conversion order request is invalid.");
+        }
+        if (evmOptionSpreadProvisioning === undefined) {
+          throw new EvmCollateralConversionOrderError("INVALID_CONFIGURATION", "EVM strategy account resolution is unavailable.");
+        }
+        const profile = evmCollateralConversionOrders.profiles().find((candidate) =>
+          candidate.profileId === (requestBody as { profileId: string }).profileId);
+        if (profile === undefined) {
+          throw new EvmCollateralConversionOrderError("PROFILE_NOT_FOUND", "EVM collateral conversion profile was not found.");
+        }
+        const resolved = await evmOptionSpreadProvisioning.resolveAccount({
+          chainId: profile.chainId,
+          factory: profile.accountFactory,
+          owner: (requestBody as { owner: string }).owner,
+        });
+        const supplied = (requestBody as { settlementAccount?: unknown }).settlementAccount;
+        if (supplied !== undefined
+          && (typeof supplied !== "string" || supplied.toLowerCase() !== resolved.account.toLowerCase())) {
+          throw new EvmCollateralConversionOrderError("INVALID_REQUEST", "Settlement account differs from the owner factory account.");
+        }
+        const created = evmCollateralConversionOrders.create({ ...requestBody, settlementAccount: resolved.account.toLowerCase() });
+        sendJson(response, 200, {
+          version: 1,
+          status: created.intake.status,
+          created: created.intake.created,
+          profileId: created.profileId,
+          orderHash: created.intake.orderHashHex,
+          graphHash: created.intake.graphHashHex,
+          templateId: created.order.templateId,
+          lifecycleAction: created.order.lifecycleAction,
+          seriesId: created.order.seriesId,
+          executionClassId: created.order.executionClassId,
+        });
+      } catch (error) {
+        if (error instanceof EvmOptionSpreadProvisioningClientError) {
+          reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);
+          return;
+        }
+        if (error instanceof EvmCollateralConversionOrderError) {
+          const status = error.code === "PROFILE_NOT_FOUND" ? 404
+            : error.code === "LIMIT_EXCEEDED" ? 409
+              : error.code === "INVALID_CONFIGURATION" ? 503
+                : error.code === "INTAKE_MISMATCH" ? 500
+                  : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        if (error instanceof StrategyOrderIntakeError) {
+          reject(response, error.status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_COLLATERAL_CONVERSION_CREATION_FAILED", "EVM collateral conversion order creation failed closed.");
       }
       return;
     }
@@ -2068,6 +2175,7 @@ export function createPrivateTerminalServer(
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
   evmTreasuryHedgeOrders?: EvmTreasuryHedgeOrderPort,
+  evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
@@ -2101,6 +2209,7 @@ export function createPrivateTerminalServer(
     hyperliquidNativeStrategyOrders,
     evmOptionSpreadOrders,
     evmTreasuryHedgeOrders,
+    evmCollateralConversionOrders,
     evmOptionSpreadProvisioning,
     evmStrategyExecutionAuthorization,
     evmStrategyExecutionObservation,
