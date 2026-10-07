@@ -132,6 +132,10 @@ import {
   loadEvmTreasuryHedgeProfiles,
 } from "./evm-treasury-hedge-order.js";
 import {
+  createSolanaTreasuryHedgeOrderPort,
+  loadSolanaTreasuryHedgeProfiles,
+} from "./solana-treasury-hedge-order.js";
+import {
   createEvmCollateralConversionOrderPort,
   loadEvmCollateralConversionProfiles,
 } from "./evm-collateral-conversion-order.js";
@@ -979,6 +983,30 @@ if (evmTreasuryHedgeProfilePath !== undefined && evmTreasuryHedgeProfilePath !==
     reportRuntimeFailure("evmTreasuryHedgeOrders", error);
   }
 }
+let solanaTreasuryHedgeOrders: ReturnType<typeof createSolanaTreasuryHedgeOrderPort> | undefined;
+const solanaTreasuryHedgeProfilePath = process.env.NARYX_SOLANA_TREASURY_HEDGE_ORDER_PROFILES;
+if (solanaTreasuryHedgeProfilePath !== undefined && solanaTreasuryHedgeProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined || solanaDevnetOrderRuntime === undefined) {
+      throw new Error("Solana treasury hedge order creation requires the public strategy market and Devnet order runtime.");
+    }
+    const runtime = solanaDevnetOrderRuntime;
+    solanaTreasuryHedgeOrders = createSolanaTreasuryHedgeOrderPort({
+      profiles: loadSolanaTreasuryHedgeProfiles(absolutePath(
+        solanaTreasuryHedgeProfilePath,
+        "NARYX_SOLANA_TREASURY_HEDGE_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+      currentSlot: async () => {
+        const context = runtime.contexts(runtime.config.contextId);
+        if (context === undefined) throw new Error("Solana Devnet order context is unavailable.");
+        return runtime.clock.currentClock(context);
+      },
+    });
+  } catch (error) {
+    reportRuntimeFailure("solanaTreasuryHedgeOrders", error);
+  }
+}
 let evmCollateralConversionOrders: ReturnType<typeof createEvmCollateralConversionOrderPort> | undefined;
 const evmCollateralConversionProfilePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_ORDER_PROFILES;
 if (evmCollateralConversionProfilePath !== undefined && evmCollateralConversionProfilePath !== "") {
@@ -1090,6 +1118,7 @@ const server = createPrivateTerminalServer(
   evmReverseBasisCollateral,
   evmStrategyExecutionAuthorization,
   evmStrategyExecutionObservation,
+  solanaTreasuryHedgeOrders,
 );
 
 const publicServer = publicMarket?.listener === undefined

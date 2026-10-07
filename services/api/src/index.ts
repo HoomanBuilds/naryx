@@ -75,6 +75,17 @@ export {
   type EvmTreasuryHedgeProfile,
 } from "./evm-treasury-hedge-order.js";
 export {
+  createSolanaTreasuryHedgeOrderPort,
+  loadSolanaTreasuryHedgeProfiles,
+  SolanaTreasuryHedgeOrderError,
+  type CreatedSolanaTreasuryHedgeOrder,
+  type SolanaTreasuryHedgeBounds,
+  type SolanaTreasuryHedgeLegProfile,
+  type SolanaTreasuryHedgeOrderPort,
+  type SolanaTreasuryHedgeOrderRequest,
+  type SolanaTreasuryHedgeProfile,
+} from "./solana-treasury-hedge-order.js";
+export {
   createEvmCollateralConversionOrderPort,
   EvmCollateralConversionOrderError,
   loadEvmCollateralConversionProfiles,

@@ -127,6 +127,10 @@ import {
   type EvmTreasuryHedgeOrderPort,
 } from "./evm-treasury-hedge-order.js";
 import {
+  SolanaTreasuryHedgeOrderError,
+  type SolanaTreasuryHedgeOrderPort,
+} from "./solana-treasury-hedge-order.js";
+import {
   EvmCollateralConversionOrderError,
   type EvmCollateralConversionOrderPort,
 } from "./evm-collateral-conversion-order.js";
@@ -351,6 +355,7 @@ export function createPrivateTerminalRequestHandler(
   evmReverseBasisCollateral?: EvmReverseBasisCollateralPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
+  solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -844,6 +849,79 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "STRATEGY_ORDER_CREATION_FAILED", "Native strategy order creation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/solana-treasury-hedge-profiles") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (solanaTreasuryHedgeOrders === undefined) {
+        reject(response, 503, "STRATEGY_ORDER_CREATION_UNAVAILABLE", "Solana treasury hedge order creation is unavailable.");
+        return;
+      }
+      sendJson(response, 200, {
+        version: 1,
+        profiles: solanaTreasuryHedgeOrders.profiles().map((profile) => ({
+          profileId: profile.profileId,
+          displayName: profile.displayName,
+          templateId: profile.templateId,
+          templateVersion: profile.templateVersion,
+          seriesId: profile.seriesId,
+          executionClassId: profile.executionClassId,
+          domainId: profile.domain.domainId,
+          multiStrategyProgramId: profile.multiStrategyProgramId,
+          inventoryAsset: { assetId: profile.inventoryAsset.assetId, decimals: profile.inventoryAsset.decimals },
+          quoteAsset: { assetId: profile.quoteAsset.assetId, decimals: profile.quoteAsset.decimals },
+          bounds: Object.fromEntries(Object.entries(profile.bounds).map(([name, value]) => [name, value.toString()])),
+        })),
+      });
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/solana-treasury-hedge-orders/create") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (solanaTreasuryHedgeOrders === undefined) {
+        reject(response, 503, "STRATEGY_ORDER_CREATION_UNAVAILABLE", "Solana treasury hedge order creation is unavailable.");
+        return;
+      }
+      try {
+        const created = await solanaTreasuryHedgeOrders.create(await readJson(request));
+        sendJson(response, 200, {
+          version: 1,
+          status: created.intake.status,
+          created: created.intake.created,
+          profileId: created.profileId,
+          settlementAccount: created.settlementAccount,
+          orderHash: created.intake.orderHashHex,
+          graphHash: created.intake.graphHashHex,
+          templateId: created.order.templateId,
+          lifecycleAction: created.order.lifecycleAction,
+          seriesId: created.order.seriesId,
+          executionClassId: created.order.executionClassId,
+        });
+      } catch (error) {
+        if (error instanceof SolanaTreasuryHedgeOrderError) {
+          const status = error.code === "PROFILE_NOT_FOUND" ? 404
+            : error.code === "LIMIT_EXCEEDED" ? 409
+              : error.code === "INVALID_CONFIGURATION" ? 503
+                : error.code === "INTAKE_MISMATCH" ? 500
+                  : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        if (error instanceof StrategyOrderIntakeError) {
+          reject(response, error.status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "STRATEGY_ORDER_CREATION_FAILED", "Solana treasury hedge order creation failed closed.");
       }
       return;
     }
@@ -2374,6 +2452,7 @@ export function createPrivateTerminalServer(
   evmReverseBasisCollateral?: EvmReverseBasisCollateralPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
+  solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -2410,6 +2489,7 @@ export function createPrivateTerminalServer(
     evmReverseBasisCollateral,
     evmStrategyExecutionAuthorization,
     evmStrategyExecutionObservation,
+    solanaTreasuryHedgeOrders,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as
