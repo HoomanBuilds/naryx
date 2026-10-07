@@ -21,6 +21,7 @@ const plan: CrossDomainPlanInput = {
   timeUnit: 'EVM_UNIX_SECONDS',
   prepareDeadline: 100n,
   commitDeadline: 200n,
+  compensationDeadline: 300n,
   maximumInterimExposureQuoteAtoms: 1_000n,
   legs: [
     { domain: domainRef('svm:testnet', 1, '21'.repeat(32)), legIds: ['spot'], inventoryReservationId: '31'.repeat(32), interimExposureQuoteAtoms: 400n, compensationActionHash: '41'.repeat(32) },
@@ -57,7 +58,7 @@ describe('cross-domain prepositioned coordination', () => {
     assert.equal(replayCrossDomainCoordination(plan, [], 101n).terminalState, 'NO_EFFECT', 'nothing prepared before expiry has no effect');
     assert.equal(replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n)], 101n).phase, 'ABORTING');
     // A prepare that was only observed is compensated once aborting, never awaited forever.
-    assert.deepEqual(replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n, '51', 'OBSERVED')], 1_000_000n).nextActions, [{ kind: 'COMPENSATE', domainId: 'svm:testnet' }]);
+    assert.deepEqual(replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n, '51', 'OBSERVED')], 101n).nextActions, [{ kind: 'COMPENSATE', domainId: 'svm:testnet' }]);
     // A failure report for a domain already prepared fences instead of skipping its compensation.
     const overwrite = replayCrossDomainCoordination(plan, [ev('PREPARED', 'svm:testnet', 20n), { kind: 'PREPARE_FAILED', domainId: 'svm:testnet', evidenceHash: '58'.repeat(32), atValue: 21n }], 30n);
     assert.equal(overwrite.phase, 'FENCED');
@@ -70,6 +71,7 @@ describe('cross-domain prepositioned coordination', () => {
       [[ev('COMMITTED', 'svm:testnet', 20n)], 30n],
       [prepared, 201n],
       [[...prepared, ev('COMMITTED', 'eip155:84532', 150n, '53'), ev('COMMITTED', 'svm:testnet', 201n, '54')], 201n],
+      [[ev('PREPARED', 'svm:testnet', 20n), { kind: 'PREPARE_FAILED', domainId: 'eip155:84532', evidenceHash: '55'.repeat(32), atValue: 30n }], 301n],
       [[ev('PREPARED', 'svm:testnet', 20n), ev('PREPARED', 'eip155:84532', 10n, '52')], 30n],
       [[...prepared, ev('COMPENSATED', 'svm:testnet', 50n, '57')], 60n],
     ];

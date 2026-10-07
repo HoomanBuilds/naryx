@@ -41,6 +41,7 @@ export interface CrossDomainPlanInput {
   readonly timeUnit: ExpiryUnit;
   readonly prepareDeadline: bigint;
   readonly commitDeadline: bigint;
+  readonly compensationDeadline: bigint;
   /** Bound on simultaneous interim exposure; the sum over all domains must stay within it. */
   readonly maximumInterimExposureQuoteAtoms: bigint;
   readonly legs: readonly CrossDomainLegInput[];
@@ -55,6 +56,7 @@ export interface CrossDomainPlan {
   readonly timeUnit: ExpiryUnit;
   readonly prepareDeadline: bigint;
   readonly commitDeadline: bigint;
+  readonly compensationDeadline: bigint;
   readonly maximumInterimExposureQuoteAtoms: bigint;
   /** Sorted by domain id. */
   readonly legs: readonly {
@@ -78,6 +80,8 @@ export function crossDomainPlan(input: CrossDomainPlanInput, context = 'crossDom
   const prepareDeadline = u(input.prepareDeadline, U64, `${context}.prepareDeadline`);
   const commitDeadline = u(input.commitDeadline, U64, `${context}.commitDeadline`);
   if (commitDeadline <= prepareDeadline) throw new MalformedInputError(`${context}.commitDeadline`, 'commit must end after prepare');
+  const compensationDeadline = u(input.compensationDeadline, U64, `${context}.compensationDeadline`);
+  if (compensationDeadline <= commitDeadline) throw new MalformedInputError(`${context}.compensationDeadline`, 'compensation must end after commit');
   if (!Array.isArray(input.legs) || input.legs.length < 2 || input.legs.length > MAX_DOMAINS) {
     throw new MalformedInputError(`${context}.legs`, `a cross-domain package spans 2 to ${MAX_DOMAINS} domains`);
   }
@@ -114,6 +118,7 @@ export function crossDomainPlan(input: CrossDomainPlanInput, context = 'crossDom
     timeUnit: input.timeUnit,
     prepareDeadline,
     commitDeadline,
+    compensationDeadline,
     maximumInterimExposureQuoteAtoms: maximum,
     legs: Object.freeze(legs),
   });
@@ -130,6 +135,7 @@ export function crossDomainPlanHash(input: CrossDomainPlanInput): CommitmentHash
     writer.writeEnum(EXPIRY_UNIT, plan.timeUnit, 'timeUnit');
     writer.writeU64(plan.prepareDeadline, 'prepareDeadline');
     writer.writeU64(plan.commitDeadline, 'commitDeadline');
+    writer.writeU64(plan.compensationDeadline, 'compensationDeadline');
     writer.writeU128(plan.maximumInterimExposureQuoteAtoms, 'maximumInterimExposureQuoteAtoms');
     writer.writeArray(plan.legs, (inner, leg) => {
       encodeDomainRef(inner, leg.domain);
@@ -234,6 +240,7 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
       case 'COMPENSATED':
         if (phase !== 'ABORTING' && phase !== 'ABORTED') { fence(`${event.domainId} compensated outside an abort`); break; }
         if (current !== 'PREPARED' && current !== 'PREPARING' && current !== 'COMPENSATING') { fence(`${event.domainId} compensated from ${current}`); break; }
+        if (at > plan.compensationDeadline) { fence(`${event.domainId} compensated after the compensation deadline`); break; }
         status.set(event.domainId, finalized ? 'COMPENSATED' : 'COMPENSATING');
         break;
       default:
@@ -248,6 +255,7 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
     phase = [...status.values()].some((value) => value === 'PREPARED' || value === 'PREPARING') ? 'ABORTING' : 'ABORTED';
   }
   if (phase === 'COMMITTING' && now > plan.commitDeadline) fence('the commit deadline passed before every domain committed');
+  if (phase === 'ABORTING' && now > plan.compensationDeadline) fence('the compensation deadline passed before every prepared domain was compensated');
 
   const interim = plan.legs
     .filter((leg) => ['PREPARING', 'PREPARED', 'COMMITTING', 'COMPENSATING'].includes(status.get(leg.domain.domainId) as string))

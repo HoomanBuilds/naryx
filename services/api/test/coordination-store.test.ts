@@ -35,6 +35,7 @@ const plan: CrossDomainPlanInput = {
   timeUnit: "EVM_UNIX_SECONDS",
   prepareDeadline: 1_100n,
   commitDeadline: 1_200n,
+  compensationDeadline: 1_300n,
   maximumInterimExposureQuoteAtoms: 1_000n,
   legs: [
     { domain: domainRef("svm:testnet", 1, "21".repeat(32)), legIds: ["spot"], inventoryReservationId: "31".repeat(32), interimExposureQuoteAtoms: 400n, compensationActionHash: "41".repeat(32) },

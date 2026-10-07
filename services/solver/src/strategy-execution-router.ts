@@ -83,7 +83,7 @@ function verifiedCrossDomainPlan(
   requireCondition(bytesEqual(plan.orderHash, orderHash), 'cross-domain plan does not bind the admitted order');
   requireCondition(bytesEqual(plan.quoteHash, strategyPackageQuoteHash(admission.quote)), 'cross-domain plan does not bind the admitted quote');
   requireCondition(bytesEqual(plan.routeHash, typedStrategyRouteHash(route)), 'cross-domain plan does not bind the selected route');
-  requireCondition(plan.timeUnit === route.routeExpiryUnit && plan.commitDeadline <= route.routeExpiryValue, 'cross-domain plan outlives the selected route');
+  requireCondition(plan.timeUnit === route.routeExpiryUnit && plan.compensationDeadline <= route.routeExpiryValue, 'cross-domain plan outlives the selected route');
   requireCondition(plan.legs.length === route.domainPlans.length, 'cross-domain plan does not cover every route domain');
   for (const domainPlan of route.domainPlans) {
     const planned = plan.legs.find((candidate) => sameDomain(candidate.domain, domainPlan.domain));
