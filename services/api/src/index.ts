@@ -69,6 +69,17 @@ export {
   type EvmTreasuryHedgeProfile,
 } from "./evm-treasury-hedge-order.js";
 export {
+  createEvmCollateralConversionOrderPort,
+  EvmCollateralConversionOrderError,
+  loadEvmCollateralConversionProfiles,
+  type CreatedEvmCollateralConversionOrder,
+  type EvmCollateralConversionBounds,
+  type EvmCollateralConversionLegProfile,
+  type EvmCollateralConversionOrderPort,
+  type EvmCollateralConversionOrderRequest,
+  type EvmCollateralConversionProfile,
+} from "./evm-collateral-conversion-order.js";
+export {
   buildHyperliquidStrategyPackageReceipt,
   HyperliquidStrategyReceiptError,
 } from "./hyperliquid-strategy-receipt.js";
