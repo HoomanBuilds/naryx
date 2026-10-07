@@ -61,6 +61,21 @@ describe('strategy template program', () => {
       assert.ok(conversion.actionSpecs.find((spec) => spec.action === action)?.allowedSettlementClasses.includes('ATOMIC_POSTCONDITION'));
     }
   });
+
+  test('multi-domain strategy entry uses only prepositioned settlement', () => {
+    for (const templateId of [
+      STRATEGY_TEMPLATE_ID.CASH_AND_CARRY,
+      STRATEGY_TEMPLATE_ID.REVERSE_CASH_AND_CARRY,
+      STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD,
+      STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE,
+      STRATEGY_TEMPLATE_ID.OPTION_SPREAD,
+      STRATEGY_TEMPLATE_ID.COLLATERAL_CONVERSION_HEDGE,
+    ] as const) {
+      const entry = requireStrategyTemplateDefinition(templateId).actionSpecs.find((spec) => spec.action === 'ENTRY');
+      assert.ok(entry?.allowedSettlementClasses.includes('CROSS_DOMAIN_PREPOSITIONED'));
+      assert.ok(!entry?.allowedSettlementClasses.includes('MANUAL_CONTROLLED_RECOVERY'));
+    }
+  });
 });
 
 const usdc = assetRef('usdc', '11'.repeat(32), 6);

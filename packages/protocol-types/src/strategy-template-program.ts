@@ -107,6 +107,7 @@ const ATOMIC_AND_RECOVERABLE = Object.freeze([
   'ATOMIC_POSTCONDITION',
   'BATCHED_IOC_WITH_RECOVERY',
   'ASYNC_BONDED_SOLVER',
+  'CROSS_DOMAIN_PREPOSITIONED',
 ] as const satisfies readonly SettlementClass[]);
 
 const RECOVERABLE = Object.freeze([
