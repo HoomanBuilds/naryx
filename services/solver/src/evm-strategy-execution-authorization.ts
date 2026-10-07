@@ -29,6 +29,7 @@ export interface AuthorizedEvmStrategyExecution {
   readonly version: 1;
   readonly domain: DomainRef;
   readonly chainId: number;
+  readonly owner: Address;
   readonly to: Address;
   readonly value: 0n;
   readonly data: Hex;
@@ -154,6 +155,7 @@ export class EvmStrategyExecutionAuthorizationService {
       version: 1,
       domain: domainExecution.domain,
       chainId: envelope.ownerTypedData.domain.chainId,
+      owner: getAddress(documents.order.owner),
       to: envelope.account,
       value: 0n,
       data,

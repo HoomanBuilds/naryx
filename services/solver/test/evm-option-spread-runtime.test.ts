@@ -453,6 +453,7 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const authorized = await authorization.authorize({ quoteHash, ownerSignature });
   assert.equal(authorized?.to, ACCOUNT);
   assert.equal(authorized?.chainId, 84_532);
+  assert.equal(authorized?.owner, OWNER);
   assert.equal(authorized?.domain.domainId, domain.domainId);
   assert.equal(authorized?.ownerSignature, ownerSignature);
   assert.match(authorized?.solverSignature ?? '', /^0x[0-9a-f]{130}$/);

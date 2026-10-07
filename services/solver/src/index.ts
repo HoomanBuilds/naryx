@@ -1022,6 +1022,19 @@ export {
   type EvmCrossDomainPhaseResult,
 } from './evm-cross-domain-execution-driver.js';
 export {
+  EvmFirmReservationCrossDomainLane,
+  type EvmAtomicPackageReceipt,
+  type EvmAtomicPackageState,
+  type EvmCrossDomainAuthorizationProvider,
+  type EvmFirmReservationCrossDomainLaneConfig,
+  type EvmFirmReservationCrossDomainPort,
+  type EvmFirmReservationRecord,
+  type EvmFirmReservationState,
+} from './evm-firm-reservation-cross-domain-lane.js';
+export {
+  createViemEvmFirmReservationCrossDomainPort,
+} from './evm-firm-reservation-cross-domain-port.js';
+export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,
