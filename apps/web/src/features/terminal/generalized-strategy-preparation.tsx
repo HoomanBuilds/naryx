@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { formatAtomicAmount, formatMetricValue } from "./format";
+import type { DomainId } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -37,6 +38,16 @@ const EVM_STRATEGY_TEMPLATES = new Set([
   "collateral-conversion-hedge-v1",
   "reverse-cash-and-carry-v1",
 ]);
+const EVM_CHAIN_IDS: Readonly<Partial<Record<DomainId, number>>> = Object.freeze({
+  base: 84_532,
+  arbitrum: 421_614,
+});
+const TEST_DOMAIN_IDS: Readonly<Record<DomainId, string>> = Object.freeze({
+  solana: "svm:devnet",
+  base: "eip155:84532",
+  arbitrum: "eip155:421614",
+  hyperliquid: "hypercore:testnet",
+});
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -1216,6 +1227,7 @@ function expiryText(unit: string, value: string): string {
 export function GeneralizedStrategyPreparationPanel({
   privateApiBaseUrl,
   publicApiBaseUrl,
+  executionDomain,
   templateId,
   lifecycleAction,
   sourceOrderHash = null,
@@ -1227,6 +1239,7 @@ export function GeneralizedStrategyPreparationPanel({
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  executionDomain: DomainId;
   templateId: string;
   lifecycleAction: string;
   sourceOrderHash?: string | null;
@@ -1236,6 +1249,15 @@ export function GeneralizedStrategyPreparationPanel({
   sendEvmTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
   waitForEvmReceipt?: (chainId: number, hash: string) => Promise<boolean>;
 }) {
+  const hyperliquidLane = executionDomain === "hyperliquid";
+  const evmChainId = EVM_CHAIN_IDS[executionDomain];
+  const evmLane = evmChainId !== undefined;
+  const expectedDomainId = TEST_DOMAIN_IDS[executionDomain];
+  const laneSupportsTemplate = sourceOrderHash !== null
+    ? hyperliquidLane
+    : hyperliquidLane
+      ? NATIVE_HYPERCORE_TEMPLATES.has(templateId)
+      : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
   const [orderHash, setOrderHash] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
@@ -1294,7 +1316,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (privateApiBaseUrl === null || sourceOrderHash !== null || templateId !== "option-spread-v1") return;
+    if (!evmLane || privateApiBaseUrl === null || sourceOrderHash !== null || templateId !== "option-spread-v1") return;
     const controller = new AbortController();
     void fetch(`${privateApiBaseUrl}/internal/terminal/evm-option-spread-profiles`, {
       headers: { Accept: "application/json" },
@@ -1314,13 +1336,13 @@ export function GeneralizedStrategyPreparationPanel({
       setError(cause instanceof Error ? cause.message : "EVM option markets are unavailable.");
     });
     return () => controller.abort();
-  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+  }, [evmLane, privateApiBaseUrl, sourceOrderHash, templateId]);
 
   useEffect(() => {
     const kind = templateId === "treasury-inventory-hedge-v1" ? "TREASURY_HEDGE"
       : templateId === "collateral-conversion-hedge-v1" ? "COLLATERAL_CONVERSION"
         : templateId === "reverse-cash-and-carry-v1" ? "REVERSE_BASIS" : null;
-    if (privateApiBaseUrl === null || sourceOrderHash !== null || kind === null) return;
+    if (!evmLane || privateApiBaseUrl === null || sourceOrderHash !== null || kind === null) return;
     const controller = new AbortController();
     const route = kind === "TREASURY_HEDGE"
       ? "/internal/terminal/evm-treasury-hedge-profiles"
@@ -1342,10 +1364,10 @@ export function GeneralizedStrategyPreparationPanel({
       setError(cause instanceof Error ? cause.message : "EVM strategy markets are unavailable.");
     });
     return () => controller.abort();
-  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+  }, [evmLane, privateApiBaseUrl, sourceOrderHash, templateId]);
 
   useEffect(() => {
-    if (privateApiBaseUrl === null || sourceOrderHash !== null || lifecycleAction === "ENTRY"
+    if (!evmLane || privateApiBaseUrl === null || sourceOrderHash !== null || lifecycleAction === "ENTRY"
       || strategyOwner === null || !OWNER.test(strategyOwner) || !EVM_STRATEGY_TEMPLATES.has(templateId)) {
       return;
     }
@@ -1368,7 +1390,7 @@ export function GeneralizedStrategyPreparationPanel({
       setEvmPositionError(cause instanceof Error ? cause.message : "EVM strategy positions are unavailable.");
     });
     return () => controller.abort();
-  }, [privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
+  }, [evmLane, privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
 
   useEffect(() => {
     if (publicApiBaseUrl === null) return;
@@ -1391,7 +1413,7 @@ export function GeneralizedStrategyPreparationPanel({
   }, [publicApiBaseUrl]);
 
   useEffect(() => {
-    if (privateApiBaseUrl === null || sourceOrderHash !== null || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
+    if (!hyperliquidLane || privateApiBaseUrl === null || sourceOrderHash !== null || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
       return;
     }
     const controller = new AbortController();
@@ -1413,10 +1435,10 @@ export function GeneralizedStrategyPreparationPanel({
       setNativeProfileError(cause instanceof Error ? cause.message : "Native strategy profiles are unavailable.");
     });
     return () => controller.abort();
-  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+  }, [hyperliquidLane, privateApiBaseUrl, sourceOrderHash, templateId]);
 
   useEffect(() => {
-    if (privateApiBaseUrl === null || sourceOrderHash !== null
+    if (!hyperliquidLane || privateApiBaseUrl === null || sourceOrderHash !== null
       || (lifecycleAction !== "INCREASE" && lifecycleAction !== "DECREASE"
         && lifecycleAction !== "EXIT" && lifecycleAction !== "MIGRATE"
         && lifecycleAction !== "REBALANCE"
@@ -1444,13 +1466,18 @@ export function GeneralizedStrategyPreparationPanel({
       setNativePositionError(cause instanceof Error ? cause.message : "Native strategy positions are unavailable.");
     });
     return () => controller.abort();
-  }, [privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
+  }, [hyperliquidLane, privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
 
-  const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId && admission.lifecycleAction === lifecycleAction);
-  const selectedEvmOptionProfile = (evmOptionProfiles ?? []).find((profile) => profile.profileId === selectedEvmOptionProfileId)
-    ?? evmOptionProfiles?.[0]
+  const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId
+    && admission.lifecycleAction === lifecycleAction
+    && admission.domainIds.length === 1
+    && admission.domainIds[0] === expectedDomainId);
+  const matchingEvmOptionProfiles = (evmOptionProfiles ?? []).filter((profile) => profile.chainId === evmChainId);
+  const selectedEvmOptionProfile = matchingEvmOptionProfiles.find((profile) => profile.profileId === selectedEvmOptionProfileId)
+    ?? matchingEvmOptionProfiles[0]
     ?? null;
-  const matchingEvmDirectionalProfiles = (evmDirectionalProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const matchingEvmDirectionalProfiles = (evmDirectionalProfiles ?? []).filter((profile) =>
+    profile.templateId === templateId && profile.chainId === evmChainId);
   const selectedEvmDirectionalProfile = matchingEvmDirectionalProfiles.find((profile) =>
     profile.profileId === selectedEvmDirectionalProfileId) ?? matchingEvmDirectionalProfiles[0] ?? null;
   const selectedEvmProfile = templateId === "option-spread-v1"
@@ -1980,7 +2007,11 @@ export function GeneralizedStrategyPreparationPanel({
         body: JSON.stringify({ quoteHash }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      setReview(parseReview(await response.json(), quoteHash));
+      const parsed = parseReview(await response.json(), quoteHash);
+      if (parsed.domains.length !== 1 || parsed.domains[0]?.domainId !== expectedDomainId) {
+        throw new Error(`Prepared strategy does not belong to the selected ${executionDomain} lane.`);
+      }
+      setReview(parsed);
       setExecutionAttempt(null);
       setAuthorizedOrderHash(null);
       setSelectionKey("");
@@ -2190,6 +2221,20 @@ export function GeneralizedStrategyPreparationPanel({
     && (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE" || evmSwapPrice !== "");
   const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
 
+  if (!laneSupportsTemplate) {
+    return (
+      <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
+        <div className={styles.evidenceHeading}>
+          <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
+          <span>LANE NOT ACTIVE</span>
+        </div>
+        <p className={styles.reviewNotice}>
+          This strategy has no reviewed execution lane on {executionDomain}. Select a supported chain before creating or authorizing an order.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
@@ -2209,7 +2254,7 @@ export function GeneralizedStrategyPreparationPanel({
           {staged ? <p className={styles.fieldContext}>Graph {compact(staged.graphHash)} is stored for solver quoting.</p> : null}
         </div>
       ) : null}
-      {sourceOrderHash === null && NATIVE_HYPERCORE_TEMPLATES.has(templateId) ? (
+      {sourceOrderHash === null && hyperliquidLane && NATIVE_HYPERCORE_TEMPLATES.has(templateId) ? (
         <div className={styles.strategyPrepareForm}>
           <label htmlFor="native-strategy-profile">HyperCore strategy market</label>
           <select
@@ -2383,7 +2428,7 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
-      {sourceOrderHash === null && templateId === "option-spread-v1" ? (
+      {sourceOrderHash === null && evmLane && templateId === "option-spread-v1" ? (
         <div className={styles.strategyPrepareForm}>
           <label htmlFor="evm-option-profile">Atomic option market</label>
           <select
@@ -2398,8 +2443,8 @@ export function GeneralizedStrategyPreparationPanel({
               setError(null);
             }}
           >
-            {(evmOptionProfiles ?? []).length === 0 ? <option value="">No reviewed option market is active</option> : null}
-            {(evmOptionProfiles ?? []).map((profile) => (
+            {matchingEvmOptionProfiles.length === 0 ? <option value="">No reviewed option market is active on this chain</option> : null}
+            {matchingEvmOptionProfiles.map((profile) => (
               <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
             ))}
           </select>
@@ -2513,7 +2558,7 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
-      {sourceOrderHash === null
+      {sourceOrderHash === null && evmLane
         && (templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1"
           || templateId === "reverse-cash-and-carry-v1") ? (
         <div className={styles.strategyPrepareForm}>

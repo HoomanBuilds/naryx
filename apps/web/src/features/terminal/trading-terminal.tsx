@@ -1368,9 +1368,10 @@ function Ticket({
 
       {!nativeCashFlow || selectedDomain === "hyperliquid" ? (
         <GeneralizedStrategyPreparationPanel
-          key={`${selectedStrategyTemplateId}:${selectedLifecycleAction}:${selectedDomain === "hyperliquid" ? hyperliquidFlow?.attempt?.orderHash ?? "manual" : "manual"}`}
+          key={`${selectedDomain}:${selectedStrategyTemplateId}:${selectedLifecycleAction}:${selectedDomain === "hyperliquid" ? hyperliquidFlow?.attempt?.orderHash ?? "manual" : "manual"}`}
           privateApiBaseUrl={privateApiBaseUrl}
           publicApiBaseUrl={publicApiBaseUrl}
+          executionDomain={selectedDomain}
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
