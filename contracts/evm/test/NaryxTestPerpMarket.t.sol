@@ -155,6 +155,40 @@ contract NaryxTestPerpMarketTest is Test {
         _assertConserved();
     }
 
+    function testIncreasesAndPartiallyDecreasesWithoutChangingDirection() public {
+        vm.prank(alice);
+        market.trade(_args(-ONE, 400e18));
+
+        vm.prank(keeper);
+        market.setFundingRatePerSecond(1e13);
+        vm.warp(block.timestamp + 100);
+        oracle.setPrice(2_000e8);
+        vm.prank(alice);
+        ISynFuturesInstrument.PositionCache memory increased = market.trade(_args(-0.5e18, 200e18));
+        assertEq(increased.size, -1.5e18);
+        assertEq(increased.balance, 598.500312e18);
+        assertEq(increased.entryNotional, 2_999.375e18);
+        assertEq(increased.entryFundingIndex, 333_333_333_333_333);
+        assertEq(market.reserveOf(alice), 400e6);
+
+        oracle.setPrice(1_900e8);
+        _fundInsurance(1_000e6);
+        vm.prank(alice);
+        ISynFuturesInstrument.PositionCache memory decreased = market.trade(_args(0.5e18, 0));
+        assertEq(decreased.size, -ONE);
+        assertEq(decreased.balance, 399.000208e18);
+        assertEq(decreased.entryNotional, 1_999.583333333333333334e18);
+        assertGt(market.reserveOf(alice), 400e6);
+        _assertConserved();
+
+        vm.startPrank(alice);
+        vm.expectRevert(NaryxTestPerpMarket.InvalidTradeShape.selector);
+        market.trade(_args(2e18, 0));
+        vm.expectRevert(NaryxTestPerpMarket.InvalidTradeShape.selector);
+        market.trade(_args(-0.5e18, 0));
+        vm.stopPrank();
+    }
+
     function testRejectsUndermarginedOversizedUnfundedAndMisshapedTrades() public {
         // Initial margin is 10% of 1999.58 = 199.958 after the 0.99979 fee.
         vm.startPrank(alice);
@@ -166,7 +200,7 @@ contract NaryxTestPerpMarketTest is Test {
         market.trade(_args(-ONE, 1_001e18));
         market.trade(_args(-ONE, 201e18));
         vm.expectRevert(NaryxTestPerpMarket.InvalidTradeShape.selector);
-        market.trade(_args(0.5e18, 0));
+        market.trade(_args(2e18, 0));
         vm.expectRevert(NaryxTestPerpMarket.InvalidTradeShape.selector);
         market.trade(_args(ONE, -201e18));
         bytes32[2] memory expired = _args(ONE, 0);
@@ -269,7 +303,7 @@ contract NaryxTestPerpMarketTest is Test {
         vm.prank(nextKeeper);
         market.setFundingRatePerSecond(-1e15);
 
-        vm.chainId(31_337);
+        vm.chainId(31_339);
         vm.expectRevert(NaryxTestPerpMarket.InvalidChain.selector);
         new NaryxTestPerpMarket(_parameters());
         vm.expectRevert(NaryxTestPerpMarket.InvalidChain.selector);
