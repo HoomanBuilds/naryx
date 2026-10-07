@@ -303,9 +303,8 @@ export function createEvmCalendarSpreadGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'EVM_UNIX_SECONDS' && graph.expiryUnit === 'EVM_UNIX_SECONDS',
       'package is not a testnet atomic EVM calendar spread');
-      const opening = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
-      const closing = order.lifecycleAction === 'DECREASE' || order.lifecycleAction === 'EXIT'
-        || order.lifecycleAction === 'EMERGENCY_UNWIND';
+      const opening = order.lifecycleAction === 'ENTRY';
+      const closing = order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND';
       requireCondition(opening || closing, 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 2 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain)),
         'package domain is unsupported');

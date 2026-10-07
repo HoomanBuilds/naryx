@@ -1165,6 +1165,12 @@ export {
   type EvmCalendarSpreadRole,
 } from './evm-calendar-spread-quote.js';
 export {
+  EvmCalendarSpreadPreparationContextResolver,
+  type EvmCalendarSpreadAdapterFactoryBinding,
+  type EvmCalendarSpreadPackageIdPort,
+  type EvmCalendarSpreadPreparationLane,
+} from './evm-calendar-spread-preparation.js';
+export {
   EvmTreasuryHedgePreparationContextResolver,
   type EvmTreasuryHedgeAdapterFactoryBinding,
   type EvmTreasuryHedgePreparationLane,
