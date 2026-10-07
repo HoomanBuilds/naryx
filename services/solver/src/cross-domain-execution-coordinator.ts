@@ -117,6 +117,8 @@ export class CrossDomainExecutionCoordinator {
     requireCondition(execution.crossDomainPlanHash !== undefined
       && toHex(execution.crossDomainPlanHash) === planHash, 'prepared execution binds another cross-domain plan');
     requireCondition(bytesEqual(execution.orderHash, plan.orderHash), 'prepared execution binds another order');
+    requireCondition(bytesEqual(execution.quoteHash, plan.quoteHash), 'prepared execution binds another quote');
+    requireCondition(bytesEqual(execution.routeHash, plan.routeHash), 'prepared execution binds another route');
     requireCondition(execution.domains.length === plan.legs.length, 'prepared execution does not cover every planned domain');
     for (const leg of plan.legs) {
       requireCondition(execution.domains.filter((candidate) => sameDomain(candidate.domain, leg.domain)).length === 1,

@@ -16,6 +16,8 @@ const plan: CrossDomainPlanInput = {
   planVersion: 1,
   environment: 'testnet',
   orderHash: hash('1'),
+  quoteHash: hash('8'),
+  routeHash: hash('9'),
   timeUnit: 'EVM_UNIX_SECONDS',
   prepareDeadline: 100n,
   commitDeadline: 200n,

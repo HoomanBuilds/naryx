@@ -36,6 +36,8 @@ export interface CrossDomainPlanInput {
   readonly planVersion: number;
   readonly environment: string;
   readonly orderHash: Uint8Array | string;
+  readonly quoteHash: Uint8Array | string;
+  readonly routeHash: Uint8Array | string;
   readonly timeUnit: ExpiryUnit;
   readonly prepareDeadline: bigint;
   readonly commitDeadline: bigint;
@@ -48,6 +50,8 @@ export interface CrossDomainPlan {
   readonly planVersion: 1;
   readonly environment: ProtocolId;
   readonly orderHash: CommitmentHash;
+  readonly quoteHash: CommitmentHash;
+  readonly routeHash: CommitmentHash;
   readonly timeUnit: ExpiryUnit;
   readonly prepareDeadline: bigint;
   readonly commitDeadline: bigint;
@@ -105,6 +109,8 @@ export function crossDomainPlan(input: CrossDomainPlanInput, context = 'crossDom
     planVersion: 1 as const,
     environment: protocolId(input.environment, `${context}.environment`),
     orderHash: commitmentHash(input.orderHash, `${context}.orderHash`),
+    quoteHash: commitmentHash(input.quoteHash, `${context}.quoteHash`),
+    routeHash: commitmentHash(input.routeHash, `${context}.routeHash`),
     timeUnit: input.timeUnit,
     prepareDeadline,
     commitDeadline,
@@ -119,6 +125,8 @@ export function crossDomainPlanHash(input: CrossDomainPlanInput): CommitmentHash
     writer.writeU32(plan.planVersion, 'planVersion');
     encodeProtocolId(writer, plan.environment, 'environment');
     encodeCommitmentHash(writer, plan.orderHash, 'orderHash');
+    encodeCommitmentHash(writer, plan.quoteHash, 'quoteHash');
+    encodeCommitmentHash(writer, plan.routeHash, 'routeHash');
     writer.writeEnum(EXPIRY_UNIT, plan.timeUnit, 'timeUnit');
     writer.writeU64(plan.prepareDeadline, 'prepareDeadline');
     writer.writeU64(plan.commitDeadline, 'commitDeadline');
