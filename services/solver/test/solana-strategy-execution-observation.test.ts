@@ -5,13 +5,15 @@ import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
 import {
   SOLANA_DEVNET_GENESIS_HASH,
+  solanaMultiStrategyEvidenceRoot,
   solanaMultiStrategyReceiptHash,
 } from '@naryx/adapter-solana';
-import { domainRef, type Hash32 } from '@naryx/protocol-types';
+import { assetAmount, assetRef, domainRef, type Hash32 } from '@naryx/protocol-types';
 import {
   SolanaStrategyExecutionObservationService,
   type PreparedStrategyExecutionTransport,
   type SolanaTreasuryHedgeExecutionLane,
+  type StoredStrategyPackageDocuments,
 } from '../src/index.js';
 
 const bytes = (byte: number) => new Uint8Array(32).fill(byte);
@@ -25,8 +27,58 @@ const receiptAddress = key(17);
 const quoteHash = bytes(6) as Hash32;
 const executionHash = bytes(13);
 const callsHash = bytes(14);
-const evidenceRoot = bytes(15);
+const evidenceHash = bytes(15);
+const evidenceRoot = solanaMultiStrategyEvidenceRoot([evidenceHash]);
 const executionSlot = 101n;
+const inventoryAsset = assetRef('sol', bytes(25), 9);
+const quoteAsset = assetRef('usdc', bytes(26), 6);
+
+function documents(): StoredStrategyPackageDocuments {
+  return {
+    orderHashHex: Buffer.from(bytes(10)).toString('hex'),
+    graphHashHex: Buffer.from(bytes(11)).toString('hex'),
+    quoteHashHex: Buffer.from(quoteHash).toString('hex'),
+    routeHashHex: Buffer.from(bytes(12)).toString('hex'),
+    order: {
+      environment: 'devnet',
+      templateId: 'treasury-inventory-hedge-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: bytes(8),
+      seriesId: 'sol-treasury-hedge',
+      seriesVersion: 1,
+      seriesManifestHash: bytes(27),
+      executionClassId: 'solana-atomic-treasury-hedge',
+      executionClassVersion: 1,
+      executionClassManifestHash: bytes(28),
+      lifecycleAction: 'ENTRY',
+      owner: owner.toBase58(),
+      settlementClass: 'ATOMIC_POSTCONDITION',
+      quoteAsset,
+    },
+    graph: {
+      legs: [{
+        legId: 'treasury-hedge',
+        legFamily: 'PERP_OPEN',
+        domain,
+        side: 'SELL',
+        quantityAsset: inventoryAsset,
+        quantityAtoms: 1_000_000_000n,
+      }],
+    },
+    quote: {
+      solverId: 'solver-1',
+      serviceCharges: [],
+      passThroughCosts: [],
+      legEconomics: [{
+        legId: 'treasury-hedge',
+        grossNotional: assetAmount(quoteAsset, 100_000_000n),
+        venueFee: assetAmount(quoteAsset, 50_000n),
+      }],
+    },
+    route: { domainPlans: [{ domain }] },
+    recordedAtMs: 1,
+  } as unknown as StoredStrategyPackageDocuments;
+}
 
 function prepared(): PreparedStrategyExecutionTransport {
   return Object.freeze({
@@ -50,6 +102,7 @@ function prepared(): PreparedStrategyExecutionTransport {
       domain,
       routeSettlementClass: 'ATOMIC_POSTCONDITION' as const,
       localGuarantee: 'ATOMIC_POSTCONDITION' as const,
+      legIds: Object.freeze(['treasury-hedge']),
       envelope: Object.freeze({
         instruction: Object.freeze({
           programId: program.toBase58(),
@@ -97,7 +150,17 @@ function receiptData(): Uint8Array {
   return data;
 }
 
-function lane(transactionData = Uint8Array.from([1, 2, 3])): SolanaTreasuryHedgeExecutionLane {
+function lane(
+  transactionData = Uint8Array.from([1, 2, 3]),
+  logMessages?: readonly string[],
+): SolanaTreasuryHedgeExecutionLane {
+  const event = Buffer.alloc(106);
+  createHash('sha256').update('event:StrategyAdapterLegExecuted', 'ascii').digest().copy(event, 0, 0, 8);
+  receiptAddress.toBuffer().copy(event, 8);
+  event[40] = 0;
+  Buffer.from(bytes(29)).copy(event, 41);
+  event[73] = 0;
+  Buffer.from(evidenceHash).copy(event, 74);
   return Object.freeze({
     domain,
     solver: solver.toBase58(),
@@ -119,6 +182,11 @@ function lane(transactionData = Uint8Array.from([1, 2, 3])): SolanaTreasuryHedge
           accounts: Object.freeze([owner, solver, account, receiptAddress].map((value) => value.toBase58())),
           data: transactionData,
         })]),
+        logMessages: Object.freeze(logMessages ?? [
+          `Program ${program.toBase58()} invoke [1]`,
+          `Program data: ${event.toString('base64')}`,
+          `Program ${program.toBase58()} success`,
+        ]),
       }),
     },
   });
@@ -126,6 +194,7 @@ function lane(transactionData = Uint8Array.from([1, 2, 3])): SolanaTreasuryHedge
 
 test('returns finalized evidence only for the exact prepared Solana instruction and receipt', async () => {
   const service = new SolanaStrategyExecutionObservationService({
+    packages: { getByQuote: async () => documents() },
     preparations: { prepareByQuote: async () => prepared() },
     lanes: [lane()],
   });
@@ -137,10 +206,22 @@ test('returns finalized evidence only for the exact prepared Solana instruction 
   assert.equal(observation.receiptAccount, receiptAddress.toBase58());
   assert.equal(observation.quoteHash, Buffer.from(quoteHash).toString('hex'));
   assert.equal(observation.solver, solver.toBase58());
+  assert.equal(observation.receipt.finalityStatus, 'FINALIZED');
+  assert.equal(observation.receipt.legOutcomes[0]?.evidenceGrade, 'CONSENSUS_VERIFIED');
 
   const changed = new SolanaStrategyExecutionObservationService({
+    packages: { getByQuote: async () => documents() },
     preparations: { prepareByQuote: async () => prepared() },
     lanes: [lane(Uint8Array.from([1, 2, 4]))],
   });
   await assert.rejects(changed.observe({ quoteHash, signature }), /exact prepared strategy instruction/);
+
+  const incompleteLogs = new SolanaStrategyExecutionObservationService({
+    packages: { getByQuote: async () => documents() },
+    preparations: { prepareByQuote: async () => prepared() },
+    lanes: [lane(Uint8Array.from([1, 2, 3]), [
+      `Program ${program.toBase58()} invoke [1]`,
+    ])],
+  });
+  await assert.rejects(incompleteLogs.observe({ quoteHash, signature }), /log stack is incomplete/);
 });

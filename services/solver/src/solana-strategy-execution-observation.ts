@@ -1,13 +1,19 @@
 import bs58 from 'bs58';
 import {
+  assetAmount,
   bytesEqual,
+  strategyPackageReceipt,
+  type StrategyPackageReceipt,
   type DomainRef,
   type Hash32,
 } from '@naryx/protocol-types';
 import {
   decodeSolanaMultiStrategyReceipt,
+  decodeSolanaStrategyAdapterLegEvent,
+  solanaMultiStrategyEvidenceRoot,
   solanaMultiStrategyReceiptHash,
 } from '@naryx/adapter-solana';
+import type { StoredStrategyPackageDocuments, StrategyPackageProvider } from './http-strategy-package-provider.js';
 import type { SolanaTreasuryHedgeExecutionLane } from './solana-treasury-hedge-config.js';
 import { requireSolanaDevnet } from './solana-devnet-rpc.js';
 import {
@@ -39,6 +45,7 @@ export type SolanaStrategyExecutionObservation = Readonly<
       onchainReceiptHash: string;
       solver: string;
       nonce: bigint;
+      receipt: StrategyPackageReceipt;
     }
 >;
 
@@ -70,15 +77,145 @@ function canonicalSignature(value: string): string {
   }
 }
 
+function signedQuantity(
+  side: 'BUY' | 'SELL' | 'NONE',
+  legFamily: string,
+  lifecycleAction: string,
+  atoms: bigint,
+): bigint {
+  if (side === 'BUY') return atoms;
+  if (side === 'SELL') return -atoms;
+  if (legFamily === 'WITHDRAW' || legFamily === 'MARGIN_RELEASE' || legFamily === 'REPAY') return -atoms;
+  if (legFamily === 'INVENTORY_TRANSFER' || legFamily === 'COLLATERAL_TRANSFER') {
+    return lifecycleAction === 'DECREASE' || lifecycleAction === 'EXIT' || lifecycleAction === 'EMERGENCY_UNWIND'
+      ? -atoms
+      : atoms;
+  }
+  return atoms;
+}
+
+function positionIdentity(legFamily: string, legId: string): Readonly<{
+  positionLegId?: string;
+  liabilityId?: string;
+}> {
+  if (legFamily === 'BORROW' || legFamily === 'REPAY') return Object.freeze({ liabilityId: legId });
+  if (legFamily === 'MARGIN_DEPOSIT' || legFamily === 'MARGIN_RELEASE' || legFamily === 'COLLATERAL_TRANSFER') {
+    return Object.freeze({});
+  }
+  return Object.freeze({ positionLegId: legId });
+}
+
+function programData(logs: readonly string[], programId: string): readonly Uint8Array[] {
+  const stack: string[] = [];
+  const values: Uint8Array[] = [];
+  for (const message of logs) {
+    const invoke = /^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) invoke \[(\d+)]$/.exec(message);
+    if (invoke !== null) {
+      const depth = Number(invoke[2]);
+      requireCondition(Number.isSafeInteger(depth) && depth >= 1 && depth <= 64,
+        'transaction program invocation depth is invalid');
+      stack.length = depth - 1;
+      stack.push(invoke[1]!);
+      continue;
+    }
+    const completion = /^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) (?:success|failed: .+)$/.exec(message);
+    if (completion !== null) {
+      requireCondition(stack.at(-1) === completion[1], 'transaction program log stack is inconsistent');
+      stack.pop();
+      continue;
+    }
+    if (!message.startsWith('Program data: ') || stack.at(-1) !== programId) continue;
+    const encoded = message.slice('Program data: '.length);
+    requireCondition(/^[A-Za-z0-9+/]*={0,2}$/.test(encoded), 'program event data is not base64');
+    const decoded = Buffer.from(encoded, 'base64');
+    requireCondition(decoded.toString('base64') === encoded, 'program event data is not canonical base64');
+    values.push(Uint8Array.from(decoded));
+  }
+  requireCondition(stack.length === 0, 'transaction program log stack is incomplete');
+  return Object.freeze(values);
+}
+
+function canonicalReceipt(
+  documents: StoredStrategyPackageDocuments,
+  legEvidence: ReadonlyMap<string, Uint8Array>,
+  executedAtValue: bigint,
+  receiptNonce: bigint,
+): StrategyPackageReceipt {
+  const zero = assetAmount(documents.order.quoteAsset, 0n);
+  requireCondition(documents.quote.serviceCharges.every((charge) => charge.amount.atoms === 0n),
+    'Solana execution receipt cannot report uncollected service charges');
+  const legOutcomes = documents.graph.legs.map((leg) => {
+    const evidenceHash = legEvidence.get(leg.legId);
+    requireCondition(evidenceHash !== undefined, `missing onchain evidence for ${leg.legId}`);
+    const economics = documents.quote.legEconomics.find((candidate) => candidate.legId === leg.legId);
+    requireCondition(economics !== undefined, `quote economics are missing for ${leg.legId}`);
+    return Object.freeze({
+      legId: leg.legId,
+      ...positionIdentity(leg.legFamily, leg.legId),
+      domain: leg.domain,
+      status: 'EXECUTED' as const,
+      requestedQuantity: assetAmount(leg.quantityAsset, leg.quantityAtoms),
+      settledQuantity: assetAmount(
+        leg.quantityAsset,
+        signedQuantity(leg.side, leg.legFamily, documents.order.lifecycleAction, leg.quantityAtoms),
+      ),
+      grossNotional: economics.grossNotional,
+      venueFee: economics.venueFee,
+      residualValue: zero,
+      evidenceGrade: 'CONSENSUS_VERIFIED' as const,
+      onchainEnforced: true,
+      evidenceHash,
+    });
+  });
+  return strategyPackageReceipt({
+    version: 1,
+    environment: documents.order.environment,
+    domains: documents.route.domainPlans.map((plan) => plan.domain),
+    orderHash: documents.orderHashHex,
+    graphHash: documents.graphHashHex,
+    quoteHash: documents.quoteHashHex,
+    routeHash: documents.routeHashHex,
+    templateId: documents.order.templateId,
+    templateVersion: documents.order.templateVersion,
+    packageTemplateManifestHash: documents.order.packageTemplateManifestHash,
+    seriesId: documents.order.seriesId,
+    seriesVersion: documents.order.seriesVersion,
+    seriesManifestHash: documents.order.seriesManifestHash,
+    executionClassId: documents.order.executionClassId,
+    executionClassVersion: documents.order.executionClassVersion,
+    executionClassManifestHash: documents.order.executionClassManifestHash,
+    lifecycleAction: documents.order.lifecycleAction,
+    owner: documents.order.owner,
+    solverId: documents.quote.solverId,
+    settlementClass: documents.order.settlementClass,
+    terminalState: 'FINALIZED_COMPLETE',
+    quoteAsset: documents.order.quoteAsset,
+    legOutcomes,
+    serviceFee: zero,
+    solverFee: zero,
+    venueFees: assetAmount(documents.order.quoteAsset,
+      legOutcomes.reduce((sum, leg) => sum + leg.venueFee.atoms, 0n)),
+    networkCost: zero,
+    recoveryCost: zero,
+    terminalResidualValue: zero,
+    finalityStatus: 'FINALIZED',
+    executedAtValue,
+    receiptNonce,
+  });
+}
+
 export class SolanaStrategyExecutionObservationService {
+  readonly #packages: StrategyPackageProvider;
   readonly #preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
   readonly #lanes: readonly SolanaTreasuryHedgeExecutionLane[];
 
   constructor(input: Readonly<{
+    packages: StrategyPackageProvider;
     preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
     lanes: readonly SolanaTreasuryHedgeExecutionLane[];
   }>) {
     requireCondition(input.lanes.length > 0, 'at least one execution lane is required');
+    this.#packages = input.packages;
     this.#preparations = input.preparations;
     this.#lanes = Object.freeze([...input.lanes]);
   }
@@ -90,6 +227,13 @@ export class SolanaStrategyExecutionObservationService {
     const signature = canonicalSignature(input.signature);
     const prepared = await this.#preparations.prepareByQuote(input.quoteHash);
     if (prepared === undefined) return undefined;
+    const documents = await this.#packages.getByQuote(input.quoteHash);
+    requireCondition(documents !== undefined, 'strategy package documents are unavailable');
+    requireCondition(documents.quoteHashHex === hex(input.quoteHash)
+      && documents.orderHashHex === hex(prepared.orderHash)
+      && documents.graphHashHex === hex(prepared.graphHash)
+      && documents.routeHashHex === hex(prepared.routeHash),
+    'strategy package documents differ from the prepared execution');
     requireCondition(bytesEqual(prepared.quoteHash, input.quoteHash), 'preparation returned another quote');
     const compiled = solanaStrategyExecutionEnvelope(prepared);
     requireCondition(prepared.identity.nextStateHash !== undefined,
@@ -133,6 +277,37 @@ export class SolanaStrategyExecutionObservationService {
       evidenceRoot: receipt.evidenceRoot,
     });
     requireCondition(bytesEqual(receipt.receiptHash, expectedReceiptHash), 'stored receipt hash is invalid');
+    requireCondition(compiled.legIds.length === documents.graph.legs.length,
+      'prepared execution leg attribution is incomplete');
+    const orderedEvidence: Array<Uint8Array | undefined> = Array(compiled.legIds.length).fill(undefined);
+    for (const data of programData(transaction.logMessages, expectedInstruction.programId.toBase58())) {
+      const event = decodeSolanaStrategyAdapterLegEvent(data);
+      if (event === undefined) continue;
+      requireCondition(event.receipt.equals(compiled.envelope.receipt),
+        'adapter evidence names another receipt');
+      requireCondition(event.callIndex < compiled.legIds.length,
+        'adapter evidence call index is invalid');
+      requireCondition(orderedEvidence[event.callIndex] === undefined,
+        'adapter evidence call appears more than once');
+      orderedEvidence[event.callIndex] = event.evidenceHash;
+    }
+    requireCondition(orderedEvidence.every((value) => value !== undefined),
+      'adapter evidence sequence is incomplete');
+    const completeEvidence = orderedEvidence.map((value) => value!);
+    requireCondition(bytesEqual(solanaMultiStrategyEvidenceRoot(completeEvidence), receipt.evidenceRoot),
+      'adapter evidence does not match the stored evidence root');
+    const evidenceByLeg = new Map<string, Uint8Array>();
+    for (const [index, evidenceHash] of completeEvidence.entries()) {
+      const legId = compiled.legIds[index]!;
+      requireCondition(!evidenceByLeg.has(legId), 'prepared execution leg appears more than once');
+      evidenceByLeg.set(legId, evidenceHash);
+    }
+    const canonical = canonicalReceipt(
+      documents,
+      evidenceByLeg,
+      await lane.reader.getBlockTime(transaction.slot),
+      receipt.nonce + 1n,
+    );
     return Object.freeze({
       version: 1,
       status: 'FINALIZED',
@@ -155,6 +330,7 @@ export class SolanaStrategyExecutionObservationService {
       onchainReceiptHash: hex(receipt.receiptHash),
       solver: receipt.solver.toBase58(),
       nonce: receipt.nonce,
+      receipt: canonical,
     });
   }
 }

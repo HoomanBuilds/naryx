@@ -454,6 +454,7 @@ const solanaStrategyObservationHandler = !solanaStrategyExecutionEnabled
   ? undefined
   : createSolanaStrategyExecutionObservationInternalHandler(
       new SolanaStrategyExecutionObservationService({
+        packages: strategyPackageProvider,
         preparations: strategyPreparationService,
         lanes: solanaTreasuryRuntime.executionLanes,
       }),

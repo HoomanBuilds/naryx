@@ -20,6 +20,7 @@ export type PreparedStrategyDomainTransport =
       domain: DomainRef;
       routeSettlementClass: PreparedStrategyDomainExecution['routeSettlementClass'];
       localGuarantee: 'ATOMIC_POSTCONDITION';
+      legIds: readonly string[];
       envelope: Readonly<{
         instruction: SolanaInstructionTransport;
         executionHash: Uint8Array;
@@ -53,6 +54,7 @@ function transportDomain(domain: PreparedStrategyDomainExecution): PreparedStrat
     domain: domain.domain,
     routeSettlementClass: domain.routeSettlementClass,
     localGuarantee: domain.localGuarantee,
+    legIds: domain.legIds,
     envelope: Object.freeze({
       instruction: Object.freeze({
         programId: instruction.programId.toBase58(),

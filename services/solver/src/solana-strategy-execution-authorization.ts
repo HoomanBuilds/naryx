@@ -76,7 +76,7 @@ function hex(value: Uint8Array): string {
 
 export function solanaStrategyExecutionEnvelope(
   prepared: PreparedStrategyExecutionTransport | undefined,
-): Readonly<{ domain: DomainRef; envelope: SolanaMultiStrategyEnvelope }> {
+): Readonly<{ domain: DomainRef; legIds: readonly string[]; envelope: SolanaMultiStrategyEnvelope }> {
   requireCondition(prepared !== undefined, 'prepared package is missing');
   requireCondition(prepared.identity.templateId === 'treasury-inventory-hedge-v1',
     'prepared package is not a treasury hedge');
@@ -92,6 +92,7 @@ export function solanaStrategyExecutionEnvelope(
   const instruction = domainExecution.envelope.instruction;
   return Object.freeze({
     domain: domainExecution.domain,
+    legIds: domainExecution.legIds,
     envelope: Object.freeze({
       instruction: new TransactionInstruction({
         programId: publicKey(instruction.programId, 'instruction program'),

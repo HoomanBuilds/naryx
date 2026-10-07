@@ -90,6 +90,7 @@ export type PreparedStrategyDomainExecution =
       domain: DomainRef;
       routeSettlementClass: CompiledStrategyRouteExecution['settlementClass'];
       localGuarantee: 'ATOMIC_POSTCONDITION';
+      legIds: readonly string[];
       envelope: SolanaMultiStrategyEnvelope;
     }>
   | Readonly<{
@@ -171,6 +172,8 @@ function prepareSolana(
 ): PreparedStrategyDomainExecution {
   requireCondition(execution.domainPlan.executionPlanKind === 'SVM_ATOMIC_CPI' && payloadPlanKind(execution) === 'SVM_ATOMIC_CPI', 'Solana execution binding requires an SVM atomic plan');
   requireCondition(compiled.settlementClass === 'ATOMIC_POSTCONDITION' || compiled.settlementClass === 'CROSS_DOMAIN_PREPOSITIONED', 'Solana strategy account cannot enforce this route settlement class');
+  const plan = execution.execution.payload as SolanaStrategyInstructionPlan;
+  const legIds = Object.freeze(plan.instructions.map((instruction) => instruction.legId));
   const envelope = compileSolanaMultiStrategyAccountEnvelope({
     compiled: execution.execution as CompiledStrategyExecution<SolanaStrategyInstructionPlan>,
     coreProgramId: binding.coreProgramId,
@@ -195,6 +198,7 @@ function prepareSolana(
     domain: execution.domainPlan.domain,
     routeSettlementClass: compiled.settlementClass,
     localGuarantee: 'ATOMIC_POSTCONDITION',
+    legIds,
     envelope,
   });
 }

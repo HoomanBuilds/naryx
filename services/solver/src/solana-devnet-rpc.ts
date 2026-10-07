@@ -18,7 +18,12 @@ export interface SolanaObservedInstruction {
 
 export type SolanaTransactionObservation = Readonly<
   | { status: 'PENDING' | 'FAILED' }
-  | { status: 'FINALIZED'; slot: bigint; instructions: readonly SolanaObservedInstruction[] }
+  | {
+      status: 'FINALIZED';
+      slot: bigint;
+      instructions: readonly SolanaObservedInstruction[];
+      logMessages: readonly string[];
+    }
 >;
 
 /** Signerless Devnet reads. Network identity always comes from getGenesisHash, never the URL. */
@@ -157,6 +162,11 @@ export class HttpSolanaDevnetSolverRpc implements SolanaDevnetObservationReadPor
     const meta = record(result.meta, 'transaction metadata');
     if (!('err' in meta)) fail('transaction metadata has no result');
     if (meta.err !== null) return Object.freeze({ status: 'FAILED' });
+    if (!Array.isArray(meta.logMessages) || meta.logMessages.length > 2_048
+      || meta.logMessages.some((message) => typeof message !== 'string' || message.length > 4_096)) {
+      fail('transaction log messages are malformed');
+    }
+    const logMessages = Object.freeze([...meta.logMessages] as string[]);
     const transaction = record(result.transaction, 'transaction');
     const message = record(transaction.message, 'transaction message');
     const staticKeys = addressList(message.accountKeys, 'transaction account keys');
@@ -195,7 +205,12 @@ export class HttpSolanaDevnetSolverRpc implements SolanaDevnetObservationReadPor
         data,
       });
     });
-    return Object.freeze({ status: 'FINALIZED', slot: BigInt(status.slot), instructions: Object.freeze(instructions) });
+    return Object.freeze({
+      status: 'FINALIZED',
+      slot: BigInt(status.slot),
+      instructions: Object.freeze(instructions),
+      logMessages,
+    });
   }
 
   async sendAndFinalize(instructions: readonly TransactionInstruction[], signer: Keypair): Promise<string> {

@@ -180,6 +180,7 @@ test('serializes Solana instructions without leaking SDK class instances across 
       domain,
       routeSettlementClass: 'ATOMIC_POSTCONDITION',
       localGuarantee: 'ATOMIC_POSTCONDITION',
+      legIds: Object.freeze(['spot-leg']),
       envelope: Object.freeze({
         instruction: new TransactionInstruction({
           programId,

@@ -51,6 +51,7 @@ function prepared(): PreparedStrategyExecutionTransport {
       domain,
       routeSettlementClass: 'ATOMIC_POSTCONDITION' as const,
       localGuarantee: 'ATOMIC_POSTCONDITION' as const,
+      legIds: Object.freeze(['treasury-hedge']),
       envelope: Object.freeze({
         instruction: Object.freeze({
           programId: program.toBase58(),
