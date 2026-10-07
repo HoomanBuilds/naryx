@@ -12,6 +12,7 @@ import {
   compileSolanaMultiStrategyAccountEnvelope,
   type SolanaMultiStrategyEnvelope,
   type SolanaStrategyAdapterPolicy,
+  type SolanaStrategyFeeTerms,
   type SolanaStrategyInstructionPlan,
 } from '@naryx/adapter-solana';
 import {
@@ -46,6 +47,7 @@ export interface SolanaStrategyAccountBinding {
   readonly solver?: PublicKey | string;
   readonly settlementManifestHash: Uint8Array;
   readonly totalGrossNotionalAtoms: bigint;
+  readonly fees?: SolanaStrategyFeeTerms;
   readonly nonce: bigint;
   readonly deadlineSlot: bigint;
   readonly policies: readonly SolanaStrategyAdapterPolicy[];
@@ -189,6 +191,7 @@ function prepareSolana(
     ...(identity.previousStateHash === undefined ? {} : { previousStateHash: identity.previousStateHash }),
     ...(identity.nextStateHash === undefined ? {} : { nextStateHash: identity.nextStateHash }),
     totalGrossNotionalAtoms: binding.totalGrossNotionalAtoms,
+    ...(binding.fees === undefined ? {} : { fees: binding.fees }),
     nonce: binding.nonce,
     deadlineSlot: binding.deadlineSlot,
     policies: binding.policies,

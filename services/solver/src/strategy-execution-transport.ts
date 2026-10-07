@@ -28,6 +28,17 @@ export type PreparedStrategyDomainTransport =
         strategyAccount: string;
         position: string;
         receipt: string;
+        fees?: Readonly<{
+          quoteAssetSubjectId: Uint8Array;
+          quoteAssetManifestVersion: number;
+          quoteAssetManifestHash: Uint8Array;
+          policyVersion: number;
+          policyManifestHash: Uint8Array;
+          mint: string;
+          protocolRecipient: string;
+          protocolFeeAtoms: bigint;
+          solverFeeAtoms: bigint;
+        }>;
         requiredSignerPubkeys: readonly string[];
       }>;
     }>
@@ -70,6 +81,19 @@ function transportDomain(domain: PreparedStrategyDomainExecution): PreparedStrat
       strategyAccount: domain.envelope.strategyAccount.toBase58(),
       position: domain.envelope.position.toBase58(),
       receipt: domain.envelope.receipt.toBase58(),
+      ...(domain.envelope.fees === undefined ? {} : {
+        fees: Object.freeze({
+          quoteAssetSubjectId: Uint8Array.from(domain.envelope.fees.quoteAssetSubjectId),
+          quoteAssetManifestVersion: domain.envelope.fees.quoteAssetManifestVersion,
+          quoteAssetManifestHash: Uint8Array.from(domain.envelope.fees.quoteAssetManifestHash),
+          policyVersion: domain.envelope.fees.policyVersion,
+          policyManifestHash: Uint8Array.from(domain.envelope.fees.policyManifestHash),
+          mint: domain.envelope.fees.mint.toBase58(),
+          protocolRecipient: domain.envelope.fees.protocolRecipient.toBase58(),
+          protocolFeeAtoms: domain.envelope.fees.protocolFeeAtoms,
+          solverFeeAtoms: domain.envelope.fees.solverFeeAtoms,
+        }),
+      }),
       requiredSignerPubkeys: Object.freeze([...domain.envelope.requiredSignerPubkeys]),
     }),
   });

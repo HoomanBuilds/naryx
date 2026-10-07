@@ -54,6 +54,7 @@ const HEDGE_PROGRAM = key(6);
 const HEDGE_PROGRAM_DATA = key(7);
 const TEST_PERP_PROGRAM = key(8);
 const SOLVER = key(9);
+const PROTOCOL_RECIPIENT = key(24);
 const INVENTORY_MINT = key(10);
 const QUOTE_MINT = key(11);
 const MARKET = key(12);
@@ -187,7 +188,7 @@ function documents(): StoredStrategyPackageDocuments {
     economicQuantity: assetAmount(inventoryAsset, QUANTITY),
     quoteAsset,
     metricLimits: [],
-    maximumServiceFeesByAsset: [],
+    maximumServiceFeesByAsset: [{ asset: quoteAsset, maxAtoms: 150_000n }],
     maximumVenueFeesByAsset: [{ asset: quoteAsset, maxAtoms: 200_000n }],
     maximumNetworkFeesByAsset: [],
     maximumRecoveryCostByAsset: [],
@@ -206,7 +207,10 @@ function documents(): StoredStrategyPackageDocuments {
     order,
     graph,
     quote: {
-      serviceCharges: [],
+      serviceCharges: [
+        { category: 'PROTOCOL', amount: amount(100_000n) },
+        { category: 'SOLVER', amount: amount(50_000n) },
+      ],
       legEconomics: [
         { legId: 'inventory-position', grossNotional: amount(300_000_000n), marginDelta: amount(0n) },
         { legId: 'treasury-hedge', grossNotional: amount(299_910_000n), marginDelta: amount(30_149_955n),
@@ -334,6 +338,9 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
     multiStrategyProgramId: MULTI_PROGRAM,
     settlementManifestHash: bytes(19),
     solver: SOLVER,
+    protocolFeeRecipient: PROTOCOL_RECIPIENT,
+    quoteAssetSubjectId: bytes(25),
+    quoteAssetManifestVersion: 1,
     inventoryAdapter: {
       role: 'inventory-position', programId: INVENTORY_PROGRAM, programDataAddress: INVENTORY_PROGRAM_DATA,
       expectedProgramDataHash: bytes(20), adapterSubjectId: bytes(21), maximumComputeUnitLimit: 200_000,
@@ -357,6 +364,8 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
   if (context.bindings[0]?.kind !== 'SOLANA_MULTI_STRATEGY_ACCOUNT') throw new Error('missing Solana binding');
   assert.equal(context.bindings[0].nonce, 7n);
   assert.equal(context.bindings[0].totalGrossNotionalAtoms, 599_910_000n);
+  assert.equal(context.bindings[0].fees?.protocolFeeAtoms, 100_000n);
+  assert.equal(context.bindings[0].fees?.solverFeeAtoms, 50_000n);
   assert.deepEqual(context.bindings[0].policies.map((policy) => [policy.legId, policy.riskIncreasing]), [
     ['inventory-position', true],
     ['treasury-hedge', true],
@@ -378,6 +387,9 @@ test('reports the exact remaining Devnet collateral before Solana treasury hedge
     multiStrategyProgramId: MULTI_PROGRAM,
     settlementManifestHash: bytes(19),
     solver: SOLVER,
+    protocolFeeRecipient: PROTOCOL_RECIPIENT,
+    quoteAssetSubjectId: bytes(25),
+    quoteAssetManifestVersion: 1,
     inventoryAdapter: {
       role: 'inventory-position', programId: INVENTORY_PROGRAM, programDataAddress: INVENTORY_PROGRAM_DATA,
       expectedProgramDataHash: bytes(20), adapterSubjectId: bytes(21), maximumComputeUnitLimit: 200_000,
@@ -394,7 +406,7 @@ test('reports the exact remaining Devnet collateral before Solana treasury hedge
   }]).resolve(packageDocuments);
   assert.equal(plan.packageId, packageDocuments.orderHashHex);
   assert.equal(plan.inventoryFundingRequiredAtoms, 0n);
-  assert.equal(plan.quoteFundingRequiredAtoms, 850_045n);
+  assert.equal(plan.quoteFundingRequiredAtoms, 1_000_045n);
   assert.equal(plan.ready, false);
   assert.deepEqual(plan.steps.map((step) => step.kind), ['CREATE_TOKEN_ACCOUNTS']);
 });

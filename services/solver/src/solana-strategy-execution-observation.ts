@@ -105,6 +105,13 @@ function positionIdentity(legFamily: string, legId: string): Readonly<{
   return Object.freeze({ positionLegId: legId });
 }
 
+function serviceCharge(
+  documents: StoredStrategyPackageDocuments,
+  category: 'PROTOCOL' | 'SOLVER',
+): bigint {
+  return documents.quote.serviceCharges.find((charge) => charge.category === category)?.amount.atoms ?? 0n;
+}
+
 function programData(logs: readonly string[], programId: string): readonly Uint8Array[] {
   const stack: string[] = [];
   const values: Uint8Array[] = [];
@@ -142,8 +149,8 @@ function canonicalReceipt(
   receiptNonce: bigint,
 ): StrategyPackageReceipt {
   const zero = assetAmount(documents.order.quoteAsset, 0n);
-  requireCondition(documents.quote.serviceCharges.every((charge) => charge.amount.atoms === 0n),
-    'Solana execution receipt cannot report uncollected service charges');
+  const protocolFee = assetAmount(documents.order.quoteAsset, serviceCharge(documents, 'PROTOCOL'));
+  const solverFee = assetAmount(documents.order.quoteAsset, serviceCharge(documents, 'SOLVER'));
   const legOutcomes = documents.graph.legs.map((leg) => {
     const evidenceHash = legEvidence.get(leg.legId);
     requireCondition(evidenceHash !== undefined, `missing onchain evidence for ${leg.legId}`);
@@ -191,8 +198,8 @@ function canonicalReceipt(
     terminalState: 'FINALIZED_COMPLETE',
     quoteAsset: documents.order.quoteAsset,
     legOutcomes,
-    serviceFee: zero,
-    solverFee: zero,
+    serviceFee: protocolFee,
+    solverFee,
     venueFees: assetAmount(documents.order.quoteAsset,
       legOutcomes.reduce((sum, leg) => sum + leg.venueFee.atoms, 0n)),
     networkCost: zero,
@@ -260,6 +267,11 @@ export class SolanaStrategyExecutionObservationService {
     requireCondition(account !== null && account !== undefined, 'strategy receipt account is absent');
     requireCondition(account.owner === expectedInstruction.programId.toBase58(), 'strategy receipt owner is invalid');
     const receipt = decodeSolanaMultiStrategyReceipt(account.data);
+    const expectedFees = compiled.envelope.fees;
+    requireCondition(expectedFees !== undefined, 'prepared strategy execution has no fee terms');
+    const expectedFeeDirection = prepared.identity.operation === 'ENTRY' || prepared.identity.operation === 'INCREASE'
+      ? 'ENTRY'
+      : 'EXIT';
     requireCondition(bytesEqual(receipt.packageId, prepared.identity.packageId)
       && bytesEqual(receipt.orderHash, prepared.orderHash)
       && bytesEqual(receipt.graphHash, prepared.graphHash)
@@ -270,6 +282,19 @@ export class SolanaStrategyExecutionObservationService {
       && bytesEqual(receipt.callsHash, compiled.envelope.callsHash)
       && receipt.solver.toBase58() === lane.solver,
     'stored receipt differs from the prepared strategy execution');
+    requireCondition(receipt.fees.direction === expectedFeeDirection
+      && bytesEqual(receipt.fees.quoteAssetSubjectId, expectedFees.quoteAssetSubjectId)
+      && receipt.fees.quoteAssetManifestVersion === expectedFees.quoteAssetManifestVersion
+      && bytesEqual(receipt.fees.quoteAssetManifestHash, expectedFees.quoteAssetManifestHash)
+      && receipt.fees.policyVersion === expectedFees.policyVersion
+      && bytesEqual(receipt.fees.policyManifestHash, expectedFees.policyManifestHash)
+      && receipt.fees.protocolFeeAtoms === expectedFees.protocolFeeAtoms
+      && receipt.fees.solverFeeAtoms === expectedFees.solverFeeAtoms
+      && receipt.fees.policyVersion === documents.quote.feePolicyVersion
+      && bytesEqual(receipt.fees.policyManifestHash, documents.quote.feePolicyManifestHash)
+      && receipt.fees.protocolFeeAtoms === serviceCharge(documents, 'PROTOCOL')
+      && receipt.fees.solverFeeAtoms === serviceCharge(documents, 'SOLVER'),
+    'stored fee receipt differs from the selected quote');
     requireCondition(receipt.executionSlot === transaction.slot, 'receipt execution slot differs from the transaction');
     const expectedReceiptHash = solanaMultiStrategyReceiptHash({
       executionHash: compiled.envelope.executionHash,

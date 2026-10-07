@@ -65,6 +65,9 @@ export interface SolanaTreasuryHedgePreparationLane {
   readonly multiStrategyProgramId: string;
   readonly settlementManifestHash: Uint8Array;
   readonly solver: string;
+  readonly protocolFeeRecipient: string;
+  readonly quoteAssetSubjectId: Uint8Array;
+  readonly quoteAssetManifestVersion: number;
   readonly inventoryAdapter: SolanaTreasuryHedgeAdapterBinding;
   readonly hedgeAdapter: SolanaTreasuryHedgeAdapterBinding;
   readonly testPerpProgramId: string;
@@ -261,6 +264,10 @@ function sameHash(left: Uint8Array, right: Uint8Array): boolean {
   return bytesEqual(left, right);
 }
 
+function charge(documents: StoredStrategyPackageDocuments, category: 'PROTOCOL' | 'SOLVER'): bigint {
+  return documents.quote.serviceCharges.find((candidate) => candidate.category === category)?.amount.atoms ?? 0n;
+}
+
 export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPreparationContextResolver {
   readonly #lanes: readonly SolanaTreasuryHedgePreparationLane[];
 
@@ -272,7 +279,12 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       key(lane.coreProgramId, 'core program');
       key(lane.multiStrategyProgramId, 'multi-strategy program');
       key(lane.solver, 'solver');
+      key(lane.protocolFeeRecipient, 'protocol fee recipient');
       key(lane.testPerpProgramId, 'test perp program');
+      hash32(lane.quoteAssetSubjectId, 'quote asset subject');
+      requireCondition(Number.isInteger(lane.quoteAssetManifestVersion)
+        && lane.quoteAssetManifestVersion > 0 && lane.quoteAssetManifestVersion <= 0xffff_ffff,
+      'quote asset manifest version is invalid');
       hash32(lane.settlementManifestHash, 'settlement manifest hash');
       hash32(lane.testPerpStrategyId, 'test perp strategy id');
       requireCondition(lane.testPerpMaximumBaseLots > 0n && lane.testPerpMaximumBaseLots <= (1n << 63n) - 1n,
@@ -306,8 +318,12 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       && quoteState.market.oracle === lane.pricing.oracleAddress
       && quoteState.market.collateralMint === lane.pricing.quoteMint,
     'live market identity differs from the reviewed lane');
-    requireCondition(documents.quote.serviceCharges.every((charge) => charge.amount.atoms === 0n),
-      'Solana multi-strategy execution does not yet collect service charges');
+    requireCondition(documents.quote.serviceCharges.every((serviceCharge) =>
+      (serviceCharge.category === 'PROTOCOL' || serviceCharge.category === 'SOLVER')
+      && serviceCharge.amount.asset.assetId === lane.pricing.quoteAsset.assetId
+      && serviceCharge.amount.asset.decimals === lane.pricing.quoteAsset.decimals
+      && bytesEqual(serviceCharge.amount.asset.assetManifestHash, lane.pricing.quoteAsset.assetManifestHash)),
+    'service charges are not collectible by the Solana strategy account');
     const currentSlot = quoteState.slot;
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, candidate) => candidate < minimum ? candidate : minimum);
@@ -554,6 +570,17 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
         solver: lane.solver,
         settlementManifestHash: lane.settlementManifestHash,
         totalGrossNotionalAtoms,
+        fees: Object.freeze({
+          quoteAssetSubjectId: lane.quoteAssetSubjectId,
+          quoteAssetManifestVersion: lane.quoteAssetManifestVersion,
+          quoteAssetManifestHash: lane.pricing.quoteAsset.assetManifestHash,
+          policyVersion: documents.quote.feePolicyVersion,
+          policyManifestHash: documents.quote.feePolicyManifestHash,
+          mint: lane.pricing.quoteMint,
+          protocolRecipient: lane.protocolFeeRecipient,
+          protocolFeeAtoms: charge(documents, 'PROTOCOL'),
+          solverFeeAtoms: charge(documents, 'SOLVER'),
+        }),
         nonce: strategy.nextNonce,
         deadlineSlot: deadline,
         policies: Object.freeze([

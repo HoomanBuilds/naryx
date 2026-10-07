@@ -186,6 +186,8 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const quoteMint = key(lane.pricing.quoteMint);
     const ownerInventory = associatedTokenAddress(owner, inventoryMint);
     const ownerQuote = associatedTokenAddress(owner, quoteMint);
+    const protocolFeeToken = associatedTokenAddress(key(lane.protocolFeeRecipient), quoteMint);
+    const solverFeeToken = associatedTokenAddress(key(lane.solver), quoteMint);
     const strategyInventory = associatedTokenAddress(strategyAccount, inventoryMint);
     const inventory = deriveSolanaPackageInventoryAddresses({
       programId: lane.inventoryAdapter.programId,
@@ -200,7 +202,7 @@ export class SolanaTreasuryHedgeProvisioningResolver {
       'market and account reads are not from the same finalized head');
     const addresses = [
       strategyAccount, inventory.inventory, inventory.vault, ownerInventory, ownerQuote, strategyInventory,
-      perp.position, perp.strategy,
+      perp.position, perp.strategy, protocolFeeToken, solverFeeToken,
     ].map((value) => value.toBase58());
     const values = await lane.rpc.getAccounts(addresses, state.slot);
     const strategyValue = values[0] ?? null;
@@ -211,6 +213,8 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const strategyInventoryValue = values[5] ?? null;
     const positionValue = values[6] ?? null;
     const perpStrategyValue = values[7] ?? null;
+    const protocolFeeTokenValue = values[8] ?? null;
+    const solverFeeTokenValue = values[9] ?? null;
     requireCondition((inventoryValue === null) === (inventoryVaultValue === null), 'package inventory is partially initialized');
     requireCondition(strategyValue === null || strategyValue.owner === lane.multiStrategyProgramId,
       'strategy account has the wrong owner');
@@ -229,6 +233,8 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const ownerInventoryAtoms = tokenAmount(ownerInventoryValue, owner, inventoryMint);
     const ownerQuoteAtoms = tokenAmount(ownerQuoteValue, owner, quoteMint);
     const strategyInventoryAtoms = tokenAmount(strategyInventoryValue, strategyAccount, inventoryMint);
+    tokenAmount(protocolFeeTokenValue, key(lane.protocolFeeRecipient), quoteMint);
+    tokenAmount(solverFeeTokenValue, key(lane.solver), quoteMint);
     const position = positionValue === null ? undefined : decodeTestPerpPosition(positionValue.data);
     if (positionValue !== null) {
       requireCondition(positionValue.owner === lane.testPerpProgramId && position?.owner === owner.toBase58()
@@ -246,6 +252,11 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const currentCollateral = position?.collateralAtoms ?? 0n;
     const inventoryShortfall = quantity > strategyInventoryAtoms ? quantity - strategyInventoryAtoms : 0n;
     const quoteShortfall = requiredCollateral > currentCollateral ? requiredCollateral - currentCollateral : 0n;
+    const serviceFeeCap = documents.order.maximumServiceFeesByAsset.find((cap) =>
+      cap.asset.assetId === lane.pricing.quoteAsset.assetId
+      && cap.asset.decimals === lane.pricing.quoteAsset.decimals
+      && bytesEqual(cap.asset.assetManifestHash, lane.pricing.quoteAsset.assetManifestHash))?.maxAtoms ?? 0n;
+    const ownerQuoteRequirement = u64(quoteShortfall + serviceFeeCap, 'quote funding requirement');
     const steps: SolanaTreasuryHedgeProvisioningStep[] = [];
     const push = (step: SolanaTreasuryHedgeProvisioningStep) => steps.push(Object.freeze({
       ...step,
@@ -266,6 +277,10 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     if (ownerInventoryValue === null) missingAtas.push(createAta(owner, owner, inventoryMint));
     if (ownerQuoteValue === null) missingAtas.push(createAta(owner, owner, quoteMint));
     if (strategyInventoryValue === null) missingAtas.push(createAta(owner, strategyAccount, inventoryMint));
+    if (protocolFeeTokenValue === null) {
+      missingAtas.push(createAta(owner, key(lane.protocolFeeRecipient), quoteMint));
+    }
+    if (solverFeeTokenValue === null) missingAtas.push(createAta(owner, key(lane.solver), quoteMint));
     if (missingAtas.length > 0) {
       push({ kind: 'CREATE_TOKEN_ACCOUNTS', label: 'Create strategy token accounts', instructions: missingAtas.map(wire) });
     }
@@ -338,7 +353,7 @@ export class SolanaTreasuryHedgeProvisioningResolver {
         ], anchor('initialize_test_perp_strategy', payload)))],
       });
     }
-    if (quoteShortfall > 0n && ownerQuoteAtoms >= quoteShortfall) {
+    if (quoteShortfall > 0n && ownerQuoteAtoms >= ownerQuoteRequirement) {
       push({
         kind: 'DEPOSIT_PERP_COLLATERAL',
         label: `Deposit ${quoteShortfall} quote atoms as test perpetual collateral`,
@@ -350,7 +365,8 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     }
     const inventoryFundingRequiredAtoms = inventoryShortfall > inventoryAvailable
       ? inventoryShortfall - inventoryAvailable : 0n;
-    const quoteFundingRequiredAtoms = quoteShortfall > ownerQuoteAtoms ? quoteShortfall - ownerQuoteAtoms : 0n;
+    const quoteFundingRequiredAtoms = ownerQuoteRequirement > ownerQuoteAtoms
+      ? ownerQuoteRequirement - ownerQuoteAtoms : 0n;
     return Object.freeze({
       version: 1,
       domainId: 'svm:devnet',

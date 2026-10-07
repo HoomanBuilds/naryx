@@ -29,6 +29,9 @@ const executionHash = bytes(13);
 const callsHash = bytes(14);
 const evidenceHash = bytes(15);
 const evidenceRoot = solanaMultiStrategyEvidenceRoot([evidenceHash]);
+const quoteAssetSubjectId = bytes(30);
+const quoteAssetManifestHash = bytes(31);
+const feePolicyManifestHash = bytes(32);
 const executionSlot = 101n;
 const inventoryAsset = assetRef('sol', bytes(25), 9);
 const quoteAsset = assetRef('usdc', bytes(26), 6);
@@ -67,8 +70,13 @@ function documents(): StoredStrategyPackageDocuments {
     },
     quote: {
       solverId: 'solver-1',
-      serviceCharges: [],
+      serviceCharges: [
+        { category: 'PROTOCOL', amount: assetAmount(quoteAsset, 100_000n) },
+        { category: 'SOLVER', amount: assetAmount(quoteAsset, 50_000n) },
+      ],
       passThroughCosts: [],
+      feePolicyVersion: 1,
+      feePolicyManifestHash,
       legEconomics: [{
         legId: 'treasury-hedge',
         grossNotional: assetAmount(quoteAsset, 100_000_000n),
@@ -119,15 +127,26 @@ function prepared(): PreparedStrategyExecutionTransport {
         strategyAccount: key(15).toBase58(),
         position: key(16).toBase58(),
         receipt: receiptAddress.toBase58(),
+        fees: Object.freeze({
+          quoteAssetSubjectId,
+          quoteAssetManifestVersion: 1,
+          quoteAssetManifestHash,
+          policyVersion: 1,
+          policyManifestHash: feePolicyManifestHash,
+          mint: key(33).toBase58(),
+          protocolRecipient: key(34).toBase58(),
+          protocolFeeAtoms: 100_000n,
+          solverFeeAtoms: 50_000n,
+        }),
         requiredSignerPubkeys: Object.freeze([owner.toBase58(), solver.toBase58()].sort()),
       }),
     }]),
   });
 }
 
-function receiptData(): Uint8Array {
+function receiptData(protocolFeeAtoms = 100_000n): Uint8Array {
   const receiptHash = solanaMultiStrategyReceiptHash({ executionHash, callsHash, evidenceRoot });
-  const data = Buffer.alloc(379);
+  const data = Buffer.alloc(500);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   let offset = 8;
   data[offset++] = 1;
@@ -140,6 +159,23 @@ function receiptData(): Uint8Array {
     Buffer.from(value).copy(data, offset);
     offset += 32;
   }
+  data[offset++] = 0;
+  for (const value of [quoteAssetSubjectId]) {
+    Buffer.from(value).copy(data, offset);
+    offset += 32;
+  }
+  data.writeUInt32LE(1, offset);
+  offset += 4;
+  Buffer.from(quoteAssetManifestHash).copy(data, offset);
+  offset += 32;
+  data.writeUInt32LE(1, offset);
+  offset += 4;
+  Buffer.from(feePolicyManifestHash).copy(data, offset);
+  offset += 32;
+  data.writeBigUInt64LE(protocolFeeAtoms, offset);
+  offset += 8;
+  data.writeBigUInt64LE(50_000n, offset);
+  offset += 8;
   data.writeBigUInt64LE(22n, offset);
   offset += 8;
   solver.toBuffer().copy(data, offset);
@@ -153,6 +189,7 @@ function receiptData(): Uint8Array {
 function lane(
   transactionData = Uint8Array.from([1, 2, 3]),
   logMessages?: readonly string[],
+  protocolFeeAtoms = 100_000n,
 ): SolanaTreasuryHedgeExecutionLane {
   const event = Buffer.alloc(106);
   createHash('sha256').update('event:StrategyAdapterLegExecuted', 'ascii').digest().copy(event, 0, 0, 8);
@@ -172,7 +209,7 @@ function lane(
       getBlockTime: async () => 1_000n,
       getAccounts: async (addresses: readonly string[]) => {
         assert.deepEqual(addresses, [receiptAddress.toBase58()]);
-        return [Object.freeze({ owner: program.toBase58(), data: receiptData() })];
+        return [Object.freeze({ owner: program.toBase58(), data: receiptData(protocolFeeAtoms) })];
       },
       getTransactionObservation: async () => Object.freeze({
         status: 'FINALIZED' as const,
@@ -207,6 +244,8 @@ test('returns finalized evidence only for the exact prepared Solana instruction 
   assert.equal(observation.quoteHash, Buffer.from(quoteHash).toString('hex'));
   assert.equal(observation.solver, solver.toBase58());
   assert.equal(observation.receipt.finalityStatus, 'FINALIZED');
+  assert.equal(observation.receipt.serviceFee.atoms, 100_000n);
+  assert.equal(observation.receipt.solverFee.atoms, 50_000n);
   assert.equal(observation.receipt.legOutcomes[0]?.evidenceGrade, 'CONSENSUS_VERIFIED');
 
   const changed = new SolanaStrategyExecutionObservationService({
@@ -215,6 +254,13 @@ test('returns finalized evidence only for the exact prepared Solana instruction 
     lanes: [lane(Uint8Array.from([1, 2, 4]))],
   });
   await assert.rejects(changed.observe({ quoteHash, signature }), /exact prepared strategy instruction/);
+
+  const wrongFee = new SolanaStrategyExecutionObservationService({
+    packages: { getByQuote: async () => documents() },
+    preparations: { prepareByQuote: async () => prepared() },
+    lanes: [lane(Uint8Array.from([1, 2, 3]), undefined, 100_001n)],
+  });
+  await assert.rejects(wrongFee.observe({ quoteHash, signature }), /stored fee receipt differs/);
 
   const incompleteLogs = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },

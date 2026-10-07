@@ -9,6 +9,7 @@ import {
 import {
   adapterRef,
   assetRef,
+  bytesEqual,
   domainRef,
   domainRegistryRecord,
   packageTemplateManifest,
@@ -228,6 +229,16 @@ function lane(
   if (inventoryAsset.assetId !== inventoryMint || quoteAsset.assetId !== quoteMint) {
     fail(`lane ${laneId} asset and mint identities differ`);
   }
+  const quoteAssetRecords = activeRegistryRecords.filter((record) =>
+    record.recordKind === 'ASSET'
+    && record.subjectId === quoteAsset.assetId
+    && record.domain.domainId === domain.domainId
+    && record.domain.domainManifestVersion === domain.domainManifestVersion
+    && bytesEqual(record.domain.domainManifestHash, domain.domainManifestHash)
+    && bytesEqual(record.subjectManifestHash, quoteAsset.assetManifestHash)
+    && record.registryState === 'ACTIVE');
+  if (quoteAssetRecords.length !== 1) fail(`lane ${laneId} quote asset must resolve to one active registry record`);
+  const quoteAssetRecord = quoteAssetRecords[0]!;
   const marketAddress = address(input.marketAddress, 'lane.marketAddress');
   const oracleAddress = address(input.oracleAddress, 'lane.oracleAddress');
   if (oracleAddress !== SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT) fail(`lane ${laneId} oracle is not the reviewed Devnet feed`);
@@ -236,9 +247,6 @@ function lane(
   const hedge = leg(input.hedge, 'lane.hedge');
   const protocolFeeBps = nonnegativeInteger(input.protocolFeeBps, 'lane.protocolFeeBps');
   const solverFeeBps = nonnegativeInteger(input.solverFeeBps, 'lane.solverFeeBps');
-  if (protocolFeeBps !== 0 || solverFeeBps !== 0) {
-    fail(`lane ${laneId} service fees must remain zero until the Solana account collects them`);
-  }
   const maximumStateAdvanceSlots = natural(input.maximumStateAdvanceSlots, 'lane.maximumStateAdvanceSlots');
   const maximumTransactionComputeUnits = integer(
     input.maximumTransactionComputeUnits,
@@ -307,6 +315,9 @@ function lane(
     multiStrategyProgramId: address(input.multiStrategyProgramId, 'lane.multiStrategyProgramId'),
     settlementManifestHash: bytes32(input.settlementManifestHash, 'lane.settlementManifestHash'),
     solver: address(input.solver, 'lane.solver'),
+    protocolFeeRecipient: address(input.protocolFeeRecipient, 'lane.protocolFeeRecipient'),
+    quoteAssetSubjectId: bytes32(input.quoteAssetSubjectId, 'lane.quoteAssetSubjectId'),
+    quoteAssetManifestVersion: quoteAssetRecord.subjectManifestVersion,
     inventoryAdapter: byRole('inventory-position'),
     hedgeAdapter: byRole('treasury-hedge'),
     testPerpProgramId,

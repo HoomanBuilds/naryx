@@ -108,6 +108,22 @@ export function solanaStrategyExecutionEnvelope(
       strategyAccount: publicKey(domainExecution.envelope.strategyAccount, 'strategy account'),
       position: publicKey(domainExecution.envelope.position, 'strategy position'),
       receipt: publicKey(domainExecution.envelope.receipt, 'strategy receipt'),
+      ...(domainExecution.envelope.fees === undefined ? {} : {
+        fees: Object.freeze({
+          quoteAssetSubjectId: Uint8Array.from(domainExecution.envelope.fees.quoteAssetSubjectId),
+          quoteAssetManifestVersion: domainExecution.envelope.fees.quoteAssetManifestVersion,
+          quoteAssetManifestHash: Uint8Array.from(domainExecution.envelope.fees.quoteAssetManifestHash),
+          policyVersion: domainExecution.envelope.fees.policyVersion,
+          policyManifestHash: Uint8Array.from(domainExecution.envelope.fees.policyManifestHash),
+          mint: publicKey(domainExecution.envelope.fees.mint, 'fee mint'),
+          protocolRecipient: publicKey(
+            domainExecution.envelope.fees.protocolRecipient,
+            'protocol fee recipient',
+          ),
+          protocolFeeAtoms: domainExecution.envelope.fees.protocolFeeAtoms,
+          solverFeeAtoms: domainExecution.envelope.fees.solverFeeAtoms,
+        }),
+      }),
       requiredSignerPubkeys: Object.freeze([...domainExecution.envelope.requiredSignerPubkeys]),
     }),
   });
