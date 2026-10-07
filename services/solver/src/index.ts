@@ -1093,6 +1093,11 @@ export {
   type EvmReverseBasisPricingInput,
 } from './evm-reverse-basis-quote.js';
 export {
+  EvmReverseBasisPreparationContextResolver,
+  type EvmReverseBasisAdapterFactoryBinding,
+  type EvmReverseBasisPreparationLane,
+} from './evm-reverse-basis-preparation.js';
+export {
   EvmCollateralConversionPreparationContextResolver,
   type EvmCollateralConversionAdapterFactoryBinding,
   type EvmCollateralConversionPreparationLane,
