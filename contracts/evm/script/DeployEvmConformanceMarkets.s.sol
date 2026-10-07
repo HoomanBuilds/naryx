@@ -6,6 +6,7 @@ import {NaryxTestAsset} from "../src/conformance/NaryxTestAsset.sol";
 import {INaryxTestMintableToken, NaryxTestLendingPool} from "../src/conformance/NaryxTestLendingPool.sol";
 import {NaryxTestOptionPool} from "../src/conformance/NaryxTestOptionPool.sol";
 import {NaryxTestOracleMarker} from "../src/conformance/NaryxTestOracleMarker.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 import {NaryxTestVault} from "../src/conformance/NaryxTestVault.sol";
 
 contract DeployEvmConformanceMarkets is Script {
@@ -23,6 +24,7 @@ contract DeployEvmConformanceMarkets is Script {
         uint256 collateralPriceQuoteAtomsPerWholeToken;
         uint16 loanToValueBps;
         uint16 liquidationThresholdBps;
+        NaryxTestPerpMarket.Parameters perpetualMarket;
     }
 
     struct Deployment {
@@ -33,6 +35,7 @@ contract DeployEvmConformanceMarkets is Script {
         NaryxTestOptionPool upperStrikeCallPool;
         NaryxTestLendingPool lendingPool;
         NaryxTestVault vault;
+        NaryxTestPerpMarket perpetualMarket;
     }
 
     error InvalidChain();
@@ -52,6 +55,8 @@ contract DeployEvmConformanceMarkets is Script {
                 || parameters.optionLiquidityAtomsPerPool > parameters.maximumBaseFaucetBalanceAtoms
                 || parameters.lowerStrike == 0 || parameters.upperStrike <= parameters.lowerStrike
                 || parameters.maturity <= block.timestamp
+                || address(parameters.perpetualMarket.collateral) != address(0)
+                || address(parameters.perpetualMarket.oracle) != address(0)
         ) revert InvalidConfiguration();
 
         deployment.baseAsset =
@@ -59,6 +64,10 @@ contract DeployEvmConformanceMarkets is Script {
         deployment.quoteAsset =
             new NaryxTestAsset("Naryx Test Quote", "ntQUOTE", 6, parameters.maximumQuoteFaucetBalanceAtoms);
         deployment.oracleMarker = new NaryxTestOracleMarker();
+        NaryxTestPerpMarket.Parameters memory perpetualParameters = parameters.perpetualMarket;
+        perpetualParameters.collateral = deployment.quoteAsset;
+        perpetualParameters.oracle = deployment.oracleMarker;
+        deployment.perpetualMarket = new NaryxTestPerpMarket(perpetualParameters);
         deployment.lowerStrikeCallPool = new NaryxTestOptionPool(
             deployment.baseAsset,
             INaryxTestMintableToken(address(deployment.quoteAsset)),

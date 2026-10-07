@@ -23,6 +23,7 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
     using SafeCast for int256;
 
     uint256 public constant BASE_SEPOLIA_CHAIN_ID = 84532;
+    uint256 public constant FOUNDRY_CHAIN_ID = 31337;
     uint256 public constant LOCAL_CHAIN_ID = 31338;
     uint256 public constant MAX_ORACLE_AGE_SECONDS = 1 days;
     uint256 public constant MAX_TAKER_FEE_BPS = 100;
@@ -158,7 +159,10 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
     mapping(address trader => Position position) private _positions;
 
     constructor(Parameters memory parameters) {
-        if (block.chainid != BASE_SEPOLIA_CHAIN_ID && block.chainid != LOCAL_CHAIN_ID) revert InvalidChain();
+        if (
+            block.chainid != BASE_SEPOLIA_CHAIN_ID && block.chainid != FOUNDRY_CHAIN_ID
+                && block.chainid != LOCAL_CHAIN_ID
+        ) revert InvalidChain();
         if (
             parameters.owner == address(0) || parameters.fundingKeeper == address(0)
                 || parameters.feeRecipient == address(0) || address(parameters.collateral).code.length == 0

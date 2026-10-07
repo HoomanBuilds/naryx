@@ -2,11 +2,14 @@
 pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
+import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {DeployEvmConformanceAdapterFactories} from "../script/DeployEvmConformanceAdapterFactories.s.sol";
 import {DeployEvmConformanceMarkets} from "../script/DeployEvmConformanceMarkets.s.sol";
 import {DeployEvmMultiStrategyCore} from "../script/DeployEvmMultiStrategyCore.s.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
+import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
 contract DeployEvmConformanceAdapterFactoriesTest is Test {
     function testDeploysFactoriesBoundToTheMultiStrategyCore() public {
@@ -48,7 +51,8 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
                 exerciseValueBps: 2_000,
                 collateralPriceQuoteAtomsPerWholeToken: 2_000e6,
                 loanToValueBps: 5_000,
-                liquidationThresholdBps: 7_500
+                liquidationThresholdBps: 7_500,
+                perpetualMarket: _perpetualParameters()
             })
         );
         DeployEvmConformanceAdapterFactories factoryScript = new DeployEvmConformanceAdapterFactories();
@@ -61,7 +65,11 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
                 lowerStrikeCallPool: markets.lowerStrikeCallPool,
                 upperStrikeCallPool: markets.upperStrikeCallPool,
                 lendingPool: markets.lendingPool,
-                vault: markets.vault
+                vault: markets.vault,
+                perpetualInstrument: markets.perpetualMarket,
+                perpetualObserver: markets.perpetualMarket,
+                perpetualMarginGate: markets.perpetualMarket,
+                perpetualExpiry: markets.perpetualMarket.expiry()
             })
         );
 
@@ -75,5 +83,32 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
         assertEq(inventoryClass, keccak256("naryx.evm.inventory-custody-exact"));
         assertEq(inventoryBase, address(markets.baseAsset));
         assertEq(inventoryQuote, address(markets.quoteAsset));
+        (bytes32 perpetualClass,, address perpetualBase, address perpetualQuote) =
+            factories.perpetualFactory.factoryMetadata();
+        assertEq(perpetualClass, keccak256("naryx.evm.perp-exact"));
+        assertEq(perpetualBase, address(markets.baseAsset));
+        assertEq(perpetualQuote, address(markets.quoteAsset));
+    }
+
+    function _perpetualParameters() private view returns (NaryxTestPerpMarket.Parameters memory) {
+        return NaryxTestPerpMarket.Parameters({
+            owner: address(this),
+            fundingKeeper: address(this),
+            feeRecipient: address(0xFEE),
+            collateral: IERC20(address(0)),
+            oracle: AggregatorV3Interface(address(0)),
+            expiry: uint32(block.timestamp + 365 days),
+            maxOracleAgeSeconds: 1 days,
+            takerFeeBps: 5,
+            halfSpreadBps: 5,
+            impactBps: 25,
+            impactSizeWad: 1_000 ether,
+            initialMarginBps: 1_000,
+            maintenanceMarginBps: 500,
+            liquidationPenaltyBps: 100,
+            maxPositionSizeWad: 10_000 ether,
+            maxMarginWad: 10_000_000 ether,
+            maxAbsFundingRatePerSecond: 1e11
+        });
     }
 }

@@ -9,9 +9,13 @@ import {ERC4626TypedVaultAdapterFactory} from "../src/ERC4626TypedVaultAdapterFa
 import {NaryxMultiStrategyAccountFactory} from "../src/NaryxMultiStrategyAccountFactory.sol";
 import {PackageInventoryAdapterFactory} from "../src/PackageInventoryAdapterFactory.sol";
 import {PremiaV3TypedOptionAdapterFactory} from "../src/PremiaV3TypedOptionAdapterFactory.sol";
+import {SynFuturesTypedPerpAdapterFactory} from "../src/SynFuturesTypedPerpAdapterFactory.sol";
 import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
+import {IPerpMarginGate} from "../src/interfaces/IPerpMarginGate.sol";
 import {IPremiaV3Pool} from "../src/interfaces/IPremiaV3Pool.sol";
 import {INaryxMultiStrategyAccountFactory} from "../src/interfaces/INaryxMultiStrategyAccountFactory.sol";
+import {ISynFuturesInstrument} from "../src/interfaces/ISynFuturesInstrument.sol";
+import {ISynFuturesPositionObserver} from "../src/interfaces/ISynFuturesPositionObserver.sol";
 
 contract DeployEvmConformanceAdapterFactories is Script {
     struct Parameters {
@@ -23,6 +27,10 @@ contract DeployEvmConformanceAdapterFactories is Script {
         IPremiaV3Pool upperStrikeCallPool;
         IAaveV3Pool lendingPool;
         IERC4626 vault;
+        ISynFuturesInstrument perpetualInstrument;
+        ISynFuturesPositionObserver perpetualObserver;
+        IPerpMarginGate perpetualMarginGate;
+        uint32 perpetualExpiry;
     }
 
     struct Deployment {
@@ -31,6 +39,7 @@ contract DeployEvmConformanceAdapterFactories is Script {
         AaveV3TypedLendingAdapterFactory lendingFactory;
         ERC4626TypedVaultAdapterFactory vaultFactory;
         PackageInventoryAdapterFactory inventoryFactory;
+        SynFuturesTypedPerpAdapterFactory perpetualFactory;
     }
 
     error InvalidChain();
@@ -52,8 +61,12 @@ contract DeployEvmConformanceAdapterFactories is Script {
                 || address(parameters.upperStrikeCallPool).code.length == 0
                 || address(parameters.lowerStrikeCallPool) == address(parameters.upperStrikeCallPool)
                 || address(parameters.lendingPool).code.length == 0 || address(parameters.vault).code.length == 0
+                || address(parameters.perpetualInstrument).code.length == 0
+                || address(parameters.perpetualObserver).code.length == 0
+                || address(parameters.perpetualMarginGate).code.length == 0 || parameters.perpetualExpiry == 0
                 || parameters.accountFactory.deploymentChainId() != block.chainid
                 || parameters.vault.asset() != address(parameters.baseAsset)
+                || address(parameters.perpetualMarginGate.collateral()) != address(parameters.quoteAsset)
         ) revert InvalidConfiguration();
 
         bytes32 accountFactoryCodeHash = address(parameters.accountFactory).codehash;
@@ -98,6 +111,26 @@ contract DeployEvmConformanceAdapterFactories is Script {
                 strategyAccountCodeHash: strategyAccountCodeHash,
                 inventoryTokenCodeHash: address(parameters.baseAsset).codehash,
                 quoteTokenCodeHash: address(parameters.quoteAsset).codehash
+            })
+        );
+        deployment.perpetualFactory = new SynFuturesTypedPerpAdapterFactory(
+            SynFuturesTypedPerpAdapterFactory.Deployment({
+                chainId: block.chainid,
+                datedFuture: false,
+                accountFactory: INaryxMultiStrategyAccountFactory(address(parameters.accountFactory)),
+                baseToken: parameters.baseAsset,
+                collateralToken: parameters.quoteAsset,
+                instrument: parameters.perpetualInstrument,
+                observer: parameters.perpetualObserver,
+                marginGate: parameters.perpetualMarginGate,
+                expiry: parameters.perpetualExpiry,
+                accountFactoryCodeHash: accountFactoryCodeHash,
+                strategyAccountCodeHash: strategyAccountCodeHash,
+                baseTokenCodeHash: address(parameters.baseAsset).codehash,
+                collateralTokenCodeHash: address(parameters.quoteAsset).codehash,
+                instrumentCodeHash: address(parameters.perpetualInstrument).codehash,
+                observerCodeHash: address(parameters.perpetualObserver).codehash,
+                marginGateCodeHash: address(parameters.perpetualMarginGate).codehash
             })
         );
     }

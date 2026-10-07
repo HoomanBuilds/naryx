@@ -6,6 +6,8 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {DeployEvmConformanceMarkets} from "../script/DeployEvmConformanceMarkets.s.sol";
 import {NaryxTestLendingPool} from "../src/conformance/NaryxTestLendingPool.sol";
 import {NaryxTestOptionPool} from "../src/conformance/NaryxTestOptionPool.sol";
+import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
+import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
 contract EvmConformanceMarketsTest is Test {
     DeployEvmConformanceMarkets.Deployment private deployment;
@@ -27,7 +29,8 @@ contract EvmConformanceMarketsTest is Test {
                 exerciseValueBps: 2_000,
                 collateralPriceQuoteAtomsPerWholeToken: 2_000e6,
                 loanToValueBps: 5_000,
-                liquidationThresholdBps: 7_500
+                liquidationThresholdBps: 7_500,
+                perpetualMarket: _perpetualParameters()
             })
         );
     }
@@ -61,5 +64,33 @@ contract EvmConformanceMarketsTest is Test {
         assertEq(pool.collateralOf(address(this)), 0);
         assertEq(pool.debtOf(address(this)), 0);
         assertEq(IERC20(address(deployment.baseAsset)).balanceOf(address(this)), 100 ether);
+    }
+
+    function testPerpetualMarketUsesTheSharedConformanceAssetsAndOracle() public view {
+        assertEq(address(deployment.perpetualMarket.collateral()), address(deployment.quoteAsset));
+        assertEq(address(deployment.perpetualMarket.oracle()), address(deployment.oracleMarker));
+        assertEq(deployment.perpetualMarket.oraclePriceWad(), 2_000 ether);
+    }
+
+    function _perpetualParameters() private view returns (NaryxTestPerpMarket.Parameters memory) {
+        return NaryxTestPerpMarket.Parameters({
+            owner: address(this),
+            fundingKeeper: address(this),
+            feeRecipient: address(0xFEE),
+            collateral: IERC20(address(0)),
+            oracle: AggregatorV3Interface(address(0)),
+            expiry: uint32(block.timestamp + 365 days),
+            maxOracleAgeSeconds: 1 days,
+            takerFeeBps: 5,
+            halfSpreadBps: 5,
+            impactBps: 25,
+            impactSizeWad: 1_000 ether,
+            initialMarginBps: 1_000,
+            maintenanceMarginBps: 500,
+            liquidationPenaltyBps: 100,
+            maxPositionSizeWad: 10_000 ether,
+            maxMarginWad: 10_000_000 ether,
+            maxAbsFundingRatePerSecond: 1e11
+        });
     }
 }
