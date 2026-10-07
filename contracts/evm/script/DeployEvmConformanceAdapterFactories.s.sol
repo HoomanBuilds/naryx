@@ -31,6 +31,14 @@ contract DeployEvmConformanceAdapterFactories is Script {
         ISynFuturesPositionObserver perpetualObserver;
         IPerpMarginGate perpetualMarginGate;
         uint32 perpetualExpiry;
+        ISynFuturesInstrument nearFutureInstrument;
+        ISynFuturesPositionObserver nearFutureObserver;
+        IPerpMarginGate nearFutureMarginGate;
+        uint32 nearFutureExpiry;
+        ISynFuturesInstrument farFutureInstrument;
+        ISynFuturesPositionObserver farFutureObserver;
+        IPerpMarginGate farFutureMarginGate;
+        uint32 farFutureExpiry;
     }
 
     struct Deployment {
@@ -40,6 +48,8 @@ contract DeployEvmConformanceAdapterFactories is Script {
         ERC4626TypedVaultAdapterFactory vaultFactory;
         PackageInventoryAdapterFactory inventoryFactory;
         SynFuturesTypedPerpAdapterFactory perpetualFactory;
+        SynFuturesTypedPerpAdapterFactory nearFutureFactory;
+        SynFuturesTypedPerpAdapterFactory farFutureFactory;
     }
 
     error InvalidChain();
@@ -64,9 +74,22 @@ contract DeployEvmConformanceAdapterFactories is Script {
                 || address(parameters.perpetualInstrument).code.length == 0
                 || address(parameters.perpetualObserver).code.length == 0
                 || address(parameters.perpetualMarginGate).code.length == 0 || parameters.perpetualExpiry == 0
+                || address(parameters.nearFutureInstrument).code.length == 0
+                || address(parameters.nearFutureObserver).code.length == 0
+                || address(parameters.nearFutureMarginGate).code.length == 0
+                || address(parameters.farFutureInstrument).code.length == 0
+                || address(parameters.farFutureObserver).code.length == 0
+                || address(parameters.farFutureMarginGate).code.length == 0
+                || address(parameters.nearFutureInstrument) == address(parameters.perpetualInstrument)
+                || address(parameters.farFutureInstrument) == address(parameters.perpetualInstrument)
+                || address(parameters.nearFutureInstrument) == address(parameters.farFutureInstrument)
+                || parameters.nearFutureExpiry <= block.timestamp
+                || parameters.farFutureExpiry <= parameters.nearFutureExpiry
                 || parameters.accountFactory.deploymentChainId() != block.chainid
                 || parameters.vault.asset() != address(parameters.baseAsset)
                 || address(parameters.perpetualMarginGate.collateral()) != address(parameters.quoteAsset)
+                || address(parameters.nearFutureMarginGate.collateral()) != address(parameters.quoteAsset)
+                || address(parameters.farFutureMarginGate.collateral()) != address(parameters.quoteAsset)
         ) revert InvalidConfiguration();
 
         bytes32 accountFactoryCodeHash = address(parameters.accountFactory).codehash;
@@ -113,24 +136,66 @@ contract DeployEvmConformanceAdapterFactories is Script {
                 quoteTokenCodeHash: address(parameters.quoteAsset).codehash
             })
         );
-        deployment.perpetualFactory = new SynFuturesTypedPerpAdapterFactory(
+        deployment.perpetualFactory = _perpFactory(
+            parameters,
+            false,
+            parameters.perpetualInstrument,
+            parameters.perpetualObserver,
+            parameters.perpetualMarginGate,
+            parameters.perpetualExpiry,
+            accountFactoryCodeHash,
+            strategyAccountCodeHash
+        );
+        deployment.nearFutureFactory = _perpFactory(
+            parameters,
+            true,
+            parameters.nearFutureInstrument,
+            parameters.nearFutureObserver,
+            parameters.nearFutureMarginGate,
+            parameters.nearFutureExpiry,
+            accountFactoryCodeHash,
+            strategyAccountCodeHash
+        );
+        deployment.farFutureFactory = _perpFactory(
+            parameters,
+            true,
+            parameters.farFutureInstrument,
+            parameters.farFutureObserver,
+            parameters.farFutureMarginGate,
+            parameters.farFutureExpiry,
+            accountFactoryCodeHash,
+            strategyAccountCodeHash
+        );
+    }
+
+    function _perpFactory(
+        Parameters calldata parameters,
+        bool datedFuture,
+        ISynFuturesInstrument instrument,
+        ISynFuturesPositionObserver observer,
+        IPerpMarginGate marginGate,
+        uint32 expiry,
+        bytes32 accountFactoryCodeHash,
+        bytes32 strategyAccountCodeHash
+    ) private returns (SynFuturesTypedPerpAdapterFactory factory) {
+        return new SynFuturesTypedPerpAdapterFactory(
             SynFuturesTypedPerpAdapterFactory.Deployment({
                 chainId: block.chainid,
-                datedFuture: false,
+                datedFuture: datedFuture,
                 accountFactory: INaryxMultiStrategyAccountFactory(address(parameters.accountFactory)),
                 baseToken: parameters.baseAsset,
                 collateralToken: parameters.quoteAsset,
-                instrument: parameters.perpetualInstrument,
-                observer: parameters.perpetualObserver,
-                marginGate: parameters.perpetualMarginGate,
-                expiry: parameters.perpetualExpiry,
+                instrument: instrument,
+                observer: observer,
+                marginGate: marginGate,
+                expiry: expiry,
                 accountFactoryCodeHash: accountFactoryCodeHash,
                 strategyAccountCodeHash: strategyAccountCodeHash,
                 baseTokenCodeHash: address(parameters.baseAsset).codehash,
                 collateralTokenCodeHash: address(parameters.quoteAsset).codehash,
-                instrumentCodeHash: address(parameters.perpetualInstrument).codehash,
-                observerCodeHash: address(parameters.perpetualObserver).codehash,
-                marginGateCodeHash: address(parameters.perpetualMarginGate).codehash
+                instrumentCodeHash: address(instrument).codehash,
+                observerCodeHash: address(observer).codehash,
+                marginGateCodeHash: address(marginGate).codehash
             })
         );
     }

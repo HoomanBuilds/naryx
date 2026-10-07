@@ -30,7 +30,9 @@ contract EvmConformanceMarketsTest is Test {
                 collateralPriceQuoteAtomsPerWholeToken: 2_000e6,
                 loanToValueBps: 5_000,
                 liquidationThresholdBps: 7_500,
-                perpetualMarket: _perpetualParameters()
+                perpetualMarket: _marketParameters(365 days),
+                nearFutureMarket: _marketParameters(30 days),
+                farFutureMarket: _marketParameters(90 days)
             })
         );
     }
@@ -72,14 +74,22 @@ contract EvmConformanceMarketsTest is Test {
         assertEq(deployment.perpetualMarket.oraclePriceWad(), 2_000 ether);
     }
 
-    function _perpetualParameters() private view returns (NaryxTestPerpMarket.Parameters memory) {
+    function testDatedFuturesUseDistinctOrderedExpiriesAndSharedDependencies() public view {
+        assertEq(address(deployment.nearFutureMarket.collateral()), address(deployment.quoteAsset));
+        assertEq(address(deployment.farFutureMarket.collateral()), address(deployment.quoteAsset));
+        assertEq(address(deployment.nearFutureMarket.oracle()), address(deployment.oracleMarker));
+        assertEq(address(deployment.farFutureMarket.oracle()), address(deployment.oracleMarker));
+        assertLt(deployment.nearFutureMarket.expiry(), deployment.farFutureMarket.expiry());
+    }
+
+    function _marketParameters(uint256 expiryOffset) private view returns (NaryxTestPerpMarket.Parameters memory) {
         return NaryxTestPerpMarket.Parameters({
             owner: address(this),
             fundingKeeper: address(this),
             feeRecipient: address(0xFEE),
             collateral: IERC20(address(0)),
             oracle: AggregatorV3Interface(address(0)),
-            expiry: uint32(block.timestamp + 365 days),
+            expiry: uint32(block.timestamp + expiryOffset),
             maxOracleAgeSeconds: 1 days,
             takerFeeBps: 5,
             halfSpreadBps: 5,

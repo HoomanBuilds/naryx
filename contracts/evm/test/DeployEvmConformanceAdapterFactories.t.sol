@@ -8,6 +8,7 @@ import {DeployEvmConformanceMarkets} from "../script/DeployEvmConformanceMarkets
 import {DeployEvmMultiStrategyCore} from "../script/DeployEvmMultiStrategyCore.s.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
+import {SynFuturesTypedPerpAdapterFactory} from "../src/SynFuturesTypedPerpAdapterFactory.sol";
 import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 import {AggregatorV3Interface} from "../src/interfaces/IAggregatorV3.sol";
 
@@ -52,7 +53,9 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
                 collateralPriceQuoteAtomsPerWholeToken: 2_000e6,
                 loanToValueBps: 5_000,
                 liquidationThresholdBps: 7_500,
-                perpetualMarket: _perpetualParameters()
+                perpetualMarket: _marketParameters(365 days),
+                nearFutureMarket: _marketParameters(30 days),
+                farFutureMarket: _marketParameters(90 days)
             })
         );
         DeployEvmConformanceAdapterFactories factoryScript = new DeployEvmConformanceAdapterFactories();
@@ -69,7 +72,15 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
                 perpetualInstrument: markets.perpetualMarket,
                 perpetualObserver: markets.perpetualMarket,
                 perpetualMarginGate: markets.perpetualMarket,
-                perpetualExpiry: markets.perpetualMarket.expiry()
+                perpetualExpiry: markets.perpetualMarket.expiry(),
+                nearFutureInstrument: markets.nearFutureMarket,
+                nearFutureObserver: markets.nearFutureMarket,
+                nearFutureMarginGate: markets.nearFutureMarket,
+                nearFutureExpiry: markets.nearFutureMarket.expiry(),
+                farFutureInstrument: markets.farFutureMarket,
+                farFutureObserver: markets.farFutureMarket,
+                farFutureMarginGate: markets.farFutureMarket,
+                farFutureExpiry: markets.farFutureMarket.expiry()
             })
         );
 
@@ -83,21 +94,51 @@ contract DeployEvmConformanceAdapterFactoriesTest is Test {
         assertEq(inventoryClass, keccak256("naryx.evm.inventory-custody-exact"));
         assertEq(inventoryBase, address(markets.baseAsset));
         assertEq(inventoryQuote, address(markets.quoteAsset));
-        (bytes32 perpetualClass,, address perpetualBase, address perpetualQuote) =
-            factories.perpetualFactory.factoryMetadata();
-        assertEq(perpetualClass, keccak256("naryx.evm.perp-exact"));
-        assertEq(perpetualBase, address(markets.baseAsset));
-        assertEq(perpetualQuote, address(markets.quoteAsset));
+        _assertFactoryMetadata(
+            factories.perpetualFactory,
+            keccak256("naryx.evm.perp-exact"),
+            address(markets.baseAsset),
+            address(markets.quoteAsset),
+            address(markets.perpetualMarket)
+        );
+        _assertFactoryMetadata(
+            factories.nearFutureFactory,
+            keccak256("naryx.evm.future-exact"),
+            address(markets.baseAsset),
+            address(markets.quoteAsset),
+            address(markets.nearFutureMarket)
+        );
+        _assertFactoryMetadata(
+            factories.farFutureFactory,
+            keccak256("naryx.evm.future-exact"),
+            address(markets.baseAsset),
+            address(markets.quoteAsset),
+            address(markets.farFutureMarket)
+        );
     }
 
-    function _perpetualParameters() private view returns (NaryxTestPerpMarket.Parameters memory) {
+    function _assertFactoryMetadata(
+        SynFuturesTypedPerpAdapterFactory factory,
+        bytes32 expectedClass,
+        address expectedBase,
+        address expectedQuote,
+        address expectedInstrument
+    ) private view {
+        (bytes32 adapterClass,, address base, address quote) = factory.factoryMetadata();
+        assertEq(adapterClass, expectedClass);
+        assertEq(base, expectedBase);
+        assertEq(quote, expectedQuote);
+        assertEq(address(factory.instrument()), expectedInstrument);
+    }
+
+    function _marketParameters(uint256 expiryOffset) private view returns (NaryxTestPerpMarket.Parameters memory) {
         return NaryxTestPerpMarket.Parameters({
             owner: address(this),
             fundingKeeper: address(this),
             feeRecipient: address(0xFEE),
             collateral: IERC20(address(0)),
             oracle: AggregatorV3Interface(address(0)),
-            expiry: uint32(block.timestamp + 365 days),
+            expiry: uint32(block.timestamp + expiryOffset),
             maxOracleAgeSeconds: 1 days,
             takerFeeBps: 5,
             halfSpreadBps: 5,

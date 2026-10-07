@@ -25,6 +25,8 @@ contract DeployEvmConformanceMarkets is Script {
         uint16 loanToValueBps;
         uint16 liquidationThresholdBps;
         NaryxTestPerpMarket.Parameters perpetualMarket;
+        NaryxTestPerpMarket.Parameters nearFutureMarket;
+        NaryxTestPerpMarket.Parameters farFutureMarket;
     }
 
     struct Deployment {
@@ -36,6 +38,8 @@ contract DeployEvmConformanceMarkets is Script {
         NaryxTestLendingPool lendingPool;
         NaryxTestVault vault;
         NaryxTestPerpMarket perpetualMarket;
+        NaryxTestPerpMarket nearFutureMarket;
+        NaryxTestPerpMarket farFutureMarket;
     }
 
     error InvalidChain();
@@ -57,6 +61,12 @@ contract DeployEvmConformanceMarkets is Script {
                 || parameters.maturity <= block.timestamp
                 || address(parameters.perpetualMarket.collateral) != address(0)
                 || address(parameters.perpetualMarket.oracle) != address(0)
+                || address(parameters.nearFutureMarket.collateral) != address(0)
+                || address(parameters.nearFutureMarket.oracle) != address(0)
+                || address(parameters.farFutureMarket.collateral) != address(0)
+                || address(parameters.farFutureMarket.oracle) != address(0)
+                || parameters.nearFutureMarket.expiry <= block.timestamp
+                || parameters.farFutureMarket.expiry <= parameters.nearFutureMarket.expiry
         ) revert InvalidConfiguration();
 
         deployment.baseAsset =
@@ -64,10 +74,9 @@ contract DeployEvmConformanceMarkets is Script {
         deployment.quoteAsset =
             new NaryxTestAsset("Naryx Test Quote", "ntQUOTE", 6, parameters.maximumQuoteFaucetBalanceAtoms);
         deployment.oracleMarker = new NaryxTestOracleMarker();
-        NaryxTestPerpMarket.Parameters memory perpetualParameters = parameters.perpetualMarket;
-        perpetualParameters.collateral = deployment.quoteAsset;
-        perpetualParameters.oracle = deployment.oracleMarker;
-        deployment.perpetualMarket = new NaryxTestPerpMarket(perpetualParameters);
+        deployment.perpetualMarket = _perpMarket(parameters.perpetualMarket, deployment);
+        deployment.nearFutureMarket = _perpMarket(parameters.nearFutureMarket, deployment);
+        deployment.farFutureMarket = _perpMarket(parameters.farFutureMarket, deployment);
         deployment.lowerStrikeCallPool = new NaryxTestOptionPool(
             deployment.baseAsset,
             INaryxTestMintableToken(address(deployment.quoteAsset)),
@@ -98,5 +107,15 @@ contract DeployEvmConformanceMarkets is Script {
         deployment.vault = new NaryxTestVault(deployment.baseAsset);
         deployment.baseAsset.mint(address(deployment.lowerStrikeCallPool), parameters.optionLiquidityAtomsPerPool);
         deployment.baseAsset.mint(address(deployment.upperStrikeCallPool), parameters.optionLiquidityAtomsPerPool);
+    }
+
+    function _perpMarket(NaryxTestPerpMarket.Parameters calldata source, Deployment memory deployment)
+        private
+        returns (NaryxTestPerpMarket market)
+    {
+        NaryxTestPerpMarket.Parameters memory parameters = source;
+        parameters.collateral = deployment.quoteAsset;
+        parameters.oracle = deployment.oracleMarker;
+        return new NaryxTestPerpMarket(parameters);
     }
 }
