@@ -421,8 +421,8 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (classId === undefined || typeof body.entryId !== "string" || !HEX32.test(body.entryId)) {
         throw new SolverRequestError(400, "INVALID_REQUEST", "packageMarketId and entryId are required.");
       }
-      requireExchange().cancelEntry(classId, body.entryId, solverId);
-      return { cancelled: true };
+      const result = requireExchange().cancelEntry(classId, body.entryId, solverId);
+      return { cancelled: true, ...result };
     }
     if (method === "GET" && (match = /^\/v1\/solver\/settlements\/([0-9a-f]{64})$/.exec(path)) !== null) {
       // Only this solver's own settled receipts for the quote are visible to it.

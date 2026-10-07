@@ -138,7 +138,9 @@ test("cancellation authority, halts, and amendments persist", () => {
     store.setHalted(CLASS, true);
     assert.deepEqual(store.submitOrder(CLASS, order(2, { side: "BID" }), NOW), { accepted: false, rejection: "HALTED" });
     store.setHalted(CLASS, false);
-    store.cancelEntry(CLASS, id(1), "maker-1");
+    const cancellation = store.cancelEntry(CLASS, id(1), "maker-1");
+    assert.equal(cancellation.replayed, false);
+    assert.equal(store.cancelEntry(CLASS, id(1), "maker-1").replayed, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
   });
 });

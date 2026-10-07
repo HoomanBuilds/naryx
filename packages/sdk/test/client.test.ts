@@ -5,6 +5,8 @@ import {
   emptyPackageBook,
   matchPackageOrder,
   packageAllocationHash,
+  packageBookCancellationBytes,
+  packageBookCancellationHash,
   packageMatchingPolicy,
   packageTakerOrderBytes,
   packageTakerOrderHash,
@@ -201,6 +203,20 @@ describe('public API client', () => {
     assert.equal(result.accepted, true);
     assert.deepEqual(signedBytes, packageTakerOrderBytes(submitted));
     if (result.accepted) assert.equal(result.evidence.allocationHash, allocationHash);
+
+    const cancellation = { version: 1, executionClassId: CLASS, entryId: orderId, participantId };
+    const cancellationHash = toHex(packageBookCancellationHash(cancellation));
+    let cancellationBytes: Uint8Array | undefined;
+    const cancelled = await client({
+      'POST /v1/package-book/cancellations': {
+        body: { cancelled: true, packageMarketId: CLASS, entryId: orderId, cancellationHash, replayed: false },
+      },
+    }).cancelPackageBookOrder(CLASS, orderId, participantId, async (bytes) => {
+      cancellationBytes = bytes;
+      return new Uint8Array(sign(null, bytes, keys.privateKey));
+    });
+    assert.equal(cancelled.cancellationHash, cancellationHash);
+    assert.deepEqual(cancellationBytes, packageBookCancellationBytes(cancellation));
 
     await assert.rejects(
       client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), matchingPolicy: policy } } })

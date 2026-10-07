@@ -14,6 +14,8 @@ import {
   packageMatchingPolicy,
   packageTakerOrderBytes,
   packageTakerOrderHash,
+  packageBookCancellationBytes,
+  packageBookCancellationHash,
   toHex,
   verifyPackageAllocation,
   type PackageAllocation,
@@ -274,6 +276,31 @@ test("signed public package orders match durably and replay idempotently", async
     const other = generateKeyPairSync("ed25519");
     const forged = { ...authorization, signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(signed)), other.privateKey)) };
     assert.equal((await get("/v1/package-book/orders", post({ order: signed, authorization: forged }))).status, 400);
+
+    const passiveDraft = { ...signed, orderId: "00".repeat(32), limitPriceTicks: 90n, timeInForce: "GTC" as const };
+    const passiveOrder = { ...passiveDraft, orderId: toHex(packageTakerOrderHash(passiveDraft)) };
+    const passiveAuthorization = {
+      scheme: "ED25519",
+      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(passiveOrder)), keys.privateKey)),
+    };
+    assert.equal((await get("/v1/package-book/orders", post({ order: passiveOrder, authorization: passiveAuthorization }))).status, 200);
+    assert.equal(store.getBook(CLASS)?.entries.length, 1);
+    const cancellation = { version: 1, executionClassId: CLASS, entryId: passiveOrder.orderId, participantId };
+    const cancellationAuthorization = {
+      scheme: "ED25519",
+      signature: bs58.encode(sign(null, Buffer.from(packageBookCancellationBytes(cancellation)), keys.privateKey)),
+    };
+    const cancelled = await get("/v1/package-book/cancellations", post({ cancellation, authorization: cancellationAuthorization }));
+    assert.equal(cancelled.status, 200);
+    assert.deepEqual(cancelled.body, {
+      cancelled: true,
+      packageMarketId: CLASS,
+      entryId: passiveOrder.orderId,
+      cancellationHash: toHex(packageBookCancellationHash(cancellation)),
+      replayed: false,
+    });
+    assert.equal(((await get("/v1/package-book/cancellations", post({ cancellation, authorization: cancellationAuthorization }))).body as { replayed: boolean }).replayed, true);
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
   });
 });
 

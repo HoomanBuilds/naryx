@@ -28,6 +28,8 @@ import {
   packageOrderHash,
   packageTakerOrderBytes,
   packageTakerOrderHash,
+  packageBookCancellationBytes,
+  packageBookCancellationHash,
   packageCloseCostIndex,
   packageGraphHash,
   simulatePackageGraphFailures,
@@ -92,6 +94,7 @@ import {
   type PackageReceipt,
   type PackageReceiptInput,
   type PackageTakerOrderInput,
+  type PackageBookCancellationInput,
   type PackageGraphInput,
   type NormalizedPosition,
   type PositionSnapshotRecord,
@@ -224,6 +227,14 @@ export type PackageBookOrderSubmission =
       readonly order: PackageTakerOrderInput;
       readonly rejection: string;
     };
+
+export interface PackageBookCancellationResult {
+  readonly cancelled: true;
+  readonly packageMarketId: string;
+  readonly entryId: string;
+  readonly cancellationHash: string;
+  readonly replayed: boolean;
+}
 
 export interface RegisteredDocumentView<T = unknown> {
   readonly kind: string;
@@ -911,6 +922,47 @@ export class NaryxClient {
       throw new NaryxEvidenceError('package book allocation hash is inconsistent');
     }
     return Object.freeze({ accepted: true, order, replayed: body.replayed, evidence });
+  }
+
+  /** Cancels one live native package-book order with its participant key. */
+  async cancelPackageBookOrder(
+    packageMarketId: string,
+    entryId: string,
+    participantId: string,
+    sign: OrderSigner,
+  ): Promise<PackageBookCancellationResult> {
+    const cancellation: PackageBookCancellationInput = {
+      version: 1,
+      executionClassId: checkId(packageMarketId, 'package market id'),
+      entryId: hashHex(entryId, 'entry id'),
+      participantId: checkId(participantId, 'participant id'),
+    };
+    if (base58Decode(cancellation.participantId)?.length !== 32) {
+      throw new TypeError('participant id must be a canonical Ed25519 public key');
+    }
+    if (typeof sign !== 'function') throw new TypeError('an order signer is required');
+    const signature = await sign(packageBookCancellationBytes(cancellation));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
+      throw new TypeError('the signer must return a 64-byte signature');
+    }
+    const expectedHash = toHex(packageBookCancellationHash(cancellation));
+    const body = record(
+      await this.#request('POST', '/v1/package-book/cancellations', {
+        cancellation,
+        authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+      }),
+      'package book cancellation',
+    );
+    if (
+      body.cancelled !== true ||
+      body.packageMarketId !== cancellation.executionClassId ||
+      body.entryId !== cancellation.entryId ||
+      body.cancellationHash !== expectedHash ||
+      typeof body.replayed !== 'boolean'
+    ) {
+      throw new NaryxEvidenceError('package book cancellation response is inconsistent');
+    }
+    return Object.freeze(body as unknown as PackageBookCancellationResult);
   }
 
   // ---------------------------------------------------------------- orders and evidence

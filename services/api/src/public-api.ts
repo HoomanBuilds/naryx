@@ -24,6 +24,9 @@ import {
   commitmentHash,
   packageTakerOrderBytes,
   packageTakerOrderHash,
+  packageBookCancellation,
+  packageBookCancellationBytes,
+  packageBookCancellationHash,
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
@@ -50,6 +53,7 @@ import type {
   PackageGraphInput,
   PackageTemplateManifestInput,
   PackageOrderInput,
+  PackageBookCancellationInput,
   StrategyCommandInput,
   StrategyHealthSnapshotInput,
   BuilderManifestInput,
@@ -164,6 +168,7 @@ export type PublicExchangeStore = Pick<
   | "getExecutionClassRecord"
   | "latestTrade"
   | "submitOrder"
+  | "cancelEntry"
 >;
 
 export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest" | "byHash">;
@@ -1095,6 +1100,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/compare",
       "/v1/clearing/simulate",
       "/v1/package-book/orders",
+      "/v1/package-book/cancellations",
       "/v1/de-risk/validate",
       "/v1/packages/compile",
       "/v1/packages/simulate",
@@ -1117,6 +1123,40 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (path === "/v1/package-book/cancellations") {
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519") {
+        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Package book cancellations require ED25519 authorization.");
+      }
+      const cancellation = packageBookCancellation(
+        object(body.cancellation, "cancellation") as unknown as PackageBookCancellationInput,
+      );
+      const participantKey = senderPublicKey(cancellation.participantId);
+      const signature = ed25519Signature(authorization.signature);
+      if (
+        participantKey === undefined ||
+        signature === undefined ||
+        !verifyEd25519(participantKey, packageBookCancellationBytes(cancellation), signature)
+      ) {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize this package book cancellation.");
+      }
+      const result = exchange.cancelEntry(
+        cancellation.executionClassId,
+        cancellation.entryId,
+        cancellation.participantId,
+      );
+      const cancellationHash = toHex(packageBookCancellationHash(cancellation));
+      if (result.cancellationHashHex !== cancellationHash) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Stored cancellation identity is inconsistent.");
+      }
+      return {
+        cancelled: true,
+        packageMarketId: cancellation.executionClassId,
+        entryId: toHex(cancellation.entryId),
+        cancellationHash,
+        replayed: result.replayed,
+      };
+    }
     if (path === "/v1/package-book/orders") {
       const authorization = object(body.authorization, "authorization");
       if (authorization.scheme !== "ED25519") {

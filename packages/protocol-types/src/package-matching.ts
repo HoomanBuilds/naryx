@@ -29,6 +29,7 @@ import type { ExactSignedRatio } from './strategy-series.js';
 
 export const PACKAGE_MATCHING_POLICY_VERSION = 1;
 export const PACKAGE_ALLOCATION_VERSION = 1;
+export const PACKAGE_BOOK_CANCELLATION_VERSION = 1;
 export const IMPLIED_PACKAGE_QUOTE_VERSION = 1;
 // Multi-package implication stays gated until bounded-depth conservation proofs exist.
 export const PACKAGE_MATCHING_MAX_IMPLICATION_DEPTH = 1;
@@ -861,6 +862,56 @@ export function packageTakerOrderHash(input: PackageTakerOrderInput): Commitment
   return commitmentHash(
     domainHash(HASH_DOMAIN.PACKAGE_TAKER_ORDER, packageTakerOrderBytes(input)),
     'packageTakerOrderHash',
+  );
+}
+
+export interface PackageBookCancellationInput {
+  readonly version: number;
+  readonly executionClassId: string;
+  readonly entryId: Uint8Array | string;
+  readonly participantId: string;
+}
+
+export interface PackageBookCancellation {
+  readonly version: 1;
+  readonly executionClassId: ProtocolId;
+  readonly entryId: CommitmentHash;
+  readonly participantId: ProtocolId;
+}
+
+export function packageBookCancellation(
+  input: PackageBookCancellationInput,
+  context = 'packageBookCancellation',
+): PackageBookCancellation {
+  object(input, context);
+  if (input.version !== PACKAGE_BOOK_CANCELLATION_VERSION) {
+    throw new MalformedInputError(`${context}.version`, `version must equal ${PACKAGE_BOOK_CANCELLATION_VERSION}`);
+  }
+  return Object.freeze({
+    version: PACKAGE_BOOK_CANCELLATION_VERSION,
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    entryId: commitmentHash(input.entryId, `${context}.entryId`),
+    participantId: protocolId(input.participantId, `${context}.participantId`),
+  });
+}
+
+export function packageBookCancellationBytes(
+  input: PackageBookCancellationInput,
+  context = 'packageBookCancellation',
+): Uint8Array {
+  const cancellation = packageBookCancellation(input, context);
+  return canonicalBytes((writer) => {
+    writer.writeU32(cancellation.version, `${context}.version`);
+    encodeProtocolId(writer, cancellation.executionClassId, `${context}.executionClassId`);
+    encodeCommitmentHash(writer, cancellation.entryId, `${context}.entryId`);
+    encodeProtocolId(writer, cancellation.participantId, `${context}.participantId`);
+  });
+}
+
+export function packageBookCancellationHash(input: PackageBookCancellationInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_BOOK_CANCELLATION, packageBookCancellationBytes(input)),
+    'packageBookCancellationHash',
   );
 }
 

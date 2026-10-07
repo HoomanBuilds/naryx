@@ -16,6 +16,8 @@ import {
   matchPackageOrder,
   packageAllocation,
   packageAllocationHash,
+  packageBookCancellation,
+  packageBookCancellationHash,
   packageBookState,
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
@@ -85,6 +87,11 @@ export interface PackageTapeRecord {
   readonly recordedAtMs: number;
 }
 
+export interface PackageExchangeCancellationResult {
+  readonly cancellationHashHex: string;
+  readonly replayed: boolean;
+}
+
 export const MAX_TAPE_PAGE = 100;
 
 export interface PackageExchangeStoreOptions {
@@ -144,6 +151,14 @@ CREATE TABLE IF NOT EXISTS package_book_allocations (
   allocation_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_cancellations (
+  cancellation_hash BLOB PRIMARY KEY,
+  execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
+  entry_id BLOB NOT NULL,
+  participant_id TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  UNIQUE (execution_class_id, entry_id)
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_consumed_sources (
   source_key BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -168,6 +183,12 @@ CREATE TRIGGER IF NOT EXISTS reject_allocation_change
 CREATE TRIGGER IF NOT EXISTS reject_allocation_delete
   BEFORE DELETE ON package_book_allocations
   BEGIN SELECT RAISE(ABORT, 'package allocations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cancellation_change
+  BEFORE UPDATE ON package_book_cancellations
+  BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cancellation_delete
+  BEFORE DELETE ON package_book_cancellations
+  BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_consumed_source_change
   BEFORE UPDATE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
@@ -598,12 +619,30 @@ export class SqlitePackageExchangeStore {
     });
   }
 
-  cancelEntry(executionClassId: string, entryId: Uint8Array | string, participantId: string): void {
-    this.transaction(() => {
+  cancelEntry(
+    executionClassId: string,
+    entryId: Uint8Array | string,
+    participantId: string,
+  ): PackageExchangeCancellationResult {
+    return this.transaction(() => {
+      const cancellation = guarded("INVALID_INPUT", "Cancellation is invalid.", () =>
+        packageBookCancellation({ version: 1, executionClassId, entryId, participantId }),
+      );
+      const cancellationHash = packageBookCancellationHash(cancellation);
+      const existing = this.db
+        .prepare("SELECT 1 FROM package_book_cancellations WHERE cancellation_hash = ?")
+        .get(cancellationHash);
+      if (existing !== undefined) return { cancellationHashHex: toHex(cancellationHash), replayed: true };
       const { book } = this.policyAndBook(executionClassId);
       this.writeBook(
         guarded("INVALID_INPUT", "Cancellation is invalid.", () => cancelPackageBookEntry(book, entryId, participantId)),
       );
+      this.db
+        .prepare(
+          "INSERT INTO package_book_cancellations (cancellation_hash, execution_class_id, entry_id, participant_id, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(cancellationHash, cancellation.executionClassId, cancellation.entryId, cancellation.participantId, this.clock());
+      return { cancellationHashHex: toHex(cancellationHash), replayed: false };
     });
   }
 

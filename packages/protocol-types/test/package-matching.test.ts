@@ -12,6 +12,8 @@ import {
   matchPackageOrder,
   packageAllocationHash,
   packageBookLevels,
+  packageBookCancellationBytes,
+  packageBookCancellationHash,
   packageBookState,
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
@@ -134,6 +136,14 @@ describe('package taker order authorization', () => {
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, quantity: 20n })));
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, participantId: 'another-maker' })));
     assert.equal(toHex(hash), toHex(packageTakerOrderHash({ ...input, orderId: id(99) })));
+  });
+
+  test('cancellation authorization binds the market, entry, and participant', () => {
+    const cancellation = { version: 1, executionClassId: CLASS, entryId: id(1), participantId: 'maker-1' };
+    const hash = packageBookCancellationHash(cancellation);
+    assert.ok(packageBookCancellationBytes(cancellation).length > 0);
+    assert.notEqual(toHex(hash), toHex(packageBookCancellationHash({ ...cancellation, entryId: id(2) })));
+    assert.notEqual(toHex(hash), toHex(packageBookCancellationHash({ ...cancellation, participantId: 'maker-2' })));
   });
 });
 

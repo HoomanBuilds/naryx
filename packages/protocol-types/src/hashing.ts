@@ -49,6 +49,7 @@ export const HASH_DOMAIN = Object.freeze({
   OPERATION_LEDGER_RECORD: 'CON/v1/operation-ledger-record',
   PACKAGE_MATCHING_POLICY: 'CON/v1/package-matching-policy',
   PACKAGE_TAKER_ORDER: 'CON/v1/package-taker-order',
+  PACKAGE_BOOK_CANCELLATION: 'CON/v1/package-book-cancellation',
   IMPLIED_PACKAGE_QUOTE: 'CON/v1/implied-package-quote',
   PACKAGE_ALLOCATION: 'CON/v1/package-allocation',
   SOLVER_CAPACITY_RECORD: 'CON/v1/solver-capacity-record',
