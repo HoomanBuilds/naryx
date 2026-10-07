@@ -240,6 +240,19 @@ function charge(documents: StoredStrategyPackageDocuments, category: 'PROTOCOL' 
   return documents.quote.serviceCharges.find((candidate) => candidate.category === category)?.amount.atoms ?? 0n;
 }
 
+export function matchesEvmTreasuryHedgePrice(input: Readonly<{
+  quoteAtoms: bigint;
+  baseAtoms: bigint;
+  fillPriceWad: bigint;
+  baseDecimals: number;
+  quoteDecimals: number;
+}>): boolean {
+  const baseScale = 10n ** BigInt(input.baseDecimals);
+  const quoteScale = 10n ** BigInt(input.quoteDecimals);
+  return input.quoteAtoms * baseScale * 1_000_000_000_000_000_000n
+    === input.fillPriceWad * input.baseAtoms * quoteScale;
+}
+
 async function readAdapter(
   lane: EvmTreasuryHedgePreparationLane,
   roleId: AdapterRole,
@@ -354,8 +367,13 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
     const snapshot = await readEvmTreasuryHedgeMarketSnapshot(lane.pricing, opening ? -quantity : quantity);
     const quotedHedge = documents.quote.legEconomics.find((leg) => leg.legId === 'treasury-hedge');
     requireCondition(quotedHedge?.executionPrice !== undefined
-      && quotedHedge.executionPrice.quoteAtoms * 1_000_000_000_000_000_000n
-        === snapshot.fillPriceWad * quotedHedge.executionPrice.baseAtoms,
+      && matchesEvmTreasuryHedgePrice({
+        quoteAtoms: quotedHedge.executionPrice.quoteAtoms,
+        baseAtoms: quotedHedge.executionPrice.baseAtoms,
+        fillPriceWad: snapshot.fillPriceWad,
+        baseDecimals: lane.pricing.inventoryAsset.decimals,
+        quoteDecimals: lane.pricing.quoteAsset.decimals,
+      }),
     'current hedge price differs from the signed quote');
     const collateralInAtoms = opening ? quotedHedge.marginDelta.atoms : 0n;
     const collateralBalanceWad = collateralInAtoms * snapshot.collateralScale;

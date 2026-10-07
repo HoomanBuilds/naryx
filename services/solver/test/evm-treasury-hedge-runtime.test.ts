@@ -20,6 +20,7 @@ import {
   type EvmTreasuryHedgePricingInput,
   type StoredStrategyPackageOrderDocuments,
 } from '../src/index.js';
+import { matchesEvmTreasuryHedgePrice } from '../src/evm-treasury-hedge-preparation.js';
 
 const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
 const codeHash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
@@ -244,4 +245,21 @@ test('prices an exact EVM treasury hedge and rejects a fill below the signed sel
     }),
     /executable hedge price violates the signed limit/,
   );
+});
+
+test('matches quoted atomic prices to WAD prices across asset decimals', () => {
+  assert.equal(matchesEvmTreasuryHedgePrice({
+    quoteAtoms: 100n,
+    baseAtoms: 1_000_000_000_000n,
+    fillPriceWad: 100n * 10n ** 18n,
+    baseDecimals: 18,
+    quoteDecimals: 6,
+  }), true);
+  assert.equal(matchesEvmTreasuryHedgePrice({
+    quoteAtoms: 101n,
+    baseAtoms: 1_000_000_000_000n,
+    fillPriceWad: 100n * 10n ** 18n,
+    baseDecimals: 18,
+    quoteDecimals: 6,
+  }), false);
 });
