@@ -239,6 +239,10 @@ export {
   type ExchangeDocumentKind,
   type PackageExchangeStoreOptions,
   type PackageExchangeSubmitResult,
+  type PackageReopeningQueueResult,
+  type PackageReopeningClearResult,
+  type PackageSettlementObligation,
+  type PackageSettlementProgress,
   type PackageTapeRecord,
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";

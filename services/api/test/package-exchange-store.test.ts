@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import {
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  packageReopeningSnapshotHash,
   toHex,
   verifyPackageAllocation,
 } from "@naryx/protocol-types";
@@ -105,6 +106,44 @@ test("GTC orders expire with their signed settlement lease", () => {
     const result = store.submitOrder(CLASS, afterLease, 2_000n, settlement(afterLease, { validUntilValue: 2_001n }));
     assert.deepEqual(result, { accepted: false, rejection: "MINIMUM_QUANTITY_UNFILLABLE" });
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+  });
+});
+
+test("halted books queue settlement-backed orders and clear them at one reopening price", () => {
+  withStore((store) => {
+    registerAll(store);
+    store.setHalted(CLASS, true);
+    const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
+    const bid = order(2, { side: "BID", limitPriceTicks: 105n });
+    assert.equal(store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask)).replayed, false);
+    assert.equal(store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid)).replayed, false);
+    assert.equal(store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid)).replayed, true);
+
+    const policy = packageMatchingPolicy(POLICY);
+    const opening = store.getBook(CLASS)!;
+    const openingSnapshotHash = packageReopeningSnapshotHash(policy, opening);
+    const cleared = store.clearReopeningAuction(CLASS, id(800), openingSnapshotHash, id(900), 100n, NOW);
+
+    assert.equal(cleared.replayed, false);
+    assert.equal(cleared.result.clearingPriceTicks, 100n);
+    assert.equal(cleared.result.executedQuantity, 10n);
+    assert.equal(cleared.settlementHandoff?.fills.length, 1);
+    assert.equal(store.getBook(CLASS)?.halted, false);
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
+    for (const [packageOrder, role] of [[ask, "ASK"], [bid, "BID"]] as const) {
+      const progress = store.settlementProgress(packageOrder.orderId)!;
+      assert.equal(progress.readiness.status, "READY_FOR_OWNER_AUTHORIZATION");
+      assert.deepEqual(
+        progress.readiness.evidenceRefs.map((reference) => reference.kind),
+        ["REOPENING_RESULT"],
+      );
+      assert.equal(progress.obligations[0]?.role, role);
+      assert.equal(progress.obligations[0]?.liquiditySource, "DIRECT");
+    }
+    assert.equal(
+      store.clearReopeningAuction(CLASS, id(800), openingSnapshotHash, id(900), 100n, NOW).replayed,
+      true,
+    );
   });
 });
 

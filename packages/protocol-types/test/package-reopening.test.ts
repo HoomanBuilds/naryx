@@ -79,7 +79,7 @@ describe('package reopening auction', () => {
       order(4, 'BID', 103n, 20n),
     );
     const snapshotHash = packageReopeningSnapshotHash(policy, opening);
-    const cleared = clearPackageReopeningAuction(policy, opening, id(900), 100n, NOW);
+    const cleared = clearPackageReopeningAuction(policy, opening, id(800), id(900), 100n, NOW);
 
     assert.equal(toHex(cleared.result.openingSnapshotHash), toHex(snapshotHash));
     assert.equal(cleared.result.clearingPriceTicks, 100n);
@@ -91,7 +91,7 @@ describe('package reopening auction', () => {
     assert.equal(cleared.state.halted, false);
     assert.equal(cleared.state.entries.length, 0);
     assert.equal(toHex(cleared.resultHash), toHex(packageReopeningResultHash(cleared.result)));
-    assert.doesNotThrow(() => verifyPackageReopeningResult(policy, opening, id(900), 100n, NOW, cleared.result));
+    assert.doesNotThrow(() => verifyPackageReopeningResult(policy, opening, id(800), id(900), 100n, NOW, cleared.result));
     const handoff = packageReopeningSettlementHandoff({
       version: 1,
       reopeningResultHash: cleared.resultHash,
@@ -116,7 +116,7 @@ describe('package reopening auction', () => {
       MalformedInputError,
     );
     assert.throws(
-      () => verifyPackageReopeningResult(policy, opening, id(900), 100n, NOW, { ...cleared.result, clearingPriceTicks: 101n }),
+      () => verifyPackageReopeningResult(policy, opening, id(800), id(900), 100n, NOW, { ...cleared.result, clearingPriceTicks: 101n }),
       MalformedInputError,
     );
   });
@@ -129,7 +129,7 @@ describe('package reopening auction', () => {
       order(2, 'BID', 105n, 10n, 'same-owner'),
       order(3, 'BID', 104n, 10n, 'external-owner'),
     );
-    const cleared = clearPackageReopeningAuction(policy, opening, id(901), 100n, NOW);
+    const cleared = clearPackageReopeningAuction(policy, opening, id(801), id(901), 100n, NOW);
     assert.deepEqual(cleared.result.selfMatchCancelledEntryIds.map(toHex), [id(2)]);
     assert.deepEqual(cleared.result.fills.map((fill) => [toHex(fill.bidEntryId), toHex(fill.askEntryId)]), [[id(3), id(1)]]);
   });
@@ -141,7 +141,7 @@ describe('package reopening auction', () => {
       order(1, 'ASK', 95n, 10n, 'same-owner'),
       order(2, 'BID', 105n, 10n, 'same-owner'),
     );
-    const cleared = clearPackageReopeningAuction(policy, opening, id(902), 100n, NOW);
+    const cleared = clearPackageReopeningAuction(policy, opening, id(802), id(902), 100n, NOW);
 
     assert.equal(cleared.result.executedQuantity, 0n);
     assert.equal(cleared.result.clearingPriceTicks, undefined);

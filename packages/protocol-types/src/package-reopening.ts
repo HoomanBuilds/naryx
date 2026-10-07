@@ -54,6 +54,7 @@ export interface PackageReopeningResult {
   readonly environment: ProtocolId;
   readonly executionClassId: ProtocolId;
   readonly matchingPolicyHash: ManifestHash;
+  readonly auctionId: CommitmentHash;
   readonly openingSnapshotHash: CommitmentHash;
   readonly qualificationSnapshotHash: CommitmentHash;
   readonly referencePriceTicks: bigint;
@@ -403,6 +404,7 @@ export function packageReopeningResult(input: PackageReopeningResult): PackageRe
     environment: protocolId(input.environment, 'packageReopeningResult.environment'),
     executionClassId: protocolId(input.executionClassId, 'packageReopeningResult.executionClassId'),
     matchingPolicyHash: manifestHash(input.matchingPolicyHash, 'packageReopeningResult.matchingPolicyHash'),
+    auctionId: commitmentHash(input.auctionId, 'packageReopeningResult.auctionId'),
     openingSnapshotHash: commitmentHash(input.openingSnapshotHash, 'packageReopeningResult.openingSnapshotHash'),
     qualificationSnapshotHash: commitmentHash(input.qualificationSnapshotHash, 'packageReopeningResult.qualificationSnapshotHash'),
     referencePriceTicks: signed(input.referencePriceTicks, 'packageReopeningResult.referencePriceTicks'),
@@ -428,6 +430,7 @@ export function packageReopeningResultBytes(input: PackageReopeningResult): Uint
     encodeProtocolId(writer, result.environment, 'packageReopeningResult.environment');
     encodeProtocolId(writer, result.executionClassId, 'packageReopeningResult.executionClassId');
     encodeManifestHash(writer, result.matchingPolicyHash, 'packageReopeningResult.matchingPolicyHash');
+    encodeCommitmentHash(writer, result.auctionId, 'packageReopeningResult.auctionId');
     encodeCommitmentHash(writer, result.openingSnapshotHash, 'packageReopeningResult.openingSnapshotHash');
     encodeCommitmentHash(writer, result.qualificationSnapshotHash, 'packageReopeningResult.qualificationSnapshotHash');
     writer.writeI128(result.referencePriceTicks, 'packageReopeningResult.referencePriceTicks');
@@ -574,6 +577,7 @@ export function verifyPackageReopeningSettlementHandoff(
 export function clearPackageReopeningAuction(
   policyInput: PackageMatchingPolicy,
   stateInput: PackageBookState,
+  auctionIdInput: Uint8Array | string,
   qualificationSnapshotHashInput: Uint8Array | string,
   referencePriceTicksInput: bigint,
   nowValue: bigint,
@@ -583,6 +587,7 @@ export function clearPackageReopeningAuction(
   if (!state.halted) throw new MalformedInputError('clearPackageReopeningAuction.state', 'book is not halted');
   const now = checkedUnsigned(nowValue, U64_BITS, 'clearPackageReopeningAuction.nowValue');
   const referencePriceTicks = signed(referencePriceTicksInput, 'clearPackageReopeningAuction.referencePriceTicks');
+  const auctionId = commitmentHash(auctionIdInput, 'clearPackageReopeningAuction.auctionId');
   const qualificationSnapshotHash = commitmentHash(qualificationSnapshotHashInput, 'clearPackageReopeningAuction.qualificationSnapshotHash');
   const openingSnapshotHash = packageReopeningSnapshotHash(policy, state);
   const expiredEntryIds = state.entries.filter((entry) => !live(entry, now)).map((entry) => entry.entryId);
@@ -616,6 +621,7 @@ export function clearPackageReopeningAuction(
     environment: policy.environment,
     executionClassId: policy.executionClassId,
     matchingPolicyHash: state.matchingPolicyHash,
+    auctionId,
     openingSnapshotHash,
     qualificationSnapshotHash,
     referencePriceTicks,
@@ -634,6 +640,7 @@ export function clearPackageReopeningAuction(
 export function verifyPackageReopeningResult(
   policy: PackageMatchingPolicy,
   openingState: PackageBookState,
+  auctionId: Uint8Array | string,
   qualificationSnapshotHash: Uint8Array | string,
   referencePriceTicks: bigint,
   nowValue: bigint,
@@ -642,6 +649,7 @@ export function verifyPackageReopeningResult(
   const expected = clearPackageReopeningAuction(
     policy,
     openingState,
+    auctionId,
     qualificationSnapshotHash,
     referencePriceTicks,
     nowValue,

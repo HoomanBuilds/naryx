@@ -232,11 +232,12 @@ export interface VerifiedSettlementAllocation extends VerifiedAllocation {
 }
 
 export interface PackageSettlementObligationView {
-  readonly allocationHashHex: string;
+  readonly evidenceKind: 'CONTINUOUS_ALLOCATION' | 'REOPENING_RESULT';
+  readonly evidenceHashHex: string;
   readonly fillSequence: bigint;
-  readonly role: 'TAKER' | 'MAKER';
+  readonly role: 'TAKER' | 'MAKER' | 'BID' | 'ASK';
   readonly counterpartyOrderIdHex?: string;
-  readonly makerSource: 'DIRECT' | 'IMPLIED';
+  readonly liquiditySource: 'DIRECT' | 'IMPLIED';
   readonly priceTicks: bigint;
   readonly quantity: bigint;
 }
@@ -987,34 +988,48 @@ export class NaryxClient {
     }
     const obligations = list(body.obligations, 'package settlement obligations').map((value, index) => {
       const obligation = record(value, `package settlement obligations[${index}]`);
-      if (typeof obligation.allocationHashHex !== 'string' || !HASH_HEX.test(obligation.allocationHashHex)
+      const continuous = obligation.evidenceKind === 'CONTINUOUS_ALLOCATION';
+      const reopening = obligation.evidenceKind === 'REOPENING_RESULT';
+      const continuousRole = obligation.role === 'TAKER' || obligation.role === 'MAKER';
+      const reopeningRole = obligation.role === 'BID' || obligation.role === 'ASK';
+      const hasCounterparty = obligation.counterpartyOrderIdHex !== undefined;
+      if ((!continuous && !reopening)
+        || typeof obligation.evidenceHashHex !== 'string' || !HASH_HEX.test(obligation.evidenceHashHex)
         || typeof obligation.fillSequence !== 'bigint' || obligation.fillSequence < 0n
-        || (obligation.role !== 'TAKER' && obligation.role !== 'MAKER')
-        || (obligation.makerSource !== 'DIRECT' && obligation.makerSource !== 'IMPLIED')
+        || (!continuousRole && !reopeningRole)
+        || (obligation.liquiditySource !== 'DIRECT' && obligation.liquiditySource !== 'IMPLIED')
         || typeof obligation.priceTicks !== 'bigint'
         || typeof obligation.quantity !== 'bigint' || obligation.quantity <= 0n
-        || (obligation.counterpartyOrderIdHex !== undefined
+        || (hasCounterparty
           && (typeof obligation.counterpartyOrderIdHex !== 'string' || !HASH_HEX.test(obligation.counterpartyOrderIdHex)))
-        || ((obligation.makerSource === 'DIRECT') !== (obligation.counterpartyOrderIdHex !== undefined))
-        || (obligation.role === 'MAKER' && obligation.makerSource !== 'DIRECT')) {
+        || (continuous !== continuousRole)
+        || (reopening !== reopeningRole)
+        || (continuous && ((obligation.liquiditySource === 'DIRECT') !== hasCounterparty))
+        || (continuous && obligation.role === 'MAKER' && obligation.liquiditySource !== 'DIRECT')
+        || (reopening && (obligation.liquiditySource !== 'DIRECT' || !hasCounterparty))) {
         throw new NaryxEvidenceError('package settlement obligation is malformed');
       }
       return Object.freeze({
-        allocationHashHex: obligation.allocationHashHex,
+        evidenceKind: obligation.evidenceKind,
+        evidenceHashHex: obligation.evidenceHashHex,
         fillSequence: obligation.fillSequence,
         role: obligation.role,
         ...(obligation.counterpartyOrderIdHex === undefined
           ? {}
           : { counterpartyOrderIdHex: obligation.counterpartyOrderIdHex }),
-        makerSource: obligation.makerSource,
+        liquiditySource: obligation.liquiditySource,
         priceTicks: obligation.priceTicks,
         quantity: obligation.quantity,
       }) as PackageSettlementObligationView;
     });
     const allocatedQuantity = obligations.reduce((sum, obligation) => sum + obligation.quantity, 0n);
-    const evidenceRefs = [...new Set(obligations.map((obligation) => obligation.allocationHashHex))]
-      .sort()
-      .map((evidenceHash) => ({ kind: 'CONTINUOUS_ALLOCATION' as const, evidenceHash }));
+    const evidenceRefs = [...new Map(obligations.map((obligation) => [
+      `${obligation.evidenceKind}:${obligation.evidenceHashHex}`,
+      { kind: obligation.evidenceKind, evidenceHash: obligation.evidenceHashHex },
+    ])).values()].sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'CONTINUOUS_ALLOCATION' ? -1 : 1;
+      return left.evidenceHash < right.evidenceHash ? -1 : left.evidenceHash > right.evidenceHash ? 1 : 0;
+    });
     if (allocatedQuantity !== readiness.allocatedQuantity
       || evidenceRefs.length !== readiness.evidenceRefs.length
       || evidenceRefs.some((reference, index) => {

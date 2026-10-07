@@ -197,11 +197,12 @@ describe('public API client', () => {
     });
     const path = `/v1/package-book/orders/${orderId}/settlement-readiness`;
     const obligation = {
-      allocationHashHex,
+      evidenceKind: 'CONTINUOUS_ALLOCATION',
+      evidenceHashHex: allocationHashHex,
       fillSequence: 1n,
       role: 'TAKER',
       counterpartyOrderIdHex: id(1),
-      makerSource: 'DIRECT',
+      liquiditySource: 'DIRECT',
       priceTicks: 100n,
       quantity: 10n,
     };
@@ -218,6 +219,34 @@ describe('public API client', () => {
         .getPackageSettlementProgress(orderId),
       NaryxEvidenceError,
     );
+
+    const reopeningOrderId = id(7);
+    const reopeningResultHash = id(8);
+    const reopeningReadiness = packageSettlementReadiness({
+      ...readiness,
+      packageOrderId: reopeningOrderId,
+      evidenceRefs: [{ kind: 'REOPENING_RESULT', evidenceHash: reopeningResultHash }],
+    });
+    const reopeningPath = `/v1/package-book/orders/${reopeningOrderId}/settlement-readiness`;
+    const reopeningProgress = await client({
+      [reopeningPath]: {
+        body: {
+          readiness: reopeningReadiness,
+          readinessHashHex: toHex(packageSettlementReadinessHash(reopeningReadiness)),
+          obligations: [{
+            evidenceKind: 'REOPENING_RESULT',
+            evidenceHashHex: reopeningResultHash,
+            fillSequence: 2n,
+            role: 'BID',
+            counterpartyOrderIdHex: id(9),
+            liquiditySource: 'DIRECT',
+            priceTicks: 101n,
+            quantity: 10n,
+          }],
+        },
+      },
+    }).getPackageSettlementProgress(reopeningOrderId);
+    assert.equal(reopeningProgress.obligations[0]?.role, 'BID');
   });
 
   test('candles must be ordered, aligned, and internally consistent', async () => {

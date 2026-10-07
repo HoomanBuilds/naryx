@@ -7,6 +7,7 @@ import {
   amendPackageBookEntry,
   bytesEqual,
   cancelPackageBookEntry,
+  clearPackageReopeningAuction,
   commitmentHash,
   economicStrategySeries,
   economicStrategySeriesBytes,
@@ -22,6 +23,11 @@ import {
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
   packageMatchingPolicyHash,
+  packageReopeningResult,
+  packageReopeningResultHash,
+  packageReopeningSettlementHandoff,
+  packageReopeningSettlementHandoffHash,
+  packageReopeningSnapshotHash,
   packageSettlementCommitment,
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
@@ -31,6 +37,7 @@ import {
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
+  queuePackageReopeningOrder,
   seriesExecutionClass,
   seriesExecutionClassBytes,
   seriesExecutionClassHash,
@@ -38,6 +45,7 @@ import {
   stringifyProtocolJson,
   toHex,
   verifyPackageAllocation,
+  verifyPackageReopeningSettlementHandoff,
   verifyPackageSettlementHandoff,
 } from "@naryx/protocol-types";
 import type {
@@ -53,10 +61,13 @@ import type {
   PackageMatchingPolicy,
   PackageMatchingPolicyInput,
   PackageMatchRejection,
+  PackageReopeningResult,
+  PackageReopeningSettlementHandoff,
   PackageSettlementCommitment,
   PackageSettlementCommitmentInput,
   PackageSettlementHandoff,
   PackageSettlementReadiness,
+  PackageSettlementEvidenceKind,
   PackageTakerOrderInput,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
@@ -107,12 +118,27 @@ export interface PackageExchangeCancellationResult {
   readonly replayed: boolean;
 }
 
+export interface PackageReopeningQueueResult {
+  readonly entry: PackageBookEntry;
+  readonly settlementCommitmentHashHex: string;
+  readonly replayed: boolean;
+}
+
+export interface PackageReopeningClearResult {
+  readonly result: PackageReopeningResult;
+  readonly resultHashHex: string;
+  readonly settlementHandoff?: PackageReopeningSettlementHandoff;
+  readonly settlementHandoffHashHex?: string;
+  readonly replayed: boolean;
+}
+
 export interface PackageSettlementObligation {
-  readonly allocationHashHex: string;
+  readonly evidenceKind: PackageSettlementEvidenceKind;
+  readonly evidenceHashHex: string;
   readonly fillSequence: bigint;
-  readonly role: "TAKER" | "MAKER";
+  readonly role: "TAKER" | "MAKER" | "BID" | "ASK";
   readonly counterpartyOrderIdHex?: string;
-  readonly makerSource: "DIRECT" | "IMPLIED";
+  readonly liquiditySource: "DIRECT" | "IMPLIED";
   readonly priceTicks: bigint;
   readonly quantity: bigint;
 }
@@ -209,6 +235,31 @@ CREATE TABLE IF NOT EXISTS package_book_settlement_obligations (
   quantity_atoms TEXT NOT NULL,
   PRIMARY KEY (allocation_hash, fill_index, role)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_reopening_results (
+  result_hash BLOB PRIMARY KEY,
+  auction_id BLOB NOT NULL UNIQUE,
+  opening_snapshot_hash BLOB NOT NULL,
+  execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
+  result_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_reopening_handoffs (
+  result_hash BLOB PRIMARY KEY REFERENCES package_book_reopening_results(result_hash),
+  handoff_hash BLOB NOT NULL UNIQUE,
+  handoff_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_reopening_obligations (
+  result_hash BLOB NOT NULL REFERENCES package_book_reopening_results(result_hash),
+  fill_index INTEGER NOT NULL CHECK (fill_index >= 0),
+  fill_sequence TEXT NOT NULL,
+  package_order_id BLOB NOT NULL REFERENCES package_book_settlement_commitments(package_order_id),
+  role TEXT NOT NULL CHECK (role IN ('BID', 'ASK')),
+  counterparty_order_id BLOB NOT NULL REFERENCES package_book_settlement_commitments(package_order_id),
+  price_ticks TEXT NOT NULL,
+  quantity_atoms TEXT NOT NULL,
+  PRIMARY KEY (result_hash, fill_index, role)
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_cancellations (
   cancellation_hash BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -259,6 +310,24 @@ CREATE TRIGGER IF NOT EXISTS reject_settlement_obligation_change
 CREATE TRIGGER IF NOT EXISTS reject_settlement_obligation_delete
   BEFORE DELETE ON package_book_settlement_obligations
   BEGIN SELECT RAISE(ABORT, 'package settlement obligations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_result_change
+  BEFORE UPDATE ON package_book_reopening_results
+  BEGIN SELECT RAISE(ABORT, 'package reopening results are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_result_delete
+  BEFORE DELETE ON package_book_reopening_results
+  BEGIN SELECT RAISE(ABORT, 'package reopening results are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_handoff_change
+  BEFORE UPDATE ON package_book_reopening_handoffs
+  BEGIN SELECT RAISE(ABORT, 'package reopening handoffs are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_handoff_delete
+  BEFORE DELETE ON package_book_reopening_handoffs
+  BEGIN SELECT RAISE(ABORT, 'package reopening handoffs are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_obligation_change
+  BEFORE UPDATE ON package_book_reopening_obligations
+  BEGIN SELECT RAISE(ABORT, 'package reopening obligations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_reopening_obligation_delete
+  BEFORE DELETE ON package_book_reopening_obligations
+  BEGIN SELECT RAISE(ABORT, 'package reopening obligations are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_cancellation_change
   BEFORE UPDATE ON package_book_cancellations
   BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
@@ -272,6 +341,7 @@ CREATE TRIGGER IF NOT EXISTS reject_consumed_source_delete
   BEFORE DELETE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
+CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
 CREATE TABLE IF NOT EXISTS package_book_trades (
   allocation_rowid INTEGER PRIMARY KEY,
   allocation_hash BLOB NOT NULL UNIQUE REFERENCES package_book_allocations(allocation_hash),
@@ -747,21 +817,12 @@ export class SqlitePackageExchangeStore {
             (allocation_hash, handoff_hash, handoff_json, recorded_at_ms)
           VALUES (?, ?, ?, ?)
         `).run(allocationHash, handoffHash, stringifyProtocolJson(settlementHandoff), recordedAtMs);
-        const allocationCount = this.db.prepare(`
-          SELECT COUNT(DISTINCT allocation_hash) AS count
-          FROM package_book_settlement_obligations
-          WHERE package_order_id = ?
-        `);
         for (const fill of result.allocation.fills) {
           if (fill.makerSource !== "DIRECT") continue;
-          const row = allocationCount.get(fill.makerEntryId) as { count: unknown };
-          if (typeof row.count !== "number" || !Number.isSafeInteger(row.count) || row.count < 0) {
-            throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement allocation count is invalid.");
-          }
-          if (row.count >= PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
+          if (this.settlementEvidenceCount(fill.makerEntryId) >= PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
             throw new PackageExchangeStoreError(
               "SETTLEMENT_ALLOCATION_LIMIT",
-              `One package order may participate in at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} allocations.`,
+              `One package order may participate in at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} settlement evidence records.`,
             );
           }
         }
@@ -808,6 +869,256 @@ export class SqlitePackageExchangeStore {
         ...(settlementHandoff === undefined || settlementHandoffHashHex === undefined
           ? {}
           : { settlementHandoff, settlementHandoffHashHex }),
+      };
+    });
+  }
+
+  queueReopeningOrder(
+    executionClassId: string,
+    order: PackageTakerOrderInput,
+    nowValue: bigint,
+    commitmentInput: PackageSettlementCommitmentInput,
+  ): PackageReopeningQueueResult {
+    return this.transaction(() => {
+      const orderId = guarded("INVALID_INPUT", "Order id is invalid.", () => commitmentHash(order.orderId));
+      const commitment = guarded("INVALID_INPUT", "Settlement commitment is invalid.", () =>
+        packageSettlementCommitment(commitmentInput),
+      );
+      const commitmentHashValue = packageSettlementCommitmentHash(commitment);
+      if (
+        commitment.executionClassId !== executionClassId
+        || !bytesEqual(commitment.packageOrderId, orderId)
+        || commitment.participantId !== order.participantId
+        || commitment.quantity !== order.quantity
+      ) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The settlement commitment does not bind the submitted reopening order.",
+        );
+      }
+      if (commitment.validUntilValue <= nowValue) {
+        throw new PackageExchangeStoreError("SETTLEMENT_EXPIRED", "The settlement commitment is expired.");
+      }
+      if (order.timeInForce === "GTC" && order.settlementLeaseUntilValue !== commitment.validUntilValue) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The GTC settlement lease and settlement commitment must expire together.",
+        );
+      }
+      if (order.timeInForce === "GTD" && order.expiresAtValue !== commitment.validUntilValue) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The book order and settlement commitment must expire together.",
+        );
+      }
+      const { policy, book } = this.policyAndBook(executionClassId);
+      if (commitment.environment !== policy.environment) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The settlement commitment belongs to another environment.",
+        );
+      }
+      const stored = this.settlementCommitment(orderId);
+      if (stored !== undefined) {
+        if (!bytesEqual(packageSettlementCommitmentHash(stored), commitmentHashValue)) {
+          throw new PackageExchangeStoreError(
+            "ORDER_CONFLICT",
+            "Order id is already bound to another settlement commitment.",
+          );
+        }
+        const entry = book.entries.find((candidate) => bytesEqual(candidate.entryId, orderId));
+        if (entry === undefined) {
+          throw new PackageExchangeStoreError("ORDER_CONFLICT", "Order id is no longer active in the package book.");
+        }
+        return {
+          entry,
+          settlementCommitmentHashHex: toHex(commitmentHashValue),
+          replayed: true,
+        };
+      }
+      const admitted = guarded("INVALID_INPUT", "Reopening order is invalid.", () =>
+        queuePackageReopeningOrder(policy, book, order, nowValue),
+      );
+      this.db.prepare(`
+        INSERT INTO package_book_settlement_commitments
+          (package_order_id, commitment_hash, execution_class_id, strategy_order_hash,
+           participant_id, commitment_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        orderId,
+        commitmentHashValue,
+        executionClassId,
+        commitment.strategyOrderHash,
+        commitment.participantId,
+        stringifyProtocolJson(commitment),
+        this.clock(),
+      );
+      this.writeBook(admitted.state);
+      return {
+        entry: admitted.entry,
+        settlementCommitmentHashHex: toHex(commitmentHashValue),
+        replayed: false,
+      };
+    });
+  }
+
+  clearReopeningAuction(
+    executionClassId: string,
+    auctionIdInput: Uint8Array | string,
+    openingSnapshotHashInput: Uint8Array | string,
+    qualificationSnapshotHash: Uint8Array | string,
+    referencePriceTicks: bigint,
+    nowValue: bigint,
+  ): PackageReopeningClearResult {
+    return this.transaction(() => {
+      const auctionId = commitmentHash(auctionIdInput);
+      const openingSnapshotHash = commitmentHash(openingSnapshotHashInput);
+      const previous = this.db.prepare(`
+        SELECT result_hash, execution_class_id, result_json
+        FROM package_book_reopening_results
+        WHERE auction_id = ?
+      `).get(auctionId) as {
+        result_hash: unknown;
+        execution_class_id: unknown;
+        result_json: unknown;
+      } | undefined;
+      if (previous !== undefined) {
+        const previousClass = jsonText(previous.execution_class_id, "execution_class_id");
+        const result = this.decodeReopeningResult(previousClass, previous.result_json);
+        if (!bytesEqual(packageReopeningResultHash(result), hashBytes(previous.result_hash, "result_hash"))) {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening result does not match its hash.");
+        }
+        if (
+          previousClass !== executionClassId
+          || !bytesEqual(result.auctionId, auctionId)
+          || !bytesEqual(result.openingSnapshotHash, openingSnapshotHash)
+          || !bytesEqual(result.qualificationSnapshotHash, commitmentHash(qualificationSnapshotHash))
+          || result.referencePriceTicks !== referencePriceTicks
+        ) {
+          throw new PackageExchangeStoreError("REOPENING_CONFLICT", "Auction id was already used by another request.");
+        }
+        const resultHashHex = toHex(hashBytes(previous.result_hash, "result_hash"));
+        const settlementHandoff = this.reopeningSettlementHandoff(resultHashHex);
+        return {
+          result,
+          resultHashHex,
+          ...(settlementHandoff === undefined ? {} : {
+            settlementHandoff,
+            settlementHandoffHashHex: toHex(packageReopeningSettlementHandoffHash(settlementHandoff)),
+          }),
+          replayed: true,
+        };
+      }
+      const { policy, book } = this.policyAndBook(executionClassId);
+      if (!bytesEqual(packageReopeningSnapshotHash(policy, book), openingSnapshotHash)) {
+        throw new PackageExchangeStoreError("STALE_REOPENING_SNAPSHOT", "Package book changed after the opening snapshot.");
+      }
+      const clearance = guarded("INVALID_INPUT", "Reopening auction cannot clear.", () =>
+        clearPackageReopeningAuction(policy, book, auctionId, qualificationSnapshotHash, referencePriceTicks, nowValue),
+      );
+      const commitments = new Map<string, PackageSettlementCommitment>();
+      for (const fill of clearance.result.fills) {
+        for (const orderId of [fill.bidEntryId, fill.askEntryId]) {
+          const key = toHex(orderId);
+          if (commitments.has(key)) continue;
+          const settlement = this.settlementCommitment(orderId);
+          if (
+            settlement === undefined
+            || settlement.executionClassId !== executionClassId
+            || settlement.validUntilValue <= nowValue
+          ) {
+            throw new PackageExchangeStoreError(
+              "UNBACKED_LIQUIDITY",
+              "Every reopening fill requires a live settlement commitment.",
+            );
+          }
+          commitments.set(key, settlement);
+        }
+      }
+      const resultHash = packageReopeningResultHash(clearance.result);
+      const recordedAtMs = this.clock();
+      this.db.prepare(`
+        INSERT INTO package_book_reopening_results
+          (result_hash, auction_id, opening_snapshot_hash, execution_class_id, result_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        resultHash,
+        auctionId,
+        clearance.result.openingSnapshotHash,
+        executionClassId,
+        stringifyProtocolJson(clearance.result),
+        recordedAtMs,
+      );
+      let settlementHandoff: PackageReopeningSettlementHandoff | undefined;
+      let settlementHandoffHashHex: string | undefined;
+      if (clearance.result.fills.length > 0) {
+        for (const orderId of commitments.keys()) {
+          if (this.settlementEvidenceCount(orderId) >= PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
+            throw new PackageExchangeStoreError(
+              "SETTLEMENT_ALLOCATION_LIMIT",
+              `One package order may participate in at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} settlement evidence records.`,
+            );
+          }
+        }
+        settlementHandoff = packageReopeningSettlementHandoff({
+          version: 1,
+          reopeningResultHash: resultHash,
+          executionClassId,
+          fills: clearance.result.fills.map((fill) => ({
+            fillSequence: fill.fillSequence,
+            bidEntryId: fill.bidEntryId,
+            askEntryId: fill.askEntryId,
+            bidSettlementCommitmentHash: packageSettlementCommitmentHash(commitments.get(toHex(fill.bidEntryId))!),
+            askSettlementCommitmentHash: packageSettlementCommitmentHash(commitments.get(toHex(fill.askEntryId))!),
+            priceTicks: clearance.result.clearingPriceTicks!,
+            quantity: fill.quantity,
+          })),
+        });
+        verifyPackageReopeningSettlementHandoff(clearance.result, settlementHandoff);
+        const handoffHash = packageReopeningSettlementHandoffHash(settlementHandoff);
+        settlementHandoffHashHex = toHex(handoffHash);
+        this.db.prepare(`
+          INSERT INTO package_book_reopening_handoffs
+            (result_hash, handoff_hash, handoff_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?)
+        `).run(resultHash, handoffHash, stringifyProtocolJson(settlementHandoff), recordedAtMs);
+        const insertObligation = this.db.prepare(`
+          INSERT INTO package_book_reopening_obligations
+            (result_hash, fill_index, fill_sequence, package_order_id, role,
+             counterparty_order_id, price_ticks, quantity_atoms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        clearance.result.fills.forEach((fill, fillIndex) => {
+          insertObligation.run(
+            resultHash,
+            fillIndex,
+            sequenceText(fill.fillSequence),
+            fill.bidEntryId,
+            "BID",
+            fill.askEntryId,
+            sequenceText(clearance.result.clearingPriceTicks!),
+            sequenceText(fill.quantity),
+          );
+          insertObligation.run(
+            resultHash,
+            fillIndex,
+            sequenceText(fill.fillSequence),
+            fill.askEntryId,
+            "ASK",
+            fill.bidEntryId,
+            sequenceText(clearance.result.clearingPriceTicks!),
+            sequenceText(fill.quantity),
+          );
+        });
+      }
+      this.writeBook(clearance.state);
+      return {
+        result: clearance.result,
+        resultHashHex: toHex(resultHash),
+        ...(settlementHandoff === undefined || settlementHandoffHashHex === undefined
+          ? {}
+          : { settlementHandoff, settlementHandoffHashHex }),
+        replayed: false,
       };
     });
   }
@@ -967,6 +1278,54 @@ export class SqlitePackageExchangeStore {
     return handoff;
   }
 
+  reopeningResult(resultHash: Uint8Array | string): PackageReopeningResult | undefined {
+    const hash = commitmentHash(resultHash);
+    const row = this.db.prepare(`
+      SELECT execution_class_id, result_json
+      FROM package_book_reopening_results
+      WHERE result_hash = ?
+    `).get(hash) as {
+      execution_class_id: unknown;
+      result_json: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const result = this.decodeReopeningResult(jsonText(row.execution_class_id, "execution_class_id"), row.result_json);
+    if (!bytesEqual(packageReopeningResultHash(result), hash)) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening result does not match its hash.");
+    }
+    return result;
+  }
+
+  reopeningSettlementHandoff(resultHash: Uint8Array | string): PackageReopeningSettlementHandoff | undefined {
+    const hash = commitmentHash(resultHash);
+    const row = this.db.prepare(`
+      SELECT handoff_hash, handoff_json
+      FROM package_book_reopening_handoffs
+      WHERE result_hash = ?
+    `).get(hash) as {
+      handoff_hash: unknown;
+      handoff_json: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const handoff = packageReopeningSettlementHandoff(
+      parseProtocolJson(jsonText(row.handoff_json, "handoff_json")) as PackageReopeningSettlementHandoff,
+    );
+    if (
+      !bytesEqual(handoff.reopeningResultHash, hash)
+      || !bytesEqual(packageReopeningSettlementHandoffHash(handoff), hashBytes(row.handoff_hash, "handoff_hash"))
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening handoff does not match its hashes.");
+    }
+    const result = this.reopeningResult(hash);
+    if (result === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening handoff lost its result.");
+    }
+    guarded("CORRUPT_ROW", "Stored reopening handoff failed verification.", () =>
+      verifyPackageReopeningSettlementHandoff(result, handoff),
+    );
+    return handoff;
+  }
+
   settlementObligations(packageOrderId: Uint8Array | string): readonly PackageSettlementObligation[] {
     const orderId = commitmentHash(packageOrderId);
     const commitment = this.settlementCommitment(orderId);
@@ -988,7 +1347,7 @@ export class SqlitePackageExchangeStore {
     }[];
     const handoffs = new Map<string, PackageSettlementHandoff>();
     const takerOrderIds = new Map<string, string>();
-    return Object.freeze(rows.map((row) => {
+    const continuous = rows.map((row) => {
       if ((row.role !== "TAKER" && row.role !== "MAKER")
         || (row.maker_source !== "DIRECT" && row.maker_source !== "IMPLIED")
         || (row.role === "MAKER" && row.maker_source !== "DIRECT")) {
@@ -1039,15 +1398,81 @@ export class SqlitePackageExchangeStore {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement obligation differs from its handoff.");
       }
       return Object.freeze({
-        allocationHashHex,
+        evidenceKind: "CONTINUOUS_ALLOCATION" as const,
+        evidenceHashHex: allocationHashHex,
         fillSequence,
         role: row.role,
         ...(counterparty === undefined ? {} : { counterpartyOrderIdHex: counterparty }),
-        makerSource: row.maker_source,
+        liquiditySource: row.maker_source,
         priceTicks,
         quantity,
       });
-    }));
+    });
+    const reopeningRows = this.db.prepare(`
+      SELECT o.result_hash, o.fill_sequence, o.role, o.counterparty_order_id,
+             o.price_ticks, o.quantity_atoms
+      FROM package_book_reopening_obligations o
+      JOIN package_book_reopening_results r ON r.result_hash = o.result_hash
+      WHERE o.package_order_id = ?
+      ORDER BY r.recorded_at_ms, o.fill_index, o.role
+    `).all(orderId) as {
+      result_hash: unknown;
+      fill_sequence: unknown;
+      role: unknown;
+      counterparty_order_id: unknown;
+      price_ticks: unknown;
+      quantity_atoms: unknown;
+    }[];
+    const reopeningHandoffs = new Map<string, PackageReopeningSettlementHandoff>();
+    const reopening = reopeningRows.map((row) => {
+      if (row.role !== "BID" && row.role !== "ASK") {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening obligation role is invalid.");
+      }
+      const evidenceHashHex = toHex(hashBytes(row.result_hash, "result_hash"));
+      const counterpartyOrderIdHex = toHex(hashBytes(row.counterparty_order_id, "counterparty_order_id"));
+      const fillSequence = storedBigInt(row.fill_sequence, "fill_sequence");
+      const priceTicks = storedBigInt(row.price_ticks, "price_ticks", true);
+      const quantity = storedBigInt(row.quantity_atoms, "quantity_atoms");
+      let handoff = reopeningHandoffs.get(evidenceHashHex);
+      if (handoff === undefined) {
+        handoff = this.reopeningSettlementHandoff(evidenceHashHex);
+        if (handoff === undefined) {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Reopening obligation lost its handoff.");
+        }
+        reopeningHandoffs.set(evidenceHashHex, handoff);
+      }
+      const fill = handoff.fills.find((candidate) => candidate.fillSequence === fillSequence);
+      const expectedOrderId = row.role === "BID" ? fill?.bidEntryId : fill?.askEntryId;
+      const expectedCounterparty = row.role === "BID" ? fill?.askEntryId : fill?.bidEntryId;
+      const expectedCommitmentHash = row.role === "BID"
+        ? fill?.bidSettlementCommitmentHash
+        : fill?.askSettlementCommitmentHash;
+      if (
+        commitment === undefined
+        || fill === undefined
+        || expectedOrderId === undefined
+        || expectedCounterparty === undefined
+        || expectedCommitmentHash === undefined
+        || !bytesEqual(expectedOrderId, orderId)
+        || toHex(expectedCounterparty) !== counterpartyOrderIdHex
+        || !bytesEqual(expectedCommitmentHash, packageSettlementCommitmentHash(commitment))
+        || fill.priceTicks !== priceTicks
+        || fill.quantity !== quantity
+      ) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening obligation differs from its handoff.");
+      }
+      return Object.freeze({
+        evidenceKind: "REOPENING_RESULT" as const,
+        evidenceHashHex,
+        fillSequence,
+        role: row.role,
+        counterpartyOrderIdHex,
+        liquiditySource: "DIRECT" as const,
+        priceTicks,
+        quantity,
+      });
+    });
+    return Object.freeze([...continuous, ...reopening]);
   }
 
   settlementProgress(packageOrderId: Uint8Array | string): PackageSettlementProgress | undefined {
@@ -1081,8 +1506,10 @@ export class SqlitePackageExchangeStore {
       remainingQuantity,
       acceptsFurtherMatches,
       status,
-      evidenceRefs: [...new Set(obligations.map((obligation) => obligation.allocationHashHex))]
-        .map((evidenceHash) => ({ kind: "CONTINUOUS_ALLOCATION" as const, evidenceHash })),
+      evidenceRefs: [...new Map(obligations.map((obligation) => [
+        `${obligation.evidenceKind}:${obligation.evidenceHashHex}`,
+        { kind: obligation.evidenceKind, evidenceHash: obligation.evidenceHashHex },
+      ])).values()],
     });
     return Object.freeze({
       readiness,
@@ -1339,5 +1766,37 @@ export class SqlitePackageExchangeStore {
       verifyPackageAllocation(policy, allocation);
       return allocation;
     });
+  }
+
+  private decodeReopeningResult(executionClassId: string, json: unknown): PackageReopeningResult {
+    return guarded("CORRUPT_ROW", "Stored reopening result failed validation.", () => {
+      const result = packageReopeningResult(
+        parseProtocolJson(jsonText(json, "result_json")) as PackageReopeningResult,
+      );
+      if (result.executionClassId !== executionClassId) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored reopening result belongs to another book.");
+      }
+      return result;
+    });
+  }
+
+  private settlementEvidenceCount(packageOrderId: Uint8Array | string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM (
+        SELECT allocation_hash AS evidence_hash
+        FROM package_book_settlement_obligations
+        WHERE package_order_id = ?
+        GROUP BY allocation_hash
+        UNION
+        SELECT result_hash AS evidence_hash
+        FROM package_book_reopening_obligations
+        WHERE package_order_id = ?
+        GROUP BY result_hash
+      )
+    `).get(commitmentHash(packageOrderId), commitmentHash(packageOrderId)) as { count: unknown };
+    if (typeof row.count !== "number" || !Number.isSafeInteger(row.count) || row.count < 0) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement evidence count is invalid.");
+    }
+    return row.count;
   }
 }
