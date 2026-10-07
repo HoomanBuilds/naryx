@@ -26,6 +26,9 @@ import {
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   packageSettlementHandoffHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
+  PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
   seriesExecutionClass,
@@ -53,6 +56,7 @@ import type {
   PackageSettlementCommitment,
   PackageSettlementCommitmentInput,
   PackageSettlementHandoff,
+  PackageSettlementReadiness,
   PackageTakerOrderInput,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
@@ -101,6 +105,22 @@ export interface PackageTapeRecord {
 export interface PackageExchangeCancellationResult {
   readonly cancellationHashHex: string;
   readonly replayed: boolean;
+}
+
+export interface PackageSettlementObligation {
+  readonly allocationHashHex: string;
+  readonly fillSequence: bigint;
+  readonly role: "TAKER" | "MAKER";
+  readonly counterpartyOrderIdHex?: string;
+  readonly makerSource: "DIRECT" | "IMPLIED";
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+}
+
+export interface PackageSettlementProgress {
+  readonly readiness: PackageSettlementReadiness;
+  readonly readinessHashHex: string;
+  readonly obligations: readonly PackageSettlementObligation[];
 }
 
 export const MAX_TAPE_PAGE = 100;
@@ -177,6 +197,18 @@ CREATE TABLE IF NOT EXISTS package_book_settlement_handoffs (
   handoff_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_settlement_obligations (
+  allocation_hash BLOB NOT NULL REFERENCES package_book_allocations(allocation_hash),
+  fill_index INTEGER NOT NULL CHECK (fill_index >= 0),
+  fill_sequence TEXT NOT NULL,
+  package_order_id BLOB NOT NULL REFERENCES package_book_settlement_commitments(package_order_id),
+  role TEXT NOT NULL CHECK (role IN ('TAKER', 'MAKER')),
+  counterparty_order_id BLOB,
+  maker_source TEXT NOT NULL CHECK (maker_source IN ('DIRECT', 'IMPLIED')),
+  price_ticks TEXT NOT NULL,
+  quantity_atoms TEXT NOT NULL,
+  PRIMARY KEY (allocation_hash, fill_index, role)
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_cancellations (
   cancellation_hash BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -221,6 +253,12 @@ CREATE TRIGGER IF NOT EXISTS reject_settlement_handoff_change
 CREATE TRIGGER IF NOT EXISTS reject_settlement_handoff_delete
   BEFORE DELETE ON package_book_settlement_handoffs
   BEGIN SELECT RAISE(ABORT, 'package settlement handoffs are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_obligation_change
+  BEFORE UPDATE ON package_book_settlement_obligations
+  BEGIN SELECT RAISE(ABORT, 'package settlement obligations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_obligation_delete
+  BEFORE DELETE ON package_book_settlement_obligations
+  BEGIN SELECT RAISE(ABORT, 'package settlement obligations are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_cancellation_change
   BEFORE UPDATE ON package_book_cancellations
   BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
@@ -304,6 +342,13 @@ function jsonText(value: unknown, field: string): string {
 
 function sequenceText(value: bigint): string {
   return value.toString(10);
+}
+
+function storedBigInt(value: unknown, field: string, signed = false): bigint {
+  if (typeof value !== "string" || !(signed ? /^-?(?:0|[1-9]\d*)$/ : /^(?:0|[1-9]\d*)$/).test(value)) {
+    throw new PackageExchangeStoreError("CORRUPT_ROW", `Stored ${field} is invalid.`);
+  }
+  return BigInt(value);
 }
 
 /**
@@ -699,6 +744,56 @@ export class SqlitePackageExchangeStore {
             (allocation_hash, handoff_hash, handoff_json, recorded_at_ms)
           VALUES (?, ?, ?, ?)
         `).run(allocationHash, handoffHash, stringifyProtocolJson(settlementHandoff), recordedAtMs);
+        const allocationCount = this.db.prepare(`
+          SELECT COUNT(DISTINCT allocation_hash) AS count
+          FROM package_book_settlement_obligations
+          WHERE package_order_id = ?
+        `);
+        for (const fill of result.allocation.fills) {
+          if (fill.makerSource !== "DIRECT") continue;
+          const row = allocationCount.get(fill.makerEntryId) as { count: unknown };
+          if (typeof row.count !== "number" || !Number.isSafeInteger(row.count) || row.count < 0) {
+            throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement allocation count is invalid.");
+          }
+          if (row.count >= PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
+            throw new PackageExchangeStoreError(
+              "SETTLEMENT_ALLOCATION_LIMIT",
+              `One package order may participate in at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} allocations.`,
+            );
+          }
+        }
+        const insertObligation = this.db.prepare(`
+          INSERT INTO package_book_settlement_obligations
+            (allocation_hash, fill_index, fill_sequence, package_order_id, role,
+             counterparty_order_id, maker_source, price_ticks, quantity_atoms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        result.allocation.fills.forEach((fill, fillIndex) => {
+          insertObligation.run(
+            allocationHash,
+            fillIndex,
+            sequenceText(fill.fillSequence),
+            orderId,
+            "TAKER",
+            fill.makerSource === "DIRECT" ? fill.makerEntryId : null,
+            fill.makerSource,
+            sequenceText(fill.priceTicks),
+            sequenceText(fill.quantity),
+          );
+          if (fill.makerSource === "DIRECT") {
+            insertObligation.run(
+              allocationHash,
+              fillIndex,
+              sequenceText(fill.fillSequence),
+              fill.makerEntryId,
+              "MAKER",
+              orderId,
+              fill.makerSource,
+              sequenceText(fill.priceTicks),
+              sequenceText(fill.quantity),
+            );
+          }
+        });
       }
       this.writeBook(result.state);
       return {
@@ -867,6 +962,129 @@ export class SqlitePackageExchangeStore {
       throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement handoff does not match its hash.");
     }
     return handoff;
+  }
+
+  settlementObligations(packageOrderId: Uint8Array | string): readonly PackageSettlementObligation[] {
+    const orderId = commitmentHash(packageOrderId);
+    const commitment = this.settlementCommitment(orderId);
+    const rows = this.db.prepare(`
+      SELECT o.allocation_hash, o.fill_sequence, o.role, o.counterparty_order_id,
+             o.maker_source, o.price_ticks, o.quantity_atoms
+      FROM package_book_settlement_obligations o
+      JOIN package_book_allocations a ON a.allocation_hash = o.allocation_hash
+      WHERE o.package_order_id = ?
+      ORDER BY a.recorded_at_ms, o.fill_index, o.role
+    `).all(orderId) as {
+      allocation_hash: unknown;
+      fill_sequence: unknown;
+      role: unknown;
+      counterparty_order_id: unknown;
+      maker_source: unknown;
+      price_ticks: unknown;
+      quantity_atoms: unknown;
+    }[];
+    const handoffs = new Map<string, PackageSettlementHandoff>();
+    const takerOrderIds = new Map<string, string>();
+    return Object.freeze(rows.map((row) => {
+      if ((row.role !== "TAKER" && row.role !== "MAKER")
+        || (row.maker_source !== "DIRECT" && row.maker_source !== "IMPLIED")
+        || (row.role === "MAKER" && row.maker_source !== "DIRECT")) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement obligation kind is invalid.");
+      }
+      const counterparty = row.counterparty_order_id === null
+        ? undefined
+        : toHex(hashBytes(row.counterparty_order_id, "counterparty_order_id"));
+      if ((row.maker_source === "DIRECT") !== (counterparty !== undefined)) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement obligation counterparty is invalid.");
+      }
+      const allocationHashHex = toHex(hashBytes(row.allocation_hash, "allocation_hash"));
+      const fillSequence = storedBigInt(row.fill_sequence, "fill_sequence");
+      const priceTicks = storedBigInt(row.price_ticks, "price_ticks", true);
+      const quantity = storedBigInt(row.quantity_atoms, "quantity_atoms");
+      let handoff = handoffs.get(allocationHashHex);
+      if (handoff === undefined) {
+        handoff = this.settlementHandoff(allocationHashHex);
+        if (handoff === undefined) {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement obligation lost its handoff.");
+        }
+        handoffs.set(allocationHashHex, handoff);
+      }
+      let takerOrderIdHex = takerOrderIds.get(allocationHashHex);
+      if (takerOrderIdHex === undefined) {
+        const allocationRow = this.db.prepare(
+          "SELECT taker_order_id FROM package_book_allocations WHERE allocation_hash = ?",
+        ).get(handoff.allocationHash) as { taker_order_id: unknown } | undefined;
+        if (allocationRow === undefined) {
+          throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement obligation lost its allocation.");
+        }
+        takerOrderIdHex = toHex(hashBytes(allocationRow.taker_order_id, "taker_order_id"));
+        takerOrderIds.set(allocationHashHex, takerOrderIdHex);
+      }
+      const fill = handoff.fills.find((candidate) => candidate.fillSequence === fillSequence);
+      if (commitment === undefined || fill === undefined
+        || fill.makerSource !== row.maker_source
+        || fill.priceTicks !== priceTicks
+        || fill.quantity !== quantity
+        || (row.role === "TAKER" && (!bytesEqual(
+          handoff.takerSettlementCommitmentHash,
+          packageSettlementCommitmentHash(commitment),
+        ) || (fill.makerSource === "DIRECT" && counterparty !== toHex(fill.makerEntryId))))
+        || (row.role === "MAKER" && (!bytesEqual(fill.makerEntryId, orderId)
+          || counterparty !== takerOrderIdHex
+          || fill.makerSettlementCommitmentHash === undefined
+          || !bytesEqual(fill.makerSettlementCommitmentHash, packageSettlementCommitmentHash(commitment))))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement obligation differs from its handoff.");
+      }
+      return Object.freeze({
+        allocationHashHex,
+        fillSequence,
+        role: row.role,
+        ...(counterparty === undefined ? {} : { counterpartyOrderIdHex: counterparty }),
+        makerSource: row.maker_source,
+        priceTicks,
+        quantity,
+      });
+    }));
+  }
+
+  settlementProgress(packageOrderId: Uint8Array | string): PackageSettlementProgress | undefined {
+    const orderId = commitmentHash(packageOrderId);
+    const commitment = this.settlementCommitment(orderId);
+    if (commitment === undefined) return undefined;
+    const obligations = this.settlementObligations(orderId);
+    const allocatedQuantity = obligations.reduce((sum, obligation) => sum + obligation.quantity, 0n);
+    if (allocatedQuantity > commitment.quantity) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement obligations exceed the committed quantity.");
+    }
+    const remainingQuantity = commitment.quantity - allocatedQuantity;
+    const { book } = this.policyAndBook(commitment.executionClassId);
+    const acceptsFurtherMatches = book.entries.some((entry) => bytesEqual(entry.entryId, orderId));
+    if (remainingQuantity === 0n && acceptsFurtherMatches) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "A fully allocated package order remains in the book.");
+    }
+    const status = allocatedQuantity === commitment.quantity
+      ? "READY_FOR_OWNER_AUTHORIZATION" as const
+      : acceptsFurtherMatches
+        ? allocatedQuantity === 0n ? "AWAITING_MATCH" as const : "PARTIALLY_ALLOCATED" as const
+        : allocatedQuantity === 0n ? "CANCELLED_UNFILLED" as const : "PARTIAL_AUTHORIZATION_REQUIRED" as const;
+    const readiness = packageSettlementReadiness({
+      version: 1,
+      packageOrderId: orderId,
+      settlementCommitmentHash: packageSettlementCommitmentHash(commitment),
+      strategyOrderHash: commitment.strategyOrderHash,
+      executionClassId: commitment.executionClassId,
+      committedQuantity: commitment.quantity,
+      allocatedQuantity,
+      remainingQuantity,
+      acceptsFurtherMatches,
+      status,
+      allocationHashes: [...new Set(obligations.map((obligation) => obligation.allocationHashHex))],
+    });
+    return Object.freeze({
+      readiness,
+      readinessHashHex: toHex(packageSettlementReadinessHash(readiness)),
+      obligations,
+    });
   }
 
   /**

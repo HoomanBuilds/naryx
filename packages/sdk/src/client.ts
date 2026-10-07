@@ -34,6 +34,8 @@ import {
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   packageSettlementHandoffHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
   packageCloseCostIndex,
   packageGraphHash,
   simulatePackageGraphFailures,
@@ -103,6 +105,7 @@ import {
   type PackageSettlementCommitmentInput,
   type PackageSettlementCommitment,
   type PackageSettlementHandoff,
+  type PackageSettlementReadiness,
   type PackageGraphInput,
   type NormalizedPosition,
   type PositionSnapshotRecord,
@@ -226,6 +229,22 @@ export interface VerifiedSettlementAllocation extends VerifiedAllocation {
   readonly settlementCommitmentHash: string;
   readonly settlementHandoff?: PackageSettlementHandoff;
   readonly settlementHandoffHash?: string;
+}
+
+export interface PackageSettlementObligationView {
+  readonly allocationHashHex: string;
+  readonly fillSequence: bigint;
+  readonly role: 'TAKER' | 'MAKER';
+  readonly counterpartyOrderIdHex?: string;
+  readonly makerSource: 'DIRECT' | 'IMPLIED';
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+}
+
+export interface PackageSettlementProgressView {
+  readonly readiness: PackageSettlementReadiness;
+  readonly readinessHash: string;
+  readonly obligations: readonly PackageSettlementObligationView[];
 }
 
 export type PackageBookOrderDraft = Omit<PackageTakerOrderInput, 'orderId'>;
@@ -953,6 +972,52 @@ export class NaryxClient {
         ? {}
         : { settlementHandoff, settlementHandoffHash }),
     });
+  }
+
+  async getPackageSettlementProgress(packageOrderId: string): Promise<PackageSettlementProgressView> {
+    if (!HASH_HEX.test(packageOrderId)) throw new TypeError('package order id must be 32 bytes of lowercase hex');
+    const body = record(
+      await this.#request('GET', `/v1/package-book/orders/${packageOrderId}/settlement-readiness`),
+      'package settlement progress',
+    );
+    const readiness = packageSettlementReadiness(body.readiness as PackageSettlementReadiness);
+    const readinessHash = toHex(packageSettlementReadinessHash(readiness));
+    if (body.readinessHashHex !== readinessHash || toHex(readiness.packageOrderId) !== packageOrderId) {
+      throw new NaryxEvidenceError('package settlement readiness is inconsistent');
+    }
+    const obligations = list(body.obligations, 'package settlement obligations').map((value, index) => {
+      const obligation = record(value, `package settlement obligations[${index}]`);
+      if (typeof obligation.allocationHashHex !== 'string' || !HASH_HEX.test(obligation.allocationHashHex)
+        || typeof obligation.fillSequence !== 'bigint' || obligation.fillSequence < 0n
+        || (obligation.role !== 'TAKER' && obligation.role !== 'MAKER')
+        || (obligation.makerSource !== 'DIRECT' && obligation.makerSource !== 'IMPLIED')
+        || typeof obligation.priceTicks !== 'bigint'
+        || typeof obligation.quantity !== 'bigint' || obligation.quantity <= 0n
+        || (obligation.counterpartyOrderIdHex !== undefined
+          && (typeof obligation.counterpartyOrderIdHex !== 'string' || !HASH_HEX.test(obligation.counterpartyOrderIdHex)))
+        || ((obligation.makerSource === 'DIRECT') !== (obligation.counterpartyOrderIdHex !== undefined))
+        || (obligation.role === 'MAKER' && obligation.makerSource !== 'DIRECT')) {
+        throw new NaryxEvidenceError('package settlement obligation is malformed');
+      }
+      return Object.freeze({
+        allocationHashHex: obligation.allocationHashHex,
+        fillSequence: obligation.fillSequence,
+        role: obligation.role,
+        ...(obligation.counterpartyOrderIdHex === undefined
+          ? {}
+          : { counterpartyOrderIdHex: obligation.counterpartyOrderIdHex }),
+        makerSource: obligation.makerSource,
+        priceTicks: obligation.priceTicks,
+        quantity: obligation.quantity,
+      }) as PackageSettlementObligationView;
+    });
+    const allocatedQuantity = obligations.reduce((sum, obligation) => sum + obligation.quantity, 0n);
+    const allocationHashes = [...new Set(obligations.map((obligation) => obligation.allocationHashHex))].sort();
+    if (allocatedQuantity !== readiness.allocatedQuantity
+      || allocationHashes.join(',') !== readiness.allocationHashes.map(toHex).join(',')) {
+      throw new NaryxEvidenceError('package settlement obligations do not reproduce readiness');
+    }
+    return Object.freeze({ readiness, readinessHash, obligations: Object.freeze(obligations) });
   }
 
   /** Signs and submits one order to the native package book. Matching is not venue settlement. */

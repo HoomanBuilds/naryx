@@ -10,6 +10,8 @@ import {
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   packageSettlementHandoffHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
   toHex,
   verifyPackageSettlementHandoff,
 } from '../src/index.js';
@@ -85,6 +87,39 @@ test('implied fills cannot pretend to have a direct settlement commitment', () =
         quantity: 10n,
         makerSettlementCommitmentHash: hash('9'),
       }],
+    }),
+    MalformedInputError,
+  );
+});
+
+test('settlement readiness conserves quantity and canonicalizes allocation evidence', () => {
+  const readiness = packageSettlementReadiness({
+    version: 1,
+    packageOrderId: hash('1'),
+    settlementCommitmentHash: hash('2'),
+    strategyOrderHash: hash('3'),
+    executionClassId: commitment.executionClassId,
+    committedQuantity: 10n,
+    allocatedQuantity: 10n,
+    remainingQuantity: 0n,
+    acceptsFurtherMatches: false,
+    status: 'READY_FOR_OWNER_AUTHORIZATION',
+    allocationHashes: [hash('5'), hash('4')],
+  });
+  assert.deepEqual(readiness.allocationHashes.map(toHex), [hash('4'), hash('5')]);
+  assert.equal(toHex(packageSettlementReadinessHash(readiness)).length, 64);
+  assert.throws(
+    () => packageSettlementReadiness({
+      ...readiness,
+      allocatedQuantity: 5n,
+      remainingQuantity: 4n,
+    }),
+    MalformedInputError,
+  );
+  assert.throws(
+    () => packageSettlementReadiness({
+      ...readiness,
+      status: 'PARTIAL_AUTHORIZATION_REQUIRED',
     }),
     MalformedInputError,
   );

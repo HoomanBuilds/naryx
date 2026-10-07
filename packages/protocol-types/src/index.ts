@@ -331,13 +331,19 @@ export {
 export {
   PACKAGE_SETTLEMENT_COMMITMENT_VERSION,
   PACKAGE_SETTLEMENT_HANDOFF_VERSION,
+  PACKAGE_SETTLEMENT_READINESS_VERSION,
   PACKAGE_SETTLEMENT_MAX_FILLS,
+  PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
+  PACKAGE_SETTLEMENT_READINESS_STATUS,
   packageSettlementCommitment,
   packageSettlementCommitmentBytes,
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   packageSettlementHandoffBytes,
   packageSettlementHandoffHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessBytes,
+  packageSettlementReadinessHash,
   verifyPackageSettlementHandoff,
   type PackageSettlementCommitmentInput,
   type PackageSettlementCommitment,
@@ -345,6 +351,9 @@ export {
   type PackageSettlementFill,
   type PackageSettlementHandoffInput,
   type PackageSettlementHandoff,
+  type PackageSettlementReadinessStatus,
+  type PackageSettlementReadinessInput,
+  type PackageSettlementReadiness,
 } from './package-settlement.js';
 
 export {

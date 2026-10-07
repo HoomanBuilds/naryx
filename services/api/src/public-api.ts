@@ -167,6 +167,7 @@ export type PublicExchangeStore = Pick<
   | "getAllocation"
   | "settlementCommitment"
   | "settlementHandoff"
+  | "settlementProgress"
   | "allocationTape"
   | "allocationsBetween"
   | "listBooks"
@@ -1086,6 +1087,15 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const store = requireDelivery();
       const hash = match[1] as string;
       return store.auctionView(hash, wallClockIn(store.auctionDefinition(hash).timeUnit));
+    }
+    if ((match = /^\/v1\/package-book\/orders\/([0-9a-f]{64})\/settlement-readiness$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const orderId = match[1] as string;
+      const progress = exchange.settlementProgress(orderId);
+      if (progress === undefined) {
+        throw new RequestError(404, "SETTLEMENT_NOT_FOUND", "No settlement commitment exists for this package order.");
+      }
+      return progress;
     }
     if ((match = /^\/v1\/allocations\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);

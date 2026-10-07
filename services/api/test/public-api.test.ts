@@ -303,6 +303,16 @@ test("signed public package orders create durable settlement handoffs and replay
     assert.equal(((await get("/v1/package-book/orders", post({ order: signed, settlementCommitment, authorization }))).body as { replayed: boolean }).replayed, true);
     assert.equal(store.getAllocation(orderId)?.fills.length, 1);
     assert.ok(store.settlementHandoff(accepted.allocationHash));
+    const progressResponse = await get(`/v1/package-book/orders/${orderId}/settlement-readiness`);
+    assert.equal(progressResponse.status, 200);
+    const progress = progressResponse.body as {
+      readiness: { status: string };
+      readinessHashHex: string;
+      obligations: readonly unknown[];
+    };
+    assert.equal(progress.readiness.status, "READY_FOR_OWNER_AUTHORIZATION");
+    assert.equal(progress.readinessHashHex.length, 64);
+    assert.equal(progress.obligations.length, 1);
     const recoveredResponse = await get(`/v1/allocations/${orderId}`);
     assert.equal(recoveredResponse.status, 200);
     const recovered = recoveredResponse.body as {

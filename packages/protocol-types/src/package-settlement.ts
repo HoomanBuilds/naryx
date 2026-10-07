@@ -1,5 +1,5 @@
 import { checkedSigned, checkedUnsigned } from './arithmetic.js';
-import { bytesEqual, toHex } from './bytes.js';
+import { bytesEqual, compareBytes, toHex } from './bytes.js';
 import { canonicalBytes, type CanonicalWriter } from './encoding.js';
 import { enumDiscriminant, EXPIRY_UNIT, type ExpiryUnit } from './enums.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
@@ -24,7 +24,18 @@ import {
 
 export const PACKAGE_SETTLEMENT_COMMITMENT_VERSION = 1;
 export const PACKAGE_SETTLEMENT_HANDOFF_VERSION = 1;
+export const PACKAGE_SETTLEMENT_READINESS_VERSION = 1;
 export const PACKAGE_SETTLEMENT_MAX_FILLS = 2_000;
+export const PACKAGE_SETTLEMENT_MAX_ALLOCATIONS = 4_096;
+
+export const PACKAGE_SETTLEMENT_READINESS_STATUS = Object.freeze({
+  AWAITING_MATCH: 1,
+  PARTIALLY_ALLOCATED: 2,
+  PARTIAL_AUTHORIZATION_REQUIRED: 3,
+  READY_FOR_OWNER_AUTHORIZATION: 4,
+  CANCELLED_UNFILLED: 5,
+} as const);
+export type PackageSettlementReadinessStatus = keyof typeof PACKAGE_SETTLEMENT_READINESS_STATUS;
 
 const U32_BITS = 32;
 const U64_BITS = 64;
@@ -99,6 +110,32 @@ export interface PackageSettlementHandoff extends Omit<
   readonly executionClassId: ProtocolId;
   readonly takerSettlementCommitmentHash: CommitmentHash;
   readonly fills: readonly PackageSettlementFill[];
+}
+
+export interface PackageSettlementReadinessInput {
+  readonly version: number;
+  readonly packageOrderId: Uint8Array | string;
+  readonly settlementCommitmentHash: Uint8Array | string;
+  readonly strategyOrderHash: Uint8Array | string;
+  readonly executionClassId: string;
+  readonly committedQuantity: bigint;
+  readonly allocatedQuantity: bigint;
+  readonly remainingQuantity: bigint;
+  readonly acceptsFurtherMatches: boolean;
+  readonly status: PackageSettlementReadinessStatus;
+  readonly allocationHashes: readonly (Uint8Array | string)[];
+}
+
+export interface PackageSettlementReadiness extends Omit<
+  PackageSettlementReadinessInput,
+  'packageOrderId' | 'settlementCommitmentHash' | 'strategyOrderHash' | 'executionClassId' | 'allocationHashes'
+> {
+  readonly version: 1;
+  readonly packageOrderId: CommitmentHash;
+  readonly settlementCommitmentHash: CommitmentHash;
+  readonly strategyOrderHash: CommitmentHash;
+  readonly executionClassId: ProtocolId;
+  readonly allocationHashes: readonly CommitmentHash[];
 }
 
 function object(value: unknown, context: string): void {
@@ -267,6 +304,92 @@ export function packageSettlementHandoffHash(input: PackageSettlementHandoffInpu
   return commitmentHash(
     domainHash(HASH_DOMAIN.PACKAGE_SETTLEMENT_HANDOFF, packageSettlementHandoffBytes(input)),
     'packageSettlementHandoffHash',
+  );
+}
+
+export function packageSettlementReadiness(
+  input: PackageSettlementReadinessInput,
+  context = 'packageSettlementReadiness',
+): PackageSettlementReadiness {
+  object(input, context);
+  version(input.version, PACKAGE_SETTLEMENT_READINESS_VERSION, `${context}.version`);
+  if (typeof input.acceptsFurtherMatches !== 'boolean') {
+    throw new MalformedInputError(`${context}.acceptsFurtherMatches`, 'expected a boolean');
+  }
+  enumDiscriminant(PACKAGE_SETTLEMENT_READINESS_STATUS, input.status, `${context}.status`);
+  const committedQuantity = unsigned(input.committedQuantity, U128_BITS, `${context}.committedQuantity`);
+  const allocatedQuantity = unsigned(input.allocatedQuantity, U128_BITS, `${context}.allocatedQuantity`);
+  const remainingQuantity = unsigned(input.remainingQuantity, U128_BITS, `${context}.remainingQuantity`);
+  if (committedQuantity === 0n || allocatedQuantity + remainingQuantity !== committedQuantity) {
+    throw new MalformedInputError(context, 'settlement quantities do not conserve the commitment');
+  }
+  if (!Array.isArray(input.allocationHashes) || input.allocationHashes.length > PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
+    throw new MalformedInputError(
+      `${context}.allocationHashes`,
+      `expected at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} allocation hashes`,
+    );
+  }
+  const allocationHashes = input.allocationHashes
+    .map((hash, index) => commitmentHash(hash, `${context}.allocationHashes[${index}]`))
+    .sort(compareBytes);
+  for (let index = 1; index < allocationHashes.length; index += 1) {
+    if (bytesEqual(allocationHashes[index - 1]!, allocationHashes[index]!)) {
+      throw new DuplicateElementError(`${context}.allocationHashes`, 'allocation hash repeats');
+    }
+  }
+  if ((allocatedQuantity === 0n) !== (allocationHashes.length === 0)) {
+    throw new MalformedInputError(`${context}.allocationHashes`, 'allocation evidence and allocated quantity disagree');
+  }
+  const stateValid =
+    (input.status === 'AWAITING_MATCH' && allocatedQuantity === 0n && remainingQuantity > 0n && input.acceptsFurtherMatches)
+    || (input.status === 'PARTIALLY_ALLOCATED' && allocatedQuantity > 0n && remainingQuantity > 0n && input.acceptsFurtherMatches)
+    || (input.status === 'PARTIAL_AUTHORIZATION_REQUIRED' && allocatedQuantity > 0n && remainingQuantity > 0n && !input.acceptsFurtherMatches)
+    || (input.status === 'READY_FOR_OWNER_AUTHORIZATION' && allocatedQuantity === committedQuantity && remainingQuantity === 0n && !input.acceptsFurtherMatches)
+    || (input.status === 'CANCELLED_UNFILLED' && allocatedQuantity === 0n && remainingQuantity === committedQuantity && !input.acceptsFurtherMatches);
+  if (!stateValid) throw new MalformedInputError(`${context}.status`, 'status does not match settlement progress');
+  return Object.freeze({
+    version: PACKAGE_SETTLEMENT_READINESS_VERSION,
+    packageOrderId: commitmentHash(input.packageOrderId, `${context}.packageOrderId`),
+    settlementCommitmentHash: commitmentHash(input.settlementCommitmentHash, `${context}.settlementCommitmentHash`),
+    strategyOrderHash: commitmentHash(input.strategyOrderHash, `${context}.strategyOrderHash`),
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    committedQuantity,
+    allocatedQuantity,
+    remainingQuantity,
+    acceptsFurtherMatches: input.acceptsFurtherMatches,
+    status: input.status,
+    allocationHashes: Object.freeze(allocationHashes),
+  });
+}
+
+export function packageSettlementReadinessBytes(
+  input: PackageSettlementReadinessInput,
+  context = 'packageSettlementReadiness',
+): Uint8Array {
+  const readiness = packageSettlementReadiness(input, context);
+  return canonicalBytes((writer) => {
+    writer.writeU32(readiness.version, `${context}.version`);
+    encodeCommitmentHash(writer, readiness.packageOrderId, `${context}.packageOrderId`);
+    encodeCommitmentHash(writer, readiness.settlementCommitmentHash, `${context}.settlementCommitmentHash`);
+    encodeCommitmentHash(writer, readiness.strategyOrderHash, `${context}.strategyOrderHash`);
+    encodeProtocolId(writer, readiness.executionClassId, `${context}.executionClassId`);
+    writer.writeU128(readiness.committedQuantity, `${context}.committedQuantity`);
+    writer.writeU128(readiness.allocatedQuantity, `${context}.allocatedQuantity`);
+    writer.writeU128(readiness.remainingQuantity, `${context}.remainingQuantity`);
+    writer.writeBool(readiness.acceptsFurtherMatches, `${context}.acceptsFurtherMatches`);
+    writer.writeEnum(PACKAGE_SETTLEMENT_READINESS_STATUS, readiness.status, `${context}.status`);
+    writer.writeArray(
+      readiness.allocationHashes,
+      (element, hash) => encodeCommitmentHash(element, hash, `${context}.allocationHashes`),
+      `${context}.allocationHashes`,
+    );
+  });
+}
+
+export function packageSettlementReadinessHash(input: PackageSettlementReadinessInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_SETTLEMENT_READINESS, packageSettlementReadinessBytes(input)),
+    'packageSettlementReadinessHash',
   );
 }
 

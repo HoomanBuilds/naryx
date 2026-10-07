@@ -72,9 +72,48 @@ test("orders match durably and replay returns the recorded allocation", () => {
     const stored = store.getAllocation(id(2));
     assert.ok(stored);
     verifyPackageAllocation(packageMatchingPolicy(POLICY), stored);
+    for (const packageOrderId of [maker.orderId, taker.orderId]) {
+      const progress = store.settlementProgress(packageOrderId);
+      assert.equal(progress?.readiness.status, "READY_FOR_OWNER_AUTHORIZATION");
+      assert.deepEqual(
+        [progress?.readiness.committedQuantity, progress?.readiness.allocatedQuantity, progress?.readiness.remainingQuantity],
+        [10n, 10n, 0n],
+      );
+      assert.equal(progress?.obligations.length, 1);
+    }
     const rejectedOrder = order(3, { side: "BID", timeInForce: "IOC" });
     const rejected = store.submitOrder(CLASS, rejectedOrder, NOW, settlement(rejectedOrder));
     assert.deepEqual(rejected, { accepted: false, rejection: "MINIMUM_QUANTITY_UNFILLABLE" });
+  });
+});
+
+test("partial settlement obligations require new authorization after the order closes", () => {
+  withStore((store) => {
+    registerAll(store);
+    const maker = order(1, { quantity: 30n });
+    store.submitOrder(CLASS, maker, NOW, settlement(maker));
+    const taker = order(2, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, taker, NOW, settlement(taker));
+
+    let progress = store.settlementProgress(maker.orderId);
+    assert.equal(progress?.readiness.status, "PARTIALLY_ALLOCATED");
+    assert.deepEqual(
+      [progress?.readiness.allocatedQuantity, progress?.readiness.remainingQuantity, progress?.readiness.acceptsFurtherMatches],
+      [10n, 20n, true],
+    );
+
+    store.cancelEntry(CLASS, maker.orderId, maker.participantId);
+    progress = store.settlementProgress(maker.orderId);
+    assert.equal(progress?.readiness.status, "PARTIAL_AUTHORIZATION_REQUIRED");
+    assert.deepEqual(
+      [progress?.readiness.allocatedQuantity, progress?.readiness.remainingQuantity, progress?.readiness.acceptsFurtherMatches],
+      [10n, 20n, false],
+    );
+
+    const untouched = order(3, { limitPriceTicks: 110n });
+    store.submitOrder(CLASS, untouched, NOW, settlement(untouched));
+    store.cancelEntry(CLASS, untouched.orderId, untouched.participantId);
+    assert.equal(store.settlementProgress(untouched.orderId)?.readiness.status, "CANCELLED_UNFILLED");
   });
 });
 

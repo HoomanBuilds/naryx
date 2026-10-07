@@ -12,6 +12,8 @@ import {
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   packageSettlementHandoffHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
   packageMatchingPolicy,
   packageTakerOrderHash,
   toHex,
@@ -167,6 +169,47 @@ describe('public API client', () => {
     await assert.rejects(
       client({ [path]: { body: { ...evidenceBody, settlementHandoff: { ...settlementHandoff, fills: settlementHandoff.fills.map((fill) => ({ ...fill, priceTicks: fill.priceTicks + 1n })) } } } })
         .getVerifiedAllocation(id(2)),
+      NaryxEvidenceError,
+    );
+  });
+
+  test('verifies package settlement readiness and rejects inconsistent obligations', async () => {
+    const orderId = id(2);
+    const allocationHashHex = id(4);
+    const readiness = packageSettlementReadiness({
+      version: 1,
+      packageOrderId: orderId,
+      settlementCommitmentHash: id(5),
+      strategyOrderHash: id(6),
+      executionClassId: CLASS,
+      committedQuantity: 10n,
+      allocatedQuantity: 10n,
+      remainingQuantity: 0n,
+      acceptsFurtherMatches: false,
+      status: 'READY_FOR_OWNER_AUTHORIZATION',
+      allocationHashes: [allocationHashHex],
+    });
+    const path = `/v1/package-book/orders/${orderId}/settlement-readiness`;
+    const obligation = {
+      allocationHashHex,
+      fillSequence: 1n,
+      role: 'TAKER',
+      counterpartyOrderIdHex: id(1),
+      makerSource: 'DIRECT',
+      priceTicks: 100n,
+      quantity: 10n,
+    };
+    const body = {
+      readiness,
+      readinessHashHex: toHex(packageSettlementReadinessHash(readiness)),
+      obligations: [obligation],
+    };
+    const progress = await client({ [path]: { body } }).getPackageSettlementProgress(orderId);
+    assert.equal(progress.readiness.status, 'READY_FOR_OWNER_AUTHORIZATION');
+    assert.equal(progress.readinessHash, body.readinessHashHex);
+    await assert.rejects(
+      client({ [path]: { body: { ...body, obligations: [{ ...obligation, quantity: 9n }] } } })
+        .getPackageSettlementProgress(orderId),
       NaryxEvidenceError,
     );
   });
