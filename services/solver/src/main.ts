@@ -62,6 +62,9 @@ import {
   loadEvmStrategySolverKey,
   EvmStrategyExecutionObservationService,
   createEvmOptionSpreadObservationInternalHandler,
+  loadSolanaTreasuryHedgeRuntime,
+  SolanaTreasuryHedgePreparationContextResolver,
+  SqliteSolanaStrategyPackageIdStore,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -217,6 +220,7 @@ const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
 const evmTreasuryRuntimePath = process.env.NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG;
 const evmCollateralConversionRuntimePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_RUNTIME_CONFIG;
 const evmReverseBasisRuntimePath = process.env.NARYX_EVM_REVERSE_BASIS_RUNTIME_CONFIG;
+const solanaTreasuryRuntimePath = process.env.NARYX_SOLANA_TREASURY_HEDGE_RUNTIME_CONFIG;
 const evmRuntimeConfigured = (evmOptionRuntimePath !== undefined && evmOptionRuntimePath !== '')
   || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '')
   || (evmCollateralConversionRuntimePath !== undefined && evmCollateralConversionRuntimePath !== '')
@@ -273,6 +277,21 @@ const evmReverseBasisRuntime = evmReverseBasisRuntimePath === undefined || evmRe
       },
       packageIds: evmStrategyPackageIds!,
     });
+const solanaStrategyPackageIds = solanaTreasuryRuntimePath === undefined || solanaTreasuryRuntimePath === ''
+  ? undefined
+  : new SqliteSolanaStrategyPackageIdStore(config.quoteDbPath);
+const solanaTreasuryRuntime = solanaTreasuryRuntimePath === undefined || solanaTreasuryRuntimePath === ''
+  ? undefined
+  : await loadSolanaTreasuryHedgeRuntime(absolutePath(
+      solanaTreasuryRuntimePath,
+      'NARYX_SOLANA_TREASURY_HEDGE_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `solana-treasury:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: solanaStrategyPackageIds!,
+    });
 const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
   ? undefined
   : new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes);
@@ -288,11 +307,15 @@ const evmCollateralConversionPreparationResolver = evmCollateralConversionRuntim
 const evmReverseBasisPreparationResolver = evmReverseBasisRuntime === undefined
   ? undefined
   : new EvmReverseBasisPreparationContextResolver(evmReverseBasisRuntime.preparationLanes);
+const solanaTreasuryPreparationResolver = solanaTreasuryRuntime === undefined
+  ? undefined
+  : new SolanaTreasuryHedgePreparationContextResolver(solanaTreasuryRuntime.preparationLanes);
 const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
     && evmOptionPreparationResolver === undefined
     && evmTreasuryPreparationResolver === undefined
     && evmCollateralConversionPreparationResolver === undefined
     && evmReverseBasisPreparationResolver === undefined
+    && solanaTreasuryPreparationResolver === undefined
   ? undefined
   : Object.freeze({
       resolve: (documents: Parameters<HyperliquidStrategyPreparationContextResolver['resolve']>[0]) => {
@@ -307,6 +330,14 @@ const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
         if (evmTreasury) {
           if (evmTreasuryPreparationResolver === undefined) throw new Error('EVM treasury hedge preparation is not configured');
           return evmTreasuryPreparationResolver.resolve(documents);
+        }
+        const solanaTreasury = documents.order.templateId === 'treasury-inventory-hedge-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId === 'svm:devnet');
+        if (solanaTreasury) {
+          if (solanaTreasuryPreparationResolver === undefined) {
+            throw new Error('Solana treasury hedge preparation is not configured');
+          }
+          return solanaTreasuryPreparationResolver.resolve(documents);
         }
         const evmCollateralConversion = documents.order.templateId === 'collateral-conversion-hedge-v1'
           && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
@@ -348,6 +379,7 @@ const allGeneralizedStrategyLanes = Object.freeze([
   ...(evmTreasuryRuntime?.quoteLanes ?? []),
   ...(evmCollateralConversionRuntime?.quoteLanes ?? []),
   ...(evmReverseBasisRuntime?.quoteLanes ?? []),
+  ...(solanaTreasuryRuntime?.quoteLanes ?? []),
 ]);
 const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
@@ -520,6 +552,7 @@ function shutdown(): void {
     store.close();
     generalizedQuoteStore?.close();
     evmStrategyPackageIds?.close();
+    solanaStrategyPackageIds?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {
@@ -549,6 +582,7 @@ try {
   store.close();
   generalizedQuoteStore?.close();
   evmStrategyPackageIds?.close();
+  solanaStrategyPackageIds?.close();
   authorizationStore?.close();
   throw error;
 }
