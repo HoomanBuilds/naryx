@@ -143,6 +143,10 @@ import {
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
 import {
+  SolanaTreasuryHedgeProvisioningClientError,
+  type SolanaTreasuryHedgeProvisioningPort,
+} from './solana-treasury-hedge-provisioning-client.js';
+import {
   EvmReverseBasisCollateralClientError,
   type EvmReverseBasisCollateralPort,
 } from './evm-reverse-basis-collateral-client.js';
@@ -356,6 +360,7 @@ export function createPrivateTerminalRequestHandler(
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
   solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
+  solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -1438,6 +1443,39 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    if (url.pathname === '/internal/terminal/strategy-executions/solana-provision') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (solanaTreasuryHedgeProvisioning === undefined) {
+        reject(response, 503, 'SOLANA_TREASURY_HEDGE_PROVISIONING_UNAVAILABLE', 'Solana treasury hedge provisioning is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).length !== 1 || typeof (requestBody as { orderHash?: unknown }).orderHash !== 'string') {
+          throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_REQUEST', 'Request must contain only orderHash.');
+        }
+        const provisioning = await solanaTreasuryHedgeProvisioning.provision((requestBody as { orderHash: string }).orderHash);
+        const fundingRequired = provisioning.inventoryFundingRequiredAtoms > 0n || provisioning.quoteFundingRequiredAtoms > 0n;
+        sendJson(response, 200, {
+          status: provisioning.ready ? 'READY' : fundingRequired ? 'FUNDING_REQUIRED' : 'WALLET_TRANSACTIONS_REQUIRED',
+          provisioning: toProtocolJson(provisioning),
+        });
+      } catch (error) {
+        if (error instanceof SolanaTreasuryHedgeProvisioningClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'SOLANA_TREASURY_HEDGE_PROVISIONING_FAILED', 'Solana treasury hedge provisioning failed closed.');
+      }
+      return;
+    }
+
     if (url.pathname === '/internal/terminal/strategy-executions/reverse-basis-collateral') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS');
@@ -2453,6 +2491,7 @@ export function createPrivateTerminalServer(
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
   solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
+  solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -2490,6 +2529,7 @@ export function createPrivateTerminalServer(
     evmStrategyExecutionAuthorization,
     evmStrategyExecutionObservation,
     solanaTreasuryHedgeOrders,
+    solanaTreasuryHedgeProvisioning,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

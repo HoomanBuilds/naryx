@@ -123,6 +123,12 @@ export {
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
 export {
+  HttpSolanaTreasuryHedgeProvisioningClient,
+  SolanaTreasuryHedgeProvisioningClientError,
+  type SolanaTreasuryHedgeProvisioningPlan,
+  type SolanaTreasuryHedgeProvisioningPort,
+} from './solana-treasury-hedge-provisioning-client.js';
+export {
   HttpEvmReverseBasisCollateralClient,
   EvmReverseBasisCollateralClientError,
   type EvmReverseBasisCollateralPort,
