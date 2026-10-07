@@ -225,6 +225,7 @@ type SolanaExecutionObservation = Readonly<
       onchainReceiptHash: string;
       solver: string;
       nonce: string;
+      receipt: StrategyReceiptSummary;
     }
 >;
 
@@ -683,6 +684,11 @@ function parseSolanaExecutionObservation(
     onchainReceiptHash: hash(observation.onchainReceiptHash, "Solana onchain receipt"),
     solver: solanaAddress(observation.solver, "Solana observed solver"),
     nonce,
+    receipt: parseStrategyReceipt({
+      version: 1,
+      quoteHash,
+      receipt: observation.receipt,
+    }, review.quoteHash),
   });
 }
 
@@ -3606,15 +3612,45 @@ export function GeneralizedStrategyPreparationPanel({
                   : `The solver has signed the reviewed ${solanaReview.summary}. Your wallet supplies the owner signature and submits it.`}
               </p>
               {solanaObservation?.status === "FINALIZED" ? (
-                <div className={styles.reviewGrid}>
-                  <span>Operation</span><strong>{solanaObservation.operation}</strong>
-                  <span>Strategy account</span><strong title={solanaObservation.strategyAccount}>{compact(solanaObservation.strategyAccount)}</strong>
-                  <span>Position</span><strong title={solanaObservation.position}>{compact(solanaObservation.position)}</strong>
-                  <span>Receipt account</span><strong title={solanaObservation.receiptAccount}>{compact(solanaObservation.receiptAccount)}</strong>
-                  <span>Onchain receipt</span><strong title={solanaObservation.onchainReceiptHash}>{compact(solanaObservation.onchainReceiptHash)}</strong>
-                  <span>Evidence root</span><strong title={solanaObservation.evidenceRoot}>{compact(solanaObservation.evidenceRoot)}</strong>
-                  <span>Next state</span><strong title={solanaObservation.nextStateHash}>{compact(solanaObservation.nextStateHash)}</strong>
-                  <span>Solver</span><strong title={solanaObservation.solver}>{compact(solanaObservation.solver)}</strong>
+                <div className={styles.quoteReview}>
+                  <div className={styles.reviewEconomics}>
+                    <div><span>Venue fees</span><strong>{formatAtomicAmount(
+                      solanaObservation.receipt.venueFees.atoms,
+                      solanaObservation.receipt.venueFees.decimals,
+                      solanaObservation.receipt.venueFees.assetId,
+                    )}</strong></div>
+                    <div><span>Terminal residual</span><strong>{formatAtomicAmount(
+                      solanaObservation.receipt.residualValue.atoms,
+                      solanaObservation.receipt.residualValue.decimals,
+                      solanaObservation.receipt.residualValue.assetId,
+                    )}</strong></div>
+                  </div>
+                  <div className={styles.reviewGrid}>
+                    <span>Operation</span><strong>{solanaObservation.operation}</strong>
+                    <span>Strategy account</span><strong title={solanaObservation.strategyAccount}>{compact(solanaObservation.strategyAccount)}</strong>
+                    <span>Position</span><strong title={solanaObservation.position}>{compact(solanaObservation.position)}</strong>
+                    <span>Receipt account</span><strong title={solanaObservation.receiptAccount}>{compact(solanaObservation.receiptAccount)}</strong>
+                    <span>Onchain receipt</span><strong title={solanaObservation.onchainReceiptHash}>{compact(solanaObservation.onchainReceiptHash)}</strong>
+                    <span>Evidence root</span><strong title={solanaObservation.evidenceRoot}>{compact(solanaObservation.evidenceRoot)}</strong>
+                    <span>Next state</span><strong title={solanaObservation.nextStateHash}>{compact(solanaObservation.nextStateHash)}</strong>
+                    <span>Solver</span><strong title={solanaObservation.solver}>{compact(solanaObservation.solver)}</strong>
+                  </div>
+                  {solanaObservation.receipt.legs.map((leg) => (
+                    <div className={styles.reviewGrid} key={leg.legId}>
+                      <span>{leg.legId}</span><strong>{leg.status}</strong>
+                      <span>Settled</span><strong>{formatAtomicAmount(
+                        leg.settled.atoms,
+                        leg.settled.decimals,
+                        leg.settled.assetId,
+                      )}</strong>
+                      <span>Venue fee</span><strong>{formatAtomicAmount(
+                        leg.venueFee.atoms,
+                        leg.venueFee.decimals,
+                        leg.venueFee.assetId,
+                      )}</strong>
+                      <span>Evidence</span><strong title={leg.evidenceHash}>{leg.evidenceGrade} / {compact(leg.evidenceHash)}</strong>
+                    </div>
+                  ))}
                 </div>
               ) : null}
             </>

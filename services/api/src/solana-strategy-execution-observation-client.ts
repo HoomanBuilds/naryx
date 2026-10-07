@@ -3,8 +3,11 @@ import {
   commitmentHash,
   domainRef,
   fromProtocolJson,
+  strategyPackageReceipt,
   toHex,
   type DomainRef,
+  type StrategyPackageReceipt,
+  type StrategyPackageReceiptInput,
 } from '@naryx/protocol-types';
 import { PublicKey } from '@solana/web3.js';
 
@@ -24,6 +27,7 @@ const FINALIZED_FIELDS = [
   'position',
   'previousStateHash',
   'quoteHash',
+  'receipt',
   'receiptAccount',
   'routeHash',
   'signature',
@@ -58,6 +62,7 @@ export type ObservedSolanaStrategyExecution = Readonly<
       onchainReceiptHash: string;
       solver: string;
       nonce: bigint;
+      receipt: StrategyPackageReceipt;
     }
 >;
 
@@ -126,6 +131,12 @@ function record(value: unknown, context: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function sameDomain(left: DomainRef, right: DomainRef): boolean {
+  return left.domainId === right.domainId
+    && left.domainManifestVersion === right.domainManifestVersion
+    && toHex(left.domainManifestHash) === toHex(right.domainManifestHash);
+}
+
 async function responseJson(response: Response): Promise<unknown> {
   if (response.headers.get('content-type')?.split(';', 1)[0]?.trim() !== 'application/json' || response.body === null) {
     throw new SolanaStrategyExecutionObservationClientError('INVALID_RESPONSE', 'observation response must be JSON');
@@ -191,6 +202,21 @@ function observation(value: unknown, quoteHash: string, expectedSignature: strin
   }
   const observedQuoteHash = hash(result.quoteHash, 'quote hash');
   if (observedQuoteHash !== quoteHash) return fail('finalized observation changed the requested quote');
+  let receipt: StrategyPackageReceipt;
+  try {
+    receipt = strategyPackageReceipt(result.receipt as StrategyPackageReceiptInput);
+  } catch {
+    return fail('canonical strategy receipt is invalid');
+  }
+  if (toHex(receipt.orderHash) !== hash(result.orderHash, 'order hash')
+    || toHex(receipt.graphHash) !== hash(result.graphHash, 'graph hash')
+    || toHex(receipt.quoteHash) !== quoteHash
+    || toHex(receipt.routeHash) !== hash(result.routeHash, 'route hash')
+    || receipt.domains.length !== 1 || !sameDomain(receipt.domains[0]!, domain)
+    || receipt.lifecycleAction !== result.operation.toLowerCase().replaceAll('_', '-')
+    || receipt.finalityStatus !== 'FINALIZED') {
+    return fail('canonical strategy receipt changed the finalized quote');
+  }
   return Object.freeze({
     version: 1,
     status: 'FINALIZED',
@@ -213,6 +239,7 @@ function observation(value: unknown, quoteHash: string, expectedSignature: strin
     onchainReceiptHash: hash(result.onchainReceiptHash, 'onchain receipt hash'),
     solver: address(result.solver, 'solver'),
     nonce: result.nonce,
+    receipt,
   });
 }
 
