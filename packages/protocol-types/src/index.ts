@@ -357,6 +357,17 @@ export {
 } from './package-settlement.js';
 
 export {
+  PACKAGE_QUOTE_EXECUTION_BINDING_VERSION,
+  packageQuoteExecutionBinding,
+  unsignedPackageQuoteExecutionBindingBytes,
+  packageQuoteExecutionBindingBytes,
+  packageQuoteExecutionBindingHash,
+  validatePackageQuoteExecutionBinding,
+  type PackageQuoteExecutionBindingInput,
+  type PackageQuoteExecutionBinding,
+} from './package-quote-execution-binding.js';
+
+export {
   SOLVER_CAPABILITY_MANIFEST_VERSION,
   SOLVER_CAPACITY_RECORD_VERSION,
   SOLVER_CAPABILITY_MAX_ENTRIES,

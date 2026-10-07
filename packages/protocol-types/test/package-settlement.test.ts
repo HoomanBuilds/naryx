@@ -12,6 +12,8 @@ import {
   packageSettlementHandoffHash,
   packageSettlementReadiness,
   packageSettlementReadinessHash,
+  packageQuoteExecutionBinding,
+  packageQuoteExecutionBindingHash,
   toHex,
   verifyPackageSettlementHandoff,
 } from '../src/index.js';
@@ -123,6 +125,30 @@ test('settlement readiness conserves quantity and canonicalizes allocation evide
     }),
     MalformedInputError,
   );
+});
+
+test('execution bindings commit the final package market state to one strategy quote', () => {
+  const binding = packageQuoteExecutionBinding({
+    version: 1,
+    packageOrderId: hash('1'),
+    settlementReadinessHash: hash('2'),
+    strategyOrderHash: hash('3'),
+    strategyQuoteHash: hash('4'),
+    routeHash: hash('5'),
+    executionClassId: commitment.executionClassId,
+    solverId: 'solver-a',
+    validUntilUnit: 'SOLANA_SLOT',
+    validUntilValue: 2_000n,
+    solverSignatureScheme: 'ED25519',
+    solverVerificationKey: new Uint8Array(32).fill(6),
+    signature: new Uint8Array(64).fill(7),
+  });
+  assert.equal(toHex(packageQuoteExecutionBindingHash(binding)).length, 64);
+  assert.notEqual(
+    toHex(packageQuoteExecutionBindingHash(binding)),
+    toHex(packageQuoteExecutionBindingHash({ ...binding, settlementReadinessHash: hash('8') })),
+  );
+  assert.throws(() => packageQuoteExecutionBinding({ ...binding, validUntilValue: 0n }), MalformedInputError);
 });
 
 test('settlement handoffs reproduce the matched allocation exactly', () => {
