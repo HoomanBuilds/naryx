@@ -159,6 +159,16 @@ function pda(program: PublicKey, seeds: readonly Uint8Array[]): PublicKey {
   return PublicKey.findProgramAddressSync(seeds.map((seed) => Buffer.from(seed)), program)[0];
 }
 
+export function deriveSolanaMultiStrategyAccount(input: Readonly<{
+  programId: PublicKey | string;
+  owner: PublicKey | string;
+}>): PublicKey {
+  return pda(key(input.programId, 'multi-strategy program'), [
+    Buffer.from('multi-strategy-account'),
+    key(input.owner, 'strategy owner').toBuffer(),
+  ]);
+}
+
 function u32be(value: number): Uint8Array {
   const result = Buffer.allocUnsafe(4);
   result.writeUInt32BE(value);
@@ -220,7 +230,7 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     ? PublicKey.default
     : key(input.solver ?? PublicKey.default, 'solver');
   requireCondition(recovery || !solver.equals(PublicKey.default), 'normal execution requires a solver');
-  const strategyAccount = pda(program, [Buffer.from('multi-strategy-account'), owner.toBuffer()]);
+  const strategyAccount = deriveSolanaMultiStrategyAccount({ programId: program, owner });
   requireCondition(key(plan.feePayer, 'plan fee payer').equals(owner), 'plan fee payer must be the strategy owner');
   const packageId = hash32(input.packageId, 'package id');
   requireCondition(Buffer.from(plan.packageId).equals(Buffer.from(packageId)), 'compiled plan package id mismatch');

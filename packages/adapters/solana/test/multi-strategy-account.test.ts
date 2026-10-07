@@ -5,6 +5,7 @@ import type { DomainRef } from '@naryx/protocol-types';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import {
   compileSolanaMultiStrategyAccountEnvelope,
+  deriveSolanaMultiStrategyAccount,
   type SolanaStrategyAdapterPolicy,
   type SolanaStrategyInstructionPlan,
 } from '../src/index.js';
@@ -100,6 +101,10 @@ function baseInput() {
 }
 
 test('compiles a solver-authorized typed strategy instruction', () => {
+  assert.equal(
+    deriveSolanaMultiStrategyAccount({ programId: multiStrategyProgram, owner }).toBase58(),
+    strategyAccount.toBase58(),
+  );
   const envelope = compileSolanaMultiStrategyAccountEnvelope(baseInput());
   assert.equal(envelope.instruction.programId.toBase58(), multiStrategyProgram.toBase58());
   assert.equal(envelope.instruction.data.subarray(0, 8).toString('hex'), '4ca9b2623392f612');
