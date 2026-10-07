@@ -27,7 +27,9 @@ import {
   type StrategyPackageReceiptInput,
   type StrategyState,
   type TypedStrategyRoute,
+  type DomainRef,
 } from "@naryx/protocol-types";
+import { PublicKey } from "@solana/web3.js";
 import { openDurableDatabase } from "./durable-sqlite.js";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 import {
@@ -166,14 +168,36 @@ CREATE TABLE IF NOT EXISTS strategy_evm_positions (
   recorded_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_solana_positions (
+  package_id BLOB PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  domain_id TEXT NOT NULL,
+  settlement_account TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  series_id TEXT NOT NULL,
+  execution_class_id TEXT NOT NULL,
+  base_asset_id TEXT NOT NULL,
+  base_asset_decimals INTEGER NOT NULL,
+  economic_quantity_atoms TEXT NOT NULL,
+  entry_order_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_orders(order_hash),
+  latest_order_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_orders(order_hash),
+  latest_receipt_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  state_hash BLOB NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
+  recorded_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE INDEX IF NOT EXISTS strategy_package_orders_by_owner ON strategy_package_orders(owner_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_quotes_by_order ON strategy_package_quotes(order_hash, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_receipts_by_order ON strategy_package_receipts(order_hash, recorded_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_package_receipts_by_quote ON strategy_package_receipts(quote_hash);
 CREATE INDEX IF NOT EXISTS strategy_native_positions_by_owner ON strategy_native_positions(owner_id, status, updated_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_evm_positions_by_owner ON strategy_evm_positions(owner_id, status, updated_at_ms);
+CREATE INDEX IF NOT EXISTS strategy_solana_positions_by_owner ON strategy_solana_positions(owner_id, status, updated_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_evm_open_state_hash
 ON strategy_evm_positions(state_hash) WHERE status = 'OPEN';
+CREATE UNIQUE INDEX IF NOT EXISTS strategy_solana_open_state_hash
+ON strategy_solana_positions(state_hash) WHERE status = 'OPEN';
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_transition
 ON strategy_native_transitions(strategy_id) WHERE receipt_hash IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_migration
@@ -270,6 +294,35 @@ export interface EvmStrategyPositionEvidence {
   readonly receiptHashHex: string;
   readonly packageIdHex: string;
   readonly chainId: number;
+  readonly account: string;
+  readonly previousStateHashHex: string;
+  readonly nextStateHashHex: string;
+}
+
+export interface StoredSolanaStrategyPosition {
+  readonly packageIdHex: string;
+  readonly owner: string;
+  readonly domainId: string;
+  readonly settlementAccount: string;
+  readonly templateId: string;
+  readonly seriesId: string;
+  readonly executionClassId: string;
+  readonly baseAssetId: string;
+  readonly baseAssetDecimals: number;
+  readonly economicQuantityAtoms: bigint;
+  readonly entryOrderHashHex: string;
+  readonly latestOrderHashHex: string;
+  readonly latestReceiptHashHex: string;
+  readonly stateHashHex: string;
+  readonly status: "OPEN" | "CLOSED";
+  readonly recordedAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface SolanaStrategyPositionEvidence {
+  readonly receiptHashHex: string;
+  readonly packageIdHex: string;
+  readonly domain: DomainRef;
   readonly account: string;
   readonly previousStateHashHex: string;
   readonly nextStateHashHex: string;
@@ -489,6 +542,8 @@ type EvmPositionRow = {
   updated_at_ms: number;
 };
 
+type SolanaPositionRow = Omit<EvmPositionRow, "chain_id">;
+
 function nativePositionRow(row: NativePositionRow): StoredNativeStrategyPosition {
   requireCondition(row.status === "OPEN" || row.status === "EXITING"
     || row.status === "CLOSED" || row.status === "UNRESOLVED",
@@ -548,6 +603,67 @@ function evmPositionRow(row: EvmPositionRow): StoredEvmStrategyPosition {
     chainId: row.chain_id,
     domainId: row.domain_id,
     settlementAccount: row.settlement_account,
+    templateId: row.template_id,
+    seriesId: row.series_id,
+    executionClassId: row.execution_class_id,
+    baseAssetId: row.base_asset_id,
+    baseAssetDecimals: row.base_asset_decimals,
+    economicQuantityAtoms,
+    entryOrderHashHex,
+    latestOrderHashHex,
+    latestReceiptHashHex,
+    stateHashHex,
+    status: row.status,
+    recordedAtMs: row.recorded_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function canonicalSolanaAddress(value: string, code: string, context: string): string {
+  try {
+    const address = new PublicKey(value);
+    requireCondition(!address.equals(PublicKey.default) && address.toBase58() === value,
+      code, `${context} is invalid.`);
+    return address.toBase58();
+  } catch (error) {
+    if (error instanceof StrategyPackageStoreError) throw error;
+    throw new StrategyPackageStoreError(code, `${context} is invalid.`);
+  }
+}
+
+function solanaPositionRow(row: SolanaPositionRow): StoredSolanaStrategyPosition {
+  requireCondition(row.status === "OPEN" || row.status === "CLOSED",
+    "CORRUPT_ROW", "The Solana strategy position status is invalid.");
+  const packageIdHex = toHex(row.package_id);
+  const entryOrderHashHex = toHex(row.entry_order_hash);
+  const latestOrderHashHex = toHex(row.latest_order_hash);
+  const latestReceiptHashHex = toHex(row.latest_receipt_hash);
+  const stateHashHex = toHex(row.state_hash);
+  const quantityValid = /^(?:0|[1-9][0-9]*)$/.test(row.economic_quantity_atoms);
+  const economicQuantityAtoms = quantityValid ? BigInt(row.economic_quantity_atoms) : -1n;
+  const owner = canonicalSolanaAddress(row.owner_id, "CORRUPT_ROW", "The stored Solana strategy owner");
+  const settlementAccount = canonicalSolanaAddress(
+    row.settlement_account,
+    "CORRUPT_ROW",
+    "The stored Solana strategy settlement account",
+  );
+  requireCondition(Number.isSafeInteger(row.base_asset_decimals)
+    && row.base_asset_decimals >= 0 && row.base_asset_decimals <= 255
+    && quantityValid
+    && /^[0-9a-f]{64}$/.test(packageIdHex)
+    && /^[0-9a-f]{64}$/.test(entryOrderHashHex)
+    && /^[0-9a-f]{64}$/.test(latestOrderHashHex)
+    && /^[0-9a-f]{64}$/.test(latestReceiptHashHex)
+    && /^[0-9a-f]{64}$/.test(stateHashHex)
+    && (row.status === "OPEN"
+      ? economicQuantityAtoms > 0n && !/^0{64}$/.test(stateHashHex)
+      : economicQuantityAtoms === 0n && /^0{64}$/.test(stateHashHex)),
+  "CORRUPT_ROW", "The stored Solana strategy position is malformed.");
+  return Object.freeze({
+    packageIdHex,
+    owner,
+    domainId: row.domain_id,
+    settlementAccount,
     templateId: row.template_id,
     seriesId: row.series_id,
     executionClassId: row.execution_class_id,
@@ -759,6 +875,17 @@ export class SqliteStrategyPackageStore {
     return Object.freeze(rows.map(evmPositionRow));
   }
 
+  solanaStrategyPositionsByOwner(owner: string): readonly StoredSolanaStrategyPosition[] {
+    const canonicalOwner = canonicalSolanaAddress(owner, "INVALID_OWNER",
+      "The Solana strategy owner");
+    const rows = this.db.prepare(`
+      SELECT * FROM strategy_solana_positions
+      WHERE owner_id = ?
+      ORDER BY updated_at_ms DESC, package_id
+    `).all(canonicalOwner) as SolanaPositionRow[];
+    return Object.freeze(rows.map(solanaPositionRow));
+  }
+
   recordEvmStrategyPosition(evidence: EvmStrategyPositionEvidence): StoredEvmStrategyPosition {
     requireCondition(Number.isSafeInteger(evidence.chainId) && evidence.chainId > 0,
       "INVALID_CHAIN", "The EVM strategy chain is invalid.");
@@ -883,6 +1010,129 @@ export class SqliteStrategyPackageStore {
         .get(packageId) as EvmPositionRow | undefined;
       requireCondition(stored !== undefined, "POSITION_NOT_FOUND", "The finalized EVM strategy position was not stored.");
       return evmPositionRow(stored);
+    }).immediate();
+  }
+
+  recordSolanaStrategyPosition(evidence: SolanaStrategyPositionEvidence): StoredSolanaStrategyPosition {
+    const account = canonicalSolanaAddress(evidence.account, "INVALID_ACCOUNT",
+      "The Solana strategy account");
+    const receiptHash = hashBuffer(evidence.receiptHashHex);
+    const packageId = hashBuffer(evidence.packageIdHex);
+    const previousStateHash = hashBuffer(evidence.previousStateHashHex);
+    const nextStateHash = hashBuffer(evidence.nextStateHashHex);
+    const previousZero = /^0{64}$/.test(evidence.previousStateHashHex);
+    const nextZero = /^0{64}$/.test(evidence.nextStateHashHex);
+    const receiptRow = this.db.prepare(`
+      SELECT r.order_hash, r.receipt_json, o.order_json, o.graph_json
+      FROM strategy_package_receipts r
+      JOIN strategy_package_orders o ON o.order_hash = r.order_hash
+      WHERE r.receipt_hash = ?
+    `).get(receiptHash) as {
+      order_hash: Uint8Array;
+      receipt_json: string;
+      order_json: string;
+      graph_json: string;
+    } | undefined;
+    requireCondition(receiptRow !== undefined, "RECEIPT_NOT_FOUND",
+      "The Solana strategy receipt must be stored before its position state.");
+    const receipt = strategyPackageReceipt(parseProtocolJson(receiptRow.receipt_json) as StrategyPackageReceiptInput);
+    const order = strategyPackageOrder(parseProtocolJson(receiptRow.order_json) as StrategyPackageOrderInput);
+    const graph = packageGraph(parseProtocolJson(receiptRow.graph_json) as PackageGraphInput);
+    requireCondition(receipt.finalityStatus === "FINALIZED" && receipt.terminalState === "FINALIZED_COMPLETE",
+      "POSITION_NOT_FINAL", "Only a finalized complete Solana execution can update strategy state.");
+    requireCondition(order.settlementClass === "ATOMIC_POSTCONDITION"
+      && graph.settlementClass === "ATOMIC_POSTCONDITION" && graph.legs.length > 0
+      && graph.legs.every((leg) => sameDomain(leg.domain, graph.legs[0]!.domain)),
+    "UNSUPPORTED_EXECUTION", "The receipt is not one atomic Solana strategy execution.");
+    const domain = graph.legs[0]!.domain;
+    requireCondition(domain.domainId.startsWith("svm:") && sameDomain(domain, evidence.domain)
+      && order.settlementAccount === account,
+    "BINDING_MISMATCH", "The Solana position evidence differs from the order domain or account.");
+    requireCondition(order.lifecycleAction === "ENTRY"
+      ? order.expectedStrategyStateHash === undefined && previousZero
+      : order.expectedStrategyStateHash !== undefined
+        && bytesEqual(order.expectedStrategyStateHash, previousStateHash) && !previousZero,
+    "BINDING_MISMATCH", "The Solana position evidence differs from the ordered strategy state.");
+    const orderHashHex = toHex(receiptRow.order_hash);
+    const changedAtMs = this.clock();
+    requireCondition(Number.isSafeInteger(changedAtMs) && changedAtMs >= 0,
+      "INVALID_CLOCK", "The Solana strategy position clock is invalid.");
+
+    return this.db.transaction(() => {
+      const existingRow = this.db.prepare("SELECT * FROM strategy_solana_positions WHERE package_id = ?")
+        .get(packageId) as SolanaPositionRow | undefined;
+      if (existingRow !== undefined && toHex(existingRow.latest_order_hash) === orderHashHex) {
+        requireCondition(toHex(existingRow.latest_receipt_hash) === evidence.receiptHashHex,
+          "POSITION_CONFLICT", "The Solana strategy transition is already bound to another receipt.");
+        return solanaPositionRow(existingRow);
+      }
+
+      if (order.lifecycleAction === "ENTRY") {
+        requireCondition(existingRow === undefined && !nextZero && evidence.packageIdHex === orderHashHex,
+          "POSITION_CONFLICT", "The Solana strategy entry identity or state transition is invalid.");
+        this.db.prepare(`
+          INSERT INTO strategy_solana_positions
+            (package_id, owner_id, domain_id, settlement_account,
+             template_id, series_id, execution_class_id, base_asset_id, base_asset_decimals,
+             economic_quantity_atoms, entry_order_hash, latest_order_hash, latest_receipt_hash,
+             state_hash, status, recorded_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+        `).run(
+          packageId,
+          order.owner,
+          domain.domainId,
+          account,
+          order.templateId,
+          order.seriesId,
+          order.executionClassId,
+          order.economicQuantity.asset.assetId,
+          order.economicQuantity.asset.decimals,
+          order.economicQuantity.atoms.toString(),
+          receiptRow.order_hash,
+          receiptRow.order_hash,
+          receiptHash,
+          nextStateHash,
+          changedAtMs,
+          changedAtMs,
+        );
+      } else {
+        const terminal = order.lifecycleAction === "EXIT" || order.lifecycleAction === "EMERGENCY_UNWIND";
+        requireCondition(terminal, "UNSUPPORTED_EXECUTION",
+          "The Solana strategy lifecycle action is unsupported.");
+        requireCondition(existingRow !== undefined && existingRow.status === "OPEN"
+          && bytesEqual(existingRow.state_hash, previousStateHash)
+          && existingRow.owner_id === order.owner
+          && existingRow.domain_id === domain.domainId
+          && existingRow.settlement_account === account
+          && existingRow.template_id === order.templateId
+          && existingRow.series_id === order.seriesId
+          && existingRow.execution_class_id === order.executionClassId
+          && existingRow.base_asset_id === order.economicQuantity.asset.assetId
+          && existingRow.base_asset_decimals === order.economicQuantity.asset.decimals
+          && BigInt(existingRow.economic_quantity_atoms) === order.economicQuantity.atoms
+          && nextZero,
+        "STALE_STRATEGY_STATE", "The Solana strategy state or identity changed before finalization.");
+        const updated = this.db.prepare(`
+          UPDATE strategy_solana_positions
+          SET economic_quantity_atoms = '0', latest_order_hash = ?, latest_receipt_hash = ?,
+              state_hash = ?, status = 'CLOSED', updated_at_ms = ?
+          WHERE package_id = ? AND status = 'OPEN' AND state_hash = ?
+        `).run(
+          receiptRow.order_hash,
+          receiptHash,
+          nextStateHash,
+          changedAtMs,
+          packageId,
+          previousStateHash,
+        );
+        requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+          "The Solana strategy state changed before finalization.");
+      }
+      const stored = this.db.prepare("SELECT * FROM strategy_solana_positions WHERE package_id = ?")
+        .get(packageId) as SolanaPositionRow | undefined;
+      requireCondition(stored !== undefined, "POSITION_NOT_FOUND",
+        "The finalized Solana strategy position was not stored.");
+      return solanaPositionRow(stored);
     }).immediate();
   }
 

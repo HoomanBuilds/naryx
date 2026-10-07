@@ -8,6 +8,7 @@ import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { toProtocolJson } from "@naryx/protocol-types";
+import { PublicKey } from "@solana/web3.js";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
 import {
@@ -108,6 +109,7 @@ import {
   type SelectHyperliquidStrategyExecutionRequest,
   type StoredNativeStrategyPosition,
   type StoredEvmStrategyPosition,
+  type StoredSolanaStrategyPosition,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 import {
@@ -183,7 +185,9 @@ interface GeneralizedStrategyExecutionPort {
   anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined;
   nativeStrategyPositionsByOwner?(owner: string): readonly StoredNativeStrategyPosition[];
   evmStrategyPositionsByOwner?(owner: string): readonly StoredEvmStrategyPosition[];
+  solanaStrategyPositionsByOwner?(owner: string): readonly StoredSolanaStrategyPosition[];
   recordEvmStrategyPosition?(evidence: import('./strategy-package-store.js').EvmStrategyPositionEvidence): StoredEvmStrategyPosition;
+  recordSolanaStrategyPosition?(evidence: import('./strategy-package-store.js').SolanaStrategyPositionEvidence): StoredSolanaStrategyPosition;
   recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
 }
 
@@ -1532,7 +1536,9 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
         return;
       }
-      if (solanaStrategyExecutionObservation === undefined) {
+      if (solanaStrategyExecutionObservation === undefined
+        || generalizedStrategyExecutions?.recordReceipt === undefined
+        || generalizedStrategyExecutions.recordSolanaStrategyPosition === undefined) {
         reject(response, 503, 'SOLANA_STRATEGY_OBSERVATION_UNAVAILABLE',
           'Solana strategy observation is unavailable.');
         return;
@@ -1550,6 +1556,17 @@ export function createPrivateTerminalRequestHandler(
         }
         const values = requestBody as { quoteHash: string; signature: string };
         const observation = await solanaStrategyExecutionObservation.observe(values.quoteHash, values.signature);
+        if (observation.status === 'FINALIZED') {
+          const stored = generalizedStrategyExecutions.recordReceipt(observation.receipt);
+          generalizedStrategyExecutions.recordSolanaStrategyPosition({
+            receiptHashHex: stored.receiptHashHex,
+            packageIdHex: observation.packageId,
+            domain: observation.domain,
+            account: observation.strategyAccount,
+            previousStateHashHex: observation.previousStateHash,
+            nextStateHashHex: observation.nextStateHash,
+          });
+        }
         sendJson(response, observation.status === 'PENDING' ? 202 : 200, {
           status: observation.status,
           observation: toProtocolJson(observation),
@@ -1560,8 +1577,50 @@ export function createPrivateTerminalRequestHandler(
           reject(response, status, error.code, error.message);
           return;
         }
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === 'RECEIPT_CONFLICT' ? 409 : 400, error.code, error.message);
+          return;
+        }
         reject(response, 502, 'SOLANA_STRATEGY_OBSERVATION_FAILED',
           'Solana strategy observation failed closed.');
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/solana-strategies") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (generalizedStrategyExecutions?.solanaStrategyPositionsByOwner === undefined) {
+        reject(response, 503, "SOLANA_STRATEGIES_UNAVAILABLE", "Solana strategy positions are unavailable.");
+        return;
+      }
+      const keys = [...url.searchParams.keys()];
+      const owner = url.searchParams.get("owner");
+      let canonicalOwner: string | undefined;
+      try {
+        if (owner !== null) {
+          const address = new PublicKey(owner);
+          if (!address.equals(PublicKey.default) && address.toBase58() === owner) canonicalOwner = owner;
+        }
+      } catch {
+        canonicalOwner = undefined;
+      }
+      if (keys.length !== 1 || keys[0] !== "owner" || canonicalOwner === undefined) {
+        reject(response, 400, "INVALID_REQUEST", "Request must contain one canonical Solana owner.");
+        return;
+      }
+      try {
+        const positions = generalizedStrategyExecutions.solanaStrategyPositionsByOwner(canonicalOwner);
+        sendJson(response, 200, toProtocolJson({ version: 1, owner: canonicalOwner, positions }, "solanaStrategies"));
+      } catch (error) {
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "SOLANA_STRATEGIES_FAILED", "Solana strategy retrieval failed closed.");
       }
       return;
     }
