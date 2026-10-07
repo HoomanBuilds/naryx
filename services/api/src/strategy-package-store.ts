@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type Database from "better-sqlite3";
 import {
   bytesEqual,
+  commitmentHash,
   packageGraph,
   packageGraphHash,
   packageQuoteExecutionBinding,
