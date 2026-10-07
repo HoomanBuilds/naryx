@@ -66,6 +66,17 @@ export {
   type EvmOptionSpreadProfile,
 } from "./evm-option-spread-order.js";
 export {
+  createEvmCalendarSpreadOrderPort,
+  EvmCalendarSpreadOrderError,
+  loadEvmCalendarSpreadProfiles,
+  type CreatedEvmCalendarSpreadOrder,
+  type EvmCalendarSpreadBounds,
+  type EvmCalendarSpreadMarketProfile,
+  type EvmCalendarSpreadOrderPort,
+  type EvmCalendarSpreadOrderRequest,
+  type EvmCalendarSpreadProfile,
+} from "./evm-calendar-spread-order.js";
+export {
   createEvmTreasuryHedgeOrderPort,
   EvmTreasuryHedgeOrderError,
   loadEvmTreasuryHedgeProfiles,

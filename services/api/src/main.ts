@@ -128,6 +128,10 @@ import {
   loadEvmOptionSpreadProfiles,
 } from "./evm-option-spread-order.js";
 import {
+  createEvmCalendarSpreadOrderPort,
+  loadEvmCalendarSpreadProfiles,
+} from "./evm-calendar-spread-order.js";
+import {
   createEvmTreasuryHedgeOrderPort,
   loadEvmTreasuryHedgeProfiles,
 } from "./evm-treasury-hedge-order.js";
@@ -858,6 +862,20 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
       domains: Object.freeze([...new Set(evmOptionSpreadOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
     }));
   }
+  if (evmAtomicExecutionReady && evmCalendarSpreadOrders !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "evm-atomic-calendar-spread",
+      templateId: "calendar-spread-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "FUTURE_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 2 }),
+        Object.freeze({ legFamily: "FUTURE_CLOSE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 2 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(evmCalendarSpreadOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
   if (evmAtomicExecutionReady && evmTreasuryHedgeOrders !== undefined) {
     capabilities.push(Object.freeze({
       laneId: "evm-atomic-treasury-inventory-hedge",
@@ -966,6 +984,24 @@ if (evmOptionSpreadProfilePath !== undefined && evmOptionSpreadProfilePath !== "
     });
   } catch (error) {
     reportRuntimeFailure("evmOptionSpreadOrders", error);
+  }
+}
+let evmCalendarSpreadOrders: ReturnType<typeof createEvmCalendarSpreadOrderPort> | undefined;
+const evmCalendarSpreadProfilePath = process.env.NARYX_EVM_CALENDAR_SPREAD_ORDER_PROFILES;
+if (evmCalendarSpreadProfilePath !== undefined && evmCalendarSpreadProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("EVM calendar spread order creation requires the public strategy market.");
+    }
+    evmCalendarSpreadOrders = createEvmCalendarSpreadOrderPort({
+      profiles: loadEvmCalendarSpreadProfiles(absolutePath(
+        evmCalendarSpreadProfilePath,
+        "NARYX_EVM_CALENDAR_SPREAD_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    reportRuntimeFailure("evmCalendarSpreadOrders", error);
   }
 }
 let evmTreasuryHedgeOrders: ReturnType<typeof createEvmTreasuryHedgeOrderPort> | undefined;
@@ -1125,6 +1161,7 @@ const server = createPrivateTerminalServer(
   },
   hyperliquidNativeStrategyOrders,
   evmOptionSpreadOrders,
+  evmCalendarSpreadOrders,
   evmTreasuryHedgeOrders,
   evmCollateralConversionOrders,
   evmReverseBasisOrders,

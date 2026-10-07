@@ -125,6 +125,10 @@ import {
   type EvmOptionSpreadOrderPort,
 } from "./evm-option-spread-order.js";
 import {
+  EvmCalendarSpreadOrderError,
+  type EvmCalendarSpreadOrderPort,
+} from "./evm-calendar-spread-order.js";
+import {
   EvmTreasuryHedgeOrderError,
   type EvmTreasuryHedgeOrderPort,
 } from "./evm-treasury-hedge-order.js";
@@ -364,6 +368,7 @@ export function createPrivateTerminalRequestHandler(
   nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
+  evmCalendarSpreadOrders?: EvmCalendarSpreadOrderPort,
   evmTreasuryHedgeOrders?: EvmTreasuryHedgeOrderPort,
   evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmReverseBasisOrders?: EvmReverseBasisOrderPort,
@@ -699,6 +704,7 @@ export function createPrivateTerminalRequestHandler(
         hyperliquidGeneralizedOrderAvailable: hyperliquidGeneralizedOrder !== undefined,
         hyperliquidNativeStrategyOrderAvailable: hyperliquidNativeStrategyOrders !== undefined,
         evmOptionSpreadOrderAvailable: evmOptionSpreadOrders !== undefined,
+        evmCalendarSpreadOrderAvailable: evmCalendarSpreadOrders !== undefined,
         evmTreasuryHedgeOrderAvailable: evmTreasuryHedgeOrders !== undefined,
         evmCollateralConversionOrderAvailable: evmCollateralConversionOrders !== undefined,
         evmOptionSpreadProvisioningAvailable: evmOptionSpreadProvisioning !== undefined,
@@ -1044,6 +1050,111 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, "EVM_OPTION_SPREAD_CREATION_FAILED", "EVM option spread order creation failed closed.");
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-calendar-spread-profiles") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (evmCalendarSpreadOrders === undefined) {
+        reject(response, 503, "EVM_CALENDAR_SPREAD_UNAVAILABLE", "EVM calendar spread order creation is unavailable.");
+        return;
+      }
+      sendJson(response, 200, {
+        version: 1,
+        profiles: evmCalendarSpreadOrders.profiles().map((profile) => ({
+          profileId: profile.profileId,
+          displayName: profile.displayName,
+          templateId: profile.templateId,
+          templateVersion: profile.templateVersion,
+          seriesId: profile.seriesId,
+          executionClassId: profile.executionClassId,
+          chainId: profile.chainId,
+          domainId: profile.domain.domainId,
+          accountFactory: profile.accountFactory,
+          baseAsset: { assetId: profile.baseAsset.assetId, decimals: profile.baseAsset.decimals },
+          quoteAsset: { assetId: profile.quoteAsset.assetId, decimals: profile.quoteAsset.decimals },
+          markets: profile.markets.map((market) => ({
+            role: market.role,
+            maturity: market.maturity.toString(),
+          })),
+          bounds: Object.fromEntries(Object.entries(profile.bounds).map(([name, value]) => [name, value.toString()])),
+        })),
+      });
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-calendar-spread-orders/create") {
+      if (request.method !== "POST") {
+        response.setHeader("Allow", "POST, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
+        return;
+      }
+      if (evmCalendarSpreadOrders === undefined) {
+        reject(response, 503, "EVM_CALENDAR_SPREAD_UNAVAILABLE", "EVM calendar spread order creation is unavailable.");
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== "object" || requestBody === null || Array.isArray(requestBody)
+          || typeof (requestBody as { profileId?: unknown }).profileId !== "string"
+          || typeof (requestBody as { owner?: unknown }).owner !== "string") {
+          throw new EvmCalendarSpreadOrderError("INVALID_REQUEST", "EVM calendar spread order request is invalid.");
+        }
+        if (evmOptionSpreadProvisioning === undefined) {
+          throw new EvmCalendarSpreadOrderError("INVALID_CONFIGURATION", "EVM strategy account resolution is unavailable.");
+        }
+        const profile = evmCalendarSpreadOrders.profiles().find((candidate) =>
+          candidate.profileId === (requestBody as { profileId: string }).profileId);
+        if (profile === undefined) {
+          throw new EvmCalendarSpreadOrderError("PROFILE_NOT_FOUND", "EVM calendar spread profile was not found.");
+        }
+        const resolved = await evmOptionSpreadProvisioning.resolveAccount({
+          chainId: profile.chainId,
+          factory: profile.accountFactory,
+          owner: (requestBody as { owner: string }).owner,
+        });
+        const supplied = (requestBody as { settlementAccount?: unknown }).settlementAccount;
+        if (supplied !== undefined
+          && (typeof supplied !== "string" || supplied.toLowerCase() !== resolved.account.toLowerCase())) {
+          throw new EvmCalendarSpreadOrderError("INVALID_REQUEST", "Settlement account differs from the owner factory account.");
+        }
+        const created = evmCalendarSpreadOrders.create({ ...requestBody, settlementAccount: resolved.account.toLowerCase() });
+        sendJson(response, 200, {
+          version: 1,
+          status: created.intake.status,
+          created: created.intake.created,
+          profileId: created.profileId,
+          orderHash: created.intake.orderHashHex,
+          graphHash: created.intake.graphHashHex,
+          templateId: created.order.templateId,
+          lifecycleAction: created.order.lifecycleAction,
+          seriesId: created.order.seriesId,
+          executionClassId: created.order.executionClassId,
+        });
+      } catch (error) {
+        if (error instanceof EvmOptionSpreadProvisioningClientError) {
+          reject(response, error.code === "INVALID_REQUEST" ? 400 : 502, error.code, error.message);
+          return;
+        }
+        if (error instanceof EvmCalendarSpreadOrderError) {
+          const status = error.code === "PROFILE_NOT_FOUND" ? 404
+            : error.code === "LIMIT_EXCEEDED" ? 409
+              : error.code === "INVALID_CONFIGURATION" ? 503
+                : error.code === "INTAKE_MISMATCH" ? 500
+                  : 400;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        if (error instanceof StrategyOrderIntakeError) {
+          reject(response, error.status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_CALENDAR_SPREAD_CREATION_FAILED", "EVM calendar spread order creation failed closed.");
       }
       return;
     }
@@ -2632,6 +2743,7 @@ export function createPrivateTerminalServer(
   nativeHyperliquidStrategyRuntime?: NativeHyperliquidStrategyRuntime,
   hyperliquidNativeStrategyOrders?: HyperliquidNativeStrategyOrderPort,
   evmOptionSpreadOrders?: EvmOptionSpreadOrderPort,
+  evmCalendarSpreadOrders?: EvmCalendarSpreadOrderPort,
   evmTreasuryHedgeOrders?: EvmTreasuryHedgeOrderPort,
   evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmReverseBasisOrders?: EvmReverseBasisOrderPort,
@@ -2672,6 +2784,7 @@ export function createPrivateTerminalServer(
     nativeHyperliquidStrategyRuntime,
     hyperliquidNativeStrategyOrders,
     evmOptionSpreadOrders,
+    evmCalendarSpreadOrders,
     evmTreasuryHedgeOrders,
     evmCollateralConversionOrders,
     evmReverseBasisOrders,
