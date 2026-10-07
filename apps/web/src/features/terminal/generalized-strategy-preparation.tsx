@@ -175,6 +175,23 @@ type EvmOptionProfile = Readonly<{
   }>;
 }>;
 
+type EvmDirectionalProfile = Readonly<{
+  kind: "TREASURY_HEDGE" | "COLLATERAL_CONVERSION";
+  profileId: string;
+  displayName: string;
+  templateId: string;
+  chainId: number;
+  domainId: string;
+  accountFactory: string;
+  baseAsset: Readonly<{ assetId: string; decimals: number }>;
+  quoteAsset: Readonly<{ assetId: string; decimals: number }>;
+  bounds: Readonly<{
+    minimumQuantityAtoms: string;
+    maximumQuantityAtoms: string;
+    maximumExpiryTtlSeconds: string;
+  }>;
+}>;
+
 type EvmProvisioningTransaction = Readonly<{
   kind: "CREATE_STRATEGY_ACCOUNT" | "CREATE_PACKAGE_ADAPTER";
   to: string;
@@ -682,6 +699,57 @@ function parseCreatedEvmOptionOrder(payload: unknown, profileId: string): Readon
   });
 }
 
+function parseEvmDirectionalProfiles(
+  payload: unknown,
+  kind: EvmDirectionalProfile["kind"],
+): readonly EvmDirectionalProfile[] {
+  const context = kind === "TREASURY_HEDGE" ? "EVM treasury hedge profiles" : "EVM collateral conversion profiles";
+  const root = record(payload, context);
+  if (root.version !== 1) throw new Error(`${context} version is unsupported.`);
+  return list(root.profiles, context).map((candidate, index) => {
+    const profile = record(candidate, `${context} ${index}`);
+    const base = record(kind === "TREASURY_HEDGE" ? profile.inventoryAsset : profile.collateralAsset,
+      `${context} ${index} base asset`);
+    const quote = record(profile.quoteAsset, `${context} ${index} quote asset`);
+    const bounds = record(profile.bounds, `${context} ${index} bounds`);
+    const accountFactory = text(profile.accountFactory, `${context} ${index} account factory`);
+    if (!EVM_ADDRESS.test(accountFactory)) throw new Error(`${context} ${index} account factory is invalid.`);
+    return Object.freeze({
+      kind,
+      profileId: text(profile.profileId, `${context} ${index} id`),
+      displayName: text(profile.displayName, `${context} ${index} display name`),
+      templateId: text(profile.templateId, `${context} ${index} template`),
+      chainId: integer(profile.chainId, `${context} ${index} chain id`),
+      domainId: text(profile.domainId, `${context} ${index} domain`),
+      accountFactory,
+      baseAsset: Object.freeze({ assetId: text(base.assetId, `${context} ${index} base asset id`),
+        decimals: unsignedInteger(base.decimals, `${context} ${index} base decimals`) }),
+      quoteAsset: Object.freeze({ assetId: text(quote.assetId, `${context} ${index} quote asset id`),
+        decimals: unsignedInteger(quote.decimals, `${context} ${index} quote decimals`) }),
+      bounds: Object.freeze({
+        minimumQuantityAtoms: decimalInteger(bounds.minimumQuantityAtoms, `${context} ${index} minimum quantity`),
+        maximumQuantityAtoms: decimalInteger(bounds.maximumQuantityAtoms, `${context} ${index} maximum quantity`),
+        maximumExpiryTtlSeconds: decimalInteger(bounds.maximumExpiryTtlSeconds, `${context} ${index} expiry TTL`),
+      }),
+    });
+  });
+}
+
+function parseCreatedEvmDirectionalOrder(
+  payload: unknown,
+  profile: EvmDirectionalProfile,
+): Readonly<{ orderHash: string; graphHash: string }> {
+  const root = record(payload, "EVM strategy order creation");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profile.profileId
+    || root.templateId !== profile.templateId || root.lifecycleAction !== "ENTRY") {
+    throw new Error("EVM strategy order creation changed the requested package.");
+  }
+  return Object.freeze({
+    orderHash: hash(root.orderHash, "EVM strategy order hash"),
+    graphHash: hash(root.graphHash, "EVM strategy graph hash"),
+  });
+}
+
 function parseEvmProvisioning(payload: unknown, expectedChainId: number, expectedOwner: string): EvmProvisioningPlan {
   const root = record(decode(payload as Json), "EVM provisioning response");
   const provisioning = record(root.provisioning, "EVM provisioning plan");
@@ -1042,6 +1110,11 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmOptionQuantity, setEvmOptionQuantity] = useState("");
   const [evmLongPremium, setEvmLongPremium] = useState("");
   const [evmShortPremium, setEvmShortPremium] = useState("");
+  const [evmDirectionalProfiles, setEvmDirectionalProfiles] = useState<readonly EvmDirectionalProfile[] | null>(null);
+  const [selectedEvmDirectionalProfileId, setSelectedEvmDirectionalProfileId] = useState("");
+  const [evmDirectionalQuantity, setEvmDirectionalQuantity] = useState("");
+  const [evmHedgePrice, setEvmHedgePrice] = useState("");
+  const [evmSwapPrice, setEvmSwapPrice] = useState("");
   const [evmProvisioning, setEvmProvisioning] = useState<EvmProvisioningPlan | null>(null);
   const [evmCreateBusy, setEvmCreateBusy] = useState(false);
   const [evmProvisionBusy, setEvmProvisionBusy] = useState(false);
@@ -1076,6 +1149,31 @@ export function GeneralizedStrategyPreparationPanel({
       if (controller.signal.aborted) return;
       setEvmOptionProfiles([]);
       setError(cause instanceof Error ? cause.message : "EVM option markets are unavailable.");
+    });
+    return () => controller.abort();
+  }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+
+  useEffect(() => {
+    const kind = templateId === "treasury-inventory-hedge-v1" ? "TREASURY_HEDGE"
+      : templateId === "collateral-conversion-hedge-v1" ? "COLLATERAL_CONVERSION" : null;
+    if (privateApiBaseUrl === null || sourceOrderHash !== null || kind === null) return;
+    const controller = new AbortController();
+    const route = kind === "TREASURY_HEDGE"
+      ? "/internal/terminal/evm-treasury-hedge-profiles"
+      : "/internal/terminal/evm-collateral-conversion-profiles";
+    void fetch(`${privateApiBaseUrl}${route}`, {
+      headers: { Accept: "application/json" }, cache: "no-store", credentials: "omit",
+      referrerPolicy: "no-referrer", signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseEvmDirectionalProfiles(await response.json(), kind);
+    }).then((profiles) => {
+      setEvmDirectionalProfiles(profiles);
+      setSelectedEvmDirectionalProfileId((current) => current || profiles[0]?.profileId || "");
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setEvmDirectionalProfiles([]);
+      setError(cause instanceof Error ? cause.message : "EVM strategy markets are unavailable.");
     });
     return () => controller.abort();
   }, [privateApiBaseUrl, sourceOrderHash, templateId]);
@@ -1158,6 +1256,12 @@ export function GeneralizedStrategyPreparationPanel({
   const selectedEvmOptionProfile = (evmOptionProfiles ?? []).find((profile) => profile.profileId === selectedEvmOptionProfileId)
     ?? evmOptionProfiles?.[0]
     ?? null;
+  const matchingEvmDirectionalProfiles = (evmDirectionalProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const selectedEvmDirectionalProfile = matchingEvmDirectionalProfiles.find((profile) =>
+    profile.profileId === selectedEvmDirectionalProfileId) ?? matchingEvmDirectionalProfiles[0] ?? null;
+  const selectedEvmProfile = templateId === "option-spread-v1"
+    ? selectedEvmOptionProfile
+    : selectedEvmDirectionalProfile;
   const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
@@ -1227,13 +1331,66 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function createEvmDirectionalOrder() {
+    if (privateApiBaseUrl === null || selectedEvmDirectionalProfile === null) return;
+    setEvmCreateBusy(true);
+    setError(null);
+    try {
+      if (lifecycleAction !== "ENTRY") throw new Error("Create the strategy entry before managing its lifecycle.");
+      if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
+        throw new Error("Connect the EVM wallet that will own this strategy package.");
+      }
+      const quantityAtoms = amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals,
+        "Package quantity");
+      const hedgeLimit = priceToAtomicRatio(evmHedgePrice, selectedEvmDirectionalProfile.baseAsset.decimals,
+        selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Hedge limit price");
+      const maximumTtl = BigInt(selectedEvmDirectionalProfile.bounds.maximumExpiryTtlSeconds);
+      const ttl = maximumTtl < BigInt(600) ? maximumTtl : BigInt(600);
+      const collateralConversion = selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION";
+      const route = collateralConversion
+        ? "/internal/terminal/evm-collateral-conversion-orders/create"
+        : "/internal/terminal/evm-treasury-hedge-orders/create";
+      const response = await fetch(`${privateApiBaseUrl}${route}`, {
+        method: "POST", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: selectedEvmDirectionalProfile.profileId,
+          owner: strategyOwner.toLowerCase(),
+          lifecycleAction: "ENTRY",
+          quantityAtoms: quantityAtoms.toString(),
+          ...(collateralConversion ? {
+            limitSwapPrice: priceToAtomicRatio(evmSwapPrice, selectedEvmDirectionalProfile.baseAsset.decimals,
+              selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Swap limit price"),
+            limitHedgePrice: hedgeLimit,
+          } : { limitHedgePrice: hedgeLimit }),
+          expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
+          nonce: randomNonce(),
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = parseCreatedEvmDirectionalOrder(await response.json(), selectedEvmDirectionalProfile);
+      setOrderHash(created.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+      setEvmProvisioning(null);
+      setEvmExecutionHash(null);
+      setEvmExecutionConfirmed(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM strategy order creation failed closed.");
+    } finally {
+      setEvmCreateBusy(false);
+    }
+  }
+
   async function provisionEvmStrategy() {
-    if (privateApiBaseUrl === null || selectedEvmOptionProfile === null || !HASH.test(orderHash)) return;
+    if (privateApiBaseUrl === null || selectedEvmProfile === null || !HASH.test(orderHash)) return;
     setEvmProvisionBusy(true);
     setError(null);
     try {
       if (sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
-        throw new Error("Connect the EVM wallet on the selected option testnet.");
+        throw new Error("Connect the EVM wallet on the selected strategy testnet.");
       }
       const loadPlan = async () => {
         const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/provision`, {
@@ -1245,7 +1402,7 @@ export function GeneralizedStrategyPreparationPanel({
           body: JSON.stringify({ orderHash }),
         });
         if (!response.ok) throw new Error(await failureMessage(response));
-        return parseEvmProvisioning(await response.json(), selectedEvmOptionProfile.chainId, strategyOwner ?? "");
+        return parseEvmProvisioning(await response.json(), selectedEvmProfile.chainId, strategyOwner ?? "");
       };
       let plan = await loadPlan();
       for (const transaction of plan.transactions) {
@@ -1287,7 +1444,7 @@ export function GeneralizedStrategyPreparationPanel({
       const transactionHash = await sendEvmTransaction(transaction.chainId, transaction);
       setEvmExecutionHash(transactionHash);
       const confirmed = await waitForEvmReceipt(transaction.chainId, transactionHash);
-      if (!confirmed) throw new Error("The option package transaction reverted on the testnet.");
+      if (!confirmed) throw new Error("The strategy package transaction reverted on the testnet.");
       await observeEvmStrategy(transactionHash, review.quoteHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM strategy execution failed closed.");
@@ -1953,6 +2110,109 @@ export function GeneralizedStrategyPreparationPanel({
             </>
           ) : (
             <p className={styles.fieldContext} role="status">Loading reviewed EVM option markets.</p>
+          )}
+        </div>
+      ) : null}
+      {sourceOrderHash === null
+        && (templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1") ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="evm-directional-profile">
+            {templateId === "treasury-inventory-hedge-v1" ? "Atomic treasury hedge market" : "Atomic conversion market"}
+          </label>
+          <select
+            id="evm-directional-profile"
+            value={selectedEvmDirectionalProfile?.profileId ?? ""}
+            disabled={evmDirectionalProfiles === null || matchingEvmDirectionalProfiles.length === 0}
+            onChange={(event) => {
+              setSelectedEvmDirectionalProfileId(event.target.value);
+              setOrderHash("");
+              setEvmProvisioning(null);
+              setError(null);
+            }}
+          >
+            {matchingEvmDirectionalProfiles.length === 0 ? <option value="">No reviewed EVM market is active</option> : null}
+            {matchingEvmDirectionalProfiles.map((profile) => (
+              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+            ))}
+          </select>
+          {selectedEvmDirectionalProfile ? (
+            <>
+              <div className={styles.reviewGrid}>
+                <span>Domain</span><strong>{selectedEvmDirectionalProfile.domainId}</strong>
+                <span>Base asset</span><strong>{selectedEvmDirectionalProfile.baseAsset.assetId}</strong>
+                <span>Quote asset</span><strong>{selectedEvmDirectionalProfile.quoteAsset.assetId}</strong>
+                <span>Settlement</span><strong>Atomic postconditions</strong>
+              </div>
+              <label htmlFor="evm-directional-quantity">Package quantity</label>
+              <input
+                id="evm-directional-quantity"
+                value={evmDirectionalQuantity}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => { setEvmDirectionalQuantity(event.target.value.trim()); setOrderHash(""); setError(null); }}
+              />
+              <p className={styles.fieldContext}>
+                Reviewed range {formatAtomicAmount(selectedEvmDirectionalProfile.bounds.minimumQuantityAtoms,
+                  selectedEvmDirectionalProfile.baseAsset.decimals, selectedEvmDirectionalProfile.baseAsset.assetId)} to {formatAtomicAmount(
+                  selectedEvmDirectionalProfile.bounds.maximumQuantityAtoms, selectedEvmDirectionalProfile.baseAsset.decimals,
+                  selectedEvmDirectionalProfile.baseAsset.assetId)}.
+              </p>
+              {selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION" ? (
+                <>
+                  <label htmlFor="evm-swap-price">Maximum collateral purchase price</label>
+                  <input
+                    id="evm-swap-price"
+                    value={evmSwapPrice}
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="0.00"
+                    onChange={(event) => { setEvmSwapPrice(event.target.value.trim()); setOrderHash(""); setError(null); }}
+                  />
+                </>
+              ) : null}
+              <label htmlFor="evm-hedge-price">Minimum short hedge price</label>
+              <input
+                id="evm-hedge-price"
+                value={evmHedgePrice}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => { setEvmHedgePrice(event.target.value.trim()); setOrderHash(""); setError(null); }}
+              />
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || evmCreateBusy || lifecycleAction !== "ENTRY"
+                  || strategyOwner === null || evmDirectionalQuantity === "" || evmHedgePrice === ""
+                  || (selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION" && evmSwapPrice === "")}
+                onClick={() => void createEvmDirectionalOrder()}
+              >
+                {evmCreateBusy ? "Creating atomic package" : "Create atomic strategy package"}
+              </button>
+              {HASH.test(orderHash) ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={evmProvisionBusy || evmProvisioning?.ready === true}
+                  onClick={() => void provisionEvmStrategy()}
+                >
+                  {evmProvisionBusy ? "Provisioning strategy account" : evmProvisioning?.ready
+                    ? "Strategy account ready" : "Provision strategy account"}
+                </button>
+              ) : null}
+              <p className={styles.fieldContext} role="status">
+                {strategyOwner === null
+                  ? "Connect the EVM wallet that will own this package."
+                  : evmProvisioning?.ready
+                    ? `Strategy account ${compact(evmProvisioning.strategyAccount, 10, 8)} is ready.`
+                    : selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION"
+                      ? "The wallet provisions isolated swap, lending, and hedge adapters before execution."
+                      : "The wallet provisions isolated inventory and hedge adapters before execution."}
+              </p>
+            </>
+          ) : (
+            <p className={styles.fieldContext} role="status">Loading reviewed EVM strategy markets.</p>
           )}
         </div>
       ) : null}
