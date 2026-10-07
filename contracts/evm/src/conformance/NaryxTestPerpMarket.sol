@@ -375,6 +375,16 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         maintenanceWad = Math.mulDiv(exitNotional, maintenanceMarginBps, BPS);
     }
 
+    function previewClose(address trader) external view returns (Settlement memory settlement) {
+        Position memory position = _positions[trader];
+        if (position.size == 0) revert NoPosition();
+        uint256 sizeAbs = _abs(position.size);
+        bool buy = position.size < 0;
+        uint256 exitNotional = _notional(sizeAbs, _fillPrice(oraclePriceWad(), sizeAbs, buy), buy);
+        (int256 realizedPnl, int256 funding, int256 equity) = _equity(position, exitNotional);
+        return _previewSettlement(position, exitNotional, realizedPnl, funding, equity, _feeWad(exitNotional, takerFeeBps));
+    }
+
     function _open(Position storage position, int128 sizeDelta, int128 balanceDelta) private {
         if (opensPaused) revert OpensPaused();
         if (sizeDelta == 0 || balanceDelta <= 0) revert InvalidTradeShape();
@@ -453,16 +463,7 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         int256 equity,
         uint256 charge
     ) private returns (Settlement memory settlement) {
-        settlement.exitNotional = exitNotional;
-        settlement.realizedPnl = realizedPnl;
-        settlement.funding = funding;
-        if (equity > 0) {
-            uint256 positive = uint256(equity);
-            settlement.charged = Math.min(charge, _floorToAtom(positive));
-            settlement.payout = _floorToAtom(positive - settlement.charged);
-        } else {
-            settlement.badDebt = uint256(-equity);
-        }
+        settlement = _previewSettlement(position, exitNotional, realizedPnl, funding, equity, charge);
         uint256 margin = uint256(int256(position.balance));
         uint256 available = insuranceWad + margin;
         if (available < settlement.payout + settlement.charged) revert InsuranceInsufficient();
@@ -475,6 +476,28 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         _reserves[feeRecipient] += chargedAtoms;
         totalReserveAtoms += payoutAtoms + chargedAtoms;
         delete _positions[trader];
+    }
+
+    function _previewSettlement(
+        Position memory position,
+        uint256 exitNotional,
+        int256 realizedPnl,
+        int256 funding,
+        int256 equity,
+        uint256 charge
+    ) private view returns (Settlement memory settlement) {
+        settlement.exitNotional = exitNotional;
+        settlement.realizedPnl = realizedPnl;
+        settlement.funding = funding;
+        if (equity > 0) {
+            uint256 positive = uint256(equity);
+            settlement.charged = Math.min(charge, _floorToAtom(positive));
+            settlement.payout = _floorToAtom(positive - settlement.charged);
+        } else {
+            settlement.badDebt = uint256(-equity);
+        }
+        uint256 margin = uint256(int256(position.balance));
+        if (insuranceWad + margin < settlement.payout + settlement.charged) revert InsuranceInsufficient();
     }
 
     function _equity(Position memory position, uint256 exitNotional)

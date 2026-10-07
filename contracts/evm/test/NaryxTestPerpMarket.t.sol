@@ -101,6 +101,13 @@ contract NaryxTestPerpMarketTest is Test {
         market.trade(_args(ONE, 0));
         _fundInsurance(1_000e6);
 
+        NaryxTestPerpMarket.Settlement memory preview = market.previewClose(alice);
+        assertEq(preview.exitNotional, 1_900.399e18);
+        assertEq(preview.realizedPnl, 99.181e18);
+        assertEq(preview.funding, 0.036e18);
+        assertEq(preview.charged, 0.9502e18);
+        assertEq(preview.payout, 497.26701e18);
+
         // Buy fill 1900.399; PnL 99.181; funding 1 * 1e13 * 3600 = 0.036; fee 0.9501995 rounded up to 0.9502.
         vm.prank(alice);
         ISynFuturesInstrument.PositionCache memory closed = market.trade(_args(ONE, 0));
