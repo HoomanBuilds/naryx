@@ -101,6 +101,13 @@ import {
   StrategyOrderIntakeError,
   type StrategyOrderIntakePort,
 } from "./strategy-order-intake.js";
+import {
+  isEvmPackageBookParticipant,
+  packageCancellationAuthorizationTypedData,
+  packageSettlementAuthorizationTypedData,
+  verifyEvmPackageCancellationAuthorization,
+  verifyEvmPackageSettlementAuthorization,
+} from "./package-book-authorization.js";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -1207,7 +1214,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/compare",
       "/v1/clearing/simulate",
       "/v1/package-book/orders",
+      "/v1/package-book/orders/authorization",
       "/v1/package-book/cancellations",
+      "/v1/package-book/cancellations/authorization",
       "/v1/de-risk/validate",
       "/v1/packages/compile",
       "/v1/packages/simulate",
@@ -1231,21 +1240,32 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
-    if (path === "/v1/package-book/cancellations") {
-      const authorization = object(body.authorization, "authorization");
-      if (authorization.scheme !== "ED25519") {
-        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Package book cancellations require ED25519 authorization.");
-      }
+    if (path === "/v1/package-book/cancellations" || path === "/v1/package-book/cancellations/authorization") {
       const cancellation = packageBookCancellation(
         object(body.cancellation, "cancellation") as unknown as PackageBookCancellationInput,
       );
+      if (path.endsWith("/authorization")) {
+        if (!isEvmPackageBookParticipant(cancellation.participantId)) {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "An EVM package participant is required for this authorization challenge.");
+        }
+        return {
+          version: 1,
+          scheme: "EIP712_SECP256K1",
+          participantId: cancellation.participantId,
+          cancellationHash: toHex(packageBookCancellationHash(cancellation)),
+          typedData: packageCancellationAuthorizationTypedData(cancellation),
+        };
+      }
+      const authorization = object(body.authorization, "authorization");
       const participantKey = senderPublicKey(cancellation.participantId);
-      const signature = ed25519Signature(authorization.signature);
-      if (
-        participantKey === undefined ||
-        signature === undefined ||
-        !verifyEd25519(participantKey, packageBookCancellationBytes(cancellation), signature)
-      ) {
+      const ed25519Authorization = ed25519Signature(authorization.signature);
+      const valid = authorization.scheme === "ED25519"
+        ? participantKey !== undefined
+          && ed25519Authorization !== undefined
+          && verifyEd25519(participantKey, packageBookCancellationBytes(cancellation), ed25519Authorization)
+        : authorization.scheme === "EIP712_SECP256K1"
+          && await verifyEvmPackageCancellationAuthorization(cancellation, authorization.signature);
+      if (!valid) {
         throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize this package book cancellation.");
       }
       const result = exchange.cancelEntry(
@@ -1265,22 +1285,19 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         replayed: result.replayed,
       };
     }
-    if (path === "/v1/package-book/orders") {
-      const authorization = object(body.authorization, "authorization");
-      if (authorization.scheme !== "ED25519") {
-        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Package book orders require ED25519 authorization.");
-      }
+    if (path === "/v1/package-book/orders" || path === "/v1/package-book/orders/authorization") {
       const order = object(body.order, "order") as unknown as PackageTakerOrderInput;
       const orderHash = packageTakerOrderHash(order);
       if (!bytesEqual(commitmentHash(order.orderId, "order.orderId"), orderHash)) {
         throw new RequestError(400, "INVALID_ORDER_ID", "Package book order id must equal its canonical order hash.");
       }
       const participantKey = senderPublicKey(order.participantId);
-      if (participantKey === undefined || order.commonControlGroupId !== order.participantId) {
+      const evmParticipant = isEvmPackageBookParticipant(order.participantId);
+      if ((!evmParticipant && participantKey === undefined) || order.commonControlGroupId !== order.participantId) {
         throw new RequestError(
           400,
           "UNSUPPORTED_AUTHORIZATION",
-          "Public package book participants use their canonical Ed25519 key as both participant and control-group id.",
+          "Public package book participants use their canonical wallet identity as both participant and control-group id.",
         );
       }
       const commitment = packageSettlementCommitment(
@@ -1325,8 +1342,28 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           "The package-book settlement commitment differs from its admitted strategy order.",
         );
       }
+      if (path.endsWith("/authorization")) {
+        if (!evmParticipant) {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "An EVM package participant is required for this authorization challenge.");
+        }
+        return {
+          version: 1,
+          scheme: "EIP712_SECP256K1",
+          participantId: commitment.participantId,
+          packageOrderId: toHex(orderHash),
+          settlementCommitmentHash: toHex(packageSettlementCommitmentHash(commitment)),
+          typedData: packageSettlementAuthorizationTypedData(commitment),
+        };
+      }
+      const authorization = object(body.authorization, "authorization");
       const signature = ed25519Signature(authorization.signature);
-      if (signature === undefined || !verifyEd25519(participantKey, packageSettlementCommitmentBytes(commitment), signature)) {
+      const valid = authorization.scheme === "ED25519"
+        ? participantKey !== undefined
+          && signature !== undefined
+          && verifyEd25519(participantKey, packageSettlementCommitmentBytes(commitment), signature)
+        : authorization.scheme === "EIP712_SECP256K1"
+          && await verifyEvmPackageSettlementAuthorization(commitment, authorization.signature);
+      if (!valid) {
         throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the package settlement commitment.");
       }
       const executionClassId = id(order.executionClassId, "executionClassId");

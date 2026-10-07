@@ -44,6 +44,13 @@ export {
   type StrategyPackageAuthorizationPort,
 } from "./strategy-package-authorization.js";
 export {
+  isEvmPackageBookParticipant,
+  packageCancellationAuthorizationTypedData,
+  packageSettlementAuthorizationTypedData,
+  verifyEvmPackageCancellationAuthorization,
+  verifyEvmPackageSettlementAuthorization,
+} from "./package-book-authorization.js";
+export {
   createHyperliquidNativeStrategyOrderPort,
   loadHyperliquidNativeStrategyProfiles,
   HyperliquidNativeStrategyOrderError,

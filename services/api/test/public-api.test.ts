@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import bs58 from "bs58";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   fromProtocolJson,
   toProtocolJson,
@@ -384,6 +385,94 @@ test("signed public package orders create durable settlement handoffs and replay
         throw new GeneralizedStrategyQuoteClientError("QUOTE_DECLINED", "test quote declined");
       },
     },
+  });
+});
+
+test("EVM owners authorize and cancel native package-book orders with chainless typed data", async () => {
+  const owner = privateKeyToAccount(generatePrivateKey());
+  const stranger = privateKeyToAccount(generatePrivateKey());
+  const participantId = owner.address.toLowerCase();
+  const strategies = new Map<string, unknown>();
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    const draft = order(10, {
+      orderId: "00".repeat(32),
+      participantId,
+      commonControlGroupId: participantId,
+      timeInForce: "GTD",
+      expiresAtValue: 2_000n,
+    });
+    const orderId = toHex(packageTakerOrderHash(draft));
+    const packageOrder = { ...draft, orderId };
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      environment: "local",
+      executionClassId: CLASS,
+      packageOrderId: orderId,
+      strategyOrderHash: id(7_101),
+      graphHash: id(7_102),
+      participantId,
+      settlementAccount: participantId,
+      quantity: packageOrder.quantity,
+      validUntilUnit: "SOLANA_SLOT",
+      validUntilValue: 2_000n,
+    });
+    strategies.set(id(7_101), {
+      orderHashHex: id(7_101),
+      graphHashHex: id(7_102),
+      order: {
+        environment: "local",
+        executionClassId: CLASS,
+        graphHash: settlementCommitment.graphHash,
+        owner: participantId,
+        settlementAccount: participantId,
+        economicQuantity: { atoms: packageOrder.quantity },
+        packageOrderType: packageOrder.orderType,
+        packageTimeInForce: packageOrder.timeInForce,
+        expiryUnit: "SOLANA_SLOT",
+        expiryValue: 2_000n,
+      },
+      graph: {},
+      recordedAtMs: 1,
+    });
+
+    const challengeResponse = await get("/v1/package-book/orders/authorization", post({
+      order: packageOrder,
+      settlementCommitment,
+    }));
+    assert.equal(challengeResponse.status, 200, challengeResponse.text);
+    const challenge = challengeResponse.body as { scheme: string; typedData: unknown };
+    assert.equal(challenge.scheme, "EIP712_SECP256K1");
+    const forgedSignature = await stranger.signTypedData(challenge.typedData as never);
+    assert.equal((await get("/v1/package-book/orders", post({
+      order: packageOrder,
+      settlementCommitment,
+      authorization: { scheme: "EIP712_SECP256K1", signature: forgedSignature },
+    }))).status, 400);
+    const signature = await owner.signTypedData(challenge.typedData as never);
+    const submitted = await get("/v1/package-book/orders", post({
+      order: packageOrder,
+      settlementCommitment,
+      authorization: { scheme: "EIP712_SECP256K1", signature },
+    }));
+    assert.equal(submitted.status, 200, submitted.text);
+    assert.equal((submitted.body as { accepted: boolean }).accepted, true);
+    assert.equal(store.getBook(CLASS)?.entries.length, 1);
+
+    const cancellation = { version: 1, executionClassId: CLASS, entryId: orderId, participantId };
+    const cancellationChallengeResponse = await get("/v1/package-book/cancellations/authorization", post({ cancellation }));
+    assert.equal(cancellationChallengeResponse.status, 200, cancellationChallengeResponse.text);
+    const cancellationChallenge = cancellationChallengeResponse.body as { typedData: unknown };
+    const cancellationSignature = await owner.signTypedData(cancellationChallenge.typedData as never);
+    const cancelled = await get("/v1/package-book/cancellations", post({
+      cancellation,
+      authorization: { scheme: "EIP712_SECP256K1", signature: cancellationSignature },
+    }));
+    assert.equal(cancelled.status, 200, cancelled.text);
+    assert.equal((cancelled.body as { cancelled: boolean }).cancelled, true);
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
+  }, {
+    strategyPackages: { order: (orderHashHex: string) => strategies.get(orderHashHex) } as never,
   });
 });
 
