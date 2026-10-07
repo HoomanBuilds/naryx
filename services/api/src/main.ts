@@ -127,6 +127,10 @@ import {
   createEvmOptionSpreadOrderPort,
   loadEvmOptionSpreadProfiles,
 } from "./evm-option-spread-order.js";
+import {
+  createEvmTreasuryHedgeOrderPort,
+  loadEvmTreasuryHedgeProfiles,
+} from "./evm-treasury-hedge-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
@@ -864,6 +868,24 @@ if (evmOptionSpreadProfilePath !== undefined && evmOptionSpreadProfilePath !== "
     reportRuntimeFailure("evmOptionSpreadOrders", error);
   }
 }
+let evmTreasuryHedgeOrders: ReturnType<typeof createEvmTreasuryHedgeOrderPort> | undefined;
+const evmTreasuryHedgeProfilePath = process.env.NARYX_EVM_TREASURY_HEDGE_ORDER_PROFILES;
+if (evmTreasuryHedgeProfilePath !== undefined && evmTreasuryHedgeProfilePath !== "") {
+  try {
+    if (publicMarket?.strategyOrderIntake === undefined) {
+      throw new Error("EVM treasury hedge order creation requires the public strategy market.");
+    }
+    evmTreasuryHedgeOrders = createEvmTreasuryHedgeOrderPort({
+      profiles: loadEvmTreasuryHedgeProfiles(absolutePath(
+        evmTreasuryHedgeProfilePath,
+        "NARYX_EVM_TREASURY_HEDGE_ORDER_PROFILES",
+      )),
+      intake: publicMarket.strategyOrderIntake,
+    });
+  } catch (error) {
+    reportRuntimeFailure("evmTreasuryHedgeOrders", error);
+  }
+}
 const strategyPackageAuthorization = publicMarket?.strategyPackageAuthorizations === undefined
   ? undefined
   : createStrategyPackageAuthorizationPort(publicMarket.strategyPackageAuthorizations);
@@ -929,6 +951,7 @@ const server = createPrivateTerminalServer(
   },
   hyperliquidNativeStrategyOrders,
   evmOptionSpreadOrders,
+  evmTreasuryHedgeOrders,
   evmOptionSpreadProvisioning,
   evmStrategyExecutionAuthorization,
   evmStrategyExecutionObservation,

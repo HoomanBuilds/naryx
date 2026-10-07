@@ -58,6 +58,17 @@ export {
   type EvmOptionSpreadProfile,
 } from "./evm-option-spread-order.js";
 export {
+  createEvmTreasuryHedgeOrderPort,
+  EvmTreasuryHedgeOrderError,
+  loadEvmTreasuryHedgeProfiles,
+  type CreatedEvmTreasuryHedgeOrder,
+  type EvmTreasuryHedgeBounds,
+  type EvmTreasuryHedgeLegProfile,
+  type EvmTreasuryHedgeOrderPort,
+  type EvmTreasuryHedgeOrderRequest,
+  type EvmTreasuryHedgeProfile,
+} from "./evm-treasury-hedge-order.js";
+export {
   buildHyperliquidStrategyPackageReceipt,
   HyperliquidStrategyReceiptError,
 } from "./hyperliquid-strategy-receipt.js";
@@ -514,14 +525,3 @@ export {
   type TestnetExecutionPolicy,
   type TestnetExecutionScope,
 } from "./testnet-execution-policy.js";
-export {
-  EvmTreasuryHedgeOrderError,
-  createEvmTreasuryHedgeOrderPort,
-  loadEvmTreasuryHedgeProfiles,
-  type CreatedEvmTreasuryHedgeOrder,
-  type EvmTreasuryHedgeBounds,
-  type EvmTreasuryHedgeLegProfile,
-  type EvmTreasuryHedgeOrderPort,
-  type EvmTreasuryHedgeOrderRequest,
-  type EvmTreasuryHedgeProfile,
-} from "./evm-treasury-hedge-order.js";
