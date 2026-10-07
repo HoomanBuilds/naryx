@@ -27,6 +27,7 @@ import type {
 import type { EvmTreasuryHedgePreparationLane } from './evm-treasury-hedge-preparation.js';
 import type { EvmCollateralConversionPreparationLane } from './evm-collateral-conversion-preparation.js';
 import type { EvmReverseBasisPreparationLane } from './evm-reverse-basis-preparation.js';
+import type { EvmCalendarSpreadPreparationLane } from './evm-calendar-spread-preparation.js';
 
 const ACCOUNT_FACTORY_ABI = [{
   type: 'function', name: 'accountOf', stateMutability: 'view',
@@ -77,7 +78,8 @@ function sameAdapter(left: AdapterRef, right: AdapterRef): boolean {
 type EvmStrategyProvisioningLane = EvmOptionSpreadPreparationLane
   | EvmTreasuryHedgePreparationLane
   | EvmCollateralConversionPreparationLane
-  | EvmReverseBasisPreparationLane;
+  | EvmReverseBasisPreparationLane
+  | EvmCalendarSpreadPreparationLane;
 
 function legBindings(lane: EvmStrategyProvisioningLane): readonly Readonly<{ role: string; adapter: AdapterRef }>[] {
   if ('pools' in lane.pricing) {
@@ -96,6 +98,9 @@ function legBindings(lane: EvmStrategyProvisioningLane): readonly Readonly<{ rol
       Object.freeze({ role: 'spot-sale', adapter: lane.pricing.spot.adapter }),
       Object.freeze({ role: 'perp-purchase', adapter: lane.pricing.hedge.adapter }),
     ]);
+  }
+  if ('markets' in lane.pricing) {
+    return lane.pricing.markets.map((market) => Object.freeze({ role: market.role, adapter: market.adapter }));
   }
   return Object.freeze([
         Object.freeze({ role: 'inventory-position', adapter: lane.pricing.inventory.adapter }),

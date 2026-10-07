@@ -23,6 +23,7 @@ import {
 import { hexToBytes, type Abi, type Address, type Hex } from 'viem';
 import {
   EvmCalendarSpreadPreparationContextResolver,
+  EvmOptionSpreadProvisioningResolver,
   GeneralizedStrategyQuoteContextRegistry,
   GeneralizedStrategyQuoteService,
   StrategyPreparationService,
@@ -439,32 +440,36 @@ test('quotes and prepares an exact atomic EVM calendar spread entry', async () =
     route: quoted.route,
   };
   const quoteHash = hexToBytes(`0x${quoted.quoteHash}`) as Hash32;
+  const preparationLane = Object.freeze({
+    environment: 'testnet' as const,
+    templateManifest: template,
+    activeRegistryRecords,
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    pricing: quotePricing,
+    accountFactory: { address: ACCOUNT_FACTORY, expectedCodeHash: codeHash('6') },
+    expectedStrategyAccountCodeHash: codeHash('7'),
+    adapters: [{
+      role: 'near-future' as const,
+      factory: { address: NEAR_FACTORY, expectedCodeHash: codeHash('8') },
+      expectedAdapterCodeHash: codeHash('a'),
+      maximumGasLimit: 600_000n,
+    }, {
+      role: 'far-future' as const,
+      factory: { address: FAR_FACTORY, expectedCodeHash: codeHash('9') },
+      expectedAdapterCodeHash: codeHash('b'),
+      maximumGasLimit: 600_000n,
+    }] as const,
+    solver: SOLVER,
+    packageIds: { resolvePackageId: async () => undefined },
+  });
+  const provisioning = await new EvmOptionSpreadProvisioningResolver([preparationLane]).resolve(orderDocuments);
+  assert.equal(provisioning.ready, true);
+  assert.equal(provisioning.transactions.length, 0);
   const preparation = new StrategyPreparationService(
     {
       getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? stored : undefined,
     },
-    new EvmCalendarSpreadPreparationContextResolver([{
-      environment: 'testnet',
-      templateManifest: template,
-      activeRegistryRecords,
-      resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
-      pricing: quotePricing,
-      accountFactory: { address: ACCOUNT_FACTORY, expectedCodeHash: codeHash('6') },
-      expectedStrategyAccountCodeHash: codeHash('7'),
-      adapters: [{
-        role: 'near-future',
-        factory: { address: NEAR_FACTORY, expectedCodeHash: codeHash('8') },
-        expectedAdapterCodeHash: codeHash('a'),
-        maximumGasLimit: 600_000n,
-      }, {
-        role: 'far-future',
-        factory: { address: FAR_FACTORY, expectedCodeHash: codeHash('9') },
-        expectedAdapterCodeHash: codeHash('b'),
-        maximumGasLimit: 600_000n,
-      }],
-      solver: SOLVER,
-      packageIds: { resolvePackageId: async () => undefined },
-    }]),
+    new EvmCalendarSpreadPreparationContextResolver([preparationLane]),
   );
   const prepared = await preparation.prepareByQuote(quoteHash);
   assert.equal(prepared?.domains[0]?.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');

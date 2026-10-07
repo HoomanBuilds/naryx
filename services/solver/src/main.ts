@@ -44,6 +44,7 @@ import {
   GeneralizedStrategyQuoteService,
   SqliteGeneralizedStrategyQuoteStore,
   EvmOptionSpreadPreparationContextResolver,
+  EvmCalendarSpreadPreparationContextResolver,
   EvmTreasuryHedgePreparationContextResolver,
   EvmCollateralConversionPreparationContextResolver,
   EvmReverseBasisPreparationContextResolver,
@@ -53,6 +54,7 @@ import {
   EvmReverseBasisCollateralService,
   createEvmReverseBasisCollateralInternalHandler,
   loadEvmOptionSpreadRuntime,
+  loadEvmCalendarSpreadRuntime,
   loadEvmTreasuryHedgeRuntime,
   loadEvmCollateralConversionRuntime,
   loadEvmReverseBasisRuntime,
@@ -237,11 +239,13 @@ const strategyPreparationPaths = (process.env.NARYX_HYPERLIQUID_STRATEGY_PREPARA
 const strategyPreparationLanes = strategyPreparationPaths.map(loadHyperliquidStrategyPreparationLane);
 const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
 const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
+const evmCalendarRuntimePath = process.env.NARYX_EVM_CALENDAR_SPREAD_RUNTIME_CONFIG;
 const evmTreasuryRuntimePath = process.env.NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG;
 const evmCollateralConversionRuntimePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_RUNTIME_CONFIG;
 const evmReverseBasisRuntimePath = process.env.NARYX_EVM_REVERSE_BASIS_RUNTIME_CONFIG;
 const solanaTreasuryRuntimePath = process.env.NARYX_SOLANA_TREASURY_HEDGE_RUNTIME_CONFIG;
 const evmRuntimeConfigured = (evmOptionRuntimePath !== undefined && evmOptionRuntimePath !== '')
+  || (evmCalendarRuntimePath !== undefined && evmCalendarRuntimePath !== '')
   || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '')
   || (evmCollateralConversionRuntimePath !== undefined && evmCollateralConversionRuntimePath !== '')
   || (evmReverseBasisRuntimePath !== undefined && evmReverseBasisRuntimePath !== '');
@@ -256,6 +260,18 @@ const evmOptionRuntime = evmOptionRuntimePath === undefined || evmOptionRuntimeP
     ), {
       nonceSource: (laneId) => {
         const source = new SqliteAtomicQuoteNonceSource(store, `evm-option:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: evmStrategyPackageIds!,
+    });
+const evmCalendarRuntime = evmCalendarRuntimePath === undefined || evmCalendarRuntimePath === ''
+  ? undefined
+  : loadEvmCalendarSpreadRuntime(absolutePath(
+      evmCalendarRuntimePath,
+      'NARYX_EVM_CALENDAR_SPREAD_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `evm-calendar:${laneId}`);
         return Object.freeze({ nextNonce: () => source.next() });
       },
       packageIds: evmStrategyPackageIds!,
@@ -318,6 +334,9 @@ const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
 const evmOptionPreparationResolver = evmOptionRuntime === undefined
   ? undefined
   : new EvmOptionSpreadPreparationContextResolver(evmOptionRuntime.preparationLanes);
+const evmCalendarPreparationResolver = evmCalendarRuntime === undefined
+  ? undefined
+  : new EvmCalendarSpreadPreparationContextResolver(evmCalendarRuntime.preparationLanes);
 const evmTreasuryPreparationResolver = evmTreasuryRuntime === undefined
   ? undefined
   : new EvmTreasuryHedgePreparationContextResolver(evmTreasuryRuntime.preparationLanes);
@@ -332,6 +351,7 @@ const solanaTreasuryPreparationResolver = solanaTreasuryRuntime === undefined
   : new SolanaTreasuryHedgePreparationContextResolver(solanaTreasuryRuntime.preparationLanes);
 const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
     && evmOptionPreparationResolver === undefined
+    && evmCalendarPreparationResolver === undefined
     && evmTreasuryPreparationResolver === undefined
     && evmCollateralConversionPreparationResolver === undefined
     && evmReverseBasisPreparationResolver === undefined
@@ -344,6 +364,12 @@ const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
         if (evmOption) {
           if (evmOptionPreparationResolver === undefined) throw new Error('EVM option spread preparation is not configured');
           return evmOptionPreparationResolver.resolve(documents);
+        }
+        const evmCalendar = documents.order.templateId === 'calendar-spread-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
+        if (evmCalendar) {
+          if (evmCalendarPreparationResolver === undefined) throw new Error('EVM calendar spread preparation is not configured');
+          return evmCalendarPreparationResolver.resolve(documents);
         }
         const evmTreasury = documents.order.templateId === 'treasury-inventory-hedge-v1'
           && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
@@ -396,6 +422,7 @@ const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
 const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
+  ...(evmCalendarRuntime?.quoteLanes ?? []),
   ...(evmTreasuryRuntime?.quoteLanes ?? []),
   ...(evmCollateralConversionRuntime?.quoteLanes ?? []),
   ...(evmReverseBasisRuntime?.quoteLanes ?? []),
@@ -414,6 +441,7 @@ const generalizedStrategyQuoteHandler = allGeneralizedStrategyLanes.length === 0
   }));
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
+  ...(evmCalendarRuntime?.preparationLanes ?? []),
   ...(evmTreasuryRuntime?.preparationLanes ?? []),
   ...(evmCollateralConversionRuntime?.preparationLanes ?? []),
   ...(evmReverseBasisRuntime?.preparationLanes ?? []),
@@ -477,6 +505,7 @@ const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPrepara
     }));
 const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
+  ...(evmCalendarRuntime?.observationLanes ?? []),
   ...(evmTreasuryRuntime?.observationLanes ?? []),
   ...(evmCollateralConversionRuntime?.observationLanes ?? []),
   ...(evmReverseBasisRuntime?.observationLanes ?? []),

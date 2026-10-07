@@ -1171,6 +1171,10 @@ export {
   type EvmCalendarSpreadPreparationLane,
 } from './evm-calendar-spread-preparation.js';
 export {
+  createEvmCalendarSpreadPreparationResolver,
+  loadEvmCalendarSpreadRuntime,
+} from './evm-calendar-spread-config.js';
+export {
   EvmTreasuryHedgePreparationContextResolver,
   type EvmTreasuryHedgeAdapterFactoryBinding,
   type EvmTreasuryHedgePreparationLane,
