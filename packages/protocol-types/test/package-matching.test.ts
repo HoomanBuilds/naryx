@@ -56,17 +56,21 @@ const CARRY = [
 ];
 
 function order(n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput {
+  const timeInForce = overrides.timeInForce ?? 'GTC';
   return {
     orderId: id(n),
     executionClassId: CLASS,
     side: 'ASK',
     orderType: 'LIMIT',
-    timeInForce: 'GTC',
+    timeInForce,
     limitPriceTicks: 100n,
     quantity: 10n,
     minimumQuantity: 10n,
     participantId: `maker-${n}`,
     commonControlGroupId: `group-${n}`,
+    ...(timeInForce === 'GTC'
+      ? { settlementLeaseUntilValue: overrides.settlementLeaseUntilValue ?? NOW + 1_000n }
+      : {}),
     ...overrides,
   };
 }
@@ -135,7 +139,22 @@ describe('package taker order authorization', () => {
     assert.ok(packageTakerOrderBytes(input).length > 0);
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, quantity: 20n })));
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, participantId: 'another-maker' })));
+    assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, settlementLeaseUntilValue: NOW + 2_000n })));
     assert.equal(toHex(hash), toHex(packageTakerOrderHash({ ...input, orderId: id(99) })));
+  });
+
+  test('GTC authorization requires a bounded settlement lease', () => {
+    const withoutLease = { ...order(1) };
+    delete withoutLease.settlementLeaseUntilValue;
+    assert.throws(() => packageTakerOrderHash(withoutLease), MalformedInputError);
+    assert.throws(
+      () => packageTakerOrderHash(order(1, { timeInForce: 'IOC', settlementLeaseUntilValue: NOW + 1_000n })),
+      MalformedInputError,
+    );
+    assert.throws(
+      () => matchPackageOrder(policy, emptyPackageBook(policy), order(1, { settlementLeaseUntilValue: NOW }), NOW),
+      MalformedInputError,
+    );
   });
 
   test('cancellation authorization binds the market, entry, and participant', () => {
@@ -188,6 +207,7 @@ describe('price-time priority and partial fills', () => {
     const gtc = accepted(matchPackageOrder(policy, book, order(2, { side: 'BID', quantity: 30n }), NOW));
     assert.equal(gtc.allocation.restedQuantity, 20n);
     assert.equal(gtc.state.entries[0]?.priceTicks, 100n);
+    assert.equal(gtc.state.entries[0]?.expiresAtValue, NOW + 1_000n);
     const ioc = accepted(
       matchPackageOrder(policy, book, order(3, { side: 'BID', quantity: 30n, timeInForce: 'IOC' }), NOW),
     );

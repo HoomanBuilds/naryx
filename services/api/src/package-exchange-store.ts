@@ -612,10 +612,10 @@ export class SqlitePackageExchangeStore {
       if (commitment.validUntilValue <= nowValue) {
         throw new PackageExchangeStoreError("SETTLEMENT_EXPIRED", "The settlement commitment is expired.");
       }
-      if (order.timeInForce === "GTC") {
+      if (order.timeInForce === "GTC" && order.settlementLeaseUntilValue !== commitment.validUntilValue) {
         throw new PackageExchangeStoreError(
-          "UNBOUNDED_SETTLEMENT",
-          "Executable package-book orders use a bounded settlement commitment and cannot be GTC.",
+          "SETTLEMENT_MISMATCH",
+          "The GTC settlement lease and settlement commitment must expire together.",
         );
       }
       if (order.timeInForce === "GTD" && order.expiresAtValue !== commitment.validUntilValue) {
@@ -661,7 +661,10 @@ export class SqlitePackageExchangeStore {
         );
       }
       const result = guarded("INVALID_INPUT", "Order is invalid.", () => matchPackageOrder(policy, book, order, nowValue));
-      if (!result.accepted) return { accepted: false, rejection: result.rejection };
+      if (!result.accepted) {
+        if (result.state !== book) this.writeBook(result.state);
+        return { accepted: false, rejection: result.rejection };
+      }
       const allocationHash = packageAllocationHash(result.allocation);
       const recordedAtMs = this.clock();
       this.db.prepare(`

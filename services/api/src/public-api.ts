@@ -1330,6 +1330,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         participantId: strategy.owner,
         commonControlGroupId: strategy.owner,
         ...(strategy.packageTimeInForce === "GTD" ? { expiresAtValue: strategy.expiryValue } : {}),
+        ...(strategy.packageTimeInForce === "GTC" ? { settlementLeaseUntilValue: strategy.expiryValue } : {}),
       };
       const packageOrderId = toHex(packageTakerOrderHash(draft));
       const order = { ...draft, orderId: packageOrderId };

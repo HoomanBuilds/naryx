@@ -40,19 +40,25 @@ const POLICY_INPUT: PackageMatchingPolicyInput = {
 };
 const policy = packageMatchingPolicy(POLICY_INPUT);
 const id = (n: number): string => n.toString(16).padStart(64, '0');
-const order = (n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput => ({
-  orderId: id(n),
-  executionClassId: CLASS,
-  side: 'ASK',
-  orderType: 'LIMIT',
-  timeInForce: 'GTC',
-  limitPriceTicks: 100n,
-  quantity: 10n,
-  minimumQuantity: 10n,
-  participantId: `maker-${n}`,
-  commonControlGroupId: `group-${n}`,
-  ...overrides,
-});
+const order = (n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput => {
+  const timeInForce = overrides.timeInForce ?? 'GTC';
+  return {
+    orderId: id(n),
+    executionClassId: CLASS,
+    side: 'ASK',
+    orderType: 'LIMIT',
+    timeInForce,
+    limitPriceTicks: 100n,
+    quantity: 10n,
+    minimumQuantity: 10n,
+    participantId: `maker-${n}`,
+    commonControlGroupId: `group-${n}`,
+    ...(timeInForce === 'GTC'
+      ? { settlementLeaseUntilValue: overrides.settlementLeaseUntilValue ?? 2_000n }
+      : {}),
+    ...overrides,
+  };
+};
 
 function takerAllocation(): PackageAllocation {
   const rested = matchPackageOrder(policy, emptyPackageBook(policy), order(1), 1_000n);

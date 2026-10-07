@@ -87,6 +87,27 @@ test("orders match durably and replay returns the recorded allocation", () => {
   });
 });
 
+test("GTC orders expire with their signed settlement lease", () => {
+  withStore((store) => {
+    registerAll(store);
+    const maker = order(1, { timeInForce: "GTC" });
+    const accepted = store.submitOrder(CLASS, maker, NOW, settlement(maker));
+    assert.equal(accepted.accepted, true);
+    assert.equal(store.getBook(CLASS)?.entries[0]?.expiresAtValue, maker.settlementLeaseUntilValue);
+
+    const mismatched = order(2, { timeInForce: "GTC" });
+    assert.throws(
+      () => store.submitOrder(CLASS, mismatched, NOW, settlement(mismatched, { validUntilValue: 1_999n })),
+      { code: "SETTLEMENT_MISMATCH" },
+    );
+
+    const afterLease = order(3, { side: "BID", timeInForce: "IOC" });
+    const result = store.submitOrder(CLASS, afterLease, 2_000n, settlement(afterLease, { validUntilValue: 2_001n }));
+    assert.deepEqual(result, { accepted: false, rejection: "MINIMUM_QUANTITY_UNFILLABLE" });
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
+  });
+});
+
 test("partial settlement obligations require new authorization after the order closes", () => {
   withStore((store) => {
     registerAll(store);

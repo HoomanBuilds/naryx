@@ -804,6 +804,7 @@ export interface PackageTakerOrderInput {
   readonly participantId: string;
   readonly commonControlGroupId: string;
   readonly expiresAtValue?: bigint;
+  readonly settlementLeaseUntilValue?: bigint;
 }
 
 interface CanonicalPackageTakerOrder {
@@ -817,12 +818,22 @@ interface CanonicalPackageTakerOrder {
   readonly participantId: ProtocolId;
   readonly commonControlGroupId: ProtocolId;
   readonly expiresAtValue?: bigint;
+  readonly settlementLeaseUntilValue?: bigint;
 }
 
 function canonicalPackageTakerOrder(input: PackageTakerOrderInput, context: string): CanonicalPackageTakerOrder {
   object(input, context);
   const expiresAtValue =
     input.expiresAtValue === undefined ? undefined : bigintIn(input.expiresAtValue, U64_BITS, `${context}.expiresAtValue`);
+  const settlementLeaseUntilValue = input.settlementLeaseUntilValue === undefined
+    ? undefined
+    : bigintIn(input.settlementLeaseUntilValue, U64_BITS, `${context}.settlementLeaseUntilValue`);
+  if ((input.timeInForce === 'GTC') !== (settlementLeaseUntilValue !== undefined)) {
+    throw new MalformedInputError(
+      `${context}.settlementLeaseUntilValue`,
+      'a bounded settlement lease is required exactly for good-till-cancelled',
+    );
+  }
   return Object.freeze({
     executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
     side: variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`),
@@ -834,6 +845,7 @@ function canonicalPackageTakerOrder(input: PackageTakerOrderInput, context: stri
     participantId: protocolId(input.participantId, `${context}.participantId`),
     commonControlGroupId: protocolId(input.commonControlGroupId, `${context}.commonControlGroupId`),
     ...(expiresAtValue === undefined ? {} : { expiresAtValue }),
+    ...(settlementLeaseUntilValue === undefined ? {} : { settlementLeaseUntilValue }),
   });
 }
 
@@ -855,6 +867,9 @@ export function packageTakerOrderBytes(
     writer.writeOptional(order.expiresAtValue, (element, value) =>
       element.writeU64(value, `${context}.expiresAtValue`),
     );
+    if (order.timeInForce === 'GTC') {
+      writer.writeU64(order.settlementLeaseUntilValue as bigint, `${context}.settlementLeaseUntilValue`);
+    }
   });
 }
 
@@ -1039,6 +1054,18 @@ function checkedTaker(policy: PackageMatchingPolicy, input: PackageTakerOrderInp
   if (expiresAtValue !== undefined && expiresAtValue <= nowValue) {
     throw new MalformedInputError(`${context}.expiresAtValue`, 'order is already expired');
   }
+  const settlementLeaseUntilValue = input.settlementLeaseUntilValue === undefined
+    ? undefined
+    : bigintIn(input.settlementLeaseUntilValue, U64_BITS, `${context}.settlementLeaseUntilValue`);
+  if ((timeInForce === 'GTC') !== (settlementLeaseUntilValue !== undefined)) {
+    throw new MalformedInputError(
+      `${context}.settlementLeaseUntilValue`,
+      'a bounded settlement lease is required exactly for good-till-cancelled',
+    );
+  }
+  if (settlementLeaseUntilValue !== undefined && settlementLeaseUntilValue <= nowValue) {
+    throw new MalformedInputError(`${context}.settlementLeaseUntilValue`, 'settlement lease is already expired');
+  }
   return {
     orderId: commitmentHash(input.orderId, `${context}.orderId`),
     side: variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`),
@@ -1051,6 +1078,7 @@ function checkedTaker(policy: PackageMatchingPolicy, input: PackageTakerOrderInp
     participantId: protocolId(input.participantId, `${context}.participantId`),
     commonControlGroupId: protocolId(input.commonControlGroupId, `${context}.commonControlGroupId`),
     ...(expiresAtValue === undefined ? {} : { expiresAtValue }),
+    ...(settlementLeaseUntilValue === undefined ? {} : { settlementLeaseUntilValue }),
   };
 }
 
@@ -1064,12 +1092,13 @@ export function matchPackageOrder(
   const { policy: checked, state } = bookFor(policy, stateInput, context);
   const now = bigintIn(nowValue, U64_BITS, `${context}.nowValue`);
   const taker = checkedTaker(checked, input, now, `${context}.order`);
-  const reject = (rejection: PackageMatchRejection): PackageMatchResult => ({ accepted: false, state, rejection });
-  if (state.halted) return reject('HALTED');
-  if (state.entries.some((entry) => compareBytes(entry.entryId, taker.orderId) === 0)) return reject('DUPLICATE_ORDER');
+  if (state.halted) return { accepted: false, state, rejection: 'HALTED' };
 
   const expiredEntryIds = state.entries.filter((entry) => !live(entry, now)).map((entry) => entry.entryId);
   let entries = state.entries.filter((entry) => live(entry, now));
+  const activeState = expiredEntryIds.length === 0 ? state : withState(state, { entries });
+  const reject = (rejection: PackageMatchRejection): PackageMatchResult => ({ accepted: false, state: activeState, rejection });
+  if (entries.some((entry) => compareBytes(entry.entryId, taker.orderId) === 0)) return reject('DUPLICATE_ORDER');
   const crossing = entries
     .filter((entry) => entry.side !== taker.side && takerCrosses(taker.side, taker.limitPriceTicks, entry.priceTicks))
     .sort(priority(taker.side));
@@ -1165,7 +1194,9 @@ export function matchPackageOrder(
         sequence,
         participantId: taker.participantId,
         commonControlGroupId: taker.commonControlGroupId,
-        ...(taker.expiresAtValue === undefined ? {} : { expiresAtValue: taker.expiresAtValue }),
+        ...((taker.expiresAtValue ?? taker.settlementLeaseUntilValue) === undefined
+          ? {}
+          : { expiresAtValue: taker.expiresAtValue ?? taker.settlementLeaseUntilValue }),
       }),
     ];
     sequence += 1n;

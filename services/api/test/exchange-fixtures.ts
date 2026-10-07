@@ -100,6 +100,9 @@ export function order(n: number, overrides: Partial<PackageTakerOrderInput> = {}
     commonControlGroupId: `group-${n}`,
     ...overrides,
     ...(timeInForce === "GTD" ? { expiresAtValue: overrides.expiresAtValue ?? 2_000n } : {}),
+    ...(timeInForce === "GTC"
+      ? { settlementLeaseUntilValue: overrides.settlementLeaseUntilValue ?? 2_000n }
+      : {}),
   };
   return value;
 }
@@ -119,7 +122,7 @@ export function settlement(
     settlementAccount: `settlement-${input.participantId}`,
     quantity: input.quantity,
     validUntilUnit: "SOLANA_SLOT",
-    validUntilValue: input.expiresAtValue ?? 2_000n,
+    validUntilValue: input.expiresAtValue ?? input.settlementLeaseUntilValue ?? 2_000n,
     ...overrides,
   });
 }
