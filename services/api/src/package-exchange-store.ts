@@ -1071,7 +1071,7 @@ export class SqlitePackageExchangeStore {
         ? allocatedQuantity === 0n ? "AWAITING_MATCH" as const : "PARTIALLY_ALLOCATED" as const
         : allocatedQuantity === 0n ? "CANCELLED_UNFILLED" as const : "PARTIAL_AUTHORIZATION_REQUIRED" as const;
     const readiness = packageSettlementReadiness({
-      version: 1,
+      version: 2,
       packageOrderId: orderId,
       settlementCommitmentHash: packageSettlementCommitmentHash(commitment),
       strategyOrderHash: commitment.strategyOrderHash,
@@ -1081,7 +1081,8 @@ export class SqlitePackageExchangeStore {
       remainingQuantity,
       acceptsFurtherMatches,
       status,
-      allocationHashes: [...new Set(obligations.map((obligation) => obligation.allocationHashHex))],
+      evidenceRefs: [...new Set(obligations.map((obligation) => obligation.allocationHashHex))]
+        .map((evidenceHash) => ({ kind: "CONTINUOUS_ALLOCATION" as const, evidenceHash })),
     });
     return Object.freeze({
       readiness,

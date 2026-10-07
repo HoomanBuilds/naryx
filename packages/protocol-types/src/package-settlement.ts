@@ -24,9 +24,16 @@ import {
 
 export const PACKAGE_SETTLEMENT_COMMITMENT_VERSION = 1;
 export const PACKAGE_SETTLEMENT_HANDOFF_VERSION = 1;
-export const PACKAGE_SETTLEMENT_READINESS_VERSION = 1;
+export const PACKAGE_SETTLEMENT_READINESS_VERSION = 2;
 export const PACKAGE_SETTLEMENT_MAX_FILLS = 2_000;
-export const PACKAGE_SETTLEMENT_MAX_ALLOCATIONS = 4_096;
+export const PACKAGE_SETTLEMENT_MAX_EVIDENCE = 4_096;
+export const PACKAGE_SETTLEMENT_MAX_ALLOCATIONS = PACKAGE_SETTLEMENT_MAX_EVIDENCE;
+
+export const PACKAGE_SETTLEMENT_EVIDENCE_KIND = Object.freeze({
+  CONTINUOUS_ALLOCATION: 1,
+  REOPENING_RESULT: 2,
+} as const);
+export type PackageSettlementEvidenceKind = keyof typeof PACKAGE_SETTLEMENT_EVIDENCE_KIND;
 
 export const PACKAGE_SETTLEMENT_READINESS_STATUS = Object.freeze({
   AWAITING_MATCH: 1,
@@ -123,19 +130,29 @@ export interface PackageSettlementReadinessInput {
   readonly remainingQuantity: bigint;
   readonly acceptsFurtherMatches: boolean;
   readonly status: PackageSettlementReadinessStatus;
-  readonly allocationHashes: readonly (Uint8Array | string)[];
+  readonly evidenceRefs: readonly PackageSettlementEvidenceRefInput[];
 }
 
 export interface PackageSettlementReadiness extends Omit<
   PackageSettlementReadinessInput,
-  'packageOrderId' | 'settlementCommitmentHash' | 'strategyOrderHash' | 'executionClassId' | 'allocationHashes'
+  'packageOrderId' | 'settlementCommitmentHash' | 'strategyOrderHash' | 'executionClassId' | 'evidenceRefs'
 > {
-  readonly version: 1;
+  readonly version: 2;
   readonly packageOrderId: CommitmentHash;
   readonly settlementCommitmentHash: CommitmentHash;
   readonly strategyOrderHash: CommitmentHash;
   readonly executionClassId: ProtocolId;
-  readonly allocationHashes: readonly CommitmentHash[];
+  readonly evidenceRefs: readonly PackageSettlementEvidenceRef[];
+}
+
+export interface PackageSettlementEvidenceRefInput {
+  readonly kind: PackageSettlementEvidenceKind;
+  readonly evidenceHash: Uint8Array | string;
+}
+
+export interface PackageSettlementEvidenceRef {
+  readonly kind: PackageSettlementEvidenceKind;
+  readonly evidenceHash: CommitmentHash;
 }
 
 function object(value: unknown, context: string): void {
@@ -323,22 +340,34 @@ export function packageSettlementReadiness(
   if (committedQuantity === 0n || allocatedQuantity + remainingQuantity !== committedQuantity) {
     throw new MalformedInputError(context, 'settlement quantities do not conserve the commitment');
   }
-  if (!Array.isArray(input.allocationHashes) || input.allocationHashes.length > PACKAGE_SETTLEMENT_MAX_ALLOCATIONS) {
+  if (!Array.isArray(input.evidenceRefs) || input.evidenceRefs.length > PACKAGE_SETTLEMENT_MAX_EVIDENCE) {
     throw new MalformedInputError(
-      `${context}.allocationHashes`,
-      `expected at most ${PACKAGE_SETTLEMENT_MAX_ALLOCATIONS} allocation hashes`,
+      `${context}.evidenceRefs`,
+      `expected at most ${PACKAGE_SETTLEMENT_MAX_EVIDENCE} settlement evidence references`,
     );
   }
-  const allocationHashes = input.allocationHashes
-    .map((hash, index) => commitmentHash(hash, `${context}.allocationHashes[${index}]`))
-    .sort(compareBytes);
-  for (let index = 1; index < allocationHashes.length; index += 1) {
-    if (bytesEqual(allocationHashes[index - 1]!, allocationHashes[index]!)) {
-      throw new DuplicateElementError(`${context}.allocationHashes`, 'allocation hash repeats');
+  const evidenceRefs = (input.evidenceRefs as readonly PackageSettlementEvidenceRefInput[])
+    .map((reference, index) => {
+      object(reference, `${context}.evidenceRefs[${index}]`);
+      enumDiscriminant(PACKAGE_SETTLEMENT_EVIDENCE_KIND, reference.kind, `${context}.evidenceRefs[${index}].kind`);
+      return Object.freeze({
+        kind: reference.kind,
+        evidenceHash: commitmentHash(reference.evidenceHash, `${context}.evidenceRefs[${index}].evidenceHash`),
+      });
+    })
+    .sort((left, right) => {
+      const kind = PACKAGE_SETTLEMENT_EVIDENCE_KIND[left.kind] - PACKAGE_SETTLEMENT_EVIDENCE_KIND[right.kind];
+      return kind === 0 ? compareBytes(left.evidenceHash, right.evidenceHash) : kind;
+    });
+  for (let index = 1; index < evidenceRefs.length; index += 1) {
+    const previous = evidenceRefs[index - 1]!;
+    const current = evidenceRefs[index]!;
+    if (previous.kind === current.kind && bytesEqual(previous.evidenceHash, current.evidenceHash)) {
+      throw new DuplicateElementError(`${context}.evidenceRefs`, 'settlement evidence repeats');
     }
   }
-  if ((allocatedQuantity === 0n) !== (allocationHashes.length === 0)) {
-    throw new MalformedInputError(`${context}.allocationHashes`, 'allocation evidence and allocated quantity disagree');
+  if ((allocatedQuantity === 0n) !== (evidenceRefs.length === 0)) {
+    throw new MalformedInputError(`${context}.evidenceRefs`, 'settlement evidence and allocated quantity disagree');
   }
   const stateValid =
     (input.status === 'AWAITING_MATCH' && allocatedQuantity === 0n && remainingQuantity > 0n && input.acceptsFurtherMatches)
@@ -358,7 +387,7 @@ export function packageSettlementReadiness(
     remainingQuantity,
     acceptsFurtherMatches: input.acceptsFurtherMatches,
     status: input.status,
-    allocationHashes: Object.freeze(allocationHashes),
+    evidenceRefs: Object.freeze(evidenceRefs),
   });
 }
 
@@ -378,11 +407,10 @@ export function packageSettlementReadinessBytes(
     writer.writeU128(readiness.remainingQuantity, `${context}.remainingQuantity`);
     writer.writeBool(readiness.acceptsFurtherMatches, `${context}.acceptsFurtherMatches`);
     writer.writeEnum(PACKAGE_SETTLEMENT_READINESS_STATUS, readiness.status, `${context}.status`);
-    writer.writeArray(
-      readiness.allocationHashes,
-      (element, hash) => encodeCommitmentHash(element, hash, `${context}.allocationHashes`),
-      `${context}.allocationHashes`,
-    );
+    writer.writeArray(readiness.evidenceRefs, (element, reference) => {
+      element.writeEnum(PACKAGE_SETTLEMENT_EVIDENCE_KIND, reference.kind, `${context}.evidenceRefs.kind`);
+      encodeCommitmentHash(element, reference.evidenceHash, `${context}.evidenceRefs.evidenceHash`);
+    }, `${context}.evidenceRefs`);
   });
 }
 

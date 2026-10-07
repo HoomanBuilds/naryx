@@ -6,11 +6,14 @@ import {
   emptyPackageBook,
   packageMatchingPolicy,
   packageReopeningResultHash,
+  packageReopeningSettlementHandoff,
+  packageReopeningSettlementHandoffHash,
   packageReopeningSnapshotHash,
   queuePackageReopeningOrder,
   setPackageBookHalted,
   toHex,
   verifyPackageReopeningResult,
+  verifyPackageReopeningSettlementHandoff,
   type PackageMatchingPolicyInput,
   type PackageTakerOrderInput,
 } from '../src/index.js';
@@ -89,6 +92,29 @@ describe('package reopening auction', () => {
     assert.equal(cleared.state.entries.length, 0);
     assert.equal(toHex(cleared.resultHash), toHex(packageReopeningResultHash(cleared.result)));
     assert.doesNotThrow(() => verifyPackageReopeningResult(policy, opening, id(900), 100n, NOW, cleared.result));
+    const handoff = packageReopeningSettlementHandoff({
+      version: 1,
+      reopeningResultHash: cleared.resultHash,
+      executionClassId: CLASS,
+      fills: cleared.result.fills.map((fill, index) => ({
+        fillSequence: fill.fillSequence,
+        bidEntryId: fill.bidEntryId,
+        askEntryId: fill.askEntryId,
+        bidSettlementCommitmentHash: id(100 + index),
+        askSettlementCommitmentHash: id(200 + index),
+        priceTicks: cleared.result.clearingPriceTicks!,
+        quantity: fill.quantity,
+      })),
+    });
+    assert.equal(toHex(packageReopeningSettlementHandoffHash(handoff)).length, 64);
+    assert.doesNotThrow(() => verifyPackageReopeningSettlementHandoff(cleared.result, handoff));
+    assert.throws(
+      () => verifyPackageReopeningSettlementHandoff(cleared.result, {
+        ...handoff,
+        fills: handoff.fills.map((fill, index) => index === 0 ? { ...fill, quantity: fill.quantity + 10n } : fill),
+      }),
+      MalformedInputError,
+    );
     assert.throws(
       () => verifyPackageReopeningResult(policy, opening, id(900), 100n, NOW, { ...cleared.result, clearingPriceTicks: 101n }),
       MalformedInputError,

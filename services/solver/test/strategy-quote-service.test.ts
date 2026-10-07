@@ -322,7 +322,7 @@ test('generalized RFQ prices, compiles, signs, validates, and replays one commit
     },
   };
   const readiness = packageSettlementReadiness({
-    version: 1,
+    version: 2,
     packageOrderId: boundRequest.packageExecution.packageOrderId,
     settlementCommitmentHash: 'd2'.repeat(32),
     strategyOrderHash: orderHash,
@@ -332,7 +332,7 @@ test('generalized RFQ prices, compiles, signs, validates, and replays one commit
     remainingQuantity: 0n,
     acceptsFurtherMatches: false,
     status: 'READY_FOR_OWNER_AUTHORIZATION',
-    allocationHashes: ['d3'.repeat(32)],
+    evidenceRefs: [{ kind: 'CONTINUOUS_ALLOCATION', evidenceHash: 'd3'.repeat(32) }],
   });
   boundRequest.packageExecution.settlementReadinessHash = Buffer.from(packageSettlementReadinessHash(readiness)).toString('hex');
   const bound = await service.quote(boundRequest);

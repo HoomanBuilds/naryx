@@ -183,7 +183,7 @@ describe('public API client', () => {
     const orderId = id(2);
     const allocationHashHex = id(4);
     const readiness = packageSettlementReadiness({
-      version: 1,
+      version: 2,
       packageOrderId: orderId,
       settlementCommitmentHash: id(5),
       strategyOrderHash: id(6),
@@ -193,7 +193,7 @@ describe('public API client', () => {
       remainingQuantity: 0n,
       acceptsFurtherMatches: false,
       status: 'READY_FOR_OWNER_AUTHORIZATION',
-      allocationHashes: [allocationHashHex],
+      evidenceRefs: [{ kind: 'CONTINUOUS_ALLOCATION', evidenceHash: allocationHashHex }],
     });
     const path = `/v1/package-book/orders/${orderId}/settlement-readiness`;
     const obligation = {

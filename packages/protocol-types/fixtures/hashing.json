@@ -55,6 +55,7 @@
     { "name": "package-allocation-shared-payload", "domain": "CON/v1/package-allocation", "payloadHex": "deadbeef", "digestHex": "f36bb2a7456fe3483e928476811d4be01d396adb5c15f1d1ba9eafd3c755b439" },
     { "name": "package-reopening-snapshot-shared-payload", "domain": "CON/v1/package-reopening-snapshot", "payloadHex": "deadbeef", "digestHex": "be82b1bb7314e2feba32b1a2e1f3dfb93469454cfe806ab137f4d6af5c70a5a9" },
     { "name": "package-reopening-result-shared-payload", "domain": "CON/v1/package-reopening-result", "payloadHex": "deadbeef", "digestHex": "c807860aa2dcfb04d7f89792a84d20e0b8015d4018fb78c9da633d03cdc0c7df" },
+    { "name": "package-reopening-settlement-handoff-shared-payload", "domain": "CON/v1/package-reopening-settlement-handoff", "payloadHex": "deadbeef", "digestHex": "ebd3fb7556aa1301f92a6da7a9cc07d41b4848085d1ef9c1f4700e79c30df343" },
     { "name": "solver-capacity-record-shared-payload", "domain": "CON/v1/solver-capacity-record", "payloadHex": "deadbeef", "digestHex": "1c49f02b141943a76e97bccf37ca275ebb9a39f770532bc4880789d2d2b4a56c" },
     { "name": "solver-commitment-root-shared-payload", "domain": "CON/v1/solver-commitment-root", "payloadHex": "deadbeef", "digestHex": "a564e26ba45b3881874faa2f3aca74fd8eedebc2e20aff8fe7ba72bc3dd8fde5" },
     { "name": "rfq-decision-shared-payload", "domain": "CON/v1/rfq-decision", "payloadHex": "deadbeef", "digestHex": "708e8bd424f13e20b74b693c0740a7ccf66398d4a4a8f664a53c7de2152313e4" },

@@ -27,6 +27,8 @@ import {
 } from './primitives.js';
 
 export const PACKAGE_REOPENING_RESULT_VERSION = 1;
+export const PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION = 1;
+export const PACKAGE_REOPENING_MAX_FILLS = 2_000;
 
 const U64_BITS = 64;
 const U128_BITS = 128;
@@ -69,6 +71,43 @@ export interface PackageReopeningClearance {
   readonly state: PackageBookState;
   readonly result: PackageReopeningResult;
   readonly resultHash: CommitmentHash;
+}
+
+export interface PackageReopeningSettlementFillInput {
+  readonly fillSequence: bigint;
+  readonly bidEntryId: Uint8Array | string;
+  readonly askEntryId: Uint8Array | string;
+  readonly bidSettlementCommitmentHash: Uint8Array | string;
+  readonly askSettlementCommitmentHash: Uint8Array | string;
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+}
+
+export interface PackageReopeningSettlementFill extends Omit<
+  PackageReopeningSettlementFillInput,
+  'bidEntryId' | 'askEntryId' | 'bidSettlementCommitmentHash' | 'askSettlementCommitmentHash'
+> {
+  readonly bidEntryId: CommitmentHash;
+  readonly askEntryId: CommitmentHash;
+  readonly bidSettlementCommitmentHash: CommitmentHash;
+  readonly askSettlementCommitmentHash: CommitmentHash;
+}
+
+export interface PackageReopeningSettlementHandoffInput {
+  readonly version: number;
+  readonly reopeningResultHash: Uint8Array | string;
+  readonly executionClassId: string;
+  readonly fills: readonly PackageReopeningSettlementFillInput[];
+}
+
+export interface PackageReopeningSettlementHandoff extends Omit<
+  PackageReopeningSettlementHandoffInput,
+  'reopeningResultHash' | 'executionClassId' | 'fills'
+> {
+  readonly version: 1;
+  readonly reopeningResultHash: CommitmentHash;
+  readonly executionClassId: ProtocolId;
+  readonly fills: readonly PackageReopeningSettlementFill[];
 }
 
 interface WorkingEntry {
@@ -415,6 +454,121 @@ export function packageReopeningResultHash(input: PackageReopeningResult): Commi
     domainHash(HASH_DOMAIN.PACKAGE_REOPENING_RESULT, packageReopeningResultBytes(input)),
     'packageReopeningResultHash',
   );
+}
+
+function reopeningSettlementFill(
+  input: PackageReopeningSettlementFillInput,
+  context: string,
+): PackageReopeningSettlementFill {
+  if (typeof input !== 'object' || input === null) throw new MalformedInputError(context, 'expected an object');
+  return Object.freeze({
+    fillSequence: positive(input.fillSequence, U64_BITS, `${context}.fillSequence`),
+    bidEntryId: commitmentHash(input.bidEntryId, `${context}.bidEntryId`),
+    askEntryId: commitmentHash(input.askEntryId, `${context}.askEntryId`),
+    bidSettlementCommitmentHash: commitmentHash(
+      input.bidSettlementCommitmentHash,
+      `${context}.bidSettlementCommitmentHash`,
+    ),
+    askSettlementCommitmentHash: commitmentHash(
+      input.askSettlementCommitmentHash,
+      `${context}.askSettlementCommitmentHash`,
+    ),
+    priceTicks: signed(input.priceTicks, `${context}.priceTicks`),
+    quantity: positive(input.quantity, U128_BITS, `${context}.quantity`),
+  });
+}
+
+export function packageReopeningSettlementHandoff(
+  input: PackageReopeningSettlementHandoffInput,
+  context = 'packageReopeningSettlementHandoff',
+): PackageReopeningSettlementHandoff {
+  if (typeof input !== 'object' || input === null) throw new MalformedInputError(context, 'expected an object');
+  if (input.version !== PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION) {
+    throw new MalformedInputError(`${context}.version`, `version must equal ${PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION}`);
+  }
+  if (!Array.isArray(input.fills) || input.fills.length === 0 || input.fills.length > PACKAGE_REOPENING_MAX_FILLS) {
+    throw new MalformedInputError(`${context}.fills`, `expected 1 to ${PACKAGE_REOPENING_MAX_FILLS} fills`);
+  }
+  const fills = input.fills.map((fill, index) => reopeningSettlementFill(fill, `${context}.fills[${index}]`));
+  fills.forEach((fill, index) => {
+    if (index > 0 && fill.fillSequence !== fills[index - 1]!.fillSequence + 1n) {
+      throw new MalformedInputError(`${context}.fills[${index}].fillSequence`, 'fill sequence is not contiguous');
+    }
+  });
+  return Object.freeze({
+    version: PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION,
+    reopeningResultHash: commitmentHash(input.reopeningResultHash, `${context}.reopeningResultHash`),
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    fills: Object.freeze(fills),
+  });
+}
+
+export function packageReopeningSettlementHandoffBytes(
+  input: PackageReopeningSettlementHandoffInput,
+  context = 'packageReopeningSettlementHandoff',
+): Uint8Array {
+  const handoff = packageReopeningSettlementHandoff(input, context);
+  return canonicalBytes((writer) => {
+    writer.writeU32(handoff.version, `${context}.version`);
+    encodeCommitmentHash(writer, handoff.reopeningResultHash, `${context}.reopeningResultHash`);
+    encodeProtocolId(writer, handoff.executionClassId, `${context}.executionClassId`);
+    writer.writeArray(handoff.fills, (element, fill) => {
+      element.writeU64(fill.fillSequence, `${context}.fills.fillSequence`);
+      encodeCommitmentHash(element, fill.bidEntryId, `${context}.fills.bidEntryId`);
+      encodeCommitmentHash(element, fill.askEntryId, `${context}.fills.askEntryId`);
+      encodeCommitmentHash(
+        element,
+        fill.bidSettlementCommitmentHash,
+        `${context}.fills.bidSettlementCommitmentHash`,
+      );
+      encodeCommitmentHash(
+        element,
+        fill.askSettlementCommitmentHash,
+        `${context}.fills.askSettlementCommitmentHash`,
+      );
+      element.writeI128(fill.priceTicks, `${context}.fills.priceTicks`);
+      element.writeU128(fill.quantity, `${context}.fills.quantity`);
+    }, `${context}.fills`);
+  });
+}
+
+export function packageReopeningSettlementHandoffHash(
+  input: PackageReopeningSettlementHandoffInput,
+): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_REOPENING_SETTLEMENT_HANDOFF, packageReopeningSettlementHandoffBytes(input)),
+    'packageReopeningSettlementHandoffHash',
+  );
+}
+
+export function verifyPackageReopeningSettlementHandoff(
+  resultInput: PackageReopeningResult,
+  handoffInput: PackageReopeningSettlementHandoffInput,
+  context = 'verifyPackageReopeningSettlementHandoff',
+): void {
+  const result = packageReopeningResult(resultInput);
+  const handoff = packageReopeningSettlementHandoff(handoffInput);
+  if (compareBytes(handoff.reopeningResultHash, packageReopeningResultHash(result)) !== 0) {
+    throw new MalformedInputError(context, 'handoff cites another reopening result');
+  }
+  if (handoff.executionClassId !== result.executionClassId || handoff.fills.length !== result.fills.length) {
+    throw new MalformedInputError(context, 'handoff does not cover the reopening result');
+  }
+  if (result.clearingPriceTicks === undefined) {
+    throw new MalformedInputError(context, 'a result without fills has no settlement handoff');
+  }
+  result.fills.forEach((fill, index) => {
+    const settlement = handoff.fills[index]!;
+    if (
+      fill.fillSequence !== settlement.fillSequence
+      || compareBytes(fill.bidEntryId, settlement.bidEntryId) !== 0
+      || compareBytes(fill.askEntryId, settlement.askEntryId) !== 0
+      || fill.quantity !== settlement.quantity
+      || settlement.priceTicks !== result.clearingPriceTicks
+    ) {
+      throw new MalformedInputError(`${context}.fills[${index}]`, 'settlement fill differs from the reopening result');
+    }
+  });
 }
 
 export function clearPackageReopeningAuction(

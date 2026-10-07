@@ -94,9 +94,9 @@ test('implied fills cannot pretend to have a direct settlement commitment', () =
   );
 });
 
-test('settlement readiness conserves quantity and canonicalizes allocation evidence', () => {
+test('settlement readiness conserves quantity and canonicalizes typed evidence', () => {
   const readiness = packageSettlementReadiness({
-    version: 1,
+    version: 2,
     packageOrderId: hash('1'),
     settlementCommitmentHash: hash('2'),
     strategyOrderHash: hash('3'),
@@ -106,9 +106,15 @@ test('settlement readiness conserves quantity and canonicalizes allocation evide
     remainingQuantity: 0n,
     acceptsFurtherMatches: false,
     status: 'READY_FOR_OWNER_AUTHORIZATION',
-    allocationHashes: [hash('5'), hash('4')],
+    evidenceRefs: [
+      { kind: 'REOPENING_RESULT', evidenceHash: hash('5') },
+      { kind: 'CONTINUOUS_ALLOCATION', evidenceHash: hash('4') },
+    ],
   });
-  assert.deepEqual(readiness.allocationHashes.map(toHex), [hash('4'), hash('5')]);
+  assert.deepEqual(
+    readiness.evidenceRefs.map((reference) => [reference.kind, toHex(reference.evidenceHash)]),
+    [['CONTINUOUS_ALLOCATION', hash('4')], ['REOPENING_RESULT', hash('5')]],
+  );
   assert.equal(toHex(packageSettlementReadinessHash(readiness)).length, 64);
   assert.throws(
     () => packageSettlementReadiness({

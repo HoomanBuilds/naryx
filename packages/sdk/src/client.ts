@@ -1012,9 +1012,15 @@ export class NaryxClient {
       }) as PackageSettlementObligationView;
     });
     const allocatedQuantity = obligations.reduce((sum, obligation) => sum + obligation.quantity, 0n);
-    const allocationHashes = [...new Set(obligations.map((obligation) => obligation.allocationHashHex))].sort();
+    const evidenceRefs = [...new Set(obligations.map((obligation) => obligation.allocationHashHex))]
+      .sort()
+      .map((evidenceHash) => ({ kind: 'CONTINUOUS_ALLOCATION' as const, evidenceHash }));
     if (allocatedQuantity !== readiness.allocatedQuantity
-      || allocationHashes.join(',') !== readiness.allocationHashes.map(toHex).join(',')) {
+      || evidenceRefs.length !== readiness.evidenceRefs.length
+      || evidenceRefs.some((reference, index) => {
+        const expected = readiness.evidenceRefs[index];
+        return expected?.kind !== reference.kind || toHex(expected.evidenceHash) !== reference.evidenceHash;
+      })) {
       throw new NaryxEvidenceError('package settlement obligations do not reproduce readiness');
     }
     return Object.freeze({ readiness, readinessHash, obligations: Object.freeze(obligations) });

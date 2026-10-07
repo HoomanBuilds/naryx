@@ -112,6 +112,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/package-allocation',
         'CON/v1/package-reopening-snapshot',
         'CON/v1/package-reopening-result',
+        'CON/v1/package-reopening-settlement-handoff',
         'CON/v1/solver-capacity-record',
         'CON/v1/solver-commitment-root',
         'CON/v1/rfq-decision',
