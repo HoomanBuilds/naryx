@@ -122,6 +122,27 @@ contract AsyncBondedPackageCoordinatorTest is Test {
         assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
     }
 
+    function testOwnerOrSolverCancelsReservedPackageWithoutSlash() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(owner, request);
+        bytes32 id = _reserve(terms);
+        vm.prank(BOND_RECIPIENT);
+        vm.expectRevert(AsyncBondedPackageCoordinator.UnauthorizedActor.selector);
+        coordinator.cancelReserved(id, 1);
+
+        vm.prank(SOLVER);
+        coordinator.cancelReserved(id, 1);
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
+        assertEq(coordinator.packageState(id).stateVersion, 2);
+        assertEq(token.balanceOf(BOND_RECIPIENT), terms.bondAtoms);
+        assertEq(token.balanceOf(RESERVE_RECIPIENT), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(SLASH_RECIPIENT), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
+        vm.prank(owner);
+        vm.expectRevert(AsyncBondedPackageCoordinator.WrongState.selector);
+        coordinator.cancelReserved(id, 2);
+    }
+
     function testExecutionClassActivationIsDelayedPauseGatedAndNonReusable() public {
         ProtocolConfig pendingConfig =
             new ProtocolConfig("eip155:421614", 1, MANIFEST_HASH, 10, PROPOSER, CANCELLER, EXECUTOR, PAUSER);

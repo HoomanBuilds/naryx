@@ -941,6 +941,34 @@ contract GmxV2CoordinatedSpotEntryTest is GmxV2FactoryRoute {
         );
     }
 
+    function testCancelledReservationReleasesOwnerFundingAndSolverBondImmediately() public {
+        IAsyncVenueAdapter.VenueRequest memory request = _request();
+        AsyncBondedPackageCoordinator.Terms memory terms = _terms(request);
+        bytes32 id = coordinator.packageId(terms);
+        _fundOwner(owner, request, id);
+        token.mint(address(this), terms.bondAtoms + terms.recoveryReserveAtoms);
+        token.approve(address(coordinator), terms.bondAtoms + terms.recoveryReserveAtoms);
+        coordinator.reserve(terms, _signature(coordinator.reserveDigest(terms)));
+
+        vm.expectRevert(GmxV2ArbitrumAdapter.InvalidRequest.selector);
+        adapter.releaseCancelledFunding(id, owner);
+        coordinator.cancelReserved(id, 1);
+        adapter.releaseCancelledFunding(id, owner);
+
+        assertEq(uint8(coordinator.packageState(id).state), uint8(AsyncBondedPackageCoordinator.State.CLOSED));
+        assertEq(token.balanceOf(owner), COLLATERAL + MAX_SPOT_QUOTE);
+        assertEq(owner.balance, EXECUTION_FEE);
+        assertEq(token.balanceOf(terms.bondRecipient), terms.bondAtoms);
+        assertEq(token.balanceOf(terms.recoveryReserveRecipient), terms.recoveryReserveAtoms);
+        assertEq(token.balanceOf(terms.slashRecipient), 0);
+        assertEq(token.balanceOf(address(coordinator)), 0);
+        assertEq(token.balanceOf(address(adapter)), 0);
+        assertEq(adapter.activePackageOf(address(account)), bytes32(0));
+        assertEq(adapter.unconsumedFundingAtoms(), 0);
+        vm.expectRevert(GmxV2ArbitrumAdapter.FundingMissing.selector);
+        adapter.releaseCancelledFunding(id, owner);
+    }
+
     /// A second wallet trades through the same admitted adapter with its own factory account, and an
     /// address the factory did not create can neither fund nor be filled.
     function testSecondOwnerReservesAndFillsThroughSharedAdapter() public {

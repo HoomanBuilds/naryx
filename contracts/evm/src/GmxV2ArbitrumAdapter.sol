@@ -86,6 +86,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     event EvidenceRelayed(bytes32 indexed requestKey, bytes32 indexed packageId, uint64 revision);
     event RecoveryRequested(bytes32 indexed packageId, bytes32 indexed requestKey);
     event ExpiredFundingReclaimed(bytes32 indexed packageId, address indexed owner);
+    event CancelledFundingReleased(bytes32 indexed packageId, address indexed owner);
     event UnfilledRequestReleased(bytes32 indexed packageId, bytes32 indexed requestKey, Status status);
     event ExitedPositionReleased(bytes32 indexed packageId, bytes32 indexed requestKey);
 
@@ -221,14 +222,22 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
         Funding memory reserved = funding[packageId][msg.sender];
         if (reserved.requestPayloadHash == bytes32(0) || reserved.consumed) revert FundingMissing();
         if (block.timestamp < reserved.submissionDeadline) revert DeadlinePassed();
-        uint256 totalFunding = reserved.collateralAtoms + reserved.spotQuoteAtoms;
-        delete funding[packageId][msg.sender];
-        if (activePackageOf[reserved.account] == packageId) activePackageOf[reserved.account] = bytes32(0);
-        unconsumedFundingAtoms -= totalFunding;
-        _transferExactCollateral(msg.sender, totalFunding);
-        (bool sent,) = payable(msg.sender).call{value: reserved.executionFeeWei}("");
-        if (!sent) revert FundingMismatch();
+        _releaseFunding(packageId, msg.sender, reserved);
         emit ExpiredFundingReclaimed(packageId, msg.sender);
+    }
+
+    function releaseCancelledFunding(bytes32 packageId, address owner) external nonReentrant {
+        _assertDeployment();
+        Funding memory reserved = funding[packageId][owner];
+        if (reserved.requestPayloadHash == bytes32(0) || reserved.consumed) revert FundingMissing();
+        AsyncBondedPackageCoordinator.Package memory packageData = coordinator.packageState(packageId);
+        if (
+            packageData.state != AsyncBondedPackageCoordinator.State.CLOSED || packageData.requestKey != bytes32(0)
+                || packageData.terms.owner != owner || packageData.terms.adapter != address(this)
+                || packageData.terms.requestPayloadHash != reserved.requestPayloadHash
+        ) revert InvalidRequest();
+        _releaseFunding(packageId, owner, reserved);
+        emit CancelledFundingReleased(packageId, owner);
     }
 
     function createRequest(bytes32 packageId, VenueRequest calldata venueRequest)
@@ -658,6 +667,16 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
 
     function _executionReconciliationHash(bytes32 requestKey, uint256 size) private pure returns (bytes32) {
         return keccak256(abi.encode(EVIDENCE_DOMAIN, "DATA_STORE_EXECUTION", requestKey, size));
+    }
+
+    function _releaseFunding(bytes32 packageId, address owner, Funding memory reserved) private {
+        uint256 totalFunding = reserved.collateralAtoms + reserved.spotQuoteAtoms;
+        delete funding[packageId][owner];
+        if (activePackageOf[reserved.account] == packageId) activePackageOf[reserved.account] = bytes32(0);
+        unconsumedFundingAtoms -= totalFunding;
+        _transferExactCollateral(owner, totalFunding);
+        (bool sent,) = payable(owner).call{value: reserved.executionFeeWei}("");
+        if (!sent) revert FundingMismatch();
     }
 
     function _transferExactCollateral(address recipient, uint256 amount) private {

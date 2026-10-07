@@ -436,6 +436,14 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
         _transition(p, id, State.VENUE_PENDING, bytes32(0));
     }
 
+    function cancelReserved(bytes32 id, uint64 expectedVersion) external nonReentrant {
+        _assertDeployment();
+        Package storage p = _package(id, expectedVersion, State.RESERVED);
+        if (msg.sender != p.terms.owner && msg.sender != p.terms.solver) revert UnauthorizedActor();
+        _transition(p, id, State.CLOSED, bytes32(0));
+        _release(p, id);
+    }
+
     function recordVenueEvidence(bytes32 id, uint64 expectedVersion, VenueEvidence calldata evidence) external {
         _assertDeployment();
         Package storage p = _packages[id];
@@ -625,6 +633,10 @@ contract AsyncBondedPackageCoordinator is EIP712, ReentrancyGuard {
             revert ReleaseLocked();
         }
         _transition(p, id, State.CLOSED, p.outcomeEvidenceHash);
+        _release(p, id);
+    }
+
+    function _release(Package storage p, bytes32 id) private {
         Terms storage terms = p.terms;
         uint256 lossAtoms = p.settledLossAtoms;
         bondToken.safeTransfer(p.bondSlashed ? terms.slashRecipient : terms.bondRecipient, terms.bondAtoms);
