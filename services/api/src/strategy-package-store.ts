@@ -1097,8 +1097,8 @@ export class SqliteStrategyPackageStore {
         );
       } else {
         const terminal = order.lifecycleAction === "EXIT" || order.lifecycleAction === "EMERGENCY_UNWIND";
-        requireCondition(terminal, "UNSUPPORTED_EXECUTION",
-          "The Solana strategy lifecycle action is unsupported.");
+        requireCondition(terminal || order.lifecycleAction === "INCREASE" || order.lifecycleAction === "DECREASE",
+          "UNSUPPORTED_EXECUTION", "The Solana strategy lifecycle action is unsupported.");
         requireCondition(existingRow !== undefined && existingRow.status === "OPEN"
           && bytesEqual(existingRow.state_hash, previousStateHash)
           && existingRow.owner_id === order.owner
@@ -1108,19 +1108,27 @@ export class SqliteStrategyPackageStore {
           && existingRow.series_id === order.seriesId
           && existingRow.execution_class_id === order.executionClassId
           && existingRow.base_asset_id === order.economicQuantity.asset.assetId
-          && existingRow.base_asset_decimals === order.economicQuantity.asset.decimals
-          && BigInt(existingRow.economic_quantity_atoms) === order.economicQuantity.atoms
-          && nextZero,
+          && existingRow.base_asset_decimals === order.economicQuantity.asset.decimals,
         "STALE_STRATEGY_STATE", "The Solana strategy state or identity changed before finalization.");
+        const currentQuantity = BigInt(existingRow.economic_quantity_atoms);
+        const nextQuantity = terminal ? 0n
+          : order.lifecycleAction === "INCREASE"
+            ? currentQuantity + order.economicQuantity.atoms
+            : currentQuantity - order.economicQuantity.atoms;
+        requireCondition((terminal && currentQuantity === order.economicQuantity.atoms && nextZero)
+          || (!terminal && nextQuantity > 0n && !nextZero),
+        "POSITION_CONFLICT", "The Solana strategy next state is invalid for the lifecycle action.");
         const updated = this.db.prepare(`
           UPDATE strategy_solana_positions
-          SET economic_quantity_atoms = '0', latest_order_hash = ?, latest_receipt_hash = ?,
-              state_hash = ?, status = 'CLOSED', updated_at_ms = ?
+          SET economic_quantity_atoms = ?, latest_order_hash = ?, latest_receipt_hash = ?,
+              state_hash = ?, status = ?, updated_at_ms = ?
           WHERE package_id = ? AND status = 'OPEN' AND state_hash = ?
         `).run(
+          nextQuantity.toString(),
           receiptRow.order_hash,
           receiptHash,
           nextStateHash,
+          terminal ? "CLOSED" : "OPEN",
           changedAtMs,
           packageId,
           previousStateHash,

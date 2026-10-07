@@ -16,6 +16,7 @@ export const SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT = '7UVimffxr9ow1uXYxsr4LHAcV58m
 export const SOLANA_DEVNET_SOL_USD_FEED_ID_HEX = 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
 const PRICE_UPDATE_V2_DISCRIMINATOR = Buffer.from([34, 241, 35, 99, 157, 126, 244, 205]);
 const BPS = 10_000n;
+const FUNDING_RATE_SCALE = 1_000_000_000_000n;
 export const QUOTE_SIDE_BID = 1;
 export const QUOTE_SIDE_ASK = 2;
 export const RESERVATION_ACTION_ENTRY = 1;
@@ -376,6 +377,9 @@ export type TestPerpMarketState = Readonly<{
   baseLotAtoms: bigint;
   quoteTickAtomsPerBaseLot: bigint;
   maxPositionLots: bigint;
+  fundingRatePerSecond: bigint;
+  cumulativeFundingIndex: bigint;
+  lastFundingTimestamp: bigint;
   pauseOpens: boolean;
 }>;
 
@@ -403,22 +407,36 @@ export function decodeTestPerpMarket(data: Uint8Array): TestPerpMarketState {
   const baseLotAtoms = r.u64();
   const quoteTickAtomsPerBaseLot = r.u64();
   const maxPositionLots = r.u64();
-  r.take(64);
+  r.i64();
+  const fundingRatePerSecond = r.i64();
+  const cumulativeFundingIndex = r.i128();
+  const lastFundingTimestamp = r.i64();
+  r.take(24);
   const pauseOpens = r.bool();
   if (impactUnitLots === 0n || baseLotAtoms === 0n || quoteTickAtomsPerBaseLot === 0n) fail('market units are zero');
   return Object.freeze({
     oracle, feedIdHex, collateralMint, collateralVault, feeVault, insuranceVault, collateralDecimals, baseDecimals,
     maxPriceAgeSeconds, maxConfidenceBps, takerFeeBps, halfSpreadBps, impactBpsPerUnit, maxSlippageBps,
-    initialMarginBps, maintenanceMarginBps, impactUnitLots, baseLotAtoms, quoteTickAtomsPerBaseLot, maxPositionLots, pauseOpens,
+    initialMarginBps, maintenanceMarginBps, impactUnitLots, baseLotAtoms, quoteTickAtomsPerBaseLot, maxPositionLots,
+    fundingRatePerSecond, cumulativeFundingIndex, lastFundingTimestamp, pauseOpens,
   });
 }
 
-export function decodeTestPerpPosition(data: Uint8Array): Readonly<{
-  market: string; owner: string; delegate: string; collateralAtoms: bigint; baseLots: bigint; entryNotionalAtoms: bigint;
-}> {
+export type TestPerpPositionState = Readonly<{
+  market: string;
+  owner: string;
+  delegate: string;
+  collateralAtoms: bigint;
+  baseLots: bigint;
+  entryNotionalAtoms: bigint;
+  entryFundingIndex: bigint;
+}>;
+
+export function decodeTestPerpPosition(data: Uint8Array): TestPerpPositionState {
   const r = new BorshReader(data, accountDiscriminator('TestPerpPosition'), 'TestPerpPosition');
   return Object.freeze({
     market: r.key(), owner: r.key(), delegate: r.key(), collateralAtoms: r.u64(), baseLots: r.i64(), entryNotionalAtoms: r.u64(),
+    entryFundingIndex: r.i128(),
   });
 }
 
@@ -519,6 +537,97 @@ export function priceTestPerpCloseShort(market: TestPerpMarketState, oraclePrice
     fillPricePerLot,
     notionalAtoms,
     feeAtoms: (notionalAtoms * BigInt(market.takerFeeBps) + BPS - 1n) / BPS,
+  });
+}
+
+export type TestPerpShortAdjustmentPreview = Readonly<{
+  baseLots: bigint;
+  collateralAtoms: bigint;
+  entryNotionalAtoms: bigint;
+  entryFundingIndex: bigint;
+  fundingAtoms: bigint;
+  realizedPnlAtoms: bigint;
+  feeAtoms: bigint;
+  fillPricePerLot: bigint;
+  notionalAtoms: bigint;
+}>;
+
+function ceilSigned(numerator: bigint, denominator: bigint): bigint {
+  const quotient = numerator / denominator;
+  return numerator > 0n && numerator % denominator !== 0n ? quotient + 1n : quotient;
+}
+
+function checkedU64(value: bigint, context: string): bigint {
+  if (value < 0n || value >= 1n << 64n) fail(`${context} is out of range`);
+  return value;
+}
+
+function checkedI128(value: bigint, context: string): bigint {
+  if (value < -(1n << 127n) || value >= 1n << 127n) fail(`${context} is out of range`);
+  return value;
+}
+
+export function previewTestPerpShortAdjustment(input: Readonly<{
+  market: TestPerpMarketState;
+  position: TestPerpPositionState;
+  oraclePricePerLot: bigint;
+  nowUnixSeconds: bigint;
+  baseAtoms: bigint;
+  action: 'INCREASE' | 'DECREASE';
+}>): TestPerpShortAdjustmentPreview {
+  const { market, position, oraclePricePerLot, nowUnixSeconds } = input;
+  if (position.baseLots >= 0n) fail('short adjustment requires an existing short');
+  let fundingIndex = market.cumulativeFundingIndex;
+  if (nowUnixSeconds > market.lastFundingTimestamp) {
+    const fundingDelta = checkedI128(market.fundingRatePerSecond
+      * (nowUnixSeconds - market.lastFundingTimestamp)
+      * oraclePricePerLot, 'funding delta');
+    fundingIndex = checkedI128(fundingIndex + fundingDelta, 'funding index');
+  }
+  const fundingAtoms = checkedI128(ceilSigned(
+    position.baseLots * (fundingIndex - position.entryFundingIndex),
+    FUNDING_RATE_SCALE,
+  ), 'funding settlement');
+  const priced = input.action === 'INCREASE'
+    ? priceTestPerpShort(market, oraclePricePerLot, input.baseAtoms)
+    : priceTestPerpCloseShort(market, oraclePricePerLot, input.baseAtoms);
+  const currentLots = -position.baseLots;
+  if (input.action === 'DECREASE' && priced.baseLots >= currentLots) {
+    fail('decrease must leave an open short');
+  }
+  const nextLots = input.action === 'INCREASE'
+    ? position.baseLots - priced.baseLots
+    : position.baseLots + priced.baseLots;
+  if (-nextLots > market.maxPositionLots) fail('adjusted short exceeds the market position limit');
+  const closedBasis = input.action === 'DECREASE'
+    ? position.entryNotionalAtoms * priced.baseLots / currentLots
+    : 0n;
+  const realizedPnlAtoms = input.action === 'DECREASE' ? closedBasis - priced.notionalAtoms : 0n;
+  const entryNotionalAtoms = input.action === 'INCREASE'
+    ? position.entryNotionalAtoms + priced.notionalAtoms
+    : position.entryNotionalAtoms - closedBasis;
+  const houseFlow = fundingAtoms - realizedPnlAtoms;
+  let collateralAtoms = position.collateralAtoms;
+  if (houseFlow < 0n) collateralAtoms = checkedU64(collateralAtoms - houseFlow, 'post-adjustment collateral');
+  if (houseFlow > collateralAtoms) fail('adjustment would create venue bad debt');
+  if (houseFlow > 0n) collateralAtoms -= houseFlow;
+  if (priced.feeAtoms > collateralAtoms) fail('adjustment cannot pay its venue fee');
+  collateralAtoms -= priced.feeAtoms;
+  const mark = oraclePricePerLot * -nextLots;
+  const equity = collateralAtoms + entryNotionalAtoms - mark;
+  const marginBps = input.action === 'INCREASE' ? market.initialMarginBps : market.maintenanceMarginBps;
+  const requiredMargin = (mark * BigInt(marginBps) + BPS - 1n) / BPS;
+  if (equity < requiredMargin) fail(`adjusted short lacks ${input.action === 'INCREASE' ? 'initial' : 'maintenance'} margin`);
+  return Object.freeze({
+    baseLots: nextLots,
+    collateralAtoms: checkedU64(collateralAtoms, 'post-adjustment collateral'),
+    entryNotionalAtoms: checkedU64(entryNotionalAtoms, 'post-adjustment entry notional'),
+    entryFundingIndex: fundingIndex,
+    fundingAtoms,
+    realizedPnlAtoms,
+    feeAtoms: priced.feeAtoms,
+    fillPricePerLot: priced.fillPricePerLot,
+    notionalAtoms: priced.notionalAtoms,
   });
 }
 

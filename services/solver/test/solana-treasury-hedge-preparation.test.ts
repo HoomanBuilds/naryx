@@ -121,6 +121,9 @@ const market: TestPerpMarketState = Object.freeze({
   baseLotAtoms: 1_000_000n,
   quoteTickAtomsPerBaseLot: 1n,
   maxPositionLots: 1_000_000n,
+  fundingRatePerSecond: 0n,
+  cumulativeFundingIndex: 0n,
+  lastFundingTimestamp: 1_000n,
   pauseOpens: false,
 });
 
@@ -267,7 +270,9 @@ function pricing(): SolanaTreasuryHedgePricingInput {
     routeTtlSlots: 30n,
     quoteTtlSlots: 60n,
     maximumStateAdvanceSlots: 2n,
-    readState: async () => ({ slot: SLOT, marketAddress: MARKET, market, oraclePricePerLot: 150_000n }),
+    readState: async () => ({
+      slot: SLOT, nowUnixSeconds: 1_000n, marketAddress: MARKET, market, oraclePricePerLot: 150_000n,
+    }),
     nonceSource: { nextNonce: () => 1n },
   };
 }

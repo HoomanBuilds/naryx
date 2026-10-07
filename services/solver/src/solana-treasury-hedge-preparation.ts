@@ -27,6 +27,7 @@ import {
   decodeTestPerpPosition,
   decodeTestPerpStrategyController,
   decodeTokenAccount,
+  previewTestPerpShortAdjustment,
   priceTestPerpCloseShort,
   priceTestPerpShort,
 } from './solana-devnet-wire.js';
@@ -394,9 +395,12 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
     'test perp strategy identity is invalid');
     requireCondition(perpPosition.owner === owner.toBase58() && perpPosition.delegate === perpAccounts.strategy.toBase58()
       && perpPosition.market === market.toBase58(), 'test perp position identity is invalid');
-    const opening = documents.order.lifecycleAction === 'ENTRY';
-    requireCondition(opening || documents.order.lifecycleAction === 'EXIT'
-      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
+    const action = documents.order.lifecycleAction;
+    const opening = action === 'ENTRY';
+    const increasing = opening || action === 'INCREASE';
+    const decreasing = action === 'DECREASE';
+    const terminal = action === 'EXIT' || action === 'EMERGENCY_UNWIND';
+    requireCondition(opening || action === 'INCREASE' || decreasing || terminal, 'lifecycle action is unsupported');
     if (opening) {
       requireCondition(strategyPositionValue === null, 'entry strategy position already exists');
     } else {
@@ -416,14 +420,27 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
     requireCondition(quantity > 0n && quantity % quoteState.market.baseLotAtoms === 0n, 'quantity is not an exact perp lot');
     const lots = quantity / quoteState.market.baseLotAtoms;
     requireCondition(lots <= perpStrategy.maxBaseLots, 'quantity exceeds the delegated perp strategy limit');
-    requireCondition(opening
-      ? vault.amount === 0n && strategyInventory.amount >= quantity && perpPosition.baseLots === 0n
-      : vault.amount === quantity && perpPosition.baseLots === -lots,
-    opening ? 'entry accounts are not ready' : 'exit accounts differ from the open hedge');
-    const entryPricing = opening
+    const currentHedgeAtoms = perpPosition.baseLots < 0n
+      ? -perpPosition.baseLots * quoteState.market.baseLotAtoms
+      : 0n;
+    if (opening) {
+      requireCondition(vault.amount === 0n && strategyInventory.amount >= quantity && perpPosition.baseLots === 0n,
+        'entry accounts are not ready');
+    } else {
+      requireCondition(perpPosition.baseLots < 0n && vault.amount === currentHedgeAtoms,
+        'open inventory and hedge quantities differ');
+      requireCondition(action !== 'INCREASE'
+        || (strategyInventory.amount >= quantity && -perpPosition.baseLots + lots <= perpStrategy.maxBaseLots),
+      'increase accounts or delegated capacity are insufficient');
+      requireCondition(!decreasing || (quantity < vault.amount && lots < -perpPosition.baseLots),
+        'decrease must leave positive inventory and short exposure');
+      requireCondition(!terminal || (quantity === vault.amount && lots === -perpPosition.baseLots),
+        'terminal quantity differs from the open hedge');
+    }
+    const entryPricing = increasing
       ? priceTestPerpShort(quoteState.market, quoteState.oraclePricePerLot, quantity)
       : undefined;
-    const exitPricing = opening
+    const exitPricing = increasing
       ? undefined
       : priceTestPerpCloseShort(quoteState.market, quoteState.oraclePricePerLot, quantity);
     const priced = entryPricing ?? exitPricing!;
@@ -437,10 +454,18 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       && hedgeEconomics.venueFee.atoms === priced.feeAtoms,
     'live perp economics differ from the signed quote');
     const requiredMargin = entryPricing === undefined ? 0n : entryPricing.initialMarginAtoms + entryPricing.feeAtoms;
-    requireCondition(!opening || hedgeEconomics.marginDelta.atoms === requiredMargin,
+    requireCondition(!increasing || hedgeEconomics.marginDelta.atoms === requiredMargin,
       'signed margin differs from the live requirement');
-    requireCondition(!opening || perpPosition.collateralAtoms >= requiredMargin,
+    requireCondition(!increasing || perpPosition.collateralAtoms >= requiredMargin,
       'test perp position lacks the quoted collateral');
+    const adjustment = opening || terminal ? undefined : previewTestPerpShortAdjustment({
+      market: quoteState.market,
+      position: perpPosition,
+      oraclePricePerLot: quoteState.oraclePricePerLot,
+      nowUnixSeconds: quoteState.nowUnixSeconds,
+      baseAtoms: quantity,
+      action: action as 'INCREASE' | 'DECREASE',
+    });
     const inventoryLeg = documents.graph.legs.find((leg) => leg.legId === 'inventory-position');
     const hedgeLeg = documents.graph.legs.find((leg) => leg.legId === 'treasury-hedge');
     requireCondition(inventoryLeg !== undefined && hedgeLeg !== undefined, 'strategy legs are missing');
@@ -463,9 +488,9 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
         mint: inventoryMint,
         bounds: [{
           legId: inventoryLeg.legId,
-          action: opening ? 'LOCK' : 'RELEASE',
+          action: increasing ? 'LOCK' : 'RELEASE',
           expectedPreInventoryAtoms: vault.amount,
-          expectedPostInventoryAtoms: opening ? vault.amount + quantity : vault.amount - quantity,
+          expectedPostInventoryAtoms: increasing ? vault.amount + quantity : vault.amount - quantity,
         }],
       }),
       createSolanaTestPerpExactShortMaterializer({
@@ -499,24 +524,25 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
         bounds: [{
           legId: hedgeLeg.legId,
           lastValidSlot: deadline,
-          minimumPostCollateralQuoteLots: opening ? perpPosition.collateralAtoms - priced.feeAtoms : 0n,
+          minimumPostCollateralQuoteLots: adjustment?.collateralAtoms
+            ?? (opening ? perpPosition.collateralAtoms - priced.feeAtoms : 0n),
           clientOrderId: clientOrderId(orderHash, quoteHash, routeHash),
         }],
       }),
     ]);
-    const nextStateHash = opening ? stateHash({
+    const nextStateHash = terminal ? undefined : stateHash({
       packageId,
       strategyAccount,
       inventory: inventoryAddresses.inventory,
-      inventoryAtoms: quantity,
+      inventoryAtoms: increasing ? vault.amount + quantity : vault.amount - quantity,
       perpStrategy: perpAccounts.strategy,
       perpPosition: perpAccounts.position,
-      baseLots: -lots,
-      collateralAtoms: perpPosition.collateralAtoms - priced.feeAtoms,
-      entryNotionalAtoms: priced.notionalAtoms,
+      baseLots: adjustment?.baseLots ?? -lots,
+      collateralAtoms: adjustment?.collateralAtoms ?? perpPosition.collateralAtoms - priced.feeAtoms,
+      entryNotionalAtoms: adjustment?.entryNotionalAtoms ?? priced.notionalAtoms,
       quoteHash,
       routeHash,
-    }) : undefined;
+    });
     if (nextStateHash !== undefined) await lane.packageIds.rememberPackageId?.(hex(nextStateHash), hex(packageId));
     const policy = (
       binding: SolanaTreasuryHedgeAdapterBinding,
@@ -531,7 +557,7 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       adapterManifestHash: manifestHash,
       adapterProgram: binding.programId,
       adapterProgramData: binding.programDataAddress,
-      riskIncreasing: opening,
+      riskIncreasing: increasing,
       grossNotionalAtoms,
     });
     const totalGrossNotionalAtoms = inventoryEconomics.grossNotional.atoms + hedgeEconomics.grossNotional.atoms;

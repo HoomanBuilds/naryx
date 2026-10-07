@@ -90,7 +90,10 @@ const intake: StrategyOrderIntakePort = Object.freeze({
   },
 });
 
-function request(lifecycleAction: "ENTRY" | "EXIT") {
+function request(
+  lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT",
+  expectedStrategyStateHash = "61".repeat(32),
+) {
   return {
     profileId: profile().profileId,
     owner: OWNER,
@@ -98,12 +101,13 @@ function request(lifecycleAction: "ENTRY" | "EXIT") {
     quantityAtoms: "1000000",
     limitHedgePrice: { quoteAtoms: "100000000", baseAtoms: "1000000000" },
     expiryValue: "1000600",
-    nonce: lifecycleAction === "ENTRY" ? "1" : "2",
-    ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: "61".repeat(32) }),
+    nonce: lifecycleAction === "ENTRY" ? "1" : lifecycleAction === "INCREASE" ? "2"
+      : lifecycleAction === "DECREASE" ? "3" : "4",
+    ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash }),
   };
 }
 
-test("creates dependency-ordered Solana treasury hedge entry and exit orders", async () => {
+test("creates dependency-ordered Solana treasury hedge lifecycle orders", async () => {
   const directory = mkdtempSync(join(tmpdir(), "naryx-solana-treasury-"));
   const path = join(directory, "profiles.json");
   try {
@@ -119,6 +123,16 @@ test("creates dependency-ordered Solana treasury hedge entry and exit orders", a
     assert.equal(entry.order.settlementAccount, entry.settlementAccount);
     assert.equal(entry.order.maximumMarginIncrease.atoms, 1_000_000n);
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
+
+    const increase = await port.create(request("INCREASE"));
+    assert.equal(increase.graph.legs[1]?.legFamily, "PERP_INCREASE");
+    assert.equal(increase.graph.dependencyEdges[0]?.fromLegId, "inventory-position");
+    assert.equal(increase.order.maximumMarginIncrease.atoms, 1_000_000n);
+
+    const decrease = await port.create(request("DECREASE"));
+    assert.equal(decrease.graph.legs.find((leg) => leg.legId === "treasury-hedge")?.legFamily, "PERP_DECREASE");
+    assert.equal(decrease.graph.dependencyEdges[0]?.toLegId, "inventory-position");
+    assert.equal(decrease.order.maximumMarginIncrease.atoms, 0n);
 
     const exit = await port.create(request("EXIT"));
     assert.equal(exit.graph.dependencyEdges[0]?.fromLegId, "treasury-hedge");
@@ -146,7 +160,7 @@ test("rejects stale expiry and a forged lifecycle state", async () => {
   );
 });
 
-test("persists one finalized Solana entry and closes it with the exact state-bound exit", async () => {
+test("persists state-bound Solana resize transitions before the exact exit", async () => {
   const directory = mkdtempSync(join(tmpdir(), "naryx-solana-position-"));
   const packageStore = new SqliteStrategyPackageStore(join(directory, "strategies.db"), { clock: () => 10 });
   const captured = new Map<string, Readonly<{ order: StrategyPackageOrderInput; graph: PackageGraphInput }>>();
@@ -258,7 +272,35 @@ test("persists one finalized Solana entry and closes it with the exact state-bou
     assert.equal(entryPosition.economicQuantityAtoms, 1_000_000n);
     assert.equal(packageStore.solanaStrategyPositionsByOwner(OWNER)[0]?.stateHashHex, "61".repeat(32));
 
-    await port.create(request("EXIT"));
+    await port.create(request("INCREASE"));
+    const increaseDocuments = captured.get("INCREASE");
+    assert.ok(increaseDocuments);
+    const increaseReceiptHash = seedReceipt(increaseDocuments, 0x73);
+    const increased = packageStore.recordSolanaStrategyPosition({
+      receiptHashHex: increaseReceiptHash,
+      packageIdHex: entry.intake.orderHashHex,
+      domain: profile().domain,
+      account: entry.settlementAccount,
+      previousStateHashHex: "61".repeat(32),
+      nextStateHashHex: "62".repeat(32),
+    });
+    assert.equal(increased.economicQuantityAtoms, 2_000_000n);
+
+    await port.create(request("DECREASE", "62".repeat(32)));
+    const decreaseDocuments = captured.get("DECREASE");
+    assert.ok(decreaseDocuments);
+    const decreaseReceiptHash = seedReceipt(decreaseDocuments, 0x74);
+    const decreased = packageStore.recordSolanaStrategyPosition({
+      receiptHashHex: decreaseReceiptHash,
+      packageIdHex: entry.intake.orderHashHex,
+      domain: profile().domain,
+      account: entry.settlementAccount,
+      previousStateHashHex: "62".repeat(32),
+      nextStateHashHex: "63".repeat(32),
+    });
+    assert.equal(decreased.economicQuantityAtoms, 1_000_000n);
+
+    await port.create(request("EXIT", "63".repeat(32)));
     const exitDocuments = captured.get("EXIT");
     assert.ok(exitDocuments);
     const exitReceiptHash = seedReceipt(exitDocuments, 0x75);
@@ -267,7 +309,7 @@ test("persists one finalized Solana entry and closes it with the exact state-bou
       packageIdHex: entry.intake.orderHashHex,
       domain: profile().domain,
       account: entry.settlementAccount,
-      previousStateHashHex: "61".repeat(32),
+      previousStateHashHex: "63".repeat(32),
       nextStateHashHex: "00".repeat(32),
     });
     assert.equal(closed.status, "CLOSED");
@@ -277,7 +319,7 @@ test("persists one finalized Solana entry and closes it with the exact state-bou
       packageIdHex: entry.intake.orderHashHex,
       domain: profile().domain,
       account: entry.settlementAccount,
-      previousStateHashHex: "61".repeat(32),
+      previousStateHashHex: "63".repeat(32),
       nextStateHashHex: "00".repeat(32),
     }), closed);
   } finally {

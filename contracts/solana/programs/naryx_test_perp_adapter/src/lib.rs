@@ -29,14 +29,28 @@ pub mod naryx_test_perp_adapter {
         ctx: Context<ExecuteTestPerpOrder>,
         args: TestPerpMarketOrderArgs,
     ) -> Result<()> {
-        instructions::execute_order(ctx, args, true).map(|_| ())
+        instructions::execute_order(ctx, args, TestPerpShortAction::Enter).map(|_| ())
+    }
+
+    pub fn test_perp_increase_short(
+        ctx: Context<ExecuteTestPerpOrder>,
+        args: TestPerpMarketOrderArgs,
+    ) -> Result<()> {
+        instructions::execute_order(ctx, args, TestPerpShortAction::Increase).map(|_| ())
+    }
+
+    pub fn test_perp_decrease_short(
+        ctx: Context<ExecuteTestPerpOrder>,
+        args: TestPerpMarketOrderArgs,
+    ) -> Result<()> {
+        instructions::execute_order(ctx, args, TestPerpShortAction::Decrease).map(|_| ())
     }
 
     pub fn test_perp_close_short(
         ctx: Context<ExecuteTestPerpOrder>,
         args: TestPerpMarketOrderArgs,
     ) -> Result<()> {
-        instructions::execute_order(ctx, args, false).map(|_| ())
+        instructions::execute_order(ctx, args, TestPerpShortAction::Close).map(|_| ())
     }
 
     pub fn execute_typed_strategy_leg(

@@ -142,8 +142,7 @@ function transferChecked(
 }
 
 function matchesLane(documents: StoredStrategyPackageOrderDocuments, lane: SolanaTreasuryHedgePreparationLane): boolean {
-  if (documents.order.environment !== 'devnet' || documents.order.lifecycleAction !== 'ENTRY'
-    || documents.order.templateId !== lane.templateManifest.templateId
+  if (documents.order.environment !== 'devnet' || documents.order.templateId !== lane.templateManifest.templateId
     || documents.order.templateVersion !== lane.templateManifest.templateVersion
     || documents.graph.legs.length !== 2) return false;
   const inventory = documents.graph.legs.find((leg) => leg.legId === 'inventory-position');
@@ -174,10 +173,18 @@ export class SolanaTreasuryHedgeProvisioningResolver {
 
   async resolve(documents: StoredStrategyPackageOrderDocuments): Promise<SolanaTreasuryHedgeProvisioningPlan> {
     const matches = this.#lanes.filter((lane) => matchesLane(documents, lane));
-    requireCondition(matches.length === 1, 'entry order must resolve to exactly one lane');
+    requireCondition(matches.length === 1, 'order must resolve to exactly one lane');
     const lane = matches[0]!;
     await requireSolanaDevnet(lane.rpc);
-    const packageId = strategyPackageOrderHash(documents.order);
+    const opening = documents.order.lifecycleAction === 'ENTRY';
+    const increasing = opening || documents.order.lifecycleAction === 'INCREASE';
+    const packageId = opening
+      ? strategyPackageOrderHash(documents.order)
+      : Buffer.from(await lane.packageIds.resolvePackageId(
+        Buffer.from(documents.order.expectedStrategyStateHash!).toString('hex'),
+      ) ?? '', 'hex');
+    requireCondition(packageId.length === 32 && packageId.some((byte) => byte !== 0),
+      'lifecycle order does not resolve to an open package');
     const owner = key(documents.order.owner);
     const strategyAccount = deriveSolanaMultiStrategyAccount({ programId: lane.multiStrategyProgramId, owner });
     requireCondition(strategyAccount.toBase58() === documents.order.settlementAccount,
@@ -215,6 +222,11 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const perpStrategyValue = values[7] ?? null;
     const protocolFeeTokenValue = values[8] ?? null;
     const solverFeeTokenValue = values[9] ?? null;
+    if (!opening) {
+      requireCondition(strategyValue !== null && inventoryValue !== null && inventoryVaultValue !== null
+        && strategyInventoryValue !== null && positionValue !== null && perpStrategyValue !== null,
+      'lifecycle package accounts are incomplete');
+    }
     requireCondition((inventoryValue === null) === (inventoryVaultValue === null), 'package inventory is partially initialized');
     requireCondition(strategyValue === null || strategyValue.owner === lane.multiStrategyProgramId,
       'strategy account has the wrong owner');
@@ -250,7 +262,9 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     const quantity = u64(documents.order.economicQuantity.atoms, 'package quantity');
     const requiredCollateral = u64(documents.order.maximumMarginIncrease.atoms, 'maximum margin increase');
     const currentCollateral = position?.collateralAtoms ?? 0n;
-    const inventoryShortfall = quantity > strategyInventoryAtoms ? quantity - strategyInventoryAtoms : 0n;
+    const inventoryRequirement = increasing ? quantity : 0n;
+    const inventoryShortfall = inventoryRequirement > strategyInventoryAtoms
+      ? inventoryRequirement - strategyInventoryAtoms : 0n;
     const quoteShortfall = requiredCollateral > currentCollateral ? requiredCollateral - currentCollateral : 0n;
     const serviceFeeCap = documents.order.maximumServiceFeesByAsset.find((cap) =>
       cap.asset.assetId === lane.pricing.quoteAsset.assetId

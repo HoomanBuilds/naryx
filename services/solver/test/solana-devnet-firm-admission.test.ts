@@ -149,7 +149,8 @@ const market: TestPerpMarketState = {
   collateralVault: key().toBase58(), feeVault: key().toBase58(), insuranceVault: key().toBase58(), collateralDecimals: 6, baseDecimals: 9,
   maxPriceAgeSeconds: 60, maxConfidenceBps: 50, takerFeeBps: 5, halfSpreadBps: 2, impactBpsPerUnit: 1, maxSlippageBps: 100,
   initialMarginBps: 1_000, maintenanceMarginBps: 500, impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n,
-  quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n, pauseOpens: false,
+  quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n,
+  fundingRatePerSecond: 0n, cumulativeFundingIndex: 0n, lastFundingTimestamp: 1_000n, pauseOpens: false,
 };
 // 150 USD per SOL with exponent -8: 150_000 quote atoms per 0.001 SOL lot.
 const ORACLE_PRICE_PER_LOT = 150_000n;

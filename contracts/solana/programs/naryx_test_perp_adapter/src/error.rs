@@ -24,6 +24,10 @@ pub enum TestPerpAdapterError {
     UnexpectedRemainingAccounts,
     #[msg("Entry requires a flat position")]
     EntryPositionNotFlat,
+    #[msg("Increase requires an existing short within the delegated limit")]
+    IncreasePositionInvalid,
+    #[msg("Decrease requires a strict partial reduction of an existing short")]
+    DecreasePositionInvalid,
     #[msg("Close requires the exact current short position")]
     ClosePositionMismatch,
     #[msg("Authoritative test perp position postcondition failed")]

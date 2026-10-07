@@ -291,6 +291,7 @@ function lane(
       const now = await rpc.getBlockTime(slot);
       return Object.freeze({
         slot,
+        nowUnixSeconds: now,
         marketAddress,
         market,
         oraclePricePerLot: testPerpOraclePricePerLot(

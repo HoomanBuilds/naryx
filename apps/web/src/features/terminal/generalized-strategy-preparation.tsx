@@ -2137,28 +2137,35 @@ export function GeneralizedStrategyPreparationPanel({
     setSolanaCreateBusy(true);
     setError(null);
     try {
-      if (lifecycleAction !== "ENTRY" && lifecycleAction !== "EXIT" && lifecycleAction !== "EMERGENCY_UNWIND") {
+      if (lifecycleAction !== "ENTRY" && lifecycleAction !== "INCREASE" && lifecycleAction !== "DECREASE"
+        && lifecycleAction !== "EXIT" && lifecycleAction !== "EMERGENCY_UNWIND") {
         throw new Error("This Solana treasury hedge lifecycle action is not active.");
       }
       if (solanaOwner === null || !SOLANA_ADDRESS.test(solanaOwner)) {
         throw new Error("Connect the Solana wallet that will own this treasury hedge package.");
       }
       if (lifecycleAction !== "ENTRY" && selectedSolanaPosition === null) {
-        throw new Error("Select an authoritative open Solana package before creating its exit.");
+        throw new Error("Select an authoritative open Solana package before creating this lifecycle action.");
       }
-      const quantityAtoms = lifecycleAction === "ENTRY"
+      const fullUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
+      const quantityAtoms = !fullUnwind
         ? amountToAtoms(
           solanaQuantity,
           selectedSolanaProfile.inventoryAsset.decimals,
           "Treasury inventory quantity",
         )
         : BigInt(selectedSolanaPosition!.economicQuantityAtoms);
+      if (lifecycleAction === "DECREASE"
+        && quantityAtoms >= BigInt(selectedSolanaPosition!.economicQuantityAtoms)) {
+        throw new Error("A Solana decrease must leave positive inventory. Use Exit for the full quantity.");
+      }
+      const increasing = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE";
       const limitHedgePrice = priceToAtomicRatio(
         solanaHedgePrice,
         selectedSolanaProfile.inventoryAsset.decimals,
         selectedSolanaProfile.quoteAsset.decimals,
         12,
-        lifecycleAction === "ENTRY" ? "Short hedge limit price" : "Hedge close limit price",
+        increasing ? "Short hedge limit price" : "Hedge reduction limit price",
       );
       const currentSlot = BigInt(await getSolanaDevnetSlot());
       const maximumTtl = BigInt(selectedSolanaProfile.bounds.maximumExpiryTtlSlots);
@@ -3059,10 +3066,13 @@ export function GeneralizedStrategyPreparationPanel({
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
     && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
   const solanaFieldsReady = selectedSolanaProfile !== null
-    && (lifecycleAction === "ENTRY" || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
+    && (lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"
+      || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
     && solanaOwner !== null
     && SOLANA_ADDRESS.test(solanaOwner)
-    && (lifecycleAction === "ENTRY" ? solanaQuantity.trim() !== "" : selectedSolanaPosition !== null)
+    && (lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"
+      ? solanaQuantity.trim() !== "" : selectedSolanaPosition !== null)
+    && (lifecycleAction === "ENTRY" || selectedSolanaPosition !== null)
     && solanaHedgePrice.trim() !== "";
   const evmOptionFieldsReady = selectedEvmOptionProfile !== null
     && evmLifecycleSupported
@@ -3386,13 +3396,14 @@ export function GeneralizedStrategyPreparationPanel({
               <label htmlFor="solana-treasury-hedge-quantity">Inventory quantity</label>
               <input
                 id="solana-treasury-hedge-quantity"
-                value={lifecycleAction !== "ENTRY" && selectedSolanaPosition !== null
+                value={(lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
+                  && selectedSolanaPosition !== null
                   ? atomsToInput(selectedSolanaPosition.economicQuantityAtoms, selectedSolanaProfile.inventoryAsset.decimals)
                   : solanaQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
-                readOnly={lifecycleAction !== "ENTRY"}
+                readOnly={lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND"}
                 onChange={(event) => {
                   setSolanaQuantity(event.target.value.trim());
                   setOrderHash("");
@@ -3409,7 +3420,8 @@ export function GeneralizedStrategyPreparationPanel({
                   selectedSolanaProfile.inventoryAsset.assetId)}.
               </p>
               <label htmlFor="solana-treasury-hedge-price">
-                {lifecycleAction === "ENTRY" ? "Minimum short hedge price" : "Maximum hedge close price"}
+                {lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                  ? "Minimum short hedge price" : "Maximum hedge reduction price"}
               </label>
               <input
                 id="solana-treasury-hedge-price"
@@ -3433,7 +3445,9 @@ export function GeneralizedStrategyPreparationPanel({
                 onClick={() => void createSolanaTreasuryHedgeOrder()}
               >
                 {solanaCreateBusy ? "Creating atomic Solana package"
-                  : lifecycleAction === "ENTRY" ? "Create atomic Solana package" : "Create atomic Solana exit"}
+                  : lifecycleAction === "ENTRY" ? "Create atomic Solana package"
+                    : lifecycleAction === "INCREASE" ? "Increase atomic Solana package"
+                      : lifecycleAction === "DECREASE" ? "Decrease atomic Solana package" : "Create atomic Solana exit"}
               </button>
               {HASH.test(orderHash) ? (
                 <button

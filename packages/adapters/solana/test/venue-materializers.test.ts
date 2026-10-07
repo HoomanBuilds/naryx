@@ -91,9 +91,9 @@ test('materializes exact Orca spot directions with adverse rounding', () => {
   assert.equal(buy.instruction.data.readUInt8(53), 0);
 });
 
-test('materializes only exact short-open or full-close perpetual actions', () => {
-  const materializer = createSolanaTestPerpExactShortMaterializer({
-    binding: binding('PERP_OPEN', 'naryx.solana.perp-exact'),
+test('materializes exact short lifecycle actions', () => {
+  const create = (legFamily: SolanaTypedAdapterMaterializerBinding['legFamily']) => createSolanaTestPerpExactShortMaterializer({
+    binding: binding(legFamily, 'naryx.solana.perp-exact'),
     baseAsset: base,
     quoteAsset: quote,
     baseLotAtoms: 10n,
@@ -117,12 +117,21 @@ test('materializes only exact short-open or full-close perpetual actions', () =>
       clientOrderId: 9n,
     }],
   });
+  const materializer = create('PERP_OPEN');
   const result = materializer.materialize(context({ legFamily: 'PERP_OPEN', side: 'SELL', quantityAtoms: 20n }));
   assert.equal(result.instruction.data.subarray(12, 20).toString('hex'), '69b83373ed514e70');
   assert.equal(result.instruction.data.readBigUInt64LE(20), 2n);
   assert.equal(result.instruction.data.readBigUInt64LE(28), 5n);
   assert.throws(
     () => materializer.materialize(context({ legFamily: 'PERP_OPEN', side: 'BUY', quantityAtoms: 20n })),
-    /exact short open or full close/,
+    /supported exact short lifecycle action/,
   );
+  const increase = create('PERP_INCREASE').materialize(
+    context({ legFamily: 'PERP_INCREASE', side: 'SELL', quantityAtoms: 10n }),
+  );
+  const decrease = create('PERP_DECREASE').materialize(
+    context({ legFamily: 'PERP_DECREASE', side: 'BUY', quantityAtoms: 10n }),
+  );
+  assert.equal(increase.instruction.data.subarray(12, 20).toString('hex'), 'c51df14bfbb37adb');
+  assert.equal(decrease.instruction.data.subarray(12, 20).toString('hex'), '3d99b8fd9f138c6d');
 });

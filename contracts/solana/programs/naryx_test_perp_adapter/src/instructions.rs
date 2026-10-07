@@ -12,8 +12,29 @@ use crate::{
 use solana_sha256_hasher::hashv;
 
 const ENTER_SHORT_DISCRIMINATOR: [u8; 8] = [0x69, 0xb8, 0x33, 0x73, 0xed, 0x51, 0x4e, 0x70];
+const INCREASE_SHORT_DISCRIMINATOR: [u8; 8] = [0xc5, 0x1d, 0xf1, 0x4b, 0xfb, 0xb3, 0x7a, 0xdb];
+const DECREASE_SHORT_DISCRIMINATOR: [u8; 8] = [0x3d, 0x99, 0xb8, 0xfd, 0x9f, 0x13, 0x8c, 0x6d];
 const CLOSE_SHORT_DISCRIMINATOR: [u8; 8] = [0xd4, 0x96, 0x10, 0xa3, 0xd8, 0xde, 0x26, 0xe6];
 const TYPED_EVIDENCE_DOMAIN: &[u8] = b"naryx.test-perp.typed-leg-evidence.v1";
+
+#[derive(Clone, Copy)]
+pub enum TestPerpShortAction {
+    Enter,
+    Increase,
+    Decrease,
+    Close,
+}
+
+impl TestPerpShortAction {
+    fn evidence_tag(self) -> u8 {
+        match self {
+            Self::Enter => 0,
+            Self::Increase => 1,
+            Self::Decrease => 2,
+            Self::Close => 3,
+        }
+    }
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct InitializeTestPerpStrategyArgs {
@@ -124,7 +145,7 @@ pub struct ExecuteTestPerpOrder<'info> {
 pub fn execute_order(
     ctx: Context<ExecuteTestPerpOrder>,
     args: TestPerpMarketOrderArgs,
-    entry: bool,
+    action: TestPerpShortAction,
 ) -> Result<[u8; 32]> {
     require!(
         ctx.remaining_accounts.is_empty(),
@@ -156,17 +177,41 @@ pub fn execute_order(
 
     let exact_short = args.base_lots as i64;
     let (pre_position, _) = read_position_and_collateral(&ctx.accounts.position)?;
-    if entry {
-        require!(
-            pre_position == 0,
-            TestPerpAdapterError::EntryPositionNotFlat
-        );
-    } else {
-        require!(
-            pre_position == -exact_short,
-            TestPerpAdapterError::ClosePositionMismatch
-        );
-    }
+    let expected_post = match action {
+        TestPerpShortAction::Enter => {
+            require!(
+                pre_position == 0,
+                TestPerpAdapterError::EntryPositionNotFlat
+            );
+            -exact_short
+        }
+        TestPerpShortAction::Increase => {
+            let post = pre_position
+                .checked_sub(exact_short)
+                .ok_or_else(|| error!(TestPerpAdapterError::IncreasePositionInvalid))?;
+            require!(
+                pre_position < 0 && post.unsigned_abs() <= ctx.accounts.strategy.max_base_lots,
+                TestPerpAdapterError::IncreasePositionInvalid
+            );
+            post
+        }
+        TestPerpShortAction::Decrease => {
+            require!(
+                pre_position < 0 && args.base_lots < pre_position.unsigned_abs(),
+                TestPerpAdapterError::DecreasePositionInvalid
+            );
+            pre_position
+                .checked_add(exact_short)
+                .ok_or_else(|| error!(TestPerpAdapterError::DecreasePositionInvalid))?
+        }
+        TestPerpShortAction::Close => {
+            require!(
+                pre_position == -exact_short,
+                TestPerpAdapterError::ClosePositionMismatch
+            );
+            0
+        }
+    };
 
     let owner = ctx.accounts.strategy.owner;
     let strategy_id = ctx.accounts.strategy.strategy_id;
@@ -194,21 +239,22 @@ pub fn execute_order(
             &[seeds],
         ),
         PlaceMarketOrderArgs {
-            side: if entry {
-                OrderSide::Ask
-            } else {
-                OrderSide::Bid
+            side: match action {
+                TestPerpShortAction::Enter | TestPerpShortAction::Increase => OrderSide::Ask,
+                TestPerpShortAction::Decrease | TestPerpShortAction::Close => OrderSide::Bid,
             },
             base_lots: args.base_lots,
             limit_price_in_ticks: args.limit_price_in_ticks,
             last_valid_slot: args.last_valid_slot,
-            reduce_only: !entry,
+            reduce_only: matches!(
+                action,
+                TestPerpShortAction::Decrease | TestPerpShortAction::Close
+            ),
             client_order_id: args.client_order_id,
         },
     )?;
 
     let (post_position, post_collateral) = read_position_and_collateral(&ctx.accounts.position)?;
-    let expected_post = if entry { -exact_short } else { 0 };
     require!(
         post_position == expected_post,
         TestPerpAdapterError::PositionPostconditionFailed
@@ -221,7 +267,7 @@ pub fn execute_order(
         TYPED_EVIDENCE_DOMAIN,
         ctx.accounts.strategy.key().as_ref(),
         ctx.accounts.position.key().as_ref(),
-        &[u8::from(entry)],
+        &[action.evidence_tag()],
         &pre_position.to_le_bytes(),
         &post_position.to_le_bytes(),
         &post_collateral.to_le_bytes(),
@@ -236,10 +282,14 @@ pub fn execute_typed(ctx: Context<ExecuteTestPerpOrder>, payload: Vec<u8>) -> Re
         TestPerpAdapterError::TypedPayloadInvalid
     );
     let (discriminator, encoded) = payload.split_at(8);
-    let entry = if discriminator == ENTER_SHORT_DISCRIMINATOR {
-        true
+    let action = if discriminator == ENTER_SHORT_DISCRIMINATOR {
+        TestPerpShortAction::Enter
+    } else if discriminator == INCREASE_SHORT_DISCRIMINATOR {
+        TestPerpShortAction::Increase
+    } else if discriminator == DECREASE_SHORT_DISCRIMINATOR {
+        TestPerpShortAction::Decrease
     } else if discriminator == CLOSE_SHORT_DISCRIMINATOR {
-        false
+        TestPerpShortAction::Close
     } else {
         return err!(TestPerpAdapterError::TypedPayloadInvalid);
     };
@@ -250,7 +300,7 @@ pub fn execute_typed(ctx: Context<ExecuteTestPerpOrder>, payload: Vec<u8>) -> Re
         encoded.is_empty(),
         TestPerpAdapterError::TypedPayloadInvalid
     );
-    let evidence = execute_order(ctx, args, entry)?;
+    let evidence = execute_order(ctx, args, action)?;
     set_return_data(&evidence);
     Ok(())
 }

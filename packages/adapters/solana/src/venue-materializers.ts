@@ -21,6 +21,8 @@ const ORCA_EXACT_INPUT_DISCRIMINATOR = Buffer.from('c2cb8e96896e515e', 'hex');
 const RISE_ENTER_SHORT_DISCRIMINATOR = Buffer.from('e730f1a3df678c6f', 'hex');
 const RISE_CLOSE_SHORT_DISCRIMINATOR = Buffer.from('1f6936c17cd9cc39', 'hex');
 const TEST_PERP_ENTER_SHORT_DISCRIMINATOR = Buffer.from('69b83373ed514e70', 'hex');
+const TEST_PERP_INCREASE_SHORT_DISCRIMINATOR = Buffer.from('c51df14bfbb37adb', 'hex');
+const TEST_PERP_DECREASE_SHORT_DISCRIMINATOR = Buffer.from('3d99b8fd9f138c6d', 'hex');
 const TEST_PERP_CLOSE_SHORT_DISCRIMINATOR = Buffer.from('d49610a3d8de26e6', 'hex');
 const U64_MAX = (1n << 64n) - 1n;
 const U128_MAX = (1n << 128n) - 1n;
@@ -242,14 +244,21 @@ function exactShortPayload(input: Readonly<{
   baseLotAtoms: bigint;
   quoteAtomsPerTickPerBaseLot: bigint;
   enterDiscriminator: Buffer;
+  increaseDiscriminator?: Buffer;
+  decreaseDiscriminator?: Buffer;
   closeDiscriminator: Buffer;
 }>): Buffer {
   const leg = graphLeg(input.context);
-  const entry = leg.legFamily === 'PERP_OPEN';
-  requireCondition(
-    (entry && leg.side === 'SELL') || (leg.legFamily === 'PERP_CLOSE' && leg.side === 'BUY'),
-    `leg ${leg.legId} must be an exact short open or full close`,
-  );
+  const discriminator = leg.legFamily === 'PERP_OPEN' && leg.side === 'SELL'
+    ? input.enterDiscriminator
+    : leg.legFamily === 'PERP_INCREASE' && leg.side === 'SELL'
+      ? input.increaseDiscriminator
+      : leg.legFamily === 'PERP_DECREASE' && leg.side === 'BUY'
+        ? input.decreaseDiscriminator
+        : leg.legFamily === 'PERP_CLOSE' && leg.side === 'BUY'
+          ? input.closeDiscriminator
+          : undefined;
+  requireCondition(discriminator !== undefined, `leg ${leg.legId} is not a supported exact short lifecycle action`);
   requireCondition(input.baseLotAtoms > 0n && leg.quantityAtoms % input.baseLotAtoms === 0n, `leg ${leg.legId} quantity is not aligned to the base lot`);
   const baseLots = leg.quantityAtoms / input.baseLotAtoms;
   const limitTicks = perpLimitTicks(
@@ -261,7 +270,7 @@ function exactShortPayload(input: Readonly<{
   );
   requireCondition(baseLots > 0n && limitTicks > 0n, `leg ${leg.legId} perp size and limit must be positive`);
   return Buffer.concat([
-    entry ? input.enterDiscriminator : input.closeDiscriminator,
+    discriminator,
     u64(baseLots, `leg ${leg.legId} base lots`),
     u64(limitTicks, `leg ${leg.legId} limit ticks`),
     u64(input.bound.lastValidSlot, `leg ${leg.legId} last valid slot`),
@@ -279,10 +288,14 @@ function exactShortMaterializer(input: Readonly<{
   bounds: readonly SolanaExactShortPerpBounds[];
   keys: readonly AccountMeta[];
   enterDiscriminator: Buffer;
+  increaseDiscriminator?: Buffer;
+  decreaseDiscriminator?: Buffer;
   closeDiscriminator: Buffer;
 }>): SolanaStrategyLegMaterializer {
   requireCondition(input.binding.materializationClassId === PERP_CLASS_ID, 'perp materializer class mismatch');
-  requireCondition(input.binding.legFamily === 'PERP_OPEN' || input.binding.legFamily === 'PERP_CLOSE', 'perp materializer family is not implemented');
+  requireCondition(input.binding.legFamily === 'PERP_OPEN' || input.binding.legFamily === 'PERP_INCREASE'
+    || input.binding.legFamily === 'PERP_DECREASE' || input.binding.legFamily === 'PERP_CLOSE',
+  'perp materializer family is not implemented');
   requireCondition(input.baseLotAtoms > 0n && input.quoteAtomsPerTickPerBaseLot > 0n, 'perp lot and tick sizes must be positive');
   const bounds = checkedBounds(input.bounds, 'perp');
   return Object.freeze({
@@ -301,6 +314,8 @@ function exactShortMaterializer(input: Readonly<{
         baseLotAtoms: input.baseLotAtoms,
         quoteAtomsPerTickPerBaseLot: input.quoteAtomsPerTickPerBaseLot,
         enterDiscriminator: input.enterDiscriminator,
+        ...(input.increaseDiscriminator === undefined ? {} : { increaseDiscriminator: input.increaseDiscriminator }),
+        ...(input.decreaseDiscriminator === undefined ? {} : { decreaseDiscriminator: input.decreaseDiscriminator }),
         closeDiscriminator: input.closeDiscriminator,
       });
       return Object.freeze({
@@ -376,6 +391,8 @@ export function createSolanaTestPerpExactShortMaterializer(input: Readonly<{
       { pubkey: key(accounts.tokenProgram, 'token program'), isSigner: false, isWritable: false },
     ],
     enterDiscriminator: TEST_PERP_ENTER_SHORT_DISCRIMINATOR,
+    increaseDiscriminator: TEST_PERP_INCREASE_SHORT_DISCRIMINATOR,
+    decreaseDiscriminator: TEST_PERP_DECREASE_SHORT_DISCRIMINATOR,
     closeDiscriminator: TEST_PERP_CLOSE_SHORT_DISCRIMINATOR,
   });
 }

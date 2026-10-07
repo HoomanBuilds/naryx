@@ -67,6 +67,9 @@ const market: TestPerpMarketState = Object.freeze({
   baseLotAtoms: 1_000_000n,
   quoteTickAtomsPerBaseLot: 1n,
   maxPositionLots: 1_000_000n,
+  fundingRatePerSecond: 0n,
+  cumulativeFundingIndex: 0n,
+  lastFundingTimestamp: 1_000n,
   pauseOpens: false,
 });
 
@@ -79,10 +82,10 @@ function gcd(left: bigint, right: bigint): bigint {
 
 function documents(
   limitQuoteAtoms: bigint,
-  lifecycleAction: 'ENTRY' | 'EXIT' = 'ENTRY',
+  lifecycleAction: 'ENTRY' | 'INCREASE' | 'DECREASE' | 'EXIT' = 'ENTRY',
 ): StoredStrategyPackageOrderDocuments {
   const priceDivisor = gcd(limitQuoteAtoms, 1_000_000n);
-  const opening = lifecycleAction === 'ENTRY';
+  const increasing = lifecycleAction === 'ENTRY' || lifecycleAction === 'INCREASE';
   const inventoryLeg = {
     legId: 'inventory-position',
     legFamily: 'INVENTORY_TRANSFER' as const,
@@ -104,14 +107,16 @@ function documents(
   };
   const hedgeLeg = {
     legId: 'treasury-hedge',
-    legFamily: opening ? 'PERP_OPEN' as const : 'PERP_CLOSE' as const,
+    legFamily: lifecycleAction === 'ENTRY' ? 'PERP_OPEN' as const
+      : lifecycleAction === 'INCREASE' ? 'PERP_INCREASE' as const
+        : lifecycleAction === 'DECREASE' ? 'PERP_DECREASE' as const : 'PERP_CLOSE' as const,
     legTypeId: 'treasury-hedge',
     domain,
     adapter: hedgeAdapter,
     venue,
     market: hedgeMarket,
     assets: [inventoryAsset, quoteAsset],
-    side: opening ? 'SELL' as const : 'BUY' as const,
+    side: increasing ? 'SELL' as const : 'BUY' as const,
     quantityAsset: inventoryAsset,
     quantityAtoms: QUANTITY,
     minimumQuantityAtoms: QUANTITY,
@@ -120,7 +125,7 @@ function documents(
       quoteAsset,
       quoteAtoms: limitQuoteAtoms / priceDivisor,
       baseAtoms: 1_000_000n / priceDivisor,
-      roundingDirection: opening ? 'CEIL' as const : 'FLOOR' as const,
+      roundingDirection: increasing ? 'CEIL' as const : 'FLOOR' as const,
     },
     maximumFeeQuoteAtoms: 200_000n,
     preconditionHashes: [],
@@ -128,7 +133,7 @@ function documents(
     timeInForce: 'IOC' as const,
     legExpiryValue: 1_200n,
   };
-  const legs = opening ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg];
+  const legs = increasing ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg];
   const graph = packageGraph({
     graphVersion: 1,
     environment: 'devnet',
@@ -145,7 +150,7 @@ function documents(
     owner: key(8),
     strategyAccountRefs: [key(9)],
     legs,
-    dependencyEdges: [opening
+    dependencyEdges: [increasing
       ? { fromLegId: 'inventory-position', toLegId: 'treasury-hedge' }
       : { fromLegId: 'treasury-hedge', toLegId: 'inventory-position' }],
     executionGroups: [{ groupId: 'treasury-hedge', kind: 'ALL_OR_NONE', legIds: legs.map((leg) => leg.legId) }],
@@ -188,9 +193,9 @@ function documents(
     maximumVenueFeesByAsset: [{ asset: quoteAsset, maxAtoms: 200_000n }],
     maximumNetworkFeesByAsset: [{ asset: quoteAsset, maxAtoms: 1_000n }],
     maximumRecoveryCostByAsset: [],
-    maximumMarginIncrease: assetAmount(quoteAsset, opening ? 31_000_000n : 0n),
+    maximumMarginIncrease: assetAmount(quoteAsset, increasing ? 31_000_000n : 0n),
     maximumResidualValue: assetAmount(quoteAsset, 0n),
-    ...(opening ? {} : { expectedStrategyStateHash: hash('e') }),
+    ...(lifecycleAction === 'ENTRY' ? {} : { expectedStrategyStateHash: hash('e') }),
     expiryUnit: 'SOLANA_SLOT',
     expiryValue: 1_200n,
     nonce: 1n,
@@ -225,6 +230,7 @@ function pricing(): SolanaTreasuryHedgePricingInput {
     maximumStateAdvanceSlots: 2n,
     readState: async () => ({
       slot: SLOT,
+      nowUnixSeconds: 1_000n,
       marketAddress: MARKET_ADDRESS,
       market,
       oraclePricePerLot: 150_000n,
@@ -264,4 +270,24 @@ test('prices an exact Solana treasury hedge exit without new margin', async () =
   assert.equal(terms.legEconomics[1]?.marginDelta.atoms, 0n);
   assert.equal(terms.legEconomics[1]?.venueFee.atoms, 150_045n);
   assert.equal(terms.netPackageOutcomeAtoms, -541_135n);
+});
+
+test('prices Solana short increases and partial decreases with their exact leg families', async () => {
+  const port = createSolanaTreasuryHedgeGeneralizedPricing(pricing());
+  const increase = await port.quote({
+    documents: documents(149_900n, 'INCREASE'),
+    currentTime: { unit: 'SOLANA_SLOT', value: SLOT },
+  });
+  const decrease = await port.quote({
+    documents: documents(150_100n, 'DECREASE'),
+    currentTime: { unit: 'SOLANA_SLOT', value: SLOT },
+  });
+  if (increase.economics.templateId !== 'treasury-inventory-hedge-v1'
+    || decrease.economics.templateId !== 'treasury-inventory-hedge-v1') {
+    throw new Error('unexpected strategy economics');
+  }
+  assert.equal(increase.economics.values.hedgeAtoms, -QUANTITY);
+  assert.equal(increase.legEconomics[1]?.marginDelta.atoms, 30_149_955n);
+  assert.equal(decrease.economics.values.hedgeAtoms, QUANTITY);
+  assert.equal(decrease.legEconomics[1]?.marginDelta.atoms, 0n);
 });

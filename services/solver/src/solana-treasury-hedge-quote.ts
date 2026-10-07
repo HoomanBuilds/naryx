@@ -29,6 +29,7 @@ export interface SolanaTreasuryHedgeLegBinding {
 
 export interface SolanaTreasuryHedgeQuoteState {
   readonly slot: bigint;
+  readonly nowUnixSeconds: bigint;
   readonly marketAddress: string;
   readonly market: TestPerpMarketState;
   readonly oraclePricePerLot: bigint;
@@ -142,7 +143,8 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'SOLANA_SLOT' && graph.expiryUnit === 'SOLANA_SLOT',
       'package is not a Devnet atomic Solana treasury hedge');
-      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'EXIT'
+      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE'
+        || order.lifecycleAction === 'DECREASE' || order.lifecycleAction === 'EXIT'
         || order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 2 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain)),
         'package domain is unsupported');
@@ -151,13 +153,15 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
       requireCondition(currentTime.unit === 'SOLANA_SLOT', 'quote clock is invalid');
       const inventoryLeg = matchLeg(documents, 'inventory-position', input.inventory);
       const hedgeLeg = matchLeg(documents, 'treasury-hedge', input.hedge);
-      const opening = order.lifecycleAction === 'ENTRY';
+      const increasing = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
       const quantity = order.economicQuantity.atoms;
       requireCondition(quantity > 0n && quantity === inventoryLeg.quantityAtoms && quantity === hedgeLeg.quantityAtoms,
         'leg quantities differ from the package quantity');
       requireCondition(inventoryLeg.legFamily === 'INVENTORY_TRANSFER' && inventoryLeg.side === 'NONE'
-        && hedgeLeg.legFamily === (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
-        && hedgeLeg.side === (opening ? 'SELL' : 'BUY'), 'legs do not match the lifecycle action');
+        && hedgeLeg.legFamily === (order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+          : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+            : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE' : 'PERP_CLOSE')
+        && hedgeLeg.side === (increasing ? 'SELL' : 'BUY'), 'legs do not match the lifecycle action');
       const state = await input.readState();
       requireCondition(state.slot >= currentTime.value
         && state.slot - currentTime.value <= input.maximumStateAdvanceSlots, 'quote clock is stale or from another head');
@@ -167,31 +171,31 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
         && state.market.collateralDecimals === input.quoteAsset.decimals
         && state.market.initialMarginBps > state.market.maintenanceMarginBps
         && state.market.initialMarginBps < Number(BPS), 'market units or margin parameters are invalid');
-      requireCondition(!opening || !state.market.pauseOpens, 'market opens are paused');
+      requireCondition(!increasing || !state.market.pauseOpens, 'market opens are paused');
       const limitPrice = hedgeLeg.limitPrice;
       requireCondition(limitPrice !== undefined && sameAsset(limitPrice.baseAsset, input.inventoryAsset)
         && sameAsset(limitPrice.quoteAsset, input.quoteAsset), 'hedge limit price is invalid');
-      const entryPricing = opening
+      const entryPricing = increasing
         ? priceTestPerpShort(state.market, state.oraclePricePerLot, quantity)
         : undefined;
-      const exitPricing = opening
+      const exitPricing = increasing
         ? undefined
         : priceTestPerpCloseShort(state.market, state.oraclePricePerLot, quantity);
       const priced = entryPricing ?? exitPricing!;
       const executableAgainstLimit = priced.fillPricePerLot * limitPrice.baseAtoms;
       const signedLimitAgainstLot = limitPrice.quoteAtoms * state.market.baseLotAtoms;
-      requireCondition(opening ? executableAgainstLimit >= signedLimitAgainstLot
+      requireCondition(increasing ? executableAgainstLimit >= signedLimitAgainstLot
         : executableAgainstLimit <= signedLimitAgainstLot, 'executable hedge price violates the signed limit');
       const oracleNotionalAtoms = state.oraclePricePerLot * priced.baseLots;
       const adverseExecutionAtoms = priced.notionalAtoms >= oracleNotionalAtoms
         ? priced.notionalAtoms - oracleNotionalAtoms
         : oracleNotionalAtoms - priced.notionalAtoms;
       const initialMarginAtoms = entryPricing?.initialMarginAtoms ?? 0n;
-      const requiredMarginAtoms = opening ? initialMarginAtoms + priced.feeAtoms : 0n;
+      const requiredMarginAtoms = increasing ? initialMarginAtoms + priced.feeAtoms : 0n;
       const protocolFee = ceilDiv(priced.notionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(priced.notionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalCost = adverseExecutionAtoms + priced.feeAtoms + protocolFee + solverFee + input.networkFeeQuoteAtoms;
-      const liquidationDistanceBps = opening
+      const liquidationDistanceBps = increasing
         ? BigInt(state.market.initialMarginBps - state.market.maintenanceMarginBps)
         : 0n;
       const priceDivisor = gcd(priced.fillPricePerLot, state.market.baseLotAtoms);
@@ -213,7 +217,7 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
             quoteAsset: input.quoteAsset,
             quoteAtoms: priced.fillPricePerLot / priceDivisor,
             baseAtoms: state.market.baseLotAtoms / priceDivisor,
-            roundingDirection: opening ? 'FLOOR' : 'CEIL',
+            roundingDirection: increasing ? 'FLOOR' : 'CEIL',
           }),
           grossNotional: assetAmount(input.quoteAsset, priced.notionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, requiredMarginAtoms),
@@ -237,7 +241,7 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
           templateId: STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE,
           values: Object.freeze({
             inventoryAtoms: quantity,
-            hedgeAtoms: opening ? -quantity : quantity,
+            hedgeAtoms: increasing ? -quantity : quantity,
             hedgeCostAtoms: totalCost,
             maximumLossAtoms: requiredMarginAtoms,
             liquidationDistanceBps,

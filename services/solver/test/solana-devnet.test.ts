@@ -19,6 +19,7 @@ import {
   BorshWriter,
   accountDiscriminator,
   decodeFirmReservation,
+  previewTestPerpShortAdjustment,
   reservationIdFor,
   type QuoteLevelState,
   type TestPerpMarketState,
@@ -30,7 +31,8 @@ const market: TestPerpMarketState = {
   collateralDecimals: 6, baseDecimals: 9, maxPriceAgeSeconds: 60, maxConfidenceBps: 50, takerFeeBps: 5, halfSpreadBps: 2,
   impactBpsPerUnit: 1, maxSlippageBps: 100, initialMarginBps: 1000, maintenanceMarginBps: 500,
   impactUnitLots: 10_000n, baseLotAtoms: 1_000_000n,
-  quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n, pauseOpens: false,
+  quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n,
+  fundingRatePerSecond: 0n, cumulativeFundingIndex: 0n, lastFundingTimestamp: 1_000n, pauseOpens: false,
 };
 
 test('reservation ids match the protocol firm reservation identity', () => {
@@ -66,6 +68,29 @@ test('prices a floored firm inventory bid and a rounded-up test perp buy-back in
   assert.equal(pricing.perpLimitPerLot, 150_121n);
   assert.equal(priceSolanaDevnetExit(config, market, 150_001n, 3_000_000n).firmQuoteAtoms, 449_552n);
   assert.throws(() => priceSolanaDevnetExit(config, market, 150_000n, 1_500_000n), /exact/);
+});
+
+test('previews short increases and partial reductions with venue-exact accounting', () => {
+  const position = {
+    market: 'm', owner: 'o', delegate: 'd', collateralAtoms: 100_000_000n,
+    baseLots: -2_000n, entryNotionalAtoms: 300_000_000n, entryFundingIndex: 0n,
+  };
+  const increase = previewTestPerpShortAdjustment({
+    market, position, oraclePricePerLot: 150_000n, nowUnixSeconds: 1_000n,
+    baseAtoms: 1_000_000_000n, action: 'INCREASE',
+  });
+  assert.deepEqual(
+    [increase.baseLots, increase.entryNotionalAtoms, increase.collateralAtoms],
+    [-3_000n, 449_955_000n, 99_925_022n],
+  );
+  const decrease = previewTestPerpShortAdjustment({
+    market, position, oraclePricePerLot: 150_000n, nowUnixSeconds: 1_000n,
+    baseAtoms: 500_000_000n, action: 'DECREASE',
+  });
+  assert.deepEqual(
+    [decrease.baseLots, decrease.entryNotionalAtoms, decrease.realizedPnlAtoms, decrease.collateralAtoms],
+    [-1_500n, 225_000_000n, -22_500n, 99_939_988n],
+  );
 });
 
 test('selects only a live firm ask level with the reviewed policy, capacity, and expiry window', () => {

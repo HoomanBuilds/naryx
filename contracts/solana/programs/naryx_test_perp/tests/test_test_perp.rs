@@ -525,7 +525,7 @@ fn positive_funding_pays_shorts_and_underwater_short_is_liquidated() {
 }
 
 #[test]
-fn adapter_strategy_enters_and_closes_exact_short_as_delegate() {
+fn adapter_strategy_resizes_and_closes_exact_short_as_delegate() {
     let mut env = setup();
     let controller = Keypair::new();
     env.svm
@@ -555,7 +555,7 @@ fn adapter_strategy_enters_and_closes_exact_short_as_delegate() {
             args: naryx_test_perp_adapter::InitializeTestPerpStrategyArgs {
                 strategy_id,
                 controller: controller.pubkey(),
-                max_base_lots: 1_000,
+                max_base_lots: 1_500,
             },
         },
     );
@@ -589,12 +589,42 @@ fn adapter_strategy_enters_and_closes_exact_short_as_delegate() {
     assert_eq!(position(&env).base_lots, -1_000);
     assert!(send(&mut env.svm, &controller, &[], &[enter]).is_err());
 
+    let increase = ix(
+        naryx_test_perp_adapter::id(),
+        accounts.clone(),
+        naryx_test_perp_adapter::instruction::TestPerpIncreaseShort {
+            args: naryx_test_perp_adapter::TestPerpMarketOrderArgs {
+                base_lots: 500,
+                client_order_id: 8,
+                ..args
+            },
+        },
+    );
+    send(&mut env.svm, &controller, &[], &[increase]).unwrap();
+    assert_eq!(position(&env).base_lots, -1_500);
+
+    let decrease = ix(
+        naryx_test_perp_adapter::id(),
+        accounts.clone(),
+        naryx_test_perp_adapter::instruction::TestPerpDecreaseShort {
+            args: naryx_test_perp_adapter::TestPerpMarketOrderArgs {
+                base_lots: 500,
+                limit_price_in_ticks: 100_030,
+                client_order_id: 9,
+                ..args
+            },
+        },
+    );
+    send(&mut env.svm, &controller, &[], &[decrease]).unwrap();
+    assert_eq!(position(&env).base_lots, -1_000);
+
     let close = ix(
         naryx_test_perp_adapter::id(),
         accounts,
         naryx_test_perp_adapter::instruction::TestPerpCloseShort {
             args: naryx_test_perp_adapter::TestPerpMarketOrderArgs {
                 limit_price_in_ticks: 100_030,
+                client_order_id: 10,
                 ..args
             },
         },

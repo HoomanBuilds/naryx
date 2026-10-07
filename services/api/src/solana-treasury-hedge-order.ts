@@ -33,7 +33,7 @@ import type { StrategyOrderIntakePort, StrategyOrderIntakeResult } from "./strat
 const MAX_CONFIG_BYTES = 1_048_576;
 const U256_MAX = (1n << 256n) - 1n;
 
-type SupportedAction = "ENTRY" | "EXIT" | "EMERGENCY_UNWIND";
+type SupportedAction = "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
 
 export class SolanaTreasuryHedgeOrderError extends Error {
   readonly code: string;
@@ -377,7 +377,8 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         || typeof fields.profileId !== "string" || typeof fields.owner !== "string"
         || typeof fields.quantityAtoms !== "string" || typeof fields.expiryValue !== "string"
         || typeof fields.nonce !== "string"
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT"
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
         fail("INVALID_REQUEST", "Solana treasury hedge order request fields are invalid.");
@@ -412,6 +413,7 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         owner,
       }).toBase58();
       const opening = request.lifecycleAction === "ENTRY";
+      const increasing = opening || request.lifecycleAction === "INCREASE";
       const inventoryLeg = Object.freeze({
         legId: "inventory-position",
         legFamily: "INVENTORY_TRANSFER" as const,
@@ -431,13 +433,16 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         timeInForce: "IOC" as const,
         legExpiryValue: expiryValue,
       });
-      const hedgeSide = opening ? "SELL" as const : "BUY" as const;
+      const hedgeSide = increasing ? "SELL" as const : "BUY" as const;
       const hedgeQuoteAtoms = requestAtoms(price.quoteAtoms, "limitHedgePrice.quoteAtoms");
       const hedgeBaseAtoms = requestAtoms(price.baseAtoms, "limitHedgePrice.baseAtoms");
       const priceDivisor = gcd(hedgeQuoteAtoms, hedgeBaseAtoms);
       const hedgeLeg = Object.freeze({
         legId: "treasury-hedge",
-        legFamily: opening ? "PERP_OPEN" as const : "PERP_CLOSE" as const,
+        legFamily: (opening ? "PERP_OPEN"
+          : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE"
+            : request.lifecycleAction === "DECREASE" ? "PERP_DECREASE" : "PERP_CLOSE") as
+          | "PERP_OPEN" | "PERP_INCREASE" | "PERP_DECREASE" | "PERP_CLOSE",
         legTypeId: "treasury-hedge",
         domain: profile.domain,
         adapter: profile.hedge.adapter,
@@ -461,7 +466,7 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         timeInForce: "IOC" as const,
         legExpiryValue: expiryValue,
       });
-      const legs = Object.freeze(opening ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg]);
+      const legs = Object.freeze(increasing ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg]);
       const graph = packageGraph({
         graphVersion: 1,
         environment: "devnet",
@@ -478,7 +483,7 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         owner: request.owner,
         strategyAccountRefs: [settlementAccount],
         legs,
-        dependencyEdges: [opening
+        dependencyEdges: [increasing
           ? { fromLegId: "inventory-position", toLegId: "treasury-hedge" }
           : { fromLegId: "treasury-hedge", toLegId: "inventory-position" }],
         executionGroups: [{
@@ -533,7 +538,7 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         maximumRecoveryCostByAsset: [],
         maximumMarginIncrease: assetAmount(
           profile.quoteAsset,
-          opening ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n,
+          increasing ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n,
         ),
         maximumResidualValue: assetAmount(profile.quoteAsset, 0n),
         ...(request.expectedStrategyStateHash === undefined

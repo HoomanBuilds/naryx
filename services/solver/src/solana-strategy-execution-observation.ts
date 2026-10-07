@@ -243,8 +243,7 @@ export class SolanaStrategyExecutionObservationService {
     'strategy package documents differ from the prepared execution');
     requireCondition(bytesEqual(prepared.quoteHash, input.quoteHash), 'preparation returned another quote');
     const compiled = solanaStrategyExecutionEnvelope(prepared);
-    requireCondition(prepared.identity.nextStateHash !== undefined,
-      'prepared strategy execution has no next state hash');
+    const expectedNextStateHash = prepared.identity.nextStateHash ?? new Uint8Array(32);
     const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
     requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');
     const lane = lanes[0]!;
@@ -278,7 +277,7 @@ export class SolanaStrategyExecutionObservationService {
       && bytesEqual(receipt.quoteHash, prepared.quoteHash)
       && bytesEqual(receipt.routeHash, prepared.routeHash)
       && receipt.operation === prepared.identity.operation
-      && bytesEqual(receipt.nextStateHash, prepared.identity.nextStateHash)
+      && bytesEqual(receipt.nextStateHash, expectedNextStateHash)
       && bytesEqual(receipt.callsHash, compiled.envelope.callsHash)
       && receipt.solver.toBase58() === lane.solver,
     'stored receipt differs from the prepared strategy execution');
