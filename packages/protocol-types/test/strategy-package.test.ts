@@ -7,6 +7,7 @@ import {
   domainRef,
   strategyEconomicsMetrics,
   strategyPackageReceipt,
+  requireStrategyTemplateDefinition,
   strategyTemplateDefinitions,
   type StrategyEconomicsInput,
   type StrategyPackageReceiptInput,
@@ -40,6 +41,19 @@ describe('strategy template program', () => {
         strategyEconomicsMetrics(input).map((metric) => metric.metricId).sort(),
         [...definition.metricIds].sort(),
       );
+    }
+  });
+
+  test('same-domain hedge templates admit atomic lifecycle execution', () => {
+    const treasury = requireStrategyTemplateDefinition(STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE);
+    const treasuryExit = treasury.actionSpecs.find((action) => action.action === 'EXIT');
+    assert.ok(treasuryExit?.allowedSettlementClasses.includes('ATOMIC_POSTCONDITION'));
+    assert.equal(treasuryExit?.maximumLegs, 2);
+    assert.equal(treasuryExit?.legRules.find((rule) => rule.legTypeId === 'inventory-position')?.minimumCount, 0);
+
+    const conversion = requireStrategyTemplateDefinition(STRATEGY_TEMPLATE_ID.COLLATERAL_CONVERSION_HEDGE);
+    for (const action of ['ENTRY', 'INCREASE', 'DECREASE', 'EXIT', 'REBALANCE'] as const) {
+      assert.ok(conversion.actionSpecs.find((spec) => spec.action === action)?.allowedSettlementClasses.includes('ATOMIC_POSTCONDITION'));
     }
   });
 });
