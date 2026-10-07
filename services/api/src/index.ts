@@ -21,9 +21,11 @@ export {
 } from "./strategy-package-store.js";
 export {
   applyNativeStrategyExitReceipt,
+  applyNativeStrategyMigrationReceipt,
   applyNativeStrategyTransitionReceipt,
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
+  validateNativeStrategyMigration,
   validateNativeStrategyTransition,
   NativeStrategyPositionError,
   type NativeStrategyPosition,

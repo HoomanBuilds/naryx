@@ -33,9 +33,11 @@ import { internalCaller, readInternalBody, sendError, sendJson } from "./interna
 import {
   applyNativeStrategyTransitionReceipt,
   applyNativeStrategyExitReceipt,
+  applyNativeStrategyMigrationReceipt,
   nativeStrategyPositionFromEntry,
   NativeStrategyPositionError,
   validateNativeStrategyExit,
+  validateNativeStrategyMigration,
   validateNativeStrategyTransition,
   type NativeStrategyPosition,
   type NativeStrategyPositionStatus,
@@ -124,6 +126,15 @@ CREATE TABLE IF NOT EXISTS strategy_native_transitions (
   selected_at_ms INTEGER NOT NULL,
   finalized_at_ms INTEGER
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_native_migrations (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  strategy_id TEXT NOT NULL REFERENCES strategy_native_positions(strategy_id),
+  action TEXT NOT NULL CHECK (action = 'MIGRATE'),
+  expected_state_hash BLOB NOT NULL,
+  receipt_hash BLOB UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  selected_at_ms INTEGER NOT NULL,
+  finalized_at_ms INTEGER
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_evm_positions (
   package_id BLOB PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -154,6 +165,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS strategy_evm_open_state_hash
 ON strategy_evm_positions(state_hash) WHERE status = 'OPEN';
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_transition
 ON strategy_native_transitions(strategy_id) WHERE receipt_hash IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_migration
+ON strategy_native_migrations(strategy_id) WHERE receipt_hash IS NULL;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
@@ -952,6 +965,7 @@ export class SqliteStrategyPackageStore {
     requireCondition(admission.order.environment === "testnet"
       && (admission.order.lifecycleAction === "ENTRY" || admission.order.lifecycleAction === "INCREASE"
         || admission.order.lifecycleAction === "DECREASE" || admission.order.lifecycleAction === "EXIT"
+        || admission.order.lifecycleAction === "MIGRATE"
         || admission.order.lifecycleAction === "EMERGENCY_UNWIND")
       && admission.order.settlementClass === "BATCHED_IOC_WITH_RECOVERY"
       && admission.order.expiryUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
@@ -999,6 +1013,8 @@ export class SqliteStrategyPackageStore {
         try {
           if (admission.order.lifecycleAction === "EXIT" || admission.order.lifecycleAction === "EMERGENCY_UNWIND") {
             validateNativeStrategyExit(transitionPosition, admission.order, admission.graph);
+          } else if (admission.order.lifecycleAction === "MIGRATE") {
+            validateNativeStrategyMigration(transitionPosition, admission.order, admission.graph);
           } else {
             validateNativeStrategyTransition(transitionPosition, admission.order, admission.graph);
           }
@@ -1027,7 +1043,11 @@ export class SqliteStrategyPackageStore {
         const pending = this.db.prepare(`
           SELECT 1 FROM strategy_native_transitions
           WHERE strategy_id = ? AND receipt_hash IS NULL
-        `).get(transitionPosition.strategyId);
+          UNION ALL
+          SELECT 1 FROM strategy_native_migrations
+          WHERE strategy_id = ? AND receipt_hash IS NULL
+          LIMIT 1
+        `).get(transitionPosition.strategyId, transitionPosition.strategyId);
         requireCondition(pending === undefined, "STRATEGY_TRANSITION_PENDING",
           "The native strategy already has a selected lifecycle transition.");
       }
@@ -1046,6 +1066,18 @@ export class SqliteStrategyPackageStore {
         );
         requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
           "The native strategy state changed before exit selection.");
+      } else if (transitionPosition !== undefined && admission.order.lifecycleAction === "MIGRATE") {
+        this.db.prepare(`
+          INSERT INTO strategy_native_migrations
+            (order_hash, strategy_id, action, expected_state_hash, receipt_hash,
+             selected_at_ms, finalized_at_ms)
+          VALUES (?, ?, 'MIGRATE', ?, NULL, ?, NULL)
+        `).run(
+          hashBuffer(admission.orderHashHex),
+          transitionPosition.strategyId,
+          hashBuffer(transitionPosition.stateHashHex),
+          selectedAtMs,
+        );
       } else if (transitionPosition !== undefined) {
         this.db.prepare(`
           INSERT INTO strategy_native_transitions
@@ -1206,6 +1238,45 @@ export class SqliteStrategyPackageStore {
             );
             requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
               "The native strategy state changed before receipt finalization.");
+          } else if (order.lifecycleAction === "MIGRATE") {
+            const migration = this.db.prepare(`
+              SELECT strategy_id, expected_state_hash, receipt_hash
+              FROM strategy_native_migrations WHERE order_hash = ?
+            `).get(receipt.orderHash) as {
+              strategy_id: string;
+              expected_state_hash: Uint8Array;
+              receipt_hash: Uint8Array | null;
+            } | undefined;
+            requireCondition(migration !== undefined && migration.receipt_hash === null,
+              "MIGRATION_NOT_SELECTED", "The native strategy receipt has no pending hedge migration.");
+            const row = this.db.prepare("SELECT * FROM strategy_native_positions WHERE strategy_id = ?")
+              .get(migration.strategy_id) as NativePositionRow | undefined;
+            requireCondition(row !== undefined && row.status === "OPEN"
+              && bytesEqual(row.state_hash, migration.expected_state_hash),
+            "STALE_STRATEGY_STATE", "The native strategy state changed before migration finalization.");
+            const position = nativePositionRow(row);
+            const next = applyNativeStrategyMigrationReceipt(position, order, graph, receipt);
+            const updated = this.db.prepare(`
+              UPDATE strategy_native_positions
+              SET state_hash = ?, state_json = ?, status = ?, updated_at_ms = ?
+              WHERE strategy_id = ? AND status = 'OPEN' AND state_hash = ?
+            `).run(
+              hashBuffer(next.stateHashHex),
+              stringifyProtocolJson(next.state),
+              next.status,
+              changedAtMs,
+              next.strategyId,
+              migration.expected_state_hash,
+            );
+            requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+              "The native strategy state changed before migration finalization.");
+            const finalized = this.db.prepare(`
+              UPDATE strategy_native_migrations
+              SET receipt_hash = ?, finalized_at_ms = ?
+              WHERE order_hash = ? AND receipt_hash IS NULL
+            `).run(receiptHash, changedAtMs, receipt.orderHash);
+            requireCondition(finalized.changes === 1, "MIGRATION_NOT_SELECTED",
+              "The native hedge migration was already finalized.");
           } else if (order.lifecycleAction === "INCREASE" || order.lifecycleAction === "DECREASE") {
             const transition = this.db.prepare(`
               SELECT strategy_id, expected_state_hash, receipt_hash

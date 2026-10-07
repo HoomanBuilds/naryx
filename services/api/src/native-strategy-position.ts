@@ -4,6 +4,7 @@ import {
   requiresSuccessfulReceipt,
   strategyState,
   strategyStateHash,
+  STRATEGY_TEMPLATE_ID,
   toHex,
   type PackageGraphInput,
   type StrategyPackageOrder,
@@ -287,6 +288,116 @@ export function applyNativeStrategyTransitionReceipt(
   return Object.freeze({
     ...position,
     economicQuantityAtoms,
+    state,
+    stateHashHex: toHex(strategyStateHash(state)),
+    status: complete ? "OPEN" : "UNRESOLVED",
+  });
+}
+
+export function validateNativeStrategyMigration(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+): void {
+  const graph = packageGraph(graphInput);
+  requireCondition(position.status === "OPEN", "STRATEGY_NOT_OPEN",
+    "The native strategy position is not available for migration.");
+  requireCondition(order.templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+    && order.lifecycleAction === "MIGRATE" && graph.lifecycleAction === "MIGRATE",
+  "POSITION_ACTION_MISMATCH", "A native hedge migration must use hedge migration semantics.");
+  requireCondition(order.expectedStrategyStateHash !== undefined
+    && bytesEqual(order.expectedStrategyStateHash, strategyStateHash(position.state)),
+  "STALE_STRATEGY_STATE", "The migration does not bind the current native strategy state.");
+  requireCondition(order.owner === position.state.ownerId
+    && order.settlementAccount === position.state.subaccountId,
+  "STRATEGY_IDENTITY_MISMATCH", "The migration owner or settlement account differs from the open strategy.");
+  requireCondition(position.state.legs.length === 1 && graph.legs.length === 2,
+    "STRATEGY_LEG_MISMATCH", "Hedge migration currently requires one open hedge and two migration legs.");
+  const current = position.state.legs[0]!;
+  const source = graph.legs.find((leg) => leg.legId === "source-hedge");
+  const destination = graph.legs.find((leg) => leg.legId === "destination-hedge");
+  const quantityAtoms = absolute(current.signedQuantityAtoms);
+  const closingSide = current.signedQuantityAtoms > 0n ? "SELL" : "BUY";
+  const openingSide = current.signedQuantityAtoms > 0n ? "BUY" : "SELL";
+  requireCondition(source !== undefined && destination !== undefined
+    && source.legFamily === "PERP_CLOSE" && destination.legFamily === "PERP_OPEN"
+    && source.quantityAsset.assetId === current.underlyingId
+    && destination.quantityAsset.assetId === current.underlyingId
+    && source.market.subjectId === current.instrumentId
+    && source.venue.subjectId === current.venueId
+    && (destination.market.subjectId !== current.instrumentId
+      || destination.venue.subjectId !== current.venueId)
+    && source.quantityAtoms === quantityAtoms && destination.quantityAtoms === quantityAtoms
+    && source.minimumQuantityAtoms === quantityAtoms
+    && destination.minimumQuantityAtoms === quantityAtoms
+    && source.side === closingSide && destination.side === openingSide
+    && order.economicQuantity.asset.assetId === current.underlyingId
+    && order.economicQuantity.atoms === quantityAtoms,
+  "STRATEGY_LEG_MISMATCH", "The migration must close the exact hedge and open equal exposure on another market.");
+}
+
+export function applyNativeStrategyMigrationReceipt(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+  receipt: StrategyPackageReceipt,
+): NativeStrategyPosition {
+  validateNativeStrategyMigration(position, order, graphInput);
+  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+    "A native hedge migration requires finalized execution evidence.");
+  const graph = packageGraph(graphInput);
+  const deltas = checkedPositionDeltas(graph, receipt);
+  if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
+    requireCondition([...deltas.values()].every((delta) => delta === 0n),
+      "POSITION_NOT_FLAT", "A no-effect migration receipt cannot change hedge exposure.");
+    return position;
+  }
+  const current = position.state.legs[0]!;
+  const source = graph.legs.find((leg) => leg.legId === "source-hedge")!;
+  const destination = graph.legs.find((leg) => leg.legId === "destination-hedge")!;
+  const sourceDelta = deltas.get(source.legId) ?? 0n;
+  const destinationDelta = deltas.get(destination.legId) ?? 0n;
+  const sourceRemaining = current.signedQuantityAtoms + sourceDelta;
+  requireCondition(sourceRemaining === 0n
+    || (sourceRemaining > 0n) === (current.signedQuantityAtoms > 0n),
+  "POSITION_DIRECTION_MISMATCH", "Migration cannot reverse the source hedge.");
+  requireCondition(destinationDelta === 0n
+    || (destinationDelta > 0n) === (current.signedQuantityAtoms > 0n),
+  "POSITION_DIRECTION_MISMATCH", "Migration destination exposure has the wrong direction.");
+  const complete = completeTerminalState(receipt.terminalState);
+  if (complete) {
+    requireCondition(sourceRemaining === 0n
+      && absolute(sourceDelta) === source.quantityAtoms
+      && absolute(destinationDelta) === destination.quantityAtoms,
+    "POSITION_INCOMPLETE", "A complete migration must close and replace the hedge exactly.");
+  }
+  const nextLegs = [
+    ...(sourceRemaining === 0n ? [] : [Object.freeze({ ...current, signedQuantityAtoms: sourceRemaining })]),
+    ...(destinationDelta === 0n ? [] : [Object.freeze({
+      legId: destination.legId,
+      underlyingId: destination.quantityAsset.assetId,
+      instrumentId: destination.market.subjectId,
+      venueId: destination.venue.subjectId,
+      signedQuantityAtoms: destinationDelta,
+      lotAtoms: gcd(absolute(destinationDelta), destination.minimumQuantityAtoms),
+      ratioNumerator: destinationDelta,
+      ratioDenominator: absolute(destinationDelta),
+    })]),
+  ];
+  requireCondition(nextLegs.length > 0, "POSITION_EMPTY", "Migration cannot remove the hedge without a replacement.");
+  const commonQuantity = nextLegs.reduce((value, leg) => gcd(value, leg.signedQuantityAtoms), 0n);
+  const normalizedLegs = nextLegs.map((leg) => Object.freeze({
+    ...leg,
+    ratioNumerator: leg.signedQuantityAtoms / commonQuantity,
+    ratioDenominator: 1n,
+  }));
+  const state = strategyState({
+    ...position.state,
+    stateVersion: position.state.stateVersion + 1n,
+    legs: normalizedLegs,
+  });
+  return Object.freeze({
+    ...position,
     state,
     stateHashHex: toHex(strategyStateHash(state)),
     status: complete ? "OPEN" : "UNRESOLVED",

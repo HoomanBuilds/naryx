@@ -23,12 +23,14 @@ import {
 } from "@naryx/protocol-types";
 import {
   applyNativeStrategyExitReceipt,
+  applyNativeStrategyMigrationReceipt,
   applyNativeStrategyTransitionReceipt,
   createHyperliquidNativeStrategyOrderPort,
   HyperliquidNativeStrategyOrderError,
   loadHyperliquidNativeStrategyProfiles,
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
+  validateNativeStrategyMigration,
   validateNativeStrategyTransition,
   type HyperliquidNativeStrategyProfile,
 } from "../src/index.js";
@@ -39,9 +41,12 @@ const OWNER = "0x1111111111111111111111111111111111111111";
 
 function profile(
   profileId: string,
-  templateId: "treasury-inventory-hedge-v1" | "perpetual-funding-spread-v1",
+  templateId: "treasury-inventory-hedge-v1" | "perpetual-funding-spread-v1" | "hedge-migration-v1",
 ): HyperliquidNativeStrategyProfile {
-  const market = (role: "treasury-hedge" | "funding-long" | "funding-short", assetId: number) => ({
+  const market = (
+    role: "treasury-hedge" | "funding-long" | "funding-short" | "source-hedge" | "destination-hedge",
+    assetId: number,
+  ) => ({
     role,
     entrySide: role === "funding-long" ? "BUY" as const : "SELL" as const,
     adapter: adapterRef({
@@ -74,7 +79,9 @@ function profile(
     quoteAsset: assetRef("hypercore:testnet:usdc", "32".repeat(32), 6),
     markets: templateId === "treasury-inventory-hedge-v1"
       ? [market("treasury-hedge", 3)]
-      : [market("funding-long", 3), market("funding-short", 4)],
+      : templateId === "perpetual-funding-spread-v1"
+        ? [market("funding-long", 3), market("funding-short", 4)]
+        : [market("source-hedge", 3), market("destination-hedge", 4)],
     metricLimits: [],
     bounds: Object.freeze({
       minimumQuantityAtoms: 100n,
@@ -118,6 +125,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
       profiles: [
         profile("btc-treasury-hedge", "treasury-inventory-hedge-v1"),
         profile("btc-eth-funding", "perpetual-funding-spread-v1"),
+        profile("btc-eth-migration", "hedge-migration-v1"),
       ],
     }));
     const port = createHyperliquidNativeStrategyOrderPort({
@@ -125,6 +133,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
       intake,
       currentTimeMs: () => NOW_MS,
     });
+    assert.equal(port.profiles().length, 3);
     const treasury = port.create({
       profileId: "btc-treasury-hedge",
       owner: OWNER,
@@ -182,6 +191,164 @@ test("rejects requests outside reviewed quantity and expiry bounds", () => {
     expiryValue: "1004000",
     nonce: "1",
   }), (error: unknown) => error instanceof HyperliquidNativeStrategyOrderError && error.code === "LIMIT_EXCEEDED");
+});
+
+test("migrates an exact native hedge to a distinct reviewed market", () => {
+  const treasuryProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const migrationProfile = profile("btc-hedge-migration", "hedge-migration-v1");
+  const port = createHyperliquidNativeStrategyOrderPort({
+    profiles: [treasuryProfile, migrationProfile],
+    intake,
+    currentTimeMs: () => NOW_MS,
+  });
+  const entry = port.create({
+    profileId: treasuryProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "ENTRY",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "200000",
+    limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "60001", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "10",
+  });
+  const entryReceipt = strategyPackageReceipt({
+    version: 1,
+    environment: "testnet",
+    domains: [treasuryProfile.domain],
+    orderHash: strategyPackageOrderHash(entry.order),
+    graphHash: packageGraphHash(entry.graph),
+    quoteHash: "71".repeat(32),
+    routeHash: "72".repeat(32),
+    templateId: entry.order.templateId,
+    templateVersion: 1,
+    packageTemplateManifestHash: entry.order.packageTemplateManifestHash,
+    seriesId: entry.order.seriesId,
+    seriesVersion: 1,
+    seriesManifestHash: entry.order.seriesManifestHash,
+    executionClassId: entry.order.executionClassId,
+    executionClassVersion: 1,
+    executionClassManifestHash: entry.order.executionClassManifestHash,
+    lifecycleAction: "entry",
+    owner: OWNER,
+    solverId: "solver-a",
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+    terminalState: "FINALIZED_COMPLETE",
+    quoteAsset: treasuryProfile.quoteAsset,
+    legOutcomes: [{
+      legId: "treasury-hedge",
+      positionLegId: "treasury-hedge",
+      domain: treasuryProfile.domain,
+      status: "EXECUTED",
+      requestedQuantity: assetAmount(treasuryProfile.baseAsset, 100_000n),
+      settledQuantity: assetAmount(treasuryProfile.baseAsset, -100_000n),
+      grossNotional: assetAmount(treasuryProfile.quoteAsset, 60_000n),
+      venueFee: assetAmount(treasuryProfile.quoteAsset, 1n),
+      residualValue: assetAmount(treasuryProfile.quoteAsset, 0n),
+      evidenceGrade: "VENUE_API_CORROBORATED",
+      onchainEnforced: false,
+      evidenceHash: "73".repeat(32),
+    }],
+    serviceFee: assetAmount(treasuryProfile.quoteAsset, 0n),
+    solverFee: assetAmount(treasuryProfile.quoteAsset, 0n),
+    venueFees: assetAmount(treasuryProfile.quoteAsset, 1n),
+    networkCost: assetAmount(treasuryProfile.quoteAsset, 0n),
+    recoveryCost: assetAmount(treasuryProfile.quoteAsset, 0n),
+    terminalResidualValue: assetAmount(treasuryProfile.quoteAsset, 0n),
+    finalityStatus: "FINALIZED",
+    executedAtValue: 1_001_000n,
+    receiptNonce: 10n,
+  });
+  const opened = nativeStrategyPositionFromEntry({
+    orderHashHex: toHex(strategyPackageOrderHash(entry.order)),
+    receiptHashHex: "74".repeat(32),
+    order: entry.order,
+    graph: entry.graph,
+    receipt: entryReceipt,
+  });
+  assert.ok(opened);
+  const migration = port.create({
+    profileId: migrationProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "MIGRATE",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "100000",
+    limitPrices: [
+      { legId: "source-hedge", quoteAtoms: "60010", baseAtoms: "1" },
+      { legId: "destination-hedge", quoteAtoms: "59990", baseAtoms: "1" },
+    ],
+    expiryValue: "1020000",
+    nonce: "11",
+    expectedStrategyStateHash: opened.stateHashHex,
+  });
+  assert.deepEqual(migration.graph.legs.map((leg) => [leg.legId, leg.legFamily, leg.side]), [
+    ["destination-hedge", "PERP_OPEN", "SELL"],
+    ["source-hedge", "PERP_CLOSE", "BUY"],
+  ]);
+  validateNativeStrategyMigration(opened, migration.order, migration.graph);
+  const migrationReceipt = strategyPackageReceipt({
+    version: 1,
+    environment: "testnet",
+    domains: [migrationProfile.domain],
+    orderHash: strategyPackageOrderHash(migration.order),
+    graphHash: packageGraphHash(migration.graph),
+    quoteHash: "75".repeat(32),
+    routeHash: "76".repeat(32),
+    templateId: migration.order.templateId,
+    templateVersion: 1,
+    packageTemplateManifestHash: migration.order.packageTemplateManifestHash,
+    seriesId: migration.order.seriesId,
+    seriesVersion: 1,
+    seriesManifestHash: migration.order.seriesManifestHash,
+    executionClassId: migration.order.executionClassId,
+    executionClassVersion: 1,
+    executionClassManifestHash: migration.order.executionClassManifestHash,
+    lifecycleAction: "migrate",
+    owner: OWNER,
+    solverId: "solver-a",
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+    terminalState: "FINALIZED_COMPLETE",
+    quoteAsset: migrationProfile.quoteAsset,
+    legOutcomes: migration.graph.legs.map((leg) => ({
+      legId: leg.legId,
+      positionLegId: leg.legId,
+      domain: migrationProfile.domain,
+      status: "EXECUTED" as const,
+      requestedQuantity: assetAmount(migrationProfile.baseAsset, 100_000n),
+      settledQuantity: assetAmount(
+        migrationProfile.baseAsset,
+        leg.legId === "source-hedge" ? 100_000n : -100_000n,
+      ),
+      grossNotional: assetAmount(migrationProfile.quoteAsset, 60_000n),
+      venueFee: assetAmount(migrationProfile.quoteAsset, 1n),
+      residualValue: assetAmount(migrationProfile.quoteAsset, 0n),
+      evidenceGrade: "VENUE_API_CORROBORATED" as const,
+      onchainEnforced: false,
+      evidenceHash: leg.legId === "source-hedge" ? "77".repeat(32) : "78".repeat(32),
+    })),
+    serviceFee: assetAmount(migrationProfile.quoteAsset, 0n),
+    solverFee: assetAmount(migrationProfile.quoteAsset, 0n),
+    venueFees: assetAmount(migrationProfile.quoteAsset, 2n),
+    networkCost: assetAmount(migrationProfile.quoteAsset, 0n),
+    recoveryCost: assetAmount(migrationProfile.quoteAsset, 0n),
+    terminalResidualValue: assetAmount(migrationProfile.quoteAsset, 0n),
+    finalityStatus: "FINALIZED",
+    executedAtValue: 1_001_100n,
+    receiptNonce: 11n,
+  });
+  const migrated = applyNativeStrategyMigrationReceipt(
+    opened,
+    migration.order,
+    migration.graph,
+    migrationReceipt,
+  );
+  assert.equal(migrated.status, "OPEN");
+  assert.equal(migrated.templateId, "treasury-inventory-hedge-v1");
+  assert.equal(migrated.state.legs.length, 1);
+  assert.equal(
+    migrated.state.legs[0]?.instrumentId,
+    migration.graph.legs.find((leg) => leg.legId === "destination-hedge")?.market.subjectId,
+  );
+  assert.equal(migrated.state.legs[0]?.signedQuantityAtoms, -100_000n);
 });
 
 test("derives an authoritative native state and closes only its exact exit", () => {
