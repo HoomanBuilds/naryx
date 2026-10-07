@@ -51,13 +51,16 @@ export function createEvmStrategyExecutionAuthorizationInternalHandler(
     if (request.method !== 'POST') return send(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Only POST is allowed.' } });
     try {
       const input = await body(request);
-      if (Object.keys(input).sort().join(',') !== 'ownerSignature,quoteHash'
-        || typeof input.quoteHash !== 'string' || typeof input.ownerSignature !== 'string') {
-        throw new Error('request must contain only quoteHash and ownerSignature');
+      const keys = Object.keys(input).sort().join(',');
+      if ((keys !== 'ownerSignature,quoteHash' && keys !== 'domainId,ownerSignature,quoteHash')
+        || typeof input.quoteHash !== 'string' || typeof input.ownerSignature !== 'string'
+        || (input.domainId !== undefined && typeof input.domainId !== 'string')) {
+        throw new Error('request must contain quoteHash, ownerSignature, and an optional domainId');
       }
       const authorized = await service.authorize({
         quoteHash: commitmentHash(input.quoteHash, 'quoteHash'),
         ownerSignature: input.ownerSignature as Hex,
+        ...(input.domainId === undefined ? {} : { domainId: input.domainId }),
       });
       if (authorized === undefined) return send(response, 404, { error: { code: 'NOT_FOUND', message: 'Admitted strategy package was not found.' } });
       return send(response, 200, { version: 1, authorization: authorized });

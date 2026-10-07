@@ -4,12 +4,16 @@ import {
 } from '@naryx/adapter-evm';
 import {
   bytesEqual,
+  protocolId,
   strategyPackageQuoteHash,
+  type DomainRef,
   type Hash32,
 } from '@naryx/protocol-types';
 import {
   getAddress,
+  keccak256,
   recoverTypedDataAddress,
+  stringToHex,
   type Address,
   type Hex,
   type LocalAccount,
@@ -23,6 +27,7 @@ const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
 
 export interface AuthorizedEvmStrategyExecution {
   readonly version: 1;
+  readonly domain: DomainRef;
   readonly chainId: number;
   readonly to: Address;
   readonly value: 0n;
@@ -69,13 +74,13 @@ export function loadEvmStrategySolverKey(path: string | undefined, expectedAddre
 }
 
 export class EvmStrategyExecutionAuthorizationService {
-  readonly #packages: StrategyPackageProvider;
-  readonly #preparations: StrategyPreparationService;
+  readonly #packages: Pick<StrategyPackageProvider, 'getByQuote'>;
+  readonly #preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
   readonly #solver: LocalAccount;
 
   constructor(input: Readonly<{
-    packages: StrategyPackageProvider;
-    preparations: StrategyPreparationService;
+    packages: Pick<StrategyPackageProvider, 'getByQuote'>;
+    preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
     solver: LocalAccount;
   }>) {
     this.#packages = input.packages;
@@ -83,21 +88,45 @@ export class EvmStrategyExecutionAuthorizationService {
     this.#solver = input.solver;
   }
 
-  async authorize(input: Readonly<{ quoteHash: Hash32; ownerSignature: Hex }>): Promise<AuthorizedEvmStrategyExecution | undefined> {
+  async authorize(input: Readonly<{
+    quoteHash: Hash32;
+    ownerSignature: Hex;
+    domainId?: string;
+  }>): Promise<AuthorizedEvmStrategyExecution | undefined> {
     requireCondition(isCanonicalEvmSignature(input.ownerSignature), 'owner signature is not canonical ECDSA');
     const documents = await this.#packages.getByQuote(input.quoteHash);
     if (documents === undefined) return undefined;
     requireCondition(bytesEqual(strategyPackageQuoteHash(documents.quote), input.quoteHash), 'quote provider returned another package');
     const prepared = await this.#preparations.prepareDocuments(documents);
-    requireCondition(prepared.settlementClass === 'ATOMIC_POSTCONDITION'
+    const singleDomain = prepared.settlementClass === 'ATOMIC_POSTCONDITION'
       && prepared.coordination === 'SINGLE_DOMAIN_ATOMIC'
-      && prepared.domains.length === 1, 'package is not one atomic EVM execution');
-    const domain = prepared.domains[0]!;
-    requireCondition(domain.kind === 'EVM_MULTI_STRATEGY_ACCOUNT', 'prepared package is not an EVM strategy account execution');
-    const envelope = domain.envelope;
+      && prepared.domains.length === 1;
+    const crossDomain = prepared.settlementClass === 'CROSS_DOMAIN_PREPOSITIONED'
+      && prepared.coordination === 'CROSS_DOMAIN_PREPOSITIONED'
+      && prepared.crossDomainPlanHash !== undefined
+      && prepared.domains.length >= 2;
+    requireCondition(singleDomain || crossDomain, 'package is not an atomic or prepositioned EVM execution');
+    const requestedDomainId = input.domainId === undefined
+      ? undefined
+      : protocolId(input.domainId, 'domainId');
+    requireCondition(!crossDomain || requestedDomainId !== undefined,
+      'cross-domain authorization requires an exact domain ID');
+    const matches = prepared.domains.filter((candidate) => candidate.kind === 'EVM_MULTI_STRATEGY_ACCOUNT'
+      && (requestedDomainId === undefined || candidate.domain.domainId === requestedDomainId));
+    requireCondition(matches.length === 1, 'prepared package does not resolve to exactly one EVM strategy account execution');
+    const domainExecution = matches[0]!;
+    requireCondition(domainExecution.kind === 'EVM_MULTI_STRATEGY_ACCOUNT', 'prepared package is not an EVM strategy account execution');
+    requireCondition(domainExecution.routeSettlementClass === (crossDomain ? 'CROSS_DOMAIN_PREPOSITIONED' : 'ATOMIC_POSTCONDITION'),
+      'prepared domain settlement class differs from the package');
+    const envelope = domainExecution.envelope;
     requireCondition(TEST_CHAIN_IDS.has(envelope.ownerTypedData.domain.chainId)
       && envelope.ownerTypedData.domain.chainId === envelope.solverTypedData.domain.chainId,
     'execution chain is not an allowed test chain');
+    requireCondition(domainExecution.domain.domainId === `eip155:${envelope.ownerTypedData.domain.chainId}`
+      && envelope.execution.domainIdHash === keccak256(stringToHex(domainExecution.domain.domainId))
+      && envelope.execution.domainManifestVersion === domainExecution.domain.domainManifestVersion
+      && envelope.execution.domainManifestHash === hex(domainExecution.domain.domainManifestHash),
+    'prepared execution domain identity is inconsistent');
     requireCondition(getAddress(envelope.execution.solver) === this.#solver.address,
       'prepared solver differs from the configured signing account');
     const recovered = await recoverTypedDataAddress({
@@ -123,6 +152,7 @@ export class EvmStrategyExecutionAuthorizationService {
     });
     return Object.freeze({
       version: 1,
+      domain: domainExecution.domain,
       chainId: envelope.ownerTypedData.domain.chainId,
       to: envelope.account,
       value: 0n,

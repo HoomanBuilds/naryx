@@ -42,6 +42,7 @@ import {
   type EvmOptionSpreadPricingInput,
   type EvmOptionSpreadReadPort,
   type EvmStrategyObservationReadPort,
+  type PreparedStrategyExecutionTransport,
   type StoredStrategyPackageDocuments,
   type StoredStrategyPackageOrderDocuments,
 } from '../src/index.js';
@@ -452,6 +453,7 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const authorized = await authorization.authorize({ quoteHash, ownerSignature });
   assert.equal(authorized?.to, ACCOUNT);
   assert.equal(authorized?.chainId, 84_532);
+  assert.equal(authorized?.domain.domainId, domain.domainId);
   assert.equal(authorized?.ownerSignature, ownerSignature);
   assert.match(authorized?.solverSignature ?? '', /^0x[0-9a-f]{130}$/);
   const wrongOwnerSignature = await privateKeyToAccount(`0x${'44'.repeat(32)}`).signTypedData({
@@ -467,6 +469,48 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
     }),
     /owner signature does not authorize/,
   );
+
+  const arbitrumDomain = domainRef('eip155:421614', 1, hash('e'));
+  const crossPrepared: PreparedStrategyExecutionTransport = Object.freeze({
+    ...prepared,
+    settlementClass: 'CROSS_DOMAIN_PREPOSITIONED',
+    coordination: 'CROSS_DOMAIN_PREPOSITIONED',
+    crossDomainPlanHash: hexToBytes(evmHash('d')) as Hash32,
+    domains: Object.freeze([
+      Object.freeze({ ...prepared.domains[0]!, routeSettlementClass: 'CROSS_DOMAIN_PREPOSITIONED' as const }),
+      Object.freeze({
+        kind: 'EVM_ASYNC_EXECUTOR' as const,
+        domain: arbitrumDomain,
+        routeSettlementClass: 'CROSS_DOMAIN_PREPOSITIONED' as const,
+        localGuarantee: 'BONDED_ASYNCHRONOUS' as const,
+        plan: Object.freeze({
+          version: 1 as const,
+          planKind: 'EVM_ASYNC_REQUEST' as const,
+          guarantee: 'BONDED_ASYNCHRONOUS' as const,
+          domain: arbitrumDomain,
+          strategyAccount: address('e'),
+          packageId: evmHash('c'),
+          stages: Object.freeze([]),
+          totalGasLimit: 0n,
+        }),
+      }),
+    ]),
+  });
+  const crossAuthorization = new EvmStrategyExecutionAuthorizationService({
+    packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
+    preparations: { prepareDocuments: async () => crossPrepared },
+    solver: SOLVER_ACCOUNT,
+  });
+  await assert.rejects(
+    () => crossAuthorization.authorize({ quoteHash, ownerSignature }),
+    /requires an exact domain ID/,
+  );
+  const baseAuthorization = await crossAuthorization.authorize({
+    quoteHash,
+    ownerSignature,
+    domainId: domain.domainId,
+  });
+  assert.equal(baseAuthorization?.domain.domainId, domain.domainId);
 
   const evidence = [evmHash('1'), evmHash('2')] as const;
   const evidenceRoot = keccak256(encodeAbiParameters([{ type: 'bytes32[]' }], [evidence]));
