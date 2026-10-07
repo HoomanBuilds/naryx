@@ -220,6 +220,7 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
         break;
       case 'COMMITTED':
         if (phase !== 'COMMITTING' && phase !== 'COMMITTED') { fence(`${event.domainId} committed without a commit decision`); break; }
+        if (at > plan.commitDeadline) { fence(`${event.domainId} committed after the commit deadline`); break; }
         status.set(event.domainId, finalized ? 'COMMITTED' : 'COMMITTING');
         break;
       case 'COMPENSATED':

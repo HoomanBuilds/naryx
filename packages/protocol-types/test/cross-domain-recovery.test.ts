@@ -67,6 +67,7 @@ describe('cross-domain prepositioned coordination', () => {
       [[ev('PREPARED', 'svm:testnet', 20n), ev('PREPARED', 'svm:testnet', 25n, '59')], 30n],
       [[ev('COMMITTED', 'svm:testnet', 20n)], 30n],
       [prepared, 201n],
+      [[...prepared, ev('COMMITTED', 'eip155:84532', 150n, '53'), ev('COMMITTED', 'svm:testnet', 201n, '54')], 201n],
       [[ev('PREPARED', 'svm:testnet', 20n), ev('PREPARED', 'eip155:84532', 10n, '52')], 30n],
       [[...prepared, ev('COMPENSATED', 'svm:testnet', 50n, '57')], 60n],
     ];
