@@ -235,6 +235,25 @@ type EvmProvisioningPlan = Readonly<{
   transactions: readonly EvmProvisioningTransaction[];
 }>;
 
+type EvmCollateralTransaction = Readonly<{
+  kind: "RESET_COLLATERAL_ALLOWANCE" | "APPROVE_COLLATERAL" | "MANAGE_PACKAGE_COLLATERAL";
+  to: string;
+  data: string;
+  value: "0";
+}>;
+
+type EvmCollateralPlan = Readonly<{
+  chainId: number;
+  owner: string;
+  strategyAccount: string;
+  quoteHash: string;
+  action: "SUPPLY" | "WITHDRAW";
+  assetToken: string;
+  minimumOutputAtoms: string;
+  maximumOutputAtoms: string;
+  transactions: readonly EvmCollateralTransaction[];
+}>;
+
 type AuthorizedEvmExecution = Readonly<{
   chainId: number;
   to: string;
@@ -855,6 +874,59 @@ function parseEvmProvisioning(payload: unknown, expectedChainId: number, expecte
   return Object.freeze({ chainId, owner, strategyAccount, ready: provisioning.ready, transactions: Object.freeze(transactions) });
 }
 
+function parseEvmCollateralPlan(
+  payload: unknown,
+  expectedChainId: number,
+  expectedOwner: string,
+  expectedQuoteHash: string,
+  expectedAction: "SUPPLY" | "WITHDRAW",
+): EvmCollateralPlan {
+  const root = record(decode(payload as Json), "EVM collateral response");
+  if (root.status !== "WALLET_TRANSACTIONS_REQUIRED") throw new Error("EVM collateral status is invalid.");
+  const collateral = record(root.collateral, "EVM collateral plan");
+  const chainId = integer(collateral.chainId, "EVM collateral chain id");
+  const owner = text(collateral.owner, "EVM collateral owner");
+  const strategyAccount = text(collateral.strategyAccount, "EVM collateral account");
+  const quoteHash = text(collateral.quoteHash, "EVM collateral quote");
+  const action = text(collateral.action, "EVM collateral action");
+  const assetToken = text(collateral.assetToken, "EVM collateral asset");
+  const minimumOutputAtoms = decimalInteger(collateral.minimumOutputAtoms, "EVM collateral minimum output");
+  const maximumOutputAtoms = decimalInteger(collateral.maximumOutputAtoms, "EVM collateral maximum output");
+  if (chainId !== expectedChainId || owner.toLowerCase() !== expectedOwner.toLowerCase()
+    || !EVM_ADDRESS.test(strategyAccount) || quoteHash !== `0x${expectedQuoteHash}`
+    || action !== expectedAction || !EVM_ADDRESS.test(assetToken)
+    || BigInt(minimumOutputAtoms) <= BigInt(0) || BigInt(maximumOutputAtoms) < BigInt(minimumOutputAtoms)) {
+    throw new Error("EVM collateral plan changed the selected package.");
+  }
+  const transactions = list(collateral.transactions, "EVM collateral transactions").map((candidate, index) => {
+    const transaction = record(candidate, `EVM collateral transaction ${index}`);
+    if ((transaction.kind !== "RESET_COLLATERAL_ALLOWANCE" && transaction.kind !== "APPROVE_COLLATERAL"
+      && transaction.kind !== "MANAGE_PACKAGE_COLLATERAL") || !EVM_ADDRESS.test(String(transaction.to))
+      || typeof transaction.data !== "string" || !/^0x(?:[0-9a-f]{2})+$/i.test(transaction.data)
+      || decimalInteger(transaction.value, `EVM collateral transaction ${index} value`) !== "0") {
+      throw new Error(`EVM collateral transaction ${index} is invalid.`);
+    }
+    return Object.freeze({
+      kind: transaction.kind,
+      to: String(transaction.to),
+      data: transaction.data,
+      value: "0" as const,
+    });
+  });
+  if (transactions.length === 0) throw new Error("EVM collateral plan has no wallet transaction.");
+  return Object.freeze({
+    chainId,
+    owner,
+    strategyAccount,
+    quoteHash,
+    action: action as "SUPPLY" | "WITHDRAW",
+    assetToken,
+    minimumOutputAtoms,
+    maximumOutputAtoms,
+    transactions: Object.freeze(transactions),
+  });
+}
+
 function parseAuthorizedEvmExecution(payload: unknown, review: StrategyPreparationReview): AuthorizedEvmExecution {
   const root = record(decode(payload as Json), "EVM strategy authorization");
   if (root.status !== "READY_FOR_WALLET_SUBMISSION") throw new Error("EVM strategy authorization is not ready.");
@@ -1191,8 +1263,11 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmHedgePrice, setEvmHedgePrice] = useState("");
   const [evmSwapPrice, setEvmSwapPrice] = useState("");
   const [evmProvisioning, setEvmProvisioning] = useState<EvmProvisioningPlan | null>(null);
+  const [evmCollateral, setEvmCollateral] = useState<EvmCollateralPlan | null>(null);
+  const [evmCollateralCompletionKey, setEvmCollateralCompletionKey] = useState("");
   const [evmCreateBusy, setEvmCreateBusy] = useState(false);
   const [evmProvisionBusy, setEvmProvisionBusy] = useState(false);
+  const [evmCollateralBusy, setEvmCollateralBusy] = useState(false);
   const [evmExecutionBusy, setEvmExecutionBusy] = useState(false);
   const [evmExecutionHash, setEvmExecutionHash] = useState<string | null>(null);
   const [evmExecutionConfirmed, setEvmExecutionConfirmed] = useState(false);
@@ -1452,6 +1527,8 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteHash("");
       setReview(null);
       setEvmProvisioning(null);
+      setEvmCollateral(null);
+      setEvmCollateralCompletionKey("");
       setEvmExecutionHash(null);
       setEvmExecutionConfirmed(false);
     } catch (cause) {
@@ -1519,6 +1596,8 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteHash("");
       setReview(null);
       setEvmProvisioning(null);
+      setEvmCollateral(null);
+      setEvmCollateralCompletionKey("");
       setEvmExecutionHash(null);
       setEvmExecutionConfirmed(false);
     } catch (cause) {
@@ -1562,6 +1641,46 @@ export function GeneralizedStrategyPreparationPanel({
       setError(cause instanceof Error ? cause.message : "EVM strategy provisioning failed closed.");
     } finally {
       setEvmProvisionBusy(false);
+    }
+  }
+
+  async function manageEvmReverseBasisCollateral(action: "SUPPLY" | "WITHDRAW") {
+    if (privateApiBaseUrl === null || selectedEvmDirectionalProfile?.kind !== "REVERSE_BASIS"
+      || strategyOwner === null || !HASH.test(quoteHash)) return;
+    setEvmCollateralBusy(true);
+    setError(null);
+    try {
+      if (sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
+        throw new Error("Connect the EVM wallet on the selected strategy testnet.");
+      }
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/reverse-basis-collateral`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash, action }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const plan = parseEvmCollateralPlan(
+        await response.json(),
+        selectedEvmDirectionalProfile.chainId,
+        strategyOwner,
+        quoteHash,
+        action,
+      );
+      for (const transaction of plan.transactions) {
+        const transactionHash = await sendEvmTransaction(plan.chainId, transaction);
+        if (!await waitForEvmReceipt(plan.chainId, transactionHash)) {
+          throw new Error(`${transaction.kind.replaceAll("_", " ").toLowerCase()} reverted on the testnet.`);
+        }
+      }
+      setEvmCollateral(plan);
+      setEvmCollateralCompletionKey(`${quoteHash}:${action}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM collateral management failed closed.");
+    } finally {
+      setEvmCollateralBusy(false);
     }
   }
 
@@ -1781,6 +1900,8 @@ export function GeneralizedStrategyPreparationPanel({
       const parsed = parseQuoteReview(await response.json(), orderHash);
       setQuoteReview(parsed);
       setQuoteHash(parsed.quoteHash);
+      setEvmCollateral(null);
+      setEvmCollateralCompletionKey("");
       setReview(null);
       setExecutionAttempt(null);
       setAuthorizedOrderHash(null);
@@ -2480,6 +2601,8 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionResult(null);
             setExecutionProgress(null);
             setStrategyReceipt(null);
+            setEvmCollateral(null);
+            setEvmCollateralCompletionKey("");
             setError(null);
           }}
         />
@@ -2519,6 +2642,26 @@ export function GeneralizedStrategyPreparationPanel({
               </div>
             </details>
           ) : null}
+          {selectedEvmDirectionalProfile?.kind === "REVERSE_BASIS" && lifecycleAction === "ENTRY" ? (
+            <>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                disabled={privateApiBaseUrl === null || evmCollateralBusy || evmProvisioning?.ready !== true
+                  || evmCollateralCompletionKey === `${quoteHash}:SUPPLY`}
+                onClick={() => void manageEvmReverseBasisCollateral("SUPPLY")}
+              >
+                {evmCollateralBusy ? "Supplying isolated collateral"
+                  : evmCollateralCompletionKey === `${quoteHash}:SUPPLY` ? "Lending collateral supplied"
+                    : "Supply isolated lending collateral"}
+              </button>
+              <p className={styles.fieldContext} role="status">
+                {evmCollateralCompletionKey === `${quoteHash}:SUPPLY` && evmCollateral !== null
+                  ? `Collateral funding confirmed for strategy account ${compact(evmCollateral.strategyAccount, 10, 8)}.`
+                  : "The wallet funds only this package adapter. Entry remains unavailable until collateral confirms."}
+              </p>
+            </>
+          ) : null}
         </div>
       ) : null}
       <div className={styles.strategyPrepareForm}>
@@ -2538,6 +2681,8 @@ export function GeneralizedStrategyPreparationPanel({
                 setExecutionResult(null);
                 setExecutionProgress(null);
                 setStrategyReceipt(null);
+                setEvmCollateral(null);
+                setEvmCollateralCompletionKey("");
                 setError(null);
               }}
             >
@@ -2568,6 +2713,8 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionResult(null);
             setExecutionProgress(null);
             setStrategyReceipt(null);
+            setEvmCollateral(null);
+            setEvmCollateralCompletionKey("");
             setError(null);
           }}
         />
@@ -2575,7 +2722,9 @@ export function GeneralizedStrategyPreparationPanel({
           type="button"
           className={styles.secondaryAction}
           disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)
-            || (templateId === "option-spread-v1" && lifecycleAction === "ENTRY" && evmProvisioning?.ready !== true)}
+            || (selectedEvmProfile !== null && lifecycleAction === "ENTRY" && evmProvisioning?.ready !== true)
+            || (selectedEvmDirectionalProfile?.kind === "REVERSE_BASIS" && lifecycleAction === "ENTRY"
+              && evmCollateralCompletionKey !== `${quoteHash}:SUPPLY`)}
           onClick={() => void prepare()}
         >
           {prepareBusy ? "Preparing unsigned plan" : "Prepare unsigned plan"}
@@ -2639,6 +2788,20 @@ export function GeneralizedStrategyPreparationPanel({
                   onClick={() => void refreshEvmObservation()}
                 >
                   {evmExecutionBusy ? "Checking finalized evidence" : "Refresh finalized receipt"}
+                </button>
+              ) : null}
+              {evmExecutionConfirmed && selectedEvmDirectionalProfile?.kind === "REVERSE_BASIS"
+                && (lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={privateApiBaseUrl === null || evmCollateralBusy
+                    || evmCollateralCompletionKey === `${quoteHash}:WITHDRAW`}
+                  onClick={() => void manageEvmReverseBasisCollateral("WITHDRAW")}
+                >
+                  {evmCollateralBusy ? "Withdrawing isolated collateral"
+                    : evmCollateralCompletionKey === `${quoteHash}:WITHDRAW` ? "Lending collateral withdrawn"
+                      : "Withdraw lending collateral and yield"}
                 </button>
               ) : null}
               <p className={styles.fieldContext} role="status">

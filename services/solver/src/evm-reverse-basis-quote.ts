@@ -301,7 +301,9 @@ export function createEvmReverseBasisGeneralizedPricing(
       const protocolFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalFees = spotFee + perpFee + protocolFee + solverFee + input.networkFeeQuoteAtoms;
-      const borrowCollateralAtoms = ceilDiv(oracleNotionalAtoms * input.borrowCollateralRatioBps, BPS);
+      const borrowCollateralAtoms = opening
+        ? ceilDiv(oracleNotionalAtoms * input.borrowCollateralRatioBps, BPS)
+        : 0n;
       const capitalRequiredAtoms = borrowCollateralAtoms + requiredMarginAtoms;
       const spotPrice = exactPrice({
         baseAsset: input.baseAsset,
@@ -318,7 +320,7 @@ export function createEvmReverseBasisGeneralizedPricing(
           legId: lending.legId,
           quantity: assetAmount(input.baseAsset, quantity),
           grossNotional: assetAmount(input.quoteAsset, oracleNotionalAtoms),
-          marginDelta: assetAmount(input.quoteAsset, 0n),
+          marginDelta: assetAmount(input.quoteAsset, borrowCollateralAtoms),
           venueFee: assetAmount(input.quoteAsset, 0n),
           builderFee: assetAmount(input.quoteAsset, 0n),
           residualValue: assetAmount(input.quoteAsset, 0n),

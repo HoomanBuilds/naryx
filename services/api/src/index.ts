@@ -108,6 +108,11 @@ export {
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
 export {
+  HttpEvmReverseBasisCollateralClient,
+  EvmReverseBasisCollateralClientError,
+  type EvmReverseBasisCollateralPort,
+} from './evm-reverse-basis-collateral-client.js';
+export {
   HttpEvmStrategyExecutionAuthorizationClient,
   EvmStrategyExecutionAuthorizationClientError,
   type AuthorizedEvmStrategyExecution,

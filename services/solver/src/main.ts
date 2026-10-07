@@ -50,6 +50,8 @@ import {
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
   createEvmOptionSpreadProvisioningInternalHandler,
+  EvmReverseBasisCollateralService,
+  createEvmReverseBasisCollateralInternalHandler,
   loadEvmOptionSpreadRuntime,
   loadEvmTreasuryHedgeRuntime,
   loadEvmCollateralConversionRuntime,
@@ -370,6 +372,12 @@ const evmOptionProvisioningHandler = evmPreparationLanes.length === 0
       strategyPackageProvider,
       new EvmOptionSpreadProvisioningResolver(evmPreparationLanes),
     ));
+const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
+  ? undefined
+  : createEvmReverseBasisCollateralInternalHandler(new EvmReverseBasisCollateralService(
+      strategyPackageProvider,
+      evmReverseBasisRuntime.preparationLanes,
+    ));
 const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPreparationService === undefined
   ? undefined
   : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
@@ -397,6 +405,7 @@ const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
   evmOptionProvisioningHandler,
+  evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,
 ]

@@ -1097,6 +1097,8 @@ export {
   type EvmReverseBasisAdapterFactoryBinding,
   type EvmReverseBasisPreparationLane,
 } from './evm-reverse-basis-preparation.js';
+export { EvmReverseBasisCollateralService } from './evm-reverse-basis-collateral.js';
+export { createEvmReverseBasisCollateralInternalHandler } from './evm-reverse-basis-collateral-server.js';
 export {
   createEvmReverseBasisPreparationResolver,
   loadEvmReverseBasisRuntime,

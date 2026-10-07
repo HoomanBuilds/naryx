@@ -140,6 +140,7 @@ import {
   loadEvmReverseBasisProfiles,
 } from "./evm-reverse-basis-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
+import { HttpEvmReverseBasisCollateralClient } from './evm-reverse-basis-collateral-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
 
@@ -1005,6 +1006,9 @@ const evmOptionProvisioningEnabled = explicitlyEnabled('NARYX_EVM_OPTION_SPREAD_
 const evmOptionSpreadProvisioning = evmOptionProvisioningEnabled
   ? new HttpEvmOptionSpreadProvisioningClient(solverOrigin)
   : undefined;
+const evmReverseBasisCollateral = evmOptionProvisioningEnabled && evmReverseBasisOrders !== undefined
+  ? new HttpEvmReverseBasisCollateralClient(solverOrigin)
+  : undefined;
 const evmStrategyAuthorizationEnabled = explicitlyEnabled('NARYX_EVM_STRATEGY_AUTHORIZATION_ENABLED');
 const evmStrategyExecutionAuthorization = evmStrategyAuthorizationEnabled
   ? new HttpEvmStrategyExecutionAuthorizationClient(solverOrigin)
@@ -1067,6 +1071,7 @@ const server = createPrivateTerminalServer(
   evmCollateralConversionOrders,
   evmReverseBasisOrders,
   evmOptionSpreadProvisioning,
+  evmReverseBasisCollateral,
   evmStrategyExecutionAuthorization,
   evmStrategyExecutionObservation,
 );

@@ -139,6 +139,10 @@ import {
   type EvmOptionSpreadProvisioningPort,
 } from './evm-option-spread-provisioning-client.js';
 import {
+  EvmReverseBasisCollateralClientError,
+  type EvmReverseBasisCollateralPort,
+} from './evm-reverse-basis-collateral-client.js';
+import {
   EvmStrategyExecutionAuthorizationClientError,
   type EvmStrategyExecutionAuthorizationPort,
 } from './evm-strategy-execution-authorization-client.js';
@@ -344,6 +348,7 @@ export function createPrivateTerminalRequestHandler(
   evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmReverseBasisOrders?: EvmReverseBasisOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
+  evmReverseBasisCollateral?: EvmReverseBasisCollateralPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
 ) {
@@ -673,6 +678,7 @@ export function createPrivateTerminalRequestHandler(
         evmTreasuryHedgeOrderAvailable: evmTreasuryHedgeOrders !== undefined,
         evmCollateralConversionOrderAvailable: evmCollateralConversionOrders !== undefined,
         evmOptionSpreadProvisioningAvailable: evmOptionSpreadProvisioning !== undefined,
+        evmReverseBasisCollateralAvailable: evmReverseBasisCollateral !== undefined,
         strategyPackageAuthorizationAvailable: strategyPackageAuthorization !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
@@ -1348,6 +1354,42 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, 'EVM_OPTION_PROVISIONING_FAILED', 'EVM option provisioning failed closed.');
+      }
+      return;
+    }
+
+    if (url.pathname === '/internal/terminal/strategy-executions/reverse-basis-collateral') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (evmReverseBasisCollateral === undefined) {
+        reject(response, 503, 'EVM_REVERSE_BASIS_COLLATERAL_UNAVAILABLE', 'Reverse basis collateral management is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).sort().join(',') !== 'action,quoteHash'
+          || typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string'
+          || ((requestBody as { action?: unknown }).action !== 'SUPPLY'
+            && (requestBody as { action?: unknown }).action !== 'WITHDRAW')) {
+          throw new EvmReverseBasisCollateralClientError(
+            'INVALID_REQUEST',
+            'Request must contain quoteHash and SUPPLY or WITHDRAW action.',
+          );
+        }
+        const values = requestBody as { quoteHash: string; action: 'SUPPLY' | 'WITHDRAW' };
+        const collateral = await evmReverseBasisCollateral.plan(values.quoteHash, values.action);
+        sendJson(response, 200, { status: 'WALLET_TRANSACTIONS_REQUIRED', collateral: toProtocolJson(collateral) });
+      } catch (error) {
+        if (error instanceof EvmReverseBasisCollateralClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'EVM_REVERSE_BASIS_COLLATERAL_FAILED', 'Reverse basis collateral planning failed closed.');
       }
       return;
     }
@@ -2327,6 +2369,7 @@ export function createPrivateTerminalServer(
   evmCollateralConversionOrders?: EvmCollateralConversionOrderPort,
   evmReverseBasisOrders?: EvmReverseBasisOrderPort,
   evmOptionSpreadProvisioning?: EvmOptionSpreadProvisioningPort,
+  evmReverseBasisCollateral?: EvmReverseBasisCollateralPort,
   evmStrategyExecutionAuthorization?: EvmStrategyExecutionAuthorizationPort,
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
 ) {
@@ -2362,6 +2405,7 @@ export function createPrivateTerminalServer(
     evmCollateralConversionOrders,
     evmReverseBasisOrders,
     evmOptionSpreadProvisioning,
+    evmReverseBasisCollateral,
     evmStrategyExecutionAuthorization,
     evmStrategyExecutionObservation,
   );

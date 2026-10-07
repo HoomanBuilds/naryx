@@ -212,7 +212,9 @@ function lane(
   });
   if (new Set(adapterFactories.map((item) => item.role)).size !== 3) fail(`lane ${laneId} adapter roles repeat`);
   const debtTolerance = natural(input.debtBaseToleranceBps, 'lane.debtBaseToleranceBps');
+  const collateralTolerance = natural(input.collateralBaseToleranceBps, 'lane.collateralBaseToleranceBps');
   if (debtTolerance > 1_000n) fail('lane.debtBaseToleranceBps exceeds 10 percent');
+  if (collateralTolerance > 1_000n) fail('lane.collateralBaseToleranceBps exceeds 10 percent');
   const preparation: EvmReverseBasisPreparationLane = Object.freeze({
     environment: 'testnet',
     templateManifest,
@@ -224,6 +226,11 @@ function lane(
     adapters: Object.freeze(adapterFactories) as EvmReverseBasisPreparationLane['adapters'],
     debtBaseAtomsPerWholeBaseToken: positive(input.debtBaseAtomsPerWholeBaseToken, 'lane.debtBaseAtomsPerWholeBaseToken'),
     debtBaseToleranceBps: debtTolerance,
+    collateralBaseAtomsPerWholeQuoteToken: positive(
+      input.collateralBaseAtomsPerWholeQuoteToken,
+      'lane.collateralBaseAtomsPerWholeQuoteToken',
+    ),
+    collateralBaseToleranceBps: collateralTolerance,
     solver: getAddress(string(input.solver, 'lane.solver')),
     packageIds,
   });

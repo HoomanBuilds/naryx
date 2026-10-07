@@ -131,6 +131,8 @@ export interface EvmReverseBasisPreparationLane {
   ];
   readonly debtBaseAtomsPerWholeBaseToken: bigint;
   readonly debtBaseToleranceBps: bigint;
+  readonly collateralBaseAtomsPerWholeQuoteToken: bigint;
+  readonly collateralBaseToleranceBps: bigint;
   readonly solver: Address;
   readonly packageIds: EvmOptionSpreadPackageIdPort;
 }

@@ -5,6 +5,7 @@ import {
   assetAmount,
   assetRef,
   domainRef,
+  hash32,
   manifestHash,
   packageGraph,
   packageGraphHash,
@@ -15,8 +16,9 @@ import {
   versionedManifestRef,
   type PackageTemplateManifestInput,
 } from '@naryx/protocol-types';
-import { getAddress, zeroHash, type Abi, type Address, type Hex } from 'viem';
+import { getAddress, hexToBytes, zeroHash, type Abi, type Address, type Hex } from 'viem';
 import {
+  EvmReverseBasisCollateralService,
   EvmReverseBasisPreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   type EvmOptionSpreadReadPort,
@@ -82,6 +84,7 @@ const template = packageTemplateManifest(templateInput);
 const templateHash = packageTemplateManifestHash(template);
 
 class Chain implements EvmOptionSpreadReadPort {
+  collateralBase = 300_000_000n;
   readonly codes = new Map<string, Hex>([
     [ACCOUNT_FACTORY, codeHash('1')], [ACCOUNT, codeHash('2')], [BASE, codeHash('3')], [QUOTE, codeHash('4')],
     [SPOT_FACTORY, codeHash('5')], [SPOT_POOL, codeHash('6')], [SPOT_QUOTER, codeHash('7')],
@@ -108,6 +111,7 @@ class Chain implements EvmOptionSpreadReadPort {
     if (request.address === ACCOUNT) {
       if (request.functionName === 'owner') return OWNER;
       if (request.functionName === 'nextNonce') return 7n;
+      if (request.functionName === 'nextCollateralNonce') return 0n;
       if (request.functionName === 'packageState') {
         return [[zeroHash, 0n, zeroHash], zeroHash, zeroHash, false];
       }
@@ -120,8 +124,11 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'validateInstance') return true;
     }
     if (request.address === LENDING_ADAPTER && request.functionName === 'accountData') {
-      return [300_000_000n, 0n, 200_000_000n, 8_000n, 7_500n, 3n * 10n ** 18n];
+      const available = this.collateralBase * 2n / 3n;
+      return [this.collateralBase, 0n, available, 8_000n, 7_500n, (2n ** 256n) - 1n];
     }
+    if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return 0n;
+    if (request.address === QUOTE && request.functionName === 'allowance') return 0n;
     if (request.address === HEDGE_ADAPTER && request.functionName === 'position') return [0n, 0n, 0n, 0n, 0n];
     if (request.address === SPOT_FACTORY && request.functionName === 'getPool') return SPOT_POOL;
     if (request.address === SPOT_POOL) {
@@ -299,7 +306,7 @@ function documents(): StoredStrategyPackageDocuments {
     quote: {
       serviceCharges: [{ category: 'PROTOCOL', amount: amount(49_500n) }, { category: 'SOLVER', amount: amount(49_500n) }],
       legEconomics: [
-        { legId: 'base-borrow', grossNotional: amount(100_000_000n), marginDelta: amount(0n) },
+        { legId: 'base-borrow', grossNotional: amount(100_000_000n), marginDelta: amount(150_000_000n) },
         { legId: 'spot-sale', grossNotional: amount(99_000_000n), marginDelta: amount(0n),
           executionPrice: { baseAsset, quoteAsset, quoteAtoms: 99n, baseAtoms: 10n ** 12n, roundingDirection: 'FLOOR' } },
         { legId: 'perp-purchase', grossNotional: amount(101_000_000n), marginDelta: amount(20_300_000n),
@@ -317,9 +324,8 @@ function documents(): StoredStrategyPackageDocuments {
   } as unknown as StoredStrategyPackageDocuments;
 }
 
-test('binds reverse basis entry to reviewed package adapters and exact approvals', async () => {
-  const chain = new Chain();
-  const lane = {
+function lane(chain: Chain) {
+  return {
     environment: 'testnet' as const,
     templateManifest: template,
     activeRegistryRecords: [],
@@ -337,11 +343,18 @@ test('binds reverse basis entry to reviewed package adapters and exact approvals
     ] as const,
     debtBaseAtomsPerWholeBaseToken: 100_000_000n,
     debtBaseToleranceBps: 100n,
+    collateralBaseAtomsPerWholeQuoteToken: 100_000_000n,
+    collateralBaseToleranceBps: 100n,
     solver: SOLVER,
     packageIds: { resolvePackageId: async () => undefined },
   };
+}
+
+test('binds reverse basis entry to reviewed package adapters and exact approvals', async () => {
+  const chain = new Chain();
+  const activeLane = lane(chain);
   const packageDocuments = documents();
-  const context = await new EvmReverseBasisPreparationContextResolver([lane]).resolve(packageDocuments);
+  const context = await new EvmReverseBasisPreparationContextResolver([activeLane]).resolve(packageDocuments);
   assert.equal(context.identity.operation, 'ENTRY');
   assert.equal(context.identity.nextStateHash?.length, 32);
   assert.equal(context.compilers.length, 1);
@@ -356,7 +369,25 @@ test('binds reverse basis entry to reviewed package adapters and exact approvals
   assert.deepEqual(binding.callPolicies.map((policy) => policy.expectedAdapterAddress),
     [LENDING_ADAPTER, SPOT_ADAPTER, HEDGE_ADAPTER]);
   assert.equal(binding.nonce, 7n);
-  const provisioning = await new EvmOptionSpreadProvisioningResolver([lane]).resolve(packageDocuments);
+  const provisioning = await new EvmOptionSpreadProvisioningResolver([activeLane]).resolve(packageDocuments);
   assert.equal(provisioning.ready, true);
   assert.equal(provisioning.strategyAccount, ACCOUNT);
+});
+
+test('plans owner collateral funding from the admitted reverse basis entry quote', async () => {
+  const chain = new Chain();
+  chain.collateralBase = 0n;
+  const packageDocuments = documents();
+  const service = new EvmReverseBasisCollateralService(
+    { getByQuote: async () => packageDocuments },
+    [lane(chain)],
+  );
+  const plan = await service.planByQuote(hash32(hexToBytes(`0x${packageDocuments.quoteHashHex}`)), 'SUPPLY');
+  assert.equal(plan?.action, 'SUPPLY');
+  assert.equal(plan?.inputAtoms, 150_000_000n);
+  assert.equal(plan?.quoteHash, `0x${packageDocuments.quoteHashHex}`);
+  assert.deepEqual(plan?.transactions.map((transaction) => transaction.kind), [
+    'APPROVE_COLLATERAL',
+    'MANAGE_PACKAGE_COLLATERAL',
+  ]);
 });
