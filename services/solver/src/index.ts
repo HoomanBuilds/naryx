@@ -1011,6 +1011,7 @@ export {
   type CrossDomainDriverAdvanceInput,
   type CrossDomainExecutionDriver,
 } from './cross-domain-execution-coordinator.js';
+export { HttpCrossDomainCoordinationJournal } from './http-cross-domain-coordination-journal.js';
 export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
