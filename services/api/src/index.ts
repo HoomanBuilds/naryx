@@ -514,3 +514,14 @@ export {
   type TestnetExecutionPolicy,
   type TestnetExecutionScope,
 } from "./testnet-execution-policy.js";
+export {
+  EvmTreasuryHedgeOrderError,
+  createEvmTreasuryHedgeOrderPort,
+  loadEvmTreasuryHedgeProfiles,
+  type CreatedEvmTreasuryHedgeOrder,
+  type EvmTreasuryHedgeBounds,
+  type EvmTreasuryHedgeLegProfile,
+  type EvmTreasuryHedgeOrderPort,
+  type EvmTreasuryHedgeOrderRequest,
+  type EvmTreasuryHedgeProfile,
+} from "./evm-treasury-hedge-order.js";
