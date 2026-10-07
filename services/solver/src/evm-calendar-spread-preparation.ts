@@ -103,10 +103,49 @@ const FUTURE_MARKET_ABI = [{
       { name: 'exitNotional', type: 'uint256' },
       { name: 'realizedPnl', type: 'int256' },
       { name: 'funding', type: 'int256' },
-      { name: 'fee', type: 'uint256' },
+      { name: 'charged', type: 'uint256' },
       { name: 'payout', type: 'uint256' },
+      { name: 'badDebt', type: 'uint256' },
     ],
   }],
+}, {
+  type: 'function', name: 'previewIncrease', stateMutability: 'view',
+  inputs: [
+    { name: 'trader', type: 'address' },
+    { name: 'sizeDelta', type: 'int128' },
+    { name: 'balanceWad', type: 'uint256' },
+  ],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' },
+      { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' },
+      { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'fillPriceWad', type: 'uint256' },
+    { name: 'feeWad', type: 'uint256' },
+  ],
+}, {
+  type: 'function', name: 'previewDecrease', stateMutability: 'view',
+  inputs: [{ name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' }],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' },
+      { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' },
+      { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'settlement', type: 'tuple', components: [
+      { name: 'exitNotional', type: 'uint256' },
+      { name: 'realizedPnl', type: 'int256' },
+      { name: 'funding', type: 'int256' },
+      { name: 'charged', type: 'uint256' },
+      { name: 'payout', type: 'uint256' },
+      { name: 'badDebt', type: 'uint256' },
+    ] },
+  ],
 }] as const satisfies Abi;
 
 export interface EvmCalendarSpreadAdapterFactoryBinding {
@@ -318,75 +357,47 @@ function absolute(value: bigint): bigint {
   return value < 0n ? -value : value;
 }
 
-function ceilDiv(numerator: bigint, denominator: bigint): bigint {
-  requireCondition(numerator >= 0n && denominator > 0n, 'division inputs are invalid');
-  return (numerator + denominator - 1n) / denominator;
-}
-
 function sameDirection(left: bigint, right: bigint): boolean {
   return (left > 0n && right > 0n) || (left < 0n && right < 0n);
 }
 
-export function deriveEvmCalendarIncreasePosition(
-  positionBefore: Position,
+async function previewIncreasePosition(
+  lane: EvmCalendarSpreadPreparationLane,
+  adapter: AdapterState,
   snapshot: EvmCalendarFutureSnapshot,
   sizeDelta: bigint,
   collateralAtoms: bigint,
-): Position {
-  const addedBalance = collateralAtoms * snapshot.collateralScale - snapshot.feeWad;
-  requireCondition(addedBalance > 0n && sameDirection(positionBefore.size, sizeDelta),
-    'future increase shape is invalid');
-  const oldSize = absolute(positionBefore.size);
-  const addedSize = absolute(sizeDelta);
-  const newSize = oldSize + addedSize;
-  return Object.freeze({
-    balance: positionBefore.balance + addedBalance,
-    size: positionBefore.size + sizeDelta,
-    entryNotional: positionBefore.entryNotional + snapshot.notionalWad,
-    entrySocialLossIndex: positionBefore.entrySocialLossIndex,
-    entryFundingIndex: (
-      oldSize * positionBefore.entryFundingIndex + addedSize * snapshot.currentFundingIndex
-    ) / newSize,
+): Promise<Position> {
+  const value = await lane.pricing.chain.readContract({
+    address: getAddress(adapter.market.contract.address),
+    abi: FUTURE_MARKET_ABI,
+    functionName: 'previewIncrease',
+    args: [adapter.address, sizeDelta, collateralAtoms * snapshot.collateralScale],
   });
+  requireCondition(natural(structField(value, 1, 'fillPriceWad'), 'increase fill price') === snapshot.fillPriceWad
+    && natural(structField(value, 2, 'feeWad'), 'increase fee') === snapshot.feeWad,
+  `${adapter.role} increase preview differs from the signed quote`);
+  return position(structField(value, 0, 'post'));
 }
 
-export function deriveEvmCalendarDecreasePosition(
-  positionBefore: Position,
+async function previewDecreasePosition(
+  lane: EvmCalendarSpreadPreparationLane,
+  adapter: AdapterState,
   snapshot: EvmCalendarFutureSnapshot,
   sizeDelta: bigint,
-): Readonly<{ post: Position; payoutAtoms: bigint }> {
-  const positionSize = absolute(positionBefore.size);
-  const closeSize = absolute(sizeDelta);
-  requireCondition(positionBefore.balance >= 0n && closeSize > 0n && closeSize < positionSize
-    && !sameDirection(positionBefore.size, sizeDelta), 'future decrease shape is invalid');
-  const entryProduct = positionBefore.entryNotional * closeSize;
-  const closedEntryNotional = positionBefore.size > 0n
-    ? ceilDiv(entryProduct, positionSize)
-    : entryProduct / positionSize;
-  const releasedMargin = positionBefore.balance * closeSize / positionSize;
-  const realizedPnl = positionBefore.size < 0n
-    ? closedEntryNotional - snapshot.notionalWad
-    : snapshot.notionalWad - closedEntryNotional;
-  const accrued = sizeDelta * (snapshot.currentFundingIndex - positionBefore.entryFundingIndex);
-  const funding = accrued >= 0n ? accrued / WAD : -ceilDiv(-accrued, WAD);
-  const equity = releasedMargin + realizedPnl + funding;
-  const positiveEquity = equity > 0n ? equity : 0n;
-  const floorToAtom = (value: bigint) => value - value % snapshot.collateralScale;
-  const charged = positiveEquity > 0n
-    ? (snapshot.feeWad < floorToAtom(positiveEquity) ? snapshot.feeWad : floorToAtom(positiveEquity))
-    : 0n;
-  const payoutWad = positiveEquity > charged ? floorToAtom(positiveEquity - charged) : 0n;
-  requireCondition(snapshot.insuranceWad + releasedMargin >= payoutWad + charged,
-    'future market insurance cannot settle the decrease');
+): Promise<Readonly<{ post: Position; payoutAtoms: bigint }>> {
+  const value = await lane.pricing.chain.readContract({
+    address: getAddress(adapter.market.contract.address),
+    abi: FUTURE_MARKET_ABI,
+    functionName: 'previewDecrease',
+    args: [adapter.address, sizeDelta],
+  });
+  const settlement = structField(value, 1, 'settlement');
+  requireCondition(natural(structField(settlement, 0, 'exitNotional'), 'decrease exit notional')
+    === snapshot.notionalWad, `${adapter.role} decrease preview differs from the signed quote`);
   return Object.freeze({
-    post: Object.freeze({
-      balance: positionBefore.balance - releasedMargin,
-      size: positionBefore.size + sizeDelta,
-      entryNotional: positionBefore.entryNotional - closedEntryNotional,
-      entrySocialLossIndex: positionBefore.entrySocialLossIndex,
-      entryFundingIndex: positionBefore.entryFundingIndex,
-    }),
-    payoutAtoms: payoutWad / snapshot.collateralScale,
+    post: position(structField(value, 0, 'post')),
+    payoutAtoms: natural(structField(settlement, 4, 'payout'), 'decrease payout') / snapshot.collateralScale,
   });
 }
 
@@ -524,12 +535,12 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
       `${adapter.role} current price differs from the signed quote`);
       const collateralIn = opening ? economics.marginDelta.atoms : 0n;
       const partial = documents.order.lifecycleAction === 'DECREASE'
-        ? deriveEvmCalendarDecreasePosition(adapter.position, snapshot, target)
+        ? await previewDecreasePosition(lane, adapter, snapshot, target)
         : undefined;
       const post = documents.order.lifecycleAction === 'ENTRY'
         ? postOpenPosition(snapshot, target, collateralIn)
         : documents.order.lifecycleAction === 'INCREASE'
-          ? deriveEvmCalendarIncreasePosition(adapter.position, snapshot, target, collateralIn)
+          ? await previewIncreasePosition(lane, adapter, snapshot, target, collateralIn)
           : partial?.post ?? zeroPosition();
       const payout = terminal
         ? await closePayout(lane, adapter, snapshot)

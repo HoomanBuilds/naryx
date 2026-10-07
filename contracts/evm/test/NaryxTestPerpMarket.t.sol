@@ -163,22 +163,28 @@ contract NaryxTestPerpMarketTest is Test {
         market.setFundingRatePerSecond(1e13);
         vm.warp(block.timestamp + 100);
         oracle.setPrice(2_000e8);
+        (ISynFuturesPositionObserver.Position memory increasePreview,,) = market.previewIncrease(alice, -0.5e18, 200e18);
         vm.prank(alice);
         ISynFuturesInstrument.PositionCache memory increased = market.trade(_args(-0.5e18, 200e18));
         assertEq(increased.size, -1.5e18);
         assertEq(increased.balance, 598.500312e18);
         assertEq(increased.entryNotional, 2_999.375e18);
         assertEq(increased.entryFundingIndex, 333_333_333_333_333);
+        assertEq(keccak256(abi.encode(increased)), keccak256(abi.encode(increasePreview)));
         assertEq(market.reserveOf(alice), 400e6);
 
         oracle.setPrice(1_900e8);
         _fundInsurance(1_000e6);
+        (ISynFuturesPositionObserver.Position memory decreasePreview, NaryxTestPerpMarket.Settlement memory settlement) =
+            market.previewDecrease(alice, 0.5e18);
+        uint256 reserveBefore = market.reserveOf(alice);
         vm.prank(alice);
         ISynFuturesInstrument.PositionCache memory decreased = market.trade(_args(0.5e18, 0));
         assertEq(decreased.size, -ONE);
         assertEq(decreased.balance, 399.000208e18);
         assertEq(decreased.entryNotional, 1_999.583333333333333334e18);
-        assertGt(market.reserveOf(alice), 400e6);
+        assertEq(keccak256(abi.encode(decreased)), keccak256(abi.encode(decreasePreview)));
+        assertEq(market.reserveOf(alice), reserveBefore + settlement.payout / market.collateralScale());
         _assertConserved();
 
         vm.startPrank(alice);

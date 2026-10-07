@@ -33,10 +33,6 @@ import {
   type StoredStrategyPackageDocuments,
   type StoredStrategyPackageOrderDocuments,
 } from '../src/index.js';
-import {
-  deriveEvmCalendarDecreasePosition,
-  deriveEvmCalendarIncreasePosition,
-} from '../src/evm-calendar-spread-preparation.js';
 
 const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
 const codeHash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
@@ -183,7 +179,6 @@ class Chain implements EvmOptionSpreadReadPort {
         case 'collateralScale': return 10n ** 12n;
         case 'oraclePriceWad': return 100n * 10n ** 18n;
         case 'currentFundingIndex': return 0n;
-        case 'insuranceWad': return 1_000n * 10n ** 18n;
         case 'reserveOf': return 0n;
         case 'previewOpen': {
           const sizeDelta = request.args?.[0];
@@ -191,6 +186,20 @@ class Chain implements EvmOptionSpreadReadPort {
           assert.equal(sizeDelta < 0n ? -sizeDelta : sizeDelta, QUANTITY);
           const price = (near ? sizeDelta > 0n ? 101n : 99n : sizeDelta > 0n ? 107n : 105n) * 10n ** 18n;
           return [price, price, price / 1_000n, 0n];
+        }
+        case 'previewDecrease': {
+          assert.equal(this.active, true);
+          assert.equal(String(request.args?.[0]).toLowerCase(), (near ? NEAR_ADAPTER : FAR_ADAPTER).toLowerCase());
+          assert.equal(request.args?.[1], near ? -QUANTITY : QUANTITY);
+          return near
+            ? [
+              [20n * 10n ** 18n, QUANTITY, 101n * 10n ** 18n, 0n, 0n],
+              [99n * 10n ** 18n, -2n * 10n ** 18n, 0n, 99n * 10n ** 15n, 17_901n * 10n ** 15n, 0n],
+            ]
+            : [
+              [21n * 10n ** 18n, -QUANTITY, 105n * 10n ** 18n, 0n, 0n],
+              [107n * 10n ** 18n, -2n * 10n ** 18n, 0n, 107n * 10n ** 15n, 18_893n * 10n ** 15n, 0n],
+            ];
         }
         default: throw new Error(`unexpected market read ${request.functionName}`);
       }
@@ -407,49 +416,6 @@ test('prices an atomic EVM calendar spread and enforces both future limits', asy
   );
 });
 
-test('derives exact calendar increase and partial-decrease postconditions', () => {
-  const snapshot = Object.freeze({
-    role: 'near-future' as const,
-    market: NEAR_MARKET,
-    expiry: 87_400n,
-    oraclePriceWad: 100n * 10n ** 18n,
-    fillPriceWad: 99n * 10n ** 18n,
-    notionalWad: 99n * 10n ** 18n,
-    feeWad: 99n * 10n ** 15n,
-    collateralScale: 10n ** 12n,
-    initialMarginBps: 2_000n,
-    maintenanceMarginBps: 1_000n,
-    currentFundingIndex: 0n,
-    insuranceWad: 1_000n * 10n ** 18n,
-  });
-  const position = Object.freeze({
-    balance: 40n * 10n ** 18n,
-    size: 2n * QUANTITY,
-    entryNotional: 202n * 10n ** 18n,
-    entrySocialLossIndex: 0n,
-    entryFundingIndex: 0n,
-  });
-  const increased = deriveEvmCalendarIncreasePosition(position, {
-    ...snapshot,
-    fillPriceWad: 101n * 10n ** 18n,
-    notionalWad: 101n * 10n ** 18n,
-    feeWad: 101n * 10n ** 15n,
-  }, QUANTITY, 20_301_000n);
-  assert.equal(increased.size, 3n * QUANTITY);
-  assert.equal(increased.balance, 60n * 10n ** 18n + 200n * 10n ** 15n);
-  assert.equal(increased.entryNotional, 303n * 10n ** 18n);
-
-  const decreased = deriveEvmCalendarDecreasePosition(position, snapshot, -QUANTITY);
-  assert.deepEqual(decreased.post, {
-    balance: 20n * 10n ** 18n,
-    size: QUANTITY,
-    entryNotional: 101n * 10n ** 18n,
-    entrySocialLossIndex: 0n,
-    entryFundingIndex: 0n,
-  });
-  assert.equal(decreased.payoutAtoms, 17_901_000n);
-});
-
 test('quotes and prepares an exact atomic EVM calendar spread entry', async () => {
   const chain = new Chain();
   const quotePricing = pricing(chain);
@@ -551,4 +517,96 @@ test('quotes and prepares an exact atomic EVM calendar spread entry', async () =
   assert.equal(envelope.execution.fees.protocolFeeAtoms, 50_500n);
   assert.equal(envelope.execution.fees.solverFeeAtoms, 50_500n);
   assert.notEqual(envelope.execution.nextStateHash, `0x${'00'.repeat(32)}`);
+});
+
+test('prepares a partial calendar decrease from authoritative market previews', async () => {
+  const chain = new Chain(true);
+  const quotePricing = pricing(chain);
+  const orderDocuments = documents(98n, 108n, 'DECREASE');
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const spki = publicKey.export({ format: 'der', type: 'spki' });
+  const quoteService = new GeneralizedStrategyQuoteService({
+    packages: { getByOrder: async () => orderDocuments },
+    contexts: new GeneralizedStrategyQuoteContextRegistry([{
+      laneId: 'base-calendar-spread-decrease',
+      environment: 'testnet',
+      templateManifest: template,
+      executionClassId: orderDocuments.order.executionClassId,
+      executionClassVersion: orderDocuments.order.executionClassVersion,
+      executionClassManifestHash: orderDocuments.order.executionClassManifestHash,
+      activeRegistryRecords,
+      resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+      adapterSupport: [{
+        domain,
+        adapter: nearAdapter,
+        legFamily: 'FUTURE_CLOSE',
+        supportedSides: ['SELL'],
+        materializationClassId: 'naryx.evm.future-exact',
+        executionPlanKind: 'EVM_ATOMIC_BATCH',
+        supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
+      }, {
+        domain,
+        adapter: farAdapter,
+        legFamily: 'FUTURE_CLOSE',
+        supportedSides: ['BUY'],
+        materializationClassId: 'naryx.evm.future-exact',
+        executionPlanKind: 'EVM_ATOMIC_BATCH',
+        supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
+      }],
+      solverId: 'base-calendar-solver',
+      solverCapabilityManifestHash: hash('e'),
+      pricing: createEvmCalendarSpreadGeneralizedPricing(quotePricing),
+      currentTime: async () => ({ unit: 'EVM_UNIX_SECONDS', value: NOW }),
+    }]),
+    signer: {
+      scheme: 'ED25519',
+      verificationKey: Uint8Array.from(spki.subarray(spki.length - 32)),
+      signDigest: (digest) => Uint8Array.from(sign(null, digest, privateKey)),
+    },
+  });
+  const quoted = await quoteService.quote({
+    orderHash: orderDocuments.orderHashHex,
+    idempotencyKey: 'evm-calendar-spread-decrease-0001',
+  });
+  const stored: StoredStrategyPackageDocuments = {
+    ...orderDocuments,
+    quoteHashHex: quoted.quoteHash,
+    routeHashHex: quoted.routeHash,
+    quote: quoted.quote,
+    route: quoted.route,
+  };
+  const preparationLane = Object.freeze({
+    environment: 'testnet' as const,
+    templateManifest: template,
+    activeRegistryRecords,
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    pricing: quotePricing,
+    accountFactory: { address: ACCOUNT_FACTORY, expectedCodeHash: codeHash('6') },
+    expectedStrategyAccountCodeHash: codeHash('7'),
+    adapters: [{
+      role: 'near-future' as const,
+      factory: { address: NEAR_FACTORY, expectedCodeHash: codeHash('8') },
+      expectedAdapterCodeHash: codeHash('a'),
+      maximumGasLimit: 600_000n,
+    }, {
+      role: 'far-future' as const,
+      factory: { address: FAR_FACTORY, expectedCodeHash: codeHash('9') },
+      expectedAdapterCodeHash: codeHash('b'),
+      maximumGasLimit: 600_000n,
+    }] as const,
+    solver: SOLVER,
+    packageIds: {
+      resolvePackageId: async (stateHash: Hex) => stateHash === `0x${OPEN_STATE_HASH}` ? OPEN_PACKAGE_ID : undefined,
+    },
+  });
+  const preparation = new StrategyPreparationService(
+    { getByQuote: async () => stored },
+    new EvmCalendarSpreadPreparationContextResolver([preparationLane]),
+  );
+  const prepared = await preparation.prepareByQuote(hexToBytes(`0x${quoted.quoteHash}`) as Hash32);
+  assert.equal(prepared?.domains[0]?.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
+  if (prepared?.domains[0]?.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('missing EVM preparation');
+  assert.deepEqual(prepared.domains[0].envelope.calls.map((call) => call.approvalAtoms), [0n, 0n]);
+  assert.notEqual(prepared.domains[0].envelope.execution.nextStateHash, `0x${'00'.repeat(32)}`);
+  assert.equal(prepared.domains[0].envelope.execution.previousStateHash, `0x${OPEN_STATE_HASH}`);
 });
