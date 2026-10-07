@@ -811,6 +811,57 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
       }));
     }
   }
+  const evmAtomicExecutionReady = generalizedStrategyPreparation !== undefined
+    && evmOptionSpreadProvisioning !== undefined
+    && evmStrategyExecutionAuthorization !== undefined
+    && evmStrategyExecutionObservation !== undefined;
+  if (evmAtomicExecutionReady && evmOptionSpreadOrders !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "evm-atomic-option-spread",
+      templateId: "option-spread-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "INCREASE", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "OPTION_BUY" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 2 }),
+        Object.freeze({ legFamily: "OPTION_MINT" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "OPTION_SELL" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(evmOptionSpreadOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
+  if (evmAtomicExecutionReady && evmTreasuryHedgeOrders !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "evm-atomic-treasury-inventory-hedge",
+      templateId: "treasury-inventory-hedge-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "INVENTORY_TRANSFER" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(evmTreasuryHedgeOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
+  if (evmAtomicExecutionReady && evmCollateralConversionOrders !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "evm-atomic-collateral-conversion-hedge",
+      templateId: "collateral-conversion-hedge-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "SPOT_SWAP" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "MARGIN_DEPOSIT" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "MARGIN_RELEASE" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(evmCollateralConversionOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
   return Object.freeze(capabilities);
 }
 
