@@ -42,6 +42,10 @@ export type SolanaDevnetOnboardingStepKind =
 type Meta = Readonly<{ pubkey: string; isSigner: boolean; isWritable: boolean }>;
 type Instruction = Readonly<{ programId: string; accounts: readonly Meta[]; data: Uint8Array }>;
 
+export type SolanaWalletInstructionBatch = Readonly<{
+  instructions: readonly Instruction[];
+}>;
+
 export type SolanaDevnetOnboardingStep = Readonly<{
   kind: SolanaDevnetOnboardingStepKind;
   label: string;
@@ -337,7 +341,11 @@ function compactU16(value: number): number[] {
 }
 
 /** Serializes one unsigned v0 transaction with the wallet as fee payer and only signer. */
-export function buildOnboardingTransaction(step: SolanaDevnetOnboardingStep, owner: string, recentBlockhash: string): Uint8Array {
+export function buildSolanaWalletTransaction(
+  batch: SolanaWalletInstructionBatch,
+  owner: string,
+  recentBlockhash: string,
+): Uint8Array {
   const keys = new Map<string, { signer: boolean; writable: boolean; order: number }>();
   const touch = (key: string, signer: boolean, writable: boolean) => {
     const current = keys.get(key);
@@ -346,7 +354,7 @@ export function buildOnboardingTransaction(step: SolanaDevnetOnboardingStep, own
       : { signer: current.signer || signer, writable: current.writable || writable, order: current.order });
   };
   touch(owner, true, true);
-  for (const instruction of step.instructions) {
+  for (const instruction of batch.instructions) {
     for (const meta of instruction.accounts) touch(meta.pubkey, meta.isSigner, meta.isWritable);
     touch(instruction.programId, false, false);
   }
@@ -368,9 +376,9 @@ export function buildOnboardingTransaction(step: SolanaDevnetOnboardingStep, own
     ...compactU16(ordered.length),
     ...ordered.flatMap(([key]) => Array.from(bs58.decode(key))),
     ...blockhash,
-    ...compactU16(step.instructions.length),
+    ...compactU16(batch.instructions.length),
   ];
-  for (const instruction of step.instructions) {
+  for (const instruction of batch.instructions) {
     message.push(index.get(instruction.programId)!, ...compactU16(instruction.accounts.length));
     for (const meta of instruction.accounts) message.push(index.get(meta.pubkey)!);
     message.push(...compactU16(instruction.data.length), ...instruction.data);
@@ -379,6 +387,10 @@ export function buildOnboardingTransaction(step: SolanaDevnetOnboardingStep, own
   const transaction = Uint8Array.from([...compactU16(1), ...new Array<number>(64).fill(0), ...message]);
   if (transaction.length > PACKET_LIMIT) fail("transaction exceeds the packet limit");
   return transaction;
+}
+
+export function buildOnboardingTransaction(step: SolanaDevnetOnboardingStep, owner: string, recentBlockhash: string): Uint8Array {
+  return buildSolanaWalletTransaction(step, owner, recentBlockhash);
 }
 
 async function devnetRpc(method: string, params: readonly unknown[]): Promise<unknown> {
@@ -396,7 +408,7 @@ async function devnetRpc(method: string, params: readonly unknown[]): Promise<un
   return payload.result;
 }
 
-async function devnetBlockhash(): Promise<Readonly<{ blockhash: string; lastValidBlockHeight: number }>> {
+export async function getSolanaDevnetBlockhash(): Promise<Readonly<{ blockhash: string; lastValidBlockHeight: number }>> {
   if (await devnetRpc("getGenesisHash", []) !== SOLANA_DEVNET_GENESIS_HASH) throw new Error("The Devnet RPC endpoint is not Solana Devnet.");
   const result = await devnetRpc("getLatestBlockhash", [{ commitment: "confirmed" }]);
   const value = isRecord(result) && isRecord(result.value) ? result.value : undefined;
@@ -406,7 +418,14 @@ async function devnetBlockhash(): Promise<Readonly<{ blockhash: string; lastVali
   return { blockhash: value.blockhash, lastValidBlockHeight: value.lastValidBlockHeight };
 }
 
-async function waitForFinality(signature: string, lastValidBlockHeight: number): Promise<void> {
+export async function getSolanaDevnetSlot(): Promise<number> {
+  if (await devnetRpc("getGenesisHash", []) !== SOLANA_DEVNET_GENESIS_HASH) throw new Error("The Devnet RPC endpoint is not Solana Devnet.");
+  const slot = await devnetRpc("getSlot", [{ commitment: "finalized" }]);
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot) || slot <= 0) throw new Error("Devnet RPC returned an invalid slot.");
+  return slot;
+}
+
+export async function waitForSolanaDevnetFinality(signature: string, lastValidBlockHeight: number): Promise<void> {
   const deadline = Date.now() + FINALITY_TIMEOUT_MS;
   for (;;) {
     const result = await devnetRpc("getSignatureStatuses", [[signature], { searchTransactionHistory: false }]);
@@ -441,10 +460,10 @@ export async function claimSolanaDevnetTestUsdc(input: Readonly<{
     const step = status.steps[0];
     if (step === undefined || (step.kind !== "CREATE_TOKEN_ACCOUNTS" && step.kind !== "CLAIM_TEST_COLLATERAL")) return false;
     onProgress?.(step.kind === "CREATE_TOKEN_ACCOUNTS" ? "Approve the token account setup" : "Approve the test USDC claim");
-    const { blockhash, lastValidBlockHeight } = await devnetBlockhash();
+    const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
     const signature = await signAndSend(buildOnboardingTransaction(step, owner, blockhash));
     onProgress?.("Waiting for Devnet finality");
-    await waitForFinality(signature, lastValidBlockHeight);
+    await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
     if (step.kind === "CLAIM_TEST_COLLATERAL") return true;
   }
   return false;
@@ -529,10 +548,10 @@ export function useSolanaDevnetOnboarding(input: Readonly<{
       setState((previous) => (previous?.key === key ? { ...previous, ...patch } : previous));
     try {
       update({ busy: "Waiting for wallet approval", error: null });
-      const { blockhash, lastValidBlockHeight } = await devnetBlockhash();
+      const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
       const signature = await signAndSend(buildOnboardingTransaction(nextStep, owner, blockhash));
       update({ busy: "Waiting for Devnet finality" });
-      await waitForFinality(signature, lastValidBlockHeight);
+      await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
       update({ busy: "Refreshing account" });
       const status = await readStatus(owner, sizeAtoms);
       setState({ key, status, error: null, busy: null });

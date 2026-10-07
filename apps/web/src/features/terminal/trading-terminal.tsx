@@ -1087,7 +1087,9 @@ function Ticket({
   selectedLifecycleAction,
   privateApiBaseUrl,
   publicApiBaseUrl,
+  connectedSolanaAccount,
   connectedEvmAccount,
+  sendSolanaTransaction,
   signStrategyOrder,
   signEvmStrategyExecution,
   sendEvmStrategyTransaction,
@@ -1135,7 +1137,9 @@ function Ticket({
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  connectedSolanaAccount: string | null;
   connectedEvmAccount: string | null;
+  sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
   signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
   sendEvmStrategyTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
@@ -1376,6 +1380,8 @@ function Ticket({
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
           strategyOwner={selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner ?? null : connectedEvmAccount}
+          solanaOwner={connectedSolanaAccount}
+          sendSolanaTransaction={sendSolanaTransaction}
           signStrategyOrder={signStrategyOrder}
           signEvmStrategyExecution={signEvmStrategyExecution}
           sendEvmTransaction={sendEvmStrategyTransaction}
@@ -3454,7 +3460,11 @@ export function TradingTerminal({
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
+            connectedSolanaAccount={wallet.selectedAccount?.address ?? null}
             connectedEvmAccount={evmWallet.account}
+            sendSolanaTransaction={wallet.selectedAccount !== null && wallet.canSignAndSendV0
+              ? wallet.signAndSend
+              : undefined}
             signStrategyOrder={evmWallet.account === null
               ? undefined
               : async (challenge) => {

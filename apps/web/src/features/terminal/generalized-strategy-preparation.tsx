@@ -2,6 +2,13 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { formatAtomicAmount, formatMetricValue } from "./format";
+import {
+  buildSolanaWalletTransaction,
+  getSolanaDevnetBlockhash,
+  getSolanaDevnetSlot,
+  waitForSolanaDevnetFinality,
+  type SolanaWalletInstructionBatch,
+} from "./solana-devnet-onboarding";
 import type { DomainId } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
 
@@ -9,6 +16,8 @@ const HASH = /^[0-9a-f]{64}$/;
 const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const EVM_ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/i;
 const EVM_HASH = /^0x[0-9a-f]{64}$/;
+const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SOLANA_PACKET_LIMIT = 1232;
 const STRATEGY_AUTHORIZATION_FIELDS = [
   ["orderHash", "bytes32"],
   ["owner", "address"],
@@ -156,6 +165,46 @@ type NativeStrategyProfile = Readonly<{
     maximumEconomicQuantityAtoms: string;
     maximumExpiryTtlMs: string;
   }>;
+}>;
+
+type SolanaTreasuryHedgeProfile = Readonly<{
+  profileId: string;
+  displayName: string;
+  templateId: string;
+  seriesId: string;
+  executionClassId: string;
+  domainId: "svm:devnet";
+  multiStrategyProgramId: string;
+  inventoryAsset: Readonly<{ assetId: string; decimals: number }>;
+  quoteAsset: Readonly<{ assetId: string; decimals: number }>;
+  bounds: Readonly<{
+    minimumQuantityAtoms: string;
+    maximumQuantityAtoms: string;
+    maximumExpiryTtlSlots: string;
+  }>;
+}>;
+
+type SolanaProvisioningPlan = Readonly<{
+  owner: string;
+  packageId: string;
+  strategyAccount: string;
+  ready: boolean;
+  inventoryFundingRequiredAtoms: string;
+  quoteFundingRequiredAtoms: string;
+  steps: readonly Readonly<{
+    kind: string;
+    label: string;
+    instructions: SolanaWalletInstructionBatch["instructions"];
+  }>[];
+}>;
+
+type AuthorizedSolanaExecution = Readonly<{
+  transactionBytes: Uint8Array;
+  owner: string;
+  solver: string;
+  strategyAccount: string;
+  quoteHash: string;
+  lastValidBlockHeight: number;
 }>;
 
 type NativeStrategyPositionReview = Readonly<{
@@ -382,6 +431,185 @@ function decode(value: Json): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, decode(entry)]));
   }
   return value;
+}
+
+function solanaAddress(value: unknown, context: string): string {
+  const result = text(value, context);
+  if (!SOLANA_ADDRESS.test(result)) throw new Error(`${context} is invalid.`);
+  return result;
+}
+
+function base64Bytes(value: unknown, context: string): Uint8Array {
+  const encoded = text(value, context);
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error(`${context} is invalid.`);
+  let binary: string;
+  try {
+    binary = atob(encoded);
+  } catch {
+    throw new Error(`${context} is invalid.`);
+  }
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (btoa(binary) !== encoded) throw new Error(`${context} is not canonical base64.`);
+  return bytes;
+}
+
+function parseSolanaTreasuryHedgeProfiles(payload: unknown): readonly SolanaTreasuryHedgeProfile[] {
+  const root = record(decode(payload as Json), "Solana treasury hedge profiles");
+  if (root.version !== 1) throw new Error("Solana treasury hedge profile version is unsupported.");
+  return list(root.profiles, "Solana treasury hedge profiles").map((candidate, index) => {
+    const profile = record(candidate, `Solana treasury hedge profile ${index}`);
+    const inventoryAsset = record(profile.inventoryAsset, `Solana treasury hedge profile ${index} inventory asset`);
+    const quoteAsset = record(profile.quoteAsset, `Solana treasury hedge profile ${index} quote asset`);
+    const bounds = record(profile.bounds, `Solana treasury hedge profile ${index} bounds`);
+    const domainId = text(profile.domainId, `Solana treasury hedge profile ${index} domain`);
+    if (domainId !== "svm:devnet") throw new Error(`Solana treasury hedge profile ${index} is not Devnet.`);
+    return Object.freeze({
+      profileId: text(profile.profileId, `Solana treasury hedge profile ${index} id`),
+      displayName: text(profile.displayName, `Solana treasury hedge profile ${index} display name`),
+      templateId: text(profile.templateId, `Solana treasury hedge profile ${index} template`),
+      seriesId: text(profile.seriesId, `Solana treasury hedge profile ${index} series`),
+      executionClassId: text(profile.executionClassId, `Solana treasury hedge profile ${index} execution class`),
+      domainId,
+      multiStrategyProgramId: solanaAddress(profile.multiStrategyProgramId, `Solana treasury hedge profile ${index} program`),
+      inventoryAsset: Object.freeze({
+        assetId: text(inventoryAsset.assetId, `Solana treasury hedge profile ${index} inventory asset id`),
+        decimals: unsignedInteger(inventoryAsset.decimals, `Solana treasury hedge profile ${index} inventory decimals`),
+      }),
+      quoteAsset: Object.freeze({
+        assetId: text(quoteAsset.assetId, `Solana treasury hedge profile ${index} quote asset id`),
+        decimals: unsignedInteger(quoteAsset.decimals, `Solana treasury hedge profile ${index} quote decimals`),
+      }),
+      bounds: Object.freeze({
+        minimumQuantityAtoms: decimalInteger(bounds.minimumQuantityAtoms, `Solana treasury hedge profile ${index} minimum quantity`),
+        maximumQuantityAtoms: decimalInteger(bounds.maximumQuantityAtoms, `Solana treasury hedge profile ${index} maximum quantity`),
+        maximumExpiryTtlSlots: decimalInteger(bounds.maximumExpiryTtlSlots, `Solana treasury hedge profile ${index} expiry TTL`),
+      }),
+    });
+  });
+}
+
+function parseCreatedSolanaTreasuryHedgeOrder(
+  payload: unknown,
+  profileId: string,
+  lifecycleAction: string,
+): Readonly<{ orderHash: string; graphHash: string }> {
+  const root = record(payload, "Solana treasury hedge order creation");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
+    || root.templateId !== "treasury-inventory-hedge-v1" || root.lifecycleAction !== lifecycleAction) {
+    throw new Error("Solana treasury hedge order creation changed the requested package.");
+  }
+  solanaAddress(root.settlementAccount, "Solana strategy account");
+  return Object.freeze({
+    orderHash: hash(root.orderHash, "Solana treasury hedge order hash"),
+    graphHash: hash(root.graphHash, "Solana treasury hedge graph hash"),
+  });
+}
+
+function parseSolanaProvisioning(
+  payload: unknown,
+  expectedOrderHash: string,
+  expectedOwner: string,
+): SolanaProvisioningPlan {
+  const root = record(decode(payload as Json), "Solana provisioning response");
+  const status = text(root.status, "Solana provisioning status");
+  if (root.version !== 1 || (status !== "READY" && status !== "FUNDING_REQUIRED"
+    && status !== "WALLET_TRANSACTIONS_REQUIRED")) {
+    throw new Error("Solana provisioning response is invalid.");
+  }
+  const plan = record(root.provisioning, "Solana provisioning plan");
+  const owner = solanaAddress(plan.owner, "Solana provisioning owner");
+  const packageId = hash(plan.packageId, "Solana provisioning package");
+  const strategyAccount = solanaAddress(plan.strategyAccount, "Solana strategy account");
+  const inventoryFundingRequiredAtoms = decimalInteger(plan.inventoryFundingRequiredAtoms, "Inventory funding requirement");
+  const quoteFundingRequiredAtoms = decimalInteger(plan.quoteFundingRequiredAtoms, "Quote funding requirement");
+  if (plan.version !== 1 || plan.domainId !== "svm:devnet" || owner !== expectedOwner
+    || packageId !== expectedOrderHash || typeof plan.ready !== "boolean"
+    || BigInt(inventoryFundingRequiredAtoms) < BigInt(0) || BigInt(quoteFundingRequiredAtoms) < BigInt(0)) {
+    throw new Error("Solana provisioning plan changed the selected package.");
+  }
+  const steps = list(plan.steps, "Solana provisioning steps").map((candidate, stepIndex) => {
+    const step = record(candidate, `Solana provisioning step ${stepIndex}`);
+    const instructions = list(step.instructions, `Solana provisioning step ${stepIndex} instructions`).map((raw, instructionIndex) => {
+      const instruction = record(raw, `Solana provisioning instruction ${stepIndex}:${instructionIndex}`);
+      const accounts = list(instruction.accounts, `Solana provisioning instruction ${stepIndex}:${instructionIndex} accounts`).map((rawAccount, accountIndex) => {
+        const account = record(rawAccount, `Solana provisioning account ${stepIndex}:${instructionIndex}:${accountIndex}`);
+        const pubkey = solanaAddress(account.pubkey, `Solana provisioning account ${stepIndex}:${instructionIndex}:${accountIndex}`);
+        if (typeof account.isSigner !== "boolean" || typeof account.isWritable !== "boolean"
+          || (account.isSigner && pubkey !== owner)) {
+          throw new Error(`Solana provisioning account ${stepIndex}:${instructionIndex}:${accountIndex} is invalid.`);
+        }
+        return Object.freeze({ pubkey, isSigner: account.isSigner, isWritable: account.isWritable });
+      });
+      if (!accounts.some((account) => account.isSigner && account.pubkey === owner)) {
+        throw new Error(`Solana provisioning instruction ${stepIndex}:${instructionIndex} is not owner-authorized.`);
+      }
+      return Object.freeze({
+        programId: solanaAddress(instruction.programId, `Solana provisioning instruction ${stepIndex}:${instructionIndex} program`),
+        accounts: Object.freeze(accounts),
+        data: base64Bytes(instruction.dataBase64, `Solana provisioning instruction ${stepIndex}:${instructionIndex} data`),
+      });
+    });
+    if (instructions.length === 0) throw new Error(`Solana provisioning step ${stepIndex} is empty.`);
+    return Object.freeze({
+      kind: text(step.kind, `Solana provisioning step ${stepIndex} kind`),
+      label: text(step.label, `Solana provisioning step ${stepIndex} label`),
+      instructions: Object.freeze(instructions),
+    });
+  });
+  const inventoryFunding = BigInt(inventoryFundingRequiredAtoms);
+  const quoteFunding = BigInt(quoteFundingRequiredAtoms);
+  const ready = plan.ready;
+  if (ready !== (steps.length === 0 && inventoryFunding === BigInt(0) && quoteFunding === BigInt(0))
+    || status === "READY" !== ready
+    || status === "FUNDING_REQUIRED" !== (!ready && (inventoryFunding > BigInt(0) || quoteFunding > BigInt(0)))) {
+    throw new Error("Solana provisioning readiness is inconsistent.");
+  }
+  return Object.freeze({
+    owner,
+    packageId,
+    strategyAccount,
+    ready,
+    inventoryFundingRequiredAtoms,
+    quoteFundingRequiredAtoms,
+    steps: Object.freeze(steps),
+  });
+}
+
+function parseAuthorizedSolanaExecution(
+  payload: unknown,
+  expectedOwner: string,
+  review: StrategyPreparationReview,
+): AuthorizedSolanaExecution {
+  const root = record(decode(payload as Json), "Solana strategy authorization");
+  if (root.version !== 1 || root.status !== "OWNER_SIGNATURE_REQUIRED") {
+    throw new Error("Solana strategy authorization is not ready for the owner wallet.");
+  }
+  const authorization = record(root.authorization, "Solana strategy authorization");
+  const domain = record(authorization.domain, "Solana authorization domain");
+  const owner = solanaAddress(authorization.owner, "Solana authorization owner");
+  const solver = solanaAddress(authorization.solver, "Solana authorization solver");
+  const transactionBytes = base64Bytes(authorization.transactionBase64, "Solana authorized transaction");
+  const requiredSigners = list(authorization.requiredSignerPubkeys, "Solana authorization signers")
+    .map((value, index) => solanaAddress(value, `Solana authorization signer ${index}`));
+  if (domain.domainId !== "svm:devnet" || owner !== expectedOwner || solver === owner
+    || transactionBytes.length === 0 || transactionBytes.length > SOLANA_PACKET_LIMIT
+    || requiredSigners.length !== 2 || new Set(requiredSigners).size !== 2
+    || !requiredSigners.includes(owner) || !requiredSigners.includes(solver)
+    || hash(authorization.packageId, "Solana authorization package") !== review.packageId
+    || hash(authorization.orderHash, "Solana authorization order") !== review.orderHash
+    || hash(authorization.quoteHash, "Solana authorization quote") !== review.quoteHash
+    || hash(authorization.routeHash, "Solana authorization route") !== review.routeHash) {
+    throw new Error("Solana strategy authorization changed the reviewed execution.");
+  }
+  const lastValidBlockHeight = integer(authorization.lastValidBlockHeight, "Solana authorization block height");
+  return Object.freeze({
+    transactionBytes,
+    owner,
+    solver,
+    strategyAccount: solanaAddress(authorization.strategyAccount, "Solana authorization strategy account"),
+    quoteHash: review.quoteHash,
+    lastValidBlockHeight,
+  });
 }
 
 function domainSummary(kind: string, value: Record<string, unknown>): Readonly<{ summary: string; expiry: string | null }> {
@@ -1232,10 +1460,12 @@ export function GeneralizedStrategyPreparationPanel({
   lifecycleAction,
   sourceOrderHash = null,
   strategyOwner = null,
+  solanaOwner = null,
   signStrategyOrder,
   signEvmStrategyExecution,
   sendEvmTransaction,
   waitForEvmReceipt,
+  sendSolanaTransaction,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
@@ -1244,12 +1474,15 @@ export function GeneralizedStrategyPreparationPanel({
   lifecycleAction: string;
   sourceOrderHash?: string | null;
   strategyOwner?: string | null;
+  solanaOwner?: string | null;
   signStrategyOrder?: (challenge: StrategyOrderAuthorizationChallenge) => Promise<string>;
   signEvmStrategyExecution?: (chainId: number, typedData: unknown) => Promise<string>;
   sendEvmTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
   waitForEvmReceipt?: (chainId: number, hash: string) => Promise<boolean>;
+  sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
 }) {
   const hyperliquidLane = executionDomain === "hyperliquid";
+  const solanaLane = executionDomain === "solana";
   const evmChainId = EVM_CHAIN_IDS[executionDomain];
   const evmLane = evmChainId !== undefined;
   const expectedDomainId = TEST_DOMAIN_IDS[executionDomain];
@@ -1257,7 +1490,9 @@ export function GeneralizedStrategyPreparationPanel({
     ? hyperliquidLane
     : hyperliquidLane
       ? NATIVE_HYPERCORE_TEMPLATES.has(templateId)
-      : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
+      : solanaLane
+        ? templateId === "treasury-inventory-hedge-v1" && lifecycleAction === "ENTRY"
+        : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
   const [orderHash, setOrderHash] = useState("");
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
@@ -1284,6 +1519,15 @@ export function GeneralizedStrategyPreparationPanel({
   const [nativeAdjustmentKind, setNativeAdjustmentKind] = useState<"INCREASE" | "DECREASE">("INCREASE");
   const [nativeLimitPrices, setNativeLimitPrices] = useState<Record<string, string>>({});
   const [createdNativeOrder, setCreatedNativeOrder] = useState<CreatedNativeStrategyOrder | null>(null);
+  const [solanaProfiles, setSolanaProfiles] = useState<readonly SolanaTreasuryHedgeProfile[] | null>(null);
+  const [selectedSolanaProfileId, setSelectedSolanaProfileId] = useState("");
+  const [solanaQuantity, setSolanaQuantity] = useState("");
+  const [solanaHedgePrice, setSolanaHedgePrice] = useState("");
+  const [solanaProvisioning, setSolanaProvisioning] = useState<SolanaProvisioningPlan | null>(null);
+  const [solanaCreateBusy, setSolanaCreateBusy] = useState(false);
+  const [solanaProvisionBusy, setSolanaProvisionBusy] = useState(false);
+  const [solanaExecutionBusy, setSolanaExecutionBusy] = useState(false);
+  const [solanaExecutionSignature, setSolanaExecutionSignature] = useState<string | null>(null);
   const [evmOptionProfiles, setEvmOptionProfiles] = useState<readonly EvmOptionProfile[] | null>(null);
   const [selectedEvmOptionProfileId, setSelectedEvmOptionProfileId] = useState("");
   const [evmOptionQuantity, setEvmOptionQuantity] = useState("");
@@ -1314,6 +1558,30 @@ export function GeneralizedStrategyPreparationPanel({
   const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!solanaLane || privateApiBaseUrl === null || sourceOrderHash !== null
+      || templateId !== "treasury-inventory-hedge-v1" || lifecycleAction !== "ENTRY") return;
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/solana-treasury-hedge-profiles`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseSolanaTreasuryHedgeProfiles(await response.json());
+    }).then((profiles) => {
+      setSolanaProfiles(profiles);
+      setSelectedSolanaProfileId((current) => current || profiles[0]?.profileId || "");
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setSolanaProfiles([]);
+      setError(cause instanceof Error ? cause.message : "Solana treasury hedge markets are unavailable.");
+    });
+    return () => controller.abort();
+  }, [lifecycleAction, privateApiBaseUrl, solanaLane, sourceOrderHash, templateId]);
 
   useEffect(() => {
     if (!evmLane || privateApiBaseUrl === null || sourceOrderHash !== null || templateId !== "option-spread-v1") return;
@@ -1472,6 +1740,10 @@ export function GeneralizedStrategyPreparationPanel({
     && admission.lifecycleAction === lifecycleAction
     && admission.domainIds.length === 1
     && admission.domainIds[0] === expectedDomainId);
+  const matchingSolanaProfiles = (solanaProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const selectedSolanaProfile = matchingSolanaProfiles.find((profile) => profile.profileId === selectedSolanaProfileId)
+    ?? matchingSolanaProfiles[0]
+    ?? null;
   const matchingEvmOptionProfiles = (evmOptionProfiles ?? []).filter((profile) => profile.chainId === evmChainId);
   const selectedEvmOptionProfile = matchingEvmOptionProfiles.find((profile) => profile.profileId === selectedEvmOptionProfileId)
     ?? matchingEvmOptionProfiles[0]
@@ -1540,6 +1812,136 @@ export function GeneralizedStrategyPreparationPanel({
     || lifecycleAction === "DECREASE" || lifecycleAction === "EXIT"
     || lifecycleAction === "MIGRATE" || lifecycleAction === "REBALANCE"
     || lifecycleAction === "EMERGENCY_UNWIND";
+
+  async function createSolanaTreasuryHedgeOrder() {
+    if (privateApiBaseUrl === null || selectedSolanaProfile === null) return;
+    setSolanaCreateBusy(true);
+    setError(null);
+    try {
+      if (lifecycleAction !== "ENTRY") throw new Error("The Solana treasury hedge lane currently activates entry only.");
+      if (solanaOwner === null || !SOLANA_ADDRESS.test(solanaOwner)) {
+        throw new Error("Connect the Solana wallet that will own this treasury hedge package.");
+      }
+      const quantityAtoms = amountToAtoms(
+        solanaQuantity,
+        selectedSolanaProfile.inventoryAsset.decimals,
+        "Treasury inventory quantity",
+      );
+      const limitHedgePrice = priceToAtomicRatio(
+        solanaHedgePrice,
+        selectedSolanaProfile.inventoryAsset.decimals,
+        selectedSolanaProfile.quoteAsset.decimals,
+        12,
+        "Short hedge limit price",
+      );
+      const currentSlot = BigInt(await getSolanaDevnetSlot());
+      const maximumTtl = BigInt(selectedSolanaProfile.bounds.maximumExpiryTtlSlots);
+      const ttl = maximumTtl < BigInt(600) ? maximumTtl : BigInt(600);
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/solana-treasury-hedge-orders/create`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: selectedSolanaProfile.profileId,
+          owner: solanaOwner,
+          lifecycleAction,
+          quantityAtoms: quantityAtoms.toString(),
+          limitHedgePrice,
+          expiryValue: (currentSlot + ttl).toString(),
+          nonce: randomNonce(),
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = parseCreatedSolanaTreasuryHedgeOrder(
+        await response.json(),
+        selectedSolanaProfile.profileId,
+        lifecycleAction,
+      );
+      setOrderHash(created.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+      setSolanaProvisioning(null);
+      setSolanaExecutionSignature(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Solana treasury hedge order creation failed closed.");
+    } finally {
+      setSolanaCreateBusy(false);
+    }
+  }
+
+  async function provisionSolanaTreasuryHedge() {
+    if (privateApiBaseUrl === null || solanaOwner === null || !HASH.test(orderHash)) return;
+    setSolanaProvisionBusy(true);
+    setError(null);
+    try {
+      if (sendSolanaTransaction === undefined) {
+        throw new Error("Connect a Wallet Standard account with Solana Devnet v0 transaction support.");
+      }
+      const loadPlan = async () => {
+        const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/solana-provision`, {
+          method: "POST",
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderHash }),
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        return parseSolanaProvisioning(await response.json(), orderHash, solanaOwner);
+      };
+      let plan = await loadPlan();
+      for (const step of plan.steps) {
+        const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
+        const transaction = buildSolanaWalletTransaction(step, solanaOwner, blockhash);
+        const signature = await sendSolanaTransaction(transaction);
+        await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
+      }
+      plan = await loadPlan();
+      setSolanaProvisioning(plan);
+      if (!plan.ready && plan.inventoryFundingRequiredAtoms === "0" && plan.quoteFundingRequiredAtoms === "0") {
+        throw new Error("Solana strategy provisioning has not finalized yet. Retry after Devnet confirms the account state.");
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Solana treasury hedge provisioning failed closed.");
+    } finally {
+      setSolanaProvisionBusy(false);
+    }
+  }
+
+  async function executeSolanaTreasuryHedge() {
+    if (privateApiBaseUrl === null || review === null || solanaOwner === null) return;
+    setSolanaExecutionBusy(true);
+    setError(null);
+    try {
+      if (sendSolanaTransaction === undefined) {
+        throw new Error("Connect a Wallet Standard account with Solana Devnet v0 transaction support.");
+      }
+      if (solanaProvisioning?.ready !== true) throw new Error("Provision the isolated Solana strategy accounts first.");
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/authorize-solana`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash: review.quoteHash }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const authorization = parseAuthorizedSolanaExecution(await response.json(), solanaOwner, review);
+      if (authorization.strategyAccount !== solanaProvisioning.strategyAccount) {
+        throw new Error("Solana execution authorization changed the provisioned strategy account.");
+      }
+      const signature = await sendSolanaTransaction(authorization.transactionBytes);
+      setSolanaExecutionSignature(signature);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Solana treasury hedge submission failed closed.");
+    } finally {
+      setSolanaExecutionBusy(false);
+    }
+  }
 
   async function createEvmOptionOrder() {
     if (privateApiBaseUrl === null || selectedEvmOptionProfile === null) return;
@@ -1976,6 +2378,7 @@ export function GeneralizedStrategyPreparationPanel({
       const parsed = parseQuoteReview(await response.json(), orderHash);
       setQuoteReview(parsed);
       setQuoteHash(parsed.quoteHash);
+      setSolanaExecutionSignature(null);
       setEvmCollateral(null);
       setEvmCollateralCompletionKey("");
       setReview(null);
@@ -2202,6 +2605,12 @@ export function GeneralizedStrategyPreparationPanel({
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
     && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
+  const solanaFieldsReady = selectedSolanaProfile !== null
+    && lifecycleAction === "ENTRY"
+    && solanaOwner !== null
+    && SOLANA_ADDRESS.test(solanaOwner)
+    && solanaQuantity.trim() !== ""
+    && solanaHedgePrice.trim() !== "";
   const evmOptionFieldsReady = selectedEvmOptionProfile !== null
     && evmLifecycleSupported
     && strategyOwner !== null
@@ -2220,6 +2629,9 @@ export function GeneralizedStrategyPreparationPanel({
     && evmHedgePrice !== ""
     && (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE" || evmSwapPrice !== "");
   const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
+  const solanaReview = review?.domains.length === 1 && review.domains[0]?.kind === "SOLANA_MULTI_STRATEGY_ACCOUNT"
+    ? review.domains[0]
+    : null;
 
   if (!laneSupportsTemplate) {
     return (
@@ -2239,7 +2651,7 @@ export function GeneralizedStrategyPreparationPanel({
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
         <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-        <span>{evmExecutionConfirmed ? "ONCHAIN CONFIRMED" : evmExecutionHash ? "SUBMITTED" : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
+        <span>{evmExecutionConfirmed ? "ONCHAIN CONFIRMED" : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED" : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
         Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
@@ -2425,6 +2837,113 @@ export function GeneralizedStrategyPreparationPanel({
             <p className={styles.fieldContext} role="status">
               {nativeProfiles === null ? "Loading reviewed HyperCore markets." : nativeProfileError ?? "No reviewed HyperCore market matches this strategy."}
             </p>
+          )}
+        </div>
+      ) : null}
+      {sourceOrderHash === null && solanaLane && templateId === "treasury-inventory-hedge-v1"
+        && lifecycleAction === "ENTRY" ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="solana-treasury-hedge-profile">Atomic treasury hedge market</label>
+          <select
+            id="solana-treasury-hedge-profile"
+            value={selectedSolanaProfile?.profileId ?? ""}
+            disabled={solanaProfiles === null || matchingSolanaProfiles.length === 0}
+            onChange={(event) => {
+              setSelectedSolanaProfileId(event.target.value);
+              setOrderHash("");
+              setQuoteHash("");
+              setQuoteReview(null);
+              setReview(null);
+              setSolanaProvisioning(null);
+              setSolanaExecutionSignature(null);
+              setError(null);
+            }}
+          >
+            {matchingSolanaProfiles.length === 0 ? <option value="">No reviewed Solana market is active</option> : null}
+            {matchingSolanaProfiles.map((profile) => (
+              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+            ))}
+          </select>
+          {selectedSolanaProfile ? (
+            <>
+              <div className={styles.reviewGrid}>
+                <span>Domain</span><strong>{selectedSolanaProfile.domainId}</strong>
+                <span>Inventory asset</span><strong>{selectedSolanaProfile.inventoryAsset.assetId}</strong>
+                <span>Quote asset</span><strong>{selectedSolanaProfile.quoteAsset.assetId}</strong>
+                <span>Settlement</span><strong>Atomic postconditions</strong>
+              </div>
+              <label htmlFor="solana-treasury-hedge-quantity">Inventory quantity</label>
+              <input
+                id="solana-treasury-hedge-quantity"
+                value={solanaQuantity}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => {
+                  setSolanaQuantity(event.target.value.trim());
+                  setOrderHash("");
+                  setSolanaProvisioning(null);
+                  setSolanaExecutionSignature(null);
+                  setError(null);
+                }}
+              />
+              <p className={styles.fieldContext}>
+                Reviewed range {formatAtomicAmount(selectedSolanaProfile.bounds.minimumQuantityAtoms,
+                  selectedSolanaProfile.inventoryAsset.decimals, selectedSolanaProfile.inventoryAsset.assetId)} to {formatAtomicAmount(
+                  selectedSolanaProfile.bounds.maximumQuantityAtoms, selectedSolanaProfile.inventoryAsset.decimals,
+                  selectedSolanaProfile.inventoryAsset.assetId)}.
+              </p>
+              <label htmlFor="solana-treasury-hedge-price">Minimum short hedge price</label>
+              <input
+                id="solana-treasury-hedge-price"
+                value={solanaHedgePrice}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder={`Price in ${selectedSolanaProfile.quoteAsset.assetId.split(":").at(-1)?.toUpperCase() ?? "quote asset"}`}
+                onChange={(event) => {
+                  setSolanaHedgePrice(event.target.value.trim());
+                  setOrderHash("");
+                  setSolanaProvisioning(null);
+                  setSolanaExecutionSignature(null);
+                  setError(null);
+                }}
+              />
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || solanaCreateBusy || !solanaFieldsReady}
+                onClick={() => void createSolanaTreasuryHedgeOrder()}
+              >
+                {solanaCreateBusy ? "Creating atomic Solana package" : "Create atomic Solana package"}
+              </button>
+              {HASH.test(orderHash) ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={solanaProvisionBusy || solanaProvisioning?.ready === true}
+                  onClick={() => void provisionSolanaTreasuryHedge()}
+                >
+                  {solanaProvisionBusy ? "Provisioning isolated accounts" : solanaProvisioning?.ready
+                    ? "Solana strategy accounts ready" : "Provision Solana strategy accounts"}
+                </button>
+              ) : null}
+              <p className={styles.fieldContext} role="status">
+                {solanaOwner === null
+                  ? "Connect the Solana wallet that will own this package."
+                  : solanaProvisioning?.ready
+                    ? `Strategy account ${compact(solanaProvisioning.strategyAccount, 10, 8)} is ready.`
+                    : solanaProvisioning !== null
+                      && (solanaProvisioning.inventoryFundingRequiredAtoms !== "0"
+                        || solanaProvisioning.quoteFundingRequiredAtoms !== "0")
+                      ? `Funding required: ${formatAtomicAmount(solanaProvisioning.inventoryFundingRequiredAtoms,
+                        selectedSolanaProfile.inventoryAsset.decimals, selectedSolanaProfile.inventoryAsset.assetId)} and ${formatAtomicAmount(
+                        solanaProvisioning.quoteFundingRequiredAtoms, selectedSolanaProfile.quoteAsset.decimals,
+                        selectedSolanaProfile.quoteAsset.assetId)}.`
+                      : "The wallet provisions isolated inventory, collateral, perpetual, and strategy accounts on Devnet."}
+              </p>
+            </>
+          ) : (
+            <p className={styles.fieldContext} role="status">Loading reviewed Solana treasury hedge markets.</p>
           )}
         </div>
       ) : null}
@@ -2726,6 +3245,7 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionResult(null);
             setExecutionProgress(null);
             setStrategyReceipt(null);
+            setSolanaExecutionSignature(null);
             setEvmCollateral(null);
             setEvmCollateralCompletionKey("");
             setError(null);
@@ -2806,6 +3326,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setExecutionResult(null);
                 setExecutionProgress(null);
                 setStrategyReceipt(null);
+                setSolanaExecutionSignature(null);
                 setEvmCollateral(null);
                 setEvmCollateralCompletionKey("");
                 setError(null);
@@ -2838,6 +3359,7 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionResult(null);
             setExecutionProgress(null);
             setStrategyReceipt(null);
+            setSolanaExecutionSignature(null);
             setEvmCollateral(null);
             setEvmCollateralCompletionKey("");
             setError(null);
@@ -2847,6 +3369,7 @@ export function GeneralizedStrategyPreparationPanel({
           type="button"
           className={styles.secondaryAction}
           disabled={privateApiBaseUrl === null || prepareBusy || !HASH.test(quoteHash)
+            || (solanaLane && selectedSolanaProfile !== null && solanaProvisioning?.ready !== true)
             || (selectedEvmProfile !== null && lifecycleAction === "ENTRY" && evmProvisioning?.ready !== true)
             || (selectedEvmDirectionalProfile?.kind === "REVERSE_BASIS" && lifecycleAction === "ENTRY"
               && evmCollateralCompletionKey !== `${quoteHash}:SUPPLY`)}
@@ -2935,6 +3458,24 @@ export function GeneralizedStrategyPreparationPanel({
                   : `The owner and solver sign the same ${review.domains[0]?.summary ?? "atomic package"}. The wallet submits one transaction.`}
               </p>
             </>
+          ) : solanaReview ? (
+            <>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || solanaExecutionBusy
+                  || solanaExecutionSignature !== null || solanaProvisioning?.ready !== true}
+                onClick={() => void executeSolanaTreasuryHedge()}
+              >
+                {solanaExecutionBusy ? "Confirming atomic Solana package"
+                  : solanaExecutionSignature ? "Atomic Solana package submitted" : "Sign and submit atomic Solana package"}
+              </button>
+              <p className={styles.fieldContext} role="status">
+                {solanaExecutionSignature
+                  ? `Submitted Devnet transaction ${compact(solanaExecutionSignature, 12, 10)}. Finalized package observation is still pending.`
+                  : `The solver has signed the reviewed ${solanaReview.summary}. Your wallet supplies the owner signature and submits it.`}
+              </p>
+            </>
           ) : (
             <>
               <button
@@ -2955,7 +3496,7 @@ export function GeneralizedStrategyPreparationPanel({
               </button>
             </>
           )}
-          {!evmReview && executionAttempt ? (
+          {!evmReview && !solanaReview && executionAttempt ? (
             <>
               <p className={styles.fieldContext} role="status">
                 Attempt {compact(executionAttempt.attemptId)} durably binds every reviewed commitment. Nothing has been submitted.
@@ -3020,8 +3561,12 @@ export function GeneralizedStrategyPreparationPanel({
           <p className={styles.reviewNotice}>
             {evmExecutionConfirmed
               ? "The atomic package executed under the strategy account's onchain call policies and postconditions."
+              : solanaExecutionSignature
+                ? "The owner and solver signed one atomic Solana Devnet transaction. Canonical package observation remains separate."
               : executionResult
               ? "The testnet executor independently revalidated the selected package before submission."
+              : solanaReview
+                ? "The reviewed Solana transaction remains unsigned by the owner until wallet confirmation."
               : authorizedOrderHash === review.orderHash
                 ? "The owner authorized this exact strategy hash. Selection and testnet execution remain separate fail-closed steps."
                 : "This remains an unsigned review until the owner authorizes the exact strategy hash."}
