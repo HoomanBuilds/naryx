@@ -1,14 +1,19 @@
 import {
   bytesEqual,
   fromProtocolJson,
+  packageQuoteExecutionBinding,
+  packageQuoteExecutionBindingHash,
   strategyPackageQuote,
   strategyPackageQuoteHash,
   toHex,
   typedStrategyRouteHash,
   type StrategyPackageQuote,
   type StrategyPackageQuoteInput,
+  type PackageQuoteExecutionBinding,
+  type PackageQuoteExecutionBindingInput,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
+import { verifyEd25519 } from './ed25519.js';
 
 const HASH = /^[0-9a-f]{64}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
@@ -25,10 +30,20 @@ export interface GeneralizedStrategyQuoteResult {
   readonly quoteHash: string;
   readonly route: TypedStrategyRoute;
   readonly quote: StrategyPackageQuote;
+  readonly executionBinding?: PackageQuoteExecutionBinding;
+}
+
+export interface GeneralizedStrategyPackageExecutionContext {
+  readonly packageOrderId: string;
+  readonly settlementReadinessHash: string;
 }
 
 export interface GeneralizedStrategyQuotePort {
-  quote(orderHash: string, idempotencyKey: string): Promise<GeneralizedStrategyQuoteResult>;
+  quote(
+    orderHash: string,
+    idempotencyKey: string,
+    packageExecution?: GeneralizedStrategyPackageExecutionContext,
+  ): Promise<GeneralizedStrategyQuoteResult>;
 }
 
 export class GeneralizedStrategyQuoteClientError extends Error {
@@ -95,6 +110,7 @@ function checkedResponse(
   value: unknown,
   expectedOrderHash: string,
   expectedIdempotencyKey: string,
+  expectedPackageExecution?: GeneralizedStrategyPackageExecutionContext,
 ): GeneralizedStrategyQuoteResult {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new GeneralizedStrategyQuoteClientError('INVALID_RESPONSE', 'strategy quote response must be an object');
@@ -103,8 +119,8 @@ function checkedResponse(
   const keys = Object.keys(root).sort();
   const expectedKeys = [
     'graphHash', 'idempotencyKey', 'orderHash', 'quote', 'quoteHash', 'route', 'routeHash',
-    'status', 'version',
-  ];
+    'status', 'version', ...(expectedPackageExecution === undefined ? [] : ['executionBinding']),
+  ].sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])
     || root.version !== 1 || root.status !== 'SIGNED'
     || root.orderHash !== expectedOrderHash || root.idempotencyKey !== expectedIdempotencyKey
@@ -125,10 +141,36 @@ function checkedResponse(
     throw new GeneralizedStrategyQuoteClientError('INVALID_RESPONSE', 'strategy quote payload is invalid');
   }
   const quoteHash = toHex(strategyPackageQuoteHash(quote));
+  let executionBinding: PackageQuoteExecutionBinding | undefined;
+  if (expectedPackageExecution !== undefined) {
+    try {
+      executionBinding = packageQuoteExecutionBinding(root.executionBinding as PackageQuoteExecutionBindingInput);
+    } catch {
+      throw new GeneralizedStrategyQuoteClientError('INVALID_RESPONSE', 'strategy quote execution binding is invalid');
+    }
+  }
   if (routeHash !== root.routeHash || quoteHash !== root.quoteHash
     || toHex(route.orderHash) !== expectedOrderHash || toHex(quote.orderHash) !== expectedOrderHash
     || toHex(route.graphHash) !== root.graphHash || toHex(quote.graphHash) !== root.graphHash
-    || !bytesEqual(quote.routeHash, typedStrategyRouteHash(route))) {
+    || !bytesEqual(quote.routeHash, typedStrategyRouteHash(route))
+    || (executionBinding !== undefined && (
+      toHex(executionBinding.packageOrderId) !== expectedPackageExecution!.packageOrderId
+      || toHex(executionBinding.settlementReadinessHash) !== expectedPackageExecution!.settlementReadinessHash
+      || toHex(executionBinding.strategyOrderHash) !== expectedOrderHash
+      || toHex(executionBinding.strategyQuoteHash) !== quoteHash
+      || toHex(executionBinding.routeHash) !== routeHash
+      || executionBinding.executionClassId !== quote.executionClassId
+      || executionBinding.solverId !== quote.solverId
+      || executionBinding.validUntilUnit !== quote.validUntilUnit
+      || executionBinding.validUntilValue > quote.validUntilValue
+      || executionBinding.solverSignatureScheme !== 'ED25519'
+      || !bytesEqual(executionBinding.solverVerificationKey, quote.solverVerificationKey)
+      || !verifyEd25519(
+        executionBinding.solverVerificationKey,
+        packageQuoteExecutionBindingHash(executionBinding),
+        executionBinding.signature,
+      )
+    ))) {
     throw new GeneralizedStrategyQuoteClientError('INVALID_RESPONSE', 'strategy quote commitments are mismatched');
   }
   return Object.freeze({
@@ -141,6 +183,7 @@ function checkedResponse(
     quoteHash,
     route,
     quote,
+    ...(executionBinding === undefined ? {} : { executionBinding }),
   });
 }
 
@@ -153,14 +196,22 @@ export class HttpGeneralizedStrategyQuoteClient implements GeneralizedStrategyQu
     this.#fetch = fetchImplementation;
   }
 
-  async quote(orderHash: string, idempotencyKey: string): Promise<GeneralizedStrategyQuoteResult> {
+  async quote(
+    orderHash: string,
+    idempotencyKey: string,
+    packageExecution?: GeneralizedStrategyPackageExecutionContext,
+  ): Promise<GeneralizedStrategyQuoteResult> {
     if (!HASH.test(orderHash) || !IDEMPOTENCY_KEY.test(idempotencyKey)) {
       throw new GeneralizedStrategyQuoteClientError('INVALID_REQUEST', 'order hash or idempotency key is invalid');
+    }
+    if (packageExecution !== undefined && (!HASH.test(packageExecution.packageOrderId)
+      || !HASH.test(packageExecution.settlementReadinessHash))) {
+      throw new GeneralizedStrategyQuoteClientError('INVALID_REQUEST', 'package execution context is invalid');
     }
     const response = await this.#fetch(`${this.#origin}/internal/strategy-quotes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderHash, idempotencyKey }),
+      body: JSON.stringify({ orderHash, idempotencyKey, ...(packageExecution === undefined ? {} : { packageExecution }) }),
       redirect: 'error',
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -170,6 +221,6 @@ export class HttpGeneralizedStrategyQuoteClient implements GeneralizedStrategyQu
     if (!response.ok) {
       throw new GeneralizedStrategyQuoteClientError('QUOTE_DECLINED', `strategy quote failed with HTTP ${response.status}`);
     }
-    return checkedResponse(await boundedProtocolJson(response), orderHash, idempotencyKey);
+    return checkedResponse(await boundedProtocolJson(response), orderHash, idempotencyKey, packageExecution);
   }
 }

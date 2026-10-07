@@ -4,12 +4,15 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import {
   bytesEqual,
+  packageQuoteExecutionBinding,
   parseProtocolJson,
   strategyPackageQuote,
   strategyPackageQuoteHash,
   stringifyProtocolJson,
   toHex,
   typedStrategyRouteHash,
+  type PackageQuoteExecutionBinding,
+  type PackageQuoteExecutionBindingInput,
   type StrategyPackageQuoteInput,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
@@ -61,7 +64,10 @@ function parseResponse(value: string, key: string, orderHash: string): Generaliz
   }
   const response = parsed as Record<string, unknown>;
   const keys = Object.keys(response).sort();
-  const expected = ['graphHash', 'idempotencyKey', 'orderHash', 'quote', 'quoteHash', 'route', 'routeHash', 'status', 'version'];
+  const expected = [
+    'graphHash', 'idempotencyKey', 'orderHash', 'quote', 'quoteHash', 'route', 'routeHash', 'status', 'version',
+    ...(response.executionBinding === undefined ? [] : ['executionBinding']),
+  ].sort();
   if (keys.length !== expected.length || keys.some((field, index) => field !== expected[index])
     || response.version !== 1 || response.status !== 'SIGNED'
     || response.idempotencyKey !== key || response.orderHash !== orderHash
@@ -81,6 +87,17 @@ function parseResponse(value: string, key: string, orderHash: string): Generaliz
     throw new Error('stored strategy quote route is invalid');
   }
   const quoteHash = toHex(strategyPackageQuoteHash(quote));
+  let executionBinding: PackageQuoteExecutionBinding | undefined;
+  if (response.executionBinding !== undefined) {
+    try {
+      executionBinding = packageQuoteExecutionBinding(
+        response.executionBinding as PackageQuoteExecutionBindingInput,
+        'storedStrategyQuote.executionBinding',
+      );
+    } catch {
+      throw new Error('stored strategy quote execution binding is invalid');
+    }
+  }
   if (route.version !== 1
     || routeHash !== response.routeHash || quoteHash !== response.quoteHash
     || toHex(route.orderHash) !== orderHash || toHex(quote.orderHash) !== orderHash
@@ -88,7 +105,18 @@ function parseResponse(value: string, key: string, orderHash: string): Generaliz
     || !bytesEqual(quote.routeHash, typedStrategyRouteHash(route))
     || quote.environment !== route.environment
     || quote.solverId !== route.solverId
-    || quote.settlementClass !== route.settlementClass) {
+    || quote.settlementClass !== route.settlementClass
+    || (executionBinding !== undefined && (
+      toHex(executionBinding.strategyOrderHash) !== orderHash
+      || toHex(executionBinding.strategyQuoteHash) !== quoteHash
+      || toHex(executionBinding.routeHash) !== routeHash
+      || executionBinding.executionClassId !== quote.executionClassId
+      || executionBinding.solverId !== quote.solverId
+      || executionBinding.validUntilUnit !== quote.validUntilUnit
+      || executionBinding.validUntilValue > quote.validUntilValue
+      || executionBinding.solverSignatureScheme !== quote.solverSignatureScheme
+      || !bytesEqual(executionBinding.solverVerificationKey, quote.solverVerificationKey)
+    ))) {
     throw new Error('stored strategy quote commitments are mismatched');
   }
   return Object.freeze({
@@ -101,6 +129,7 @@ function parseResponse(value: string, key: string, orderHash: string): Generaliz
     quoteHash,
     route,
     quote,
+    ...(executionBinding === undefined ? {} : { executionBinding }),
   });
 }
 

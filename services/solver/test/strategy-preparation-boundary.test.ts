@@ -41,6 +41,30 @@ test('preparation service does not resolve context for an unknown quote', async 
   assert.equal(await service.prepareByQuote(commitmentHash(QUOTE_HASH)), undefined);
 });
 
+test('preparation blocks an unbound quote after final package settlement', async () => {
+  let contextResolved = false;
+  const service = new StrategyPreparationService(
+    { getByQuote: async () => undefined },
+    {
+      resolve: async () => {
+        contextResolved = true;
+        throw new Error('must not resolve');
+      },
+    },
+  );
+  await assert.rejects(
+    () => service.prepareDocuments({
+      packageExecution: {
+        readinessHashHex: '22'.repeat(32),
+        readiness: {} as never,
+        recordedAtMs: 1,
+      },
+    } as never),
+    /requires a signed quote execution binding/,
+  );
+  assert.equal(contextResolved, false);
+});
+
 test('strategy preparation handler is loopback-only and protocol-serializes the prepared result', async () => {
   const handler = createStrategyPreparationInternalHandler({
     prepareByQuote: async (quoteHash) => ({ version: 1, quoteHash } as never),

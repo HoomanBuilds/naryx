@@ -31,6 +31,8 @@ import {
   packageSettlementCommitmentBytes,
   packageSettlementCommitmentHash,
   packageSettlementHandoffHash,
+  packageSettlementReadinessHash,
+  packageQuoteExecutionBindingHash,
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
@@ -44,6 +46,7 @@ import {
   builderManifestHash,
   toProtocolJson,
   validatePackageOrderProfile,
+  validatePackageQuoteExecutionBinding,
   verifyPackageSettlementHandoff,
 } from "@naryx/protocol-types";
 import type {
@@ -215,7 +218,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -482,12 +485,26 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return series.document;
   }
 
-  async function requestAndStoreStrategyQuote(orderHash: string, idempotencyKey: string) {
+  async function requestAndStoreStrategyQuote(
+    orderHash: string,
+    idempotencyKey: string,
+    packageExecution?: Readonly<{
+      packageOrderId: string;
+      settlement: ReturnType<SqlitePackageExchangeStore["settlementProgress"]> & {};
+    }>,
+  ) {
     const store = requireStrategyPackages();
     if (store.order === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
     const stored = store.order(orderHash);
     if (stored === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "The strategy order is not stored for quoting.");
-    const result = await requireStrategyQuotes().quote(orderHash, idempotencyKey);
+    const result = await requireStrategyQuotes().quote(
+      orderHash,
+      idempotencyKey,
+      packageExecution === undefined ? undefined : {
+        packageOrderId: packageExecution.packageOrderId,
+        settlementReadinessHash: packageExecution.settlement.readinessHashHex,
+      },
+    );
     const graph = packageGraph(stored.graph);
     const series = requireStrategyMarket(graph);
     const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
@@ -538,7 +555,43 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
       throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
     }
-    const storedQuote = store.registerQuote(admitted);
+    if (packageExecution !== undefined) {
+      if (result.executionBinding === undefined) {
+        throw new RequestError(400, "EXECUTION_BINDING_MISSING", "The solver omitted the package execution binding.");
+      }
+      try {
+        validatePackageQuoteExecutionBinding(
+          result.executionBinding,
+          packageExecution.settlement.readiness,
+          admitted.quote,
+        );
+      } catch {
+        throw new RequestError(400, "EXECUTION_BINDING_MISMATCH", "The package execution binding does not match final settlement readiness and quote.");
+      }
+      if (!bytesEqual(
+        result.executionBinding.settlementReadinessHash,
+        packageSettlementReadinessHash(packageExecution.settlement.readiness),
+      ) || !verifyEd25519(
+        result.executionBinding.solverVerificationKey,
+        packageQuoteExecutionBindingHash(result.executionBinding),
+        result.executionBinding.signature,
+      )) {
+        throw new RequestError(400, "INVALID_EXECUTION_BINDING_SIGNATURE", "The package execution binding signature is invalid.");
+      }
+    } else if (result.executionBinding !== undefined) {
+      throw new RequestError(400, "UNEXPECTED_EXECUTION_BINDING", "A direct strategy quote cannot carry a package execution binding.");
+    }
+    const storedQuote = packageExecution === undefined
+      ? store.registerQuote(admitted)
+      : (() => {
+        if (result.executionBinding === undefined) {
+          throw new RequestError(400, "EXECUTION_BINDING_MISSING", "The solver omitted the package execution binding.");
+        }
+        if (store.registerBoundQuote === undefined) {
+          throw new RequestError(503, "EXECUTION_BINDING_STORE_UNAVAILABLE", "Durable package execution binding storage is unavailable.");
+        }
+        return store.registerBoundQuote(admitted, packageExecution.settlement.readiness, result.executionBinding);
+      })();
     return Object.freeze({
       version: 1 as const,
       status: "SIGNED_AND_STORED" as const,
@@ -548,6 +601,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       quoteHash: storedQuote.quoteHashHex,
       route: admitted.route,
       quote: admitted.quote,
+      ...(result.executionBinding === undefined ? {} : {
+        executionBinding: result.executionBinding,
+        executionBindingHash: toHex(packageQuoteExecutionBindingHash(result.executionBinding)),
+      }),
     });
   }
 
@@ -1556,7 +1613,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         version: 1,
         packageOrderId: body.packageOrderId,
         settlement,
-        strategyQuote: await requestAndStoreStrategyQuote(strategyOrderHash, body.idempotencyKey),
+        strategyQuote: await requestAndStoreStrategyQuote(strategyOrderHash, body.idempotencyKey, {
+          packageOrderId: body.packageOrderId,
+          settlement,
+        }),
       };
     }
     if (path === "/v1/strategy-quotes/request") {

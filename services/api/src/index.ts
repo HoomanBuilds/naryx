@@ -170,6 +170,7 @@ export {
   HttpGeneralizedStrategyQuoteClient,
   type GeneralizedStrategyQuotePort,
   type GeneralizedStrategyQuoteResult,
+  type GeneralizedStrategyPackageExecutionContext,
 } from "./generalized-strategy-quote-client.js";
 export {
   createSolanaDevnetExecutionPorts,

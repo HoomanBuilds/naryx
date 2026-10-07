@@ -1,6 +1,11 @@
+import { createPublicKey, verify } from 'node:crypto';
 import {
   bytesEqual,
+  packageQuoteExecutionBindingHash,
+  packageSettlementReadinessHash,
   strategyPackageQuoteHash,
+  toHex,
+  validatePackageQuoteExecutionBinding,
   validateStrategyPackageRouteAdmission,
   type CrossDomainPlanInput,
   type Hash32,
@@ -23,6 +28,22 @@ import type {
   StoredStrategyPackageDocuments,
   StrategyPackageProvider,
 } from './http-strategy-package-provider.js';
+
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+function verifyExecutionBindingSignature(key: Uint8Array, digest: Uint8Array, signature: Uint8Array): boolean {
+  if (key.length !== 32 || signature.length !== 64) return false;
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(key)]),
+      format: 'der',
+      type: 'spki',
+    });
+    return verify(null, Buffer.from(digest), publicKey, Buffer.from(signature));
+  } catch {
+    return false;
+  }
+}
 
 export interface StrategyPreparationContext {
   readonly compileContext: PackageGraphCompileContext;
@@ -57,6 +78,24 @@ export class StrategyPreparationService {
   async prepareDocuments(
     documents: StoredStrategyPackageDocuments,
   ): Promise<PreparedStrategyExecutionTransport> {
+    if (documents.packageExecution !== undefined) {
+      const { readiness, readinessHashHex, binding, bindingHashHex } = documents.packageExecution;
+      if (binding === undefined || bindingHashHex === undefined) {
+        throw new Error('final package settlement requires a signed quote execution binding');
+      }
+      try {
+        validatePackageQuoteExecutionBinding(binding, readiness, documents.quote);
+      } catch {
+        throw new Error('package quote execution binding does not match final settlement readiness');
+      }
+      const bindingHash = packageQuoteExecutionBindingHash(binding);
+      if (toHex(packageSettlementReadinessHash(readiness)) !== readinessHashHex
+        || toHex(bindingHash) !== bindingHashHex
+        || binding.solverSignatureScheme !== 'ED25519'
+        || !verifyExecutionBindingSignature(binding.solverVerificationKey, bindingHash, binding.signature)) {
+        throw new Error('package quote execution binding evidence is invalid');
+      }
+    }
     const context = await this.#contexts.resolve(documents);
     const admission = validateStrategyPackageRouteAdmission(
       documents.order,

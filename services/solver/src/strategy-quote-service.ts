@@ -2,6 +2,7 @@ import {
   bytesEqual,
   compileTypedStrategyRoute,
   commitmentHash,
+  packageQuoteExecutionBinding,
   strategyPackageOrderHash,
   strategyPackageQuoteHash,
   toHex,
@@ -9,6 +10,7 @@ import {
   validateStrategyPackageRouteAdmission,
   type Hash32,
   type DomainRef,
+  type PackageQuoteExecutionBinding,
   type PackageGraphCompileContext,
   type StrategyEconomicsInput,
   type StrategyLegEconomicsInput,
@@ -24,6 +26,7 @@ import type {
 } from './http-strategy-package-provider.js';
 import {
   buildSignedStrategyPackageQuote,
+  buildSignedPackageQuoteExecutionBinding,
   type StrategyQuoteSigner,
 } from './strategy-quote-builder.js';
 
@@ -33,6 +36,10 @@ const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
 export interface GeneralizedStrategyQuoteRequest {
   readonly orderHash: string;
   readonly idempotencyKey: string;
+  readonly packageExecution?: Readonly<{
+    readonly packageOrderId: string;
+    readonly settlementReadinessHash: string;
+  }>;
 }
 
 export interface GeneralizedStrategyQuoteResponse {
@@ -45,6 +52,7 @@ export interface GeneralizedStrategyQuoteResponse {
   readonly quoteHash: string;
   readonly route: TypedStrategyRoute;
   readonly quote: StrategyPackageQuote;
+  readonly executionBinding?: PackageQuoteExecutionBinding;
 }
 
 export interface GeneralizedStrategyQuoteTerms {
@@ -132,12 +140,33 @@ function parseRequest(value: GeneralizedStrategyQuoteRequest): GeneralizedStrate
   }
   const record = value as unknown as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  if (keys.length !== 2 || keys[0] !== 'idempotencyKey' || keys[1] !== 'orderHash'
+  if ((keys.length !== 2 && keys.length !== 3) || keys[0] !== 'idempotencyKey' || keys[1] !== 'orderHash'
+    || (keys.length === 3 && keys[2] !== 'packageExecution')
     || typeof record.orderHash !== 'string' || !HASH_HEX.test(record.orderHash)
     || typeof record.idempotencyKey !== 'string' || !IDEMPOTENCY_KEY.test(record.idempotencyKey)) {
-    throw new GeneralizedStrategyQuoteError('INVALID_REQUEST', 'request must contain a valid orderHash and idempotencyKey');
+    throw new GeneralizedStrategyQuoteError('INVALID_REQUEST', 'request must contain a valid orderHash, idempotencyKey, and optional packageExecution');
   }
-  return Object.freeze({ orderHash: record.orderHash, idempotencyKey: record.idempotencyKey });
+  if (record.packageExecution === undefined) {
+    return Object.freeze({ orderHash: record.orderHash, idempotencyKey: record.idempotencyKey });
+  }
+  if (typeof record.packageExecution !== 'object' || record.packageExecution === null || Array.isArray(record.packageExecution)) {
+    throw new GeneralizedStrategyQuoteError('INVALID_REQUEST', 'packageExecution must be an object');
+  }
+  const packageExecution = record.packageExecution as Record<string, unknown>;
+  const packageKeys = Object.keys(packageExecution).sort();
+  if (packageKeys.length !== 2 || packageKeys[0] !== 'packageOrderId' || packageKeys[1] !== 'settlementReadinessHash'
+    || typeof packageExecution.packageOrderId !== 'string' || !HASH_HEX.test(packageExecution.packageOrderId)
+    || typeof packageExecution.settlementReadinessHash !== 'string' || !HASH_HEX.test(packageExecution.settlementReadinessHash)) {
+    throw new GeneralizedStrategyQuoteError('INVALID_REQUEST', 'packageExecution must contain packageOrderId and settlementReadinessHash');
+  }
+  return Object.freeze({
+    orderHash: record.orderHash,
+    idempotencyKey: record.idempotencyKey,
+    packageExecution: Object.freeze({
+      packageOrderId: packageExecution.packageOrderId,
+      settlementReadinessHash: packageExecution.settlementReadinessHash,
+    }),
+  });
 }
 
 function hashBytes(value: string): Hash32 {
@@ -148,6 +177,15 @@ function sameRequest(existing: StoredGeneralizedStrategyQuote, request: Generali
   if (existing.orderHash !== request.orderHash) {
     throw new GeneralizedStrategyQuoteError('IDEMPOTENCY_CONFLICT', 'idempotency key is already bound to another order');
   }
+  const binding = existing.response.executionBinding;
+  const sameExecution = request.packageExecution === undefined
+    ? binding === undefined
+    : binding !== undefined
+      && toHex(binding.packageOrderId) === request.packageExecution.packageOrderId
+      && toHex(binding.settlementReadinessHash) === request.packageExecution.settlementReadinessHash;
+  if (!sameExecution) {
+    throw new GeneralizedStrategyQuoteError('IDEMPOTENCY_CONFLICT', 'idempotency key is already bound to another package execution context');
+  }
   return existing.response;
 }
 
@@ -156,7 +194,12 @@ export class GeneralizedStrategyQuoteService {
   readonly #contexts: GeneralizedStrategyQuoteContextResolver;
   readonly #signer: StrategyQuoteSigner;
   readonly #store: GeneralizedStrategyQuoteStore;
-  readonly #pending = new Map<string, Readonly<{ orderHash: string; response: Promise<GeneralizedStrategyQuoteResponse> }>>();
+  readonly #pending = new Map<string, Readonly<{
+    orderHash: string;
+    packageOrderId?: string;
+    settlementReadinessHash?: string;
+    response: Promise<GeneralizedStrategyQuoteResponse>;
+  }>>();
 
   constructor(input: Readonly<{
     packages: StrategyPackageOrderProvider;
@@ -176,13 +219,19 @@ export class GeneralizedStrategyQuoteService {
     if (stored !== undefined) return sameRequest(stored, request);
     const pending = this.#pending.get(request.idempotencyKey);
     if (pending !== undefined) {
-      if (pending.orderHash !== request.orderHash) {
-        throw new GeneralizedStrategyQuoteError('IDEMPOTENCY_CONFLICT', 'idempotency key is already bound to another order');
+      if (pending.orderHash !== request.orderHash
+        || pending.packageOrderId !== request.packageExecution?.packageOrderId
+        || pending.settlementReadinessHash !== request.packageExecution?.settlementReadinessHash) {
+        throw new GeneralizedStrategyQuoteError('IDEMPOTENCY_CONFLICT', 'idempotency key is already bound to another quote request');
       }
       return pending.response;
     }
     const task = this.#quote(request);
-    this.#pending.set(request.idempotencyKey, { orderHash: request.orderHash, response: task });
+    this.#pending.set(request.idempotencyKey, {
+      orderHash: request.orderHash,
+      ...(request.packageExecution === undefined ? {} : request.packageExecution),
+      response: task,
+    });
     try {
       const response = await task;
       return this.#store.save({ orderHash: request.orderHash, response }).response;
@@ -268,6 +317,20 @@ export class GeneralizedStrategyQuoteService {
       compiled.route,
       context.compileContext,
     );
+    const executionBinding = request.packageExecution === undefined
+      ? undefined
+      : buildSignedPackageQuoteExecutionBinding({
+        version: 1,
+        packageOrderId: request.packageExecution.packageOrderId,
+        settlementReadinessHash: request.packageExecution.settlementReadinessHash,
+        strategyOrderHash: requestedHash,
+        strategyQuoteHash: strategyPackageQuoteHash(quote),
+        routeHash: typedStrategyRouteHash(compiled.route),
+        executionClassId: quote.executionClassId,
+        solverId: quote.solverId,
+        validUntilUnit: quote.validUntilUnit,
+        validUntilValue: quote.validUntilValue,
+      }, this.#signer);
     return Object.freeze({
       version: 1,
       status: 'SIGNED',
@@ -278,6 +341,9 @@ export class GeneralizedStrategyQuoteService {
       quoteHash: toHex(strategyPackageQuoteHash(quote)),
       route: compiled.route,
       quote,
+      ...(executionBinding === undefined ? {} : {
+        executionBinding: packageQuoteExecutionBinding(executionBinding),
+      }),
     });
   }
 }

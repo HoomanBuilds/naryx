@@ -3,15 +3,24 @@ import {
   fromProtocolJson,
   packageGraph,
   packageGraphHash,
+  packageQuoteExecutionBinding,
+  packageQuoteExecutionBindingHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
   strategyPackageQuote,
   strategyPackageQuoteHash,
   toHex,
   typedStrategyRouteHash,
+  validatePackageQuoteExecutionBinding,
   type Hash32,
   type PackageGraph,
   type PackageGraphInput,
+  type PackageQuoteExecutionBinding,
+  type PackageQuoteExecutionBindingInput,
+  type PackageSettlementReadiness,
+  type PackageSettlementReadinessInput,
   type StrategyPackageOrder,
   type StrategyPackageOrderInput,
   type StrategyPackageQuote,
@@ -31,6 +40,16 @@ export interface StoredStrategyPackageDocuments {
   readonly quote: StrategyPackageQuote;
   readonly route: TypedStrategyRoute;
   readonly recordedAtMs: number;
+  readonly packageExecution?: StoredStrategyPackageExecution;
+}
+
+export interface StoredStrategyPackageExecution {
+  readonly readinessHashHex: string;
+  readonly readiness: PackageSettlementReadiness;
+  readonly recordedAtMs: number;
+  readonly bindingHashHex?: string;
+  readonly binding?: PackageQuoteExecutionBinding;
+  readonly bindingRecordedAtMs?: number;
 }
 
 export interface StoredStrategyPackageOrderDocuments {
@@ -101,7 +120,11 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('strategy package response must be an object');
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  const expectedKeys = ['graph', 'graphHashHex', 'order', 'orderHashHex', 'quote', 'quoteHashHex', 'recordedAtMs', 'route', 'routeHashHex', 'version'];
+  const hasPackageExecution = Object.hasOwn(record, 'packageExecution');
+  const expectedKeys = [
+    'graph', 'graphHashHex', 'order', 'orderHashHex', ...(hasPackageExecution ? ['packageExecution'] : []),
+    'quote', 'quoteHashHex', 'recordedAtMs', 'route', 'routeHashHex', 'version',
+  ].sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index]) || record.version !== 1) {
     throw new Error('strategy package response fields are invalid');
   }
@@ -138,6 +161,66 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
     || !bytesEqual(quote.routeHash, typedStrategyRouteHash(route))) {
     throw new Error('strategy package response commitments are mismatched');
   }
+  let packageExecution: StoredStrategyPackageExecution | undefined;
+  if (hasPackageExecution) {
+    if (typeof record.packageExecution !== 'object' || record.packageExecution === null
+      || Array.isArray(record.packageExecution)) {
+      throw new Error('strategy package execution requirement is invalid');
+    }
+    const execution = record.packageExecution as Record<string, unknown>;
+    const hasBinding = Object.hasOwn(execution, 'binding');
+    const executionKeys = Object.keys(execution).sort();
+    const expectedExecutionKeys = [
+      ...(hasBinding ? ['binding', 'bindingHashHex', 'bindingRecordedAtMs'] : []),
+      'readiness', 'readinessHashHex', 'recordedAtMs',
+    ].sort();
+    if (executionKeys.length !== expectedExecutionKeys.length
+      || executionKeys.some((key, index) => key !== expectedExecutionKeys[index])
+      || typeof execution.readinessHashHex !== 'string' || !/^[0-9a-f]{64}$/.test(execution.readinessHashHex)
+      || !Number.isSafeInteger(execution.recordedAtMs) || Number(execution.recordedAtMs) < 0) {
+      throw new Error('strategy package execution requirement fields are invalid');
+    }
+    let readiness: PackageSettlementReadiness;
+    try {
+      readiness = packageSettlementReadiness(execution.readiness as PackageSettlementReadinessInput);
+    } catch {
+      throw new Error('strategy package settlement readiness is invalid');
+    }
+    if (toHex(packageSettlementReadinessHash(readiness)) !== execution.readinessHashHex
+      || !bytesEqual(readiness.strategyOrderHash, strategyPackageOrderHash(order))) {
+      throw new Error('strategy package execution requirement commitments are mismatched');
+    }
+    if (hasBinding) {
+      if (typeof execution.bindingHashHex !== 'string' || !/^[0-9a-f]{64}$/.test(execution.bindingHashHex)
+        || !Number.isSafeInteger(execution.bindingRecordedAtMs) || Number(execution.bindingRecordedAtMs) < 0) {
+        throw new Error('strategy package execution binding fields are invalid');
+      }
+      let binding: PackageQuoteExecutionBinding;
+      try {
+        binding = packageQuoteExecutionBinding(execution.binding as PackageQuoteExecutionBindingInput);
+        validatePackageQuoteExecutionBinding(binding, readiness, quote);
+      } catch {
+        throw new Error('strategy package execution binding is invalid');
+      }
+      if (toHex(packageQuoteExecutionBindingHash(binding)) !== execution.bindingHashHex) {
+        throw new Error('strategy package execution binding commitment is mismatched');
+      }
+      packageExecution = Object.freeze({
+        readinessHashHex: execution.readinessHashHex,
+        readiness,
+        recordedAtMs: Number(execution.recordedAtMs),
+        bindingHashHex: execution.bindingHashHex,
+        binding,
+        bindingRecordedAtMs: Number(execution.bindingRecordedAtMs),
+      });
+    } else {
+      packageExecution = Object.freeze({
+        readinessHashHex: execution.readinessHashHex,
+        readiness,
+        recordedAtMs: Number(execution.recordedAtMs),
+      });
+    }
+  }
   return Object.freeze({
     orderHashHex,
     graphHashHex,
@@ -148,6 +231,7 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
     quote,
     route,
     recordedAtMs: Number(record.recordedAtMs),
+    ...(packageExecution === undefined ? {} : { packageExecution }),
   });
 }
 

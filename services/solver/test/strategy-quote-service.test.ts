@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, sign, verify } from 'node:crypto';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,12 +12,16 @@ import {
   domainRef,
   packageGraph,
   packageGraphHash,
+  packageQuoteExecutionBindingHash,
+  packageSettlementReadiness,
+  packageSettlementReadinessHash,
   packageTemplateManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
   STRATEGY_QUOTE_CONVENTION_ID,
   STRATEGY_RISK_CLASS_ID,
   versionedManifestRef,
+  validatePackageQuoteExecutionBinding,
   type DomainRegistryRecordInput,
   type PackageGraphInput,
   type PackageTemplateManifestInput,
@@ -309,17 +313,55 @@ test('generalized RFQ prices, compiles, signs, validates, and replays one commit
   assert.deepEqual(first.route.legs.map((leg) => leg.materializationClassId), ['evm-perp', 'evm-spot']);
   assert.equal(replay.quoteHash, first.quoteHash);
   assert.equal(pricingCalls, 1);
+  const boundRequest = {
+    orderHash: request.orderHash,
+    idempotencyKey: 'strategy-quote-bound-0001',
+    packageExecution: {
+      packageOrderId: 'd1'.repeat(32),
+      settlementReadinessHash: '',
+    },
+  };
+  const readiness = packageSettlementReadiness({
+    version: 1,
+    packageOrderId: boundRequest.packageExecution.packageOrderId,
+    settlementCommitmentHash: 'd2'.repeat(32),
+    strategyOrderHash: orderHash,
+    executionClassId: graph.executionClassId,
+    committedQuantity: 1n,
+    allocatedQuantity: 1n,
+    remainingQuantity: 0n,
+    acceptsFurtherMatches: false,
+    status: 'READY_FOR_OWNER_AUTHORIZATION',
+    allocationHashes: ['d3'.repeat(32)],
+  });
+  boundRequest.packageExecution.settlementReadinessHash = Buffer.from(packageSettlementReadinessHash(readiness)).toString('hex');
+  const bound = await service.quote(boundRequest);
+  assert.equal(Buffer.from(bound.executionBinding!.packageOrderId).toString('hex'), boundRequest.packageExecution.packageOrderId);
+  assert.equal(Buffer.from(bound.executionBinding!.settlementReadinessHash).toString('hex'), boundRequest.packageExecution.settlementReadinessHash);
+  assert.equal(Buffer.from(bound.executionBinding!.strategyQuoteHash).toString('hex'), bound.quoteHash);
+  assert.equal(
+    verify(null, Buffer.from(packageQuoteExecutionBindingHash(bound.executionBinding!)), publicKey, Buffer.from(bound.executionBinding!.signature)),
+    true,
+  );
+  assert.equal(validatePackageQuoteExecutionBinding(bound.executionBinding!, readiness, bound.quote).solverId, 'solver');
+  assert.equal(pricingCalls, 2);
+  await assert.rejects(
+    () => service.quote({ orderHash: request.orderHash, idempotencyKey: boundRequest.idempotencyKey }),
+    (error: unknown) => error instanceof GeneralizedStrategyQuoteError && error.code === 'IDEMPOTENCY_CONFLICT',
+  );
   const scratch = mkdtempSync(join(tmpdir(), 'naryx-strategy-quotes-'));
   const path = join(scratch, 'quotes.db');
   const durable = new SqliteGeneralizedStrategyQuoteStore(path);
   try {
     assert.equal(durable.save({ orderHash: request.orderHash, response: first }).response.quoteHash, first.quoteHash);
+    assert.equal(durable.save({ orderHash: request.orderHash, response: bound }).response.executionBinding?.solverId, 'solver');
   } finally {
     durable.close();
   }
   const reopened = new SqliteGeneralizedStrategyQuoteStore(path);
   try {
     assert.equal(reopened.get(request.idempotencyKey)?.response.quoteHash, first.quoteHash);
+    assert.equal(reopened.get(boundRequest.idempotencyKey)?.response.executionBinding?.solverId, 'solver');
     assert.throws(
       () => reopened.save({ orderHash: 'ff'.repeat(32), response: { ...first, orderHash: 'ff'.repeat(32) } }),
       (error: unknown) => error instanceof Error,

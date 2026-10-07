@@ -1,9 +1,13 @@
 import {
   assetAmount,
+  packageQuoteExecutionBinding,
+  packageQuoteExecutionBindingHash,
   strategyEconomicsMetrics,
   strategyPackageQuote,
   strategyPackageQuoteHash,
   type AssetRef,
+  type PackageQuoteExecutionBinding,
+  type PackageQuoteExecutionBindingInput,
   type StrategyEconomicsInput,
   type StrategyLegEconomicsInput,
   type StrategyPackageQuote,
@@ -56,4 +60,21 @@ export function buildSignedStrategyPackageQuote(input: StrategyQuoteBuildInput, 
   const signature = signer.signDigest(digest);
   requireCondition(signature.length === 64, 'the strategy quote Ed25519 signature must be 64 bytes');
   return strategyPackageQuote({ ...unsigned, signature });
+}
+
+export function buildSignedPackageQuoteExecutionBinding(
+  input: Omit<PackageQuoteExecutionBindingInput, 'solverSignatureScheme' | 'solverVerificationKey' | 'signature'>,
+  signer: StrategyQuoteSigner,
+): PackageQuoteExecutionBinding {
+  requireCondition(signer.scheme === 'ED25519', 'the package execution binding supports Ed25519 signers');
+  requireCondition(signer.verificationKey.length === 32, 'the package execution binding verification key must be 32 bytes');
+  const unsigned: PackageQuoteExecutionBindingInput = {
+    ...input,
+    solverSignatureScheme: signer.scheme,
+    solverVerificationKey: Uint8Array.from(signer.verificationKey),
+    signature: new Uint8Array(),
+  };
+  const signature = signer.signDigest(packageQuoteExecutionBindingHash(unsigned));
+  requireCondition(signature.length === 64, 'the package execution binding Ed25519 signature must be 64 bytes');
+  return packageQuoteExecutionBinding({ ...unsigned, signature });
 }
