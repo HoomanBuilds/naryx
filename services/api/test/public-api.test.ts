@@ -25,6 +25,7 @@ import {
 import {
   createPrivateTerminalServer,
   createPublicApiHandler,
+  GeneralizedStrategyQuoteClientError,
   loadPublicMarketRuntime,
   PublicMarketConfigError,
   SqlitePackageExchangeStore,
@@ -239,6 +240,7 @@ const post = (body: unknown): RequestInit => ({
 
 test("signed public package orders create durable settlement handoffs and replay idempotently", async () => {
   const strategies = new Map<string, unknown>();
+  const requestedQuotes: { orderHash: string; idempotencyKey: string }[] = [];
   await withMarket(async (get, store) => {
     registerAll(store);
     submitBookOrder(store, order(1));
@@ -313,6 +315,12 @@ test("signed public package orders create durable settlement handoffs and replay
     assert.equal(progress.readiness.status, "READY_FOR_OWNER_AUTHORIZATION");
     assert.equal(progress.readinessHashHex.length, 64);
     assert.equal(progress.obligations.length, 1);
+    const quoteRequest = await get("/v1/package-book/settlement-quotes/request", post({
+      packageOrderId: orderId,
+      idempotencyKey: "settlement-quote-0001",
+    }));
+    assert.equal(quoteRequest.status, 409);
+    assert.deepEqual(requestedQuotes, [{ orderHash: id(7_001), idempotencyKey: "settlement-quote-0001" }]);
     const recoveredResponse = await get(`/v1/allocations/${orderId}`);
     assert.equal(recoveredResponse.status, 200);
     const recovered = recoveredResponse.body as {
@@ -363,8 +371,19 @@ test("signed public package orders create durable settlement handoffs and replay
     });
     assert.equal(((await get("/v1/package-book/cancellations", post({ cancellation, authorization: cancellationAuthorization }))).body as { replayed: boolean }).replayed, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+    assert.equal((await get("/v1/package-book/settlement-quotes/request", post({
+      packageOrderId: passiveOrder.orderId,
+      idempotencyKey: "settlement-quote-0002",
+    }))).status, 409);
+    assert.equal(requestedQuotes.length, 1);
   }, {
     strategyPackages: { order: (orderHashHex: string) => strategies.get(orderHashHex) } as never,
+    strategyQuotes: {
+      quote: async (orderHash: string, idempotencyKey: string) => {
+        requestedQuotes.push({ orderHash, idempotencyKey });
+        throw new GeneralizedStrategyQuoteClientError("QUOTE_DECLINED", "test quote declined");
+      },
+    },
   });
 });
 

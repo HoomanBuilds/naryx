@@ -475,6 +475,75 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return series.document;
   }
 
+  async function requestAndStoreStrategyQuote(orderHash: string, idempotencyKey: string) {
+    const store = requireStrategyPackages();
+    if (store.order === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
+    const stored = store.order(orderHash);
+    if (stored === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "The strategy order is not stored for quoting.");
+    const result = await requireStrategyQuotes().quote(orderHash, idempotencyKey);
+    const graph = packageGraph(stored.graph);
+    const series = requireStrategyMarket(graph);
+    const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
+    if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
+    const currentValue = nowIn(graph.expiryUnit);
+    if (currentValue === undefined) throw new RequestError(400, "TIME_UNIT_UNSUPPORTED", "The server cannot judge this strategy quote clock.");
+    const currentTime = { unit: graph.expiryUnit, value: currentValue };
+    const graphContext = options.graphContext;
+    if (graphContext === undefined) {
+      throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
+    }
+    const admitted = validateStrategyPackageRouteAdmission(
+      stored.order,
+      stored.graph,
+      result.quote,
+      result.route,
+      {
+        templateManifest: template.document,
+        activeRegistryRecords: graphContext.activeRegistryRecords,
+        resourceLimits: graphContext.resourceLimits,
+        currentTime,
+      },
+    );
+    if (admitted.order.quoteAsset.assetId !== series.quoteAsset) {
+      throw new RequestError(400, "SERIES_MISMATCH", "The order quote asset differs from the registered strategy series.");
+    }
+    if (currentTime.value >= admitted.quote.validUntilValue) throw new RequestError(409, "QUOTE_EXPIRED", "The strategy quote has expired.");
+    const capability = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", admitted.quote.solverId);
+    if (capability === undefined || !bytesEqual(solverCapabilityManifestHash(capability.document), admitted.quote.solverCapabilityManifestHash)
+      || capability.document.validityUnit !== admitted.quote.validUntilUnit) {
+      throw new RequestError(400, "SOLVER_CAPABILITY_MISMATCH", "The quote does not bind the registered solver capability.");
+    }
+    for (const domain of admitted.quote.domains) {
+      const authorization = authorizeSolverQuote(capability.document, {
+        environment: admitted.quote.environment,
+        domain,
+        templateId: admitted.quote.templateId,
+        quoteMode: admitted.quote.quoteMode,
+        marketId: admitted.quote.executionClassId,
+        notionalAtoms: admitted.quote.totalGrossNotional.atoms,
+        scheme: admitted.quote.solverSignatureScheme,
+        verificationKey: admitted.quote.solverVerificationKey,
+        atValue: currentTime.value,
+      });
+      if (!authorization.authorized) throw new RequestError(400, "SOLVER_NOT_AUTHORIZED", `The solver capability rejects this quote: ${authorization.reason}.`);
+    }
+    if (admitted.quote.solverSignatureScheme !== "ED25519"
+      || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
+      throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
+    }
+    const storedQuote = store.registerQuote(admitted);
+    return Object.freeze({
+      version: 1 as const,
+      status: "SIGNED_AND_STORED" as const,
+      orderHash: result.orderHash,
+      graphHash: result.graphHash,
+      routeHash: storedQuote.routeHashHex,
+      quoteHash: storedQuote.quoteHashHex,
+      route: admitted.route,
+      quote: admitted.quote,
+    });
+  }
+
   /** The last recorded trade of a book, labeled OBSERVED: the final fill price and the traded quantity. */
   function lastTrade(classId: string) {
     const record = exchange.latestTrade(classId);
@@ -1145,6 +1214,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategy-orders/validate",
       "/v1/strategy-orders",
       "/v1/strategy-quotes/request",
+      "/v1/package-book/settlement-quotes/request",
       "/v1/strategy-routes/compile",
       "/v1/strategy-quotes/admit",
       "/v1/strategy-packages/submit",
@@ -1346,6 +1416,33 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         body.atSlot as bigint | undefined,
       );
     }
+    if (path === "/v1/package-book/settlement-quotes/request") {
+      const keys = Object.keys(body).sort();
+      if (keys.length !== 2 || keys[0] !== "idempotencyKey" || keys[1] !== "packageOrderId"
+        || typeof body.packageOrderId !== "string" || !HASH_HEX.test(body.packageOrderId)
+        || typeof body.idempotencyKey !== "string"
+        || !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(body.idempotencyKey)) {
+        throw new RequestError(400, "INVALID_REQUEST", "Request must contain a valid packageOrderId and idempotencyKey.");
+      }
+      const settlement = exchange.settlementProgress(body.packageOrderId);
+      if (settlement === undefined) {
+        throw new RequestError(404, "SETTLEMENT_NOT_FOUND", "No settlement commitment exists for this package order.");
+      }
+      if (settlement.readiness.status !== "READY_FOR_OWNER_AUTHORIZATION") {
+        throw new RequestError(
+          409,
+          "SETTLEMENT_NOT_READY",
+          `Package settlement status is ${settlement.readiness.status}.`,
+        );
+      }
+      const strategyOrderHash = toHex(settlement.readiness.strategyOrderHash);
+      return {
+        version: 1,
+        packageOrderId: body.packageOrderId,
+        settlement,
+        strategyQuote: await requestAndStoreStrategyQuote(strategyOrderHash, body.idempotencyKey),
+      };
+    }
     if (path === "/v1/strategy-quotes/request") {
       const keys = Object.keys(body).sort();
       if (keys.length !== 2 || keys[0] !== "idempotencyKey" || keys[1] !== "orderHash"
@@ -1354,72 +1451,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         || !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(body.idempotencyKey)) {
         throw new RequestError(400, "INVALID_REQUEST", "Request must contain a valid orderHash and idempotencyKey.");
       }
-      const store = requireStrategyPackages();
-      if (store.order === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
-      const stored = store.order(body.orderHash);
-      if (stored === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "The strategy order is not stored for quoting.");
-      const result = await requireStrategyQuotes().quote(body.orderHash, body.idempotencyKey);
-      const graph = packageGraph(stored.graph);
-      const series = requireStrategyMarket(graph);
-      const template = requireRegistry().latest<PackageTemplateManifestInput>("PACKAGE_TEMPLATE", graph.templateId, graph.templateVersion);
-      if (template === undefined) throw new RequestError(404, "TEMPLATE_NOT_FOUND", "The graph binds no registered package template.");
-      const currentValue = nowIn(graph.expiryUnit);
-      if (currentValue === undefined) throw new RequestError(400, "TIME_UNIT_UNSUPPORTED", "The server cannot judge this strategy quote clock.");
-      const currentTime = { unit: graph.expiryUnit, value: currentValue };
-      const graphContext = options.graphContext;
-      if (graphContext === undefined) {
-        throw new RequestError(503, "GRAPH_CONTEXT_UNAVAILABLE", "No graph compilation context is configured on this server.");
-      }
-      const admitted = validateStrategyPackageRouteAdmission(
-        stored.order,
-        stored.graph,
-        result.quote,
-        result.route,
-        {
-          templateManifest: template.document,
-          activeRegistryRecords: graphContext.activeRegistryRecords,
-          resourceLimits: graphContext.resourceLimits,
-          currentTime,
-        },
-      );
-      if (admitted.order.quoteAsset.assetId !== series.quoteAsset) {
-        throw new RequestError(400, "SERIES_MISMATCH", "The order quote asset differs from the registered strategy series.");
-      }
-      if (currentTime.value >= admitted.quote.validUntilValue) throw new RequestError(409, "QUOTE_EXPIRED", "The strategy quote has expired.");
-      const capability = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", admitted.quote.solverId);
-      if (capability === undefined || !bytesEqual(solverCapabilityManifestHash(capability.document), admitted.quote.solverCapabilityManifestHash)
-        || capability.document.validityUnit !== admitted.quote.validUntilUnit) {
-        throw new RequestError(400, "SOLVER_CAPABILITY_MISMATCH", "The quote does not bind the registered solver capability.");
-      }
-      for (const domain of admitted.quote.domains) {
-        const authorization = authorizeSolverQuote(capability.document, {
-          environment: admitted.quote.environment,
-          domain,
-          templateId: admitted.quote.templateId,
-          quoteMode: admitted.quote.quoteMode,
-          marketId: admitted.quote.executionClassId,
-          notionalAtoms: admitted.quote.totalGrossNotional.atoms,
-          scheme: admitted.quote.solverSignatureScheme,
-          verificationKey: admitted.quote.solverVerificationKey,
-          atValue: currentTime.value,
-        });
-        if (!authorization.authorized) throw new RequestError(400, "SOLVER_NOT_AUTHORIZED", `The solver capability rejects this quote: ${authorization.reason}.`);
-      }
-      if (admitted.quote.solverSignatureScheme !== "ED25519"
-        || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
-        throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
-      }
-      const storedQuote = store.registerQuote(admitted);
-      return {
-        version: 1,
-        status: "SIGNED_AND_STORED",
-        orderHash: result.orderHash,
-        graphHash: result.graphHash,
-        routeHash: storedQuote.routeHashHex,
-        quoteHash: storedQuote.quoteHashHex,
-        route: admitted.route,
-        quote: admitted.quote,
-      };
+      return requestAndStoreStrategyQuote(body.orderHash, body.idempotencyKey);
     }
     if (path === "/v1/routes/replay-decision") return replayRouteDecision(body.decision as RouteDecisionInput);
     if (path === "/v1/routes/compare") {
