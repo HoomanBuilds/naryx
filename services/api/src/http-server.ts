@@ -107,6 +107,7 @@ import {
   type SelectNativeHyperliquidStrategyExecutionRequest,
   type SelectHyperliquidStrategyExecutionRequest,
   type StoredNativeStrategyPosition,
+  type StoredEvmStrategyPosition,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
 import {
@@ -157,6 +158,8 @@ interface GeneralizedStrategyExecutionPort {
   nativeStrategyExecutionAttempt(attemptId: string): SelectedNativeStrategyPackageAttempt | undefined;
   anyStrategyExecutionAttempt(attemptId: string): AnySelectedStrategyPackageAttempt | undefined;
   nativeStrategyPositionsByOwner?(owner: string): readonly StoredNativeStrategyPosition[];
+  evmStrategyPositionsByOwner?(owner: string): readonly StoredEvmStrategyPosition[];
+  recordEvmStrategyPosition?(evidence: import('./strategy-package-store.js').EvmStrategyPositionEvidence): StoredEvmStrategyPosition;
   recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
 }
 
@@ -1281,7 +1284,8 @@ export function createPrivateTerminalRequestHandler(
         reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
         return;
       }
-      if (evmStrategyExecutionObservation === undefined || generalizedStrategyExecutions?.recordReceipt === undefined) {
+      if (evmStrategyExecutionObservation === undefined || generalizedStrategyExecutions?.recordReceipt === undefined
+        || generalizedStrategyExecutions.recordEvmStrategyPosition === undefined) {
         reject(response, 503, 'EVM_STRATEGY_OBSERVATION_UNAVAILABLE', 'EVM strategy observation is unavailable.');
         return;
       }
@@ -1300,12 +1304,21 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         const stored = generalizedStrategyExecutions.recordReceipt(observation.receipt);
+        const position = generalizedStrategyExecutions.recordEvmStrategyPosition({
+          receiptHashHex: stored.receiptHashHex,
+          packageIdHex: observation.packageId,
+          chainId: observation.chainId,
+          account: observation.account,
+          previousStateHashHex: observation.previousStateHash,
+          nextStateHashHex: observation.nextStateHash,
+        });
         sendJson(response, 200, {
           status: 'FINALIZED',
           transactionHash: observation.transactionHash,
           onchainReceiptHash: observation.onchainReceiptHash,
           receiptHash: stored.receiptHashHex,
           created: stored.created,
+          position: toProtocolJson(position, 'evmStrategyPosition'),
         });
       } catch (error) {
         if (error instanceof EvmStrategyExecutionObservationClientError) {
@@ -1318,6 +1331,36 @@ export function createPrivateTerminalRequestHandler(
           return;
         }
         reject(response, 502, 'EVM_STRATEGY_OBSERVATION_FAILED', 'EVM strategy observation failed closed.');
+      }
+      return;
+    }
+
+    if (url.pathname === "/internal/terminal/evm-strategies") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (generalizedStrategyExecutions?.evmStrategyPositionsByOwner === undefined) {
+        reject(response, 503, "EVM_STRATEGIES_UNAVAILABLE", "EVM strategy positions are unavailable.");
+        return;
+      }
+      const keys = [...url.searchParams.keys()];
+      const owner = url.searchParams.get("owner");
+      if (keys.length !== 1 || keys[0] !== "owner"
+        || owner === null || !/^0x(?!0{40}$)[0-9a-f]{40}$/.test(owner)) {
+        reject(response, 400, "INVALID_REQUEST", "Request must contain one lowercase EVM owner.");
+        return;
+      }
+      try {
+        const positions = generalizedStrategyExecutions.evmStrategyPositionsByOwner(owner);
+        sendJson(response, 200, toProtocolJson({ version: 1, owner, positions }, "evmStrategies"));
+      } catch (error) {
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 502, "EVM_STRATEGIES_FAILED", "EVM strategy retrieval failed closed.");
       }
       return;
     }

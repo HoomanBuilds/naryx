@@ -14,6 +14,8 @@ export {
   type StoredStrategyPackageReceipt,
   type StoredStrategyPackageAuthorization,
   type StoredNativeStrategyPosition,
+  type StoredEvmStrategyPosition,
+  type EvmStrategyPositionEvidence,
   type SelectHyperliquidStrategyExecutionRequest,
   type SelectedStrategyPackageAttempt,
 } from "./strategy-package-store.js";

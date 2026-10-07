@@ -63,6 +63,11 @@ export type EvmStrategyExecutionObservation = Readonly<
       version: 1;
       status: 'FINALIZED';
       transactionHash: Hex;
+      chainId: number;
+      account: Address;
+      packageId: Hex;
+      previousStateHash: Hex;
+      nextStateHash: Hex;
       onchainReceiptHash: Hex;
       receipt: StrategyPackageReceipt;
     }
@@ -347,6 +352,11 @@ export class EvmStrategyExecutionObservationService {
       version: 1,
       status: 'FINALIZED',
       transactionHash: input.transactionHash,
+      chainId,
+      account: account.toLowerCase() as Address,
+      packageId: envelope.execution.packageId,
+      previousStateHash: envelope.execution.previousStateHash,
+      nextStateHash: envelope.execution.nextStateHash,
       onchainReceiptHash: receiptHash,
       receipt,
     });

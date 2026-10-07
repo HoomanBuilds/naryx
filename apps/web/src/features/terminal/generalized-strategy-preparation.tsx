@@ -29,6 +29,11 @@ const NATIVE_HYPERCORE_TEMPLATES = new Set([
   "treasury-inventory-hedge-v1",
   "perpetual-funding-spread-v1",
 ]);
+const EVM_STRATEGY_TEMPLATES = new Set([
+  "option-spread-v1",
+  "treasury-inventory-hedge-v1",
+  "collateral-conversion-hedge-v1",
+]);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -162,6 +167,9 @@ type CreatedNativeStrategyOrder = Readonly<{
 type EvmOptionProfile = Readonly<{
   profileId: string;
   displayName: string;
+  templateId: string;
+  seriesId: string;
+  executionClassId: string;
   chainId: number;
   domainId: string;
   accountFactory: string;
@@ -180,6 +188,8 @@ type EvmDirectionalProfile = Readonly<{
   profileId: string;
   displayName: string;
   templateId: string;
+  seriesId: string;
+  executionClassId: string;
   chainId: number;
   domainId: string;
   accountFactory: string;
@@ -190,6 +200,22 @@ type EvmDirectionalProfile = Readonly<{
     maximumQuantityAtoms: string;
     maximumExpiryTtlSeconds: string;
   }>;
+}>;
+
+type EvmStrategyPositionReview = Readonly<{
+  packageId: string;
+  owner: string;
+  chainId: number;
+  domainId: string;
+  settlementAccount: string;
+  templateId: string;
+  seriesId: string;
+  executionClassId: string;
+  baseAssetId: string;
+  baseAssetDecimals: number;
+  economicQuantityAtoms: string;
+  stateHash: string;
+  status: "OPEN" | "CLOSED";
 }>;
 
 type EvmProvisioningTransaction = Readonly<{
@@ -666,6 +692,9 @@ function parseEvmOptionProfiles(payload: unknown): readonly EvmOptionProfile[] {
     return Object.freeze({
       profileId: text(profile.profileId, `EVM option profile ${index} id`),
       displayName: text(profile.displayName, `EVM option profile ${index} display name`),
+      templateId: text(profile.templateId, `EVM option profile ${index} template`),
+      seriesId: text(profile.seriesId, `EVM option profile ${index} series`),
+      executionClassId: text(profile.executionClassId, `EVM option profile ${index} execution class`),
       chainId: integer(profile.chainId, `EVM option profile ${index} chain id`),
       domainId: text(profile.domainId, `EVM option profile ${index} domain`),
       accountFactory,
@@ -687,10 +716,14 @@ function parseEvmOptionProfiles(payload: unknown): readonly EvmOptionProfile[] {
   });
 }
 
-function parseCreatedEvmOptionOrder(payload: unknown, profileId: string): Readonly<{ orderHash: string; graphHash: string }> {
+function parseCreatedEvmOptionOrder(
+  payload: unknown,
+  profileId: string,
+  lifecycleAction: string,
+): Readonly<{ orderHash: string; graphHash: string }> {
   const root = record(payload, "EVM option order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
-    || root.templateId !== "option-spread-v1" || root.lifecycleAction !== "ENTRY") {
+    || root.templateId !== "option-spread-v1" || root.lifecycleAction !== lifecycleAction) {
     throw new Error("EVM option order creation changed the requested package.");
   }
   return Object.freeze({
@@ -719,6 +752,8 @@ function parseEvmDirectionalProfiles(
       profileId: text(profile.profileId, `${context} ${index} id`),
       displayName: text(profile.displayName, `${context} ${index} display name`),
       templateId: text(profile.templateId, `${context} ${index} template`),
+      seriesId: text(profile.seriesId, `${context} ${index} series`),
+      executionClassId: text(profile.executionClassId, `${context} ${index} execution class`),
       chainId: integer(profile.chainId, `${context} ${index} chain id`),
       domainId: text(profile.domainId, `${context} ${index} domain`),
       accountFactory,
@@ -738,15 +773,48 @@ function parseEvmDirectionalProfiles(
 function parseCreatedEvmDirectionalOrder(
   payload: unknown,
   profile: EvmDirectionalProfile,
+  lifecycleAction: string,
 ): Readonly<{ orderHash: string; graphHash: string }> {
   const root = record(payload, "EVM strategy order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profile.profileId
-    || root.templateId !== profile.templateId || root.lifecycleAction !== "ENTRY") {
+    || root.templateId !== profile.templateId || root.lifecycleAction !== lifecycleAction) {
     throw new Error("EVM strategy order creation changed the requested package.");
   }
   return Object.freeze({
     orderHash: hash(root.orderHash, "EVM strategy order hash"),
     graphHash: hash(root.graphHash, "EVM strategy graph hash"),
+  });
+}
+
+function parseEvmStrategyPositions(payload: unknown, requestedOwner: string): readonly EvmStrategyPositionReview[] {
+  const root = record(decode(payload as Json), "EVM strategy positions");
+  if (root.version !== 1 || root.owner !== requestedOwner) {
+    throw new Error("EVM strategy positions do not bind the connected owner.");
+  }
+  return list(root.positions, "EVM strategy positions").map((candidate, index) => {
+    const position = record(candidate, `EVM strategy position ${index}`);
+    const status = text(position.status, `EVM strategy position ${index} status`);
+    if (status !== "OPEN" && status !== "CLOSED") throw new Error(`EVM strategy position ${index} status is invalid.`);
+    const owner = text(position.owner, `EVM strategy position ${index} owner`);
+    const settlementAccount = text(position.settlementAccount, `EVM strategy position ${index} account`);
+    if (owner !== requestedOwner || !EVM_ADDRESS.test(settlementAccount)) {
+      throw new Error(`EVM strategy position ${index} owner or account is invalid.`);
+    }
+    return Object.freeze({
+      packageId: hash(position.packageIdHex, `EVM strategy position ${index} package`),
+      owner,
+      chainId: integer(position.chainId, `EVM strategy position ${index} chain`),
+      domainId: text(position.domainId, `EVM strategy position ${index} domain`),
+      settlementAccount,
+      templateId: text(position.templateId, `EVM strategy position ${index} template`),
+      seriesId: text(position.seriesId, `EVM strategy position ${index} series`),
+      executionClassId: text(position.executionClassId, `EVM strategy position ${index} execution class`),
+      baseAssetId: text(position.baseAssetId, `EVM strategy position ${index} base asset`),
+      baseAssetDecimals: unsignedInteger(position.baseAssetDecimals, `EVM strategy position ${index} base decimals`),
+      economicQuantityAtoms: decimalInteger(position.economicQuantityAtoms, `EVM strategy position ${index} quantity`),
+      stateHash: hash(position.stateHashHex, `EVM strategy position ${index} state hash`),
+      status,
+    });
   });
 }
 
@@ -1112,6 +1180,9 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmShortPremium, setEvmShortPremium] = useState("");
   const [evmDirectionalProfiles, setEvmDirectionalProfiles] = useState<readonly EvmDirectionalProfile[] | null>(null);
   const [selectedEvmDirectionalProfileId, setSelectedEvmDirectionalProfileId] = useState("");
+  const [evmPositions, setEvmPositions] = useState<readonly EvmStrategyPositionReview[] | null>(null);
+  const [evmPositionError, setEvmPositionError] = useState<string | null>(null);
+  const [selectedEvmPackageId, setSelectedEvmPackageId] = useState("");
   const [evmDirectionalQuantity, setEvmDirectionalQuantity] = useState("");
   const [evmHedgePrice, setEvmHedgePrice] = useState("");
   const [evmSwapPrice, setEvmSwapPrice] = useState("");
@@ -1177,6 +1248,32 @@ export function GeneralizedStrategyPreparationPanel({
     });
     return () => controller.abort();
   }, [privateApiBaseUrl, sourceOrderHash, templateId]);
+
+  useEffect(() => {
+    if (privateApiBaseUrl === null || sourceOrderHash !== null || lifecycleAction === "ENTRY"
+      || strategyOwner === null || !OWNER.test(strategyOwner) || !EVM_STRATEGY_TEMPLATES.has(templateId)) {
+      return;
+    }
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/evm-strategies?owner=${encodeURIComponent(strategyOwner)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseEvmStrategyPositions(await response.json(), strategyOwner);
+    }).then((positions) => {
+      setEvmPositions(positions);
+      setEvmPositionError(null);
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setEvmPositions([]);
+      setEvmPositionError(cause instanceof Error ? cause.message : "EVM strategy positions are unavailable.");
+    });
+    return () => controller.abort();
+  }, [privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
 
   useEffect(() => {
     if (publicApiBaseUrl === null) return;
@@ -1262,6 +1359,23 @@ export function GeneralizedStrategyPreparationPanel({
   const selectedEvmProfile = templateId === "option-spread-v1"
     ? selectedEvmOptionProfile
     : selectedEvmDirectionalProfile;
+  const matchingEvmPositions = (evmPositions ?? []).filter((position) => position.status === "OPEN"
+    && position.owner === strategyOwner
+    && selectedEvmProfile !== null
+    && position.chainId === selectedEvmProfile.chainId
+    && position.domainId === selectedEvmProfile.domainId
+    && position.templateId === selectedEvmProfile.templateId
+    && position.seriesId === selectedEvmProfile.seriesId
+    && position.executionClassId === selectedEvmProfile.executionClassId
+    && position.baseAssetId === selectedEvmProfile.baseAsset.assetId
+    && position.baseAssetDecimals === selectedEvmProfile.baseAsset.decimals);
+  const selectedEvmPosition = matchingEvmPositions.find((position) => position.packageId === selectedEvmPackageId)
+    ?? matchingEvmPositions[0]
+    ?? null;
+  const evmLifecycleSupported = lifecycleAction === "ENTRY"
+    || (templateId === "option-spread-v1" && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
+    || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
+  const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
@@ -1286,11 +1400,19 @@ export function GeneralizedStrategyPreparationPanel({
     setEvmCreateBusy(true);
     setError(null);
     try {
-      if (lifecycleAction !== "ENTRY") throw new Error("Create an option entry before managing its lifecycle.");
+      if (!evmLifecycleSupported) throw new Error("This option lifecycle action is not available on the atomic EVM lane.");
       if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
         throw new Error("Connect the EVM wallet that will own this option package.");
       }
-      const quantityAtoms = amountToAtoms(evmOptionQuantity, selectedEvmOptionProfile.baseAsset.decimals, "Option quantity");
+      if (lifecycleAction !== "ENTRY" && selectedEvmPosition === null) {
+        throw new Error("Select an authoritative open option package before creating its transition.");
+      }
+      const quantityAtoms = fullEvmUnwind
+        ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
+        : amountToAtoms(evmOptionQuantity, selectedEvmOptionProfile.baseAsset.decimals, "Option quantity");
+      if (lifecycleAction === "DECREASE" && quantityAtoms >= BigInt(selectedEvmPosition!.economicQuantityAtoms)) {
+        throw new Error("An option decrease must retain an open package quantity. Use exit to close it.");
+      }
       const longPremiumAtoms = amountToAtoms(evmLongPremium, selectedEvmOptionProfile.quoteAsset.decimals, "Maximum long premium");
       const shortPremiumAtoms = amountToAtoms(evmShortPremium, selectedEvmOptionProfile.quoteAsset.decimals, "Minimum short premium");
       const maximumTtl = BigInt(selectedEvmOptionProfile.bounds.maximumExpiryTtlSeconds);
@@ -1304,18 +1426,19 @@ export function GeneralizedStrategyPreparationPanel({
         body: JSON.stringify({
           profileId: selectedEvmOptionProfile.profileId,
           owner: strategyOwner.toLowerCase(),
-          lifecycleAction: "ENTRY",
+          lifecycleAction,
           quantityAtoms: quantityAtoms.toString(),
           limitPremiums: [
             { legId: "option-long", quoteAtoms: longPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
             { legId: "option-short", quoteAtoms: shortPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
           ],
           expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
-          nonce: BigInt(Date.now()).toString(),
+          nonce: randomNonce(),
+          ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedEvmPosition!.stateHash }),
         }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      const created = parseCreatedEvmOptionOrder(await response.json(), selectedEvmOptionProfile.profileId);
+      const created = parseCreatedEvmOptionOrder(await response.json(), selectedEvmOptionProfile.profileId, lifecycleAction);
       setOrderHash(created.orderHash);
       setQuoteRequestKey("");
       setQuoteReview(null);
@@ -1336,12 +1459,18 @@ export function GeneralizedStrategyPreparationPanel({
     setEvmCreateBusy(true);
     setError(null);
     try {
-      if (lifecycleAction !== "ENTRY") throw new Error("Create the strategy entry before managing its lifecycle.");
+      if (!evmLifecycleSupported || (lifecycleAction !== "ENTRY" && !fullEvmUnwind)) {
+        throw new Error("This EVM strategy lane supports entry, exit, and emergency unwind.");
+      }
       if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
         throw new Error("Connect the EVM wallet that will own this strategy package.");
       }
-      const quantityAtoms = amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals,
-        "Package quantity");
+      if (lifecycleAction !== "ENTRY" && selectedEvmPosition === null) {
+        throw new Error("Select an authoritative open strategy before creating its transition.");
+      }
+      const quantityAtoms = fullEvmUnwind
+        ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
+        : amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals, "Package quantity");
       const hedgeLimit = priceToAtomicRatio(evmHedgePrice, selectedEvmDirectionalProfile.baseAsset.decimals,
         selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Hedge limit price");
       const maximumTtl = BigInt(selectedEvmDirectionalProfile.bounds.maximumExpiryTtlSeconds);
@@ -1356,7 +1485,7 @@ export function GeneralizedStrategyPreparationPanel({
         body: JSON.stringify({
           profileId: selectedEvmDirectionalProfile.profileId,
           owner: strategyOwner.toLowerCase(),
-          lifecycleAction: "ENTRY",
+          lifecycleAction,
           quantityAtoms: quantityAtoms.toString(),
           ...(collateralConversion ? {
             limitSwapPrice: priceToAtomicRatio(evmSwapPrice, selectedEvmDirectionalProfile.baseAsset.decimals,
@@ -1365,10 +1494,11 @@ export function GeneralizedStrategyPreparationPanel({
           } : { limitHedgePrice: hedgeLimit }),
           expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
           nonce: randomNonce(),
+          ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedEvmPosition!.stateHash }),
         }),
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      const created = parseCreatedEvmDirectionalOrder(await response.json(), selectedEvmDirectionalProfile);
+      const created = parseCreatedEvmDirectionalOrder(await response.json(), selectedEvmDirectionalProfile, lifecycleAction);
       setOrderHash(created.orderHash);
       setQuoteRequestKey("");
       setQuoteReview(null);
@@ -1854,6 +1984,23 @@ export function GeneralizedStrategyPreparationPanel({
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
     && (lifecycleAction === "ENTRY" || HASH.test(selectedNativePosition?.stateHash ?? ""));
+  const evmOptionFieldsReady = selectedEvmOptionProfile !== null
+    && evmLifecycleSupported
+    && strategyOwner !== null
+    && OWNER.test(strategyOwner.toLowerCase())
+    && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
+    && (fullEvmUnwind || evmOptionQuantity !== "")
+    && evmLongPremium !== ""
+    && evmShortPremium !== "";
+  const evmDirectionalFieldsReady = selectedEvmDirectionalProfile !== null
+    && evmLifecycleSupported
+    && (lifecycleAction === "ENTRY" || fullEvmUnwind)
+    && strategyOwner !== null
+    && OWNER.test(strategyOwner.toLowerCase())
+    && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
+    && (fullEvmUnwind || evmDirectionalQuantity !== "")
+    && evmHedgePrice !== ""
+    && (selectedEvmDirectionalProfile.kind !== "COLLATERAL_CONVERSION" || evmSwapPrice !== "");
   const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
 
   return (
@@ -2030,6 +2177,7 @@ export function GeneralizedStrategyPreparationPanel({
             disabled={evmOptionProfiles === null || evmOptionProfiles.length === 0}
             onChange={(event) => {
               setSelectedEvmOptionProfileId(event.target.value);
+              setSelectedEvmPackageId("");
               setOrderHash("");
               setEvmProvisioning(null);
               setError(null);
@@ -2051,19 +2199,54 @@ export function GeneralizedStrategyPreparationPanel({
                   </Fragment>
                 ))}
               </div>
+              {lifecycleAction !== "ENTRY" ? (
+                <>
+                  <label htmlFor="evm-option-position">Open option package</label>
+                  <select
+                    id="evm-option-position"
+                    value={selectedEvmPosition?.packageId ?? ""}
+                    disabled={evmPositions === null || matchingEvmPositions.length === 0}
+                    onChange={(event) => {
+                      setSelectedEvmPackageId(event.target.value);
+                      setOrderHash("");
+                      setEvmProvisioning(null);
+                      setError(null);
+                    }}
+                  >
+                    {matchingEvmPositions.length === 0 ? <option value="">No open package matches this market</option> : null}
+                    {matchingEvmPositions.map((position) => (
+                      <option key={position.packageId} value={position.packageId}>
+                        {compact(position.packageId, 18, 8)} / {compact(position.stateHash, 8, 6)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={styles.fieldContext} role="status">
+                    {selectedEvmPosition
+                      ? `${lifecycleAction.toLowerCase()} is bound to finalized state ${compact(selectedEvmPosition.stateHash)}.`
+                      : evmPositions === null ? "Loading authoritative EVM packages."
+                        : evmPositionError ?? "No open package matches this reviewed market."}
+                  </p>
+                </>
+              ) : null}
               <label htmlFor="evm-option-quantity">Package quantity</label>
               <input
                 id="evm-option-quantity"
-                value={evmOptionQuantity}
+                value={fullEvmUnwind && selectedEvmPosition !== null
+                  ? atomsToInput(selectedEvmPosition.economicQuantityAtoms, selectedEvmOptionProfile.baseAsset.decimals)
+                  : evmOptionQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
+                readOnly={fullEvmUnwind}
                 onChange={(event) => { setEvmOptionQuantity(event.target.value.trim()); setOrderHash(""); setError(null); }}
               />
               <p className={styles.fieldContext}>
                 Reviewed range {formatAtomicAmount(selectedEvmOptionProfile.bounds.minimumQuantityAtoms, selectedEvmOptionProfile.baseAsset.decimals, selectedEvmOptionProfile.baseAsset.assetId)} to {formatAtomicAmount(selectedEvmOptionProfile.bounds.maximumQuantityAtoms, selectedEvmOptionProfile.baseAsset.decimals, selectedEvmOptionProfile.baseAsset.assetId)}.
               </p>
-              <label htmlFor="evm-option-long-premium">Maximum total long premium</label>
+              <label htmlFor="evm-option-long-premium">
+                {lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                  ? "Maximum total long premium" : "Minimum total long sale premium"}
+              </label>
               <input
                 id="evm-option-long-premium"
                 value={evmLongPremium}
@@ -2072,7 +2255,10 @@ export function GeneralizedStrategyPreparationPanel({
                 placeholder="0.00"
                 onChange={(event) => { setEvmLongPremium(event.target.value.trim()); setOrderHash(""); setError(null); }}
               />
-              <label htmlFor="evm-option-short-premium">Minimum total short premium</label>
+              <label htmlFor="evm-option-short-premium">
+                {lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                  ? "Minimum total short premium" : "Maximum total short close premium"}
+              </label>
               <input
                 id="evm-option-short-premium"
                 value={evmShortPremium}
@@ -2084,8 +2270,7 @@ export function GeneralizedStrategyPreparationPanel({
               <button
                 type="button"
                 className={styles.primaryAction}
-                disabled={privateApiBaseUrl === null || evmCreateBusy || lifecycleAction !== "ENTRY"
-                  || strategyOwner === null || evmOptionQuantity === "" || evmLongPremium === "" || evmShortPremium === ""}
+                disabled={privateApiBaseUrl === null || evmCreateBusy || !evmOptionFieldsReady}
                 onClick={() => void createEvmOptionOrder()}
               >
                 {evmCreateBusy ? "Creating atomic option package" : "Create atomic option package"}
@@ -2125,6 +2310,7 @@ export function GeneralizedStrategyPreparationPanel({
             disabled={evmDirectionalProfiles === null || matchingEvmDirectionalProfiles.length === 0}
             onChange={(event) => {
               setSelectedEvmDirectionalProfileId(event.target.value);
+              setSelectedEvmPackageId("");
               setOrderHash("");
               setEvmProvisioning(null);
               setError(null);
@@ -2143,13 +2329,45 @@ export function GeneralizedStrategyPreparationPanel({
                 <span>Quote asset</span><strong>{selectedEvmDirectionalProfile.quoteAsset.assetId}</strong>
                 <span>Settlement</span><strong>Atomic postconditions</strong>
               </div>
+              {lifecycleAction !== "ENTRY" ? (
+                <>
+                  <label htmlFor="evm-directional-position">Open strategy package</label>
+                  <select
+                    id="evm-directional-position"
+                    value={selectedEvmPosition?.packageId ?? ""}
+                    disabled={evmPositions === null || matchingEvmPositions.length === 0}
+                    onChange={(event) => {
+                      setSelectedEvmPackageId(event.target.value);
+                      setOrderHash("");
+                      setEvmProvisioning(null);
+                      setError(null);
+                    }}
+                  >
+                    {matchingEvmPositions.length === 0 ? <option value="">No open package matches this market</option> : null}
+                    {matchingEvmPositions.map((position) => (
+                      <option key={position.packageId} value={position.packageId}>
+                        {compact(position.packageId, 18, 8)} / {compact(position.stateHash, 8, 6)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={styles.fieldContext} role="status">
+                    {selectedEvmPosition
+                      ? `${lifecycleAction.toLowerCase()} is bound to finalized state ${compact(selectedEvmPosition.stateHash)}.`
+                      : evmPositions === null ? "Loading authoritative EVM packages."
+                        : evmPositionError ?? "No open package matches this reviewed market."}
+                  </p>
+                </>
+              ) : null}
               <label htmlFor="evm-directional-quantity">Package quantity</label>
               <input
                 id="evm-directional-quantity"
-                value={evmDirectionalQuantity}
+                value={fullEvmUnwind && selectedEvmPosition !== null
+                  ? atomsToInput(selectedEvmPosition.economicQuantityAtoms, selectedEvmDirectionalProfile.baseAsset.decimals)
+                  : evmDirectionalQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
+                readOnly={fullEvmUnwind}
                 onChange={(event) => { setEvmDirectionalQuantity(event.target.value.trim()); setOrderHash(""); setError(null); }}
               />
               <p className={styles.fieldContext}>
@@ -2160,7 +2378,9 @@ export function GeneralizedStrategyPreparationPanel({
               </p>
               {selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION" ? (
                 <>
-                  <label htmlFor="evm-swap-price">Maximum collateral purchase price</label>
+                  <label htmlFor="evm-swap-price">
+                    {lifecycleAction === "ENTRY" ? "Maximum collateral purchase price" : "Minimum collateral sale price"}
+                  </label>
                   <input
                     id="evm-swap-price"
                     value={evmSwapPrice}
@@ -2171,7 +2391,9 @@ export function GeneralizedStrategyPreparationPanel({
                   />
                 </>
               ) : null}
-              <label htmlFor="evm-hedge-price">Minimum short hedge price</label>
+              <label htmlFor="evm-hedge-price">
+                {lifecycleAction === "ENTRY" ? "Minimum short hedge price" : "Maximum hedge close price"}
+              </label>
               <input
                 id="evm-hedge-price"
                 value={evmHedgePrice}
@@ -2183,9 +2405,7 @@ export function GeneralizedStrategyPreparationPanel({
               <button
                 type="button"
                 className={styles.primaryAction}
-                disabled={privateApiBaseUrl === null || evmCreateBusy || lifecycleAction !== "ENTRY"
-                  || strategyOwner === null || evmDirectionalQuantity === "" || evmHedgePrice === ""
-                  || (selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION" && evmSwapPrice === "")}
+                disabled={privateApiBaseUrl === null || evmCreateBusy || !evmDirectionalFieldsReady}
                 onClick={() => void createEvmDirectionalOrder()}
               >
                 {evmCreateBusy ? "Creating atomic package" : "Create atomic strategy package"}

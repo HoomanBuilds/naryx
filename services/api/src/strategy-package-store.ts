@@ -124,11 +124,34 @@ CREATE TABLE IF NOT EXISTS strategy_native_transitions (
   selected_at_ms INTEGER NOT NULL,
   finalized_at_ms INTEGER
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_evm_positions (
+  package_id BLOB PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  chain_id INTEGER NOT NULL,
+  domain_id TEXT NOT NULL,
+  settlement_account TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  series_id TEXT NOT NULL,
+  execution_class_id TEXT NOT NULL,
+  base_asset_id TEXT NOT NULL,
+  base_asset_decimals INTEGER NOT NULL,
+  economic_quantity_atoms TEXT NOT NULL,
+  entry_order_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_orders(order_hash),
+  latest_order_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_orders(order_hash),
+  latest_receipt_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  state_hash BLOB NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
+  recorded_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE INDEX IF NOT EXISTS strategy_package_orders_by_owner ON strategy_package_orders(owner_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_quotes_by_order ON strategy_package_quotes(order_hash, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS strategy_package_receipts_by_order ON strategy_package_receipts(order_hash, recorded_at_ms);
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_package_receipts_by_quote ON strategy_package_receipts(quote_hash);
 CREATE INDEX IF NOT EXISTS strategy_native_positions_by_owner ON strategy_native_positions(owner_id, status, updated_at_ms);
+CREATE INDEX IF NOT EXISTS strategy_evm_positions_by_owner ON strategy_evm_positions(owner_id, status, updated_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS strategy_evm_open_state_hash
+ON strategy_evm_positions(state_hash) WHERE status = 'OPEN';
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_transition
 ON strategy_native_transitions(strategy_id) WHERE receipt_hash IS NULL;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
@@ -194,6 +217,36 @@ export interface StoredStrategyPackageReceipt {
 export interface StoredNativeStrategyPosition extends NativeStrategyPosition {
   readonly recordedAtMs: number;
   readonly updatedAtMs: number;
+}
+
+export interface StoredEvmStrategyPosition {
+  readonly packageIdHex: string;
+  readonly owner: string;
+  readonly chainId: number;
+  readonly domainId: string;
+  readonly settlementAccount: string;
+  readonly templateId: string;
+  readonly seriesId: string;
+  readonly executionClassId: string;
+  readonly baseAssetId: string;
+  readonly baseAssetDecimals: number;
+  readonly economicQuantityAtoms: bigint;
+  readonly entryOrderHashHex: string;
+  readonly latestOrderHashHex: string;
+  readonly latestReceiptHashHex: string;
+  readonly stateHashHex: string;
+  readonly status: "OPEN" | "CLOSED";
+  readonly recordedAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface EvmStrategyPositionEvidence {
+  readonly receiptHashHex: string;
+  readonly packageIdHex: string;
+  readonly chainId: number;
+  readonly account: string;
+  readonly previousStateHashHex: string;
+  readonly nextStateHashHex: string;
 }
 
 export interface StrategyPackageSourceBinding {
@@ -286,6 +339,13 @@ function absolute(value: bigint): bigint {
 function hashBuffer(hex: string): Buffer {
   if (!/^[0-9a-f]{64}$/.test(hex)) throw new StrategyPackageStoreError("INVALID_HASH", "A strategy package hash must be 32 bytes of lowercase hex.");
   return Buffer.from(hex, "hex");
+}
+
+function evmHashBuffer(hex: string): Buffer {
+  if (!/^0x[0-9a-f]{64}$/.test(hex)) {
+    throw new StrategyPackageStoreError("INVALID_HASH", "An EVM strategy hash must be lowercase bytes32.");
+  }
+  return Buffer.from(hex.slice(2), "hex");
 }
 
 function strategyAttemptId(
@@ -382,6 +442,27 @@ type NativePositionRow = {
   updated_at_ms: number;
 };
 
+type EvmPositionRow = {
+  package_id: Uint8Array;
+  owner_id: string;
+  chain_id: number;
+  domain_id: string;
+  settlement_account: string;
+  template_id: string;
+  series_id: string;
+  execution_class_id: string;
+  base_asset_id: string;
+  base_asset_decimals: number;
+  economic_quantity_atoms: string;
+  entry_order_hash: Uint8Array;
+  latest_order_hash: Uint8Array;
+  latest_receipt_hash: Uint8Array;
+  state_hash: Uint8Array;
+  status: string;
+  recorded_at_ms: number;
+  updated_at_ms: number;
+};
+
 function nativePositionRow(row: NativePositionRow): StoredNativeStrategyPosition {
   requireCondition(row.status === "OPEN" || row.status === "EXITING"
     || row.status === "CLOSED" || row.status === "UNRESOLVED",
@@ -406,6 +487,52 @@ function nativePositionRow(row: NativePositionRow): StoredNativeStrategyPosition
     status: row.status as NativeStrategyPositionStatus,
     ...(row.exit_order_hash === null ? {} : { exitOrderHashHex: toHex(row.exit_order_hash) }),
     ...(row.exit_receipt_hash === null ? {} : { exitReceiptHashHex: toHex(row.exit_receipt_hash) }),
+    recordedAtMs: row.recorded_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function evmPositionRow(row: EvmPositionRow): StoredEvmStrategyPosition {
+  requireCondition(row.status === "OPEN" || row.status === "CLOSED",
+    "CORRUPT_ROW", "The EVM strategy position status is invalid.");
+  const packageIdHex = toHex(row.package_id);
+  const entryOrderHashHex = toHex(row.entry_order_hash);
+  const latestOrderHashHex = toHex(row.latest_order_hash);
+  const latestReceiptHashHex = toHex(row.latest_receipt_hash);
+  const stateHashHex = toHex(row.state_hash);
+  const quantityValid = /^(?:0|[1-9][0-9]*)$/.test(row.economic_quantity_atoms);
+  const economicQuantityAtoms = quantityValid ? BigInt(row.economic_quantity_atoms) : -1n;
+  requireCondition(Number.isSafeInteger(row.chain_id) && row.chain_id > 0
+    && Number.isSafeInteger(row.base_asset_decimals) && row.base_asset_decimals >= 0 && row.base_asset_decimals <= 255
+    && quantityValid
+    && /^0x(?!0{40}$)[0-9a-f]{40}$/.test(row.owner_id)
+    && /^0x(?!0{40}$)[0-9a-f]{40}$/.test(row.settlement_account)
+    && /^[0-9a-f]{64}$/.test(packageIdHex)
+    && /^[0-9a-f]{64}$/.test(entryOrderHashHex)
+    && /^[0-9a-f]{64}$/.test(latestOrderHashHex)
+    && /^[0-9a-f]{64}$/.test(latestReceiptHashHex)
+    && /^[0-9a-f]{64}$/.test(stateHashHex)
+    && (row.status === "OPEN"
+      ? economicQuantityAtoms > 0n && !/^0{64}$/.test(stateHashHex)
+      : economicQuantityAtoms === 0n && /^0{64}$/.test(stateHashHex)),
+  "CORRUPT_ROW", "The stored EVM strategy position is malformed.");
+  return Object.freeze({
+    packageIdHex,
+    owner: row.owner_id,
+    chainId: row.chain_id,
+    domainId: row.domain_id,
+    settlementAccount: row.settlement_account,
+    templateId: row.template_id,
+    seriesId: row.series_id,
+    executionClassId: row.execution_class_id,
+    baseAssetId: row.base_asset_id,
+    baseAssetDecimals: row.base_asset_decimals,
+    economicQuantityAtoms,
+    entryOrderHashHex,
+    latestOrderHashHex,
+    latestReceiptHashHex,
+    stateHashHex,
+    status: row.status,
     recordedAtMs: row.recorded_at_ms,
     updatedAtMs: row.updated_at_ms,
   });
@@ -593,6 +720,144 @@ export class SqliteStrategyPackageStore {
       ORDER BY updated_at_ms DESC, strategy_id
     `).all(owner) as NativePositionRow[];
     return Object.freeze(rows.map(nativePositionRow));
+  }
+
+  evmStrategyPositionsByOwner(owner: string): readonly StoredEvmStrategyPosition[] {
+    requireCondition(/^0x(?!0{40}$)[0-9a-f]{40}$/.test(owner), "INVALID_OWNER",
+      "The EVM strategy owner must be a lowercase nonzero address.");
+    const rows = this.db.prepare(`
+      SELECT * FROM strategy_evm_positions
+      WHERE owner_id = ?
+      ORDER BY updated_at_ms DESC, package_id
+    `).all(owner) as EvmPositionRow[];
+    return Object.freeze(rows.map(evmPositionRow));
+  }
+
+  recordEvmStrategyPosition(evidence: EvmStrategyPositionEvidence): StoredEvmStrategyPosition {
+    requireCondition(Number.isSafeInteger(evidence.chainId) && evidence.chainId > 0,
+      "INVALID_CHAIN", "The EVM strategy chain is invalid.");
+    requireCondition(/^0x(?!0{40}$)[0-9a-f]{40}$/.test(evidence.account),
+      "INVALID_ACCOUNT", "The EVM strategy account must be a lowercase nonzero address.");
+    const receiptHash = hashBuffer(evidence.receiptHashHex);
+    const packageId = evmHashBuffer(evidence.packageIdHex);
+    const previousStateHash = evmHashBuffer(evidence.previousStateHashHex);
+    const nextStateHash = evmHashBuffer(evidence.nextStateHashHex);
+    const zeroHash = /^0x0{64}$/.test(evidence.nextStateHashHex);
+    const previousZero = /^0x0{64}$/.test(evidence.previousStateHashHex);
+    const receiptRow = this.db.prepare(`
+      SELECT r.order_hash, r.receipt_json, o.order_json, o.graph_json
+      FROM strategy_package_receipts r
+      JOIN strategy_package_orders o ON o.order_hash = r.order_hash
+      WHERE r.receipt_hash = ?
+    `).get(receiptHash) as {
+      order_hash: Uint8Array;
+      receipt_json: string;
+      order_json: string;
+      graph_json: string;
+    } | undefined;
+    requireCondition(receiptRow !== undefined, "RECEIPT_NOT_FOUND",
+      "The EVM strategy receipt must be stored before its position state.");
+    const receipt = strategyPackageReceipt(parseProtocolJson(receiptRow.receipt_json) as StrategyPackageReceiptInput);
+    const order = strategyPackageOrder(parseProtocolJson(receiptRow.order_json) as StrategyPackageOrderInput);
+    const graph = packageGraph(parseProtocolJson(receiptRow.graph_json) as PackageGraphInput);
+    requireCondition(receipt.finalityStatus === "FINALIZED" && receipt.terminalState === "FINALIZED_COMPLETE",
+      "POSITION_NOT_FINAL", "Only a finalized complete EVM execution can update strategy state.");
+    requireCondition(order.settlementClass === "ATOMIC_POSTCONDITION" && graph.settlementClass === "ATOMIC_POSTCONDITION"
+      && graph.legs.length > 0 && new Set(graph.legs.map((leg) => leg.domain.domainId)).size === 1,
+    "UNSUPPORTED_EXECUTION", "The receipt is not one atomic EVM strategy execution.");
+    const domainId = graph.legs[0]!.domain.domainId;
+    requireCondition(domainId === `eip155:${evidence.chainId}` && order.settlementAccount === evidence.account,
+      "BINDING_MISMATCH", "The EVM position evidence differs from the order domain or account.");
+    const orderHashHex = toHex(receiptRow.order_hash);
+    const changedAtMs = this.clock();
+    requireCondition(Number.isSafeInteger(changedAtMs) && changedAtMs >= 0,
+      "INVALID_CLOCK", "The EVM strategy position clock is invalid.");
+
+    return this.db.transaction(() => {
+      const existingRow = this.db.prepare("SELECT * FROM strategy_evm_positions WHERE package_id = ?")
+        .get(packageId) as EvmPositionRow | undefined;
+      if (existingRow !== undefined && toHex(existingRow.latest_order_hash) === orderHashHex) {
+        requireCondition(toHex(existingRow.latest_receipt_hash) === evidence.receiptHashHex,
+          "POSITION_CONFLICT", "The EVM strategy transition is already bound to another receipt.");
+        return evmPositionRow(existingRow);
+      }
+
+      if (order.lifecycleAction === "ENTRY") {
+        requireCondition(existingRow === undefined && previousZero && !zeroHash
+          && evidence.packageIdHex.slice(2) === orderHashHex,
+        "POSITION_CONFLICT", "The EVM strategy entry identity or state transition is invalid.");
+        this.db.prepare(`
+          INSERT INTO strategy_evm_positions
+            (package_id, owner_id, chain_id, domain_id, settlement_account,
+             template_id, series_id, execution_class_id, base_asset_id, base_asset_decimals,
+             economic_quantity_atoms, entry_order_hash, latest_order_hash, latest_receipt_hash,
+             state_hash, status, recorded_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
+        `).run(
+          packageId,
+          order.owner,
+          evidence.chainId,
+          domainId,
+          evidence.account,
+          order.templateId,
+          order.seriesId,
+          order.executionClassId,
+          order.economicQuantity.asset.assetId,
+          order.economicQuantity.asset.decimals,
+          order.economicQuantity.atoms.toString(),
+          receiptRow.order_hash,
+          receiptRow.order_hash,
+          receiptHash,
+          nextStateHash,
+          changedAtMs,
+          changedAtMs,
+        );
+      } else {
+        requireCondition(existingRow !== undefined && existingRow.status === "OPEN"
+          && bytesEqual(existingRow.state_hash, previousStateHash)
+          && existingRow.owner_id === order.owner
+          && existingRow.chain_id === evidence.chainId
+          && existingRow.domain_id === domainId
+          && existingRow.settlement_account === evidence.account
+          && existingRow.template_id === order.templateId
+          && existingRow.series_id === order.seriesId
+          && existingRow.execution_class_id === order.executionClassId
+          && existingRow.base_asset_id === order.economicQuantity.asset.assetId
+          && existingRow.base_asset_decimals === order.economicQuantity.asset.decimals,
+        "STALE_STRATEGY_STATE", "The EVM strategy state or identity changed before finalization.");
+        const currentQuantity = BigInt(existingRow.economic_quantity_atoms);
+        const terminal = order.lifecycleAction === "EXIT" || order.lifecycleAction === "EMERGENCY_UNWIND";
+        requireCondition(terminal || order.lifecycleAction === "INCREASE" || order.lifecycleAction === "DECREASE",
+          "UNSUPPORTED_EXECUTION", "The EVM strategy lifecycle action is unsupported.");
+        const nextQuantity = terminal ? 0n
+          : order.lifecycleAction === "INCREASE"
+            ? currentQuantity + order.economicQuantity.atoms
+            : currentQuantity - order.economicQuantity.atoms;
+        requireCondition((terminal && zeroHash) || (!terminal && !zeroHash && nextQuantity > 0n),
+          "POSITION_CONFLICT", "The EVM strategy next state is invalid for the lifecycle action.");
+        const updated = this.db.prepare(`
+          UPDATE strategy_evm_positions
+          SET economic_quantity_atoms = ?, latest_order_hash = ?, latest_receipt_hash = ?,
+              state_hash = ?, status = ?, updated_at_ms = ?
+          WHERE package_id = ? AND status = 'OPEN' AND state_hash = ?
+        `).run(
+          nextQuantity.toString(),
+          receiptRow.order_hash,
+          receiptHash,
+          nextStateHash,
+          terminal ? "CLOSED" : "OPEN",
+          changedAtMs,
+          packageId,
+          previousStateHash,
+        );
+        requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+          "The EVM strategy state changed before finalization.");
+      }
+      const stored = this.db.prepare("SELECT * FROM strategy_evm_positions WHERE package_id = ?")
+        .get(packageId) as EvmPositionRow | undefined;
+      requireCondition(stored !== undefined, "POSITION_NOT_FOUND", "The finalized EVM strategy position was not stored.");
+      return evmPositionRow(stored);
+    }).immediate();
   }
 
   selectHyperliquidExecution(request: SelectHyperliquidStrategyExecutionRequest): SelectedStrategyPackageAttempt {

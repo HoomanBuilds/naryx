@@ -15,6 +15,11 @@ export type ObservedEvmStrategyExecution = Readonly<
       version: 1;
       status: 'FINALIZED';
       transactionHash: Hex;
+      chainId: number;
+      account: Hex;
+      packageId: Hex;
+      previousStateHash: Hex;
+      nextStateHash: Hex;
       onchainReceiptHash: Hex;
       receipt: StrategyPackageReceipt;
     }
@@ -99,7 +104,12 @@ function validateObservation(value: unknown, quoteHash: string, transactionHash:
     }
     return observation as ObservedEvmStrategyExecution;
   }
-  if (Object.keys(observation).sort().join(',') !== 'onchainReceiptHash,receipt,status,transactionHash,version'
+  if (Object.keys(observation).sort().join(',') !== 'account,chainId,nextStateHash,onchainReceiptHash,packageId,previousStateHash,receipt,status,transactionHash,version'
+    || typeof observation.chainId !== 'number' || !Number.isSafeInteger(observation.chainId) || observation.chainId < 1
+    || typeof observation.account !== 'string' || !/^0x(?!0{40}$)[0-9a-f]{40}$/.test(observation.account)
+    || typeof observation.packageId !== 'string' || !/^0x[0-9a-f]{64}$/.test(observation.packageId)
+    || typeof observation.previousStateHash !== 'string' || !/^0x[0-9a-f]{64}$/.test(observation.previousStateHash)
+    || typeof observation.nextStateHash !== 'string' || !/^0x[0-9a-f]{64}$/.test(observation.nextStateHash)
     || typeof observation.onchainReceiptHash !== 'string' || !/^0x[0-9a-f]{64}$/.test(observation.onchainReceiptHash)) {
     throw new EvmStrategyExecutionObservationClientError('INVALID_RESPONSE', 'finalized observation fields are invalid');
   }
@@ -111,6 +121,11 @@ function validateObservation(value: unknown, quoteHash: string, transactionHash:
     version: 1,
     status: 'FINALIZED',
     transactionHash: transactionHash as Hex,
+    chainId: observation.chainId,
+    account: observation.account as Hex,
+    packageId: observation.packageId as Hex,
+    previousStateHash: observation.previousStateHash as Hex,
+    nextStateHash: observation.nextStateHash as Hex,
     onchainReceiptHash: observation.onchainReceiptHash as Hex,
     receipt,
   });

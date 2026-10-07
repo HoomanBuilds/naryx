@@ -537,6 +537,11 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const observed = await observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH });
   assert.equal(observed?.status, 'FINALIZED');
   if (observed?.status !== 'FINALIZED') throw new Error('missing finalized receipt');
+  assert.equal(observed.chainId, 84_532);
+  assert.equal(observed.account, ACCOUNT.toLowerCase());
+  assert.equal(observed.packageId, envelope.execution.packageId);
+  assert.equal(observed.previousStateHash, envelope.execution.previousStateHash);
+  assert.equal(observed.nextStateHash, envelope.execution.nextStateHash);
   assert.equal(observed.onchainReceiptHash, ONCHAIN_RECEIPT_HASH);
   assert.deepEqual(observed.receipt.legOutcomes.map((leg) => leg.settledQuantity.atoms), [QUANTITY, -QUANTITY]);
   assert.equal(observed.receipt.serviceFee.atoms, envelope.execution.fees.protocolFeeAtoms);
