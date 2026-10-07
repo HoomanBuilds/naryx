@@ -1004,6 +1004,14 @@ export {
   type PreparedStrategyExecutionTransport,
 } from './strategy-execution-transport.js';
 export {
+  CrossDomainExecutionCoordinator,
+  type CrossDomainAdvanceResult,
+  type CrossDomainCoordinationJournal,
+  type CrossDomainCoordinationSnapshot,
+  type CrossDomainDriverAdvanceInput,
+  type CrossDomainExecutionDriver,
+} from './cross-domain-execution-coordinator.js';
+export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,
