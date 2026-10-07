@@ -34,10 +34,12 @@ import {
   applyNativeStrategyTransitionReceipt,
   applyNativeStrategyExitReceipt,
   applyNativeStrategyMigrationReceipt,
+  applyNativeStrategyRebalanceReceipt,
   nativeStrategyPositionFromEntry,
   NativeStrategyPositionError,
   validateNativeStrategyExit,
   validateNativeStrategyMigration,
+  validateNativeStrategyRebalance,
   validateNativeStrategyTransition,
   type NativeStrategyPosition,
   type NativeStrategyPositionStatus,
@@ -135,6 +137,15 @@ CREATE TABLE IF NOT EXISTS strategy_native_migrations (
   selected_at_ms INTEGER NOT NULL,
   finalized_at_ms INTEGER
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_native_rebalances (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  strategy_id TEXT NOT NULL REFERENCES strategy_native_positions(strategy_id),
+  action TEXT NOT NULL CHECK (action = 'REBALANCE'),
+  expected_state_hash BLOB NOT NULL,
+  receipt_hash BLOB UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  selected_at_ms INTEGER NOT NULL,
+  finalized_at_ms INTEGER
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_evm_positions (
   package_id BLOB PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -167,6 +178,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_transition
 ON strategy_native_transitions(strategy_id) WHERE receipt_hash IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_migration
 ON strategy_native_migrations(strategy_id) WHERE receipt_hash IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS strategy_native_pending_rebalance
+ON strategy_native_rebalances(strategy_id) WHERE receipt_hash IS NULL;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
@@ -1015,6 +1028,8 @@ export class SqliteStrategyPackageStore {
             validateNativeStrategyExit(transitionPosition, admission.order, admission.graph);
           } else if (admission.order.lifecycleAction === "MIGRATE") {
             validateNativeStrategyMigration(transitionPosition, admission.order, admission.graph);
+          } else if (admission.order.lifecycleAction === "REBALANCE") {
+            validateNativeStrategyRebalance(transitionPosition, admission.order, admission.graph);
           } else {
             validateNativeStrategyTransition(transitionPosition, admission.order, admission.graph);
           }
@@ -1046,8 +1061,11 @@ export class SqliteStrategyPackageStore {
           UNION ALL
           SELECT 1 FROM strategy_native_migrations
           WHERE strategy_id = ? AND receipt_hash IS NULL
+          UNION ALL
+          SELECT 1 FROM strategy_native_rebalances
+          WHERE strategy_id = ? AND receipt_hash IS NULL
           LIMIT 1
-        `).get(transitionPosition.strategyId, transitionPosition.strategyId);
+        `).get(transitionPosition.strategyId, transitionPosition.strategyId, transitionPosition.strategyId);
         requireCondition(pending === undefined, "STRATEGY_TRANSITION_PENDING",
           "The native strategy already has a selected lifecycle transition.");
       }
@@ -1072,6 +1090,18 @@ export class SqliteStrategyPackageStore {
             (order_hash, strategy_id, action, expected_state_hash, receipt_hash,
              selected_at_ms, finalized_at_ms)
           VALUES (?, ?, 'MIGRATE', ?, NULL, ?, NULL)
+        `).run(
+          hashBuffer(admission.orderHashHex),
+          transitionPosition.strategyId,
+          hashBuffer(transitionPosition.stateHashHex),
+          selectedAtMs,
+        );
+      } else if (transitionPosition !== undefined && admission.order.lifecycleAction === "REBALANCE") {
+        this.db.prepare(`
+          INSERT INTO strategy_native_rebalances
+            (order_hash, strategy_id, action, expected_state_hash, receipt_hash,
+             selected_at_ms, finalized_at_ms)
+          VALUES (?, ?, 'REBALANCE', ?, NULL, ?, NULL)
         `).run(
           hashBuffer(admission.orderHashHex),
           transitionPosition.strategyId,
@@ -1277,6 +1307,45 @@ export class SqliteStrategyPackageStore {
             `).run(receiptHash, changedAtMs, receipt.orderHash);
             requireCondition(finalized.changes === 1, "MIGRATION_NOT_SELECTED",
               "The native hedge migration was already finalized.");
+          } else if (order.lifecycleAction === "REBALANCE") {
+            const rebalance = this.db.prepare(`
+              SELECT strategy_id, expected_state_hash, receipt_hash
+              FROM strategy_native_rebalances WHERE order_hash = ?
+            `).get(receipt.orderHash) as {
+              strategy_id: string;
+              expected_state_hash: Uint8Array;
+              receipt_hash: Uint8Array | null;
+            } | undefined;
+            requireCondition(rebalance !== undefined && rebalance.receipt_hash === null,
+              "REBALANCE_NOT_SELECTED", "The native strategy receipt has no pending delta rebalance.");
+            const row = this.db.prepare("SELECT * FROM strategy_native_positions WHERE strategy_id = ?")
+              .get(rebalance.strategy_id) as NativePositionRow | undefined;
+            requireCondition(row !== undefined && row.status === "OPEN"
+              && bytesEqual(row.state_hash, rebalance.expected_state_hash),
+            "STALE_STRATEGY_STATE", "The native strategy state changed before rebalance finalization.");
+            const position = nativePositionRow(row);
+            const next = applyNativeStrategyRebalanceReceipt(position, order, graph, receipt);
+            const updated = this.db.prepare(`
+              UPDATE strategy_native_positions
+              SET state_hash = ?, state_json = ?, status = ?, updated_at_ms = ?
+              WHERE strategy_id = ? AND status = 'OPEN' AND state_hash = ?
+            `).run(
+              hashBuffer(next.stateHashHex),
+              stringifyProtocolJson(next.state),
+              next.status,
+              changedAtMs,
+              next.strategyId,
+              rebalance.expected_state_hash,
+            );
+            requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
+              "The native strategy state changed before rebalance finalization.");
+            const finalized = this.db.prepare(`
+              UPDATE strategy_native_rebalances
+              SET receipt_hash = ?, finalized_at_ms = ?
+              WHERE order_hash = ? AND receipt_hash IS NULL
+            `).run(receiptHash, changedAtMs, receipt.orderHash);
+            requireCondition(finalized.changes === 1, "REBALANCE_NOT_SELECTED",
+              "The native delta rebalance was already finalized.");
           } else if (order.lifecycleAction === "INCREASE" || order.lifecycleAction === "DECREASE") {
             const transition = this.db.prepare(`
               SELECT strategy_id, expected_state_hash, receipt_hash

@@ -35,11 +35,13 @@ import type {
 
 const MAX_CONFIG_BYTES = 1_048_576;
 const U256_MAX = (1n << 256n) - 1n;
+const I128_MIN = -(1n << 127n);
+const I128_MAX = (1n << 127n) - 1n;
 const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const COIN = /^[A-Za-z0-9@._:/-]{1,64}$/;
 
 type NativeRole = "treasury-hedge" | "funding-long" | "funding-short"
-  | "source-hedge" | "destination-hedge";
+  | "source-hedge" | "destination-hedge" | "perp-adjustment";
 
 export class HyperliquidNativeStrategyOrderError extends Error {
   readonly code: string;
@@ -82,7 +84,8 @@ export interface HyperliquidNativeStrategyProfile {
   readonly templateId:
     | typeof STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
     | typeof STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
-    | typeof STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION;
+    | typeof STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+    | typeof STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE;
   readonly templateVersion: 1;
   readonly packageTemplateManifestHash: Uint8Array;
   readonly seriesId: string;
@@ -103,7 +106,9 @@ export interface HyperliquidNativeStrategyProfile {
 export interface HyperliquidNativeStrategyOrderRequest {
   readonly profileId: string;
   readonly owner: string;
-  readonly lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "MIGRATE" | "EMERGENCY_UNWIND";
+  readonly lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "MIGRATE" | "REBALANCE" | "EMERGENCY_UNWIND";
+  readonly adjustmentKind?: "INCREASE" | "DECREASE";
+  readonly preDeltaAtoms?: string;
   readonly quantityAtoms: string;
   readonly economicQuantityAtoms: string;
   readonly limitPrices: readonly Readonly<{
@@ -197,7 +202,8 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
   const templateId = profile.templateId;
   if (templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
     && templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
-    && templateId !== STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION) {
+    && templateId !== STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+    && templateId !== STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE) {
     fail("INVALID_CONFIGURATION", `${context}.templateId is unsupported.`);
   }
   const templateVersion = positiveVersion(profile.templateVersion, `${context}.templateVersion`);
@@ -227,7 +233,8 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
       "sizeDecimals", "maximumPriceDecimals",
     ], marketContext);
     if ((market.role !== "treasury-hedge" && market.role !== "funding-long" && market.role !== "funding-short"
-      && market.role !== "source-hedge" && market.role !== "destination-hedge")
+      && market.role !== "source-hedge" && market.role !== "destination-hedge"
+      && market.role !== "perp-adjustment")
       || (market.entrySide !== "BUY" && market.entrySide !== "SELL")
       || typeof market.coin !== "string" || !COIN.test(market.coin)) {
       fail("INVALID_CONFIGURATION", `${marketContext} role, side, or coin is invalid.`);
@@ -263,9 +270,11 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
       ? roles === "funding-long,funding-short"
         && markets.find((market) => market.role === "funding-long")?.entrySide === "BUY"
         && markets.find((market) => market.role === "funding-short")?.entrySide === "SELL"
-      : roles === "destination-hedge,source-hedge"
-        && markets.find((market) => market.role === "source-hedge")?.entrySide
-          === markets.find((market) => market.role === "destination-hedge")?.entrySide;
+      : templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+        ? roles === "destination-hedge,source-hedge"
+          && markets.find((market) => market.role === "source-hedge")?.entrySide
+            === markets.find((market) => market.role === "destination-hedge")?.entrySide
+        : roles === "perp-adjustment";
   if (!templateMarketsValid) {
     fail("INVALID_CONFIGURATION", `${context}.markets do not match the strategy template.`);
   }
@@ -331,7 +340,9 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     profile.executionClassManifestHash as Uint8Array,
     `${context}.executionClassManifestHash`,
   );
-  const lifecycleAction = templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION ? "MIGRATE" : "ENTRY";
+  const lifecycleAction = templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+    ? "MIGRATE"
+    : templateId === STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE ? "REBALANCE" : "ENTRY";
   try {
     strategyPackageOrder({
       version: 1,
@@ -363,7 +374,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
       maximumRecoveryCostByAsset: [],
       maximumMarginIncrease: assetAmount(quoteAsset, 0n),
       maximumResidualValue: assetAmount(quoteAsset, 0n),
-      ...(lifecycleAction === "MIGRATE" ? { expectedStrategyStateHash: "02".repeat(32) } : {}),
+      ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: "02".repeat(32) }),
       expiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
       expiryValue: 2n,
       nonce: 1n,
@@ -427,6 +438,15 @@ function requestAtoms(value: string, name: string, allowZero = false): bigint {
   return atoms;
 }
 
+function requestSignedAtoms(value: string, name: string): bigint {
+  if (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(value)) {
+    fail("INVALID_REQUEST", `${name} must be signed decimal atoms.`);
+  }
+  const atoms = BigInt(value);
+  if (atoms < I128_MIN || atoms > I128_MAX) fail("INVALID_REQUEST", `${name} is out of range.`);
+  return atoms;
+}
+
 function policyHash(profile: HyperliquidNativeStrategyProfile, request: HyperliquidNativeStrategyOrderRequest, name: string): string {
   return createHash("sha256").update([
     "NARYX/native-strategy-policy/v1",
@@ -465,9 +485,10 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
       const fields = requestValue as Record<string, unknown>;
       const allowed = new Set([
         "profileId", "owner", "lifecycleAction", "quantityAtoms", "economicQuantityAtoms",
-        "limitPrices", "expiryValue", "nonce", "expectedStrategyStateHash",
+        "limitPrices", "expiryValue", "nonce", "expectedStrategyStateHash", "adjustmentKind", "preDeltaAtoms",
       ]);
-      const required = [...allowed].filter((name) => name !== "expectedStrategyStateHash");
+      const required = [...allowed].filter((name) => name !== "expectedStrategyStateHash"
+        && name !== "adjustmentKind" && name !== "preDeltaAtoms");
       if (Object.keys(fields).some((name) => !allowed.has(name))
         || required.some((name) => !(name in fields))
         || typeof fields.profileId !== "string"
@@ -475,6 +496,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
           && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "MIGRATE"
+          && fields.lifecycleAction !== "REBALANCE"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || typeof fields.quantityAtoms !== "string"
         || typeof fields.economicQuantityAtoms !== "string"
@@ -482,6 +504,9 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         || typeof fields.nonce !== "string"
         || (fields.expectedStrategyStateHash !== undefined
           && typeof fields.expectedStrategyStateHash !== "string")
+        || (fields.adjustmentKind !== undefined
+          && fields.adjustmentKind !== "INCREASE" && fields.adjustmentKind !== "DECREASE")
+        || (fields.preDeltaAtoms !== undefined && typeof fields.preDeltaAtoms !== "string")
         || !Array.isArray(fields.limitPrices)) {
         fail("INVALID_REQUEST", "Native strategy order request fields are invalid.");
       }
@@ -491,6 +516,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
       if (!OWNER.test(request.owner) || (request.lifecycleAction !== "ENTRY"
         && request.lifecycleAction !== "INCREASE" && request.lifecycleAction !== "DECREASE"
         && request.lifecycleAction !== "MIGRATE"
+        && request.lifecycleAction !== "REBALANCE"
         && request.lifecycleAction !== "EXIT" && request.lifecycleAction !== "EMERGENCY_UNWIND")) {
         fail("INVALID_REQUEST", "Owner or lifecycle action is invalid.");
       }
@@ -502,11 +528,17 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
           || !/^[0-9a-f]{64}$/.test(request.expectedStrategyStateHash))) {
         fail("INVALID_REQUEST", "A lifecycle transition requires the exact expected strategy state hash.");
       }
-      if ((profile.templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION) !== (request.lifecycleAction === "MIGRATE")) {
+      const migration = profile.templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION;
+      const rebalance = profile.templateId === STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE;
+      if (migration !== (request.lifecycleAction === "MIGRATE")
+        || rebalance !== (request.lifecycleAction === "REBALANCE")
+        || rebalance !== (request.adjustmentKind !== undefined)
+        || rebalance !== (request.preDeltaAtoms !== undefined)) {
         fail("INVALID_REQUEST", "The selected native strategy profile does not support this lifecycle action.");
       }
       const quantityAtoms = requestAtoms(request.quantityAtoms, "quantityAtoms");
       const economicQuantityAtoms = requestAtoms(request.economicQuantityAtoms, "economicQuantityAtoms");
+      const preDeltaAtoms = rebalance ? requestSignedAtoms(request.preDeltaAtoms!, "preDeltaAtoms") : undefined;
       const expiryValue = requestAtoms(request.expiryValue, "expiryValue");
       const nonce = requestAtoms(request.nonce, "nonce");
       const now = currentTimeMs();
@@ -518,10 +550,10 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         || expiryValue > BigInt(now) + profile.bounds.maximumExpiryTtlMs) {
         fail("LIMIT_EXCEEDED", "Native strategy quantity or expiry is outside the reviewed profile bounds.");
       }
-      if ((profile.templateId === STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
-        || profile.templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION)
-        ? economicQuantityAtoms !== quantityAtoms
-        : economicQuantityAtoms < quantityAtoms) {
+      if (((profile.templateId === STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD || migration)
+        && economicQuantityAtoms !== quantityAtoms)
+        || (!rebalance && profile.templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
+          && !migration && economicQuantityAtoms < quantityAtoms)) {
         fail("INVALID_REQUEST", "Economic and executable quantities do not match the strategy template.");
       }
       if (!profile.markets.every((market) =>
@@ -546,12 +578,15 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
       }
       const graphLegs = profile.markets.map((market) => {
         const limit = limits.get(market.role)!;
-        const migration = request.lifecycleAction === "MIGRATE";
         const increasing = request.lifecycleAction === "ENTRY" || request.lifecycleAction === "INCREASE";
-        const side = migration
+        const side = rebalance
+          ? request.adjustmentKind === "INCREASE" ? market.entrySide : reverse(market.entrySide)
+          : migration
           ? market.role === "source-hedge" ? reverse(market.entrySide) : market.entrySide
           : increasing ? market.entrySide : reverse(market.entrySide);
-        const family = migration
+        const family = rebalance
+          ? request.adjustmentKind === "INCREASE" ? "PERP_INCREASE" as const : "PERP_DECREASE" as const
+          : migration
           ? market.role === "source-hedge" ? "PERP_CLOSE" as const : "PERP_OPEN" as const
           : request.lifecycleAction === "ENTRY" ? "PERP_OPEN" as const
           : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE" as const
@@ -656,7 +691,18 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         packageTimeInForce: "IOC",
         economicQuantity: assetAmount(profile.baseAsset, economicQuantityAtoms),
         quoteAsset: profile.quoteAsset,
-        metricLimits: profile.metricLimits,
+        metricLimits: preDeltaAtoms === undefined
+          ? profile.metricLimits
+          : Object.freeze([
+            ...profile.metricLimits.filter((limit) => limit.metricId !== "pre-delta-atoms"),
+            Object.freeze({
+              metricId: "pre-delta-atoms",
+              comparator: "EQ" as const,
+              value: preDeltaAtoms,
+              scale: 0,
+              unitId: "base-atoms",
+            }),
+          ]),
         maximumServiceFeesByAsset: cap(profile.bounds.maximumServiceFeeQuoteAtoms),
         maximumVenueFeesByAsset: cap(profile.bounds.maximumVenueFeeQuoteAtoms),
         maximumNetworkFeesByAsset: [],

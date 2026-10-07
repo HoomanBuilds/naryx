@@ -22,10 +22,12 @@ export {
 export {
   applyNativeStrategyExitReceipt,
   applyNativeStrategyMigrationReceipt,
+  applyNativeStrategyRebalanceReceipt,
   applyNativeStrategyTransitionReceipt,
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
   validateNativeStrategyMigration,
+  validateNativeStrategyRebalance,
   validateNativeStrategyTransition,
   NativeStrategyPositionError,
   type NativeStrategyPosition,

@@ -404,6 +404,101 @@ export function applyNativeStrategyMigrationReceipt(
   });
 }
 
+export function validateNativeStrategyRebalance(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+): void {
+  const graph = packageGraph(graphInput);
+  requireCondition(position.status === "OPEN", "STRATEGY_NOT_OPEN",
+    "The native strategy position is not available for rebalancing.");
+  requireCondition(position.templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+    && order.templateId === STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE
+    && order.lifecycleAction === "REBALANCE" && graph.lifecycleAction === "REBALANCE",
+  "POSITION_ACTION_MISMATCH", "A native delta rebalance must target an open treasury hedge.");
+  requireCondition(order.expectedStrategyStateHash !== undefined
+    && bytesEqual(order.expectedStrategyStateHash, strategyStateHash(position.state)),
+  "STALE_STRATEGY_STATE", "The rebalance does not bind the current native strategy state.");
+  requireCondition(order.owner === position.state.ownerId
+    && order.settlementAccount === position.state.subaccountId,
+  "STRATEGY_IDENTITY_MISMATCH", "The rebalance owner or settlement account differs from the open strategy.");
+  requireCondition(position.state.legs.length === 1 && graph.legs.length === 1,
+    "STRATEGY_LEG_MISMATCH", "The native delta rebalance currently requires one open hedge and one adjustment.");
+  const current = position.state.legs[0]!;
+  const adjustment = graph.legs[0]!;
+  const currentQuantity = absolute(current.signedQuantityAtoms);
+  const sameDirection = current.signedQuantityAtoms > 0n ? "BUY" : "SELL";
+  const oppositeDirection = sameDirection === "BUY" ? "SELL" : "BUY";
+  const increasing = adjustment.legFamily === "PERP_INCREASE";
+  requireCondition(adjustment.legId === "perp-adjustment"
+    && (increasing || adjustment.legFamily === "PERP_DECREASE")
+    && adjustment.quantityAsset.assetId === current.underlyingId
+    && adjustment.market.subjectId === current.instrumentId
+    && adjustment.venue.subjectId === current.venueId
+    && adjustment.minimumQuantityAtoms === adjustment.quantityAtoms
+    && adjustment.side === (increasing ? sameDirection : oppositeDirection)
+    && (increasing || adjustment.quantityAtoms < currentQuantity)
+    && order.economicQuantity.asset.assetId === current.underlyingId
+    && order.economicQuantity.atoms === position.economicQuantityAtoms,
+  "STRATEGY_LEG_MISMATCH", "The rebalance must adjust the exact open hedge without closing or reversing it.");
+  const preDelta = position.economicQuantityAtoms + current.signedQuantityAtoms;
+  const adjustmentDelta = adjustment.side === "BUY" ? adjustment.quantityAtoms : -adjustment.quantityAtoms;
+  const postDelta = preDelta + adjustmentDelta;
+  const committedPreDelta = order.metricLimits.find((limit) => limit.metricId === "pre-delta-atoms");
+  requireCondition(committedPreDelta !== undefined && committedPreDelta.comparator === "EQ"
+    && committedPreDelta.scale === 0 && committedPreDelta.unitId === "base-atoms"
+    && committedPreDelta.value === preDelta,
+  "STALE_STRATEGY_STATE", "The rebalance pre-delta commitment does not match the authoritative position.");
+  requireCondition(preDelta !== 0n && absolute(postDelta) < absolute(preDelta),
+    "RISK_NOT_REDUCED", "The requested rebalance does not reduce absolute portfolio delta.");
+}
+
+export function applyNativeStrategyRebalanceReceipt(
+  position: NativeStrategyPosition,
+  order: StrategyPackageOrder,
+  graphInput: PackageGraphInput,
+  receipt: StrategyPackageReceipt,
+): NativeStrategyPosition {
+  validateNativeStrategyRebalance(position, order, graphInput);
+  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+    "A native delta rebalance requires finalized execution evidence.");
+  const graph = packageGraph(graphInput);
+  const deltas = checkedPositionDeltas(graph, receipt);
+  if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
+    requireCondition([...deltas.values()].every((delta) => delta === 0n),
+      "POSITION_NOT_FLAT", "A no-effect rebalance receipt cannot change hedge exposure.");
+    return position;
+  }
+  const current = position.state.legs[0]!;
+  const adjustment = graph.legs[0]!;
+  const delta = deltas.get(adjustment.legId) ?? 0n;
+  if (completeTerminalState(receipt.terminalState)) {
+    requireCondition(absolute(delta) === adjustment.quantityAtoms,
+      "POSITION_INCOMPLETE", "A complete rebalance must execute the adjustment exactly.");
+  }
+  const nextQuantity = current.signedQuantityAtoms + delta;
+  requireCondition(nextQuantity !== 0n && (nextQuantity > 0n) === (current.signedQuantityAtoms > 0n),
+    "POSITION_DIRECTION_MISMATCH", "A rebalance cannot close or reverse the hedge.");
+  const nextLeg = Object.freeze({
+    ...current,
+    signedQuantityAtoms: nextQuantity,
+    lotAtoms: gcd(current.lotAtoms, absolute(delta)),
+    ratioNumerator: nextQuantity > 0n ? 1n : -1n,
+    ratioDenominator: 1n,
+  });
+  const state = strategyState({
+    ...position.state,
+    stateVersion: position.state.stateVersion + 1n,
+    legs: [nextLeg],
+  });
+  return Object.freeze({
+    ...position,
+    state,
+    stateHashHex: toHex(strategyStateHash(state)),
+    status: completeTerminalState(receipt.terminalState) ? "OPEN" : "UNRESOLVED",
+  });
+}
+
 export function applyNativeStrategyExitReceipt(
   position: NativeStrategyPosition,
   orderHashHex: string,

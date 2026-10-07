@@ -24,6 +24,7 @@ import {
 import {
   applyNativeStrategyExitReceipt,
   applyNativeStrategyMigrationReceipt,
+  applyNativeStrategyRebalanceReceipt,
   applyNativeStrategyTransitionReceipt,
   createHyperliquidNativeStrategyOrderPort,
   HyperliquidNativeStrategyOrderError,
@@ -31,6 +32,7 @@ import {
   nativeStrategyPositionFromEntry,
   validateNativeStrategyExit,
   validateNativeStrategyMigration,
+  validateNativeStrategyRebalance,
   validateNativeStrategyTransition,
   type HyperliquidNativeStrategyProfile,
 } from "../src/index.js";
@@ -41,10 +43,12 @@ const OWNER = "0x1111111111111111111111111111111111111111";
 
 function profile(
   profileId: string,
-  templateId: "treasury-inventory-hedge-v1" | "perpetual-funding-spread-v1" | "hedge-migration-v1",
+  templateId: "treasury-inventory-hedge-v1" | "perpetual-funding-spread-v1" | "hedge-migration-v1"
+    | "delta-neutral-rebalance-v1",
 ): HyperliquidNativeStrategyProfile {
   const market = (
-    role: "treasury-hedge" | "funding-long" | "funding-short" | "source-hedge" | "destination-hedge",
+    role: "treasury-hedge" | "funding-long" | "funding-short" | "source-hedge" | "destination-hedge"
+      | "perp-adjustment",
     assetId: number,
   ) => ({
     role,
@@ -81,7 +85,9 @@ function profile(
       ? [market("treasury-hedge", 3)]
       : templateId === "perpetual-funding-spread-v1"
         ? [market("funding-long", 3), market("funding-short", 4)]
-        : [market("source-hedge", 3), market("destination-hedge", 4)],
+        : templateId === "hedge-migration-v1"
+          ? [market("source-hedge", 3), market("destination-hedge", 4)]
+          : [market("perp-adjustment", 3)],
     metricLimits: [],
     bounds: Object.freeze({
       minimumQuantityAtoms: 100n,
@@ -126,6 +132,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
         profile("btc-treasury-hedge", "treasury-inventory-hedge-v1"),
         profile("btc-eth-funding", "perpetual-funding-spread-v1"),
         profile("btc-eth-migration", "hedge-migration-v1"),
+        profile("btc-delta-rebalance", "delta-neutral-rebalance-v1"),
       ],
     }));
     const port = createHyperliquidNativeStrategyOrderPort({
@@ -133,7 +140,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
       intake,
       currentTimeMs: () => NOW_MS,
     });
-    assert.equal(port.profiles().length, 3);
+    assert.equal(port.profiles().length, 4);
     const treasury = port.create({
       profileId: "btc-treasury-hedge",
       owner: OWNER,
@@ -193,11 +200,12 @@ test("rejects requests outside reviewed quantity and expiry bounds", () => {
   }), (error: unknown) => error instanceof HyperliquidNativeStrategyOrderError && error.code === "LIMIT_EXCEEDED");
 });
 
-test("migrates an exact native hedge to a distinct reviewed market", () => {
+test("rebalances and migrates an authoritative native hedge", () => {
   const treasuryProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
   const migrationProfile = profile("btc-hedge-migration", "hedge-migration-v1");
+  const rebalanceProfile = profile("btc-delta-rebalance", "delta-neutral-rebalance-v1");
   const port = createHyperliquidNativeStrategyOrderPort({
-    profiles: [treasuryProfile, migrationProfile],
+    profiles: [treasuryProfile, migrationProfile, rebalanceProfile],
     intake,
     currentTimeMs: () => NOW_MS,
   });
@@ -266,6 +274,95 @@ test("migrates an exact native hedge to a distinct reviewed market", () => {
     receipt: entryReceipt,
   });
   assert.ok(opened);
+  const rebalance = port.create({
+    profileId: rebalanceProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "REBALANCE",
+    adjustmentKind: "INCREASE",
+    preDeltaAtoms: "100000",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "200000",
+    limitPrices: [{ legId: "perp-adjustment", quoteAtoms: "60001", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "12",
+    expectedStrategyStateHash: opened.stateHashHex,
+  });
+  assert.deepEqual(rebalance.graph.legs.map((leg) => [leg.legId, leg.legFamily, leg.side]), [
+    ["perp-adjustment", "PERP_INCREASE", "SELL"],
+  ]);
+  validateNativeStrategyRebalance(opened, rebalance.order, rebalance.graph);
+  const rebalanceReceipt = strategyPackageReceipt({
+    version: 1,
+    environment: "testnet",
+    domains: [rebalanceProfile.domain],
+    orderHash: strategyPackageOrderHash(rebalance.order),
+    graphHash: packageGraphHash(rebalance.graph),
+    quoteHash: "79".repeat(32),
+    routeHash: "7a".repeat(32),
+    templateId: rebalance.order.templateId,
+    templateVersion: 1,
+    packageTemplateManifestHash: rebalance.order.packageTemplateManifestHash,
+    seriesId: rebalance.order.seriesId,
+    seriesVersion: 1,
+    seriesManifestHash: rebalance.order.seriesManifestHash,
+    executionClassId: rebalance.order.executionClassId,
+    executionClassVersion: 1,
+    executionClassManifestHash: rebalance.order.executionClassManifestHash,
+    lifecycleAction: "rebalance",
+    owner: OWNER,
+    solverId: "solver-a",
+    settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+    terminalState: "FINALIZED_COMPLETE",
+    quoteAsset: rebalanceProfile.quoteAsset,
+    legOutcomes: [{
+      legId: "perp-adjustment",
+      positionLegId: "perp-adjustment",
+      domain: rebalanceProfile.domain,
+      status: "EXECUTED",
+      requestedQuantity: assetAmount(rebalanceProfile.baseAsset, 100_000n),
+      settledQuantity: assetAmount(rebalanceProfile.baseAsset, -100_000n),
+      grossNotional: assetAmount(rebalanceProfile.quoteAsset, 60_000n),
+      venueFee: assetAmount(rebalanceProfile.quoteAsset, 1n),
+      residualValue: assetAmount(rebalanceProfile.quoteAsset, 0n),
+      evidenceGrade: "VENUE_API_CORROBORATED",
+      onchainEnforced: false,
+      evidenceHash: "7b".repeat(32),
+    }],
+    serviceFee: assetAmount(rebalanceProfile.quoteAsset, 0n),
+    solverFee: assetAmount(rebalanceProfile.quoteAsset, 0n),
+    venueFees: assetAmount(rebalanceProfile.quoteAsset, 1n),
+    networkCost: assetAmount(rebalanceProfile.quoteAsset, 0n),
+    recoveryCost: assetAmount(rebalanceProfile.quoteAsset, 0n),
+    terminalResidualValue: assetAmount(rebalanceProfile.quoteAsset, 0n),
+    finalityStatus: "FINALIZED",
+    executedAtValue: 1_001_050n,
+    receiptNonce: 12n,
+  });
+  const rebalanced = applyNativeStrategyRebalanceReceipt(
+    opened,
+    rebalance.order,
+    rebalance.graph,
+    rebalanceReceipt,
+  );
+  assert.equal(rebalanced.economicQuantityAtoms, 200_000n);
+  assert.equal(rebalanced.state.legs[0]?.signedQuantityAtoms, -200_000n);
+  const riskIncreasing = port.create({
+    profileId: rebalanceProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "REBALANCE",
+    adjustmentKind: "DECREASE",
+    preDeltaAtoms: "100000",
+    quantityAtoms: "50000",
+    economicQuantityAtoms: "200000",
+    limitPrices: [{ legId: "perp-adjustment", quoteAtoms: "60001", baseAtoms: "1" }],
+    expiryValue: "1020000",
+    nonce: "13",
+    expectedStrategyStateHash: opened.stateHashHex,
+  });
+  assert.throws(
+    () => validateNativeStrategyRebalance(opened, riskIncreasing.order, riskIncreasing.graph),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "RISK_NOT_REDUCED",
+  );
   const migration = port.create({
     profileId: migrationProfile.profileId,
     owner: OWNER,
