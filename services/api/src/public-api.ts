@@ -12,6 +12,7 @@ import {
   QUALIFICATION_OBJECT_TYPE,
   matchPackageOrder,
   packageBookLevels,
+  packageAllocationHash,
   packageOrderHash,
   planCoordinatedDeRisk,
   compilePackageGraph,
@@ -22,11 +23,14 @@ import {
   authorizeSolverQuote,
   bytesEqual,
   commitmentHash,
-  packageTakerOrderBytes,
   packageTakerOrderHash,
   packageBookCancellation,
   packageBookCancellationBytes,
   packageBookCancellationHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentBytes,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoffHash,
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
@@ -40,6 +44,7 @@ import {
   builderManifestHash,
   toProtocolJson,
   validatePackageOrderProfile,
+  verifyPackageSettlementHandoff,
 } from "@naryx/protocol-types";
 import type {
   QualificationObjectType,
@@ -54,6 +59,7 @@ import type {
   PackageTemplateManifestInput,
   PackageOrderInput,
   PackageBookCancellationInput,
+  PackageSettlementCommitmentInput,
   StrategyCommandInput,
   StrategyHealthSnapshotInput,
   BuilderManifestInput,
@@ -159,6 +165,8 @@ export type PublicExchangeStore = Pick<
   | "getBook"
   | "getMatchingPolicy"
   | "getAllocation"
+  | "settlementCommitment"
+  | "settlementHandoff"
   | "allocationTape"
   | "allocationsBetween"
   | "listBooks"
@@ -1086,7 +1094,27 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const allocation = exchange.getAllocation(orderId);
       const policy = allocation === undefined ? undefined : exchange.getMatchingPolicy(allocation.matchingPolicyHash);
       if (allocation === undefined || policy === undefined) throw new RequestError(404, "ALLOCATION_NOT_FOUND", "No allocation exists for this order.");
-      return { allocation, matchingPolicy: policy };
+      const settlementCommitment = exchange.settlementCommitment(orderId);
+      if (settlementCommitment === undefined) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Allocation settlement commitment is unavailable.");
+      }
+      const allocationHash = packageAllocationHash(allocation);
+      const settlementHandoff = exchange.settlementHandoff(allocationHash);
+      if ((allocation.fills.length > 0) !== (settlementHandoff !== undefined)) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Allocation settlement handoff is inconsistent.");
+      }
+      if (settlementHandoff !== undefined) verifyPackageSettlementHandoff(allocation, settlementHandoff);
+      return {
+        allocation,
+        allocationHash: toHex(allocationHash),
+        matchingPolicy: policy,
+        settlementCommitment,
+        settlementCommitmentHash: toHex(packageSettlementCommitmentHash(settlementCommitment)),
+        ...(settlementHandoff === undefined ? {} : {
+          settlementHandoff,
+          settlementHandoffHash: toHex(packageSettlementHandoffHash(settlementHandoff)),
+        }),
+      };
     }
     throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
   }
@@ -1163,7 +1191,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Package book orders require ED25519 authorization.");
       }
       const order = object(body.order, "order") as unknown as PackageTakerOrderInput;
-      const orderBytes = packageTakerOrderBytes(order);
       const orderHash = packageTakerOrderHash(order);
       if (!bytesEqual(commitmentHash(order.orderId, "order.orderId"), orderHash)) {
         throw new RequestError(400, "INVALID_ORDER_ID", "Package book order id must equal its canonical order hash.");
@@ -1176,12 +1203,54 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           "Public package book participants use their canonical Ed25519 key as both participant and control-group id.",
         );
       }
+      const commitment = packageSettlementCommitment(
+        object(body.settlementCommitment, "settlementCommitment") as unknown as PackageSettlementCommitmentInput,
+      );
+      if (
+        commitment.executionClassId !== order.executionClassId
+        || !bytesEqual(commitment.packageOrderId, orderHash)
+        || commitment.participantId !== order.participantId
+        || commitment.quantity !== order.quantity
+      ) {
+        throw new RequestError(
+          400,
+          "SETTLEMENT_MISMATCH",
+          "The settlement commitment does not bind the canonical package-book order.",
+        );
+      }
+      const strategyStore = requireStrategyPackages();
+      if (strategyStore.order === undefined) {
+        throw new RequestError(503, "SETTLEMENT_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
+      }
+      const storedStrategy = strategyStore.order(toHex(commitment.strategyOrderHash));
+      if (storedStrategy === undefined) {
+        throw new RequestError(404, "STRATEGY_ORDER_NOT_FOUND", "The settlement commitment binds no admitted strategy order.");
+      }
+      const strategy = storedStrategy.order;
+      if (
+        strategy.environment !== commitment.environment
+        || strategy.executionClassId !== commitment.executionClassId
+        || !bytesEqual(strategy.graphHash, commitment.graphHash)
+        || strategy.owner !== commitment.participantId
+        || strategy.settlementAccount !== commitment.settlementAccount
+        || strategy.economicQuantity.atoms !== commitment.quantity
+        || strategy.packageOrderType !== order.orderType
+        || strategy.packageTimeInForce !== order.timeInForce
+        || strategy.expiryUnit !== commitment.validUntilUnit
+        || strategy.expiryValue !== commitment.validUntilValue
+      ) {
+        throw new RequestError(
+          400,
+          "SETTLEMENT_MISMATCH",
+          "The package-book settlement commitment differs from its admitted strategy order.",
+        );
+      }
       const signature = ed25519Signature(authorization.signature);
-      if (signature === undefined || !verifyEd25519(participantKey, orderBytes, signature)) {
-        throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the canonical package book order.");
+      if (signature === undefined || !verifyEd25519(participantKey, packageSettlementCommitmentBytes(commitment), signature)) {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the package settlement commitment.");
       }
       const executionClassId = id(order.executionClassId, "executionClassId");
-      const result = exchange.submitOrder(executionClassId, order, nowValue());
+      const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment);
       if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
       const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);
       if (matchingPolicy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
@@ -1192,6 +1261,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         replayed: result.replayed,
         allocation: result.allocation,
         allocationHash: result.allocationHashHex,
+        settlementCommitmentHash: result.settlementCommitmentHashHex,
+        ...(result.settlementHandoff === undefined ? {} : {
+          settlementHandoff: result.settlementHandoff,
+          settlementHandoffHash: result.settlementHandoffHashHex,
+        }),
         matchingPolicy,
       };
     }

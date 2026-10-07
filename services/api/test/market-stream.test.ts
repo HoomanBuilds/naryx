@@ -8,7 +8,7 @@ import test from "node:test";
 import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "../src/index.js";
 import { createMarketStream } from "../src/market-stream.js";
-import { CLASS, CLASS_SUPPORT, NOW, SERIES_SUPPORT, order, registerAll } from "./exchange-fixtures.js";
+import { CLASS, CLASS_SUPPORT, NOW, SERIES_SUPPORT, order, registerAll, settlement } from "./exchange-fixtures.js";
 
 type Message = Record<string, unknown>;
 
@@ -67,14 +67,16 @@ test("the stream pushes executable depth on change and observed trades after a c
   });
   const send = (message: Message) => socket.send(stringifyProtocolJson(message));
   try {
-    exchange.submitOrder(CLASS, order(1), NOW);
+    const firstOrder = order(1);
+    exchange.submitOrder(CLASS, firstOrder, NOW, settlement(firstOrder));
     send({ op: "subscribe", channel: "package-depth", packageMarketId: CLASS });
     assert.equal((await messages.next((message) => message.type === "subscribed")).channel, "package-depth");
     const first = await messages.next((message) => message.type === "package-depth");
     assert.equal(first.label, "EXECUTABLE");
     assert.equal((first.asks as readonly unknown[]).length, 1);
     // A new resting order changes depth, so it is pushed without asking.
-    exchange.submitOrder(CLASS, order(2, { limitPriceTicks: 101n }), NOW);
+    const secondOrder = order(2, { limitPriceTicks: 101n });
+    exchange.submitOrder(CLASS, secondOrder, NOW, settlement(secondOrder));
     const second = await messages.next((message) => message.type === "package-depth");
     assert.equal((second.asks as readonly unknown[]).length, 2);
 
@@ -82,7 +84,8 @@ test("the stream pushes executable depth on change and observed trades after a c
     send({ op: "subscribe", channel: "package-tape", packageMarketId: CLASS });
     const subscribed = await messages.next((message) => message.type === "subscribed" && message.channel === "package-tape");
     assert.equal(subscribed.after, 0);
-    exchange.submitOrder(CLASS, order(3, { side: "BID", timeInForce: "IOC" }), NOW);
+    const takerOrder = order(3, { side: "BID", timeInForce: "IOC" });
+    exchange.submitOrder(CLASS, takerOrder, NOW, settlement(takerOrder));
     const tape = await messages.next((message) => message.type === "package-tape");
     assert.equal(tape.label, "OBSERVED");
     assert.equal((tape.trades as readonly unknown[]).length, 1);

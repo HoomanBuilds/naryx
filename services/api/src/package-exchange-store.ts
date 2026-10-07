@@ -22,6 +22,10 @@ import {
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
   packageMatchingPolicyHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoff,
+  packageSettlementHandoffHash,
   parseProtocolJson,
   protocolId,
   seriesExecutionClass,
@@ -31,6 +35,7 @@ import {
   stringifyProtocolJson,
   toHex,
   verifyPackageAllocation,
+  verifyPackageSettlementHandoff,
 } from "@naryx/protocol-types";
 import type {
   CommitmentHash,
@@ -45,6 +50,9 @@ import type {
   PackageMatchingPolicy,
   PackageMatchingPolicyInput,
   PackageMatchRejection,
+  PackageSettlementCommitment,
+  PackageSettlementCommitmentInput,
+  PackageSettlementHandoff,
   PackageTakerOrderInput,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
@@ -77,6 +85,9 @@ export type PackageExchangeSubmitResult =
       readonly replayed: boolean;
       readonly allocation: PackageAllocation;
       readonly allocationHashHex: string;
+      readonly settlementCommitmentHashHex: string;
+      readonly settlementHandoff?: PackageSettlementHandoff;
+      readonly settlementHandoffHashHex?: string;
     }
   | { readonly accepted: false; readonly rejection: PackageMatchRejection };
 
@@ -151,6 +162,21 @@ CREATE TABLE IF NOT EXISTS package_book_allocations (
   allocation_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_settlement_commitments (
+  package_order_id BLOB PRIMARY KEY,
+  commitment_hash BLOB NOT NULL UNIQUE,
+  execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
+  strategy_order_hash BLOB NOT NULL,
+  participant_id TEXT NOT NULL,
+  commitment_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_settlement_handoffs (
+  allocation_hash BLOB PRIMARY KEY REFERENCES package_book_allocations(allocation_hash),
+  handoff_hash BLOB NOT NULL UNIQUE,
+  handoff_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_cancellations (
   cancellation_hash BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -183,6 +209,18 @@ CREATE TRIGGER IF NOT EXISTS reject_allocation_change
 CREATE TRIGGER IF NOT EXISTS reject_allocation_delete
   BEFORE DELETE ON package_book_allocations
   BEGIN SELECT RAISE(ABORT, 'package allocations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_commitment_change
+  BEFORE UPDATE ON package_book_settlement_commitments
+  BEGIN SELECT RAISE(ABORT, 'package settlement commitments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_commitment_delete
+  BEFORE DELETE ON package_book_settlement_commitments
+  BEGIN SELECT RAISE(ABORT, 'package settlement commitments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_handoff_change
+  BEFORE UPDATE ON package_book_settlement_handoffs
+  BEGIN SELECT RAISE(ABORT, 'package settlement handoffs are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_handoff_delete
+  BEFORE DELETE ON package_book_settlement_handoffs
+  BEGIN SELECT RAISE(ABORT, 'package settlement handoffs are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_cancellation_change
   BEFORE UPDATE ON package_book_cancellations
   BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
@@ -503,9 +541,44 @@ export class SqlitePackageExchangeStore {
     return exists === undefined ? undefined : this.loadBook(executionClassId);
   }
 
-  submitOrder(executionClassId: string, order: PackageTakerOrderInput, nowValue: bigint): PackageExchangeSubmitResult {
+  submitOrder(
+    executionClassId: string,
+    order: PackageTakerOrderInput,
+    nowValue: bigint,
+    commitmentInput: PackageSettlementCommitmentInput,
+  ): PackageExchangeSubmitResult {
     return this.transaction(() => {
       const orderId = guarded("INVALID_INPUT", "Order id is invalid.", () => commitmentHash(order.orderId));
+      const commitment = guarded("INVALID_INPUT", "Settlement commitment is invalid.", () =>
+        packageSettlementCommitment(commitmentInput),
+      );
+      const settlementCommitmentHash = packageSettlementCommitmentHash(commitment);
+      if (
+        commitment.executionClassId !== executionClassId
+        || !bytesEqual(commitment.packageOrderId, orderId)
+        || commitment.participantId !== order.participantId
+        || commitment.quantity !== order.quantity
+      ) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The settlement commitment does not bind the submitted package order.",
+        );
+      }
+      if (commitment.validUntilValue <= nowValue) {
+        throw new PackageExchangeStoreError("SETTLEMENT_EXPIRED", "The settlement commitment is expired.");
+      }
+      if (order.timeInForce === "GTC") {
+        throw new PackageExchangeStoreError(
+          "UNBOUNDED_SETTLEMENT",
+          "Executable package-book orders use a bounded settlement commitment and cannot be GTC.",
+        );
+      }
+      if (order.timeInForce === "GTD" && order.expiresAtValue !== commitment.validUntilValue) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The book order and settlement commitment must expire together.",
+        );
+      }
       const replay = this.db
         .prepare("SELECT allocation_json, execution_class_id FROM package_book_allocations WHERE taker_order_id = ?")
         .get(orderId) as { allocation_json: unknown; execution_class_id: unknown } | undefined;
@@ -513,18 +586,58 @@ export class SqlitePackageExchangeStore {
         if (replay.execution_class_id !== executionClassId) {
           throw new PackageExchangeStoreError("ORDER_CONFLICT", "Order id was already allocated in another book.");
         }
+        const storedCommitment = this.settlementCommitment(orderId);
+        if (storedCommitment === undefined || !bytesEqual(packageSettlementCommitmentHash(storedCommitment), settlementCommitmentHash)) {
+          throw new PackageExchangeStoreError(
+            "ORDER_CONFLICT",
+            "Order id was already allocated under another settlement commitment.",
+          );
+        }
         const allocation = this.decodeAllocation(executionClassId, replay.allocation_json);
-        return { accepted: true, replayed: true, allocation, allocationHashHex: toHex(packageAllocationHash(allocation)) };
+        const allocationHashHex = toHex(packageAllocationHash(allocation));
+        const handoff = this.settlementHandoff(allocationHashHex);
+        return {
+          accepted: true,
+          replayed: true,
+          allocation,
+          allocationHashHex,
+          settlementCommitmentHashHex: toHex(settlementCommitmentHash),
+          ...(handoff === undefined ? {} : {
+            settlementHandoff: handoff,
+            settlementHandoffHashHex: toHex(packageSettlementHandoffHash(handoff)),
+          }),
+        };
       }
       const { policy, book } = this.policyAndBook(executionClassId);
+      if (commitment.environment !== policy.environment) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_MISMATCH",
+          "The settlement commitment belongs to another environment.",
+        );
+      }
       const result = guarded("INVALID_INPUT", "Order is invalid.", () => matchPackageOrder(policy, book, order, nowValue));
       if (!result.accepted) return { accepted: false, rejection: result.rejection };
       const allocationHash = packageAllocationHash(result.allocation);
+      const recordedAtMs = this.clock();
+      this.db.prepare(`
+        INSERT INTO package_book_settlement_commitments
+          (package_order_id, commitment_hash, execution_class_id, strategy_order_hash,
+           participant_id, commitment_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        orderId,
+        settlementCommitmentHash,
+        executionClassId,
+        commitment.strategyOrderHash,
+        commitment.participantId,
+        stringifyProtocolJson(commitment),
+        recordedAtMs,
+      );
       this.db
         .prepare(
           "INSERT INTO package_book_allocations (allocation_hash, taker_order_id, execution_class_id, allocation_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
         )
-        .run(allocationHash, orderId, executionClassId, stringifyProtocolJson(result.allocation), this.clock());
+        .run(allocationHash, orderId, executionClassId, stringifyProtocolJson(result.allocation), recordedAtMs);
       // Only allocations that filled are trades; resting-only allocations never reach the tape.
       if (result.allocation.fills.length > 0) {
         this.db
@@ -543,12 +656,60 @@ export class SqlitePackageExchangeStore {
           );
         }
       }
+      let settlementHandoff: PackageSettlementHandoff | undefined;
+      let settlementHandoffHashHex: string | undefined;
+      if (result.allocation.fills.length > 0) {
+        settlementHandoff = packageSettlementHandoff({
+          version: 1,
+          allocationHash,
+          executionClassId,
+          takerSettlementCommitmentHash: settlementCommitmentHash,
+          fills: result.allocation.fills.map((fill) => {
+            if (fill.makerSource === "IMPLIED") {
+              return {
+                fillSequence: fill.fillSequence,
+                makerEntryId: fill.makerEntryId,
+                makerSource: fill.makerSource,
+                priceTicks: fill.priceTicks,
+                quantity: fill.quantity,
+              };
+            }
+            const makerCommitment = this.settlementCommitment(fill.makerEntryId);
+            if (makerCommitment === undefined) {
+              throw new PackageExchangeStoreError(
+                "UNBACKED_LIQUIDITY",
+                "A direct maker entry has no settlement commitment.",
+              );
+            }
+            return {
+              fillSequence: fill.fillSequence,
+              makerEntryId: fill.makerEntryId,
+              makerSource: fill.makerSource,
+              priceTicks: fill.priceTicks,
+              quantity: fill.quantity,
+              makerSettlementCommitmentHash: packageSettlementCommitmentHash(makerCommitment),
+            };
+          }),
+        });
+        verifyPackageSettlementHandoff(result.allocation, settlementHandoff);
+        const handoffHash = packageSettlementHandoffHash(settlementHandoff);
+        settlementHandoffHashHex = toHex(handoffHash);
+        this.db.prepare(`
+          INSERT INTO package_book_settlement_handoffs
+            (allocation_hash, handoff_hash, handoff_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?)
+        `).run(allocationHash, handoffHash, stringifyProtocolJson(settlementHandoff), recordedAtMs);
+      }
       this.writeBook(result.state);
       return {
         accepted: true,
         replayed: false,
         allocation: result.allocation,
         allocationHashHex: toHex(allocationHash),
+        settlementCommitmentHashHex: toHex(settlementCommitmentHash),
+        ...(settlementHandoff === undefined || settlementHandoffHashHex === undefined
+          ? {}
+          : { settlementHandoff, settlementHandoffHashHex }),
       };
     });
   }
@@ -668,6 +829,44 @@ export class SqlitePackageExchangeStore {
       .get(commitmentHash(takerOrderId)) as { allocation_json: unknown; execution_class_id: unknown } | undefined;
     if (row === undefined) return undefined;
     return this.decodeAllocation(jsonText(row.execution_class_id, "execution_class_id"), row.allocation_json);
+  }
+
+  settlementCommitment(packageOrderId: Uint8Array | string): PackageSettlementCommitment | undefined {
+    const row = this.db.prepare(`
+      SELECT commitment_hash, commitment_json
+      FROM package_book_settlement_commitments
+      WHERE package_order_id = ?
+    `).get(commitmentHash(packageOrderId)) as {
+      commitment_hash: unknown;
+      commitment_json: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const commitment = packageSettlementCommitment(
+      parseProtocolJson(jsonText(row.commitment_json, "commitment_json")) as PackageSettlementCommitmentInput,
+    );
+    if (!bytesEqual(packageSettlementCommitmentHash(commitment), hashBytes(row.commitment_hash, "commitment_hash"))) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement commitment does not match its hash.");
+    }
+    return commitment;
+  }
+
+  settlementHandoff(allocationHash: Uint8Array | string): PackageSettlementHandoff | undefined {
+    const row = this.db.prepare(`
+      SELECT handoff_hash, handoff_json
+      FROM package_book_settlement_handoffs
+      WHERE allocation_hash = ?
+    `).get(commitmentHash(allocationHash)) as {
+      handoff_hash: unknown;
+      handoff_json: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const handoff = packageSettlementHandoff(
+      parseProtocolJson(jsonText(row.handoff_json, "handoff_json")) as PackageSettlementHandoff,
+    );
+    if (!bytesEqual(packageSettlementHandoffHash(handoff), hashBytes(row.handoff_hash, "handoff_hash"))) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement handoff does not match its hash.");
+    }
+    return handoff;
   }
 
   /**

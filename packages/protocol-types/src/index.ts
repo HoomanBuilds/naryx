@@ -329,6 +329,25 @@ export {
 } from './package-matching.js';
 
 export {
+  PACKAGE_SETTLEMENT_COMMITMENT_VERSION,
+  PACKAGE_SETTLEMENT_HANDOFF_VERSION,
+  PACKAGE_SETTLEMENT_MAX_FILLS,
+  packageSettlementCommitment,
+  packageSettlementCommitmentBytes,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoff,
+  packageSettlementHandoffBytes,
+  packageSettlementHandoffHash,
+  verifyPackageSettlementHandoff,
+  type PackageSettlementCommitmentInput,
+  type PackageSettlementCommitment,
+  type PackageSettlementFillInput,
+  type PackageSettlementFill,
+  type PackageSettlementHandoffInput,
+  type PackageSettlementHandoff,
+} from './package-settlement.js';
+
+export {
   SOLVER_CAPABILITY_MANIFEST_VERSION,
   SOLVER_CAPACITY_RECORD_VERSION,
   SOLVER_CAPABILITY_MAX_ENTRIES,

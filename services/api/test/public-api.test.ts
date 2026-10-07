@@ -12,8 +12,9 @@ import {
   toProtocolJson,
   packageAllocationHash,
   packageMatchingPolicy,
-  packageTakerOrderBytes,
   packageTakerOrderHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentBytes,
   packageBookCancellationBytes,
   packageBookCancellationHash,
   toHex,
@@ -31,7 +32,11 @@ import {
   type PublicApiOptions,
 } from "../src/index.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
-import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll } from "./exchange-fixtures.js";
+import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
+
+function submitBookOrder(store: SqlitePackageExchangeStore, input: ReturnType<typeof order>) {
+  return store.submitOrder(CLASS, input, NOW, settlement(input));
+}
 
 async function withMarket(
   run: (get: (path: string, init?: RequestInit) => Promise<{ status: number; body: unknown; text: string }>, store: SqlitePackageExchangeStore) => Promise<void>,
@@ -65,7 +70,7 @@ async function withMarket(
 test("depth keeps direct and implied quantity apart within a level", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
+    submitBookOrder(store, order(1));
     store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
     const { status, body } = await get(`/v1/markets/${CLASS}/package-depth`);
     assert.equal(status, 200);
@@ -80,8 +85,8 @@ test("depth keeps direct and implied quantity apart within a level", async () =>
 test("the tape pages by cursor and omits participant and taker order identities", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
-    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    submitBookOrder(store, order(1));
+    submitBookOrder(store, order(2, { side: "BID", timeInForce: "IOC" }));
     const first = await get(`/v1/markets/${CLASS}/package-tape?limit=1`);
     assert.equal(first.status, 200);
     const tape = first.body as { trades: readonly { cursor: number; allocationHash: string; fills: readonly unknown[] }[]; nextCursor: number };
@@ -91,8 +96,8 @@ test("the tape pages by cursor and omits participant and taker order identities"
     }
     // The resting order produced no fill, so the tape holds exactly the one trade.
     assert.equal(tape.trades[0]?.fills.length, 1);
-    store.submitOrder(CLASS, order(3), NOW);
-    store.submitOrder(CLASS, order(4, { side: "BID", timeInForce: "IOC" }), NOW);
+    submitBookOrder(store, order(3));
+    submitBookOrder(store, order(4, { side: "BID", timeInForce: "IOC" }));
     const next = await get(`/v1/markets/${CLASS}/package-tape?after=${tape.nextCursor}&limit=1`);
     const page = next.body as { trades: readonly { fills: readonly unknown[] }[]; nextCursor: number };
     assert.equal(page.trades.length, 1);
@@ -106,8 +111,8 @@ test("the tape pages by cursor and omits participant and taker order identities"
 test("allocation evidence verifies independently against the served policy", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
-    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    submitBookOrder(store, order(1));
+    submitBookOrder(store, order(2, { side: "BID", timeInForce: "IOC" }));
     const { status, body } = await get(`/v1/allocations/${id(2)}`);
     assert.equal(status, 200);
     const { allocation, matchingPolicy } = body as { allocation: PackageAllocation; matchingPolicy: PackageMatchingPolicy };
@@ -232,10 +237,11 @@ const post = (body: unknown): RequestInit => ({
   body: JSON.stringify(toProtocolJson(body)),
 });
 
-test("signed public package orders match durably and replay idempotently", async () => {
+test("signed public package orders create durable settlement handoffs and replay idempotently", async () => {
+  const strategies = new Map<string, unknown>();
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
+    submitBookOrder(store, order(1));
     const keys = generateKeyPairSync("ed25519");
     const participantId = bs58.encode((keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32));
     const draft = order(9, {
@@ -247,43 +253,89 @@ test("signed public package orders match durably and replay idempotently", async
     });
     const orderId = toHex(packageTakerOrderHash(draft));
     const signed = { ...draft, orderId };
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      environment: "local",
+      executionClassId: CLASS,
+      packageOrderId: orderId,
+      strategyOrderHash: id(7_001),
+      graphHash: id(7_002),
+      participantId,
+      settlementAccount: "solana-settlement-account",
+      quantity: signed.quantity,
+      validUntilUnit: "SOLANA_SLOT",
+      validUntilValue: 2_000n,
+    });
+    const strategyOrder = {
+      environment: "local",
+      executionClassId: CLASS,
+      graphHash: settlementCommitment.graphHash,
+      owner: participantId,
+      settlementAccount: "solana-settlement-account",
+      economicQuantity: { atoms: signed.quantity },
+      packageOrderType: signed.orderType,
+      packageTimeInForce: signed.timeInForce,
+      expiryUnit: "SOLANA_SLOT",
+      expiryValue: 2_000n,
+    };
+    strategies.set(id(7_001), { orderHashHex: id(7_001), graphHashHex: id(7_002), order: strategyOrder, graph: {}, recordedAtMs: 1 });
     const authorization = {
       scheme: "ED25519",
-      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(signed)), keys.privateKey)),
+      signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(settlementCommitment)), keys.privateKey)),
     };
-    const first = await get("/v1/package-book/orders", post({ order: signed, authorization }));
-    assert.equal(first.status, 200);
+    const first = await get("/v1/package-book/orders", post({ order: signed, settlementCommitment, authorization }));
+    assert.equal(first.status, 200, first.text);
     const accepted = first.body as {
       accepted: boolean;
       replayed: boolean;
       orderId: string;
       allocationHash: string;
+      settlementCommitmentHash: string;
+      settlementHandoffHash: string;
       allocation: PackageAllocation;
       matchingPolicy: PackageMatchingPolicy;
     };
     assert.deepEqual([accepted.accepted, accepted.replayed, accepted.orderId, accepted.allocation.fills.length], [true, false, orderId, 1]);
+    assert.equal(accepted.settlementCommitmentHash.length, 64);
+    assert.equal(accepted.settlementHandoffHash.length, 64);
     verifyPackageAllocation(packageMatchingPolicy(accepted.matchingPolicy), accepted.allocation);
     assert.equal(accepted.allocationHash, toHex(packageAllocationHash(accepted.allocation)));
-    assert.equal(((await get("/v1/package-book/orders", post({ order: signed, authorization }))).body as { replayed: boolean }).replayed, true);
+    assert.equal(((await get("/v1/package-book/orders", post({ order: signed, settlementCommitment, authorization }))).body as { replayed: boolean }).replayed, true);
     assert.equal(store.getAllocation(orderId)?.fills.length, 1);
+    assert.ok(store.settlementHandoff(accepted.allocationHash));
+    const recoveredResponse = await get(`/v1/allocations/${orderId}`);
+    assert.equal(recoveredResponse.status, 200);
+    const recovered = recoveredResponse.body as {
+      allocationHash: string;
+      settlementCommitmentHash: string;
+      settlementHandoffHash: string;
+    };
+    assert.deepEqual(
+      [recovered.allocationHash, recovered.settlementCommitmentHash, recovered.settlementHandoffHash],
+      [accepted.allocationHash, accepted.settlementCommitmentHash, accepted.settlementHandoffHash],
+    );
 
     const changed = { ...signed, quantity: 20n };
-    const changedAuthorization = {
-      ...authorization,
-      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(changed)), keys.privateKey)),
-    };
-    assert.equal((await get("/v1/package-book/orders", post({ order: changed, authorization: changedAuthorization }))).status, 400);
+    assert.equal((await get("/v1/package-book/orders", post({ order: changed, settlementCommitment, authorization }))).status, 400);
     const other = generateKeyPairSync("ed25519");
-    const forged = { ...authorization, signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(signed)), other.privateKey)) };
-    assert.equal((await get("/v1/package-book/orders", post({ order: signed, authorization: forged }))).status, 400);
+    const forged = { ...authorization, signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(settlementCommitment)), other.privateKey)) };
+    assert.equal((await get("/v1/package-book/orders", post({ order: signed, settlementCommitment, authorization: forged }))).status, 400);
 
-    const passiveDraft = { ...signed, orderId: "00".repeat(32), limitPriceTicks: 90n, timeInForce: "GTC" as const };
+    const passiveDraft = { ...signed, orderId: "00".repeat(32), limitPriceTicks: 90n, timeInForce: "GTD" as const, expiresAtValue: 2_000n };
     const passiveOrder = { ...passiveDraft, orderId: toHex(packageTakerOrderHash(passiveDraft)) };
+    const passiveCommitment = packageSettlementCommitment({ ...settlementCommitment, packageOrderId: passiveOrder.orderId, strategyOrderHash: id(7_003) });
+    strategies.set(id(7_003), {
+      orderHashHex: id(7_003),
+      graphHashHex: id(7_002),
+      order: { ...strategyOrder, packageTimeInForce: "GTD" },
+      graph: {},
+      recordedAtMs: 2,
+    });
     const passiveAuthorization = {
       scheme: "ED25519",
-      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(passiveOrder)), keys.privateKey)),
+      signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(passiveCommitment)), keys.privateKey)),
     };
-    assert.equal((await get("/v1/package-book/orders", post({ order: passiveOrder, authorization: passiveAuthorization }))).status, 200);
+    assert.equal((await get("/v1/package-book/orders", post({ order: passiveOrder, settlementCommitment: passiveCommitment, authorization: passiveAuthorization }))).status, 200);
     assert.equal(store.getBook(CLASS)?.entries.length, 1);
     const cancellation = { version: 1, executionClassId: CLASS, entryId: passiveOrder.orderId, participantId };
     const cancellationAuthorization = {
@@ -301,6 +353,8 @@ test("signed public package orders match durably and replay idempotently", async
     });
     assert.equal(((await get("/v1/package-book/cancellations", post({ cancellation, authorization: cancellationAuthorization }))).body as { replayed: boolean }).replayed, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+  }, {
+    strategyPackages: { order: (orderHashHex: string) => strategies.get(orderHashHex) } as never,
   });
 });
 
@@ -313,7 +367,7 @@ test("registries, strategy series, and package markets are listed from their sto
     await withMarket(
       async (get, store) => {
         registerAll(store);
-        store.submitOrder(CLASS, order(1), NOW);
+        submitBookOrder(store, order(1));
         const domains = (await get("/v1/domains")).body as { domains: readonly { subjectId: string }[] };
         assert.deepEqual(domains.domains.map((entry) => entry.subjectId), [DOMAIN_MANIFEST.domainId]);
         const solver = (await get("/v1/solvers/solver-a")).body as { solverId: string; manifestNonce: number; quoteVerificationKeys: readonly unknown[] };
@@ -397,8 +451,8 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
 test("candles are built only from recorded trades and the index keeps executable depth separate", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
-    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
+    submitBookOrder(store, order(1));
+    submitBookOrder(store, order(2, { side: "BID", timeInForce: "IOC" }));
     const to = Date.now() + 60_000;
     const candles = (await get(`/v1/markets/${CLASS}/candles?interval=1h&from=${to - 86_400_000}&to=${to}`)).body as {
       label: string;
@@ -408,7 +462,7 @@ test("candles are built only from recorded trades and the index keeps executable
     assert.deepEqual(candles.candles.map((candle) => [candle.open, candle.close, candle.volume, candle.tradeCount]), [[100n, 100n, 10n, 1]]);
     assert.equal((await get(`/v1/markets/${CLASS}/candles?interval=2m`)).status, 400);
     assert.equal((await get(`/v1/markets/${CLASS}/candles?interval=1m&from=0&to=${to}`)).status, 400);
-    store.submitOrder(CLASS, order(3), NOW);
+    submitBookOrder(store, order(3));
     store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
     const index = (await get(`/v1/markets/${CLASS}/index?sizes=10,30`)).body as {
       executable: { asks: readonly { averagePriceTicks?: bigint; label: string }[] };
@@ -433,10 +487,10 @@ test("series indices, curves, and the opportunity feed are built from executable
     const unopened = (await get(`/v1/curves/${SERIES.seriesId}?sizes=10`)).body as { points: readonly { open: boolean; lastTrade?: unknown }[] };
     assert.deepEqual(unopened.points.map((point) => [point.open, point.lastTrade]), [[true, undefined]]);
 
-    store.submitOrder(CLASS, order(1), NOW);
-    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
-    store.submitOrder(CLASS, order(3, { limitPriceTicks: 104n }), NOW);
-    store.submitOrder(CLASS, order(4, { side: "BID", limitPriceTicks: 96n }), NOW);
+    submitBookOrder(store, order(1));
+    submitBookOrder(store, order(2, { side: "BID", timeInForce: "IOC" }));
+    submitBookOrder(store, order(3, { limitPriceTicks: 104n }));
+    submitBookOrder(store, order(4, { side: "BID", limitPriceTicks: 96n }));
 
     const indices = (await get(`/v1/indices/${SERIES.seriesId}?sizes=10,20`)).body as {
       seriesId: string;
@@ -480,7 +534,7 @@ test("series indices, curves, and the opportunity feed are built from executable
 test("compute routes validate, simulate without persisting, and reject malformed bodies", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
+    submitBookOrder(store, order(1));
     const simulated = (await get("/v1/clearing/simulate", post({ packageMarketId: CLASS, order: order(9, { side: "BID", timeInForce: "IOC" }) }))).body as {
       accepted: boolean;
       simulated: boolean;

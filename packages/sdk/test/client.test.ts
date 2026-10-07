@@ -7,8 +7,12 @@ import {
   packageAllocationHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentBytes,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoff,
+  packageSettlementHandoffHash,
   packageMatchingPolicy,
-  packageTakerOrderBytes,
   packageTakerOrderHash,
   toHex,
   toProtocolJson,
@@ -108,20 +112,62 @@ describe('public API client', () => {
   test('verifies allocation evidence locally and rejects tampering or a substituted policy', async () => {
     const allocation = takerAllocation();
     const path = `/v1/allocations/${id(2)}`;
-    const verified = await client({ [path]: { body: { allocation, matchingPolicy: policy } } }).getVerifiedAllocation(id(2));
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      environment: allocation.environment,
+      executionClassId: allocation.executionClassId,
+      packageOrderId: id(2),
+      strategyOrderHash: id(7_001),
+      graphHash: id(7_002),
+      participantId: allocation.takerParticipantId,
+      settlementAccount: 'settlement-account',
+      quantity: allocation.requestedQuantity,
+      validUntilUnit: 'SOLANA_SLOT',
+      validUntilValue: 2_000n,
+    });
+    const settlementHandoff = packageSettlementHandoff({
+      version: 1,
+      allocationHash: packageAllocationHash(allocation),
+      executionClassId: allocation.executionClassId,
+      takerSettlementCommitmentHash: packageSettlementCommitmentHash(settlementCommitment),
+      fills: allocation.fills.map((fill) => ({
+        fillSequence: fill.fillSequence,
+        makerEntryId: fill.makerEntryId,
+        makerSource: fill.makerSource,
+        priceTicks: fill.priceTicks,
+        quantity: fill.quantity,
+        makerSettlementCommitmentHash: id(7_003),
+      })),
+    });
+    const evidenceBody = {
+      allocation,
+      allocationHash: toHex(packageAllocationHash(allocation)),
+      matchingPolicy: policy,
+      settlementCommitment,
+      settlementCommitmentHash: toHex(packageSettlementCommitmentHash(settlementCommitment)),
+      settlementHandoff,
+      settlementHandoffHash: toHex(packageSettlementHandoffHash(settlementHandoff)),
+    };
+    const verified = await client({ [path]: { body: evidenceBody } }).getVerifiedAllocation(id(2));
     assert.equal(verified.allocation.fills.length, 1);
     assert.match(verified.allocationHash, /^[0-9a-f]{64}$/);
+    assert.equal(verified.settlementHandoffHash, evidenceBody.settlementHandoffHash);
 
     const inflated = { ...allocation, fills: allocation.fills.map((fill) => ({ ...fill, quantity: fill.quantity + 10n })) };
-    await assert.rejects(client({ [path]: { body: { allocation: inflated, matchingPolicy: policy } } }).getVerifiedAllocation(id(2)), NaryxEvidenceError);
+    await assert.rejects(client({ [path]: { body: { ...evidenceBody, allocation: inflated } } }).getVerifiedAllocation(id(2)), NaryxEvidenceError);
     const otherPolicy = packageMatchingPolicy({ ...POLICY_INPUT, quantityIncrement: 5n, minimumExecutionQuantity: 5n });
     await assert.rejects(
-      client({ [path]: { body: { allocation, matchingPolicy: otherPolicy } } }).getVerifiedAllocation(id(2)),
+      client({ [path]: { body: { ...evidenceBody, matchingPolicy: otherPolicy } } }).getVerifiedAllocation(id(2)),
       /not the policy the allocation binds/,
     );
     await assert.rejects(
-      client({ [`/v1/allocations/${id(3)}`]: { body: { allocation, matchingPolicy: policy } } }).getVerifiedAllocation(id(3)),
+      client({ [`/v1/allocations/${id(3)}`]: { body: evidenceBody } }).getVerifiedAllocation(id(3)),
       /another order/,
+    );
+    await assert.rejects(
+      client({ [path]: { body: { ...evidenceBody, settlementHandoff: { ...settlementHandoff, fills: settlementHandoff.fills.map((fill) => ({ ...fill, priceTicks: fill.priceTicks + 1n })) } } } })
+        .getVerifiedAllocation(id(2)),
+      NaryxEvidenceError,
     );
   });
 
@@ -178,11 +224,43 @@ describe('public API client', () => {
     const provisional = { ...draft, orderId: '00'.repeat(32) };
     const orderId = toHex(packageTakerOrderHash(provisional));
     const submitted = { ...draft, orderId };
+    const settlementDraft = {
+      environment: 'local',
+      strategyOrderHash: id(7_001),
+      graphHash: id(7_002),
+      settlementAccount: 'solana-settlement-account',
+      validUntilUnit: 'SOLANA_SLOT' as const,
+      validUntilValue: 2_000n,
+    };
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      ...settlementDraft,
+      executionClassId: CLASS,
+      packageOrderId: orderId,
+      participantId,
+      quantity: submitted.quantity,
+    });
+    const settlementCommitmentHash = toHex(packageSettlementCommitmentHash(settlementCommitment));
     const rested = matchPackageOrder(policy, emptyPackageBook(policy), order(1), 1_000n);
     if (!rested.accepted) assert.fail('resting order rejected');
     const matched = matchPackageOrder(policy, rested.state, submitted, 1_000n);
     if (!matched.accepted) assert.fail('package order rejected');
     const allocationHash = toHex(packageAllocationHash(matched.allocation));
+    const settlementHandoff = packageSettlementHandoff({
+      version: 1,
+      allocationHash,
+      executionClassId: CLASS,
+      takerSettlementCommitmentHash: settlementCommitmentHash,
+      fills: matched.allocation.fills.map((fill) => ({
+        fillSequence: fill.fillSequence,
+        makerEntryId: fill.makerEntryId,
+        makerSource: fill.makerSource,
+        priceTicks: fill.priceTicks,
+        quantity: fill.quantity,
+        makerSettlementCommitmentHash: id(7_003),
+      })),
+    });
+    const settlementHandoffHash = toHex(packageSettlementHandoffHash(settlementHandoff));
     let signedBytes: Uint8Array | undefined;
     const result = await client({
       'POST /v1/package-book/orders': {
@@ -193,15 +271,18 @@ describe('public API client', () => {
           replayed: false,
           allocation: matched.allocation,
           allocationHash,
+          settlementCommitmentHash,
+          settlementHandoff,
+          settlementHandoffHash,
           matchingPolicy: policy,
         },
       },
-    }).submitPackageBookOrder(draft, async (bytes) => {
+    }).submitPackageBookOrder(draft, settlementDraft, async (bytes) => {
       signedBytes = bytes;
       return new Uint8Array(sign(null, bytes, keys.privateKey));
     });
     assert.equal(result.accepted, true);
-    assert.deepEqual(signedBytes, packageTakerOrderBytes(submitted));
+    assert.deepEqual(signedBytes, packageSettlementCommitmentBytes(settlementCommitment));
     if (result.accepted) assert.equal(result.evidence.allocationHash, allocationHash);
 
     const cancellation = { version: 1, executionClassId: CLASS, entryId: orderId, participantId };
@@ -219,8 +300,8 @@ describe('public API client', () => {
     assert.deepEqual(cancellationBytes, packageBookCancellationBytes(cancellation));
 
     await assert.rejects(
-      client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), matchingPolicy: policy } } })
-        .submitPackageBookOrder(draft, async (bytes) => new Uint8Array(sign(null, bytes, keys.privateKey))),
+      client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), settlementCommitmentHash, matchingPolicy: policy } } })
+        .submitPackageBookOrder(draft, settlementDraft, async (bytes) => new Uint8Array(sign(null, bytes, keys.privateKey))),
       /allocation hash is inconsistent/,
     );
   });

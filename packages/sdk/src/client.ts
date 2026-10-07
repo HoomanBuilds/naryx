@@ -26,10 +26,14 @@ import {
   packageMatchingPolicyHash,
   packageOrderBytes,
   packageOrderHash,
-  packageTakerOrderBytes,
   packageTakerOrderHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentBytes,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoff,
+  packageSettlementHandoffHash,
   packageCloseCostIndex,
   packageGraphHash,
   simulatePackageGraphFailures,
@@ -80,6 +84,7 @@ import {
   validatePackageOrderProfile,
   verifyOutcomeReceiptLink,
   verifyPackageAllocation,
+  verifyPackageSettlementHandoff,
   verifyReceiptFees,
   type AcceptedQuoteFeeTerms,
   type CandleInterval,
@@ -95,6 +100,9 @@ import {
   type PackageReceiptInput,
   type PackageTakerOrderInput,
   type PackageBookCancellationInput,
+  type PackageSettlementCommitmentInput,
+  type PackageSettlementCommitment,
+  type PackageSettlementHandoff,
   type PackageGraphInput,
   type NormalizedPosition,
   type PositionSnapshotRecord,
@@ -213,7 +221,19 @@ export interface VerifiedAllocation {
   readonly allocationHash: string;
 }
 
+export interface VerifiedSettlementAllocation extends VerifiedAllocation {
+  readonly settlementCommitment: PackageSettlementCommitment;
+  readonly settlementCommitmentHash: string;
+  readonly settlementHandoff?: PackageSettlementHandoff;
+  readonly settlementHandoffHash?: string;
+}
+
 export type PackageBookOrderDraft = Omit<PackageTakerOrderInput, 'orderId'>;
+
+export type PackageBookSettlementDraft = Omit<
+  PackageSettlementCommitmentInput,
+  'version' | 'executionClassId' | 'packageOrderId' | 'participantId' | 'quantity'
+>;
 
 export type PackageBookOrderSubmission =
   | {
@@ -221,6 +241,9 @@ export type PackageBookOrderSubmission =
       readonly order: PackageTakerOrderInput;
       readonly replayed: boolean;
       readonly evidence: VerifiedAllocation;
+      readonly settlementCommitmentHash: string;
+      readonly settlementHandoff?: PackageSettlementHandoff;
+      readonly settlementHandoffHash?: string;
     }
   | {
       readonly accepted: false;
@@ -877,32 +900,91 @@ export class NaryxClient {
   }
 
   /** Fetches the allocation for an order the caller submitted and verifies it before returning it. */
-  async getVerifiedAllocation(takerOrderId: string): Promise<VerifiedAllocation> {
+  async getVerifiedAllocation(takerOrderId: string): Promise<VerifiedSettlementAllocation> {
     if (!HASH_HEX.test(takerOrderId)) throw new TypeError('taker order id must be 32 bytes of lowercase hex');
     const body = record(await this.#request('GET', `/v1/allocations/${takerOrderId}`), 'allocation response');
-    return verifyAllocationEvidence(takerOrderId, body.allocation, body.matchingPolicy);
+    const evidence = verifyAllocationEvidence(takerOrderId, body.allocation, body.matchingPolicy);
+    if (body.allocationHash !== evidence.allocationHash) {
+      throw new NaryxEvidenceError('allocation response hash is inconsistent');
+    }
+    const settlementCommitment = packageSettlementCommitment(
+      body.settlementCommitment as PackageSettlementCommitmentInput,
+    );
+    const settlementCommitmentHash = toHex(packageSettlementCommitmentHash(settlementCommitment));
+    if (
+      body.settlementCommitmentHash !== settlementCommitmentHash
+      || toHex(settlementCommitment.packageOrderId) !== takerOrderId
+      || settlementCommitment.environment !== evidence.allocation.environment
+      || settlementCommitment.executionClassId !== evidence.allocation.executionClassId
+      || settlementCommitment.quantity !== evidence.allocation.requestedQuantity
+    ) {
+      throw new NaryxEvidenceError('allocation settlement commitment is inconsistent');
+    }
+    let settlementHandoff: PackageSettlementHandoff | undefined;
+    let settlementHandoffHash: string | undefined;
+    if (body.settlementHandoff !== undefined || body.settlementHandoffHash !== undefined) {
+      settlementHandoff = packageSettlementHandoff(body.settlementHandoff as PackageSettlementHandoff);
+      settlementHandoffHash = toHex(packageSettlementHandoffHash(settlementHandoff));
+      if (
+        body.settlementHandoffHash !== settlementHandoffHash
+        || toHex(settlementHandoff.allocationHash) !== evidence.allocationHash
+        || settlementHandoff.executionClassId !== evidence.allocation.executionClassId
+        || !bytesEqual(
+          settlementHandoff.takerSettlementCommitmentHash,
+          packageSettlementCommitmentHash(settlementCommitment),
+        )
+      ) {
+        throw new NaryxEvidenceError('allocation settlement handoff is inconsistent');
+      }
+      try {
+        verifyPackageSettlementHandoff(evidence.allocation, settlementHandoff);
+      } catch (error) {
+        throw new NaryxEvidenceError(`allocation settlement handoff failed verification: ${(error as Error).message}`);
+      }
+    }
+    if ((evidence.allocation.fills.length > 0) !== (settlementHandoff !== undefined)) {
+      throw new NaryxEvidenceError('allocation settlement handoff presence is inconsistent');
+    }
+    return Object.freeze({
+      ...evidence,
+      settlementCommitment,
+      settlementCommitmentHash,
+      ...(settlementHandoff === undefined || settlementHandoffHash === undefined
+        ? {}
+        : { settlementHandoff, settlementHandoffHash }),
+    });
   }
 
   /** Signs and submits one order to the native package book. Matching is not venue settlement. */
   async submitPackageBookOrder(
     draft: PackageBookOrderDraft,
+    settlementDraft: PackageBookSettlementDraft,
     sign: OrderSigner,
   ): Promise<PackageBookOrderSubmission> {
     if (typeof sign !== 'function') throw new TypeError('an order signer is required');
     const provisional: PackageTakerOrderInput = { ...draft, orderId: '00'.repeat(32) };
     const orderId = toHex(packageTakerOrderHash(provisional));
     const order: PackageTakerOrderInput = Object.freeze({ ...draft, orderId });
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      ...settlementDraft,
+      executionClassId: order.executionClassId,
+      packageOrderId: orderId,
+      participantId: order.participantId,
+      quantity: order.quantity,
+    });
     const participantKey = base58Decode(order.participantId);
     if (participantKey?.length !== 32 || order.commonControlGroupId !== order.participantId) {
       throw new TypeError('public package book participants use their Ed25519 key as participant and control-group id');
     }
-    const signature = await sign(packageTakerOrderBytes(order));
+    const signature = await sign(packageSettlementCommitmentBytes(settlementCommitment));
     if (!(signature instanceof Uint8Array) || signature.length !== 64) {
       throw new TypeError('the signer must return a 64-byte signature');
     }
     const body = record(
       await this.#request('POST', '/v1/package-book/orders', {
         order,
+        settlementCommitment,
         authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
       }),
       'package book submission',
@@ -914,14 +996,53 @@ export class NaryxClient {
       if (typeof body.rejection !== 'string') throw new NaryxEvidenceError('package book rejection is malformed');
       return Object.freeze({ accepted: false, order, rejection: body.rejection });
     }
-    if (typeof body.replayed !== 'boolean' || typeof body.allocationHash !== 'string') {
+    const expectedCommitmentHash = toHex(packageSettlementCommitmentHash(settlementCommitment));
+    if (
+      typeof body.replayed !== 'boolean'
+      || typeof body.allocationHash !== 'string'
+      || body.settlementCommitmentHash !== expectedCommitmentHash
+    ) {
       throw new NaryxEvidenceError('package book allocation response is malformed');
     }
     const evidence = verifyAllocationEvidence(orderId, body.allocation, body.matchingPolicy);
     if (body.allocationHash !== evidence.allocationHash) {
       throw new NaryxEvidenceError('package book allocation hash is inconsistent');
     }
-    return Object.freeze({ accepted: true, order, replayed: body.replayed, evidence });
+    let settlementHandoff: PackageSettlementHandoff | undefined;
+    let settlementHandoffHash: string | undefined;
+    if (body.settlementHandoff !== undefined || body.settlementHandoffHash !== undefined) {
+      settlementHandoff = packageSettlementHandoff(body.settlementHandoff as PackageSettlementHandoff);
+      settlementHandoffHash = toHex(packageSettlementHandoffHash(settlementHandoff));
+      if (
+        body.settlementHandoffHash !== settlementHandoffHash
+        || toHex(settlementHandoff.allocationHash) !== evidence.allocationHash
+        || settlementHandoff.executionClassId !== order.executionClassId
+        || !bytesEqual(
+          settlementHandoff.takerSettlementCommitmentHash,
+          packageSettlementCommitmentHash(settlementCommitment),
+        )
+      ) {
+        throw new NaryxEvidenceError('package settlement handoff is inconsistent');
+      }
+      try {
+        verifyPackageSettlementHandoff(evidence.allocation, settlementHandoff);
+      } catch (error) {
+        throw new NaryxEvidenceError(`package settlement handoff failed verification: ${(error as Error).message}`);
+      }
+    }
+    if ((evidence.allocation.fills.length > 0) !== (settlementHandoff !== undefined)) {
+      throw new NaryxEvidenceError('package settlement handoff presence is inconsistent');
+    }
+    return Object.freeze({
+      accepted: true,
+      order,
+      replayed: body.replayed,
+      evidence,
+      settlementCommitmentHash: expectedCommitmentHash,
+      ...(settlementHandoff === undefined || settlementHandoffHash === undefined
+        ? {}
+        : { settlementHandoff, settlementHandoffHash }),
+    });
   }
 
   /** Cancels one live native package-book order with its participant key. */

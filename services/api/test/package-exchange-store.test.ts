@@ -22,6 +22,7 @@ import {
   impliedAsk,
   order,
   registerAll,
+  settlement,
   withStore,
 } from "./exchange-fixtures.js";
 
@@ -58,19 +59,21 @@ test("a class cannot bind a matching policy written for another class", () => {
 test("orders match durably and replay returns the recorded allocation", () => {
   withStore((store) => {
     registerAll(store);
-    const rested = store.submitOrder(CLASS, order(1), NOW);
+    const maker = order(1);
+    const rested = store.submitOrder(CLASS, maker, NOW, settlement(maker));
     assert.equal(rested.accepted && rested.allocation.restedQuantity, 10n);
     const taker = order(2, { side: "BID", timeInForce: "IOC" });
-    const filled = store.submitOrder(CLASS, taker, NOW);
+    const filled = store.submitOrder(CLASS, taker, NOW, settlement(taker));
     assert.equal(filled.accepted && filled.replayed, false);
-    const replay = store.submitOrder(CLASS, taker, NOW);
+    const replay = store.submitOrder(CLASS, taker, NOW, settlement(taker));
     assert.equal(replay.accepted && replay.replayed, true);
     assert.equal(replay.accepted && replay.allocationHashHex, filled.accepted && filled.allocationHashHex);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
     const stored = store.getAllocation(id(2));
     assert.ok(stored);
     verifyPackageAllocation(packageMatchingPolicy(POLICY), stored);
-    const rejected = store.submitOrder(CLASS, order(3, { side: "BID", timeInForce: "IOC" }), NOW);
+    const rejectedOrder = order(3, { side: "BID", timeInForce: "IOC" });
+    const rejected = store.submitOrder(CLASS, rejectedOrder, NOW, settlement(rejectedOrder));
     assert.deepEqual(rejected, { accepted: false, rejection: "MINIMUM_QUANTITY_UNFILLABLE" });
   });
 });
@@ -78,9 +81,12 @@ test("orders match durably and replay returns the recorded allocation", () => {
 test("only filled allocations are trades, and a store opened before trades were indexed indexes them once", () => {
   withStore((store, path) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
-    store.submitOrder(CLASS, order(2, { side: "BID", timeInForce: "IOC" }), NOW);
-    store.submitOrder(CLASS, order(3), NOW);
+    const firstMaker = order(1);
+    const firstTaker = order(2, { side: "BID", timeInForce: "IOC" });
+    const secondMaker = order(3);
+    store.submitOrder(CLASS, firstMaker, NOW, settlement(firstMaker));
+    store.submitOrder(CLASS, firstTaker, NOW, settlement(firstTaker));
+    store.submitOrder(CLASS, secondMaker, NOW, settlement(secondMaker));
     const tape = store.allocationTape(CLASS, 0, 10);
     assert.deepEqual(tape.map((entry) => entry.cursor), [2]);
     assert.equal(store.latestTrade(CLASS)?.cursor, 2);
@@ -104,7 +110,8 @@ test("a consumed source reservation cannot back new implied liquidity", () => {
   withStore((store) => {
     registerAll(store);
     store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
-    const fill = store.submitOrder(CLASS, order(9, { side: "BID", quantity: 20n, timeInForce: "IOC" }), NOW);
+    const taker = order(9, { side: "BID", quantity: 20n, timeInForce: "IOC" });
+    const fill = store.submitOrder(CLASS, taker, NOW, settlement(taker));
     assert.equal(fill.accepted && fill.allocation.externalImpliedQuantity, 20n);
     assert.throws(
       () => store.addImpliedLiquidity(CLASS, { quote: impliedAsk(2, 2, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW }),
@@ -131,12 +138,14 @@ test("a newer source version invalidates stale implied liquidity and blocks its 
 test("cancellation authority, halts, and amendments persist", () => {
   withStore((store) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1, { quantity: 30n }), NOW);
+    const maker = order(1, { quantity: 30n });
+    store.submitOrder(CLASS, maker, NOW, settlement(maker));
     assert.throws(() => store.cancelEntry(CLASS, id(1), "intruder"), { code: "INVALID_INPUT" });
     store.amendEntry(CLASS, { entryId: id(1), participantId: "maker-1", quantity: 20n });
     assert.equal(store.getBook(CLASS)?.entries[0]?.quantity, 20n);
     store.setHalted(CLASS, true);
-    assert.deepEqual(store.submitOrder(CLASS, order(2, { side: "BID" }), NOW), { accepted: false, rejection: "HALTED" });
+    const blocked = order(2, { side: "BID" });
+    assert.deepEqual(store.submitOrder(CLASS, blocked, NOW, settlement(blocked)), { accepted: false, rejection: "HALTED" });
     store.setHalted(CLASS, false);
     const cancellation = store.cancelEntry(CLASS, id(1), "maker-1");
     assert.equal(cancellation.replayed, false);
@@ -148,7 +157,8 @@ test("cancellation authority, halts, and amendments persist", () => {
 test("tampered stored state fails closed", () => {
   withStore((store, path) => {
     registerAll(store);
-    store.submitOrder(CLASS, order(1), NOW);
+    const maker = order(1);
+    store.submitOrder(CLASS, maker, NOW, settlement(maker));
     const raw = new Database(path);
     try {
       raw.prepare("UPDATE package_book_entries SET entry_json = replace(entry_json, '\"10\"', '\"15\"')").run();
@@ -172,13 +182,16 @@ test("one participant cannot grow a book past its entry cap, but can always canc
     registerAll(store);
     const resting = (n: number) => order(n, { participantId: "flooder", commonControlGroupId: "flood", limitPriceTicks: 100n + BigInt(n) });
     for (let n = 1; n <= MAX_ENTRIES_PER_PARTICIPANT; n += 1) {
-      const result = store.submitOrder(CLASS, resting(n), NOW);
+      const packageOrder = resting(n);
+      const result = store.submitOrder(CLASS, packageOrder, NOW, settlement(packageOrder));
       assert.equal(result.accepted, true);
     }
-    assert.throws(() => store.submitOrder(CLASS, resting(MAX_ENTRIES_PER_PARTICIPANT + 1), NOW), { code: "PARTICIPANT_BOOK_LIMIT" });
+    const overflow = resting(MAX_ENTRIES_PER_PARTICIPANT + 1);
+    assert.throws(() => store.submitOrder(CLASS, overflow, NOW, settlement(overflow)), { code: "PARTICIPANT_BOOK_LIMIT" });
     assert.equal(store.getBook(CLASS)?.entries.length, MAX_ENTRIES_PER_PARTICIPANT);
     store.cancelEntry(CLASS, id(1), "flooder");
     assert.equal(store.getBook(CLASS)?.entries.length, MAX_ENTRIES_PER_PARTICIPANT - 1);
-    assert.equal(store.submitOrder(CLASS, order(9_999, { limitPriceTicks: 100n }), NOW).accepted, true);
+    const replacement = order(9_999, { limitPriceTicks: 100n });
+    assert.equal(store.submitOrder(CLASS, replacement, NOW, settlement(replacement)).accepted, true);
   });
 });

@@ -8,11 +8,13 @@ import {
   economicStrategySeriesHash,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  packageSettlementCommitment,
 } from "@naryx/protocol-types";
 import type {
   EconomicStrategySeriesInput,
   PackageMatchingPolicyInput,
   PackageTakerOrderInput,
+  PackageSettlementCommitmentInput,
   SeriesExecutionClassInput,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "../src/index.js";
@@ -84,19 +86,42 @@ export function executionClass(overrides: Partial<SeriesExecutionClassInput> = {
 }
 
 export function order(n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput {
-  return {
+  const timeInForce = overrides.timeInForce ?? "GTD";
+  const value: PackageTakerOrderInput = {
     orderId: id(n),
     executionClassId: CLASS,
     side: "ASK",
     orderType: "LIMIT",
-    timeInForce: "GTC",
+    timeInForce,
     limitPriceTicks: 100n,
     quantity: 10n,
     minimumQuantity: 10n,
     participantId: `maker-${n}`,
     commonControlGroupId: `group-${n}`,
     ...overrides,
+    ...(timeInForce === "GTD" ? { expiresAtValue: overrides.expiresAtValue ?? 2_000n } : {}),
   };
+  return value;
+}
+
+export function settlement(
+  input: PackageTakerOrderInput,
+  overrides: Partial<PackageSettlementCommitmentInput> = {},
+): PackageSettlementCommitmentInput {
+  return packageSettlementCommitment({
+    version: 1,
+    environment: "local",
+    executionClassId: input.executionClassId,
+    packageOrderId: input.orderId,
+    strategyOrderHash: id(80_000 + Number(input.quantity)),
+    graphHash: id(90_000 + Number(input.quantity)),
+    participantId: input.participantId,
+    settlementAccount: `settlement-${input.participantId}`,
+    quantity: input.quantity,
+    validUntilUnit: "SOLANA_SLOT",
+    validUntilValue: input.expiresAtValue ?? 2_000n,
+    ...overrides,
+  });
 }
 
 export function impliedAsk(spot: number, perp: number, spotReservation: number) {
