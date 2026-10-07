@@ -78,6 +78,11 @@ export class StrategyPreparationService {
   async prepareDocuments(
     documents: StoredStrategyPackageDocuments,
   ): Promise<PreparedStrategyExecutionTransport> {
+    if (documents.packageExecutionLock !== undefined
+      && (documents.packageExecution?.binding === undefined
+        || toHex(documents.packageExecution.readiness.packageOrderId) !== documents.packageExecutionLock.packageOrderIdHex)) {
+      throw new Error('package-market execution requires a quote bound to the locked package order');
+    }
     if (documents.packageExecution !== undefined) {
       const { readiness, readinessHashHex, binding, bindingHashHex } = documents.packageExecution;
       if (binding === undefined || bindingHashHex === undefined) {

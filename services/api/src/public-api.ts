@@ -218,7 +218,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote" | "lockPackageExecution">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -1503,6 +1503,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the package settlement commitment.");
       }
       const executionClassId = id(order.executionClassId, "executionClassId");
+      if (strategyStore.lockPackageExecution === undefined) {
+        throw new RequestError(503, "EXECUTION_BINDING_STORE_UNAVAILABLE", "Durable package execution locking is unavailable.");
+      }
+      strategyStore.lockPackageExecution(toHex(commitment.strategyOrderHash), orderHash);
       const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment);
       if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
       const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);

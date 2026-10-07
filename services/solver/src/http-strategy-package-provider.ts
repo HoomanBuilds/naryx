@@ -40,6 +40,7 @@ export interface StoredStrategyPackageDocuments {
   readonly quote: StrategyPackageQuote;
   readonly route: TypedStrategyRoute;
   readonly recordedAtMs: number;
+  readonly packageExecutionLock?: Readonly<{ packageOrderIdHex: string; recordedAtMs: number }>;
   readonly packageExecution?: StoredStrategyPackageExecution;
 }
 
@@ -121,8 +122,10 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
   const hasPackageExecution = Object.hasOwn(record, 'packageExecution');
+  const hasPackageExecutionLock = Object.hasOwn(record, 'packageExecutionLock');
   const expectedKeys = [
-    'graph', 'graphHashHex', 'order', 'orderHashHex', ...(hasPackageExecution ? ['packageExecution'] : []),
+    'graph', 'graphHashHex', 'order', 'orderHashHex', ...(hasPackageExecutionLock ? ['packageExecutionLock'] : []),
+    ...(hasPackageExecution ? ['packageExecution'] : []),
     'quote', 'quoteHashHex', 'recordedAtMs', 'route', 'routeHashHex', 'version',
   ].sort();
   if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index]) || record.version !== 1) {
@@ -162,6 +165,23 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
     throw new Error('strategy package response commitments are mismatched');
   }
   let packageExecution: StoredStrategyPackageExecution | undefined;
+  let packageExecutionLock: StoredStrategyPackageDocuments['packageExecutionLock'];
+  if (hasPackageExecutionLock) {
+    if (typeof record.packageExecutionLock !== 'object' || record.packageExecutionLock === null
+      || Array.isArray(record.packageExecutionLock)) {
+      throw new Error('strategy package execution lock is invalid');
+    }
+    const lock = record.packageExecutionLock as Record<string, unknown>;
+    if (Object.keys(lock).sort().join(',') !== 'packageOrderIdHex,recordedAtMs'
+      || typeof lock.packageOrderIdHex !== 'string' || !/^[0-9a-f]{64}$/.test(lock.packageOrderIdHex)
+      || !Number.isSafeInteger(lock.recordedAtMs) || Number(lock.recordedAtMs) < 0) {
+      throw new Error('strategy package execution lock fields are invalid');
+    }
+    packageExecutionLock = Object.freeze({
+      packageOrderIdHex: lock.packageOrderIdHex,
+      recordedAtMs: Number(lock.recordedAtMs),
+    });
+  }
   if (hasPackageExecution) {
     if (typeof record.packageExecution !== 'object' || record.packageExecution === null
       || Array.isArray(record.packageExecution)) {
@@ -231,6 +251,7 @@ function decodeDocuments(value: unknown, expectedQuoteHash: Hash32): StoredStrat
     quote,
     route,
     recordedAtMs: Number(record.recordedAtMs),
+    ...(packageExecutionLock === undefined ? {} : { packageExecutionLock }),
     ...(packageExecution === undefined ? {} : { packageExecution }),
   });
 }

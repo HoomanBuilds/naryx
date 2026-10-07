@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS strategy_package_quotes (
   route_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_package_execution_locks (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  package_order_id BLOB NOT NULL UNIQUE,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_package_execution_requirements (
   order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
   package_order_id BLOB NOT NULL UNIQUE,
@@ -88,6 +93,8 @@ CREATE TABLE IF NOT EXISTS strategy_package_execution_bindings (
   binding_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+INSERT OR IGNORE INTO strategy_package_execution_locks (order_hash, package_order_id, recorded_at_ms)
+SELECT order_hash, package_order_id, recorded_at_ms FROM strategy_package_execution_requirements;
 CREATE TABLE IF NOT EXISTS strategy_package_sources (
   order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
   source_order_hash BLOB NOT NULL UNIQUE,
@@ -231,6 +238,8 @@ CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_change BEFORE UPDATE 
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_order_delete BEFORE DELETE ON strategy_package_orders BEGIN SELECT RAISE(ABORT, 'strategy package orders are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_change BEFORE UPDATE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_quote_delete BEFORE DELETE ON strategy_package_quotes BEGIN SELECT RAISE(ABORT, 'strategy package quotes are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_execution_lock_change BEFORE UPDATE ON strategy_package_execution_locks BEGIN SELECT RAISE(ABORT, 'strategy package execution locks are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_package_execution_lock_delete BEFORE DELETE ON strategy_package_execution_locks BEGIN SELECT RAISE(ABORT, 'strategy package execution locks are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_execution_requirement_change BEFORE UPDATE ON strategy_package_execution_requirements BEGIN SELECT RAISE(ABORT, 'strategy package execution requirements are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_execution_requirement_delete BEFORE DELETE ON strategy_package_execution_requirements BEGIN SELECT RAISE(ABORT, 'strategy package execution requirements are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_package_execution_binding_change BEFORE UPDATE ON strategy_package_execution_bindings BEGIN SELECT RAISE(ABORT, 'strategy package execution bindings are immutable'); END;
@@ -283,7 +292,13 @@ export interface StoredStrategyPackageAdmission {
   readonly quote: StrategyPackageQuote;
   readonly route: TypedStrategyRoute;
   readonly recordedAtMs: number;
+  readonly packageExecutionLock?: StoredStrategyPackageExecutionLock;
   readonly packageExecution?: StoredStrategyPackageExecution;
+}
+
+export interface StoredStrategyPackageExecutionLock {
+  readonly packageOrderIdHex: string;
+  readonly recordedAtMs: number;
 }
 
 export interface StoredStrategyPackageExecution {
@@ -776,6 +791,44 @@ export class SqliteStrategyPackageStore {
     return this.db.transaction(() => this.registerQuoteRecord(admission)).immediate();
   }
 
+  lockPackageExecution(orderHashHex: string, packageOrderId: Uint8Array | string): { readonly created: boolean; readonly lock: StoredStrategyPackageExecutionLock } {
+    const orderHash = hashBuffer(orderHashHex);
+    const packageOrder = commitmentHash(packageOrderId, "packageOrderId");
+    requireCondition(this.db.prepare("SELECT 1 FROM strategy_package_orders WHERE order_hash = ?").get(orderHash) !== undefined,
+      "ORDER_NOT_FOUND", "The strategy package order is not stored.");
+    return this.db.transaction(() => {
+      const known = this.db.prepare("SELECT package_order_id, recorded_at_ms FROM strategy_package_execution_locks WHERE order_hash = ?")
+        .get(orderHash) as { package_order_id: Uint8Array; recorded_at_ms: number } | undefined;
+      if (known !== undefined) {
+        requireCondition(bytesEqual(known.package_order_id, packageOrder), "BINDING_CONFLICT",
+          "The strategy order is already locked to another package order.");
+        return Object.freeze({
+          created: false,
+          lock: Object.freeze({ packageOrderIdHex: toHex(known.package_order_id), recordedAtMs: known.recorded_at_ms }),
+        });
+      }
+      const conflict = this.db.prepare("SELECT order_hash FROM strategy_package_execution_locks WHERE package_order_id = ?")
+        .get(packageOrder) as { order_hash: Uint8Array } | undefined;
+      requireCondition(conflict === undefined, "BINDING_CONFLICT", "The package order is already locked to another strategy order.");
+      const recordedAtMs = this.clock();
+      this.db.prepare("INSERT INTO strategy_package_execution_locks (order_hash, package_order_id, recorded_at_ms) VALUES (?, ?, ?)")
+        .run(orderHash, packageOrder, recordedAtMs);
+      return Object.freeze({
+        created: true,
+        lock: Object.freeze({ packageOrderIdHex: toHex(packageOrder), recordedAtMs }),
+      });
+    }).immediate();
+  }
+
+  packageExecutionLock(orderHashHex: string): StoredStrategyPackageExecutionLock | undefined {
+    const row = this.db.prepare("SELECT package_order_id, recorded_at_ms FROM strategy_package_execution_locks WHERE order_hash = ?")
+      .get(hashBuffer(orderHashHex)) as { package_order_id: Uint8Array; recorded_at_ms: number } | undefined;
+    return row === undefined ? undefined : Object.freeze({
+      packageOrderIdHex: toHex(row.package_order_id),
+      recordedAtMs: row.recorded_at_ms,
+    });
+  }
+
   registerBoundQuote(
     admission: AdmittedStrategyRoute,
     readinessInput: PackageSettlementReadinessInput,
@@ -798,6 +851,18 @@ export class SqliteStrategyPackageStore {
     const readinessJson = stringifyProtocolJson(readiness);
     const bindingJson = stringifyProtocolJson(binding);
     return this.db.transaction(() => {
+      const lock = this.packageExecutionLock(toHex(orderHash));
+      if (lock === undefined) {
+        const conflictingLock = this.db.prepare("SELECT order_hash FROM strategy_package_execution_locks WHERE package_order_id = ?")
+          .get(readiness.packageOrderId) as { order_hash: Uint8Array } | undefined;
+        requireCondition(conflictingLock === undefined, "BINDING_CONFLICT",
+          "The package order is already locked to another strategy order.");
+        this.db.prepare("INSERT INTO strategy_package_execution_locks (order_hash, package_order_id, recorded_at_ms) VALUES (?, ?, ?)")
+          .run(orderHash, readiness.packageOrderId, this.clock());
+      } else {
+        requireCondition(lock.packageOrderIdHex === toHex(readiness.packageOrderId), "BINDING_CONFLICT",
+          "Settlement readiness belongs to another locked package order.");
+      }
       const quote = this.registerQuoteRecord(admission);
       const requirement = this.db.prepare(`
         SELECT package_order_id, readiness_hash, readiness_json
@@ -1284,7 +1349,7 @@ export class SqliteStrategyPackageStore {
     hashBuffer(sourceOrderHashHex);
     const admission = this.admissionByQuote(quoteHashHex);
     requireCondition(admission !== undefined, "QUOTE_NOT_FOUND", "The strategy package quote is not stored.");
-    requireCondition(admission.packageExecution === undefined || admission.packageExecution.binding !== undefined,
+    requireCondition(admission.packageExecutionLock === undefined || admission.packageExecution?.binding !== undefined,
       "EXECUTION_BINDING_REQUIRED", "Final package settlement requires a quote bound to its exact readiness state.");
     requireCondition(this.ownerAuthorization(admission.orderHashHex) !== undefined,
       "OWNER_AUTHORIZATION_REQUIRED", "The strategy package owner must authorize the exact generalized order before selection.");
@@ -1365,7 +1430,7 @@ export class SqliteStrategyPackageStore {
     hashBuffer(routeHashHex);
     const admission = this.admissionByQuote(quoteHashHex);
     requireCondition(admission !== undefined, "QUOTE_NOT_FOUND", "The strategy package quote is not stored.");
-    requireCondition(admission.packageExecution === undefined || admission.packageExecution.binding !== undefined,
+    requireCondition(admission.packageExecutionLock === undefined || admission.packageExecution?.binding !== undefined,
       "EXECUTION_BINDING_REQUIRED", "Final package settlement requires a quote bound to its exact readiness state.");
     requireCondition(this.ownerAuthorization(admission.orderHashHex) !== undefined,
       "OWNER_AUTHORIZATION_REQUIRED", "The strategy package owner must authorize the exact generalized order before selection.");
@@ -1815,10 +1880,12 @@ export class SqliteStrategyPackageStore {
     const row = this.db.prepare(`
       SELECT q.order_hash, q.route_hash, q.quote_json, q.route_json, q.recorded_at_ms,
              o.graph_hash, o.order_json, o.graph_json,
+             l.package_order_id AS locked_package_order_id, l.recorded_at_ms AS lock_recorded_at_ms,
              r.readiness_hash, r.readiness_json, r.recorded_at_ms AS requirement_recorded_at_ms,
              b.binding_hash, b.binding_json, b.recorded_at_ms AS binding_recorded_at_ms
       FROM strategy_package_quotes q
       JOIN strategy_package_orders o ON o.order_hash = q.order_hash
+      LEFT JOIN strategy_package_execution_locks l ON l.order_hash = q.order_hash
       LEFT JOIN strategy_package_execution_requirements r ON r.order_hash = q.order_hash
       LEFT JOIN strategy_package_execution_bindings b ON b.quote_hash = q.quote_hash
       WHERE q.quote_hash = ?
@@ -1831,6 +1898,8 @@ export class SqliteStrategyPackageStore {
       graph_hash: Uint8Array;
       order_json: string;
       graph_json: string;
+      locked_package_order_id: Uint8Array | null;
+      lock_recorded_at_ms: number | null;
       readiness_hash: Uint8Array | null;
       readiness_json: string | null;
       requirement_recorded_at_ms: number | null;
@@ -1850,6 +1919,15 @@ export class SqliteStrategyPackageStore {
     requireCondition(graphHashHex === toHex(row.graph_hash) && bytesEqual(order.graphHash, row.graph_hash), "CORRUPT_ROW", "The stored strategy package graph does not match its hash.");
     requireCondition(toHex(strategyPackageQuoteHash(quote)) === quoteHashHex && bytesEqual(quote.orderHash, row.order_hash), "CORRUPT_ROW", "The stored strategy package quote does not match its hash.");
     requireCondition(routeHashHex === toHex(row.route_hash) && bytesEqual(quote.routeHash, row.route_hash), "CORRUPT_ROW", "The stored strategy package route does not match its hash.");
+    let packageExecutionLock: StoredStrategyPackageExecutionLock | undefined;
+    if (row.locked_package_order_id !== null || row.lock_recorded_at_ms !== null) {
+      requireCondition(row.locked_package_order_id !== null && row.lock_recorded_at_ms !== null,
+        "CORRUPT_ROW", "The stored package execution lock is incomplete.");
+      packageExecutionLock = Object.freeze({
+        packageOrderIdHex: toHex(row.locked_package_order_id),
+        recordedAtMs: row.lock_recorded_at_ms,
+      });
+    }
     let packageExecution: StoredStrategyPackageExecution | undefined;
     if (row.readiness_hash !== null || row.readiness_json !== null || row.requirement_recorded_at_ms !== null) {
       requireCondition(row.readiness_hash !== null && row.readiness_json !== null && row.requirement_recorded_at_ms !== null, "CORRUPT_ROW", "The stored package execution requirement is incomplete.");
@@ -1898,6 +1976,7 @@ export class SqliteStrategyPackageStore {
       quote,
       route,
       recordedAtMs: row.recorded_at_ms,
+      ...(packageExecutionLock === undefined ? {} : { packageExecutionLock }),
       ...(packageExecution === undefined ? {} : { packageExecution }),
     });
   }
