@@ -430,12 +430,18 @@ export function decodeOpenCashCarryPackage(data: Uint8Array): Readonly<{
   return Object.freeze({ version: r.u8(), domain: r.domain(), trader: r.key(), entryReceipt: r.key() });
 }
 
-export function decodeTestPerpStrategyController(data: Uint8Array): Readonly<{ owner: string; controller: string; market: string; position: string }> {
+export function decodeTestPerpStrategyController(data: Uint8Array): Readonly<{
+  owner: string;
+  controller: string;
+  market: string;
+  position: string;
+  maxBaseLots: bigint;
+}> {
   const r = new BorshReader(data, accountDiscriminator('TestPerpStrategy'), 'TestPerpStrategy');
   const owner = r.key();
   const controller = r.key();
   r.hash();
-  return Object.freeze({ owner, controller, market: r.key(), position: r.key() });
+  return Object.freeze({ owner, controller, market: r.key(), position: r.key(), maxBaseLots: r.u64() });
 }
 
 /** Mirrors `oracle_price_per_lot`: exact oracle, receiver owner, Full verification, feed, age, confidence. */

@@ -53,6 +53,12 @@ export {
   type SolanaTreasuryHedgeQuoteState,
 } from './solana-treasury-hedge-quote.js';
 export {
+  SolanaTreasuryHedgePreparationContextResolver,
+  type SolanaTreasuryHedgeAdapterBinding,
+  type SolanaTreasuryHedgePackageIdPort,
+  type SolanaTreasuryHedgePreparationLane,
+} from './solana-treasury-hedge-preparation.js';
+export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
 } from './strategy-receipt-builder.js';
