@@ -4,6 +4,8 @@ import test from 'node:test';
 import { PublicKey } from '@solana/web3.js';
 import {
   decodeSolanaMultiStrategyReceipt,
+  decodeSolanaStrategyAdapterLegEvent,
+  solanaMultiStrategyEvidenceRoot,
   solanaMultiStrategyReceiptHash,
 } from '../src/index.js';
 
@@ -52,4 +54,29 @@ test('rejects another account type and an unsupported operation', () => {
   data[8] = 1;
   data[8 + 1 + (32 * 5)] = 8;
   assert.throws(() => decodeSolanaMultiStrategyReceipt(data), /operation/);
+});
+
+test('decodes adapter evidence events and preserves their ordered root', () => {
+  const first = bytes(21);
+  const second = bytes(22);
+  const data = Buffer.alloc(106);
+  createHash('sha256').update('event:StrategyAdapterLegExecuted', 'ascii').digest().copy(data, 0, 0, 8);
+  const receipt = new PublicKey(bytes(23));
+  receipt.toBuffer().copy(data, 8);
+  data[40] = 1;
+  Buffer.from(bytes(24)).copy(data, 41);
+  data[73] = 2;
+  Buffer.from(second).copy(data, 74);
+  const event = decodeSolanaStrategyAdapterLegEvent(data);
+  assert(event !== undefined);
+  assert.equal(event.receipt.toBase58(), receipt.toBase58());
+  assert.equal(event.callIndex, 1);
+  assert.equal(event.stage, 2);
+  assert.deepEqual(event.evidenceHash, second);
+  const expected = createHash('sha256')
+    .update('naryx.solana.multi-strategy.evidence.v1', 'ascii')
+    .update(first)
+    .update(second)
+    .digest();
+  assert.deepEqual(solanaMultiStrategyEvidenceRoot([first, second]), Uint8Array.from(expected));
 });

@@ -6,7 +6,13 @@ const ACCOUNT_DISCRIMINATOR = createHash('sha256')
   .digest()
   .subarray(0, 8);
 const RECEIPT_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.receipt.v1', 'ascii');
+const EVIDENCE_ROOT_DOMAIN = Buffer.from('naryx.solana.multi-strategy.evidence.v1', 'ascii');
+const LEG_EVENT_DISCRIMINATOR = createHash('sha256')
+  .update('event:StrategyAdapterLegExecuted', 'ascii')
+  .digest()
+  .subarray(0, 8);
 const ACCOUNT_BYTES = 379;
+const LEG_EVENT_BYTES = 106;
 
 export type SolanaStrategyReceiptOperation =
   | 'ENTRY'
@@ -48,6 +54,14 @@ export interface DecodedSolanaStrategyReceipt {
   readonly bump: number;
 }
 
+export interface DecodedSolanaStrategyAdapterLegEvent {
+  readonly receipt: PublicKey;
+  readonly callIndex: number;
+  readonly adapterSubjectId: Uint8Array;
+  readonly stage: number;
+  readonly evidenceHash: Uint8Array;
+}
+
 function fail(message: string): never {
   throw new Error(`Solana strategy receipt: ${message}`);
 }
@@ -70,6 +84,33 @@ export function solanaMultiStrategyReceiptHash(input: Readonly<{
     .update(input.callsHash)
     .update(input.evidenceRoot)
     .digest());
+}
+
+export function solanaMultiStrategyEvidenceRoot(evidence: readonly Uint8Array[]): Uint8Array {
+  if (evidence.length === 0) fail('evidence sequence must not be empty');
+  const hash = createHash('sha256').update(EVIDENCE_ROOT_DOMAIN);
+  for (const [index, value] of evidence.entries()) {
+    if (value.length !== 32 || value.every((byte) => byte === 0)) {
+      fail(`evidence ${index} must be 32 nonzero bytes`);
+    }
+    hash.update(value);
+  }
+  return Uint8Array.from(hash.digest());
+}
+
+export function decodeSolanaStrategyAdapterLegEvent(
+  value: Uint8Array,
+): DecodedSolanaStrategyAdapterLegEvent | undefined {
+  const data = Buffer.from(value);
+  if (data.length < 8 || !data.subarray(0, 8).equals(LEG_EVENT_DISCRIMINATOR)) return undefined;
+  if (data.length !== LEG_EVENT_BYTES) fail(`adapter leg event must be exactly ${LEG_EVENT_BYTES} bytes`);
+  const receipt = new PublicKey(data.subarray(8, 40));
+  const callIndex = data[40]!;
+  const adapterSubjectId = readBytes(data, 41, 32);
+  const stage = data[73]!;
+  const evidenceHash = readBytes(data, 74, 32);
+  if (evidenceHash.every((byte) => byte === 0)) fail('adapter leg evidence hash is zero');
+  return Object.freeze({ receipt, callIndex, adapterSubjectId, stage, evidenceHash });
 }
 
 export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSolanaStrategyReceipt {
