@@ -33,6 +33,7 @@ const EVM_STRATEGY_TEMPLATES = new Set([
   "option-spread-v1",
   "treasury-inventory-hedge-v1",
   "collateral-conversion-hedge-v1",
+  "reverse-cash-and-carry-v1",
 ]);
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -184,7 +185,7 @@ type EvmOptionProfile = Readonly<{
 }>;
 
 type EvmDirectionalProfile = Readonly<{
-  kind: "TREASURY_HEDGE" | "COLLATERAL_CONVERSION";
+  kind: "TREASURY_HEDGE" | "COLLATERAL_CONVERSION" | "REVERSE_BASIS";
   profileId: string;
   displayName: string;
   templateId: string;
@@ -736,12 +737,15 @@ function parseEvmDirectionalProfiles(
   payload: unknown,
   kind: EvmDirectionalProfile["kind"],
 ): readonly EvmDirectionalProfile[] {
-  const context = kind === "TREASURY_HEDGE" ? "EVM treasury hedge profiles" : "EVM collateral conversion profiles";
+  const context = kind === "TREASURY_HEDGE" ? "EVM treasury hedge profiles"
+    : kind === "COLLATERAL_CONVERSION" ? "EVM collateral conversion profiles"
+      : "EVM reverse basis profiles";
   const root = record(payload, context);
   if (root.version !== 1) throw new Error(`${context} version is unsupported.`);
   return list(root.profiles, context).map((candidate, index) => {
     const profile = record(candidate, `${context} ${index}`);
-    const base = record(kind === "TREASURY_HEDGE" ? profile.inventoryAsset : profile.collateralAsset,
+    const base = record(kind === "TREASURY_HEDGE" ? profile.inventoryAsset
+      : kind === "COLLATERAL_CONVERSION" ? profile.collateralAsset : profile.baseAsset,
       `${context} ${index} base asset`);
     const quote = record(profile.quoteAsset, `${context} ${index} quote asset`);
     const bounds = record(profile.bounds, `${context} ${index} bounds`);
@@ -1226,12 +1230,15 @@ export function GeneralizedStrategyPreparationPanel({
 
   useEffect(() => {
     const kind = templateId === "treasury-inventory-hedge-v1" ? "TREASURY_HEDGE"
-      : templateId === "collateral-conversion-hedge-v1" ? "COLLATERAL_CONVERSION" : null;
+      : templateId === "collateral-conversion-hedge-v1" ? "COLLATERAL_CONVERSION"
+        : templateId === "reverse-cash-and-carry-v1" ? "REVERSE_BASIS" : null;
     if (privateApiBaseUrl === null || sourceOrderHash !== null || kind === null) return;
     const controller = new AbortController();
     const route = kind === "TREASURY_HEDGE"
       ? "/internal/terminal/evm-treasury-hedge-profiles"
-      : "/internal/terminal/evm-collateral-conversion-profiles";
+      : kind === "COLLATERAL_CONVERSION"
+        ? "/internal/terminal/evm-collateral-conversion-profiles"
+        : "/internal/terminal/evm-reverse-basis-profiles";
     void fetch(`${privateApiBaseUrl}${route}`, {
       headers: { Accept: "application/json" }, cache: "no-store", credentials: "omit",
       referrerPolicy: "no-referrer", signal: controller.signal,
@@ -1476,9 +1483,12 @@ export function GeneralizedStrategyPreparationPanel({
       const maximumTtl = BigInt(selectedEvmDirectionalProfile.bounds.maximumExpiryTtlSeconds);
       const ttl = maximumTtl < BigInt(600) ? maximumTtl : BigInt(600);
       const collateralConversion = selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION";
+      const reverseBasis = selectedEvmDirectionalProfile.kind === "REVERSE_BASIS";
       const route = collateralConversion
         ? "/internal/terminal/evm-collateral-conversion-orders/create"
-        : "/internal/terminal/evm-treasury-hedge-orders/create";
+        : reverseBasis
+          ? "/internal/terminal/evm-reverse-basis-orders/create"
+          : "/internal/terminal/evm-treasury-hedge-orders/create";
       const response = await fetch(`${privateApiBaseUrl}${route}`, {
         method: "POST", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer",
         headers: { "Content-Type": "application/json" },
@@ -1490,6 +1500,10 @@ export function GeneralizedStrategyPreparationPanel({
           ...(collateralConversion ? {
             limitSwapPrice: priceToAtomicRatio(evmSwapPrice, selectedEvmDirectionalProfile.baseAsset.decimals,
               selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Swap limit price"),
+            limitHedgePrice: hedgeLimit,
+          } : reverseBasis ? {
+            limitSpotPrice: priceToAtomicRatio(evmSwapPrice, selectedEvmDirectionalProfile.baseAsset.decimals,
+              selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Spot limit price"),
             limitHedgePrice: hedgeLimit,
           } : { limitHedgePrice: hedgeLimit }),
           expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
@@ -2000,7 +2014,7 @@ export function GeneralizedStrategyPreparationPanel({
     && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
     && (fullEvmUnwind || evmDirectionalQuantity !== "")
     && evmHedgePrice !== ""
-    && (selectedEvmDirectionalProfile.kind !== "COLLATERAL_CONVERSION" || evmSwapPrice !== "");
+    && (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE" || evmSwapPrice !== "");
   const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
 
   return (
@@ -2299,10 +2313,13 @@ export function GeneralizedStrategyPreparationPanel({
         </div>
       ) : null}
       {sourceOrderHash === null
-        && (templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1") ? (
+        && (templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1"
+          || templateId === "reverse-cash-and-carry-v1") ? (
         <div className={styles.strategyPrepareForm}>
           <label htmlFor="evm-directional-profile">
-            {templateId === "treasury-inventory-hedge-v1" ? "Atomic treasury hedge market" : "Atomic conversion market"}
+            {templateId === "treasury-inventory-hedge-v1" ? "Atomic treasury hedge market"
+              : templateId === "collateral-conversion-hedge-v1" ? "Atomic conversion market"
+                : "Atomic reverse basis market"}
           </label>
           <select
             id="evm-directional-profile"
@@ -2376,10 +2393,12 @@ export function GeneralizedStrategyPreparationPanel({
                   selectedEvmDirectionalProfile.bounds.maximumQuantityAtoms, selectedEvmDirectionalProfile.baseAsset.decimals,
                   selectedEvmDirectionalProfile.baseAsset.assetId)}.
               </p>
-              {selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION" ? (
+              {selectedEvmDirectionalProfile.kind !== "TREASURY_HEDGE" ? (
                 <>
                   <label htmlFor="evm-swap-price">
-                    {lifecycleAction === "ENTRY" ? "Maximum collateral purchase price" : "Minimum collateral sale price"}
+                    {selectedEvmDirectionalProfile.kind === "REVERSE_BASIS"
+                      ? lifecycleAction === "ENTRY" ? "Minimum spot sale price" : "Maximum spot repurchase price"
+                      : lifecycleAction === "ENTRY" ? "Maximum collateral purchase price" : "Minimum collateral sale price"}
                   </label>
                   <input
                     id="evm-swap-price"
@@ -2392,7 +2411,9 @@ export function GeneralizedStrategyPreparationPanel({
                 </>
               ) : null}
               <label htmlFor="evm-hedge-price">
-                {lifecycleAction === "ENTRY" ? "Minimum short hedge price" : "Maximum hedge close price"}
+                {selectedEvmDirectionalProfile.kind === "REVERSE_BASIS"
+                  ? lifecycleAction === "ENTRY" ? "Maximum long hedge price" : "Minimum long close price"
+                  : lifecycleAction === "ENTRY" ? "Minimum short hedge price" : "Maximum hedge close price"}
               </label>
               <input
                 id="evm-hedge-price"
@@ -2428,7 +2449,9 @@ export function GeneralizedStrategyPreparationPanel({
                     ? `Strategy account ${compact(evmProvisioning.strategyAccount, 10, 8)} is ready.`
                     : selectedEvmDirectionalProfile.kind === "COLLATERAL_CONVERSION"
                       ? "The wallet provisions isolated swap, lending, and hedge adapters before execution."
-                      : "The wallet provisions isolated inventory and hedge adapters before execution."}
+                      : selectedEvmDirectionalProfile.kind === "REVERSE_BASIS"
+                        ? "The wallet provisions isolated borrowing, spot, and long hedge adapters. Supply lending collateral before entry."
+                        : "The wallet provisions isolated inventory and hedge adapters before execution."}
               </p>
             </>
           ) : (
