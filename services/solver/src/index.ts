@@ -59,7 +59,10 @@ export {
   type SolanaTreasuryHedgePreparationLane,
 } from './solana-treasury-hedge-preparation.js';
 export { SqliteSolanaStrategyPackageIdStore } from './solana-strategy-package-id-store.js';
-export { loadSolanaTreasuryHedgeRuntime } from './solana-treasury-hedge-config.js';
+export {
+  loadSolanaTreasuryHedgeRuntime,
+  type SolanaTreasuryHedgeExecutionLane,
+} from './solana-treasury-hedge-config.js';
 export {
   SolanaTreasuryHedgeProvisioningResolver,
   SolanaTreasuryHedgeProvisioningService,
@@ -68,6 +71,14 @@ export {
   type SolanaTreasuryHedgeProvisioningStep,
 } from './solana-treasury-hedge-provisioning.js';
 export { createSolanaTreasuryHedgeProvisioningInternalHandler } from './solana-treasury-hedge-provisioning-server.js';
+export {
+  SolanaStrategyExecutionAuthorizationService,
+  type AuthorizedSolanaStrategyExecution,
+  type SolanaStrategyTransactionSigner,
+} from './solana-strategy-execution-authorization.js';
+export {
+  createSolanaStrategyExecutionAuthorizationInternalHandler,
+} from './solana-strategy-execution-authorization-server.js';
 export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,

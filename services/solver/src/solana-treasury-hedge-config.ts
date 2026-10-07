@@ -1,6 +1,12 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import {
+  ConnectionSolanaReadOnlyRpc,
+  SOLANA_DEVNET_GENESIS_HASH,
+  SolanaMultiStrategyTransactionMaterializer,
+  type SolanaLookupTableConfig,
+} from '@naryx/adapter-solana';
+import {
   adapterRef,
   assetRef,
   domainRef,
@@ -31,6 +37,14 @@ const MAX_CONFIG_BYTES = 2_097_152;
 interface RuntimeLane {
   readonly quote: GeneralizedStrategyQuoteLane;
   readonly preparation: SolanaTreasuryHedgePreparationLane;
+  readonly execution?: SolanaTreasuryHedgeExecutionLane;
+}
+
+export interface SolanaTreasuryHedgeExecutionLane {
+  readonly domain: ReturnType<typeof domainRef>;
+  readonly solver: string;
+  readonly computeUnitLimit: number;
+  readonly materializer: SolanaMultiStrategyTransactionMaterializer;
 }
 
 function fail(message: string): never {
@@ -76,6 +90,40 @@ function address(value: unknown, context: string): string {
   } catch {
     return fail(`${context} is not a canonical Solana address`);
   }
+}
+
+function anyAddress(value: unknown, context: string): string {
+  try {
+    const checked = new PublicKey(string(value, context));
+    if (checked.toBase58() !== value) fail(`${context} is invalid`);
+    return checked.toBase58();
+  } catch {
+    return fail(`${context} is not a canonical Solana address`);
+  }
+}
+
+function lookupTables(value: unknown, context: string): readonly SolanaLookupTableConfig[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
+    fail(`${context} must contain one to four lookup tables`);
+  }
+  const tables = value.map((item, index) => {
+    const table = record(item, `${context}[${index}]`);
+    if (Object.keys(table).sort().join(',') !== 'address,expectedAddresses'
+      || !Array.isArray(table.expectedAddresses)
+      || table.expectedAddresses.length === 0
+      || table.expectedAddresses.length > 256) {
+      fail(`${context}[${index}] is invalid`);
+    }
+    return Object.freeze({
+      address: address(table.address, `${context}[${index}].address`),
+      expectedAddresses: Object.freeze(table.expectedAddresses.map((candidate, addressIndex) =>
+        anyAddress(candidate, `${context}[${index}].expectedAddresses[${addressIndex}]`))),
+    });
+  });
+  if (new Set(tables.map((table) => table.address)).size !== tables.length) {
+    fail(`${context} addresses repeat`);
+  }
+  return Object.freeze(tables);
 }
 
 function bytes32(value: unknown, context: string): Uint8Array {
@@ -140,6 +188,8 @@ function adapterBinding(value: unknown, context: string) {
 function lane(
   value: unknown,
   rpc: HttpSolanaDevnetSolverRpc,
+  materializationRpc: ConnectionSolanaReadOnlyRpc,
+  rpcUrl: string,
   nonceSource: (laneId: string) => Readonly<{ nextNonce(): bigint }>,
   packageIds: SolanaTreasuryHedgePackageIdPort,
 ): RuntimeLane {
@@ -185,6 +235,16 @@ function lane(
     fail(`lane ${laneId} service fees must remain zero until the Solana account collects them`);
   }
   const maximumStateAdvanceSlots = natural(input.maximumStateAdvanceSlots, 'lane.maximumStateAdvanceSlots');
+  const maximumTransactionComputeUnits = integer(
+    input.maximumTransactionComputeUnits,
+    'lane.maximumTransactionComputeUnits',
+  );
+  if (maximumTransactionComputeUnits > 1_260_000) {
+    fail(`lane ${laneId} maximum transaction compute units exceed the Solana route cap`);
+  }
+  const reviewedLookupTables = input.lookupTables === undefined
+    ? undefined
+    : lookupTables(input.lookupTables, 'lane.lookupTables');
   const pricing = Object.freeze({
     domain,
     inventoryAsset,
@@ -247,11 +307,27 @@ function lane(
     testPerpProgramId,
     testPerpStrategyId: bytes32(input.testPerpStrategyId, 'lane.testPerpStrategyId'),
     testPerpMaximumBaseLots: positive(input.testPerpMaximumBaseLots, 'lane.testPerpMaximumBaseLots'),
-    maximumTransactionComputeUnits: integer(input.maximumTransactionComputeUnits, 'lane.maximumTransactionComputeUnits'),
+    maximumTransactionComputeUnits,
     packageIds,
   });
   return Object.freeze({
     preparation,
+    ...(reviewedLookupTables === undefined
+      ? {}
+      : {
+          execution: Object.freeze({
+            domain,
+            solver: preparation.solver,
+            computeUnitLimit: maximumTransactionComputeUnits,
+            materializer: new SolanaMultiStrategyTransactionMaterializer(materializationRpc, {
+              environment: 'devnet',
+              domain,
+              rpcUrl,
+              expectedGenesisHash: SOLANA_DEVNET_GENESIS_HASH,
+              lookupTables: reviewedLookupTables,
+            }),
+          }),
+        }),
     quote: Object.freeze({
       laneId,
       environment: 'devnet',
@@ -279,17 +355,28 @@ export async function loadSolanaTreasuryHedgeRuntime(
 ): Promise<Readonly<{
   quoteLanes: readonly GeneralizedStrategyQuoteLane[];
   preparationLanes: readonly SolanaTreasuryHedgePreparationLane[];
+  executionLanes: readonly SolanaTreasuryHedgeExecutionLane[];
 }>> {
   const root = record(absoluteJson(path), 'root');
   if (root.version !== 1 || root.environment !== 'devnet' || typeof root.rpcUrl !== 'string'
     || !Array.isArray(root.lanes) || root.lanes.length === 0 || root.lanes.length > 8) {
     fail('root must define version 1, devnet, rpcUrl, and one to eight lanes');
   }
-  const rpc = new HttpSolanaDevnetSolverRpc(root.rpcUrl, { writesEnabled: false });
+  const rpcUrl = string(root.rpcUrl, 'root.rpcUrl');
+  const rpc = new HttpSolanaDevnetSolverRpc(rpcUrl, { writesEnabled: false });
+  const materializationRpc = new ConnectionSolanaReadOnlyRpc(rpcUrl);
   await requireSolanaDevnet(rpc);
-  const lanes = root.lanes.map((item) => lane(item, rpc, dependencies.nonceSource, dependencies.packageIds));
+  const lanes = root.lanes.map((item) => lane(
+    item,
+    rpc,
+    materializationRpc,
+    rpcUrl,
+    dependencies.nonceSource,
+    dependencies.packageIds,
+  ));
   return Object.freeze({
     quoteLanes: Object.freeze(lanes.map((item) => item.quote)),
     preparationLanes: Object.freeze(lanes.map((item) => item.preparation)),
+    executionLanes: Object.freeze(lanes.flatMap((item) => item.execution === undefined ? [] : [item.execution])),
   });
 }

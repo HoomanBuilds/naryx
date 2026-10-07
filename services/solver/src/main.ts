@@ -68,11 +68,16 @@ import {
   SolanaTreasuryHedgeProvisioningResolver,
   SolanaTreasuryHedgeProvisioningService,
   createSolanaTreasuryHedgeProvisioningInternalHandler,
+  SolanaStrategyExecutionAuthorizationService,
+  createSolanaStrategyExecutionAuthorizationInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
 import { loadBaseSepoliaSolverRuntime } from './base-sepolia-solver-authorization.js';
-import { loadSolanaDevnetSolverRuntime } from './solana-devnet-solver-runtime.js';
+import {
+  SOLANA_TREASURY_HEDGE_EXECUTION_ENV,
+  loadSolanaDevnetSolverRuntime,
+} from './solana-devnet-solver-runtime.js';
 import { explicitBoolean, loadSolverProcessConfig, tcpPort } from './solver-process-config.js';
 
 const ED25519_SPKI_PREFIX_BYTES = 12;
@@ -198,6 +203,16 @@ const solanaDevnetSolver = await loadSolanaDevnetSolverRuntime(process.env, {
   apiOrigin,
   reservedPorts: [listenPort],
 });
+const solanaStrategyExecutionEnabled = explicitBoolean(
+  process.env[SOLANA_TREASURY_HEDGE_EXECUTION_ENV],
+  SOLANA_TREASURY_HEDGE_EXECUTION_ENV,
+);
+if (solanaStrategyExecutionEnabled
+  && (solanaDevnetSolver === undefined
+    || !solanaDevnetSolver.strategyExecutionEnabled
+    || solanaDevnetSolver.strategySigner === undefined)) {
+  throw new Error(`${SOLANA_TREASURY_HEDGE_EXECUTION_ENV}=true requires the Solana Devnet solver runtime`);
+}
 await solanaDevnetSolver?.listen(host);
 // Hyperliquid, Base Sepolia, and Arbitrum Sepolia exits are quoted by their runtimes; every other order
 // reaches the entry coordinator.
@@ -413,6 +428,24 @@ const solanaTreasuryProvisioningHandler = solanaTreasuryRuntime === undefined
       strategyPackageProvider,
       new SolanaTreasuryHedgeProvisioningResolver(solanaTreasuryRuntime.preparationLanes),
     ));
+if (solanaStrategyExecutionEnabled
+  && (solanaTreasuryRuntime === undefined
+    || solanaTreasuryRuntime.executionLanes.length === 0
+    || strategyPreparationService === undefined)) {
+  throw new Error(`${SOLANA_TREASURY_HEDGE_EXECUTION_ENV}=true requires the Solana treasury hedge runtime`);
+}
+const solanaStrategyAuthorizationHandler = !solanaStrategyExecutionEnabled
+    || solanaTreasuryRuntime === undefined
+    || strategyPreparationService === undefined
+    || solanaDevnetSolver?.strategySigner === undefined
+  ? undefined
+  : createSolanaStrategyExecutionAuthorizationInternalHandler(
+      new SolanaStrategyExecutionAuthorizationService({
+        preparations: strategyPreparationService,
+        lanes: solanaTreasuryRuntime.executionLanes,
+        signer: solanaDevnetSolver.strategySigner,
+      }),
+    );
 const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
   ? undefined
   : createEvmReverseBasisCollateralInternalHandler(new EvmReverseBasisCollateralService(
@@ -447,6 +480,7 @@ const strategyRouteHandlers = [
   strategyPreparationHandler,
   evmOptionProvisioningHandler,
   solanaTreasuryProvisioningHandler,
+  solanaStrategyAuthorizationHandler,
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,

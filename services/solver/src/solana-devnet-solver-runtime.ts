@@ -1,4 +1,5 @@
 import type { Server } from 'node:http';
+import type { VersionedTransaction } from '@solana/web3.js';
 import {
   ConnectionSolanaDeploymentIdentityReadPort,
   verifySolanaDevnetDeploymentIdentity,
@@ -25,6 +26,7 @@ import { explicitBoolean, tcpPort } from './solver-process-config.js';
 
 export const SOLANA_DEVNET_SOLVER_ENABLED_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_ENABLED';
 export const SOLANA_DEVNET_SOLVER_WRITES_ENV = 'NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED';
+export const SOLANA_TREASURY_HEDGE_EXECUTION_ENV = 'NARYX_SOLANA_TREASURY_HEDGE_EXECUTION_ENABLED';
 /** How often standing levels are checked; how far ahead one must stay usable follows the quote TTL. */
 const STANDING_LEVEL_REFRESH_MS = 10_000;
 
@@ -35,6 +37,11 @@ export type LoadedSolanaDevnetSolverRuntime = Readonly<{
   close(): Promise<void>;
   port: number;
   writesEnabled: boolean;
+  strategyExecutionEnabled: boolean;
+  strategySigner: Readonly<{
+    publicKey: string;
+    sign(transaction: VersionedTransaction): void;
+  }> | undefined;
 }>;
 
 /** Serializes the solver's own shard and reservation writes so read sequences stay current. */
@@ -61,6 +68,10 @@ export async function loadSolanaDevnetSolverRuntime(
 ): Promise<LoadedSolanaDevnetSolverRuntime | undefined> {
   if (!explicitBoolean(env[SOLANA_DEVNET_SOLVER_ENABLED_ENV], SOLANA_DEVNET_SOLVER_ENABLED_ENV)) return undefined;
   const writesEnabled = explicitBoolean(env[SOLANA_DEVNET_SOLVER_WRITES_ENV], SOLANA_DEVNET_SOLVER_WRITES_ENV);
+  const strategyExecutionEnabled = explicitBoolean(
+    env[SOLANA_TREASURY_HEDGE_EXECUTION_ENV],
+    SOLANA_TREASURY_HEDGE_EXECUTION_ENV,
+  );
   const config = loadSolanaDevnetSolverConfig(env.NARYX_SOLANA_DEVNET_SOLVER_CONFIG ?? '');
   const manifest = loadSolanaDevnetSharedManifest(config.runtimeManifestPath);
   const key = loadSolanaDevnetSolverKey(env.NARYX_SOLANA_DEVNET_SOLVER_KEYPAIR_PATH ?? '', config.solverId);
@@ -119,5 +130,12 @@ export async function loadSolanaDevnetSolverRuntime(
     }),
     port,
     writesEnabled,
+    strategyExecutionEnabled,
+    strategySigner: strategyExecutionEnabled
+      ? Object.freeze({
+          publicKey: key.publicKey.toBase58(),
+          sign: (transaction: VersionedTransaction) => transaction.sign([key.keypair]),
+        })
+      : undefined,
   });
 }
