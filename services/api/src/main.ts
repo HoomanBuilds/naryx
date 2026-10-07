@@ -146,6 +146,7 @@ import {
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpSolanaTreasuryHedgeProvisioningClient } from './solana-treasury-hedge-provisioning-client.js';
 import { HttpSolanaStrategyExecutionAuthorizationClient } from './solana-strategy-execution-authorization-client.js';
+import { HttpSolanaStrategyExecutionObservationClient } from './solana-strategy-execution-observation-client.js';
 import { HttpEvmReverseBasisCollateralClient } from './evm-reverse-basis-collateral-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
@@ -1060,6 +1061,9 @@ const solanaStrategyExecutionAuthorization = explicitlyEnabled(
 )
   ? new HttpSolanaStrategyExecutionAuthorizationClient(solverOrigin)
   : undefined;
+const solanaStrategyExecutionObservation = solanaStrategyExecutionAuthorization === undefined
+  ? undefined
+  : new HttpSolanaStrategyExecutionObservationClient(solverOrigin);
 const evmReverseBasisCollateral = evmOptionProvisioningEnabled && evmReverseBasisOrders !== undefined
   ? new HttpEvmReverseBasisCollateralClient(solverOrigin)
   : undefined;
@@ -1131,6 +1135,7 @@ const server = createPrivateTerminalServer(
   solanaTreasuryHedgeOrders,
   solanaTreasuryHedgeProvisioning,
   solanaStrategyExecutionAuthorization,
+  solanaStrategyExecutionObservation,
 );
 
 const publicServer = publicMarket?.listener === undefined

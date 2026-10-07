@@ -129,6 +129,12 @@ export {
   type SolanaTreasuryHedgeProvisioningPort,
 } from './solana-treasury-hedge-provisioning-client.js';
 export {
+  HttpSolanaStrategyExecutionObservationClient,
+  SolanaStrategyExecutionObservationClientError,
+  type ObservedSolanaStrategyExecution,
+  type SolanaStrategyExecutionObservationPort,
+} from './solana-strategy-execution-observation-client.js';
+export {
   HttpEvmReverseBasisCollateralClient,
   EvmReverseBasisCollateralClientError,
   type EvmReverseBasisCollateralPort,

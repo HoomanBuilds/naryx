@@ -17,6 +17,7 @@ const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const EVM_ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/i;
 const EVM_HASH = /^0x[0-9a-f]{64}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
 const SOLANA_PACKET_LIMIT = 1232;
 const STRATEGY_AUTHORIZATION_FIELDS = [
   ["orderHash", "bytes32"],
@@ -206,6 +207,26 @@ type AuthorizedSolanaExecution = Readonly<{
   quoteHash: string;
   lastValidBlockHeight: number;
 }>;
+
+type SolanaExecutionObservation = Readonly<
+  | { status: "PENDING" | "FAILED"; signature: string }
+  | {
+      status: "FINALIZED";
+      signature: string;
+      slot: string;
+      strategyAccount: string;
+      position: string;
+      receiptAccount: string;
+      packageId: string;
+      operation: string;
+      previousStateHash: string;
+      nextStateHash: string;
+      evidenceRoot: string;
+      onchainReceiptHash: string;
+      solver: string;
+      nonce: string;
+    }
+>;
 
 type NativeStrategyPositionReview = Readonly<{
   strategyId: string;
@@ -413,6 +434,12 @@ function hash(value: unknown, context: string): string {
   return result;
 }
 
+function bytes32(value: unknown, context: string): string {
+  const result = text(value, context);
+  if (!HASH.test(result)) throw new Error(`${context} is invalid.`);
+  return result;
+}
+
 function list(value: unknown, context: string): readonly unknown[] {
   if (!Array.isArray(value)) throw new Error(`${context} is invalid.`);
   return value;
@@ -609,6 +636,53 @@ function parseAuthorizedSolanaExecution(
     strategyAccount: solanaAddress(authorization.strategyAccount, "Solana authorization strategy account"),
     quoteHash: review.quoteHash,
     lastValidBlockHeight,
+  });
+}
+
+function parseSolanaExecutionObservation(
+  payload: unknown,
+  expectedSignature: string,
+  review: StrategyPreparationReview,
+): SolanaExecutionObservation {
+  const root = record(decode(payload as Json), "Solana execution observation");
+  const observation = record(root.observation, "Solana execution observation result");
+  const status = text(observation.status, "Solana observation status");
+  const signature = text(observation.signature, "Solana observation signature");
+  if (root.status !== status || observation.version !== 1 || signature !== expectedSignature
+    || !SOLANA_SIGNATURE.test(signature)
+    || (status !== "PENDING" && status !== "FAILED" && status !== "FINALIZED")) {
+    throw new Error("Solana execution observation changed the submitted transaction.");
+  }
+  if (status !== "FINALIZED") return Object.freeze({ status, signature });
+  const domain = record(observation.domain, "Solana observation domain");
+  const packageId = hash(observation.packageId, "Solana observed package");
+  const orderHash = hash(observation.orderHash, "Solana observed order");
+  const quoteHash = hash(observation.quoteHash, "Solana observed quote");
+  const routeHash = hash(observation.routeHash, "Solana observed route");
+  if (domain.domainId !== "svm:devnet" || packageId !== review.packageId
+    || orderHash !== review.orderHash || quoteHash !== review.quoteHash || routeHash !== review.routeHash) {
+    throw new Error("Finalized Solana evidence changed the reviewed package commitments.");
+  }
+  const slot = decimalInteger(observation.slot, "Solana execution slot");
+  const nonce = decimalInteger(observation.nonce, "Solana execution nonce");
+  if (BigInt(slot) <= BigInt(0) || BigInt(nonce) < BigInt(0)) {
+    throw new Error("Finalized Solana evidence has invalid chain coordinates.");
+  }
+  return Object.freeze({
+    status: "FINALIZED",
+    signature,
+    slot,
+    strategyAccount: solanaAddress(observation.strategyAccount, "Solana observed strategy account"),
+    position: solanaAddress(observation.position, "Solana observed position"),
+    receiptAccount: solanaAddress(observation.receiptAccount, "Solana observed receipt account"),
+    packageId,
+    operation: text(observation.operation, "Solana observed operation"),
+    previousStateHash: bytes32(observation.previousStateHash, "Solana previous state"),
+    nextStateHash: bytes32(observation.nextStateHash, "Solana next state"),
+    evidenceRoot: hash(observation.evidenceRoot, "Solana evidence root"),
+    onchainReceiptHash: hash(observation.onchainReceiptHash, "Solana onchain receipt"),
+    solver: solanaAddress(observation.solver, "Solana observed solver"),
+    nonce,
   });
 }
 
@@ -1528,6 +1602,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [solanaProvisionBusy, setSolanaProvisionBusy] = useState(false);
   const [solanaExecutionBusy, setSolanaExecutionBusy] = useState(false);
   const [solanaExecutionSignature, setSolanaExecutionSignature] = useState<string | null>(null);
+  const [solanaObservation, setSolanaObservation] = useState<SolanaExecutionObservation | null>(null);
   const [evmOptionProfiles, setEvmOptionProfiles] = useState<readonly EvmOptionProfile[] | null>(null);
   const [selectedEvmOptionProfileId, setSelectedEvmOptionProfileId] = useState("");
   const [evmOptionQuantity, setEvmOptionQuantity] = useState("");
@@ -1866,6 +1941,7 @@ export function GeneralizedStrategyPreparationPanel({
       setReview(null);
       setSolanaProvisioning(null);
       setSolanaExecutionSignature(null);
+      setSolanaObservation(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Solana treasury hedge order creation failed closed.");
     } finally {
@@ -1936,8 +2012,35 @@ export function GeneralizedStrategyPreparationPanel({
       }
       const signature = await sendSolanaTransaction(authorization.transactionBytes);
       setSolanaExecutionSignature(signature);
+      setSolanaObservation(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Solana treasury hedge submission failed closed.");
+    } finally {
+      setSolanaExecutionBusy(false);
+    }
+  }
+
+  async function refreshSolanaObservation() {
+    if (privateApiBaseUrl === null || review === null || solanaExecutionSignature === null) return;
+    setSolanaExecutionBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/observe-solana`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quoteHash: review.quoteHash, signature: solanaExecutionSignature }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      setSolanaObservation(parseSolanaExecutionObservation(
+        await response.json(),
+        solanaExecutionSignature,
+        review,
+      ));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Solana execution observation failed closed.");
     } finally {
       setSolanaExecutionBusy(false);
     }
@@ -2379,6 +2482,7 @@ export function GeneralizedStrategyPreparationPanel({
       setQuoteReview(parsed);
       setQuoteHash(parsed.quoteHash);
       setSolanaExecutionSignature(null);
+      setSolanaObservation(null);
       setEvmCollateral(null);
       setEvmCollateralCompletionKey("");
       setReview(null);
@@ -2651,7 +2755,11 @@ export function GeneralizedStrategyPreparationPanel({
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
       <div className={styles.evidenceHeading}>
         <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-        <span>{evmExecutionConfirmed ? "ONCHAIN CONFIRMED" : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED" : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED" : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
+        <span>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "ONCHAIN CONFIRMED"
+          : solanaObservation?.status === "FAILED" ? "FAILED"
+          : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED"
+          : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED"
+          : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE" : "QUOTE REQUIRED"}</span>
       </div>
       <p className={styles.reviewNotice}>
         Request a live solver-signed quote for a stored typed order, inspect its complete-package economics, then compile the admitted route into an unsigned execution plan.
@@ -2856,6 +2964,7 @@ export function GeneralizedStrategyPreparationPanel({
               setReview(null);
               setSolanaProvisioning(null);
               setSolanaExecutionSignature(null);
+              setSolanaObservation(null);
               setError(null);
             }}
           >
@@ -2884,6 +2993,7 @@ export function GeneralizedStrategyPreparationPanel({
                   setOrderHash("");
                   setSolanaProvisioning(null);
                   setSolanaExecutionSignature(null);
+                  setSolanaObservation(null);
                   setError(null);
                 }}
               />
@@ -2905,6 +3015,7 @@ export function GeneralizedStrategyPreparationPanel({
                   setOrderHash("");
                   setSolanaProvisioning(null);
                   setSolanaExecutionSignature(null);
+                  setSolanaObservation(null);
                   setError(null);
                 }}
               />
@@ -3246,6 +3357,7 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionProgress(null);
             setStrategyReceipt(null);
             setSolanaExecutionSignature(null);
+            setSolanaObservation(null);
             setEvmCollateral(null);
             setEvmCollateralCompletionKey("");
             setError(null);
@@ -3327,6 +3439,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setExecutionProgress(null);
                 setStrategyReceipt(null);
                 setSolanaExecutionSignature(null);
+                setSolanaObservation(null);
                 setEvmCollateral(null);
                 setEvmCollateralCompletionKey("");
                 setError(null);
@@ -3360,6 +3473,7 @@ export function GeneralizedStrategyPreparationPanel({
             setExecutionProgress(null);
             setStrategyReceipt(null);
             setSolanaExecutionSignature(null);
+            setSolanaObservation(null);
             setEvmCollateral(null);
             setEvmCollateralCompletionKey("");
             setError(null);
@@ -3468,13 +3582,41 @@ export function GeneralizedStrategyPreparationPanel({
                 onClick={() => void executeSolanaTreasuryHedge()}
               >
                 {solanaExecutionBusy ? "Confirming atomic Solana package"
-                  : solanaExecutionSignature ? "Atomic Solana package submitted" : "Sign and submit atomic Solana package"}
+                  : solanaObservation?.status === "FINALIZED" ? "Atomic Solana package finalized"
+                    : solanaExecutionSignature ? "Atomic Solana package submitted" : "Sign and submit atomic Solana package"}
               </button>
+              {solanaExecutionSignature !== null && solanaObservation?.status !== "FINALIZED"
+                && solanaObservation?.status !== "FAILED" ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={privateApiBaseUrl === null || solanaExecutionBusy}
+                  onClick={() => void refreshSolanaObservation()}
+                >
+                  {solanaExecutionBusy ? "Checking finalized evidence" : "Refresh finalized Solana receipt"}
+                </button>
+              ) : null}
               <p className={styles.fieldContext} role="status">
                 {solanaExecutionSignature
-                  ? `Submitted Devnet transaction ${compact(solanaExecutionSignature, 12, 10)}. Finalized package observation is still pending.`
+                  ? solanaObservation?.status === "FINALIZED"
+                    ? `Finalized Devnet transaction ${compact(solanaExecutionSignature, 12, 10)} at slot ${solanaObservation.slot}.`
+                    : solanaObservation?.status === "FAILED"
+                      ? `Devnet transaction ${compact(solanaExecutionSignature, 12, 10)} failed onchain.`
+                      : `Submitted Devnet transaction ${compact(solanaExecutionSignature, 12, 10)}. Finalized package observation is pending.`
                   : `The solver has signed the reviewed ${solanaReview.summary}. Your wallet supplies the owner signature and submits it.`}
               </p>
+              {solanaObservation?.status === "FINALIZED" ? (
+                <div className={styles.reviewGrid}>
+                  <span>Operation</span><strong>{solanaObservation.operation}</strong>
+                  <span>Strategy account</span><strong title={solanaObservation.strategyAccount}>{compact(solanaObservation.strategyAccount)}</strong>
+                  <span>Position</span><strong title={solanaObservation.position}>{compact(solanaObservation.position)}</strong>
+                  <span>Receipt account</span><strong title={solanaObservation.receiptAccount}>{compact(solanaObservation.receiptAccount)}</strong>
+                  <span>Onchain receipt</span><strong title={solanaObservation.onchainReceiptHash}>{compact(solanaObservation.onchainReceiptHash)}</strong>
+                  <span>Evidence root</span><strong title={solanaObservation.evidenceRoot}>{compact(solanaObservation.evidenceRoot)}</strong>
+                  <span>Next state</span><strong title={solanaObservation.nextStateHash}>{compact(solanaObservation.nextStateHash)}</strong>
+                  <span>Solver</span><strong title={solanaObservation.solver}>{compact(solanaObservation.solver)}</strong>
+                </div>
+              ) : null}
             </>
           ) : (
             <>
@@ -3561,8 +3703,12 @@ export function GeneralizedStrategyPreparationPanel({
           <p className={styles.reviewNotice}>
             {evmExecutionConfirmed
               ? "The atomic package executed under the strategy account's onchain call policies and postconditions."
+              : solanaObservation?.status === "FINALIZED"
+                ? "The exact reviewed Solana instruction finalized and its program-owned receipt passed all commitment and hash checks."
+              : solanaObservation?.status === "FAILED"
+                ? "The submitted Solana transaction failed. No successful package execution is claimed."
               : solanaExecutionSignature
-                ? "The owner and solver signed one atomic Solana Devnet transaction. Canonical package observation remains separate."
+                ? "The owner and solver signed one atomic Solana Devnet transaction. Finalized onchain receipt evidence remains separate."
               : executionResult
               ? "The testnet executor independently revalidated the selected package before submission."
               : solanaReview
