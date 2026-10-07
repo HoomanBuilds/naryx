@@ -334,7 +334,7 @@ export interface CrossDomainCoordination {
  * Replays a coordination from its plan and ordered per-domain evidence, so a coordinator that
  * crashed recomputes exactly where it was and what it must do next. The commit rule: every domain
  * prepared with FINALIZED evidence no later than the prepare deadline. Any failure or expiry
- * before that aborts, and every prepared domain is compensated with its pre-signed action. After
+ * before that aborts, and every prepared domain is compensated with its pre-committed action. After
  * the commit decision every domain must commit; a commit deadline passed, conflicting evidence
  * for one domain, commit and compensation mixed, or time running backward fences the package for
  * manual controlled recovery. Terminal precedence: fenced over everything, then committed

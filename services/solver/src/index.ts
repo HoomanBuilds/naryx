@@ -1013,6 +1013,15 @@ export {
 } from './cross-domain-execution-coordinator.js';
 export { HttpCrossDomainCoordinationJournal } from './http-cross-domain-coordination-journal.js';
 export {
+  EvmCrossDomainExecutionDriver,
+  type EvmCrossDomainCompensationProfile,
+  type EvmCrossDomainExecutionLane,
+  type EvmCrossDomainFinalityInput,
+  type EvmCrossDomainLaneInput,
+  type EvmCrossDomainPhase,
+  type EvmCrossDomainPhaseResult,
+} from './evm-cross-domain-execution-driver.js';
+export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,
