@@ -18,6 +18,7 @@ import {
 import { getAddress, zeroHash, type Abi, type Address, type Hex } from 'viem';
 import {
   EvmReverseBasisPreparationContextResolver,
+  EvmOptionSpreadProvisioningResolver,
   type EvmOptionSpreadReadPort,
   type EvmReverseBasisPricingInput,
   type StoredStrategyPackageDocuments,
@@ -318,8 +319,8 @@ function documents(): StoredStrategyPackageDocuments {
 
 test('binds reverse basis entry to reviewed package adapters and exact approvals', async () => {
   const chain = new Chain();
-  const resolver = new EvmReverseBasisPreparationContextResolver([{
-    environment: 'testnet',
+  const lane = {
+    environment: 'testnet' as const,
     templateManifest: template,
     activeRegistryRecords: [],
     resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 6 }],
@@ -333,13 +334,14 @@ test('binds reverse basis entry to reviewed package adapters and exact approvals
         expectedAdapterCodeHash: codeHash('f'), maximumGasLimit: 600_000n },
       { role: 'perp-purchase', factory: { address: HEDGE_FACTORY, expectedCodeHash: codeHash('d') },
         expectedAdapterCodeHash: codeHash('1'), maximumGasLimit: 600_000n },
-    ],
+    ] as const,
     debtBaseAtomsPerWholeBaseToken: 100_000_000n,
     debtBaseToleranceBps: 100n,
     solver: SOLVER,
     packageIds: { resolvePackageId: async () => undefined },
-  }]);
-  const context = await resolver.resolve(documents());
+  };
+  const packageDocuments = documents();
+  const context = await new EvmReverseBasisPreparationContextResolver([lane]).resolve(packageDocuments);
   assert.equal(context.identity.operation, 'ENTRY');
   assert.equal(context.identity.nextStateHash?.length, 32);
   assert.equal(context.compilers.length, 1);
@@ -354,4 +356,7 @@ test('binds reverse basis entry to reviewed package adapters and exact approvals
   assert.deepEqual(binding.callPolicies.map((policy) => policy.expectedAdapterAddress),
     [LENDING_ADAPTER, SPOT_ADAPTER, HEDGE_ADAPTER]);
   assert.equal(binding.nonce, 7n);
+  const provisioning = await new EvmOptionSpreadProvisioningResolver([lane]).resolve(packageDocuments);
+  assert.equal(provisioning.ready, true);
+  assert.equal(provisioning.strategyAccount, ACCOUNT);
 });

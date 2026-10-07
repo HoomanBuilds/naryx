@@ -1098,6 +1098,10 @@ export {
   type EvmReverseBasisPreparationLane,
 } from './evm-reverse-basis-preparation.js';
 export {
+  createEvmReverseBasisPreparationResolver,
+  loadEvmReverseBasisRuntime,
+} from './evm-reverse-basis-config.js';
+export {
   EvmCollateralConversionPreparationContextResolver,
   type EvmCollateralConversionAdapterFactoryBinding,
   type EvmCollateralConversionPreparationLane,

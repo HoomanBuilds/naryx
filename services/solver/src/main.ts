@@ -46,12 +46,14 @@ import {
   EvmOptionSpreadPreparationContextResolver,
   EvmTreasuryHedgePreparationContextResolver,
   EvmCollateralConversionPreparationContextResolver,
+  EvmReverseBasisPreparationContextResolver,
   EvmOptionSpreadProvisioningResolver,
   EvmOptionSpreadProvisioningService,
   createEvmOptionSpreadProvisioningInternalHandler,
   loadEvmOptionSpreadRuntime,
   loadEvmTreasuryHedgeRuntime,
   loadEvmCollateralConversionRuntime,
+  loadEvmReverseBasisRuntime,
   SqliteEvmStrategyPackageIdStore,
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
@@ -212,9 +214,11 @@ const strategyPackageProvider = new HttpStrategyPackageProvider(apiOrigin);
 const evmOptionRuntimePath = process.env.NARYX_EVM_OPTION_SPREAD_RUNTIME_CONFIG;
 const evmTreasuryRuntimePath = process.env.NARYX_EVM_TREASURY_HEDGE_RUNTIME_CONFIG;
 const evmCollateralConversionRuntimePath = process.env.NARYX_EVM_COLLATERAL_CONVERSION_RUNTIME_CONFIG;
+const evmReverseBasisRuntimePath = process.env.NARYX_EVM_REVERSE_BASIS_RUNTIME_CONFIG;
 const evmRuntimeConfigured = (evmOptionRuntimePath !== undefined && evmOptionRuntimePath !== '')
   || (evmTreasuryRuntimePath !== undefined && evmTreasuryRuntimePath !== '')
-  || (evmCollateralConversionRuntimePath !== undefined && evmCollateralConversionRuntimePath !== '');
+  || (evmCollateralConversionRuntimePath !== undefined && evmCollateralConversionRuntimePath !== '')
+  || (evmReverseBasisRuntimePath !== undefined && evmReverseBasisRuntimePath !== '');
 const evmStrategyPackageIds = !evmRuntimeConfigured
   ? undefined
   : new SqliteEvmStrategyPackageIdStore(config.quoteDbPath);
@@ -255,6 +259,18 @@ const evmCollateralConversionRuntime = evmCollateralConversionRuntimePath === un
       },
       packageIds: evmStrategyPackageIds!,
     });
+const evmReverseBasisRuntime = evmReverseBasisRuntimePath === undefined || evmReverseBasisRuntimePath === ''
+  ? undefined
+  : loadEvmReverseBasisRuntime(absolutePath(
+      evmReverseBasisRuntimePath,
+      'NARYX_EVM_REVERSE_BASIS_RUNTIME_CONFIG',
+    ), {
+      nonceSource: (laneId) => {
+        const source = new SqliteAtomicQuoteNonceSource(store, `evm-reverse-basis:${laneId}`);
+        return Object.freeze({ nextNonce: () => source.next() });
+      },
+      packageIds: evmStrategyPackageIds!,
+    });
 const hyperliquidPreparationResolver = strategyPreparationLanes.length === 0
   ? undefined
   : new HyperliquidStrategyPreparationContextResolver(strategyPreparationLanes);
@@ -267,10 +283,14 @@ const evmTreasuryPreparationResolver = evmTreasuryRuntime === undefined
 const evmCollateralConversionPreparationResolver = evmCollateralConversionRuntime === undefined
   ? undefined
   : new EvmCollateralConversionPreparationContextResolver(evmCollateralConversionRuntime.preparationLanes);
+const evmReverseBasisPreparationResolver = evmReverseBasisRuntime === undefined
+  ? undefined
+  : new EvmReverseBasisPreparationContextResolver(evmReverseBasisRuntime.preparationLanes);
 const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
     && evmOptionPreparationResolver === undefined
     && evmTreasuryPreparationResolver === undefined
     && evmCollateralConversionPreparationResolver === undefined
+    && evmReverseBasisPreparationResolver === undefined
   ? undefined
   : Object.freeze({
       resolve: (documents: Parameters<HyperliquidStrategyPreparationContextResolver['resolve']>[0]) => {
@@ -293,6 +313,14 @@ const strategyPreparationResolver = hyperliquidPreparationResolver === undefined
             throw new Error('EVM collateral conversion preparation is not configured');
           }
           return evmCollateralConversionPreparationResolver.resolve(documents);
+        }
+        const evmReverseBasis = documents.order.templateId === 'reverse-cash-and-carry-v1'
+          && documents.graph.legs.every((leg) => leg.domain.domainId.startsWith('eip155:'));
+        if (evmReverseBasis) {
+          if (evmReverseBasisPreparationResolver === undefined) {
+            throw new Error('EVM reverse basis preparation is not configured');
+          }
+          return evmReverseBasisPreparationResolver.resolve(documents);
         }
         if (hyperliquidPreparationResolver === undefined) throw new Error('Hyperliquid strategy preparation is not configured');
         return hyperliquidPreparationResolver.resolve(documents);
@@ -317,6 +345,7 @@ const allGeneralizedStrategyLanes = Object.freeze([
   ...(evmOptionRuntime?.quoteLanes ?? []),
   ...(evmTreasuryRuntime?.quoteLanes ?? []),
   ...(evmCollateralConversionRuntime?.quoteLanes ?? []),
+  ...(evmReverseBasisRuntime?.quoteLanes ?? []),
 ]);
 const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
@@ -333,6 +362,7 @@ const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmTreasuryRuntime?.preparationLanes ?? []),
   ...(evmCollateralConversionRuntime?.preparationLanes ?? []),
+  ...(evmReverseBasisRuntime?.preparationLanes ?? []),
 ]);
 const evmOptionProvisioningHandler = evmPreparationLanes.length === 0
   ? undefined
@@ -354,6 +384,7 @@ const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
   ...(evmTreasuryRuntime?.observationLanes ?? []),
   ...(evmCollateralConversionRuntime?.observationLanes ?? []),
+  ...(evmReverseBasisRuntime?.observationLanes ?? []),
 ].map((lane) => [lane.chainId, lane])).values()];
 const evmOptionObservationHandler = evmObservationLanes.length === 0 || strategyPreparationService === undefined
   ? undefined
