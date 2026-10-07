@@ -58,6 +58,7 @@ export {
   type SolanaTreasuryHedgePackageIdPort,
   type SolanaTreasuryHedgePreparationLane,
 } from './solana-treasury-hedge-preparation.js';
+export { SqliteSolanaStrategyPackageIdStore } from './solana-strategy-package-id-store.js';
 export {
   buildStrategyPackageReceipt,
   type StrategyReceiptBuildInput,
