@@ -28,6 +28,7 @@ const DOMAIN_KINDS = new Set([
 const NATIVE_HYPERCORE_TEMPLATES = new Set([
   "treasury-inventory-hedge-v1",
   "perpetual-funding-spread-v1",
+  "hedge-migration-v1",
 ]);
 const EVM_STRATEGY_TEMPLATES = new Set([
   "option-spread-v1",
@@ -118,6 +119,8 @@ type StagedStrategyOrder = Readonly<{
 type NativeStrategyMarketProfile = Readonly<{
   role: string;
   entrySide: "BUY" | "SELL";
+  venueId: string;
+  marketId: string;
   coin: string;
   assetId: number;
   sizeDecimals: number;
@@ -155,6 +158,9 @@ type NativeStrategyPositionReview = Readonly<{
   status: "OPEN" | "EXITING" | "CLOSED" | "UNRESOLVED";
   legs: readonly Readonly<{
     legId: string;
+    underlyingId: string;
+    instrumentId: string;
+    venueId: string;
     signedQuantityAtoms: string;
   }>[];
 }>;
@@ -573,6 +579,8 @@ function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyP
       return Object.freeze({
         role: text(market.role, `Native strategy profile ${index} market ${marketIndex} role`),
         entrySide: market.entrySide,
+        venueId: text(market.venueId, `Native strategy profile ${index} market ${marketIndex} venue`),
+        marketId: text(market.marketId, `Native strategy profile ${index} market ${marketIndex} market`),
         coin: text(market.coin, `Native strategy profile ${index} market ${marketIndex} coin`),
         assetId: unsignedInteger(market.assetId, `Native strategy profile ${index} market ${marketIndex} asset id`),
         sizeDecimals: unsignedInteger(market.sizeDecimals, `Native strategy profile ${index} market ${marketIndex} size decimals`),
@@ -627,6 +635,9 @@ function parseNativeStrategyPositions(payload: unknown, requestedOwner: string):
       const leg = record(candidateLeg, `Native strategy position ${index} leg ${legIndex}`);
       return Object.freeze({
         legId: text(leg.legId, `Native strategy position ${index} leg ${legIndex} id`),
+        underlyingId: text(leg.underlyingId, `Native strategy position ${index} leg ${legIndex} underlying`),
+        instrumentId: text(leg.instrumentId, `Native strategy position ${index} leg ${legIndex} instrument`),
+        venueId: text(leg.venueId, `Native strategy position ${index} leg ${legIndex} venue`),
         signedQuantityAtoms: decimalInteger(
           leg.signedQuantityAtoms,
           `Native strategy position ${index} leg ${legIndex} quantity`,
@@ -1405,7 +1416,8 @@ export function GeneralizedStrategyPreparationPanel({
   useEffect(() => {
     if (privateApiBaseUrl === null || sourceOrderHash !== null
       || (lifecycleAction !== "INCREASE" && lifecycleAction !== "DECREASE"
-        && lifecycleAction !== "EXIT" && lifecycleAction !== "EMERGENCY_UNWIND")
+        && lifecycleAction !== "EXIT" && lifecycleAction !== "MIGRATE"
+        && lifecycleAction !== "EMERGENCY_UNWIND")
       || strategyOwner === null || !OWNER.test(strategyOwner)
       || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
       return;
@@ -1462,20 +1474,30 @@ export function GeneralizedStrategyPreparationPanel({
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
     ?? null;
+  const migrationSource = selectedNativeProfile?.templateId === "hedge-migration-v1"
+    ? selectedNativeProfile.markets.find((market) => market.role === "source-hedge") ?? null
+    : null;
   const matchingNativePositions = (nativePositions ?? []).filter((position) =>
     (position.status === "OPEN" || (lifecycleAction === "EMERGENCY_UNWIND" && position.status === "UNRESOLVED"))
     && position.owner === strategyOwner
-    && position.templateId === templateId
     && selectedNativeProfile !== null
-    && position.seriesId === selectedNativeProfile.seriesId
-    && position.executionClassId === selectedNativeProfile.executionClassId
-    && position.settlementAccount === selectedNativeProfile.settlementAccount);
+    && position.settlementAccount === selectedNativeProfile.settlementAccount
+    && (lifecycleAction === "MIGRATE"
+      ? migrationSource !== null && position.legs.length === 1
+        && position.legs[0]?.underlyingId === selectedNativeProfile.baseAsset.assetId
+        && position.legs[0]?.instrumentId === migrationSource.marketId
+        && position.legs[0]?.venueId === migrationSource.venueId
+        && (BigInt(position.legs[0]?.signedQuantityAtoms ?? "0") > BigInt(0)
+          ? migrationSource.entrySide === "BUY" : migrationSource.entrySide === "SELL")
+      : position.templateId === templateId
+        && position.seriesId === selectedNativeProfile.seriesId
+        && position.executionClassId === selectedNativeProfile.executionClassId));
   const selectedNativePosition = matchingNativePositions.find((position) => position.strategyId === selectedNativeStrategyId)
     ?? matchingNativePositions[0]
     ?? null;
   const nativeLifecycleSupported = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
     || lifecycleAction === "DECREASE" || lifecycleAction === "EXIT"
-    || lifecycleAction === "EMERGENCY_UNWIND";
+    || lifecycleAction === "MIGRATE" || lifecycleAction === "EMERGENCY_UNWIND";
 
   async function createEvmOptionOrder() {
     if (privateApiBaseUrl === null || selectedEvmOptionProfile === null) return;
@@ -1765,17 +1787,21 @@ export function GeneralizedStrategyPreparationPanel({
       }
       if (lifecycleAction !== "ENTRY" && lifecycleAction !== "INCREASE"
         && lifecycleAction !== "DECREASE" && lifecycleAction !== "EXIT"
+        && lifecycleAction !== "MIGRATE"
         && lifecycleAction !== "EMERGENCY_UNWIND") {
         throw new Error("This native strategy profile does not support the selected lifecycle action yet.");
       }
       if (lifecycleAction !== "ENTRY" && selectedNativePosition === null) {
         throw new Error("Select an authoritative open strategy before creating its transition.");
       }
-      const fullUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
-      const quantityAtoms = fullUnwind
+      const fullPosition = lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
+        || lifecycleAction === "EMERGENCY_UNWIND";
+      const quantityAtoms = fullPosition
         ? nativePositionQuantityAtoms(selectedNativePosition!)
         : amountToAtoms(nativeQuantity, selectedNativeProfile.baseAsset.decimals, "Package quantity");
-      const economicQuantityAtoms = fullUnwind
+      const economicQuantityAtoms = lifecycleAction === "MIGRATE"
+        ? quantityAtoms
+        : fullPosition
         ? BigInt(selectedNativePosition!.economicQuantityAtoms)
         : selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
           ? quantityAtoms
@@ -2113,8 +2139,10 @@ export function GeneralizedStrategyPreparationPanel({
     && strategyOwner !== null
     && OWNER.test(strategyOwner)
     && (lifecycleAction === "ENTRY" ? nativeQuantity.trim() !== "" : selectedNativePosition !== null)
-    && ((lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") || nativeQuantity.trim() !== "")
-    && ((lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
+    && ((lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
+      || lifecycleAction === "EMERGENCY_UNWIND") || nativeQuantity.trim() !== "")
+    && ((lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
+      || lifecycleAction === "EMERGENCY_UNWIND")
       || selectedNativeProfile.templateId === "perpetual-funding-spread-v1"
       || nativeEconomicQuantity.trim() !== "")
     && selectedNativeProfile.markets.every((market) => (nativeLimitPrices[market.role] ?? "").trim() !== "")
@@ -2216,13 +2244,15 @@ export function GeneralizedStrategyPreparationPanel({
               <label htmlFor="native-strategy-quantity">Package quantity</label>
               <input
                 id="native-strategy-quantity"
-                value={(lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND") && selectedNativePosition !== null
+                value={(lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
+                  || lifecycleAction === "EMERGENCY_UNWIND") && selectedNativePosition !== null
                   ? atomsToInput(nativePositionQuantityAtoms(selectedNativePosition).toString(), selectedNativeProfile.baseAsset.decimals)
                   : nativeQuantity}
                 inputMode="decimal"
                 autoComplete="off"
                 placeholder="0.00"
-                readOnly={lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND"}
+                readOnly={lifecycleAction === "EXIT" || lifecycleAction === "MIGRATE"
+                  || lifecycleAction === "EMERGENCY_UNWIND"}
                 onChange={(event) => {
                   setNativeQuantity(event.target.value.trim());
                   setCreatedNativeOrder(null);
@@ -2263,8 +2293,12 @@ export function GeneralizedStrategyPreparationPanel({
               {selectedNativeProfile.markets.map((market) => (
                 <Fragment key={market.role}>
                   <label htmlFor={`native-strategy-price-${market.role}`}>
-                    {market.coin} {(lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE")
-                      ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY"} limit price
+                    {market.coin} {(lifecycleAction === "MIGRATE"
+                      ? market.role === "source-hedge"
+                        ? market.entrySide === "BUY" ? "SELL" : "BUY"
+                        : market.entrySide
+                      : lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                        ? market.entrySide : market.entrySide === "BUY" ? "SELL" : "BUY")} limit price
                   </label>
                   <input
                     id={`native-strategy-price-${market.role}`}

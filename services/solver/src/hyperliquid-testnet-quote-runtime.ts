@@ -175,6 +175,24 @@ export interface HyperliquidTestnetGeneralizedFundingSpreadPricingInput {
   readonly shortPerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
 }
 
+export interface HyperliquidTestnetGeneralizedHedgeMigrationPricingInput {
+  readonly domain: DomainRef;
+  readonly baseAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
+  readonly tradingAccount: `0x${string}`;
+  readonly market: HyperliquidTestnetGeneralizedMarketReadPort;
+  readonly maxBookAgeMs: number;
+  readonly maxBookSpreadBps: number;
+  readonly marginBps: number;
+  readonly routeTtlMs: bigint;
+  readonly quoteTtlMs: bigint;
+  readonly feePolicyVersion: number;
+  readonly feePolicyManifestHash: Uint8Array | string;
+  readonly nonceSource: AtomicQuoteNonceSource;
+  readonly sourcePerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
+  readonly destinationPerpetual: Pick<HyperliquidTestnetQuoteLeg, 'adapter' | 'venue' | 'market' | 'coin' | 'sizeDecimals'>;
+}
+
 export interface QuoteProviders {
   readonly candidates: InternalAtomicQuoteCandidateProvider;
   readonly terms: InternalAtomicQuoteTermsProvider;
@@ -443,6 +461,20 @@ function sweep(
     numerator: total * pow10(quote.decimals),
     denominator: pow10(scale + base.decimals),
   });
+}
+
+function midpointNotionalAtoms(
+  book: Book,
+  quantityAtoms: bigint,
+  base: AssetRef,
+  quote: AssetRef,
+): bigint {
+  const bid = hyperliquidTestnetDecimal(book.levels[0][0]!.px, 'midpoint bid');
+  const ask = hyperliquidTestnetDecimal(book.levels[1][0]!.px, 'midpoint ask');
+  const scale = Math.max(bid.scale, ask.scale);
+  const sum = bid.atoms * pow10(scale - bid.scale) + ask.atoms * pow10(scale - ask.scale);
+  return quantityAtoms * sum * pow10(quote.decimals)
+    / (2n * pow10(scale + base.decimals));
 }
 
 function entrySpread(
@@ -1577,6 +1609,242 @@ export function createHyperliquidTestnetGeneralizedFundingSpreadPricing(
         throw new GeneralizedStrategyQuoteError(
           'QUOTE_DECLINED',
           `Hyperliquid testnet funding spread quote declined: ${reason}`,
+        );
+      }
+    },
+  };
+  return Object.freeze(pricing);
+}
+
+function validateGeneralizedHedgeMigrationPricing(
+  input: HyperliquidTestnetGeneralizedHedgeMigrationPricingInput,
+): void {
+  try {
+    domainRef(input.domain.domainId, input.domain.domainManifestVersion, input.domain.domainManifestHash);
+    assetRef(input.baseAsset.assetId, input.baseAsset.assetManifestHash, input.baseAsset.decimals);
+    assetRef(input.quoteAsset.assetId, input.quoteAsset.assetManifestHash, input.quoteAsset.decimals);
+    manifestHash(input.feePolicyManifestHash, 'feePolicyManifestHash');
+    if (input.domain.domainId !== 'hypercore:testnet'
+      || sameAsset(input.baseAsset, input.quoteAsset)
+      || input.market.environment !== 'testnet'
+      || input.market.apiUrl !== HYPERLIQUID_TESTNET_MARKET_INFO_URL
+      || typeof input.market.l2Book !== 'function'
+      || typeof input.market.userFees !== 'function'
+      || !ADDRESS.test(input.tradingAccount)
+      || !Number.isSafeInteger(input.maxBookAgeMs) || input.maxBookAgeMs <= 0
+      || !Number.isSafeInteger(input.feePolicyVersion) || input.feePolicyVersion <= 0
+      || typeof input.nonceSource?.next !== 'function') {
+      throw new Error('missing required configuration');
+    }
+    requireBps(input.maxBookSpreadBps, 'maxBookSpreadBps');
+    requireBps(input.marginBps, 'marginBps');
+    requirePositive(input.routeTtlMs, 'routeTtlMs');
+    requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+    for (const leg of [input.sourcePerpetual, input.destinationPerpetual]) {
+      adapterRef(leg.adapter);
+      versionedManifestRef(leg.venue.subjectId, leg.venue.manifestVersion, leg.venue.manifestHash);
+      versionedManifestRef(leg.market.subjectId, leg.market.manifestVersion, leg.market.manifestHash);
+      if (!/^[A-Za-z0-9@._:/-]{1,64}$/.test(leg.coin)
+        || !Number.isSafeInteger(leg.sizeDecimals) || leg.sizeDecimals < 0
+        || leg.sizeDecimals > 6) throw new Error('perpetual market identity is invalid');
+    }
+    if (sameVersionedRef(input.sourcePerpetual.market, input.destinationPerpetual.market)
+      && sameVersionedRef(input.sourcePerpetual.venue, input.destinationPerpetual.venue)) {
+      throw new Error('hedge migration requires distinct source and destination markets');
+    }
+  } catch (error) {
+    throw new Error(`Hyperliquid Testnet generalized hedge migration pricing is incomplete or invalid: ${
+      error instanceof Error ? error.message : 'invalid value'}`);
+  }
+}
+
+async function generalizedHedgeMigrationTerms(
+  documents: StoredStrategyPackageOrderDocuments,
+  currentTime: Readonly<{ unit: string; value: bigint }>,
+  input: HyperliquidTestnetGeneralizedHedgeMigrationPricingInput,
+): Promise<GeneralizedStrategyQuoteTerms> {
+  const { order, graph } = documents;
+  if (order.templateId !== STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
+    || order.lifecycleAction !== 'MIGRATE'
+    || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
+    || graph.legs.length !== 2
+    || currentTime.unit !== 'HYPERLIQUID_UNIX_MILLISECONDS'
+    || order.expiryUnit !== currentTime.unit) {
+    throw new Error('committed package is not a supported Hyperliquid hedge migration');
+  }
+  const source = graph.legs.find((leg) => leg.legTypeId === 'source-hedge');
+  const destination = graph.legs.find((leg) => leg.legTypeId === 'destination-hedge');
+  if (source === undefined || destination === undefined
+    || source.legFamily !== 'PERP_CLOSE' || destination.legFamily !== 'PERP_OPEN'
+    || source.side === 'NONE' || destination.side === 'NONE' || source.side === destination.side
+    || !sameDomain(source.domain, input.domain) || !sameDomain(destination.domain, input.domain)
+    || !sameAdapter(source.adapter, input.sourcePerpetual.adapter)
+    || !sameAdapter(destination.adapter, input.destinationPerpetual.adapter)
+    || !sameVersionedRef(source.venue, input.sourcePerpetual.venue)
+    || !sameVersionedRef(destination.venue, input.destinationPerpetual.venue)
+    || !sameVersionedRef(source.market, input.sourcePerpetual.market)
+    || !sameVersionedRef(destination.market, input.destinationPerpetual.market)
+    || !sameAsset(source.quantityAsset, input.baseAsset)
+    || !sameAsset(destination.quantityAsset, input.baseAsset)
+    || source.quantityAtoms !== destination.quantityAtoms
+    || source.limitPrice === undefined || destination.limitPrice === undefined
+    || !sameAsset(source.limitPrice.baseAsset, input.baseAsset)
+    || !sameAsset(destination.limitPrice.baseAsset, input.baseAsset)
+    || !sameAsset(source.limitPrice.quoteAsset, input.quoteAsset)
+    || !sameAsset(destination.limitPrice.quoteAsset, input.quoteAsset)
+    || !sameAsset(order.economicQuantity.asset, input.baseAsset)
+    || order.economicQuantity.atoms !== source.quantityAtoms
+    || !sameAsset(order.quoteAsset, input.quoteAsset)) {
+    throw new Error('committed package does not match the configured Hyperliquid migration markets');
+  }
+  formatHypercoreSize(source.quantityAtoms, input.baseAsset.decimals, input.sourcePerpetual.sizeDecimals);
+  formatHypercoreSize(destination.quantityAtoms, input.baseAsset.decimals, input.destinationPerpetual.sizeDecimals);
+  const sourceWire = formatHypercorePrice(source.limitPrice, 6 - input.sourcePerpetual.sizeDecimals);
+  const destinationWire = formatHypercorePrice(
+    destination.limitPrice,
+    6 - input.destinationPerpetual.sizeDecimals,
+  );
+  const sourceRelation = compareHypercoreWirePriceToExact(sourceWire, source.limitPrice);
+  const destinationRelation = compareHypercoreWirePriceToExact(destinationWire, destination.limitPrice);
+  if ((source.side === 'BUY' && sourceRelation > 0) || (source.side === 'SELL' && sourceRelation < 0)
+    || (destination.side === 'BUY' && destinationRelation > 0)
+    || (destination.side === 'SELL' && destinationRelation < 0)) {
+    throw new Error('signed migration limit is not safely representable on HyperCore');
+  }
+  const [sourceBookValue, destinationBookValue, fees] = await Promise.all([
+    input.market.l2Book(input.sourcePerpetual.coin),
+    input.market.l2Book(input.destinationPerpetual.coin),
+    input.market.userFees(input.tradingAccount),
+  ]);
+  const now = requirePositive(currentTime.value, 'currentTime');
+  if (now >= order.expiryValue) throw new Error('order is expired');
+  const sourceBook = liveBook(sourceBookValue, input.sourcePerpetual.coin, 'source perpetual book', now, input);
+  const destinationBook = liveBook(
+    destinationBookValue,
+    input.destinationPerpetual.coin,
+    'destination perpetual book',
+    now,
+    input,
+  );
+  const sourceExecution = sweep(
+    sourceBook, source.side, source.quantityAtoms, sourceWire,
+    input.baseAsset, input.quoteAsset, 'source perpetual book',
+  );
+  const destinationExecution = sweep(
+    destinationBook, destination.side, destination.quantityAtoms, destinationWire,
+    input.baseAsset, input.quoteAsset, 'destination perpetual book',
+  );
+  const notional = (execution: QuoteValue, side: 'BUY' | 'SELL') => side === 'BUY'
+    ? ceilDiv(execution.numerator, execution.denominator)
+    : execution.numerator / execution.denominator;
+  const sourceNotionalAtoms = notional(sourceExecution, source.side);
+  const destinationNotionalAtoms = notional(destinationExecution, destination.side);
+  const sourceMidAtoms = midpointNotionalAtoms(
+    sourceBook, source.quantityAtoms, input.baseAsset, input.quoteAsset,
+  );
+  const destinationMidAtoms = midpointNotionalAtoms(
+    destinationBook, destination.quantityAtoms, input.baseAsset, input.quoteAsset,
+  );
+  const executionCost = (side: 'BUY' | 'SELL', executed: bigint, midpoint: bigint) => {
+    const difference = side === 'BUY' ? executed - midpoint : midpoint - executed;
+    return difference > 0n ? difference : 0n;
+  };
+  const sourceCostAtoms = executionCost(source.side, sourceNotionalAtoms, sourceMidAtoms);
+  const destinationCostAtoms = executionCost(
+    destination.side, destinationNotionalAtoms, destinationMidAtoms,
+  );
+  const takerFee = feeRate(fees.userCrossRate, 'userCrossRate');
+  const feeAtoms = (execution: QuoteValue) => ceilDiv(
+    execution.numerator * takerFee.numerator,
+    execution.denominator * takerFee.denominator,
+  );
+  const sourceFeeAtoms = feeAtoms(sourceExecution);
+  const destinationFeeAtoms = feeAtoms(destinationExecution);
+  const totalFeesAtoms = sourceFeeAtoms + destinationFeeAtoms;
+  const marginAtoms = ceilDiv(
+    destinationNotionalAtoms * requireBps(input.marginBps, 'marginBps'),
+    BPS_SCALE,
+  );
+  if (marginAtoms > order.maximumMarginIncrease.atoms) {
+    throw new Error('required destination margin exceeds the signed cap');
+  }
+  const quoteTtl = requirePositive(input.quoteTtlMs, 'quoteTtlMs');
+  const routeTtl = requirePositive(input.routeTtlMs, 'routeTtlMs');
+  const routeExpiryValue = [order.expiryValue - 1n, now + routeTtl, now + quoteTtl - 1n]
+    .reduce((left, right) => left < right ? left : right);
+  const validUntilValue = order.expiryValue < now + quoteTtl ? order.expiryValue : now + quoteTtl;
+  if (routeExpiryValue <= now || validUntilValue <= routeExpiryValue) {
+    throw new Error('configured quote freshness window is empty');
+  }
+  const quoteNonce = input.nonceSource.next();
+  if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
+  const migrationCostAtoms = sourceCostAtoms + destinationCostAtoms + totalFeesAtoms;
+  return Object.freeze({
+    quoteMode: 'EXECUTION_COMMITMENT',
+    economics: Object.freeze({
+      templateId: STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION,
+      values: Object.freeze({
+        sourceCloseCostAtoms: sourceCostAtoms,
+        destinationOpenCostAtoms: destinationCostAtoms,
+        feesAtoms: totalFeesAtoms,
+        overlapDurationMs: routeTtl,
+        maximumInterimDeltaAtoms: source.quantityAtoms,
+        sourceClosePriceTicks: sourceWire.scaled,
+        destinationOpenPriceTicks: destinationWire.scaled,
+      }),
+    }),
+    legEconomics: Object.freeze([Object.freeze({
+      legId: source.legId,
+      quantity: assetAmount(input.baseAsset, source.quantityAtoms),
+      executionPrice: reducedPrice(
+        input.baseAsset, input.quoteAsset, sourceExecution.numerator,
+        sourceExecution.denominator * source.quantityAtoms,
+      ),
+      grossNotional: assetAmount(input.quoteAsset, sourceNotionalAtoms),
+      marginDelta: assetAmount(input.quoteAsset, 0n),
+      venueFee: assetAmount(input.quoteAsset, sourceFeeAtoms),
+      builderFee: assetAmount(input.quoteAsset, 0n),
+      residualValue: assetAmount(input.quoteAsset, 0n),
+    }), Object.freeze({
+      legId: destination.legId,
+      quantity: assetAmount(input.baseAsset, destination.quantityAtoms),
+      executionPrice: reducedPrice(
+        input.baseAsset, input.quoteAsset, destinationExecution.numerator,
+        destinationExecution.denominator * destination.quantityAtoms,
+      ),
+      grossNotional: assetAmount(input.quoteAsset, destinationNotionalAtoms),
+      marginDelta: assetAmount(input.quoteAsset, marginAtoms),
+      venueFee: assetAmount(input.quoteAsset, destinationFeeAtoms),
+      builderFee: assetAmount(input.quoteAsset, 0n),
+      residualValue: assetAmount(input.quoteAsset, 0n),
+    })]),
+    netPackageOutcomeAtoms: -migrationCostAtoms,
+    serviceCharges: Object.freeze([]),
+    passThroughCosts: Object.freeze([Object.freeze({
+      category: 'VENUE' as const,
+      amount: assetAmount(input.quoteAsset, totalFeesAtoms),
+    })]),
+    feePolicyVersion: input.feePolicyVersion,
+    feePolicyManifestHash: input.feePolicyManifestHash,
+    routeExpiryValue,
+    validUntilValue,
+    quoteNonce,
+  });
+}
+
+export function createHyperliquidTestnetGeneralizedHedgeMigrationPricing(
+  input: HyperliquidTestnetGeneralizedHedgeMigrationPricingInput,
+): GeneralizedStrategyPricingPort {
+  validateGeneralizedHedgeMigrationPricing(input);
+  const pricing: GeneralizedStrategyPricingPort = {
+    quote: async ({ documents, currentTime }) => {
+      try {
+        return await generalizedHedgeMigrationTerms(documents, currentTime, input);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n', 1)[0]!.slice(0, 200) : 'pricing failed';
+        throw new GeneralizedStrategyQuoteError(
+          'QUOTE_DECLINED',
+          `Hyperliquid testnet hedge migration quote declined: ${reason}`,
         );
       }
     },

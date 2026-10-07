@@ -55,9 +55,11 @@
     "cashCarryStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet cash-and-carry strategy preparation config" },
     "treasuryStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet treasury inventory hedge strategy preparation config" },
     "fundingStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet perpetual funding spread strategy preparation config" },
+    "migrationStrategyPreparation": { "$operator": "reviewed version 1 HyperCore Testnet hedge migration strategy preparation config" },
     "treasuryStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet treasury inventory hedge quote config with embedded generalized settings" },
     "fundingStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet perpetual funding spread quote config with embedded generalized settings" },
-    "nativeStrategyOrderProfiles": { "$operator": "reviewed version 1 Testnet native strategy order profile file containing treasury hedge and funding spread profiles" },
+    "migrationStrategyQuote": { "$operator": "reviewed version 2 HyperCore Testnet hedge migration quote config with embedded generalized settings" },
+    "nativeStrategyOrderProfiles": { "$operator": "reviewed version 1 Testnet native strategy order profile file containing treasury hedge, funding spread, and hedge migration profiles" },
     "publicStrategyMarketSupport": { "$operator": "reviewed version 1 package exchange support manifest covering every generated HyperCore native strategy series and execution class" },
     "publicStrategyMarketBootstrap": { "$operator": "reviewed version 1 Testnet public market bootstrap containing the HyperCore domain and template manifests, matching policies, economic series, execution classes, and open books" },
     "publicStrategyGraphContext": { "$operator": "reviewed version 1 graph compilation context containing the active HyperCore registry records and resource limits for every generated native strategy profile" },
@@ -240,6 +242,10 @@
       "format": "protocol-json",
       "content": { "$def": "fundingStrategyPreparation" }
     },
+    "solver/hyperliquid-migration-strategy-preparation.json": {
+      "format": "protocol-json",
+      "content": { "$def": "migrationStrategyPreparation" }
+    },
     "solver/hyperliquid-treasury-quote.json": {
       "format": "protocol-json",
       "content": { "$def": "treasuryStrategyQuote" }
@@ -247,6 +253,10 @@
     "solver/hyperliquid-funding-quote.json": {
       "format": "protocol-json",
       "content": { "$def": "fundingStrategyQuote" }
+    },
+    "solver/hyperliquid-migration-quote.json": {
+      "format": "protocol-json",
+      "content": { "$def": "migrationStrategyQuote" }
     },
     "api/testnet-execution-policy.json": {
       "format": "json",
@@ -291,13 +301,15 @@
         "NARYX_HYPERLIQUID_STRATEGY_PREPARATION_CONFIGS": { "$join": [
           { "$out": "solver/hyperliquid-cash-carry-strategy-preparation.json" },
           { "$out": "solver/hyperliquid-treasury-strategy-preparation.json" },
-          { "$out": "solver/hyperliquid-funding-strategy-preparation.json" }
+          { "$out": "solver/hyperliquid-funding-strategy-preparation.json" },
+          { "$out": "solver/hyperliquid-migration-strategy-preparation.json" }
         ], "separator": "," },
         "NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED": "true",
         "NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS": { "$join": [
           { "$out": "solver/hyperliquid-testnet-quote.json" },
           { "$out": "solver/hyperliquid-treasury-quote.json" },
-          { "$out": "solver/hyperliquid-funding-quote.json" }
+          { "$out": "solver/hyperliquid-funding-quote.json" },
+          { "$out": "solver/hyperliquid-migration-quote.json" }
         ], "separator": "," },
         "NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT": { "$def": "tradingAccount" },
         "NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED": { "$def": "executionEnabled" },

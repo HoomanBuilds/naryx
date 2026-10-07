@@ -45,6 +45,7 @@ import {
   composeQuoteProviders,
   createHyperliquidTestnetGeneralizedCashCarryPricing,
   createHyperliquidTestnetGeneralizedFundingSpreadPricing,
+  createHyperliquidTestnetGeneralizedHedgeMigrationPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
@@ -1277,4 +1278,186 @@ test('prices a native two-market Hyperliquid funding spread from both books and 
   assert.equal(exitTerms.legEconomics[1]?.marginDelta.atoms, 0n);
   assert.equal(exitTerms.netPackageOutcomeAtoms, -540_585n);
   assert.equal(exitTerms.quoteNonce, 4n);
+});
+
+test('prices a native Hyperliquid hedge migration with bounded overlap and replacement margin', async () => {
+  const destinationVenue = versionedManifestRef('hip3-testnet', 1, hash('b'));
+  const destinationMarket = versionedManifestRef('hip3-btc-perp', 1, hash('c'));
+  const graph = packageGraph({
+    graphVersion: 1,
+    environment: 'testnet',
+    templateId: 'hedge-migration-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: hash('9'),
+    seriesId: 'btc-hedge-migration',
+    seriesVersion: 1,
+    seriesManifestHash: hash('a'),
+    executionClassId: 'hypercore-hedge-migration',
+    executionClassVersion: 1,
+    executionClassManifestHash: hash('b'),
+    lifecycleAction: 'MIGRATE',
+    owner: 'testnet-treasury',
+    strategyAccountRefs: ['testnet-treasury-account'],
+    legs: [{
+      legId: 'source-hedge',
+      legFamily: 'PERP_CLOSE',
+      legTypeId: 'source-hedge',
+      domain,
+      adapter: perpetualAdapter,
+      venue,
+      market: perpetualMarket,
+      assets: [base, quote],
+      side: 'BUY',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(602n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }, {
+      legId: 'destination-hedge',
+      legFamily: 'PERP_OPEN',
+      legTypeId: 'destination-hedge',
+      domain,
+      adapter: perpetualAdapter,
+      venue: destinationVenue,
+      market: destinationMarket,
+      assets: [base, quote],
+      side: 'SELL',
+      quantityAsset: base,
+      quantityAtoms: 1_000_000n,
+      minimumQuantityAtoms: 1_000_000n,
+      limitPrice: price(600n),
+      maximumFeeQuoteAtoms: 1_000_000n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'IOC',
+      legExpiryValue: 1_500n,
+    }],
+    dependencyEdges: [],
+    executionGroups: [{
+      groupId: 'migration-ioc',
+      kind: 'BOUNDED_PARTIAL',
+      legIds: ['source-hedge', 'destination-hedge'],
+      maximumResidualQuoteAtoms: 1_000_000n,
+    }],
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    policyHashes: {
+      netting: hash('4'), privacy: hash('5'), solver: hash('6'), delivery: hash('7'),
+      resource: hash('8'), portfolioRiskLimits: hash('9'),
+    },
+    recoverySlots: [{
+      legId: 'source-hedge', action: 'COMPLETE', maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }, {
+      legId: 'destination-hedge', action: 'COMPLETE', maximumQuantityAtoms: 1_000_000n,
+      maximumCostQuoteAtoms: 1_000_000n,
+    }],
+    maximumRecoveryCostQuoteAtoms: 2_000_000n,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    packageExpiryValue: 2_000n,
+    nonce: 20n,
+  });
+  const order = strategyPackageOrder({
+    version: 1,
+    environment: graph.environment,
+    templateId: graph.templateId,
+    templateVersion: graph.templateVersion,
+    packageTemplateManifestHash: graph.packageTemplateManifestHash,
+    graphHash: packageGraphHash(graph),
+    seriesId: graph.seriesId,
+    seriesVersion: graph.seriesVersion,
+    seriesManifestHash: graph.seriesManifestHash,
+    executionClassId: graph.executionClassId,
+    executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash,
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.MIGRATION_COST,
+    riskClassId: STRATEGY_RISK_CLASS_ID.MIGRATION,
+    owner: graph.owner,
+    settlementAccount: 'testnet-treasury-account',
+    lifecycleAction: 'MIGRATE',
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    packageOrderType: 'MARKETABLE_LIMIT',
+    packageTimeInForce: 'IOC',
+    economicQuantity: assetAmount(base, 1_000_000n),
+    quoteAsset: quote,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 2_000_000n }],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [{ asset: quote, maxAtoms: 2_000_000n }],
+    maximumMarginIncrease: assetAmount(quote, 100_000_000n),
+    maximumResidualValue: assetAmount(quote, 1_000_000n),
+    expectedStrategyStateHash: hash('f'),
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    expiryValue: 2_000n,
+    nonce: 20n,
+  });
+  const requests: string[] = [];
+  const books: Record<string, BookShape> = {
+    'SOURCE:BTC': book('SOURCE:BTC', 950, [['60000', '1']], [['60010', '1']]),
+    'DEST:BTC': book('DEST:BTC', 960, [['60020', '1']], [['60030', '1']]),
+  };
+  const market: HyperliquidTestnetGeneralizedMarketReadPort = {
+    environment: 'testnet',
+    apiUrl: HYPERLIQUID_TESTNET_MARKET_INFO_URL,
+    l2Book: async (coin) => {
+      requests.push(`l2Book:${coin}`);
+      return books[coin] ?? null;
+    },
+    userFees: async (user) => {
+      requests.push(`userFees:${user}`);
+      return liveFees;
+    },
+    perpetualContext: async () => ({ funding: '0' }),
+  };
+  const terms = await createHyperliquidTestnetGeneralizedHedgeMigrationPricing({
+    domain,
+    baseAsset: base,
+    quoteAsset: quote,
+    tradingAccount,
+    market,
+    maxBookAgeMs: 500,
+    maxBookSpreadBps: 50,
+    marginBps: 1_000,
+    routeTtlMs: 100n,
+    quoteTtlMs: 200n,
+    feePolicyVersion: 1,
+    feePolicyManifestHash: hash('d'),
+    nonceSource: { next: () => 21n },
+    sourcePerpetual: {
+      adapter: perpetualAdapter, venue, market: perpetualMarket, coin: 'SOURCE:BTC', sizeDecimals: 5,
+    },
+    destinationPerpetual: {
+      adapter: perpetualAdapter, venue: destinationVenue, market: destinationMarket,
+      coin: 'DEST:BTC', sizeDecimals: 5,
+    },
+  }).quote({
+    documents: {
+      orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
+      graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'),
+      order,
+      graph,
+      recordedAtMs: 1,
+    },
+    currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+  });
+  assert.deepEqual(requests, [
+    'l2Book:SOURCE:BTC', 'l2Book:DEST:BTC', `userFees:${tradingAccount}`,
+  ]);
+  assert.equal(terms.economics.templateId, 'hedge-migration-v1');
+  assert.ok('values' in terms.economics);
+  if ('values' in terms.economics) {
+    assert.equal(terms.economics.values.overlapDurationMs, 100n);
+    assert.equal(terms.economics.values.maximumInterimDeltaAtoms, 1_000_000n);
+  }
+  assert.equal(terms.legEconomics.length, 2);
+  assert.equal(terms.legEconomics[0]?.marginDelta.atoms, 0n);
+  assert.ok((terms.legEconomics[1]?.marginDelta.atoms ?? 0n) > 0n);
+  assert.ok(terms.netPackageOutcomeAtoms < 0n);
+  assert.equal(terms.routeExpiryValue, 1_100n);
+  assert.equal(terms.quoteNonce, 21n);
 });

@@ -23,6 +23,7 @@ import {
 import {
   createHyperliquidTestnetGeneralizedCashCarryPricing,
   createHyperliquidTestnetGeneralizedFundingSpreadPricing,
+  createHyperliquidTestnetGeneralizedHedgeMigrationPricing,
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   type HyperliquidTestnetQuoteRuntime,
@@ -287,7 +288,8 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
   }
   if (configured.templateId !== 'cash-and-carry-v1'
     && configured.templateId !== 'treasury-inventory-hedge-v1'
-    && configured.templateId !== 'perpetual-funding-spread-v1') {
+    && configured.templateId !== 'perpetual-funding-spread-v1'
+    && configured.templateId !== 'hedge-migration-v1') {
     throw new Error('generalized Hyperliquid quote lane does not support the configured template');
   }
   const laneSettings = generalizedLaneSettings(env, generalized);
@@ -311,11 +313,12 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
   } as const;
   const cashCarry = configured.templateId === 'cash-and-carry-v1';
   const fundingSpread = configured.templateId === 'perpetual-funding-spread-v1';
+  const hedgeMigration = configured.templateId === 'hedge-migration-v1';
   const counterPerpetual = (configured as typeof configured & Readonly<{
     counterPerpetual?: typeof configured.perpetual;
   }>).counterPerpetual;
-  if (fundingSpread && counterPerpetual === undefined) {
-    throw new Error('generalized Hyperliquid funding spread quote config requires counterPerpetual');
+  if ((fundingSpread || hedgeMigration) && counterPerpetual === undefined) {
+    throw new Error('generalized Hyperliquid two-market quote config requires counterPerpetual');
   }
   return Object.freeze({
     laneId: laneSettings.laneId,
@@ -378,7 +381,25 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
           executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
           supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
         })])
-        : Object.freeze([Object.freeze({
+        : hedgeMigration
+          ? Object.freeze([Object.freeze({
+            domain: configured.domain,
+            adapter: configured.perpetual.adapter,
+            legFamily: 'PERP_CLOSE' as const,
+            supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+            materializationClassId: 'hypercore-perpetual-ioc-v1',
+            executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+            supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+          }), Object.freeze({
+            domain: configured.domain,
+            adapter: counterPerpetual!.adapter,
+            legFamily: 'PERP_OPEN' as const,
+            supportedSides: Object.freeze(['BUY' as const, 'SELL' as const]),
+            materializationClassId: 'hypercore-perpetual-ioc-v1',
+            executionPlanKind: 'HYPERCORE_BATCHED_IOC' as const,
+            supportedSettlementClasses: Object.freeze(['BATCHED_IOC_WITH_RECOVERY' as const]),
+          })])
+          : Object.freeze([Object.freeze({
           domain: configured.domain,
           adapter: configured.perpetual.adapter,
           legFamily: 'PERP_OPEN' as const,
@@ -412,7 +433,13 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
           longPerpetual: configured.perpetual,
           shortPerpetual: counterPerpetual!,
         })
-        : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
+        : hedgeMigration
+          ? createHyperliquidTestnetGeneralizedHedgeMigrationPricing({
+            ...commonPricing,
+            sourcePerpetual: configured.perpetual,
+            destinationPerpetual: counterPerpetual!,
+          })
+          : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
     currentTime: async () => Object.freeze({
       unit: 'HYPERLIQUID_UNIX_MILLISECONDS' as const,
       value: clock(),

@@ -792,6 +792,8 @@ export function createPrivateTerminalRequestHandler(
           markets: profile.markets.map((market) => ({
             role: market.role,
             entrySide: market.entrySide,
+            venueId: market.venue.subjectId,
+            marketId: market.market.subjectId,
             coin: market.coin,
             assetId: market.assetId,
             sizeDecimals: market.sizeDecimals,
