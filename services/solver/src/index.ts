@@ -1088,6 +1088,11 @@ export {
   type EvmCollateralConversionSpotSnapshot,
 } from './evm-collateral-conversion-quote.js';
 export {
+  createEvmReverseBasisGeneralizedPricing,
+  type EvmReverseBasisLegBinding,
+  type EvmReverseBasisPricingInput,
+} from './evm-reverse-basis-quote.js';
+export {
   EvmCollateralConversionPreparationContextResolver,
   type EvmCollateralConversionAdapterFactoryBinding,
   type EvmCollateralConversionPreparationLane,
