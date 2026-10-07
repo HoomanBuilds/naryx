@@ -33,7 +33,7 @@ const U256_MAX = (1n << 256n) - 1n;
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 
-type SupportedAction = "ENTRY" | "EXIT" | "EMERGENCY_UNWIND";
+type SupportedAction = "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
 
 export class EvmTreasuryHedgeOrderError extends Error {
   readonly code: string;
@@ -350,7 +350,8 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         || typeof fields.profileId !== "string" || typeof fields.owner !== "string"
         || typeof fields.settlementAccount !== "string" || typeof fields.quantityAtoms !== "string"
         || typeof fields.expiryValue !== "string" || typeof fields.nonce !== "string"
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT"
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
         fail("INVALID_REQUEST", "EVM treasury hedge order request fields are invalid.");
@@ -382,7 +383,7 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         || expiryValue <= BigInt(now) + 15n || expiryValue > BigInt(now) + profile.bounds.maximumExpiryTtlSeconds) {
         fail("LIMIT_EXCEEDED", "EVM treasury hedge quantity or expiry is outside the reviewed profile bounds.");
       }
-      const opening = request.lifecycleAction === "ENTRY";
+      const increasing = request.lifecycleAction === "ENTRY" || request.lifecycleAction === "INCREASE";
       const inventoryLeg = Object.freeze({
         legId: "inventory-position",
         legFamily: "INVENTORY_TRANSFER" as const,
@@ -402,13 +403,16 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         timeInForce: "IOC" as const,
         legExpiryValue: expiryValue,
       });
-      const hedgeSide = opening ? "SELL" as const : "BUY" as const;
+      const hedgeSide = increasing ? "SELL" as const : "BUY" as const;
       const hedgeQuoteAtoms = requestAtoms(price.quoteAtoms, "limitHedgePrice.quoteAtoms");
       const hedgeBaseAtoms = requestAtoms(price.baseAtoms, "limitHedgePrice.baseAtoms");
       const priceDivisor = gcd(hedgeQuoteAtoms, hedgeBaseAtoms);
       const hedgeLeg = Object.freeze({
         legId: "treasury-hedge",
-        legFamily: opening ? "PERP_OPEN" as const : "PERP_CLOSE" as const,
+        legFamily: request.lifecycleAction === "ENTRY" ? "PERP_OPEN" as const
+          : request.lifecycleAction === "INCREASE" ? "PERP_INCREASE" as const
+            : request.lifecycleAction === "DECREASE" ? "PERP_DECREASE" as const
+              : "PERP_CLOSE" as const,
         legTypeId: "treasury-hedge",
         domain: profile.domain,
         adapter: profile.hedge.adapter,
@@ -432,7 +436,7 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         timeInForce: "IOC" as const,
         legExpiryValue: expiryValue,
       });
-      const legs = Object.freeze(opening ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg]);
+      const legs = Object.freeze(increasing ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg]);
       const graph = packageGraph({
         graphVersion: 1,
         environment: "testnet",
@@ -449,7 +453,7 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         owner: request.owner,
         strategyAccountRefs: [request.settlementAccount],
         legs,
-        dependencyEdges: [opening
+        dependencyEdges: [increasing
           ? { fromLegId: "inventory-position", toLegId: "treasury-hedge" }
           : { fromLegId: "treasury-hedge", toLegId: "inventory-position" }],
         executionGroups: [{ groupId: "evm-treasury-hedge", kind: "ALL_OR_NONE", legIds: legs.map((leg) => leg.legId) }],
@@ -498,7 +502,7 @@ export function createEvmTreasuryHedgeOrderPort(input: Readonly<{
         maximumVenueFeesByAsset: cap(profile.bounds.maximumVenueFeeQuoteAtoms),
         maximumNetworkFeesByAsset: cap(profile.bounds.maximumNetworkFeeQuoteAtoms),
         maximumRecoveryCostByAsset: [],
-        maximumMarginIncrease: assetAmount(profile.quoteAsset, opening ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
+        maximumMarginIncrease: assetAmount(profile.quoteAsset, increasing ? profile.bounds.maximumMarginIncreaseQuoteAtoms : 0n),
         maximumResidualValue: assetAmount(profile.quoteAsset, 0n),
         ...(request.expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash: request.expectedStrategyStateHash }),
         expiryUnit: "EVM_UNIX_SECONDS",

@@ -257,7 +257,8 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'EVM_UNIX_SECONDS' && graph.expiryUnit === 'EVM_UNIX_SECONDS',
       'package is not a testnet atomic EVM treasury hedge');
-      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'EXIT'
+      requireCondition(order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE'
+        || order.lifecycleAction === 'DECREASE' || order.lifecycleAction === 'EXIT'
         || order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 2 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain)),
         'package domain is unsupported');
@@ -266,14 +267,16 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
       requireCondition(currentTime.unit === 'EVM_UNIX_SECONDS', 'quote clock is invalid');
       const inventoryLeg = matchLeg(documents, 'inventory-position', input.inventory);
       const hedgeLeg = matchLeg(documents, 'treasury-hedge', input.hedge);
-      const opening = order.lifecycleAction === 'ENTRY';
+      const increasing = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
       const quantity = order.economicQuantity.atoms;
       requireCondition(quantity > 0n && quantity === inventoryLeg.quantityAtoms && quantity === hedgeLeg.quantityAtoms,
         'leg quantities differ from the package quantity');
       requireCondition(inventoryLeg.legFamily === 'INVENTORY_TRANSFER' && inventoryLeg.side === 'NONE'
-        && hedgeLeg.legFamily === (opening ? 'PERP_OPEN' : 'PERP_CLOSE')
-        && hedgeLeg.side === (opening ? 'SELL' : 'BUY'), 'legs do not match the lifecycle action');
-      const sizeDelta = opening ? -quantity : quantity;
+        && hedgeLeg.legFamily === (order.lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+          : order.lifecycleAction === 'INCREASE' ? 'PERP_INCREASE'
+            : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE' : 'PERP_CLOSE')
+        && hedgeLeg.side === (increasing ? 'SELL' : 'BUY'), 'legs do not match the lifecycle action');
+      const sizeDelta = increasing ? -quantity : quantity;
       const [chainId, observedAt, snapshot] = await Promise.all([
         input.chain.chainId(),
         input.chain.latestBlockTimestamp(),
@@ -291,7 +294,7 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
       const quoteScale = 10n ** BigInt(input.quoteAsset.decimals);
       const fillAtLimitScale = snapshot.fillPriceWad * limitPrice.baseAtoms * quoteScale;
       const signedLimitAtWadScale = limitPrice.quoteAtoms * baseScale * WAD;
-      requireCondition(opening ? fillAtLimitScale >= signedLimitAtWadScale : fillAtLimitScale <= signedLimitAtWadScale,
+      requireCondition(increasing ? fillAtLimitScale >= signedLimitAtWadScale : fillAtLimitScale <= signedLimitAtWadScale,
         'executable hedge price violates the signed limit');
       const notionalAtoms = ceilDiv(snapshot.notionalWad, snapshot.collateralScale);
       const oracleNotionalWad = quantity * snapshot.oraclePriceWad / WAD;
@@ -300,16 +303,16 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
         : oracleNotionalWad - snapshot.notionalWad;
       const adverseExecutionAtoms = ceilDiv(adverseExecutionWad, snapshot.collateralScale);
       const venueFeeAtoms = ceilDiv(snapshot.feeWad, snapshot.collateralScale);
-      const requiredMarginWad = opening
+      const requiredMarginWad = increasing
         ? ceilDiv(snapshot.notionalWad * snapshot.initialMarginBps, BPS) + snapshot.feeWad
         : 0n;
-      const requiredMarginAtoms = opening ? ceilDiv(requiredMarginWad, snapshot.collateralScale) : 0n;
+      const requiredMarginAtoms = increasing ? ceilDiv(requiredMarginWad, snapshot.collateralScale) : 0n;
       const protocolFee = ceilDiv(notionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(notionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalCost = adverseExecutionAtoms + venueFeeAtoms + protocolFee + solverFee + input.networkFeeQuoteAtoms;
       const maintenanceWad = ceilDiv(snapshot.notionalWad * snapshot.maintenanceMarginBps, BPS);
       const postMarginWad = requiredMarginAtoms * snapshot.collateralScale - snapshot.feeWad;
-      const liquidationDistanceBps = opening && postMarginWad > maintenanceWad
+      const liquidationDistanceBps = increasing && postMarginWad > maintenanceWad
         ? (postMarginWad - maintenanceWad) * BPS / snapshot.notionalWad
         : 0n;
       const priceNumerator = snapshot.fillPriceWad * quoteScale;
@@ -333,7 +336,7 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
             quoteAsset: input.quoteAsset,
             quoteAtoms: priceNumerator / priceDivisor,
             baseAtoms: priceDenominator / priceDivisor,
-            roundingDirection: opening ? 'FLOOR' : 'CEIL',
+            roundingDirection: increasing ? 'FLOOR' : 'CEIL',
           }),
           grossNotional: assetAmount(input.quoteAsset, notionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, requiredMarginAtoms),
@@ -355,7 +358,7 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
           templateId: STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE,
           values: Object.freeze({
             inventoryAtoms: quantity,
-            hedgeAtoms: opening ? -quantity : quantity,
+            hedgeAtoms: increasing ? -quantity : quantity,
             hedgeCostAtoms: totalCost,
             maximumLossAtoms: requiredMarginAtoms,
             liquidationDistanceBps,

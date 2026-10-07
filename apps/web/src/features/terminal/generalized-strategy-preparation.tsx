@@ -2085,7 +2085,8 @@ export function GeneralizedStrategyPreparationPanel({
     ?? matchingEvmPositions[0]
     ?? null;
   const evmLifecycleSupported = lifecycleAction === "ENTRY"
-    || ((templateId === "option-spread-v1" || templateId === "calendar-spread-v1")
+    || ((templateId === "option-spread-v1" || templateId === "calendar-spread-v1"
+      || templateId === "treasury-inventory-hedge-v1")
       && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
     || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
@@ -2452,8 +2453,10 @@ export function GeneralizedStrategyPreparationPanel({
     setEvmCreateBusy(true);
     setError(null);
     try {
-      if (!evmLifecycleSupported || (lifecycleAction !== "ENTRY" && !fullEvmUnwind)) {
-        throw new Error("This EVM strategy lane supports entry, exit, and emergency unwind.");
+      const resizing = selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+        && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE");
+      if (!evmLifecycleSupported || (lifecycleAction !== "ENTRY" && !fullEvmUnwind && !resizing)) {
+        throw new Error("This lifecycle action is not active for the selected EVM strategy lane.");
       }
       if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
         throw new Error("Connect the EVM wallet that will own this strategy package.");
@@ -2464,6 +2467,9 @@ export function GeneralizedStrategyPreparationPanel({
       const quantityAtoms = fullEvmUnwind
         ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
         : amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals, "Package quantity");
+      if (lifecycleAction === "DECREASE" && quantityAtoms >= BigInt(selectedEvmPosition!.economicQuantityAtoms)) {
+        throw new Error("A treasury hedge decrease must retain an open package quantity. Use exit to close it.");
+      }
       const hedgeLimit = priceToAtomicRatio(evmHedgePrice, selectedEvmDirectionalProfile.baseAsset.decimals,
         selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Hedge limit price");
       const maximumTtl = BigInt(selectedEvmDirectionalProfile.bounds.maximumExpiryTtlSeconds);
@@ -3073,7 +3079,9 @@ export function GeneralizedStrategyPreparationPanel({
     && evmFarFuturePrice !== "";
   const evmDirectionalFieldsReady = selectedEvmDirectionalProfile !== null
     && evmLifecycleSupported
-    && (lifecycleAction === "ENTRY" || fullEvmUnwind)
+    && (lifecycleAction === "ENTRY" || fullEvmUnwind
+      || (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE"
+        && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE")))
     && strategyOwner !== null
     && OWNER.test(strategyOwner.toLowerCase())
     && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
@@ -3823,8 +3831,10 @@ export function GeneralizedStrategyPreparationPanel({
                 <>
                   <label htmlFor="evm-swap-price">
                     {selectedEvmDirectionalProfile.kind === "REVERSE_BASIS"
-                      ? lifecycleAction === "ENTRY" ? "Minimum spot sale price" : "Maximum spot repurchase price"
-                      : lifecycleAction === "ENTRY" ? "Maximum collateral purchase price" : "Minimum collateral sale price"}
+                      ? lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                        ? "Minimum spot sale price" : "Maximum spot repurchase price"
+                      : lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                        ? "Maximum collateral purchase price" : "Minimum collateral sale price"}
                   </label>
                   <input
                     id="evm-swap-price"
@@ -3838,8 +3848,10 @@ export function GeneralizedStrategyPreparationPanel({
               ) : null}
               <label htmlFor="evm-hedge-price">
                 {selectedEvmDirectionalProfile.kind === "REVERSE_BASIS"
-                  ? lifecycleAction === "ENTRY" ? "Maximum long hedge price" : "Minimum long close price"
-                  : lifecycleAction === "ENTRY" ? "Minimum short hedge price" : "Maximum hedge close price"}
+                  ? lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                    ? "Maximum long hedge price" : "Minimum long close price"
+                  : lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                    ? "Minimum short hedge price" : "Maximum hedge close price"}
               </label>
               <input
                 id="evm-hedge-price"

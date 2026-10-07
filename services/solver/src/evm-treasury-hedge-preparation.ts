@@ -107,6 +107,44 @@ const PERP_MARKET_ABI = [{
     { name: 'payout', type: 'uint256' },
     { name: 'badDebt', type: 'uint256' },
   ] }],
+}, {
+  type: 'function', name: 'previewIncrease', stateMutability: 'view',
+  inputs: [
+    { name: 'trader', type: 'address' },
+    { name: 'sizeDelta', type: 'int128' },
+    { name: 'balanceWad', type: 'uint256' },
+  ],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' },
+      { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' },
+      { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'fillPriceWad', type: 'uint256' },
+    { name: 'feeWad', type: 'uint256' },
+  ],
+}, {
+  type: 'function', name: 'previewDecrease', stateMutability: 'view',
+  inputs: [{ name: 'trader', type: 'address' }, { name: 'sizeDelta', type: 'int128' }],
+  outputs: [
+    { name: 'post', type: 'tuple', components: [
+      { name: 'balance', type: 'int128' },
+      { name: 'size', type: 'int128' },
+      { name: 'entryNotional', type: 'uint128' },
+      { name: 'entrySocialLossIndex', type: 'uint128' },
+      { name: 'entryFundingIndex', type: 'int128' },
+    ] },
+    { name: 'settlement', type: 'tuple', components: [
+      { name: 'exitNotional', type: 'uint256' },
+      { name: 'realizedPnl', type: 'int256' },
+      { name: 'funding', type: 'int256' },
+      { name: 'charged', type: 'uint256' },
+      { name: 'payout', type: 'uint256' },
+      { name: 'badDebt', type: 'uint256' },
+    ] },
+  ],
 }] as const satisfies Abi;
 
 type AdapterRole = 'inventory-position' | 'treasury-hedge';
@@ -357,14 +395,22 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
     const prePosition = position(positionValue);
     const reserveBefore = natural(reserveValue, 'perpetual reserve');
     const quantity = documents.order.economicQuantity.atoms;
-    const opening = documents.order.lifecycleAction === 'ENTRY';
-    requireCondition(opening || documents.order.lifecycleAction === 'EXIT'
-      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND', 'lifecycle action is unsupported');
-    requireCondition(opening
+    const increasing = documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'INCREASE';
+    const decreasing = documents.order.lifecycleAction === 'DECREASE';
+    const terminal = documents.order.lifecycleAction === 'EXIT'
+      || documents.order.lifecycleAction === 'EMERGENCY_UNWIND';
+    requireCondition(increasing || decreasing || terminal, 'lifecycle action is unsupported');
+    requireCondition(documents.order.lifecycleAction === 'ENTRY'
       ? inventoryAtoms === 0n && prePosition.size === 0n && reserveBefore === 0n
-      : inventoryAtoms === quantity && prePosition.size === -quantity,
-    opening ? 'entry adapters are not flat' : 'exit quantity differs from the open hedge');
-    const snapshot = await readEvmTreasuryHedgeMarketSnapshot(lane.pricing, opening ? -quantity : quantity);
+      : inventoryAtoms > 0n && prePosition.size < 0n && inventoryAtoms === -prePosition.size
+        && reserveBefore === 0n,
+    documents.order.lifecycleAction === 'ENTRY' ? 'entry adapters are not flat' : 'open hedge state is inconsistent');
+    requireCondition(!decreasing || quantity < inventoryAtoms,
+      'decrease quantity must retain an open treasury hedge');
+    requireCondition(!terminal || quantity === inventoryAtoms,
+      'terminal quantity differs from the open treasury hedge');
+    const sizeDelta = increasing ? -quantity : quantity;
+    const snapshot = await readEvmTreasuryHedgeMarketSnapshot(lane.pricing, sizeDelta);
     const quotedHedge = documents.quote.legEconomics.find((leg) => leg.legId === 'treasury-hedge');
     requireCondition(quotedHedge?.executionPrice !== undefined
       && matchesEvmTreasuryHedgePrice({
@@ -375,37 +421,69 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
         quoteDecimals: lane.pricing.quoteAsset.decimals,
       }),
     'current hedge price differs from the signed quote');
-    const collateralInAtoms = opening ? quotedHedge.marginDelta.atoms : 0n;
+    const collateralInAtoms = increasing ? quotedHedge.marginDelta.atoms : 0n;
     const collateralBalanceWad = collateralInAtoms * snapshot.collateralScale;
-    const postPosition: Position = opening
-      ? Object.freeze({
-          balance: collateralBalanceWad - snapshot.feeWad,
-          size: -quantity,
-          entryNotional: snapshot.notionalWad,
-          entrySocialLossIndex: 0n,
-          entryFundingIndex: snapshot.currentFundingIndex,
-        })
-      : Object.freeze({ balance: 0n, size: 0n, entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n });
+    let postPosition: Position;
     let collateralOutAtoms = 0n;
-    if (!opening) {
+    if (documents.order.lifecycleAction === 'ENTRY') {
+      postPosition = Object.freeze({
+        balance: collateralBalanceWad - snapshot.feeWad,
+        size: -quantity,
+        entryNotional: snapshot.notionalWad,
+        entrySocialLossIndex: 0n,
+        entryFundingIndex: snapshot.currentFundingIndex,
+      });
+    } else if (documents.order.lifecycleAction === 'INCREASE') {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.market.address),
+        abi: PERP_MARKET_ABI,
+        functionName: 'previewIncrease',
+        args: [hedgeAdapter.address, sizeDelta, collateralBalanceWad],
+      });
+      requireCondition(natural(structField(value, 1, 'fillPriceWad'), 'increase fill price') === snapshot.fillPriceWad
+        && natural(structField(value, 2, 'feeWad'), 'increase fee') === snapshot.feeWad,
+      'increase preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post'));
+    } else if (decreasing) {
+      const value = await chain.readContract({
+        address: getAddress(lane.pricing.market.address),
+        abi: PERP_MARKET_ABI,
+        functionName: 'previewDecrease',
+        args: [hedgeAdapter.address, sizeDelta],
+      });
+      const settlement = structField(value, 1, 'settlement');
+      requireCondition(natural(structField(settlement, 0, 'exitNotional'), 'decrease exit notional')
+        === snapshot.notionalWad, 'decrease preview differs from the signed quote');
+      postPosition = position(structField(value, 0, 'post'));
+      collateralOutAtoms = natural(structField(settlement, 4, 'payout'), 'decrease payout')
+        / snapshot.collateralScale;
+    } else {
       const closeValue = await chain.readContract({
         address: getAddress(lane.pricing.market.address),
         abi: PERP_MARKET_ABI,
         functionName: 'previewClose',
         args: [hedgeAdapter.address],
       });
-      collateralOutAtoms = natural(structField(closeValue, 4, 'payout'), 'close payout') / snapshot.collateralScale;
+      collateralOutAtoms = natural(structField(closeValue, 4, 'payout'), 'close payout')
+        / snapshot.collateralScale;
+      postPosition = Object.freeze({
+        balance: 0n,
+        size: 0n,
+        entryNotional: 0n,
+        entrySocialLossIndex: 0n,
+        entryFundingIndex: 0n,
+      });
     }
     const inventoryBounds: EvmExactInventoryLegBounds = Object.freeze({
       legId: 'inventory-position',
-      action: opening ? 'LOCK' : 'RELEASE',
+      action: increasing ? 'LOCK' : 'RELEASE',
       expectedPreInventoryAtoms: inventoryAtoms,
-      expectedPostInventoryAtoms: opening ? inventoryAtoms + quantity : inventoryAtoms - quantity,
+      expectedPostInventoryAtoms: increasing ? inventoryAtoms + quantity : inventoryAtoms - quantity,
     });
     const perpBounds: EvmExactPerpLegBounds = Object.freeze({
       legId: 'treasury-hedge',
       expectedPrePositionHash: positionHash(prePosition),
-      tradeArgs: tradeArgs(snapshot.expiry, documents.order.expiryValue, opening ? -quantity : quantity, opening ? collateralBalanceWad : 0n),
+      tradeArgs: tradeArgs(snapshot.expiry, documents.order.expiryValue, sizeDelta, increasing ? collateralBalanceWad : 0n),
       expectedPostSizeWad: postPosition.size,
       minimumPostBalanceWad: postPosition.balance,
       maximumPostBalanceWad: postPosition.balance,
@@ -415,8 +493,8 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
       minimumReserveAfterAtoms: 0n,
       maximumReserveAfterAtoms: 0n,
       collateralInAtoms,
-      collateralOutAtoms: 0n,
-      withdrawAll: !opening,
+      collateralOutAtoms: decreasing ? collateralOutAtoms : 0n,
+      withdrawAll: terminal,
       minimumCollateralOutAtoms: collateralOutAtoms,
       maximumCollateralOutAtoms: collateralOutAtoms,
     });
@@ -474,18 +552,19 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
       }),
       expectedAdapterAddress: adapter.address,
       expectedAdapterCodeHash: adapter.codeHash,
-      riskIncreasing: opening,
+      riskIncreasing: increasing,
       ...(approvalToken === undefined ? {} : { approvalToken }),
       approvalAtoms,
       grossNotionalAtoms,
     });
     const inventoryEconomics = documents.quote.legEconomics.find((leg) => leg.legId === 'inventory-position');
     requireCondition(inventoryEconomics !== undefined, 'quote lacks inventory economics');
-    const nextStateHash = opening ? strategyStateHash({
+    const nextInventoryAtoms = increasing ? inventoryAtoms + quantity : inventoryAtoms - quantity;
+    const nextStateHash = !terminal ? strategyStateHash({
       packageId: checkedPackageId,
       account,
       inventoryAdapter: inventoryAdapter.address,
-      inventoryAtoms: quantity,
+      inventoryAtoms: nextInventoryAtoms,
       hedgeAdapter: hedgeAdapter.address,
       hedgePosition: postPosition,
     }) : undefined;
@@ -534,13 +613,13 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
         callPolicies: Object.freeze([
           policy(
             inventoryAdapter,
-            opening ? getAddress(lane.pricing.inventoryToken.address) : undefined,
-            opening ? quantity : 0n,
+            increasing ? getAddress(lane.pricing.inventoryToken.address) : undefined,
+            increasing ? quantity : 0n,
             inventoryEconomics.grossNotional.atoms,
           ),
           policy(
             hedgeAdapter,
-            opening ? getAddress(lane.pricing.quoteToken.address) : undefined,
+            increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
             collateralInAtoms,
             quotedHedge.grossNotional.atoms,
           ),

@@ -79,14 +79,18 @@ class Chain implements EvmOptionSpreadReadPort {
       case 'oraclePriceWad': return 100n * 10n ** 18n;
       case 'currentFundingIndex': return -50n;
       case 'previewOpen':
-        assert.deepEqual(request.args, [-QUANTITY, 0n]);
+        assert.equal(request.args?.[1], 0n);
         return [100n * 10n ** 18n, 100n * 10n ** 18n, 10n ** 17n, 0n];
       default: throw new Error(`unexpected read ${request.functionName}`);
     }
   }
 }
 
-function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments {
+function documents(
+  limitQuoteAtoms: bigint,
+  lifecycleAction: 'ENTRY' | 'INCREASE' | 'DECREASE' = 'ENTRY',
+): StoredStrategyPackageOrderDocuments {
+  const increasing = lifecycleAction === 'ENTRY' || lifecycleAction === 'INCREASE';
   const graph = packageGraph({
     graphVersion: 1,
     environment: 'testnet',
@@ -99,7 +103,7 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
     executionClassId: 'evm-atomic-treasury-hedge',
     executionClassVersion: 1,
     executionClassManifestHash: hash('b'),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction,
     owner: address('5').toLowerCase(),
     strategyAccountRefs: [address('6').toLowerCase()],
     legs: [{
@@ -122,14 +126,15 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
       legExpiryValue: 1_200n,
     }, {
       legId: 'treasury-hedge',
-      legFamily: 'PERP_OPEN',
+      legFamily: lifecycleAction === 'ENTRY' ? 'PERP_OPEN'
+        : lifecycleAction === 'INCREASE' ? 'PERP_INCREASE' : 'PERP_DECREASE',
       legTypeId: 'treasury-hedge',
       domain,
       adapter: hedgeAdapter,
       venue,
       market: hedgeMarket,
       assets: [inventoryAsset, quoteAsset],
-      side: 'SELL',
+      side: increasing ? 'SELL' : 'BUY',
       quantityAsset: inventoryAsset,
       quantityAtoms: QUANTITY,
       minimumQuantityAtoms: QUANTITY,
@@ -138,7 +143,7 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
         quoteAsset,
         quoteAtoms: limitQuoteAtoms,
         baseAtoms: 10n ** 12n,
-        roundingDirection: 'CEIL',
+        roundingDirection: increasing ? 'CEIL' : 'FLOOR',
       },
       maximumFeeQuoteAtoms: 200_000n,
       preconditionHashes: [],
@@ -146,7 +151,9 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
       timeInForce: 'IOC',
       legExpiryValue: 1_200n,
     }],
-    dependencyEdges: [{ fromLegId: 'inventory-position', toLegId: 'treasury-hedge' }],
+    dependencyEdges: [increasing
+      ? { fromLegId: 'inventory-position', toLegId: 'treasury-hedge' }
+      : { fromLegId: 'treasury-hedge', toLegId: 'inventory-position' }],
     executionGroups: [{ groupId: 'treasury-hedge', kind: 'ALL_OR_NONE', legIds: ['inventory-position', 'treasury-hedge'] }],
     settlementClass: 'ATOMIC_POSTCONDITION',
     policyHashes: {
@@ -176,7 +183,7 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
     riskClassId: STRATEGY_RISK_CLASS_ID.TREASURY_HEDGE,
     owner: graph.owner,
     settlementAccount: address('6').toLowerCase(),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction,
     settlementClass: 'ATOMIC_POSTCONDITION',
     packageOrderType: 'MARKETABLE_LIMIT',
     packageTimeInForce: 'IOC',
@@ -187,11 +194,12 @@ function documents(limitQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments
     maximumVenueFeesByAsset: [{ asset: quoteAsset, maxAtoms: 200_000n }],
     maximumNetworkFeesByAsset: [{ asset: quoteAsset, maxAtoms: 1_000n }],
     maximumRecoveryCostByAsset: [],
-    maximumMarginIncrease: assetAmount(quoteAsset, 21_000_000n),
+    maximumMarginIncrease: assetAmount(quoteAsset, increasing ? 21_000_000n : 0n),
     maximumResidualValue: assetAmount(quoteAsset, 0n),
     expiryUnit: 'EVM_UNIX_SECONDS',
     expiryValue: 1_200n,
-    nonce: 1n,
+    nonce: lifecycleAction === 'ENTRY' ? 1n : 2n,
+    ...(lifecycleAction === 'ENTRY' ? {} : { expectedStrategyStateHash: hash('d') }),
   });
   return {
     orderHashHex: Buffer.from(strategyPackageOrderHash(order)).toString('hex'),
@@ -245,6 +253,21 @@ test('prices an exact EVM treasury hedge and rejects a fill below the signed sel
     }),
     /executable hedge price violates the signed limit/,
   );
+});
+
+test('prices treasury hedge increases and decreases with directional margin', async () => {
+  const port = createEvmTreasuryHedgeGeneralizedPricing(pricing(new Chain()));
+  const increase = await port.quote({
+    documents: documents(99n, 'INCREASE'),
+    currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW },
+  });
+  assert.equal(increase.legEconomics[1]?.marginDelta.atoms, 20_100_000n);
+
+  const decrease = await port.quote({
+    documents: documents(101n, 'DECREASE'),
+    currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW },
+  });
+  assert.equal(decrease.legEconomics[1]?.marginDelta.atoms, 0n);
 });
 
 test('matches quoted atomic prices to WAD prices across asset decimals', () => {
