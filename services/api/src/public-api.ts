@@ -21,6 +21,9 @@ import {
   validateStrategyPackageRouteAdmission,
   authorizeSolverQuote,
   bytesEqual,
+  commitmentHash,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
@@ -101,6 +104,16 @@ function senderPublicKey(senderKeyId: unknown): Uint8Array | undefined {
     return undefined;
   }
 }
+
+function ed25519Signature(value: unknown): Uint8Array | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const bytes = bs58.decode(value);
+    return bytes.length === 64 && bs58.encode(bytes) === value ? bytes : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const HASH_HEX = /^[0-9a-f]{64}$/;
 /** Executable package depth of one book, as the HTTP route and the stream both serve it. */
 export function packageDepthView(state: NonNullable<ReturnType<SqlitePackageExchangeStore["getBook"]>>, now: bigint) {
@@ -150,6 +163,7 @@ export type PublicExchangeStore = Pick<
   | "getSeriesRecord"
   | "getExecutionClassRecord"
   | "latestTrade"
+  | "submitOrder"
 >;
 
 export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest" | "byHash">;
@@ -1080,6 +1094,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/replay-decision",
       "/v1/routes/compare",
       "/v1/clearing/simulate",
+      "/v1/package-book/orders",
       "/v1/de-risk/validate",
       "/v1/packages/compile",
       "/v1/packages/simulate",
@@ -1102,6 +1117,44 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (path === "/v1/package-book/orders") {
+      const authorization = object(body.authorization, "authorization");
+      if (authorization.scheme !== "ED25519") {
+        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Package book orders require ED25519 authorization.");
+      }
+      const order = object(body.order, "order") as unknown as PackageTakerOrderInput;
+      const orderBytes = packageTakerOrderBytes(order);
+      const orderHash = packageTakerOrderHash(order);
+      if (!bytesEqual(commitmentHash(order.orderId, "order.orderId"), orderHash)) {
+        throw new RequestError(400, "INVALID_ORDER_ID", "Package book order id must equal its canonical order hash.");
+      }
+      const participantKey = senderPublicKey(order.participantId);
+      if (participantKey === undefined || order.commonControlGroupId !== order.participantId) {
+        throw new RequestError(
+          400,
+          "UNSUPPORTED_AUTHORIZATION",
+          "Public package book participants use their canonical Ed25519 key as both participant and control-group id.",
+        );
+      }
+      const signature = ed25519Signature(authorization.signature);
+      if (signature === undefined || !verifyEd25519(participantKey, orderBytes, signature)) {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the canonical package book order.");
+      }
+      const executionClassId = id(order.executionClassId, "executionClassId");
+      const result = exchange.submitOrder(executionClassId, order, nowValue());
+      if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
+      const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);
+      if (matchingPolicy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
+      return {
+        accepted: true,
+        packageMarketId: executionClassId,
+        orderId: toHex(orderHash),
+        replayed: result.replayed,
+        allocation: result.allocation,
+        allocationHash: result.allocationHashHex,
+        matchingPolicy,
+      };
+    }
     if (path === "/v1/orders") {
       // Intake only: the order is validated and its owner's signature over the exact canonical
       // bytes is verified. Nothing is quoted, reserved, signed, or submitted to any network here.

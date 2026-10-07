@@ -16,6 +16,8 @@ import {
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
   packageMatchingPolicyHash,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
   setPackageBookHalted,
   toHex,
   verifyPackageAllocation,
@@ -120,6 +122,18 @@ describe('package matching policy', () => {
   test('a book opened under one policy rejects another', () => {
     const other = packageMatchingPolicy({ ...POLICY_INPUT, selfMatchPolicy: 'CANCEL_BOTH' });
     assert.throws(() => matchPackageOrder(other, emptyPackageBook(policy), order(1), NOW), MalformedInputError);
+  });
+});
+
+describe('package taker order authorization', () => {
+  test('the order id is derived from every signed matching field', () => {
+    const input = order(1);
+    const hash = packageTakerOrderHash(input);
+    assert.equal(hash.length, 32);
+    assert.ok(packageTakerOrderBytes(input).length > 0);
+    assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, quantity: 20n })));
+    assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, participantId: 'another-maker' })));
+    assert.equal(toHex(hash), toHex(packageTakerOrderHash({ ...input, orderId: id(99) })));
   });
 });
 

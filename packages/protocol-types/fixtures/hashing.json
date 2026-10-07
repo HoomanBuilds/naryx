@@ -45,6 +45,7 @@
     { "name": "readiness-decision-shared-payload", "domain": "CON/v1/readiness-decision", "payloadHex": "deadbeef", "digestHex": "988381c539dd735c5fd646b70440bf687e676609b7a06d245230d36851603913" },
     { "name": "operation-ledger-record-shared-payload", "domain": "CON/v1/operation-ledger-record", "payloadHex": "deadbeef", "digestHex": "9e59a9d27bcd0a4f80e00c559873747bdd1cd7454ad8b29da0e64ab72f56eb5f" },
     { "name": "package-matching-policy-shared-payload", "domain": "CON/v1/package-matching-policy", "payloadHex": "deadbeef", "digestHex": "997672f76ae6609bb7bd8bad709d5f8e8a0f5715014cdb81a04d1a0f7ef900cb" },
+    { "name": "package-taker-order-shared-payload", "domain": "CON/v1/package-taker-order", "payloadHex": "deadbeef", "digestHex": "5763ccc2164a2e9368c097eed5f67cde18b32037872296ad8252258c84062653" },
     { "name": "implied-package-quote-shared-payload", "domain": "CON/v1/implied-package-quote", "payloadHex": "deadbeef", "digestHex": "c71834e1884ff4d7cf5fe295887e971d0df04fddc27acc37d91c020f49adcea7" },
     { "name": "package-allocation-shared-payload", "domain": "CON/v1/package-allocation", "payloadHex": "deadbeef", "digestHex": "f36bb2a7456fe3483e928476811d4be01d396adb5c15f1d1ba9eafd3c755b439" },
     { "name": "solver-capacity-record-shared-payload", "domain": "CON/v1/solver-capacity-record", "payloadHex": "deadbeef", "digestHex": "1c49f02b141943a76e97bccf37ca275ebb9a39f770532bc4880789d2d2b4a56c" },

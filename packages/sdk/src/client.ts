@@ -26,6 +26,8 @@ import {
   packageMatchingPolicyHash,
   packageOrderBytes,
   packageOrderHash,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
   packageCloseCostIndex,
   packageGraphHash,
   simulatePackageGraphFailures,
@@ -207,6 +209,21 @@ export interface VerifiedAllocation {
   readonly matchingPolicy: PackageMatchingPolicy;
   readonly allocationHash: string;
 }
+
+export type PackageBookOrderDraft = Omit<PackageTakerOrderInput, 'orderId'>;
+
+export type PackageBookOrderSubmission =
+  | {
+      readonly accepted: true;
+      readonly order: PackageTakerOrderInput;
+      readonly replayed: boolean;
+      readonly evidence: VerifiedAllocation;
+    }
+  | {
+      readonly accepted: false;
+      readonly order: PackageTakerOrderInput;
+      readonly rejection: string;
+    };
 
 export interface RegisteredDocumentView<T = unknown> {
   readonly kind: string;
@@ -853,6 +870,47 @@ export class NaryxClient {
     if (!HASH_HEX.test(takerOrderId)) throw new TypeError('taker order id must be 32 bytes of lowercase hex');
     const body = record(await this.#request('GET', `/v1/allocations/${takerOrderId}`), 'allocation response');
     return verifyAllocationEvidence(takerOrderId, body.allocation, body.matchingPolicy);
+  }
+
+  /** Signs and submits one order to the native package book. Matching is not venue settlement. */
+  async submitPackageBookOrder(
+    draft: PackageBookOrderDraft,
+    sign: OrderSigner,
+  ): Promise<PackageBookOrderSubmission> {
+    if (typeof sign !== 'function') throw new TypeError('an order signer is required');
+    const provisional: PackageTakerOrderInput = { ...draft, orderId: '00'.repeat(32) };
+    const orderId = toHex(packageTakerOrderHash(provisional));
+    const order: PackageTakerOrderInput = Object.freeze({ ...draft, orderId });
+    const participantKey = base58Decode(order.participantId);
+    if (participantKey?.length !== 32 || order.commonControlGroupId !== order.participantId) {
+      throw new TypeError('public package book participants use their Ed25519 key as participant and control-group id');
+    }
+    const signature = await sign(packageTakerOrderBytes(order));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
+      throw new TypeError('the signer must return a 64-byte signature');
+    }
+    const body = record(
+      await this.#request('POST', '/v1/package-book/orders', {
+        order,
+        authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+      }),
+      'package book submission',
+    );
+    if (body.packageMarketId !== order.executionClassId || body.orderId !== orderId || typeof body.accepted !== 'boolean') {
+      throw new NaryxEvidenceError('package book response is for another order or market');
+    }
+    if (!body.accepted) {
+      if (typeof body.rejection !== 'string') throw new NaryxEvidenceError('package book rejection is malformed');
+      return Object.freeze({ accepted: false, order, rejection: body.rejection });
+    }
+    if (typeof body.replayed !== 'boolean' || typeof body.allocationHash !== 'string') {
+      throw new NaryxEvidenceError('package book allocation response is malformed');
+    }
+    const evidence = verifyAllocationEvidence(orderId, body.allocation, body.matchingPolicy);
+    if (body.allocationHash !== evidence.allocationHash) {
+      throw new NaryxEvidenceError('package book allocation hash is inconsistent');
+    }
+    return Object.freeze({ accepted: true, order, replayed: body.replayed, evidence });
   }
 
   // ---------------------------------------------------------------- orders and evidence

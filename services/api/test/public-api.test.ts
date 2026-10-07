@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import bs58 from "bs58";
 import {
   fromProtocolJson,
   toProtocolJson,
   packageAllocationHash,
   packageMatchingPolicy,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
   toHex,
   verifyPackageAllocation,
   type PackageAllocation,
@@ -224,6 +228,53 @@ const post = (body: unknown): RequestInit => ({
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(toProtocolJson(body)),
+});
+
+test("signed public package orders match durably and replay idempotently", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.submitOrder(CLASS, order(1), NOW);
+    const keys = generateKeyPairSync("ed25519");
+    const participantId = bs58.encode((keys.publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32));
+    const draft = order(9, {
+      orderId: "00".repeat(32),
+      side: "BID",
+      timeInForce: "IOC",
+      participantId,
+      commonControlGroupId: participantId,
+    });
+    const orderId = toHex(packageTakerOrderHash(draft));
+    const signed = { ...draft, orderId };
+    const authorization = {
+      scheme: "ED25519",
+      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(signed)), keys.privateKey)),
+    };
+    const first = await get("/v1/package-book/orders", post({ order: signed, authorization }));
+    assert.equal(first.status, 200);
+    const accepted = first.body as {
+      accepted: boolean;
+      replayed: boolean;
+      orderId: string;
+      allocationHash: string;
+      allocation: PackageAllocation;
+      matchingPolicy: PackageMatchingPolicy;
+    };
+    assert.deepEqual([accepted.accepted, accepted.replayed, accepted.orderId, accepted.allocation.fills.length], [true, false, orderId, 1]);
+    verifyPackageAllocation(packageMatchingPolicy(accepted.matchingPolicy), accepted.allocation);
+    assert.equal(accepted.allocationHash, toHex(packageAllocationHash(accepted.allocation)));
+    assert.equal(((await get("/v1/package-book/orders", post({ order: signed, authorization }))).body as { replayed: boolean }).replayed, true);
+    assert.equal(store.getAllocation(orderId)?.fills.length, 1);
+
+    const changed = { ...signed, quantity: 20n };
+    const changedAuthorization = {
+      ...authorization,
+      signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(changed)), keys.privateKey)),
+    };
+    assert.equal((await get("/v1/package-book/orders", post({ order: changed, authorization: changedAuthorization }))).status, 400);
+    const other = generateKeyPairSync("ed25519");
+    const forged = { ...authorization, signature: bs58.encode(sign(null, Buffer.from(packageTakerOrderBytes(signed)), other.privateKey)) };
+    assert.equal((await get("/v1/package-book/orders", post({ order: signed, authorization: forged }))).status, 400);
+  });
 });
 
 test("registries, strategy series, and package markets are listed from their stores", async () => {

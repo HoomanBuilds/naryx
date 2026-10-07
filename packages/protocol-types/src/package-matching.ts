@@ -805,6 +805,65 @@ export interface PackageTakerOrderInput {
   readonly expiresAtValue?: bigint;
 }
 
+interface CanonicalPackageTakerOrder {
+  readonly executionClassId: ProtocolId;
+  readonly side: PackageBookSide;
+  readonly orderType: PackageOrderType;
+  readonly timeInForce: PackageTimeInForce;
+  readonly limitPriceTicks: bigint;
+  readonly quantity: bigint;
+  readonly minimumQuantity: bigint;
+  readonly participantId: ProtocolId;
+  readonly commonControlGroupId: ProtocolId;
+  readonly expiresAtValue?: bigint;
+}
+
+function canonicalPackageTakerOrder(input: PackageTakerOrderInput, context: string): CanonicalPackageTakerOrder {
+  object(input, context);
+  const expiresAtValue =
+    input.expiresAtValue === undefined ? undefined : bigintIn(input.expiresAtValue, U64_BITS, `${context}.expiresAtValue`);
+  return Object.freeze({
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    side: variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`),
+    orderType: variant(PACKAGE_ORDER_TYPE, input.orderType, `${context}.orderType`),
+    timeInForce: variant(PACKAGE_TIME_IN_FORCE, input.timeInForce, `${context}.timeInForce`),
+    limitPriceTicks: signedTicks(input.limitPriceTicks, `${context}.limitPriceTicks`),
+    quantity: positive(input.quantity, U128_BITS, `${context}.quantity`),
+    minimumQuantity: positive(input.minimumQuantity, U128_BITS, `${context}.minimumQuantity`),
+    participantId: protocolId(input.participantId, `${context}.participantId`),
+    commonControlGroupId: protocolId(input.commonControlGroupId, `${context}.commonControlGroupId`),
+    ...(expiresAtValue === undefined ? {} : { expiresAtValue }),
+  });
+}
+
+export function packageTakerOrderBytes(
+  input: PackageTakerOrderInput,
+  context = 'packageTakerOrder',
+): Uint8Array {
+  const order = canonicalPackageTakerOrder(input, context);
+  return canonicalBytes((writer) => {
+    encodeProtocolId(writer, order.executionClassId, `${context}.executionClassId`);
+    writer.writeEnum(PACKAGE_BOOK_SIDE, order.side, `${context}.side`);
+    writer.writeEnum(PACKAGE_ORDER_TYPE, order.orderType, `${context}.orderType`);
+    writer.writeEnum(PACKAGE_TIME_IN_FORCE, order.timeInForce, `${context}.timeInForce`);
+    writer.writeI128(order.limitPriceTicks, `${context}.limitPriceTicks`);
+    writer.writeU128(order.quantity, `${context}.quantity`);
+    writer.writeU128(order.minimumQuantity, `${context}.minimumQuantity`);
+    encodeProtocolId(writer, order.participantId, `${context}.participantId`);
+    encodeProtocolId(writer, order.commonControlGroupId, `${context}.commonControlGroupId`);
+    writer.writeOptional(order.expiresAtValue, (element, value) =>
+      element.writeU64(value, `${context}.expiresAtValue`),
+    );
+  });
+}
+
+export function packageTakerOrderHash(input: PackageTakerOrderInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_TAKER_ORDER, packageTakerOrderBytes(input)),
+    'packageTakerOrderHash',
+  );
+}
+
 export interface PackageFill {
   readonly fillSequence: bigint;
   readonly makerEntryId: CommitmentHash;

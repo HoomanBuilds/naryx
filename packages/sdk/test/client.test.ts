@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
   emptyPackageBook,
   matchPackageOrder,
+  packageAllocationHash,
   packageMatchingPolicy,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
+  toHex,
   toProtocolJson,
   type PackageAllocation,
   type PackageMatchingPolicyInput,
   type PackageTakerOrderInput,
 } from '@naryx/protocol-types';
-import { NaryxApiError, NaryxClient, NaryxEvidenceError, candlesFromTape, type FetchLike } from '../src/index.js';
+import { NaryxApiError, NaryxClient, NaryxEvidenceError, base58Encode, candlesFromTape, type FetchLike } from '../src/index.js';
 
 const CLASS = 'solana-atomic-cash-carry-v1';
 const POLICY_INPUT: PackageMatchingPolicyInput = {
@@ -154,6 +159,56 @@ describe('public API client', () => {
     );
   });
 
+  test('submits a signed native package-book order and verifies returned allocation evidence', async () => {
+    const keys = generateKeyPairSync('ed25519');
+    const participantId = base58Encode(new Uint8Array((keys.publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32)));
+    const draft = {
+      executionClassId: CLASS,
+      side: 'BID' as const,
+      orderType: 'LIMIT' as const,
+      timeInForce: 'IOC' as const,
+      limitPriceTicks: 100n,
+      quantity: 10n,
+      minimumQuantity: 10n,
+      participantId,
+      commonControlGroupId: participantId,
+    };
+    const provisional = { ...draft, orderId: '00'.repeat(32) };
+    const orderId = toHex(packageTakerOrderHash(provisional));
+    const submitted = { ...draft, orderId };
+    const rested = matchPackageOrder(policy, emptyPackageBook(policy), order(1), 1_000n);
+    if (!rested.accepted) assert.fail('resting order rejected');
+    const matched = matchPackageOrder(policy, rested.state, submitted, 1_000n);
+    if (!matched.accepted) assert.fail('package order rejected');
+    const allocationHash = toHex(packageAllocationHash(matched.allocation));
+    let signedBytes: Uint8Array | undefined;
+    const result = await client({
+      'POST /v1/package-book/orders': {
+        body: {
+          accepted: true,
+          packageMarketId: CLASS,
+          orderId,
+          replayed: false,
+          allocation: matched.allocation,
+          allocationHash,
+          matchingPolicy: policy,
+        },
+      },
+    }).submitPackageBookOrder(draft, async (bytes) => {
+      signedBytes = bytes;
+      return new Uint8Array(sign(null, bytes, keys.privateKey));
+    });
+    assert.equal(result.accepted, true);
+    assert.deepEqual(signedBytes, packageTakerOrderBytes(submitted));
+    if (result.accepted) assert.equal(result.evidence.allocationHash, allocationHash);
+
+    await assert.rejects(
+      client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), matchingPolicy: policy } } })
+        .submitPackageBookOrder(draft, async (bytes) => new Uint8Array(sign(null, bytes, keys.privateKey))),
+      /allocation hash is inconsistent/,
+    );
+  });
+
   test('a closed sealed auction must replay from its published events', async () => {
     const { openSealedAuction, sealedAuctionHash, sealedQuoteCommitment, replaySealedAuction } = await import('@naryx/protocol-types');
     const definition = {
@@ -191,4 +246,3 @@ describe('public API client', () => {
 function toHexString(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
-

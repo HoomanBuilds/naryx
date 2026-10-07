@@ -289,6 +289,8 @@ export {
   setPackageBookHalted,
   cancelPackageBookEntry,
   amendPackageBookEntry,
+  packageTakerOrderBytes,
+  packageTakerOrderHash,
   matchPackageOrder,
   packageAllocation,
   verifyPackageAllocation,
