@@ -45,6 +45,11 @@ describe('strategy template program', () => {
   });
 
   test('same-domain hedge templates admit atomic lifecycle execution', () => {
+    const reverseCashAndCarry = requireStrategyTemplateDefinition(STRATEGY_TEMPLATE_ID.REVERSE_CASH_AND_CARRY);
+    for (const action of ['ENTRY', 'INCREASE', 'DECREASE', 'EXIT', 'REBALANCE'] as const) {
+      assert.ok(reverseCashAndCarry.actionSpecs.find((spec) => spec.action === action)?.allowedSettlementClasses.includes('ATOMIC_POSTCONDITION'));
+    }
+
     const treasury = requireStrategyTemplateDefinition(STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE);
     const treasuryExit = treasury.actionSpecs.find((action) => action.action === 'EXIT');
     assert.ok(treasuryExit?.allowedSettlementClasses.includes('ATOMIC_POSTCONDITION'));

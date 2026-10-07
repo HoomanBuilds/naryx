@@ -226,27 +226,27 @@ const DEFINITIONS: readonly StrategyTemplateDefinition[] = Object.freeze([
         rule('base-borrow', ['BORROW'], NONE),
         rule('spot-sale', ['SPOT_SWAP'], ['SELL']),
         rule('perp-purchase', ['PERP_OPEN'], ['BUY']),
-      ], RECOVERABLE),
+      ], ATOMIC_AND_RECOVERABLE),
       action('INCREASE', 3, 3, [
         rule('base-borrow', ['BORROW'], NONE),
         rule('spot-sale', ['SPOT_SWAP'], ['SELL']),
         rule('perp-purchase', ['PERP_INCREASE'], ['BUY']),
-      ], RECOVERABLE),
+      ], ATOMIC_AND_RECOVERABLE),
       action('DECREASE', 3, 3, [
         rule('base-borrow', ['REPAY'], NONE),
         rule('spot-sale', ['SPOT_SWAP'], ['BUY']),
         rule('perp-purchase', ['PERP_DECREASE'], ['SELL']),
-      ], RECOVERABLE),
+      ], ATOMIC_AND_RECOVERABLE),
       action('EXIT', 3, 3, [
         rule('base-borrow', ['REPAY'], NONE),
         rule('spot-sale', ['SPOT_SWAP'], ['BUY']),
         rule('perp-purchase', ['PERP_CLOSE'], ['SELL']),
-      ], RECOVERABLE),
+      ], ATOMIC_AND_RECOVERABLE),
       action('REBALANCE', 1, 3, [
         rule('base-borrow', ['BORROW', 'REPAY'], NONE, 0, 1),
         rule('spot-sale', ['SPOT_SWAP'], BUY_SELL, 0, 1),
         rule('perp-purchase', ['PERP_INCREASE', 'PERP_DECREASE'], BUY_SELL, 0, 1),
-      ], RECOVERABLE),
+      ], ATOMIC_AND_RECOVERABLE),
       action('ROLL', 2, 2, [
         rule('perp-purchase-close', ['PERP_CLOSE'], ['SELL']),
         rule('perp-purchase-open', ['PERP_OPEN'], ['BUY']),
