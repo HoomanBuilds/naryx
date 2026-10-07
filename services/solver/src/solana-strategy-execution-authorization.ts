@@ -27,6 +27,10 @@ export interface AuthorizedSolanaStrategyExecution {
   readonly strategyAccount: string;
   readonly position: string;
   readonly receipt: string;
+  readonly packageId: string;
+  readonly orderHash: string;
+  readonly quoteHash: string;
+  readonly routeHash: string;
   readonly executionHash: string;
   readonly callsHash: string;
   readonly materializationCommitment: string;
@@ -168,6 +172,10 @@ export class SolanaStrategyExecutionAuthorizationService {
       strategyAccount: compiled.envelope.strategyAccount.toBase58(),
       position: compiled.envelope.position.toBase58(),
       receipt: compiled.envelope.receipt.toBase58(),
+      packageId: hex(prepared.identity.packageId),
+      orderHash: hex(prepared.orderHash),
+      quoteHash: hex(prepared.quoteHash),
+      routeHash: hex(prepared.routeHash),
       executionHash: hex(compiled.envelope.executionHash),
       callsHash: hex(compiled.envelope.callsHash),
       materializationCommitment: hex(materialized.materializationCommitment),

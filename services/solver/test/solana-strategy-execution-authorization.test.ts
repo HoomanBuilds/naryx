@@ -131,6 +131,7 @@ test('returns a Devnet transaction signed only by the configured solver', async 
   assert(transaction.signatures[ownerIndex]!.every((byte) => byte === 0));
   assert(transaction.signatures[solverIndex]!.some((byte) => byte !== 0));
   assert.equal(authorization.owner, owner.toBase58());
+  assert.equal(authorization.quoteHash, Buffer.from(quoteHash).toString('hex'));
   assert.equal(authorization.lookupTables[0]?.address, tableAddress.toBase58());
 });
 
