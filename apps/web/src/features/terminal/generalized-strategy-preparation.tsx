@@ -43,6 +43,7 @@ const NATIVE_HYPERCORE_TEMPLATES = new Set([
   "delta-neutral-rebalance-v1",
 ]);
 const EVM_STRATEGY_TEMPLATES = new Set([
+  "calendar-spread-v1",
   "option-spread-v1",
   "treasury-inventory-hedge-v1",
   "collateral-conversion-hedge-v1",
@@ -281,6 +282,25 @@ type EvmOptionProfile = Readonly<{
   baseAsset: Readonly<{ assetId: string; decimals: number }>;
   quoteAsset: Readonly<{ assetId: string; decimals: number }>;
   markets: readonly Readonly<{ role: "option-long" | "option-short"; strike: string; maturity: string }>[];
+  bounds: Readonly<{
+    minimumQuantityAtoms: string;
+    maximumQuantityAtoms: string;
+    maximumExpiryTtlSeconds: string;
+  }>;
+}>;
+
+type EvmCalendarProfile = Readonly<{
+  profileId: string;
+  displayName: string;
+  templateId: "calendar-spread-v1";
+  seriesId: string;
+  executionClassId: string;
+  chainId: number;
+  domainId: string;
+  accountFactory: string;
+  baseAsset: Readonly<{ assetId: string; decimals: number }>;
+  quoteAsset: Readonly<{ assetId: string; decimals: number }>;
+  markets: readonly Readonly<{ role: "near-future" | "far-future"; maturity: string }>[];
   bounds: Readonly<{
     minimumQuantityAtoms: string;
     maximumQuantityAtoms: string;
@@ -1141,6 +1161,89 @@ function parseCreatedEvmOptionOrder(
   });
 }
 
+function parseEvmCalendarProfiles(payload: unknown): readonly EvmCalendarProfile[] {
+  const root = record(payload, "EVM calendar spread profiles");
+  if (root.version !== 1) throw new Error("EVM calendar spread profile version is unsupported.");
+  return list(root.profiles, "EVM calendar spread profiles").map((candidate, index): EvmCalendarProfile => {
+    const profile = record(candidate, `EVM calendar spread profile ${index}`);
+    const baseAsset = record(profile.baseAsset, `EVM calendar spread profile ${index} base asset`);
+    const quoteAsset = record(profile.quoteAsset, `EVM calendar spread profile ${index} quote asset`);
+    const bounds = record(profile.bounds, `EVM calendar spread profile ${index} bounds`);
+    const markets = list(profile.markets, `EVM calendar spread profile ${index} markets`).map(
+      (candidateMarket, marketIndex) => {
+        const market = record(candidateMarket, `EVM calendar spread profile ${index} market ${marketIndex}`);
+        if (market.role !== "near-future" && market.role !== "far-future") {
+          throw new Error(`EVM calendar spread profile ${index} market ${marketIndex} role is invalid.`);
+        }
+        return Object.freeze({
+          role: market.role,
+          maturity: decimalInteger(
+            market.maturity,
+            `EVM calendar spread profile ${index} market ${marketIndex} maturity`,
+          ),
+        });
+      },
+    );
+    const near = markets.find((market) => market.role === "near-future");
+    const far = markets.find((market) => market.role === "far-future");
+    const accountFactory = text(profile.accountFactory, `EVM calendar spread profile ${index} account factory`);
+    if (!EVM_ADDRESS.test(accountFactory) || near === undefined || far === undefined
+      || BigInt(near.maturity) >= BigInt(far.maturity) || markets.length !== 2
+      || profile.templateId !== "calendar-spread-v1") {
+      throw new Error(`EVM calendar spread profile ${index} is invalid.`);
+    }
+    return Object.freeze({
+      profileId: text(profile.profileId, `EVM calendar spread profile ${index} id`),
+      displayName: text(profile.displayName, `EVM calendar spread profile ${index} display name`),
+      templateId: "calendar-spread-v1",
+      seriesId: text(profile.seriesId, `EVM calendar spread profile ${index} series`),
+      executionClassId: text(profile.executionClassId, `EVM calendar spread profile ${index} execution class`),
+      chainId: integer(profile.chainId, `EVM calendar spread profile ${index} chain id`),
+      domainId: text(profile.domainId, `EVM calendar spread profile ${index} domain`),
+      accountFactory,
+      baseAsset: Object.freeze({
+        assetId: text(baseAsset.assetId, `EVM calendar spread profile ${index} base asset id`),
+        decimals: unsignedInteger(baseAsset.decimals, `EVM calendar spread profile ${index} base decimals`),
+      }),
+      quoteAsset: Object.freeze({
+        assetId: text(quoteAsset.assetId, `EVM calendar spread profile ${index} quote asset id`),
+        decimals: unsignedInteger(quoteAsset.decimals, `EVM calendar spread profile ${index} quote decimals`),
+      }),
+      markets: Object.freeze([near, far]),
+      bounds: Object.freeze({
+        minimumQuantityAtoms: decimalInteger(
+          bounds.minimumQuantityAtoms,
+          `EVM calendar spread profile ${index} minimum quantity`,
+        ),
+        maximumQuantityAtoms: decimalInteger(
+          bounds.maximumQuantityAtoms,
+          `EVM calendar spread profile ${index} maximum quantity`,
+        ),
+        maximumExpiryTtlSeconds: decimalInteger(
+          bounds.maximumExpiryTtlSeconds,
+          `EVM calendar spread profile ${index} expiry TTL`,
+        ),
+      }),
+    });
+  });
+}
+
+function parseCreatedEvmCalendarOrder(
+  payload: unknown,
+  profileId: string,
+  lifecycleAction: string,
+): Readonly<{ orderHash: string; graphHash: string }> {
+  const root = record(payload, "EVM calendar spread order creation");
+  if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
+    || root.templateId !== "calendar-spread-v1" || root.lifecycleAction !== lifecycleAction) {
+    throw new Error("EVM calendar spread order creation changed the requested package.");
+  }
+  return Object.freeze({
+    orderHash: hash(root.orderHash, "EVM calendar spread order hash"),
+    graphHash: hash(root.graphHash, "EVM calendar spread graph hash"),
+  });
+}
+
 function parseEvmDirectionalProfiles(
   payload: unknown,
   kind: EvmDirectionalProfile["kind"],
@@ -1676,6 +1779,11 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmOptionQuantity, setEvmOptionQuantity] = useState("");
   const [evmLongPremium, setEvmLongPremium] = useState("");
   const [evmShortPremium, setEvmShortPremium] = useState("");
+  const [evmCalendarProfiles, setEvmCalendarProfiles] = useState<readonly EvmCalendarProfile[] | null>(null);
+  const [selectedEvmCalendarProfileId, setSelectedEvmCalendarProfileId] = useState("");
+  const [evmCalendarQuantity, setEvmCalendarQuantity] = useState("");
+  const [evmNearFuturePrice, setEvmNearFuturePrice] = useState("");
+  const [evmFarFuturePrice, setEvmFarFuturePrice] = useState("");
   const [evmDirectionalProfiles, setEvmDirectionalProfiles] = useState<readonly EvmDirectionalProfile[] | null>(null);
   const [selectedEvmDirectionalProfileId, setSelectedEvmDirectionalProfileId] = useState("");
   const [evmPositions, setEvmPositions] = useState<readonly EvmStrategyPositionReview[] | null>(null);
@@ -1771,6 +1879,29 @@ export function GeneralizedStrategyPreparationPanel({
       if (controller.signal.aborted) return;
       setEvmOptionProfiles([]);
       setError(cause instanceof Error ? cause.message : "EVM option markets are unavailable.");
+    });
+    return () => controller.abort();
+  }, [evmLane, privateApiBaseUrl, sourceOrderHash, templateId]);
+
+  useEffect(() => {
+    if (!evmLane || privateApiBaseUrl === null || sourceOrderHash !== null || templateId !== "calendar-spread-v1") return;
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/evm-calendar-spread-profiles`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseEvmCalendarProfiles(await response.json());
+    }).then((profiles) => {
+      setEvmCalendarProfiles(profiles);
+      setSelectedEvmCalendarProfileId((current) => current || profiles[0]?.profileId || "");
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setEvmCalendarProfiles([]);
+      setError(cause instanceof Error ? cause.message : "EVM calendar spread markets are unavailable.");
     });
     return () => controller.abort();
   }, [evmLane, privateApiBaseUrl, sourceOrderHash, templateId]);
@@ -1928,13 +2059,18 @@ export function GeneralizedStrategyPreparationPanel({
   const selectedEvmOptionProfile = matchingEvmOptionProfiles.find((profile) => profile.profileId === selectedEvmOptionProfileId)
     ?? matchingEvmOptionProfiles[0]
     ?? null;
+  const matchingEvmCalendarProfiles = (evmCalendarProfiles ?? []).filter((profile) => profile.chainId === evmChainId);
+  const selectedEvmCalendarProfile = matchingEvmCalendarProfiles.find((profile) =>
+    profile.profileId === selectedEvmCalendarProfileId) ?? matchingEvmCalendarProfiles[0] ?? null;
   const matchingEvmDirectionalProfiles = (evmDirectionalProfiles ?? []).filter((profile) =>
     profile.templateId === templateId && profile.chainId === evmChainId);
   const selectedEvmDirectionalProfile = matchingEvmDirectionalProfiles.find((profile) =>
     profile.profileId === selectedEvmDirectionalProfileId) ?? matchingEvmDirectionalProfiles[0] ?? null;
   const selectedEvmProfile = templateId === "option-spread-v1"
     ? selectedEvmOptionProfile
-    : selectedEvmDirectionalProfile;
+    : templateId === "calendar-spread-v1"
+      ? selectedEvmCalendarProfile
+      : selectedEvmDirectionalProfile;
   const matchingEvmPositions = (evmPositions ?? []).filter((position) => position.status === "OPEN"
     && position.owner === strategyOwner
     && selectedEvmProfile !== null
@@ -2219,6 +2355,89 @@ export function GeneralizedStrategyPreparationPanel({
       setEvmExecutionConfirmed(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM option order creation failed closed.");
+    } finally {
+      setEvmCreateBusy(false);
+    }
+  }
+
+  async function createEvmCalendarOrder() {
+    if (privateApiBaseUrl === null || selectedEvmCalendarProfile === null) return;
+    setEvmCreateBusy(true);
+    setError(null);
+    try {
+      if (lifecycleAction !== "ENTRY" && !fullEvmUnwind) {
+        throw new Error("Calendar spreads support entry, exit, and emergency unwind on this lane.");
+      }
+      if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
+        throw new Error("Connect the EVM wallet that will own this calendar spread.");
+      }
+      if (lifecycleAction !== "ENTRY" && selectedEvmPosition === null) {
+        throw new Error("Select an authoritative open calendar spread before creating its transition.");
+      }
+      const quantityAtoms = fullEvmUnwind
+        ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
+        : amountToAtoms(evmCalendarQuantity, selectedEvmCalendarProfile.baseAsset.decimals, "Calendar quantity");
+      const nearPrice = priceToAtomicRatio(
+        evmNearFuturePrice,
+        selectedEvmCalendarProfile.baseAsset.decimals,
+        selectedEvmCalendarProfile.quoteAsset.decimals,
+        12,
+        "Near future limit price",
+      );
+      const farPrice = priceToAtomicRatio(
+        evmFarFuturePrice,
+        selectedEvmCalendarProfile.baseAsset.decimals,
+        selectedEvmCalendarProfile.quoteAsset.decimals,
+        12,
+        "Far future limit price",
+      );
+      const nearFuture = selectedEvmCalendarProfile.markets.find((market) => market.role === "near-future");
+      if (nearFuture === undefined) throw new Error("The reviewed calendar spread has no near future.");
+      const now = BigInt(Math.floor(Date.now() / 1_000));
+      const maximumTtl = BigInt(selectedEvmCalendarProfile.bounds.maximumExpiryTtlSeconds);
+      const maturityHeadroom = BigInt(nearFuture.maturity) - now - BigInt(1);
+      const ttl = [BigInt(600), maximumTtl, maturityHeadroom].reduce(
+        (minimum, candidate) => candidate < minimum ? candidate : minimum,
+      );
+      if (ttl <= BigInt(15)) throw new Error("The near future is too close to maturity for a new package order.");
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/evm-calendar-spread-orders/create`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileId: selectedEvmCalendarProfile.profileId,
+          owner: strategyOwner.toLowerCase(),
+          lifecycleAction,
+          quantityAtoms: quantityAtoms.toString(),
+          limitPrices: [
+            { legId: "near-future", ...nearPrice },
+            { legId: "far-future", ...farPrice },
+          ],
+          expiryValue: (now + ttl).toString(),
+          nonce: randomNonce(),
+          ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedEvmPosition!.stateHash }),
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = parseCreatedEvmCalendarOrder(
+        await response.json(),
+        selectedEvmCalendarProfile.profileId,
+        lifecycleAction,
+      );
+      setOrderHash(created.orderHash);
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setReview(null);
+      setEvmProvisioning(null);
+      setEvmCollateral(null);
+      setEvmCollateralCompletionKey("");
+      setEvmExecutionHash(null);
+      setEvmExecutionConfirmed(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "EVM calendar spread creation failed closed.");
     } finally {
       setEvmCreateBusy(false);
     }
@@ -2840,6 +3059,14 @@ export function GeneralizedStrategyPreparationPanel({
     && (fullEvmUnwind || evmOptionQuantity !== "")
     && evmLongPremium !== ""
     && evmShortPremium !== "";
+  const evmCalendarFieldsReady = selectedEvmCalendarProfile !== null
+    && (lifecycleAction === "ENTRY" || fullEvmUnwind)
+    && strategyOwner !== null
+    && OWNER.test(strategyOwner.toLowerCase())
+    && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
+    && (fullEvmUnwind || evmCalendarQuantity !== "")
+    && evmNearFuturePrice !== ""
+    && evmFarFuturePrice !== "";
   const evmDirectionalFieldsReady = selectedEvmDirectionalProfile !== null
     && evmLifecycleSupported
     && (lifecycleAction === "ENTRY" || fullEvmUnwind)
@@ -2849,6 +3076,8 @@ export function GeneralizedStrategyPreparationPanel({
     && (fullEvmUnwind || evmDirectionalQuantity !== "")
     && evmHedgePrice !== ""
     && (selectedEvmDirectionalProfile.kind === "TREASURY_HEDGE" || evmSwapPrice !== "");
+  const evmPackageLabel = templateId === "option-spread-v1" ? "option package"
+    : templateId === "calendar-spread-v1" ? "calendar spread" : "strategy package";
   const evmReview = review?.domains.length === 1 ? review.domains[0]?.evmAuthorization ?? null : null;
   const solanaReview = review?.domains.length === 1 && review.domains[0]?.kind === "SOLANA_MULTI_STRATEGY_ACCOUNT"
     ? review.domains[0]
@@ -3351,6 +3580,158 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
+      {sourceOrderHash === null && evmLane && templateId === "calendar-spread-v1" ? (
+        <div className={styles.strategyPrepareForm}>
+          <label htmlFor="evm-calendar-profile">Atomic calendar market</label>
+          <select
+            id="evm-calendar-profile"
+            value={selectedEvmCalendarProfile?.profileId ?? ""}
+            disabled={evmCalendarProfiles === null || evmCalendarProfiles.length === 0}
+            onChange={(event) => {
+              setSelectedEvmCalendarProfileId(event.target.value);
+              setSelectedEvmPackageId("");
+              setOrderHash("");
+              setEvmProvisioning(null);
+              setError(null);
+            }}
+          >
+            {matchingEvmCalendarProfiles.length === 0
+              ? <option value="">No reviewed calendar market is active on this chain</option> : null}
+            {matchingEvmCalendarProfiles.map((profile) => (
+              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+            ))}
+          </select>
+          {selectedEvmCalendarProfile ? (
+            <>
+              <div className={styles.reviewGrid}>
+                <span>Domain</span><strong>{selectedEvmCalendarProfile.domainId}</strong>
+                {selectedEvmCalendarProfile.markets.map((market) => (
+                  <Fragment key={market.role}>
+                    <span>{market.role === "near-future" ? "Near maturity" : "Far maturity"}</span>
+                    <strong>{expiryText("EVM_UNIX_SECONDS", market.maturity)}</strong>
+                  </Fragment>
+                ))}
+                <span>Settlement</span><strong>Atomic postconditions</strong>
+              </div>
+              {lifecycleAction !== "ENTRY" ? (
+                <>
+                  <label htmlFor="evm-calendar-position">Open calendar spread</label>
+                  <select
+                    id="evm-calendar-position"
+                    value={selectedEvmPosition?.packageId ?? ""}
+                    disabled={evmPositions === null || matchingEvmPositions.length === 0}
+                    onChange={(event) => {
+                      setSelectedEvmPackageId(event.target.value);
+                      setOrderHash("");
+                      setEvmProvisioning(null);
+                      setError(null);
+                    }}
+                  >
+                    {matchingEvmPositions.length === 0
+                      ? <option value="">No open calendar spread matches this market</option> : null}
+                    {matchingEvmPositions.map((position) => (
+                      <option key={position.packageId} value={position.packageId}>
+                        {compact(position.packageId, 18, 8)} / {compact(position.stateHash, 8, 6)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={styles.fieldContext} role="status">
+                    {selectedEvmPosition
+                      ? `${lifecycleAction.toLowerCase()} is bound to finalized state ${compact(selectedEvmPosition.stateHash)}.`
+                      : evmPositions === null ? "Loading authoritative EVM packages."
+                        : evmPositionError ?? "No open calendar spread matches this reviewed market."}
+                  </p>
+                </>
+              ) : null}
+              <label htmlFor="evm-calendar-quantity">Package quantity</label>
+              <input
+                id="evm-calendar-quantity"
+                value={fullEvmUnwind && selectedEvmPosition !== null
+                  ? atomsToInput(selectedEvmPosition.economicQuantityAtoms, selectedEvmCalendarProfile.baseAsset.decimals)
+                  : evmCalendarQuantity}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                readOnly={fullEvmUnwind}
+                onChange={(event) => {
+                  setEvmCalendarQuantity(event.target.value.trim());
+                  setOrderHash("");
+                  setError(null);
+                }}
+              />
+              <p className={styles.fieldContext}>
+                Reviewed range {formatAtomicAmount(
+                  selectedEvmCalendarProfile.bounds.minimumQuantityAtoms,
+                  selectedEvmCalendarProfile.baseAsset.decimals,
+                  selectedEvmCalendarProfile.baseAsset.assetId,
+                )} to {formatAtomicAmount(
+                  selectedEvmCalendarProfile.bounds.maximumQuantityAtoms,
+                  selectedEvmCalendarProfile.baseAsset.decimals,
+                  selectedEvmCalendarProfile.baseAsset.assetId,
+                )}.
+              </p>
+              <label htmlFor="evm-near-future-price">
+                {lifecycleAction === "ENTRY" ? "Maximum near future purchase price" : "Minimum near future sale price"}
+              </label>
+              <input
+                id="evm-near-future-price"
+                value={evmNearFuturePrice}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => {
+                  setEvmNearFuturePrice(event.target.value.trim());
+                  setOrderHash("");
+                  setError(null);
+                }}
+              />
+              <label htmlFor="evm-far-future-price">
+                {lifecycleAction === "ENTRY" ? "Minimum far future sale price" : "Maximum far future purchase price"}
+              </label>
+              <input
+                id="evm-far-future-price"
+                value={evmFarFuturePrice}
+                inputMode="decimal"
+                autoComplete="off"
+                placeholder="0.00"
+                onChange={(event) => {
+                  setEvmFarFuturePrice(event.target.value.trim());
+                  setOrderHash("");
+                  setError(null);
+                }}
+              />
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || evmCreateBusy || !evmCalendarFieldsReady}
+                onClick={() => void createEvmCalendarOrder()}
+              >
+                {evmCreateBusy ? "Creating atomic calendar spread" : "Create atomic calendar spread"}
+              </button>
+              {HASH.test(orderHash) ? (
+                <button
+                  type="button"
+                  className={styles.secondaryAction}
+                  disabled={evmProvisionBusy || evmProvisioning?.ready === true}
+                  onClick={() => void provisionEvmStrategy()}
+                >
+                  {evmProvisionBusy ? "Provisioning strategy account" : evmProvisioning?.ready
+                    ? "Strategy account ready" : "Provision strategy account"}
+                </button>
+              ) : null}
+              <p className={styles.fieldContext} role="status">
+                {strategyOwner === null
+                  ? "Connect the EVM wallet that will own this calendar spread."
+                  : evmProvisioning?.ready
+                    ? `Strategy account ${compact(evmProvisioning.strategyAccount, 10, 8)} is ready.`
+                    : "The wallet creates one isolated account and two policy-bound future adapters before execution."}
+              </p>
+            </>
+          ) : (
+            <p className={styles.fieldContext} role="status">Loading reviewed EVM calendar markets.</p>
+          )}
+        </div>
+      ) : null}
       {sourceOrderHash === null && evmLane
         && (templateId === "treasury-inventory-hedge-v1" || templateId === "collateral-conversion-hedge-v1"
           || templateId === "reverse-cash-and-carry-v1") ? (
@@ -3703,7 +4084,10 @@ export function GeneralizedStrategyPreparationPanel({
                 disabled={privateApiBaseUrl === null || evmExecutionBusy || evmExecutionHash !== null}
                 onClick={() => void executeEvmStrategy()}
               >
-                {evmExecutionBusy ? "Confirming atomic option package" : evmExecutionConfirmed ? "Atomic option package finalized" : evmExecutionHash ? "Atomic option package submitted" : "Sign and execute atomic option package"}
+                {evmExecutionBusy ? `Confirming atomic ${evmPackageLabel}`
+                  : evmExecutionConfirmed ? `Atomic ${evmPackageLabel} finalized`
+                    : evmExecutionHash ? `Atomic ${evmPackageLabel} submitted`
+                      : `Sign and execute atomic ${evmPackageLabel}`}
               </button>
               {evmExecutionHash !== null && !evmExecutionConfirmed ? (
                 <button
