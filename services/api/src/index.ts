@@ -82,6 +82,17 @@ export {
   type EvmCollateralConversionProfile,
 } from "./evm-collateral-conversion-order.js";
 export {
+  createEvmReverseBasisOrderPort,
+  EvmReverseBasisOrderError,
+  loadEvmReverseBasisProfiles,
+  type CreatedEvmReverseBasisOrder,
+  type EvmReverseBasisBounds,
+  type EvmReverseBasisLegProfile,
+  type EvmReverseBasisOrderPort,
+  type EvmReverseBasisOrderRequest,
+  type EvmReverseBasisProfile,
+} from "./evm-reverse-basis-order.js";
+export {
   buildHyperliquidStrategyPackageReceipt,
   HyperliquidStrategyReceiptError,
 } from "./hyperliquid-strategy-receipt.js";
