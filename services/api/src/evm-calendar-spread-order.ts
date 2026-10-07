@@ -34,7 +34,7 @@ const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 
 type CalendarRole = "near-future" | "far-future";
-type SupportedAction = "ENTRY" | "EXIT" | "EMERGENCY_UNWIND";
+type SupportedAction = "ENTRY" | "INCREASE" | "DECREASE" | "EXIT" | "EMERGENCY_UNWIND";
 
 export class EvmCalendarSpreadOrderError extends Error {
   readonly code: string;
@@ -348,6 +348,10 @@ function policyHash(profile: EvmCalendarSpreadProfile, request: EvmCalendarSprea
   ].join("\0"), "utf8").digest("hex");
 }
 
+function increasing(action: SupportedAction): boolean {
+  return action === "ENTRY" || action === "INCREASE";
+}
+
 export function createEvmCalendarSpreadOrderPort(input: Readonly<{
   profiles: readonly EvmCalendarSpreadProfile[];
   intake: StrategyOrderIntakePort;
@@ -374,7 +378,8 @@ export function createEvmCalendarSpreadOrderPort(input: Readonly<{
         || typeof fields.settlementAccount !== "string" || typeof fields.quantityAtoms !== "string"
         || typeof fields.expiryValue !== "string" || typeof fields.nonce !== "string"
         || !Array.isArray(fields.limitPrices)
-        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "EXIT"
+        || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
+          && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
         || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
         fail("INVALID_REQUEST", "EVM calendar spread order request fields are invalid.");
@@ -411,7 +416,7 @@ export function createEvmCalendarSpreadOrderPort(input: Readonly<{
       }
       const limits = new Map(request.limitPrices.map((limit) => [limit.legId, limit]));
       if (limits.size !== 2) fail("INVALID_REQUEST", "Calendar spread price limits repeat a leg.");
-      const opening = request.lifecycleAction === "ENTRY";
+      const opening = increasing(request.lifecycleAction);
       const legs = profile.markets.map((market) => {
         const side = opening
           ? market.role === "near-future" ? "BUY" as const : "SELL" as const

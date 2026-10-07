@@ -314,6 +314,82 @@ function postOpenPosition(snapshot: EvmCalendarFutureSnapshot, size: bigint, col
   });
 }
 
+function absolute(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+function ceilDiv(numerator: bigint, denominator: bigint): bigint {
+  requireCondition(numerator >= 0n && denominator > 0n, 'division inputs are invalid');
+  return (numerator + denominator - 1n) / denominator;
+}
+
+function sameDirection(left: bigint, right: bigint): boolean {
+  return (left > 0n && right > 0n) || (left < 0n && right < 0n);
+}
+
+export function deriveEvmCalendarIncreasePosition(
+  positionBefore: Position,
+  snapshot: EvmCalendarFutureSnapshot,
+  sizeDelta: bigint,
+  collateralAtoms: bigint,
+): Position {
+  const addedBalance = collateralAtoms * snapshot.collateralScale - snapshot.feeWad;
+  requireCondition(addedBalance > 0n && sameDirection(positionBefore.size, sizeDelta),
+    'future increase shape is invalid');
+  const oldSize = absolute(positionBefore.size);
+  const addedSize = absolute(sizeDelta);
+  const newSize = oldSize + addedSize;
+  return Object.freeze({
+    balance: positionBefore.balance + addedBalance,
+    size: positionBefore.size + sizeDelta,
+    entryNotional: positionBefore.entryNotional + snapshot.notionalWad,
+    entrySocialLossIndex: positionBefore.entrySocialLossIndex,
+    entryFundingIndex: (
+      oldSize * positionBefore.entryFundingIndex + addedSize * snapshot.currentFundingIndex
+    ) / newSize,
+  });
+}
+
+export function deriveEvmCalendarDecreasePosition(
+  positionBefore: Position,
+  snapshot: EvmCalendarFutureSnapshot,
+  sizeDelta: bigint,
+): Readonly<{ post: Position; payoutAtoms: bigint }> {
+  const positionSize = absolute(positionBefore.size);
+  const closeSize = absolute(sizeDelta);
+  requireCondition(positionBefore.balance >= 0n && closeSize > 0n && closeSize < positionSize
+    && !sameDirection(positionBefore.size, sizeDelta), 'future decrease shape is invalid');
+  const entryProduct = positionBefore.entryNotional * closeSize;
+  const closedEntryNotional = positionBefore.size > 0n
+    ? ceilDiv(entryProduct, positionSize)
+    : entryProduct / positionSize;
+  const releasedMargin = positionBefore.balance * closeSize / positionSize;
+  const realizedPnl = positionBefore.size < 0n
+    ? closedEntryNotional - snapshot.notionalWad
+    : snapshot.notionalWad - closedEntryNotional;
+  const accrued = sizeDelta * (snapshot.currentFundingIndex - positionBefore.entryFundingIndex);
+  const funding = accrued >= 0n ? accrued / WAD : -ceilDiv(-accrued, WAD);
+  const equity = releasedMargin + realizedPnl + funding;
+  const positiveEquity = equity > 0n ? equity : 0n;
+  const floorToAtom = (value: bigint) => value - value % snapshot.collateralScale;
+  const charged = positiveEquity > 0n
+    ? (snapshot.feeWad < floorToAtom(positiveEquity) ? snapshot.feeWad : floorToAtom(positiveEquity))
+    : 0n;
+  const payoutWad = positiveEquity > charged ? floorToAtom(positiveEquity - charged) : 0n;
+  requireCondition(snapshot.insuranceWad + releasedMargin >= payoutWad + charged,
+    'future market insurance cannot settle the decrease');
+  return Object.freeze({
+    post: Object.freeze({
+      balance: positionBefore.balance - releasedMargin,
+      size: positionBefore.size + sizeDelta,
+      entryNotional: positionBefore.entryNotional - closedEntryNotional,
+      entrySocialLossIndex: positionBefore.entrySocialLossIndex,
+      entryFundingIndex: positionBefore.entryFundingIndex,
+    }),
+    payoutAtoms: payoutWad / snapshot.collateralScale,
+  });
+}
+
 async function closePayout(
   lane: EvmCalendarSpreadPreparationLane,
   adapter: AdapterState,
@@ -347,9 +423,10 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
       && bytesEqual(documents.route.domainPlans[0]!.domain.domainManifestHash, lane.pricing.domain.domainManifestHash));
     requireCondition(matches.length === 1, 'package must resolve to exactly one preparation lane');
     const lane = matches[0]!;
-    const opening = documents.order.lifecycleAction === 'ENTRY';
-    const closing = documents.order.lifecycleAction === 'EXIT' || documents.order.lifecycleAction === 'EMERGENCY_UNWIND';
-    requireCondition((opening || closing) && documents.order.settlementClass === 'ATOMIC_POSTCONDITION'
+    const opening = documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'INCREASE';
+    const terminal = documents.order.lifecycleAction === 'EXIT' || documents.order.lifecycleAction === 'EMERGENCY_UNWIND';
+    const decreasing = documents.order.lifecycleAction === 'DECREASE' || terminal;
+    requireCondition((opening || decreasing) && documents.order.settlementClass === 'ATOMIC_POSTCONDITION'
       && documents.order.expiryUnit === 'EVM_UNIX_SECONDS', 'package is not a supported atomic EVM calendar execution');
     const chain = lane.pricing.chain;
     const [currentTime, chainId] = await Promise.all([chain.latestBlockTimestamp(), chain.chainId()]);
@@ -389,7 +466,9 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
     const accountStateHash = hash(structField(packageValue, 1, 'stateHash'), 'package state hash', true);
     const accountActive = structField(packageValue, 3, 'active');
     requireCondition(typeof accountActive === 'boolean', 'package active state is invalid');
-    if (opening) requireCondition(!accountActive && accountStateHash === zeroHash, 'entry package is already active');
+    if (documents.order.lifecycleAction === 'ENTRY') {
+      requireCondition(!accountActive && accountStateHash === zeroHash, 'entry package is already active');
+    }
     else requireCondition(accountActive && accountStateHash === toHex(documents.order.expectedStrategyStateHash!),
       'onchain package state differs from the signed expected state');
 
@@ -400,14 +479,32 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
       'calendar future legs are missing');
     const nearTarget = nearLeg.side === 'BUY' ? quantity : -quantity;
     const farTarget = farLeg.side === 'BUY' ? quantity : -quantity;
-    requireCondition(opening
-      ? nearAdapter.position.size === 0n && farAdapter.position.size === 0n
-        && nearAdapter.reserveAtoms === 0n && farAdapter.reserveAtoms === 0n
-      : nearAdapter.position.size === -nearTarget && farAdapter.position.size === -farTarget,
-    opening ? 'entry adapters are not flat' : 'exit sides do not close the open calendar positions');
+    requireCondition(nearAdapter.reserveAtoms === 0n && farAdapter.reserveAtoms === 0n,
+      'calendar adapters carry unexpected free collateral');
+    if (documents.order.lifecycleAction === 'ENTRY') {
+      requireCondition(nearAdapter.position.size === 0n && farAdapter.position.size === 0n,
+        'entry adapters are not flat');
+    } else {
+      requireCondition(nearAdapter.position.size !== 0n && farAdapter.position.size !== 0n
+        && absolute(nearAdapter.position.size) === absolute(farAdapter.position.size),
+      'open calendar positions are missing or unbalanced');
+      requireCondition(opening
+        ? sameDirection(nearAdapter.position.size, nearTarget) && sameDirection(farAdapter.position.size, farTarget)
+        : !sameDirection(nearAdapter.position.size, nearTarget) && !sameDirection(farAdapter.position.size, farTarget),
+      'calendar transition directions differ from the open positions');
+      if (decreasing) {
+        requireCondition(quantity <= absolute(nearAdapter.position.size), 'decrease exceeds the open calendar spread');
+        requireCondition(terminal ? quantity === absolute(nearAdapter.position.size)
+          : quantity < absolute(nearAdapter.position.size),
+        terminal ? 'terminal action must close the entire calendar spread'
+          : 'decrease must retain an open calendar spread');
+      }
+    }
     const [nearSnapshot, farSnapshot] = await Promise.all([
-      readEvmCalendarFutureSnapshot(lane.pricing, nearAdapter.market, opening ? nearTarget : -nearAdapter.position.size),
-      readEvmCalendarFutureSnapshot(lane.pricing, farAdapter.market, opening ? farTarget : -farAdapter.position.size),
+      readEvmCalendarFutureSnapshot(lane.pricing, nearAdapter.market,
+        terminal ? -nearAdapter.position.size : nearTarget),
+      readEvmCalendarFutureSnapshot(lane.pricing, farAdapter.market,
+        terminal ? -farAdapter.position.size : farTarget),
     ]);
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, candidate) => candidate < minimum ? candidate : minimum);
@@ -426,15 +523,25 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
         === snapshot.fillPriceWad * economics.executionPrice.baseAtoms * quoteScale,
       `${adapter.role} current price differs from the signed quote`);
       const collateralIn = opening ? economics.marginDelta.atoms : 0n;
-      const post = opening ? postOpenPosition(snapshot, target, collateralIn) : zeroPosition();
-      const payout = opening ? 0n : await closePayout(lane, adapter, snapshot);
+      const partial = documents.order.lifecycleAction === 'DECREASE'
+        ? deriveEvmCalendarDecreasePosition(adapter.position, snapshot, target)
+        : undefined;
+      const post = documents.order.lifecycleAction === 'ENTRY'
+        ? postOpenPosition(snapshot, target, collateralIn)
+        : documents.order.lifecycleAction === 'INCREASE'
+          ? deriveEvmCalendarIncreasePosition(adapter.position, snapshot, target, collateralIn)
+          : partial?.post ?? zeroPosition();
+      const payout = terminal
+        ? await closePayout(lane, adapter, snapshot)
+        : partial?.payoutAtoms ?? 0n;
       return Object.freeze({
         collateralIn,
         post,
         bounds: Object.freeze({
           legId: adapter.role,
           expectedPrePositionHash: positionHash(adapter.position),
-          tradeArgs: tradeArgs(snapshot.expiry, deadline, opening ? target : -adapter.position.size, opening ? collateralIn * snapshot.collateralScale : 0n),
+          tradeArgs: tradeArgs(snapshot.expiry, deadline, terminal ? -adapter.position.size : target,
+            opening ? collateralIn * snapshot.collateralScale : 0n),
           expectedPostSizeWad: post.size,
           minimumPostBalanceWad: post.balance,
           maximumPostBalanceWad: post.balance,
@@ -445,7 +552,7 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
           maximumReserveAfterAtoms: 0n,
           collateralInAtoms: collateralIn,
           collateralOutAtoms: 0n,
-          withdrawAll: !opening,
+          withdrawAll: decreasing,
           minimumCollateralOutAtoms: payout,
           maximumCollateralOutAtoms: payout,
         }),
@@ -472,14 +579,14 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
       },
       bounds: [bounds],
     });
-    const nextStateHash = opening ? strategyStateHash({
+    const nextStateHash = terminal ? undefined : strategyStateHash({
       packageId: checkedPackageId,
       account,
       nearAdapter: nearAdapter.address,
       nearPosition: nearExecution.post,
       farAdapter: farAdapter.address,
       farPosition: farExecution.post,
-    }) : undefined;
+    });
     if (nextStateHash !== undefined) await lane.packageIds.rememberPackageId?.(nextStateHash, checkedPackageId);
     const policy = (
       adapter: AdapterState,

@@ -33,6 +33,10 @@ import {
   type StoredStrategyPackageDocuments,
   type StoredStrategyPackageOrderDocuments,
 } from '../src/index.js';
+import {
+  deriveEvmCalendarDecreasePosition,
+  deriveEvmCalendarIncreasePosition,
+} from '../src/evm-calendar-spread-preparation.js';
 
 const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
 const codeHash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
@@ -52,6 +56,8 @@ const FAR_FACTORY = address('a');
 const NEAR_ADAPTER = address('b');
 const FAR_ADAPTER = address('c');
 const SOLVER = address('d');
+const OPEN_STATE_HASH = hash('f');
+const OPEN_PACKAGE_ID = codeHash('e');
 
 const domain = domainRef('eip155:84532', 1, hash('1'));
 const baseAsset = assetRef('base-sepolia:ntbase', hash('2'), 18);
@@ -134,6 +140,12 @@ function reducedPrice(value: bigint): readonly [bigint, bigint] {
 }
 
 class Chain implements EvmOptionSpreadReadPort {
+  readonly active: boolean;
+
+  constructor(active = false) {
+    this.active = active;
+  }
+
   readonly codes = new Map<string, Hex>([
     [BASE_TOKEN, codeHash('1')],
     [QUOTE_TOKEN, codeHash('2')],
@@ -171,10 +183,13 @@ class Chain implements EvmOptionSpreadReadPort {
         case 'collateralScale': return 10n ** 12n;
         case 'oraclePriceWad': return 100n * 10n ** 18n;
         case 'currentFundingIndex': return 0n;
+        case 'insuranceWad': return 1_000n * 10n ** 18n;
         case 'reserveOf': return 0n;
         case 'previewOpen': {
-          assert.deepEqual(request.args, [near ? QUANTITY : -QUANTITY, 0n]);
-          const price = (near ? 101n : 105n) * 10n ** 18n;
+          const sizeDelta = request.args?.[0];
+          if (typeof sizeDelta !== 'bigint') throw new Error('preview size is invalid');
+          assert.equal(sizeDelta < 0n ? -sizeDelta : sizeDelta, QUANTITY);
+          const price = (near ? sizeDelta > 0n ? 101n : 99n : sizeDelta > 0n ? 107n : 105n) * 10n ** 18n;
           return [price, price, price / 1_000n, 0n];
         }
         default: throw new Error(`unexpected market read ${request.functionName}`);
@@ -189,7 +204,9 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'owner') return OWNER;
       if (request.functionName === 'nextNonce') return 0n;
       if (request.functionName === 'packageState') {
-        return [[`0x${'00'.repeat(32)}`, 0, `0x${'00'.repeat(32)}`], `0x${'00'.repeat(32)}`, `0x${'00'.repeat(32)}`, false];
+        return this.active
+          ? [[`0x${'00'.repeat(32)}`, 0, `0x${'00'.repeat(32)}`], `0x${OPEN_STATE_HASH}`, `0x${'00'.repeat(32)}`, true]
+          : [[`0x${'00'.repeat(32)}`, 0, `0x${'00'.repeat(32)}`], `0x${'00'.repeat(32)}`, `0x${'00'.repeat(32)}`, false];
       }
     }
     if (target === NEAR_FACTORY.toLowerCase() || target === FAR_FACTORY.toLowerCase()) {
@@ -197,13 +214,23 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'validateInstance') return true;
     }
     if (target === NEAR_ADAPTER.toLowerCase() || target === FAR_ADAPTER.toLowerCase()) {
-      if (request.functionName === 'position') return [0n, 0n, 0n, 0n, 0n];
+      if (request.functionName === 'position') {
+        if (!this.active) return [0n, 0n, 0n, 0n, 0n];
+        return target === NEAR_ADAPTER.toLowerCase()
+          ? [40n * 10n ** 18n, 2n * QUANTITY, 202n * 10n ** 18n, 0n, 0n]
+          : [42n * 10n ** 18n, -2n * QUANTITY, 210n * 10n ** 18n, 0n, 0n];
+      }
     }
     throw new Error(`unexpected read ${request.functionName} at ${request.address}`);
   }
 }
 
-function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOrderDocuments {
+function documents(
+  nearLimit: bigint,
+  farLimit: bigint,
+  lifecycleAction: 'ENTRY' | 'DECREASE' = 'ENTRY',
+): StoredStrategyPackageOrderDocuments {
+  const opening = lifecycleAction === 'ENTRY';
   const [nearQuoteAtoms, nearBaseAtoms] = reducedPrice(nearLimit);
   const [farQuoteAtoms, farBaseAtoms] = reducedPrice(farLimit);
   const graph = packageGraph({
@@ -218,19 +245,19 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
     executionClassId: 'evm-atomic-calendar-spread',
     executionClassVersion: 1,
     executionClassManifestHash: hash('b'),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction,
     owner: OWNER.toLowerCase(),
     strategyAccountRefs: [ACCOUNT.toLowerCase()],
     legs: [{
       legId: 'near-future',
-      legFamily: 'FUTURE_OPEN',
+      legFamily: opening ? 'FUTURE_OPEN' : 'FUTURE_CLOSE',
       legTypeId: 'near-future',
       domain,
       adapter: nearAdapter,
       venue,
       market: nearMarket,
       assets: [baseAsset, quoteAsset],
-      side: 'BUY',
+      side: opening ? 'BUY' : 'SELL',
       quantityAsset: baseAsset,
       quantityAtoms: QUANTITY,
       minimumQuantityAtoms: QUANTITY,
@@ -239,7 +266,7 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
         quoteAsset,
         quoteAtoms: nearQuoteAtoms,
         baseAtoms: nearBaseAtoms,
-        roundingDirection: 'FLOOR',
+        roundingDirection: opening ? 'FLOOR' : 'CEIL',
       },
       maximumFeeQuoteAtoms: 250_000n,
       preconditionHashes: [],
@@ -248,14 +275,14 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
       legExpiryValue: 1_200n,
     }, {
       legId: 'far-future',
-      legFamily: 'FUTURE_OPEN',
+      legFamily: opening ? 'FUTURE_OPEN' : 'FUTURE_CLOSE',
       legTypeId: 'far-future',
       domain,
       adapter: farAdapter,
       venue,
       market: farMarket,
       assets: [baseAsset, quoteAsset],
-      side: 'SELL',
+      side: opening ? 'SELL' : 'BUY',
       quantityAsset: baseAsset,
       quantityAtoms: QUANTITY,
       minimumQuantityAtoms: QUANTITY,
@@ -264,7 +291,7 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
         quoteAsset,
         quoteAtoms: farQuoteAtoms,
         baseAtoms: farBaseAtoms,
-        roundingDirection: 'CEIL',
+        roundingDirection: opening ? 'CEIL' : 'FLOOR',
       },
       maximumFeeQuoteAtoms: 250_000n,
       preconditionHashes: [],
@@ -302,7 +329,7 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
     riskClassId: STRATEGY_RISK_CLASS_ID.CALENDAR,
     owner: graph.owner,
     settlementAccount: ACCOUNT.toLowerCase(),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction,
     settlementClass: 'ATOMIC_POSTCONDITION',
     packageOrderType: 'MARKETABLE_LIMIT',
     packageTimeInForce: 'IOC',
@@ -313,8 +340,9 @@ function documents(nearLimit: bigint, farLimit: bigint): StoredStrategyPackageOr
     maximumVenueFeesByAsset: [{ asset: quoteAsset, maxAtoms: 250_000n }],
     maximumNetworkFeesByAsset: [{ asset: quoteAsset, maxAtoms: 1_000n }],
     maximumRecoveryCostByAsset: [],
-    maximumMarginIncrease: assetAmount(quoteAsset, 42_000_000n),
+    maximumMarginIncrease: assetAmount(quoteAsset, opening ? 42_000_000n : 0n),
     maximumResidualValue: assetAmount(quoteAsset, 0n),
+    ...(opening ? {} : { expectedStrategyStateHash: OPEN_STATE_HASH }),
     expiryUnit: 'EVM_UNIX_SECONDS',
     expiryValue: 1_200n,
     nonce: 1n,
@@ -377,6 +405,49 @@ test('prices an atomic EVM calendar spread and enforces both future limits', asy
     }),
     /near-future executable price violates the signed limit/,
   );
+});
+
+test('derives exact calendar increase and partial-decrease postconditions', () => {
+  const snapshot = Object.freeze({
+    role: 'near-future' as const,
+    market: NEAR_MARKET,
+    expiry: 87_400n,
+    oraclePriceWad: 100n * 10n ** 18n,
+    fillPriceWad: 99n * 10n ** 18n,
+    notionalWad: 99n * 10n ** 18n,
+    feeWad: 99n * 10n ** 15n,
+    collateralScale: 10n ** 12n,
+    initialMarginBps: 2_000n,
+    maintenanceMarginBps: 1_000n,
+    currentFundingIndex: 0n,
+    insuranceWad: 1_000n * 10n ** 18n,
+  });
+  const position = Object.freeze({
+    balance: 40n * 10n ** 18n,
+    size: 2n * QUANTITY,
+    entryNotional: 202n * 10n ** 18n,
+    entrySocialLossIndex: 0n,
+    entryFundingIndex: 0n,
+  });
+  const increased = deriveEvmCalendarIncreasePosition(position, {
+    ...snapshot,
+    fillPriceWad: 101n * 10n ** 18n,
+    notionalWad: 101n * 10n ** 18n,
+    feeWad: 101n * 10n ** 15n,
+  }, QUANTITY, 20_301_000n);
+  assert.equal(increased.size, 3n * QUANTITY);
+  assert.equal(increased.balance, 60n * 10n ** 18n + 200n * 10n ** 15n);
+  assert.equal(increased.entryNotional, 303n * 10n ** 18n);
+
+  const decreased = deriveEvmCalendarDecreasePosition(position, snapshot, -QUANTITY);
+  assert.deepEqual(decreased.post, {
+    balance: 20n * 10n ** 18n,
+    size: QUANTITY,
+    entryNotional: 101n * 10n ** 18n,
+    entrySocialLossIndex: 0n,
+    entryFundingIndex: 0n,
+  });
+  assert.equal(decreased.payoutAtoms, 17_901_000n);
 });
 
 test('quotes and prepares an exact atomic EVM calendar spread entry', async () => {

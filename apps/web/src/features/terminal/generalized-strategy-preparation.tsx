@@ -2085,7 +2085,8 @@ export function GeneralizedStrategyPreparationPanel({
     ?? matchingEvmPositions[0]
     ?? null;
   const evmLifecycleSupported = lifecycleAction === "ENTRY"
-    || (templateId === "option-spread-v1" && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
+    || ((templateId === "option-spread-v1" || templateId === "calendar-spread-v1")
+      && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
     || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
@@ -2365,8 +2366,8 @@ export function GeneralizedStrategyPreparationPanel({
     setEvmCreateBusy(true);
     setError(null);
     try {
-      if (lifecycleAction !== "ENTRY" && !fullEvmUnwind) {
-        throw new Error("Calendar spreads support entry, exit, and emergency unwind on this lane.");
+      if (!evmLifecycleSupported) {
+        throw new Error("This calendar spread lifecycle action is not active.");
       }
       if (strategyOwner === null || !OWNER.test(strategyOwner.toLowerCase())) {
         throw new Error("Connect the EVM wallet that will own this calendar spread.");
@@ -2377,6 +2378,9 @@ export function GeneralizedStrategyPreparationPanel({
       const quantityAtoms = fullEvmUnwind
         ? BigInt(selectedEvmPosition!.economicQuantityAtoms)
         : amountToAtoms(evmCalendarQuantity, selectedEvmCalendarProfile.baseAsset.decimals, "Calendar quantity");
+      if (lifecycleAction === "DECREASE" && quantityAtoms >= BigInt(selectedEvmPosition!.economicQuantityAtoms)) {
+        throw new Error("A calendar decrease must retain an open package quantity. Use exit to close it.");
+      }
       const nearPrice = priceToAtomicRatio(
         evmNearFuturePrice,
         selectedEvmCalendarProfile.baseAsset.decimals,
@@ -3060,7 +3064,7 @@ export function GeneralizedStrategyPreparationPanel({
     && evmLongPremium !== ""
     && evmShortPremium !== "";
   const evmCalendarFieldsReady = selectedEvmCalendarProfile !== null
-    && (lifecycleAction === "ENTRY" || fullEvmUnwind)
+    && evmLifecycleSupported
     && strategyOwner !== null
     && OWNER.test(strategyOwner.toLowerCase())
     && (lifecycleAction === "ENTRY" || selectedEvmPosition !== null)
@@ -3671,7 +3675,8 @@ export function GeneralizedStrategyPreparationPanel({
                 )}.
               </p>
               <label htmlFor="evm-near-future-price">
-                {lifecycleAction === "ENTRY" ? "Maximum near future purchase price" : "Minimum near future sale price"}
+                {lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                  ? "Maximum near future purchase price" : "Minimum near future sale price"}
               </label>
               <input
                 id="evm-near-future-price"
@@ -3686,7 +3691,8 @@ export function GeneralizedStrategyPreparationPanel({
                 }}
               />
               <label htmlFor="evm-far-future-price">
-                {lifecycleAction === "ENTRY" ? "Minimum far future sale price" : "Maximum far future purchase price"}
+                {lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
+                  ? "Minimum far future sale price" : "Maximum far future purchase price"}
               </label>
               <input
                 id="evm-far-future-price"

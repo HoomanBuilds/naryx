@@ -94,7 +94,8 @@ const intake: StrategyOrderIntakePort = Object.freeze({
   },
 });
 
-function request(lifecycleAction: "ENTRY" | "EXIT") {
+function request(lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT") {
+  const increasing = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE";
   return {
     profileId: "base-sepolia-ntbase-calendar",
     owner: OWNER,
@@ -102,8 +103,8 @@ function request(lifecycleAction: "ENTRY" | "EXIT") {
     lifecycleAction,
     quantityAtoms: "1000000000000000",
     limitPrices: [
-      { legId: "near-future", quoteAtoms: lifecycleAction === "ENTRY" ? "101" : "97", baseAtoms: "1000000000000" },
-      { legId: "far-future", quoteAtoms: lifecycleAction === "ENTRY" ? "103" : "107", baseAtoms: "1000000000000" },
+      { legId: "near-future", quoteAtoms: increasing ? "101" : "97", baseAtoms: "1000000000000" },
+      { legId: "far-future", quoteAtoms: increasing ? "103" : "107", baseAtoms: "1000000000000" },
     ],
     expiryValue: "1000600",
     nonce: lifecycleAction === "ENTRY" ? "1" : "2",
@@ -137,6 +138,20 @@ test("loads a reviewed calendar profile and creates atomic entry and exit orders
     ]);
     assert.equal(exit.order.maximumMarginIncrease.atoms, 0n);
     assert.equal(validateStrategyTemplateGraph(exit.graph).valid, true);
+
+    const increase = port.create(request("INCREASE"));
+    assert.deepEqual(increase.graph.legs.map((leg) => [leg.legFamily, leg.side]), [
+      ["FUTURE_OPEN", "SELL"],
+      ["FUTURE_OPEN", "BUY"],
+    ]);
+    assert.equal(increase.order.maximumMarginIncrease.atoms, 50_000_000n);
+
+    const decrease = port.create(request("DECREASE"));
+    assert.deepEqual(decrease.graph.legs.map((leg) => [leg.legFamily, leg.side]), [
+      ["FUTURE_CLOSE", "BUY"],
+      ["FUTURE_CLOSE", "SELL"],
+    ]);
+    assert.equal(decrease.order.maximumMarginIncrease.atoms, 0n);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

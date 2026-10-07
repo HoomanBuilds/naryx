@@ -41,6 +41,8 @@ const FUTURE_ABI = [{
 }, {
   type: 'function', name: 'currentFundingIndex', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'int256' }],
 }, {
+  type: 'function', name: 'insuranceWad', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }],
+}, {
   type: 'function', name: 'previewOpen', stateMutability: 'view',
   inputs: [{ name: 'sizeDelta', type: 'int128' }, { name: 'balanceWad', type: 'uint256' }],
   outputs: [
@@ -73,6 +75,7 @@ export interface EvmCalendarFutureSnapshot {
   readonly initialMarginBps: bigint;
   readonly maintenanceMarginBps: bigint;
   readonly currentFundingIndex: bigint;
+  readonly insuranceWad: bigint;
 }
 
 export interface EvmCalendarSpreadPricingInput {
@@ -178,7 +181,8 @@ export async function readEvmCalendarFutureSnapshot(
     ...(args === undefined ? {} : { args }),
   });
   const [collateralValue, oracleValue, expiryValue, takerFeeValue, initialMarginValue,
-    maintenanceMarginValue, collateralScaleValue, oraclePriceValue, fundingIndexValue, previewValue] = await Promise.all([
+    maintenanceMarginValue, collateralScaleValue, oraclePriceValue, fundingIndexValue, insuranceValue,
+    previewValue] = await Promise.all([
     read('collateral'),
     read('oracle'),
     read('expiry'),
@@ -188,6 +192,7 @@ export async function readEvmCalendarFutureSnapshot(
     read('collateralScale'),
     read('oraclePriceWad'),
     read('currentFundingIndex'),
+    read('insuranceWad'),
     read('previewOpen', [sizeDelta, 0n]),
     assertCode(input.chain, binding.contract, `${binding.role} market`),
   ]);
@@ -203,6 +208,7 @@ export async function readEvmCalendarFutureSnapshot(
   const takerFeeBps = checkedBigInt(takerFeeValue, `${binding.role} taker fee`);
   const initialMarginBps = checkedBigInt(initialMarginValue, `${binding.role} initial margin`);
   const maintenanceMarginBps = checkedBigInt(maintenanceMarginValue, `${binding.role} maintenance margin`);
+  const insuranceWad = checkedBigInt(insuranceValue, `${binding.role} insurance`);
   requireCondition(typeof fundingIndexValue === 'bigint', `${binding.role} funding index is invalid`);
   requireCondition(expiry > 0n && oraclePriceWad > 0n && fillPriceWad > 0n && notionalWad > 0n
     && collateralScale > 0n && takerFeeBps < BPS && initialMarginBps > maintenanceMarginBps,
@@ -219,6 +225,7 @@ export async function readEvmCalendarFutureSnapshot(
     initialMarginBps,
     maintenanceMarginBps,
     currentFundingIndex: fundingIndexValue,
+    insuranceWad,
   });
 }
 
@@ -303,8 +310,9 @@ export function createEvmCalendarSpreadGeneralizedPricing(
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'
         && order.expiryUnit === 'EVM_UNIX_SECONDS' && graph.expiryUnit === 'EVM_UNIX_SECONDS',
       'package is not a testnet atomic EVM calendar spread');
-      const opening = order.lifecycleAction === 'ENTRY';
-      const closing = order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND';
+      const opening = order.lifecycleAction === 'ENTRY' || order.lifecycleAction === 'INCREASE';
+      const closing = order.lifecycleAction === 'DECREASE'
+        || order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND';
       requireCondition(opening || closing, 'lifecycle action is unsupported');
       requireCondition(graph.legs.length === 2 && graph.legs.every((leg) => sameDomain(leg.domain, input.domain)),
         'package domain is unsupported');

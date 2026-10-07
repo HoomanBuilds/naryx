@@ -867,7 +867,7 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
       laneId: "evm-atomic-calendar-spread",
       templateId: "calendar-spread-v1",
       templateVersion: 1,
-      actions: Object.freeze(["ENTRY", "EXIT", "EMERGENCY_UNWIND"] as const),
+      actions: Object.freeze(["ENTRY", "INCREASE", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const),
       legs: Object.freeze([
         Object.freeze({ legFamily: "FUTURE_OPEN" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 2 }),
         Object.freeze({ legFamily: "FUTURE_CLOSE" as const, sides: Object.freeze(["BUY", "SELL"] as const), maximumLegs: 2 }),
