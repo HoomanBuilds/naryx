@@ -145,6 +145,7 @@ import {
 } from "./evm-reverse-basis-order.js";
 import { HttpEvmOptionSpreadProvisioningClient } from './evm-option-spread-provisioning-client.js';
 import { HttpSolanaTreasuryHedgeProvisioningClient } from './solana-treasury-hedge-provisioning-client.js';
+import { HttpSolanaStrategyExecutionAuthorizationClient } from './solana-strategy-execution-authorization-client.js';
 import { HttpEvmReverseBasisCollateralClient } from './evm-reverse-basis-collateral-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
@@ -1054,6 +1055,11 @@ const evmOptionSpreadProvisioning = evmOptionProvisioningEnabled
 const solanaTreasuryHedgeProvisioning = explicitlyEnabled('NARYX_SOLANA_TREASURY_HEDGE_PROVISIONING_ENABLED')
   ? new HttpSolanaTreasuryHedgeProvisioningClient(solverOrigin)
   : undefined;
+const solanaStrategyExecutionAuthorization = explicitlyEnabled(
+  'NARYX_SOLANA_TREASURY_HEDGE_AUTHORIZATION_ENABLED',
+)
+  ? new HttpSolanaStrategyExecutionAuthorizationClient(solverOrigin)
+  : undefined;
 const evmReverseBasisCollateral = evmOptionProvisioningEnabled && evmReverseBasisOrders !== undefined
   ? new HttpEvmReverseBasisCollateralClient(solverOrigin)
   : undefined;
@@ -1124,6 +1130,7 @@ const server = createPrivateTerminalServer(
   evmStrategyExecutionObservation,
   solanaTreasuryHedgeOrders,
   solanaTreasuryHedgeProvisioning,
+  solanaStrategyExecutionAuthorization,
 );
 
 const publicServer = publicMarket?.listener === undefined

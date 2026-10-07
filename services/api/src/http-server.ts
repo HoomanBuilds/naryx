@@ -147,6 +147,10 @@ import {
   type SolanaTreasuryHedgeProvisioningPort,
 } from './solana-treasury-hedge-provisioning-client.js';
 import {
+  SolanaStrategyExecutionAuthorizationClientError,
+  type SolanaStrategyExecutionAuthorizationPort,
+} from './solana-strategy-execution-authorization-client.js';
+import {
   EvmReverseBasisCollateralClientError,
   type EvmReverseBasisCollateralPort,
 } from './evm-reverse-basis-collateral-client.js';
@@ -361,6 +365,7 @@ export function createPrivateTerminalRequestHandler(
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
   solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
   solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
+  solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -1476,6 +1481,46 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    if (url.pathname === '/internal/terminal/strategy-executions/authorize-solana') {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (solanaStrategyExecutionAuthorization === undefined) {
+        reject(response, 503, 'SOLANA_STRATEGY_AUTHORIZATION_UNAVAILABLE',
+          'Solana strategy authorization is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
+          || Object.keys(requestBody).length !== 1
+          || typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string') {
+          throw new SolanaStrategyExecutionAuthorizationClientError(
+            'INVALID_REQUEST',
+            'Request must contain only quoteHash.',
+          );
+        }
+        const authorization = await solanaStrategyExecutionAuthorization.authorize(
+          (requestBody as { quoteHash: string }).quoteHash,
+        );
+        sendJson(response, 200, {
+          status: 'OWNER_SIGNATURE_REQUIRED',
+          authorization: toProtocolJson(authorization),
+        });
+      } catch (error) {
+        if (error instanceof SolanaStrategyExecutionAuthorizationClientError) {
+          const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;
+          reject(response, status, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'SOLANA_STRATEGY_AUTHORIZATION_FAILED',
+          'Solana strategy authorization failed closed.');
+      }
+      return;
+    }
+
     if (url.pathname === '/internal/terminal/strategy-executions/reverse-basis-collateral') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS');
@@ -2492,6 +2537,7 @@ export function createPrivateTerminalServer(
   evmStrategyExecutionObservation?: EvmStrategyExecutionObservationPort,
   solanaTreasuryHedgeOrders?: SolanaTreasuryHedgeOrderPort,
   solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
+  solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -2530,6 +2576,7 @@ export function createPrivateTerminalServer(
     evmStrategyExecutionObservation,
     solanaTreasuryHedgeOrders,
     solanaTreasuryHedgeProvisioning,
+    solanaStrategyExecutionAuthorization,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as
