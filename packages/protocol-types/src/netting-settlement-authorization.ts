@@ -20,6 +20,7 @@ import {
 } from './netting-policy-manifest.js';
 import {
   verifyNettingFinalAllocationReceipt,
+  type CrossBatchNettingResolution,
   type NettingFinalAllocation,
   type NettingFinalAllocationReceipt,
 } from './netting-settlement.js';
@@ -143,11 +144,19 @@ function checkedPayload(
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
   settlement: PackageSettlementCommitmentInput | PackageSettlementCommitment,
+  crossBatchResolutions: readonly CrossBatchNettingResolution[],
 ): AuthorizationPayload {
   if (typeof input !== 'object' || input === null) {
     throw new MalformedInputError('nettingAllocationExecutionAuthorization', 'expected an object');
   }
-  verifyNettingFinalAllocationReceipt(receipt, result, policyInput, intents, externalEvidence);
+  verifyNettingFinalAllocationReceipt(
+    receipt,
+    result,
+    policyInput,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   const policy = nettingPolicyManifest(policyInput, 'nettingAllocationExecutionAuthorization.policy');
   const finalAllocationReceiptHash = commitmentHash(
     input.finalAllocationReceiptHash,
@@ -315,8 +324,18 @@ export function nettingAllocationExecutionAuthorization(
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
   settlement: PackageSettlementCommitmentInput | PackageSettlementCommitment,
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): NettingAllocationExecutionAuthorization {
-  const payload = checkedPayload(input, receipt, result, policy, intents, externalEvidence, settlement);
+  const payload = checkedPayload(
+    input,
+    receipt,
+    result,
+    policy,
+    intents,
+    externalEvidence,
+    settlement,
+    crossBatchResolutions,
+  );
   const authorizationHash = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_ALLOCATION_EXECUTION_AUTHORIZATION, authorizationBytes(payload)),
     'nettingAllocationExecutionAuthorization.authorizationHash',
@@ -332,6 +351,7 @@ export function nettingAllocationExecutionAuthorizationBytes(
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
   settlement: PackageSettlementCommitmentInput | PackageSettlementCommitment,
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): Uint8Array {
   return authorizationBytes(checkedPayload(
     input,
@@ -341,6 +361,7 @@ export function nettingAllocationExecutionAuthorizationBytes(
     intents,
     externalEvidence,
     settlement,
+    crossBatchResolutions,
   ));
 }
 
@@ -352,6 +373,7 @@ export function verifyNettingAllocationExecutionAuthorization(
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
   settlement: PackageSettlementCommitmentInput | PackageSettlementCommitment,
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): void {
   const payload = checkedPayload(
     authorization,
@@ -361,6 +383,7 @@ export function verifyNettingAllocationExecutionAuthorization(
     intents,
     externalEvidence,
     settlement,
+    crossBatchResolutions,
   );
   const expected = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_ALLOCATION_EXECUTION_AUTHORIZATION, authorizationBytes(payload)),

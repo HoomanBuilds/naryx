@@ -6,6 +6,7 @@ import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import {
   verifyNettingFinalAllocationReceipt,
+  type CrossBatchNettingResolution,
   type NettingFinalAllocation,
   type NettingFinalAllocationReceipt,
 } from './netting-settlement.js';
@@ -168,8 +169,16 @@ function verifyFinalReceipt(
   policy: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[],
 ): NettingPolicyManifest {
-  verifyNettingFinalAllocationReceipt(receipt, result, policy, intents, externalEvidence);
+  verifyNettingFinalAllocationReceipt(
+    receipt,
+    result,
+    policy,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   return nettingPolicyManifest(policy, 'nettingAllocationSettlementEvidence.policy');
 }
 
@@ -251,8 +260,16 @@ export function nettingAllocationSettlementEvidence(
   policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): NettingAllocationSettlementEvidence {
-  const policy = verifyFinalReceipt(receipt, result, policyInput, intents, externalEvidence);
+  const policy = verifyFinalReceipt(
+    receipt,
+    result,
+    policyInput,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   const payload = checkedEvidence(input, receipt, policy, 'nettingAllocationSettlementEvidence');
   const evidenceHash = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_ALLOCATION_SETTLEMENT_EVIDENCE, evidenceBytes(payload)),
@@ -268,8 +285,16 @@ export function verifyNettingAllocationSettlementEvidence(
   policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): void {
-  const policy = verifyFinalReceipt(receipt, result, policyInput, intents, externalEvidence);
+  const policy = verifyFinalReceipt(
+    receipt,
+    result,
+    policyInput,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   const payload = checkedEvidence(evidence, receipt, policy, 'nettingAllocationSettlementEvidence');
   const expected = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_ALLOCATION_SETTLEMENT_EVIDENCE, evidenceBytes(payload)),
@@ -297,14 +322,23 @@ function completionPayload(
   policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[],
 ): CompletionPayload {
-  verifyFinalReceipt(receipt, result, policyInput, intents, externalEvidence);
+  verifyFinalReceipt(receipt, result, policyInput, intents, externalEvidence, crossBatchResolutions);
   if (settlementEvidence.length !== receipt.allocations.length) {
     throw new MalformedInputError('nettingSettlementCompletionReceipt.settlementEvidence', 'settlement evidence coverage is incomplete');
   }
   const evidenceByAllocation = new Map<string, NettingAllocationSettlementEvidence>();
   for (const evidence of settlementEvidence) {
-    verifyNettingAllocationSettlementEvidence(evidence, receipt, result, policyInput, intents, externalEvidence);
+    verifyNettingAllocationSettlementEvidence(
+      evidence,
+      receipt,
+      result,
+      policyInput,
+      intents,
+      externalEvidence,
+      crossBatchResolutions,
+    );
     const allocationKey = toHex(evidence.allocationReceiptHash);
     if (evidenceByAllocation.has(allocationKey)) {
       throw new DuplicateElementError('nettingSettlementCompletionReceipt.settlementEvidence', 'allocation repeats');
@@ -333,8 +367,17 @@ export function nettingSettlementCompletionReceipt(
   policy: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): NettingSettlementCompletionReceipt {
-  const payload = completionPayload(receipt, settlementEvidence, result, policy, intents, externalEvidence);
+  const payload = completionPayload(
+    receipt,
+    settlementEvidence,
+    result,
+    policy,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   const receiptHash = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_SETTLEMENT_COMPLETION_RECEIPT, completionBytes(payload)),
     'nettingSettlementCompletionReceipt.receiptHash',
@@ -350,9 +393,18 @@ export function verifyNettingSettlementCompletionReceipt(
   policy: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   externalEvidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): void {
   version(completion.version, NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION, 'nettingSettlementCompletionReceipt.version');
-  const payload = completionPayload(receipt, settlementEvidence, result, policy, intents, externalEvidence);
+  const payload = completionPayload(
+    receipt,
+    settlementEvidence,
+    result,
+    policy,
+    intents,
+    externalEvidence,
+    crossBatchResolutions,
+  );
   const expected = commitmentHash(
     domainHash(HASH_DOMAIN.NETTING_SETTLEMENT_COMPLETION_RECEIPT, completionBytes(payload)),
     'nettingSettlementCompletionReceipt.receiptHash',
