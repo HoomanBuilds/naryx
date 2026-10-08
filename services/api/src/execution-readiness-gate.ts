@@ -71,6 +71,29 @@ export type ExecutionReadinessReceipt = Readonly<{
   readinessDecisionHash: string;
 }>;
 
+export type ExecutionReadinessDomainStatus = Readonly<{
+  domainId: string;
+  quoteAssetId: string;
+  maxPrincipalAtomsPerOperation: string;
+  maxPrincipalAtomsPerDay: string | null;
+  maxPrincipalAtomsPerOwnerPerDay: string | null;
+  maxRecoveryLossAtomsPerOperation: string;
+  authorizedPrincipalAtomsToday: string;
+  latestAuthorization: Readonly<{
+    decisionHash: string;
+    policyHash: string;
+    decidedAtMs: number;
+  }> | null;
+}>;
+
+export type ExecutionReadinessStatus = Readonly<{
+  source: "TESTNET_CAP_POLICY";
+  policyHash: string;
+  observedAtMs: number;
+  utcDay: string;
+  domains: readonly ExecutionReadinessDomainStatus[];
+}>;
+
 export interface ExecutionReadinessPolicyProvider {
   current(): ReadinessDecisionInput | undefined;
 }
@@ -99,6 +122,8 @@ export interface ExecutionReadinessGate<Scope extends ExecutionReadinessScopeIde
    * before the owner has signed. A gate without it is checked with `authorize`.
    */
   check?(scope: Scope): void;
+  /** Read-only operating evidence for the terminal. It never approves or consumes a cap. */
+  status?(): ExecutionReadinessStatus;
 }
 
 export class ExecutionReadinessError extends Error {

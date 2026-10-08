@@ -93,6 +93,7 @@ import {
   type ExecutionReadinessGate,
   type ExecutionReadinessScopeIdentity,
   type ExecutionReadinessScopeResolver,
+  type ExecutionReadinessStatus,
 } from "./execution-readiness-gate.js";
 import {
   strategyProgramView,
@@ -751,20 +752,34 @@ export function createPrivateTerminalRequestHandler(
         localAtomicRuntimeMode,
         Object.values(markets).map((state) => state === "LIVE"),
       );
+      let executionReadiness: ExecutionReadinessStatus | undefined;
+      let currentExecutionReadinessAvailable = executionReadinessAvailable;
+      if (executionReadinessGate?.status !== undefined) {
+        try {
+          executionReadiness = executionReadinessGate.status();
+        } catch {
+          executionReadiness = undefined;
+          currentExecutionReadinessAvailable = false;
+        }
+      }
+      const currentStatus = executionReadinessAvailable && !currentExecutionReadinessAvailable
+        ? "degraded"
+        : summary.status;
       sendJson(response, 200, {
-        status: summary.status,
+        status: currentStatus,
         scope: "private_terminal",
         environment: summary.environment,
         markets,
         localAtomicRuntimeMode,
-        executionPreparationAvailable: executionPorts.preparation !== undefined && executionReadinessAvailable,
+        executionPreparationAvailable: executionPorts.preparation !== undefined && currentExecutionReadinessAvailable,
         executionObservationAvailable: executionPorts.observation !== undefined,
-        hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined && executionReadinessAvailable,
-        evmTestnetAtomicAuthorizationAvailable: evmTestnetPorts.authorization !== undefined && executionReadinessAvailable,
-        evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined && executionReadinessAvailable,
+        hyperliquidTestnetExecutionAvailable: hyperliquidTestnetExecutionPort !== undefined && currentExecutionReadinessAvailable,
+        evmTestnetAtomicAuthorizationAvailable: evmTestnetPorts.authorization !== undefined && currentExecutionReadinessAvailable,
+        evmTestnetAtomicPreparationAvailable: evmTestnetPorts.preparation !== undefined && currentExecutionReadinessAvailable,
         evmTestnetAtomicObservationAvailable: evmTestnetPorts.atomicObservation !== undefined,
-        evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined && executionReadinessAvailable,
-        executionReadinessAvailable,
+        evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined && currentExecutionReadinessAvailable,
+        executionReadinessAvailable: currentExecutionReadinessAvailable,
+        ...(executionReadiness === undefined ? {} : { executionReadiness }),
         lifecycleReadAvailable: lifecycleStore !== undefined,
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,

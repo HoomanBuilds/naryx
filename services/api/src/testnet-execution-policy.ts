@@ -10,6 +10,7 @@ import {
   type ExecutionReadinessGate,
   type ExecutionReadinessReceipt,
   type ExecutionReadinessScopeResolver,
+  type ExecutionReadinessStatus,
 } from "./execution-readiness-gate.js";
 import type { ExecutionIntentStore } from "./execution-intent-store.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
@@ -392,6 +393,7 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
   readonly #insertApproval: Database.Statement;
   readonly #insertHandoff: Database.Statement;
   readonly #insertDenial: Database.Statement;
+  readonly #latestApproval: Database.Statement;
 
   constructor(options: TestnetExecutionGateOptions) {
     this.#policy = options.policy;
@@ -461,6 +463,13 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
         (handoff, attempt_id, idempotency_key, domain_id, principal_atoms, reason, policy_hash, decided_at_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    this.#latestApproval = this.#db.prepare(`
+      SELECT decision_hash, policy_hash, decided_at_ms
+      FROM testnet_execution_approvals
+      WHERE domain_id = ?
+      ORDER BY decided_at_ms DESC, attempt_id DESC
+      LIMIT 1
+    `);
   }
 
   #currentPolicy(): TestnetExecutionPolicy {
@@ -515,6 +524,42 @@ export class TestnetCapExecutionGate implements ExecutionReadinessGate<TestnetEx
       return;
     }
     this.#checkCaps(scope, policy, utcDay(this.#nowMs()), deny);
+  }
+
+  status(): ExecutionReadinessStatus {
+    const observedAtMs = this.#nowMs();
+    const day = utcDay(observedAtMs);
+    const policy = this.#currentPolicy();
+    const domains = policy.domains.map((caps) => {
+      const authorizedPrincipalAtomsToday = (this.#dayRows.all(caps.domainId, day) as { principal_atoms: string }[])
+        .reduce((total, row) => total + BigInt(row.principal_atoms), 0n);
+      const latest = this.#latestApproval.get(caps.domainId) as {
+        decision_hash: string;
+        policy_hash: string;
+        decided_at_ms: number;
+      } | undefined;
+      return Object.freeze({
+        domainId: caps.domainId,
+        quoteAssetId: caps.quoteAssetId,
+        maxPrincipalAtomsPerOperation: caps.maxPrincipalAtomsPerOperation.toString(),
+        maxPrincipalAtomsPerDay: caps.maxPrincipalAtomsPerDay?.toString() ?? null,
+        maxPrincipalAtomsPerOwnerPerDay: caps.maxPrincipalAtomsPerOwnerPerDay?.toString() ?? null,
+        maxRecoveryLossAtomsPerOperation: caps.maxRecoveryLossAtomsPerOperation.toString(),
+        authorizedPrincipalAtomsToday: authorizedPrincipalAtomsToday.toString(),
+        latestAuthorization: latest === undefined ? null : Object.freeze({
+          decisionHash: latest.decision_hash,
+          policyHash: latest.policy_hash,
+          decidedAtMs: latest.decided_at_ms,
+        }),
+      });
+    });
+    return Object.freeze({
+      source: "TESTNET_CAP_POLICY",
+      policyHash: policy.policyHash,
+      observedAtMs,
+      utcDay: day,
+      domains: Object.freeze(domains),
+    });
   }
 
   authorize(scope: TestnetExecutionScope): ExecutionReadinessReceipt {

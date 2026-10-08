@@ -82,11 +82,18 @@ test("policy parsing refuses mainnet domains, unknown fields, and inverted caps"
 
 test("an attempt within caps is approved once and reused by its later handoffs", () => {
   withGate((gate) => {
+    const before = gate.status();
+    assert.equal(before.domains[0]?.authorizedPrincipalAtomsToday, "0");
+    assert.equal(before.domains[0]?.latestAuthorization, null);
     const first = gate.authorize(scope("a1", 900_000_000n));
     const second = gate.authorize({ ...scope("a1", 900_000_000n), handoff: "BASE_TESTNET_ATOMIC_PREPARE" });
     assert.equal(second.fundedOperationManifestHash, first.fundedOperationManifestHash);
     // The reuse did not count twice: a second 900 USDC attempt still fits under the 2,500 USDC day.
-    gate.authorize(scope("a2", 900_000_000n));
+    const third = gate.authorize(scope("a2", 900_000_000n));
+    const after = gate.status();
+    assert.equal(after.domains[0]?.authorizedPrincipalAtomsToday, "1800000000");
+    assert.equal(after.domains[0]?.latestAuthorization?.decisionHash, third.fundedOperationManifestHash);
+    assert.equal(after.domains[0]?.latestAuthorization?.policyHash, after.policyHash);
   });
 });
 

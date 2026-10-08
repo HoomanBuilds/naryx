@@ -568,6 +568,8 @@ export {
   type ExecutionReadinessGate,
   type ExecutionReadinessPolicyProvider,
   type ExecutionReadinessReceipt,
+  type ExecutionReadinessDomainStatus,
+  type ExecutionReadinessStatus,
   type ExecutionReadinessScope,
   type ExecutionReadinessScopeResolver,
 } from "./execution-readiness-gate.js";
