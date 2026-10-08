@@ -47,6 +47,7 @@ export interface BaseSepoliaLiveReadClient {
   readContract: EvmReadPort["readContract"];
   chainHead: EvmReadPort["chainHead"];
   latestBlockTimestamp(): Promise<bigint>;
+  blockTimestamp?(blockNumber: bigint): Promise<bigint>;
 }
 
 export interface BaseSepoliaRuntimeOptions {
@@ -206,6 +207,7 @@ export function createViemBaseSepoliaReadClient(rpcUrl: string): BaseSepoliaLive
       ...(read.args === undefined ? {} : { args: read.args }),
     } as never),
     latestBlockTimestamp: async () => (await client.getBlock({ blockTag: "latest" })).timestamp,
+    blockTimestamp: async (blockNumber: bigint) => (await client.getBlock({ blockNumber })).timestamp,
     chainHead: async () => {
       const latestBlock = await client.getBlockNumber();
       try {

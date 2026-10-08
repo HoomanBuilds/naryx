@@ -105,6 +105,7 @@ export interface ArbitrumSepoliaExitBinding {
 export interface ArbitrumSepoliaLiveReadClient extends EvmReadPort {
   codeHash(address: Address): Promise<Hex | undefined>;
   latestBlockTimestamp(): Promise<bigint>;
+  blockTimestamp?(blockNumber: bigint): Promise<bigint>;
   attemptEvidence(
     binding: ArbitrumSepoliaAttemptBinding,
     observationStartBlock: bigint,
@@ -372,6 +373,7 @@ export function createViemArbitrumSepoliaReadClient(rpcUrl: string): ArbitrumSep
   return Object.freeze({
     chainId: async () => BigInt(await client.getChainId()),
     latestBlockTimestamp: async () => (await client.getBlock({ blockTag: "latest" })).timestamp,
+    blockTimestamp: async (blockNumber: bigint) => (await client.getBlock({ blockNumber })).timestamp,
     codeHash: async (address: Address) => {
       const code = await client.getCode({ address });
       return code === undefined || code === "0x" ? undefined : keccak256(code);
