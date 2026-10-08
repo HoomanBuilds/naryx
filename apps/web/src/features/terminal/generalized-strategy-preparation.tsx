@@ -136,6 +136,37 @@ type PackageQuoteReview = Readonly<{
   metrics: readonly QuoteMetric[];
 }>;
 
+type AuctionSolverSummary = Readonly<{
+  solverId: string;
+  environment: string;
+  supportedDomainIds: readonly string[];
+  supportedTemplateIds: readonly string[];
+  supportedQuoteModes: readonly string[];
+  validityUnit: string;
+  validUntilValue: string;
+}>;
+
+type SealedAuctionWinner = Readonly<{
+  solverId: string;
+  quoteHash: string;
+  netOutcomeAtoms: string;
+}>;
+
+type SealedAuctionReview = Readonly<{
+  auctionHash: string;
+  orderHash: string;
+  eligibleSolverIds: readonly string[];
+  timeUnit: "EVM_UNIX_SECONDS" | "HYPERLIQUID_UNIX_MILLISECONDS";
+  commitDeadlineValue: string;
+  revealDeadlineValue: string;
+  settlementDeadlineValue: string;
+  phase: "COMMIT" | "REVEAL" | "CLOSED";
+  commitmentCount: number;
+  outcome: "AWARDED" | "NO_FILL" | null;
+  resultHash: string | null;
+  winner: SealedAuctionWinner | null;
+}>;
+
 type StagedStrategyOrder = Readonly<{
   sourceOrderHash: string;
   orderHash: string;
@@ -1001,6 +1032,126 @@ function parseQuoteReview(payload: unknown, requestedOrderHash: string): Package
     validUntilValue: decimalInteger(quote.validUntilValue, "Quote validity value"),
     metrics: Object.freeze(metrics),
   });
+}
+
+function parseAuctionSolvers(payload: unknown): readonly AuctionSolverSummary[] {
+  const root = record(decode(payload as Json), "Solver registry");
+  return list(root.solvers, "Solver registry entries").map((candidate, index): AuctionSolverSummary => {
+    const solver = record(candidate, `Solver ${index}`);
+    hash(solver.manifestHash, `Solver ${index} manifest hash`);
+    const supportedDomainIds = list(solver.supportedDomains, `Solver ${index} domains`).map((candidateDomain, domainIndex) => {
+      const domain = record(candidateDomain, `Solver ${index} domain ${domainIndex}`);
+      return text(domain.domainId, `Solver ${index} domain ${domainIndex} id`);
+    });
+    const supportedTemplateIds = list(solver.supportedTemplateIds, `Solver ${index} templates`).map((value, templateIndex) =>
+      text(value, `Solver ${index} template ${templateIndex}`));
+    const supportedQuoteModes = list(solver.supportedQuoteModes, `Solver ${index} quote modes`).map((value, modeIndex) =>
+      text(value, `Solver ${index} quote mode ${modeIndex}`));
+    return Object.freeze({
+      solverId: text(solver.solverId, `Solver ${index} id`),
+      environment: text(solver.environment, `Solver ${index} environment`),
+      supportedDomainIds: Object.freeze(supportedDomainIds),
+      supportedTemplateIds: Object.freeze(supportedTemplateIds),
+      supportedQuoteModes: Object.freeze(supportedQuoteModes),
+      validityUnit: text(solver.validityUnit, `Solver ${index} validity unit`),
+      validUntilValue: decimalInteger(solver.validUntilValue, `Solver ${index} validity`),
+    });
+  });
+}
+
+function parseSealedAuctionReview(
+  payload: unknown,
+  auctionHash: string,
+  requestedOrderHash: string,
+  expectedTimeUnit: "EVM_UNIX_SECONDS" | "HYPERLIQUID_UNIX_MILLISECONDS",
+): SealedAuctionReview {
+  const root = record(decode(payload as Json), "Sealed auction");
+  const phase = text(root.phase, "Sealed auction phase");
+  if (phase !== "COMMIT" && phase !== "REVEAL" && phase !== "CLOSED") {
+    throw new Error("Sealed auction phase is invalid.");
+  }
+  const definition = record(root.definition, "Sealed auction definition");
+  if (definition.version !== 1 || definition.environment !== "testnet") {
+    throw new Error("Sealed auction definition is unsupported.");
+  }
+  const orderHash = hash(definition.orderHash, "Sealed auction order hash");
+  if (orderHash !== requestedOrderHash) throw new Error("Sealed auction binds another strategy order.");
+  const timeUnit = text(definition.timeUnit, "Sealed auction time unit");
+  if (timeUnit !== expectedTimeUnit) throw new Error("Sealed auction uses another clock.");
+  const eligibleSolverIds = list(definition.eligibleSolverIds, "Sealed auction solvers").map((value, index) =>
+    text(value, `Sealed auction solver ${index}`));
+  if (eligibleSolverIds.length === 0) throw new Error("Sealed auction has no eligible solver.");
+  const commitDeadlineValue = decimalInteger(definition.commitDeadlineValue, "Sealed auction commit deadline");
+  const revealDeadlineValue = decimalInteger(definition.revealDeadlineValue, "Sealed auction reveal deadline");
+  const settlementDeadlineValue = decimalInteger(definition.settlementDeadlineValue, "Sealed auction settlement deadline");
+  const commitmentCount = phase === "CLOSED"
+    ? list(root.events, "Sealed auction events").filter((event) => record(event, "Sealed auction event").kind === "COMMIT").length
+    : unsignedInteger(root.commitmentCount, "Sealed auction commitment count");
+  if (phase !== "CLOSED") {
+    if (root.result !== undefined) throw new Error("Open sealed auction disclosed a result.");
+    return Object.freeze({
+      auctionHash,
+      orderHash,
+      eligibleSolverIds: Object.freeze(eligibleSolverIds),
+      timeUnit,
+      commitDeadlineValue,
+      revealDeadlineValue,
+      settlementDeadlineValue,
+      phase,
+      commitmentCount,
+      outcome: null,
+      resultHash: null,
+      winner: null,
+    });
+  }
+  const result = record(root.result, "Sealed auction result");
+  if (hash(result.auctionHash, "Sealed auction result auction hash") !== auctionHash) {
+    throw new Error("Sealed auction result binds another auction.");
+  }
+  const outcome = text(result.outcome, "Sealed auction outcome");
+  if (outcome !== "AWARDED" && outcome !== "NO_FILL") throw new Error("Sealed auction outcome is invalid.");
+  const winner = outcome === "AWARDED" ? (() => {
+    const entry = record(result.winner, "Sealed auction winner");
+    return Object.freeze({
+      solverId: text(entry.solverId, "Sealed auction winner solver"),
+      quoteHash: hash(entry.quoteHash, "Sealed auction winner quote"),
+      netOutcomeAtoms: decimalInteger(entry.netOutcomeAtoms, "Sealed auction winner outcome"),
+    });
+  })() : null;
+  if (outcome === "NO_FILL" && result.winner !== undefined) throw new Error("No-fill auction contains a winner.");
+  return Object.freeze({
+    auctionHash,
+    orderHash,
+    eligibleSolverIds: Object.freeze(eligibleSolverIds),
+    timeUnit,
+    commitDeadlineValue,
+    revealDeadlineValue,
+    settlementDeadlineValue,
+    phase,
+    commitmentCount,
+    outcome,
+    resultHash: hash(result.resultHash, "Sealed auction result hash"),
+    winner,
+  });
+}
+
+function parseSealedAuctionAward(payload: unknown, auction: SealedAuctionReview): PackageQuoteReview {
+  if (auction.phase !== "CLOSED" || auction.outcome !== "AWARDED" || auction.winner === null || auction.resultHash === null) {
+    throw new Error("Sealed auction has no executable award.");
+  }
+  const root = record(decode(payload as Json), "Sealed auction award");
+  if (hash(root.auctionHash, "Award auction hash") !== auction.auctionHash
+    || hash(root.auctionResultHash, "Award result hash") !== auction.resultHash
+    || text(root.awardSolverId, "Award solver") !== auction.winner.solverId) {
+    throw new Error("Sealed auction award does not bind the reviewed result.");
+  }
+  const quote = parseQuoteReview(payload, auction.orderHash);
+  if (quote.solverId !== auction.winner.solverId
+    || quote.quoteHash !== auction.winner.quoteHash
+    || quote.netOutcomeAtoms !== auction.winner.netOutcomeAtoms) {
+    throw new Error("Admitted quote does not match the sealed auction winner.");
+  }
+  return quote;
 }
 
 function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: string): StagedStrategyOrder {
@@ -1972,6 +2123,11 @@ export function GeneralizedStrategyPreparationPanel({
   const evmChainId = EVM_CHAIN_IDS[executionDomain];
   const evmLane = evmChainId !== undefined;
   const expectedDomainId = TEST_DOMAIN_IDS[executionDomain];
+  const sealedAuctionTimeUnit = hyperliquidLane
+    ? "HYPERLIQUID_UNIX_MILLISECONDS" as const
+    : evmLane
+      ? "EVM_UNIX_SECONDS" as const
+      : null;
   const laneSupportsTemplate = sourceOrderHash !== null
     ? hyperliquidLane
     : hyperliquidLane
@@ -1993,6 +2149,14 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
   const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | null>(null);
+  const [auctionSolvers, setAuctionSolvers] = useState<readonly AuctionSolverSummary[]>([]);
+  const [auctionSolverError, setAuctionSolverError] = useState<string | null>(null);
+  const [selectedAuctionSolverIds, setSelectedAuctionSolverIds] = useState<readonly string[]>([]);
+  const [sealedAuction, setSealedAuction] = useState<SealedAuctionReview | null>(null);
+  const [sealedAuctionBusy, setSealedAuctionBusy] = useState(false);
+  const [sealedAuctionAwardBusy, setSealedAuctionAwardBusy] = useState(false);
+  const [sealedAuctionAwardAttempt, setSealedAuctionAwardAttempt] = useState("");
+  const [sealedAuctionAwardedQuote, setSealedAuctionAwardedQuote] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
   const [authorizedOrderHash, setAuthorizedOrderHash] = useState<string | null>(null);
@@ -2070,6 +2234,24 @@ export function GeneralizedStrategyPreparationPanel({
     recordedPackageOrders,
     [strategyOwner, solanaOwner].filter((owner): owner is string => owner !== null),
   );
+  const auctionValidityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+    ? BigInt(Date.now() + 20_000)
+    : BigInt(Math.floor(Date.now() / 1_000) + 20);
+  const eligibleAuctionSolvers = sealedAuctionTimeUnit === null ? [] : auctionSolvers.filter((solver) =>
+    solver.environment === "testnet"
+    && solver.validityUnit === sealedAuctionTimeUnit
+    && BigInt(solver.validUntilValue) >= auctionValidityFloor
+    && solver.supportedDomainIds.includes(expectedDomainId)
+    && solver.supportedTemplateIds.includes(templateId)
+    && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT"));
+  const activeAuctionHash = sealedAuction?.auctionHash ?? "";
+  const activeAuctionOrderHash = sealedAuction?.orderHash ?? "";
+  const activeAuctionSolverKey = sealedAuction?.eligibleSolverIds.join("\u0000") ?? "";
+  const activeAuctionTimeUnit = sealedAuction?.timeUnit ?? null;
+  const activeAuctionCommitDeadline = sealedAuction?.commitDeadlineValue ?? "";
+  const activeAuctionRevealDeadline = sealedAuction?.revealDeadlineValue ?? "";
+  const activeAuctionSettlementDeadline = sealedAuction?.settlementDeadlineValue ?? "";
+  const activeAuctionPhase = sealedAuction?.phase ?? null;
 
   function setOrderHash(value: string) {
     setOrderHashValue(value);
@@ -2079,6 +2261,33 @@ export function GeneralizedStrategyPreparationPanel({
     setPackageAmendQuantity("");
     setPackageAmendPriceTicks("");
     setQuoteOrigin(null);
+    setSealedAuction(null);
+    setSealedAuctionAwardAttempt("");
+    setSealedAuctionAwardedQuote("");
+  }
+
+  function acceptQuote(parsed: PackageQuoteReview, origin: "DIRECT" | "POST_MATCH") {
+    setQuoteReview(parsed);
+    setQuoteHash(parsed.quoteHash);
+    setQuoteOrigin(origin);
+    setSolanaExecutionSignature(null);
+    setSolanaObservation(null);
+    setEvmCollateral(null);
+    setEvmCollateralCompletionKey("");
+    setReview(null);
+    setExecutionAttempt(null);
+    setAuthorizedOrderHash(null);
+    setSelectionKey("");
+    setExecutionKey("");
+    setExecutionResult(null);
+    setExecutionProgress(null);
+    setStrategyReceipt(null);
+  }
+
+  function clearSealedAuction() {
+    setSealedAuction(null);
+    setSealedAuctionAwardAttempt("");
+    setSealedAuctionAwardedQuote("");
   }
 
   function recordPackageSettlementReadiness(readiness: PackageSettlementReadiness) {
@@ -2086,6 +2295,139 @@ export function GeneralizedStrategyPreparationPanel({
     setPackageAmendQuantity(readiness.restingOrder?.quantity ?? "");
     setPackageAmendPriceTicks(readiness.restingOrder?.priceTicks ?? "");
   }
+
+  useEffect(() => {
+    if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null) return;
+    const controller = new AbortController();
+    void fetch(`${publicApiBaseUrl}/v1/solvers`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseAuctionSolvers(await response.json());
+    }).then((solvers) => {
+      setAuctionSolvers(solvers);
+      setAuctionSolverError(null);
+      const validityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+        ? BigInt(Date.now() + 20_000)
+        : BigInt(Math.floor(Date.now() / 1_000) + 20);
+      const compatibleSolverIds = solvers.filter((solver) => solver.environment === "testnet"
+        && solver.validityUnit === sealedAuctionTimeUnit
+        && BigInt(solver.validUntilValue) >= validityFloor
+        && solver.supportedDomainIds.includes(expectedDomainId)
+        && solver.supportedTemplateIds.includes(templateId)
+        && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT"))
+        .map((solver) => solver.solverId);
+      setSelectedAuctionSolverIds((current) => {
+        const retained = current.filter((solverId) => compatibleSolverIds.includes(solverId));
+        return Object.freeze(retained.length > 0 ? retained : compatibleSolverIds);
+      });
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setAuctionSolvers([]);
+      setAuctionSolverError(cause instanceof Error ? cause.message : "Solver registry is unavailable.");
+    });
+    return () => controller.abort();
+  }, [expectedDomainId, publicApiBaseUrl, sealedAuctionTimeUnit, templateId]);
+
+  useEffect(() => {
+    if (publicApiBaseUrl === null || !HASH.test(activeAuctionHash) || !HASH.test(activeAuctionOrderHash)
+      || activeAuctionTimeUnit === null || activeAuctionPhase === "CLOSED") return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${publicApiBaseUrl}/v1/auctions/sealed/${activeAuctionHash}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        const parsed = parseSealedAuctionReview(
+          await response.json(),
+          activeAuctionHash,
+          activeAuctionOrderHash,
+          activeAuctionTimeUnit,
+        );
+        if (parsed.eligibleSolverIds.join("\u0000") !== activeAuctionSolverKey
+          || parsed.commitDeadlineValue !== activeAuctionCommitDeadline
+          || parsed.revealDeadlineValue !== activeAuctionRevealDeadline
+          || parsed.settlementDeadlineValue !== activeAuctionSettlementDeadline) {
+          throw new Error("Sealed auction definition changed after creation.");
+        }
+        setSealedAuction(parsed);
+        if (parsed.phase !== "CLOSED") timer = setTimeout(() => void poll(), 1_000);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : "Sealed auction monitoring failed closed.");
+        timer = setTimeout(() => void poll(), 1_000);
+      }
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [activeAuctionCommitDeadline, activeAuctionHash, activeAuctionOrderHash, activeAuctionPhase,
+    activeAuctionRevealDeadline, activeAuctionSettlementDeadline, activeAuctionSolverKey,
+    activeAuctionTimeUnit, publicApiBaseUrl]);
+
+  useEffect(() => {
+    if (publicApiBaseUrl === null || sealedAuction === null || sealedAuction.phase !== "CLOSED"
+      || sealedAuction.outcome !== "AWARDED" || sealedAuction.winner === null
+      || sealedAuctionAwardAttempt === sealedAuction.auctionHash
+      || sealedAuctionAwardedQuote === sealedAuction.winner.quoteHash) return;
+    const active = sealedAuction;
+    const controller = new AbortController();
+    void (async () => {
+      await Promise.resolve();
+      if (controller.signal.aborted) return;
+      setSealedAuctionAwardAttempt(active.auctionHash);
+      setSealedAuctionAwardBusy(true);
+      setError(null);
+      try {
+        const response = await fetch(`${publicApiBaseUrl}/v1/auctions/sealed/${active.auctionHash}/award`, {
+          method: "POST",
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        const parsed = parseSealedAuctionAward(await response.json(), active);
+        setQuoteReview(parsed);
+        setQuoteHash(parsed.quoteHash);
+        setQuoteOrigin("DIRECT");
+        setSolanaExecutionSignature(null);
+        setSolanaObservation(null);
+        setEvmCollateral(null);
+        setEvmCollateralCompletionKey("");
+        setReview(null);
+        setExecutionAttempt(null);
+        setAuthorizedOrderHash(null);
+        setSelectionKey("");
+        setExecutionKey("");
+        setExecutionResult(null);
+        setExecutionProgress(null);
+        setStrategyReceipt(null);
+        setSealedAuctionAwardedQuote(parsed.quoteHash);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof Error ? cause.message : "Sealed auction award failed closed.");
+        }
+      } finally {
+        if (!controller.signal.aborted) setSealedAuctionAwardBusy(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [publicApiBaseUrl, sealedAuction, sealedAuctionAwardAttempt, sealedAuctionAwardedQuote]);
 
   useEffect(() => {
     if (!solanaLane || privateApiBaseUrl === null || sourceOrderHash !== null
@@ -3340,10 +3682,115 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function createSealedAuction() {
+    if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null || !HASH.test(orderHash)) return;
+    setSealedAuctionBusy(true);
+    setError(null);
+    try {
+      const currentEligible = eligibleAuctionSolvers.filter((solver) => selectedAuctionSolverIds.includes(solver.solverId));
+      if (currentEligible.length === 0) throw new Error("Select at least one eligible solver.");
+      const now = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+        ? BigInt(Date.now())
+        : BigInt(Math.floor(Date.now() / 1_000));
+      const second = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS" ? BigInt(1_000) : BigInt(1);
+      const commitDeadlineValue = now + BigInt(5) * second;
+      const revealDeadlineValue = now + BigInt(10) * second;
+      const settlementDeadlineValue = now + BigInt(20) * second;
+      if (currentEligible.some((solver) => BigInt(solver.validUntilValue) < settlementDeadlineValue)) {
+        throw new Error("A selected solver capability expires before settlement. Refresh the solver registry.");
+      }
+      const eligibleSolverIds = Object.freeze(currentEligible.map((solver) => solver.solverId).sort());
+      const response = await fetch(`${publicApiBaseUrl}/v1/auctions/sealed`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          definition: {
+            version: 1,
+            auctionId: `auction-${crypto.randomUUID()}`,
+            environment: "testnet",
+            orderHash,
+            eligibleSolverIds,
+            timeUnit: sealedAuctionTimeUnit,
+            commitDeadlineValue: protocolInteger(commitDeadlineValue.toString()),
+            revealDeadlineValue: protocolInteger(revealDeadlineValue.toString()),
+            settlementDeadlineValue: protocolInteger(settlementDeadlineValue.toString()),
+            minimumValidReveals: 1,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const created = record(await response.json(), "Sealed auction creation");
+      const auctionHash = hash(created.auctionHashHex, "Sealed auction hash");
+      if (typeof created.created !== "boolean") throw new Error("Sealed auction creation response is invalid.");
+      setQuoteRequestKey("");
+      setQuoteReview(null);
+      setQuoteHash("");
+      setQuoteOrigin(null);
+      setReview(null);
+      setExecutionAttempt(null);
+      setAuthorizedOrderHash(null);
+      setSelectionKey("");
+      setExecutionKey("");
+      setExecutionResult(null);
+      setExecutionProgress(null);
+      setStrategyReceipt(null);
+      setSealedAuctionAwardAttempt("");
+      setSealedAuctionAwardedQuote("");
+      setSealedAuction(Object.freeze({
+        auctionHash,
+        orderHash,
+        eligibleSolverIds,
+        timeUnit: sealedAuctionTimeUnit,
+        commitDeadlineValue: commitDeadlineValue.toString(),
+        revealDeadlineValue: revealDeadlineValue.toString(),
+        settlementDeadlineValue: settlementDeadlineValue.toString(),
+        phase: "COMMIT",
+        commitmentCount: 0,
+        outcome: null,
+        resultHash: null,
+        winner: null,
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sealed auction creation failed closed.");
+    } finally {
+      setSealedAuctionBusy(false);
+    }
+  }
+
+  async function retrySealedAuctionAward() {
+    if (publicApiBaseUrl === null || sealedAuction === null || sealedAuction.phase !== "CLOSED"
+      || sealedAuction.outcome !== "AWARDED" || sealedAuction.winner === null) return;
+    setSealedAuctionAwardBusy(true);
+    setSealedAuctionAwardAttempt(sealedAuction.auctionHash);
+    setError(null);
+    try {
+      const response = await fetch(`${publicApiBaseUrl}/v1/auctions/sealed/${sealedAuction.auctionHash}/award`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const parsed = parseSealedAuctionAward(await response.json(), sealedAuction);
+      acceptQuote(parsed, "DIRECT");
+      setSealedAuctionAwardedQuote(parsed.quoteHash);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Sealed auction award failed closed.");
+    } finally {
+      setSealedAuctionAwardBusy(false);
+    }
+  }
+
   async function requestQuote(settlementBound = false) {
     if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
     setQuoteBusyMode(settlementBound ? "SETTLEMENT" : "DIRECT");
     setError(null);
+    clearSealedAuction();
     const idempotencyKey = quoteRequestKey || crypto.randomUUID();
     if (quoteRequestKey === "") setQuoteRequestKey(idempotencyKey);
     try {
@@ -3368,21 +3815,7 @@ export function GeneralizedStrategyPreparationPanel({
       const parsed = settlementBound
         ? parseSettlementBoundQuote(payload, packageSubmission!.packageOrderId, orderHash)
         : parseQuoteReview(payload, orderHash);
-      setQuoteReview(parsed);
-      setQuoteHash(parsed.quoteHash);
-      setQuoteOrigin(settlementBound ? "POST_MATCH" : "DIRECT");
-      setSolanaExecutionSignature(null);
-      setSolanaObservation(null);
-      setEvmCollateral(null);
-      setEvmCollateralCompletionKey("");
-      setReview(null);
-      setExecutionAttempt(null);
-      setAuthorizedOrderHash(null);
-      setSelectionKey("");
-      setExecutionKey("");
-      setExecutionResult(null);
-      setExecutionProgress(null);
-      setStrategyReceipt(null);
+      acceptQuote(parsed, settlementBound ? "POST_MATCH" : "DIRECT");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
@@ -4650,7 +5083,87 @@ export function GeneralizedStrategyPreparationPanel({
         >
           {quoteBusyMode === "DIRECT" ? "Requesting direct solver quote" : "Request direct solver quote"}
         </button>
+        {sealedAuctionTimeUnit !== null ? (
+          <>
+            <label htmlFor="sealed-auction-solvers">Sealed auction solvers</label>
+            <select
+              id="sealed-auction-solvers"
+              className={styles.auctionSolverSelect}
+              multiple
+              value={[...selectedAuctionSolverIds]}
+              disabled={sealedAuctionBusy || (sealedAuction !== null && sealedAuction.phase !== "CLOSED")}
+              onChange={(event) => {
+                setSelectedAuctionSolverIds(Object.freeze(Array.from(
+                  event.currentTarget.selectedOptions,
+                  (option) => option.value,
+                )));
+                setError(null);
+              }}
+            >
+              {eligibleAuctionSolvers.map((solver) => (
+                <option key={solver.solverId} value={solver.solverId}>{solver.solverId}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className={styles.primaryAction}
+              disabled={publicApiBaseUrl === null || sealedAuctionBusy || !HASH.test(orderHash)
+                || selectedAuctionSolverIds.length === 0
+                || (sealedAuction !== null && sealedAuction.phase !== "CLOSED")}
+              onClick={() => void createSealedAuction()}
+            >
+              {sealedAuctionBusy ? "Opening sealed solver auction" : "Run sealed solver auction"}
+            </button>
+            <p className={styles.fieldContext}>
+              Bids remain hidden until the auction closes. Registered eligibility does not guarantee that a solver is online.
+            </p>
+            {auctionSolverError !== null ? <p className={styles.fieldContext}>{auctionSolverError}</p> : null}
+            {auctionSolverError === null && eligibleAuctionSolvers.length === 0 ? (
+              <p className={styles.fieldContext}>No compatible solver capability is currently active for this strategy and domain.</p>
+            ) : null}
+          </>
+        ) : null}
       </div>
+      {sealedAuction ? (
+        <div className={styles.quoteReview}>
+          <div className={styles.reviewGrid}>
+            <span>Auction</span><strong title={sealedAuction.auctionHash}>{compact(sealedAuction.auctionHash)}</strong>
+            <span>Phase</span><strong>{sealedAuction.phase}</strong>
+            <span>Eligible solvers</span><strong>{sealedAuction.eligibleSolverIds.length}</strong>
+            <span>Commitments</span><strong>{sealedAuction.commitmentCount}</strong>
+            <span>Commit closes</span><strong>{expiryText(sealedAuction.timeUnit, sealedAuction.commitDeadlineValue)}</strong>
+            <span>Reveal closes</span><strong>{expiryText(sealedAuction.timeUnit, sealedAuction.revealDeadlineValue)}</strong>
+            <span>Settlement closes</span><strong>{expiryText(sealedAuction.timeUnit, sealedAuction.settlementDeadlineValue)}</strong>
+            {sealedAuction.outcome !== null ? <><span>Outcome</span><strong>{sealedAuction.outcome}</strong></> : null}
+            {sealedAuction.winner !== null ? (
+              <>
+                <span>Winning solver</span><strong>{sealedAuction.winner.solverId}</strong>
+                <span>Winning quote</span><strong title={sealedAuction.winner.quoteHash}>{compact(sealedAuction.winner.quoteHash)}</strong>
+                <span>Net outcome atoms</span><strong>{sealedAuction.winner.netOutcomeAtoms}</strong>
+              </>
+            ) : null}
+            {sealedAuction.resultHash !== null ? (
+              <><span>Result</span><strong title={sealedAuction.resultHash}>{compact(sealedAuction.resultHash)}</strong></>
+            ) : null}
+          </div>
+          {sealedAuctionAwardedQuote !== "" ? (
+            <p className={styles.fieldContext}>The winning signed quote is admitted and ready for execution preparation.</p>
+          ) : sealedAuction.phase === "CLOSED" && sealedAuction.outcome === "AWARDED" ? (
+            <button
+              type="button"
+              className={styles.secondaryAction}
+              disabled={sealedAuctionAwardBusy}
+              onClick={() => void retrySealedAuctionAward()}
+            >
+              {sealedAuctionAwardBusy ? "Admitting winning quote" : "Retry winning quote admission"}
+            </button>
+          ) : sealedAuction.phase === "CLOSED" ? (
+            <p className={styles.fieldContext}>No solver revealed a valid quote before close.</p>
+          ) : (
+            <p className={styles.fieldContext}>Only the commitment count is public before close.</p>
+          )}
+        </div>
+      ) : null}
       {quoteReview ? (
         <div className={styles.quoteReview}>
           <div className={styles.reviewEconomics}>

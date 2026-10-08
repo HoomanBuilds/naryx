@@ -1069,6 +1069,12 @@
   appearance: none;
 }
 
+.strategyPrepareForm .auctionSolverSelect {
+  height: auto;
+  min-height: 76px;
+  padding: 5px 8px;
+}
+
 .strategyPrepareForm input:focus-visible {
   border-color: var(--yellow);
   outline: 0;
