@@ -246,9 +246,23 @@ export {
   type PackageReopeningClearResult,
   type PackageSettlementObligation,
   type PackageSettlementProgress,
+  type PackageSettlementAuthorizationScheme,
+  type PackageSettlementAuthorizationEvidenceInput,
+  type PackageSettlementAuthorizationEvidence,
+  type PreparedNettingBatchPackage,
+  type PreparedNettingBatch,
+  type PreparedNettingBatchRecordInput,
   type PackageTapeRecord,
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";
+export {
+  AuthoritativeNettingError,
+  prepareAuthoritativeNettingBatch,
+  type AuthoritativeNettingExchangePort,
+  type AuthoritativeNettingStrategyPort,
+  type PrepareAuthoritativeNettingBatchInput,
+  type PrepareAuthoritativeNettingBatchResult,
+} from "./authoritative-netting.js";
 export {
   createPackageReopeningAdminHandler,
   type PackageReopeningAdminOptions,

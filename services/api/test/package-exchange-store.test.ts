@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
+import bs58 from "bs58";
 import {
+  adapterRef,
+  assetRef,
+  domainRef,
+  netObligations,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
   packageReopeningSnapshotHash,
+  seriesExecutionClassHash,
   toHex,
   verifyPackageAllocation,
+  versionedManifestRef,
+  type NettingPolicyManifestInput,
 } from "@naryx/protocol-types";
 import { PackageExchangeStoreError, SqlitePackageExchangeStore } from "../src/index.js";
 import { MAX_ENTRIES_PER_PARTICIPANT } from "../src/package-exchange-store.js";
@@ -85,6 +93,93 @@ test("orders match durably and replay returns the recorded allocation", () => {
     const rejectedOrder = order(3, { side: "BID", timeInForce: "IOC" });
     const rejected = store.submitOrder(CLASS, rejectedOrder, NOW, settlement(rejectedOrder));
     assert.deepEqual(rejected, { accepted: false, rejection: "MINIMUM_QUANTITY_UNFILLABLE" });
+  });
+});
+
+test("owner authorization and prepared netting evidence are immutable and replayable", () => {
+  withStore((store) => {
+    registerAll(store);
+    const signature = bs58.encode(new Uint8Array(64).fill(7));
+    const maker = order(1);
+    const taker = order(2, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, maker, NOW, settlement(maker), { scheme: "ED25519", signature });
+    store.submitOrder(CLASS, taker, NOW, settlement(taker), { scheme: "ED25519", signature });
+    assert.equal(store.settlementAuthorization(maker.orderId)?.signature, signature);
+    assert.throws(
+      () => store.submitOrder(CLASS, taker, NOW, settlement(taker), {
+        scheme: "ED25519",
+        signature: bs58.encode(new Uint8Array(64).fill(8)),
+      }),
+      { code: "SETTLEMENT_AUTHORIZATION_CONFLICT" },
+    );
+
+    const instrument = {
+      instrumentId: "sol-spot",
+      domain: domainRef("svm:solana-devnet", 1, id(501)),
+      adapter: adapterRef({ adapterId: "spot-adapter", adapterManifestVersion: 1, adapterManifestHash: id(502) }),
+      venue: versionedManifestRef("spot-venue", 1, id(503)),
+      market: versionedManifestRef("sol-usdc", 1, id(504)),
+      quantityAsset: assetRef("sol", id(505), 9),
+      legFamily: "SPOT_SWAP" as const,
+      quantityIncrementAtoms: 10n,
+    };
+    const policy: NettingPolicyManifestInput = {
+      schemaVersion: 1,
+      manifestVersion: 1,
+      nettingPolicyVersion: 1,
+      environment: "local",
+      executionClassId: CLASS,
+      executionClassVersion: 1,
+      executionClassManifestHash: seriesExecutionClassHash(executionClass(), CLASS_SUPPORT),
+      settlementClass: "ATOMIC_POSTCONDITION",
+      allocationRule: "PRO_RATA_SEQUENCE",
+      externalExecutionMode: "EXACT_NET_ONLY",
+      maximumObligations: 4,
+      maximumBatchWindowMilliseconds: 1_000n,
+      instruments: [instrument],
+    };
+    const makerProgress = store.settlementProgress(maker.orderId)!;
+    const takerProgress = store.settlementProgress(taker.orderId)!;
+    const result = netObligations([
+      {
+        ownerId: maker.participantId,
+        strategyOrderHash: settlement(maker).strategyOrderHash,
+        packageOrderId: maker.orderId,
+        settlementReadinessHash: makerProgress.readinessHashHex,
+        legId: "spot-buy",
+        instrumentId: instrument.instrumentId,
+        signedQuantityAtoms: 10n,
+        sequence: 1n,
+      },
+      {
+        ownerId: taker.participantId,
+        strategyOrderHash: settlement(taker).strategyOrderHash,
+        packageOrderId: taker.orderId,
+        settlementReadinessHash: takerProgress.readinessHashHex,
+        legId: "spot-sell",
+        instrumentId: instrument.instrumentId,
+        signedQuantityAtoms: -10n,
+        sequence: 2n,
+      },
+    ], policy);
+    const packages = [
+      {
+        packageOrderIdHex: maker.orderId as string,
+        strategyOrderHashHex: settlement(maker).strategyOrderHash as string,
+        settlementReadinessHashHex: makerProgress.readinessHashHex,
+      },
+      {
+        packageOrderIdHex: taker.orderId as string,
+        strategyOrderHashHex: settlement(taker).strategyOrderHash as string,
+        settlementReadinessHashHex: takerProgress.readinessHashHex,
+      },
+    ];
+    const created = store.recordPreparedNettingBatch({ policy, result, packages });
+    assert.equal(created.replayed, false);
+    assert.equal(created.batch.status, "PREPARED");
+    assert.equal(created.batch.result.underlyings[0]?.externalNetAtoms, 0n);
+    assert.equal(store.recordPreparedNettingBatch({ policy, result, packages }).replayed, true);
+    assert.deepEqual(store.nettingBatch(created.batch.proofHashHex), created.batch);
   });
 });
 

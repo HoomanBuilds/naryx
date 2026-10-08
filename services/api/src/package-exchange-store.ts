@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import bs58 from "bs58";
 import {
   addImpliedLiquidity,
   applyPackageBookHalt,
@@ -40,6 +41,9 @@ import {
   packageSettlementHandoffHash,
   packageSettlementReadiness,
   packageSettlementReadinessHash,
+  nettingPolicyManifest,
+  nettingPolicyManifestHash,
+  nettingResultHash,
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
@@ -52,6 +56,7 @@ import {
   verifyPackageAllocation,
   verifyPackageReopeningSettlementHandoff,
   verifyPackageSettlementHandoff,
+  verifyNettingResultAgainstPolicy,
 } from "@naryx/protocol-types";
 import type {
   CommitmentHash,
@@ -76,6 +81,9 @@ import type {
   PackageSettlementReadiness,
   PackageSettlementEvidenceKind,
   PackageTakerOrderInput,
+  NettingPolicyManifest,
+  NettingPolicyManifestInput,
+  NettingResult,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
   SeriesExecutionClassSupportInput,
@@ -177,6 +185,41 @@ export interface PackageSettlementProgress {
   readonly obligations: readonly PackageSettlementObligation[];
 }
 
+export type PackageSettlementAuthorizationScheme = "ED25519" | "EIP712_SECP256K1";
+
+export interface PackageSettlementAuthorizationEvidenceInput {
+  readonly scheme: PackageSettlementAuthorizationScheme;
+  readonly signature: string;
+}
+
+export interface PackageSettlementAuthorizationEvidence extends PackageSettlementAuthorizationEvidenceInput {
+  readonly packageOrderIdHex: string;
+  readonly settlementCommitmentHashHex: string;
+  readonly participantId: string;
+  readonly authorizedAtMs: number;
+}
+
+export interface PreparedNettingBatchPackage {
+  readonly packageOrderIdHex: string;
+  readonly strategyOrderHashHex: string;
+  readonly settlementReadinessHashHex: string;
+}
+
+export interface PreparedNettingBatch {
+  readonly status: "PREPARED";
+  readonly proofHashHex: string;
+  readonly policy: NettingPolicyManifest;
+  readonly result: NettingResult;
+  readonly packages: readonly PreparedNettingBatchPackage[];
+  readonly recordedAtMs: number;
+}
+
+export interface PreparedNettingBatchRecordInput {
+  readonly policy: NettingPolicyManifestInput | NettingPolicyManifest;
+  readonly result: NettingResult;
+  readonly packages: readonly PreparedNettingBatchPackage[];
+}
+
 export const MAX_TAPE_PAGE = 100;
 
 export interface PackageExchangeStoreOptions {
@@ -244,6 +287,14 @@ CREATE TABLE IF NOT EXISTS package_book_settlement_commitments (
   participant_id TEXT NOT NULL,
   commitment_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_settlement_authorizations (
+  package_order_id BLOB PRIMARY KEY REFERENCES package_book_settlement_commitments(package_order_id),
+  commitment_hash BLOB NOT NULL,
+  participant_id TEXT NOT NULL,
+  scheme TEXT NOT NULL CHECK (scheme IN ('ED25519', 'EIP712_SECP256K1')),
+  signature TEXT NOT NULL,
+  authorized_at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_settlement_handoffs (
   allocation_hash BLOB PRIMARY KEY REFERENCES package_book_allocations(allocation_hash),
@@ -322,6 +373,21 @@ CREATE TABLE IF NOT EXISTS implied_source_versions (
   source_id TEXT PRIMARY KEY,
   current_version TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_batches (
+  proof_hash BLOB PRIMARY KEY,
+  netting_policy_hash BLOB NOT NULL,
+  policy_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status = 'PREPARED'),
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS netting_batch_packages (
+  proof_hash BLOB NOT NULL REFERENCES netting_batches(proof_hash),
+  package_order_id BLOB NOT NULL UNIQUE REFERENCES package_book_settlement_commitments(package_order_id),
+  strategy_order_hash BLOB NOT NULL,
+  settlement_readiness_hash BLOB NOT NULL,
+  PRIMARY KEY (proof_hash, package_order_id)
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_exchange_document_change
   BEFORE UPDATE ON exchange_documents
   BEGIN SELECT RAISE(ABORT, 'exchange documents are immutable'); END;
@@ -343,6 +409,12 @@ CREATE TRIGGER IF NOT EXISTS reject_settlement_commitment_change
 CREATE TRIGGER IF NOT EXISTS reject_settlement_commitment_delete
   BEFORE DELETE ON package_book_settlement_commitments
   BEGIN SELECT RAISE(ABORT, 'package settlement commitments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_authorization_change
+  BEFORE UPDATE ON package_book_settlement_authorizations
+  BEGIN SELECT RAISE(ABORT, 'package settlement authorizations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_settlement_authorization_delete
+  BEFORE DELETE ON package_book_settlement_authorizations
+  BEGIN SELECT RAISE(ABORT, 'package settlement authorizations are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_settlement_handoff_change
   BEFORE UPDATE ON package_book_settlement_handoffs
   BEGIN SELECT RAISE(ABORT, 'package settlement handoffs are append-only'); END;
@@ -397,6 +469,18 @@ CREATE TRIGGER IF NOT EXISTS reject_consumed_source_change
 CREATE TRIGGER IF NOT EXISTS reject_consumed_source_delete
   BEFORE DELETE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_batch_change
+  BEFORE UPDATE ON netting_batches
+  BEGIN SELECT RAISE(ABORT, 'netting batches are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_batch_delete
+  BEFORE DELETE ON netting_batches
+  BEGIN SELECT RAISE(ABORT, 'netting batches are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_batch_package_change
+  BEFORE UPDATE ON netting_batch_packages
+  BEGIN SELECT RAISE(ABORT, 'netting batch packages are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_batch_package_delete
+  BEFORE DELETE ON netting_batch_packages
+  BEGIN SELECT RAISE(ABORT, 'netting batch packages are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
 CREATE TABLE IF NOT EXISTS package_book_trades (
@@ -476,6 +560,30 @@ function storedBigInt(value: unknown, field: string, signed = false): bigint {
     throw new PackageExchangeStoreError("CORRUPT_ROW", `Stored ${field} is invalid.`);
   }
   return BigInt(value);
+}
+
+function settlementAuthorizationEvidence(
+  input: PackageSettlementAuthorizationEvidenceInput,
+): PackageSettlementAuthorizationEvidenceInput {
+  if (typeof input !== "object" || input === null) {
+    throw new PackageExchangeStoreError("INVALID_INPUT", "Settlement authorization evidence must be an object.");
+  }
+  if (input.scheme === "ED25519") {
+    if (typeof input.signature !== "string") {
+      throw new PackageExchangeStoreError("INVALID_INPUT", "Ed25519 settlement authorization must be a signature string.");
+    }
+    try {
+      const signature = bs58.decode(input.signature);
+      if (signature.length !== 64 || bs58.encode(signature) !== input.signature) throw new Error("noncanonical signature");
+    } catch {
+      throw new PackageExchangeStoreError("INVALID_INPUT", "Ed25519 settlement authorization is not canonical base58.");
+    }
+    return Object.freeze({ scheme: input.scheme, signature: input.signature });
+  }
+  if (input.scheme === "EIP712_SECP256K1" && /^0x[0-9a-f]{130}$/.test(input.signature)) {
+    return Object.freeze({ scheme: input.scheme, signature: input.signature });
+  }
+  throw new PackageExchangeStoreError("INVALID_INPUT", "Settlement authorization scheme or signature is invalid.");
 }
 
 /**
@@ -718,6 +826,7 @@ export class SqlitePackageExchangeStore {
     order: PackageTakerOrderInput,
     nowValue: bigint,
     commitmentInput: PackageSettlementCommitmentInput,
+    authorizationInput?: PackageSettlementAuthorizationEvidenceInput,
   ): PackageExchangeSubmitResult {
     return this.transaction(() => {
       const orderId = guarded("INVALID_INPUT", "Order id is invalid.", () => commitmentHash(order.orderId));
@@ -725,6 +834,9 @@ export class SqlitePackageExchangeStore {
         packageSettlementCommitment(commitmentInput),
       );
       const settlementCommitmentHash = packageSettlementCommitmentHash(commitment);
+      const authorization = authorizationInput === undefined
+        ? undefined
+        : settlementAuthorizationEvidence(authorizationInput);
       if (
         commitment.executionClassId !== executionClassId
         || !bytesEqual(commitment.packageOrderId, orderId)
@@ -765,6 +877,7 @@ export class SqlitePackageExchangeStore {
             "Order id was already allocated under another settlement commitment.",
           );
         }
+        if (authorization !== undefined) this.insertSettlementAuthorization(storedCommitment, authorization);
         const allocation = this.decodeAllocation(executionClassId, replay.allocation_json);
         const allocationHashHex = toHex(packageAllocationHash(allocation));
         const handoff = this.settlementHandoff(allocationHashHex);
@@ -808,6 +921,7 @@ export class SqlitePackageExchangeStore {
         stringifyProtocolJson(commitment),
         recordedAtMs,
       );
+      if (authorization !== undefined) this.insertSettlementAuthorization(commitment, authorization);
       this.db
         .prepare(
           "INSERT INTO package_book_allocations (allocation_hash, taker_order_id, execution_class_id, allocation_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
@@ -935,6 +1049,7 @@ export class SqlitePackageExchangeStore {
     order: PackageTakerOrderInput,
     nowValue: bigint,
     commitmentInput: PackageSettlementCommitmentInput,
+    authorizationInput?: PackageSettlementAuthorizationEvidenceInput,
   ): PackageReopeningQueueResult {
     return this.transaction(() => {
       const orderId = guarded("INVALID_INPUT", "Order id is invalid.", () => commitmentHash(order.orderId));
@@ -942,6 +1057,9 @@ export class SqlitePackageExchangeStore {
         packageSettlementCommitment(commitmentInput),
       );
       const commitmentHashValue = packageSettlementCommitmentHash(commitment);
+      const authorization = authorizationInput === undefined
+        ? undefined
+        : settlementAuthorizationEvidence(authorizationInput);
       if (
         commitment.executionClassId !== executionClassId
         || !bytesEqual(commitment.packageOrderId, orderId)
@@ -983,6 +1101,7 @@ export class SqlitePackageExchangeStore {
             "Order id is already bound to another settlement commitment.",
           );
         }
+        if (authorization !== undefined) this.insertSettlementAuthorization(stored, authorization);
         const entry = book.entries.find((candidate) => bytesEqual(candidate.entryId, orderId));
         if (entry === undefined) {
           throw new PackageExchangeStoreError("ORDER_CONFLICT", "Order id is no longer active in the package book.");
@@ -1010,6 +1129,7 @@ export class SqlitePackageExchangeStore {
         stringifyProtocolJson(commitment),
         this.clock(),
       );
+      if (authorization !== undefined) this.insertSettlementAuthorization(commitment, authorization);
       this.writeBook(admitted.state);
       return {
         entry: admitted.entry,
@@ -1426,6 +1546,215 @@ export class SqlitePackageExchangeStore {
       throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement commitment does not match its hash.");
     }
     return commitment;
+  }
+
+  settlementAuthorization(packageOrderId: Uint8Array | string): PackageSettlementAuthorizationEvidence | undefined {
+    const orderId = commitmentHash(packageOrderId);
+    const row = this.db.prepare(`
+      SELECT commitment_hash, participant_id, scheme, signature, authorized_at_ms
+      FROM package_book_settlement_authorizations
+      WHERE package_order_id = ?
+    `).get(orderId) as {
+      commitment_hash: unknown;
+      participant_id: unknown;
+      scheme: unknown;
+      signature: unknown;
+      authorized_at_ms: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const commitment = this.settlementCommitment(orderId);
+    if (commitment === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement authorization lost its commitment.");
+    }
+    const evidence = settlementAuthorizationEvidence({
+      scheme: jsonText(row.scheme, "scheme") as PackageSettlementAuthorizationScheme,
+      signature: jsonText(row.signature, "signature"),
+    });
+    const commitmentHashValue = packageSettlementCommitmentHash(commitment);
+    const participantId = jsonText(row.participant_id, "participant_id");
+    const authorizedAtMs = row.authorized_at_ms;
+    if (
+      !bytesEqual(commitmentHashValue, hashBytes(row.commitment_hash, "commitment_hash"))
+      || participantId !== commitment.participantId
+      || typeof authorizedAtMs !== "number"
+      || !Number.isSafeInteger(authorizedAtMs)
+      || authorizedAtMs < 0
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement authorization differs from its commitment.");
+    }
+    return Object.freeze({
+      packageOrderIdHex: toHex(orderId),
+      settlementCommitmentHashHex: toHex(commitmentHashValue),
+      participantId,
+      ...evidence,
+      authorizedAtMs,
+    });
+  }
+
+  recordPreparedNettingBatch(input: PreparedNettingBatchRecordInput): { readonly batch: PreparedNettingBatch; readonly replayed: boolean } {
+    return this.transaction(() => {
+      const policy = guarded("INVALID_INPUT", "Netting policy is invalid.", () => nettingPolicyManifest(input.policy));
+      guarded("INVALID_INPUT", "Netting result is invalid.", () => verifyNettingResultAgainstPolicy(input.result, policy));
+      const executionClass = this.getExecutionClassRecord(policy.executionClassId, policy.executionClassVersion);
+      if (
+        executionClass === undefined
+        || executionClass.documentHashHex !== toHex(policy.executionClassManifestHash)
+        || executionClass.document.settlementClass !== policy.settlementClass
+        || executionClass.document.executionClassId !== policy.executionClassId
+      ) {
+        throw new PackageExchangeStoreError("NETTING_POLICY_MISMATCH", "Netting policy does not bind the registered execution class.");
+      }
+      const proofHash = nettingResultHash(input.result);
+      if (!bytesEqual(proofHash, input.result.proofHash)) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Netting result proof hash is inconsistent.");
+      }
+      if (!Array.isArray(input.packages) || input.packages.length === 0) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "A prepared netting batch must name at least one package.");
+      }
+      const packages = [...input.packages]
+        .map((entry) => Object.freeze({
+          packageOrderIdHex: toHex(commitmentHash(entry.packageOrderIdHex)),
+          strategyOrderHashHex: toHex(commitmentHash(entry.strategyOrderHashHex)),
+          settlementReadinessHashHex: toHex(commitmentHash(entry.settlementReadinessHashHex)),
+        }))
+        .sort((left, right) => left.packageOrderIdHex.localeCompare(right.packageOrderIdHex));
+      if (new Set(packages.map((entry) => entry.packageOrderIdHex)).size !== packages.length) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Prepared netting batch package ids repeat.");
+      }
+      const allocatedPackages = new Set(input.result.allocations.map((allocation) => toHex(allocation.packageOrderId)));
+      if (allocatedPackages.size !== packages.length || packages.some((entry) => !allocatedPackages.has(entry.packageOrderIdHex))) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Prepared netting packages do not match the result allocations.");
+      }
+      for (const entry of packages) {
+        const commitment = this.settlementCommitment(entry.packageOrderIdHex);
+        const authorization = this.settlementAuthorization(entry.packageOrderIdHex);
+        const progress = this.settlementProgress(entry.packageOrderIdHex);
+        if (commitment === undefined || authorization === undefined || progress === undefined) {
+          throw new PackageExchangeStoreError("NETTING_NOT_READY", "A netting package lacks durable settlement evidence.");
+        }
+        if (
+          progress.readiness.status !== "READY_FOR_OWNER_AUTHORIZATION"
+          || entry.strategyOrderHashHex !== toHex(commitment.strategyOrderHash)
+          || entry.settlementReadinessHashHex !== progress.readinessHashHex
+        ) {
+          throw new PackageExchangeStoreError("NETTING_NOT_READY", "A netting package is not fully allocated under the named readiness evidence.");
+        }
+        const allocations = input.result.allocations.filter((allocation) => toHex(allocation.packageOrderId) === entry.packageOrderIdHex);
+        if (allocations.length === 0 || allocations.some((allocation) =>
+          toHex(allocation.strategyOrderHash) !== entry.strategyOrderHashHex
+          || toHex(allocation.settlementReadinessHash) !== entry.settlementReadinessHashHex
+          || allocation.ownerId !== commitment.participantId
+        )) {
+          throw new PackageExchangeStoreError("INVALID_INPUT", "A netting allocation differs from its package settlement evidence.");
+        }
+      }
+      const existing = this.nettingBatch(proofHash);
+      const policyJson = stringifyProtocolJson(policy);
+      const resultJson = stringifyProtocolJson(input.result);
+      if (existing !== undefined) {
+        if (
+          stringifyProtocolJson(existing.policy) !== policyJson
+          || stringifyProtocolJson(existing.result) !== resultJson
+          || stringifyProtocolJson(existing.packages) !== stringifyProtocolJson(packages)
+        ) {
+          throw new PackageExchangeStoreError("NETTING_BATCH_CONFLICT", "The proof hash is already bound to another netting batch.");
+        }
+        return Object.freeze({ batch: existing, replayed: true });
+      }
+      const recordedAtMs = this.clock();
+      guarded("NETTING_PACKAGE_CONFLICT", "A package is already assigned to another prepared netting batch.", () => {
+        this.db.prepare(`
+          INSERT INTO netting_batches
+            (proof_hash, netting_policy_hash, policy_json, result_json, status, recorded_at_ms)
+          VALUES (?, ?, ?, ?, 'PREPARED', ?)
+        `).run(proofHash, nettingPolicyManifestHash(policy), policyJson, resultJson, recordedAtMs);
+        const insertPackage = this.db.prepare(`
+          INSERT INTO netting_batch_packages
+            (proof_hash, package_order_id, strategy_order_hash, settlement_readiness_hash)
+          VALUES (?, ?, ?, ?)
+        `);
+        for (const entry of packages) {
+          insertPackage.run(
+            proofHash,
+            commitmentHash(entry.packageOrderIdHex),
+            commitmentHash(entry.strategyOrderHashHex),
+            commitmentHash(entry.settlementReadinessHashHex),
+          );
+        }
+      });
+      return Object.freeze({
+        batch: Object.freeze({
+          status: "PREPARED" as const,
+          proofHashHex: toHex(proofHash),
+          policy,
+          result: input.result,
+          packages: Object.freeze(packages),
+          recordedAtMs,
+        }),
+        replayed: false,
+      });
+    });
+  }
+
+  nettingBatch(proofHashInput: Uint8Array | string): PreparedNettingBatch | undefined {
+    const proofHash = commitmentHash(proofHashInput);
+    const row = this.db.prepare(`
+      SELECT netting_policy_hash, policy_json, result_json, status, recorded_at_ms
+      FROM netting_batches
+      WHERE proof_hash = ?
+    `).get(proofHash) as {
+      netting_policy_hash: unknown;
+      policy_json: unknown;
+      result_json: unknown;
+      status: unknown;
+      recorded_at_ms: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const policy = nettingPolicyManifest(
+      parseProtocolJson(jsonText(row.policy_json, "policy_json")) as NettingPolicyManifestInput,
+    );
+    const result = parseProtocolJson(jsonText(row.result_json, "result_json")) as NettingResult;
+    guarded("CORRUPT_ROW", "Stored netting result failed validation.", () => verifyNettingResultAgainstPolicy(result, policy));
+    const status = jsonText(row.status, "status");
+    const recordedAtMs = row.recorded_at_ms;
+    if (
+      status !== "PREPARED"
+      || !bytesEqual(nettingPolicyManifestHash(policy), hashBytes(row.netting_policy_hash, "netting_policy_hash"))
+      || !bytesEqual(nettingResultHash(result), proofHash)
+      || !bytesEqual(result.proofHash, proofHash)
+      || typeof recordedAtMs !== "number"
+      || !Number.isSafeInteger(recordedAtMs)
+      || recordedAtMs < 0
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored prepared netting batch is inconsistent.");
+    }
+    const packageRows = this.db.prepare(`
+      SELECT package_order_id, strategy_order_hash, settlement_readiness_hash
+      FROM netting_batch_packages
+      WHERE proof_hash = ?
+      ORDER BY package_order_id
+    `).all(proofHash) as {
+      package_order_id: unknown;
+      strategy_order_hash: unknown;
+      settlement_readiness_hash: unknown;
+    }[];
+    const packages = Object.freeze(packageRows.map((entry) => Object.freeze({
+      packageOrderIdHex: toHex(hashBytes(entry.package_order_id, "package_order_id")),
+      strategyOrderHashHex: toHex(hashBytes(entry.strategy_order_hash, "strategy_order_hash")),
+      settlementReadinessHashHex: toHex(hashBytes(entry.settlement_readiness_hash, "settlement_readiness_hash")),
+    })));
+    const allocatedPackages = new Set(result.allocations.map((allocation) => toHex(allocation.packageOrderId)));
+    if (packages.length === 0 || allocatedPackages.size !== packages.length || packages.some((entry) => !allocatedPackages.has(entry.packageOrderIdHex))) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored netting package set differs from its result.");
+    }
+    return Object.freeze({
+      status: "PREPARED",
+      proofHashHex: toHex(proofHash),
+      policy,
+      result,
+      packages,
+      recordedAtMs,
+    });
   }
 
   settlementHandoff(allocationHash: Uint8Array | string): PackageSettlementHandoff | undefined {
@@ -1947,6 +2276,51 @@ export class SqlitePackageExchangeStore {
       }
       return result;
     });
+  }
+
+  private insertSettlementAuthorization(
+    commitment: PackageSettlementCommitment,
+    input: PackageSettlementAuthorizationEvidenceInput,
+  ): void {
+    const evidence = settlementAuthorizationEvidence(input);
+    const packageOrderId = commitment.packageOrderId;
+    const commitmentHashValue = packageSettlementCommitmentHash(commitment);
+    const existing = this.db.prepare(`
+      SELECT commitment_hash, participant_id, scheme, signature
+      FROM package_book_settlement_authorizations
+      WHERE package_order_id = ?
+    `).get(packageOrderId) as {
+      commitment_hash: unknown;
+      participant_id: unknown;
+      scheme: unknown;
+      signature: unknown;
+    } | undefined;
+    if (existing !== undefined) {
+      if (
+        !bytesEqual(commitmentHashValue, hashBytes(existing.commitment_hash, "commitment_hash"))
+        || jsonText(existing.participant_id, "participant_id") !== commitment.participantId
+        || jsonText(existing.scheme, "scheme") !== evidence.scheme
+        || jsonText(existing.signature, "signature") !== evidence.signature
+      ) {
+        throw new PackageExchangeStoreError(
+          "SETTLEMENT_AUTHORIZATION_CONFLICT",
+          "Package order is already bound to another settlement authorization.",
+        );
+      }
+      return;
+    }
+    this.db.prepare(`
+      INSERT INTO package_book_settlement_authorizations
+        (package_order_id, commitment_hash, participant_id, scheme, signature, authorized_at_ms)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      packageOrderId,
+      commitmentHashValue,
+      commitment.participantId,
+      evidence.scheme,
+      evidence.signature,
+      this.clock(),
+    );
   }
 
   private settlementEvidenceCount(packageOrderId: Uint8Array | string): number {

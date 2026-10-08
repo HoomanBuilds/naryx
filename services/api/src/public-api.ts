@@ -116,6 +116,10 @@ import {
   type StrategyOrderIntakePort,
 } from "./strategy-order-intake.js";
 import {
+  AuthoritativeNettingError,
+  prepareAuthoritativeNettingBatch,
+} from "./authoritative-netting.js";
+import {
   isEvmPackageBookParticipant,
   packageAmendmentAuthorizationTypedData,
   packageCancellationAuthorizationTypedData,
@@ -189,6 +193,7 @@ export type PublicExchangeStore = Pick<
   | "getMatchingPolicy"
   | "getAllocation"
   | "settlementCommitment"
+  | "settlementAuthorization"
   | "settlementHandoff"
   | "settlementProgress"
   | "reopeningResult"
@@ -204,6 +209,8 @@ export type PublicExchangeStore = Pick<
   | "latestTrade"
   | "submitOrder"
   | "queueReopeningOrder"
+  | "recordPreparedNettingBatch"
+  | "nettingBatch"
   | "amendEntry"
   | "cancelEntry"
 >;
@@ -1346,6 +1353,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           : { quantity: restingEntry.quantity, priceTicks: restingEntry.priceTicks },
       };
     }
+    if ((match = /^\/v1\/netting\/batches\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const batch = exchange.nettingBatch(match[1] as string);
+      if (batch === undefined) throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this proof hash.");
+      return batch;
+    }
     if ((match = /^\/v1\/package-book\/reopenings\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);
       const resultHash = match[1] as string;
@@ -1425,6 +1438,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/compare",
       "/v1/clearing/simulate",
       "/v1/netting/simulate",
+      "/v1/netting/batches",
       "/v1/package-book/orders/prepare",
       "/v1/package-book/orders",
       "/v1/package-book/orders/authorization",
@@ -1790,13 +1804,16 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (!valid) {
         throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize the package settlement commitment.");
       }
+      const settlementAuthorization = authorization.scheme === "ED25519"
+        ? { scheme: "ED25519" as const, signature: authorization.signature as string }
+        : { scheme: "EIP712_SECP256K1" as const, signature: (authorization.signature as string).toLowerCase() };
       const executionClassId = id(order.executionClassId, "executionClassId");
       if (strategyStore.lockPackageExecution === undefined) {
         throw new RequestError(503, "EXECUTION_BINDING_STORE_UNAVAILABLE", "Durable package execution locking is unavailable.");
       }
       strategyStore.lockPackageExecution(toHex(commitment.strategyOrderHash), orderHash);
       if (reopeningOrderPath) {
-        const result = exchange.queueReopeningOrder(executionClassId, order, nowValue(), commitment);
+        const result = exchange.queueReopeningOrder(executionClassId, order, nowValue(), commitment, settlementAuthorization);
         return {
           accepted: true,
           queuedForReopening: true,
@@ -1807,7 +1824,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           settlementCommitmentHash: result.settlementCommitmentHashHex,
         };
       }
-      const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment);
+      const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment, settlementAuthorization);
       if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
       const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);
       if (matchingPolicy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
@@ -1965,6 +1982,27 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           policy as NettingPolicyManifestInput,
         ),
       };
+    }
+    if (path === "/v1/netting/batches") {
+      const packageOrderIds = body.packageOrderIds;
+      const policy = body.policy;
+      if (
+        !Array.isArray(packageOrderIds)
+        || packageOrderIds.length === 0
+        || packageOrderIds.some((value) => typeof value !== "string" || !HASH_HEX.test(value))
+        || typeof policy !== "object"
+        || policy === null
+      ) {
+        throw new RequestError(400, "INVALID_REQUEST", "packageOrderIds must be nonempty 32-byte hashes and policy must be an object.");
+      }
+      const strategyStore = requireStrategyPackages();
+      if (strategyStore.order === undefined) {
+        throw new RequestError(503, "NETTING_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
+      }
+      return prepareAuthoritativeNettingBatch(exchange, strategyStore as { order: SqliteStrategyPackageStore["order"] }, {
+        packageOrderIds: packageOrderIds as string[],
+        policy: policy as NettingPolicyManifestInput,
+      });
     }
     if (path === "/v1/rfqs/private") {
       const relay = requireDelivery();
@@ -2262,6 +2300,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyOrderIntakeError) {
           return fail(response, error.status, error.code, error.message);
+        }
+        if (error instanceof AuthoritativeNettingError) {
+          const status = error.code.endsWith("NOT_FOUND") ? 404
+            : error.code === "INVALID_BATCH" ? 400 : 409;
+          return fail(response, status, error.code, error.message);
         }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });
