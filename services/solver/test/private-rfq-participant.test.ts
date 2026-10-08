@@ -73,7 +73,14 @@ test('decrypts an authenticated private request and returns only an encrypted si
     routeHash: hash('4'),
     quoteHash,
     route: {},
-    quote: { environment: 'testnet', solverId: 'solver-a' },
+    quote: {
+      environment: 'testnet',
+      solverId: 'solver-a',
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      packageTemplateManifestHash: new Uint8Array(32).fill(0x22),
+      domains: [domainRef('eip155:84532', 1, hash('1'))],
+    },
   } as unknown as GeneralizedStrategyQuoteResponse;
   const participant = new PrivateRfqParticipant({
     solverId: 'solver-a',
@@ -103,4 +110,18 @@ test('decrypts an authenticated private request and returns only an encrypted si
     responsePrivateKey: responseKey.privateKey,
   });
   assert.deepEqual(decodePrivateRfqQuoteResponse(plaintext), quoteResponse);
+
+  const mismatched = new PrivateRfqParticipant({
+    solverId: 'solver-a',
+    encryptionKeyId: 'rfq-key-1',
+    privateKey: solverKey.privateKey,
+    relay,
+    quotes: {
+      quote: async () => ({
+        ...quoteResponse,
+        quote: { ...quoteResponse.quote, templateId: 'another-template' },
+      } as GeneralizedStrategyQuoteResponse),
+    },
+  });
+  await assert.rejects(mismatched.tick(), /private RFQ quote does not match its envelope/);
 });

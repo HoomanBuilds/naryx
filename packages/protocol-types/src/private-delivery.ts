@@ -209,6 +209,7 @@ export function privateRfqEnvelopeHash(input: PrivateRfqEnvelopeInput): Commitme
 
 export type PrivateRfqRejection =
   | 'ENVIRONMENT_MISMATCH'
+  | 'CLOCK_MISMATCH'
   | 'SUITE_NOT_PINNED'
   | 'RECIPIENT_MISMATCH'
   | 'KEY_UNKNOWN'
@@ -247,6 +248,7 @@ export function admitPrivateRfqEnvelope(
   const reject = (reason: PrivateRfqRejection) => Object.freeze({ admitted: false as const, reason });
   const environment = protocolId(admission.environment, 'admitPrivateRfqEnvelope.environment');
   if (envelope.environment !== environment || manifest.environment !== environment) return reject('ENVIRONMENT_MISMATCH');
+  if (manifest.validityUnit !== envelope.createdAtUnit) return reject('CLOCK_MISMATCH');
   if (!pinned.includes(envelope.encryptionSuiteId)) return reject('SUITE_NOT_PINNED');
   if (manifest.solverId !== envelope.recipientSolverId) return reject('RECIPIENT_MISMATCH');
   const key = manifest.rfqEncryptionKeys.find((value) => value.keyId === envelope.recipientEncryptionKeyId);

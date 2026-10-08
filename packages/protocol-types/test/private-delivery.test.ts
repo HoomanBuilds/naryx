@@ -74,6 +74,7 @@ describe('private direct RFQ envelope', () => {
   test('replay, substitution, downgrade, expiry, and mutation fail before decryption', () => {
     const cases: [Partial<PrivateRfqEnvelopeInput>, Partial<PrivateRfqAdmission>, string][] = [
       [{}, { environment: 'devnet' }, 'ENVIRONMENT_MISMATCH'],
+      [{ createdAtUnit: 'SOLANA_SLOT', expiresAtUnit: 'SOLANA_SLOT' }, {}, 'CLOCK_MISMATCH'],
       [{ encryptionSuiteId: 'legacy-suite', recipientEncryptionKeyId: 'rfq-2' }, { atValue: 55n }, 'SUITE_NOT_PINNED'],
       [{ recipientSolverId: 'solver-b' }, {}, 'RECIPIENT_MISMATCH'],
       [{ recipientEncryptionKeyId: 'rfq-9' }, {}, 'KEY_UNKNOWN'],

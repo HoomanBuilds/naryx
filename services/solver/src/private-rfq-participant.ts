@@ -4,6 +4,7 @@ import bs58 from 'bs58';
 import {
   NARYX_RFQ_HPKE_PRIVATE_KEY_BYTES,
   NARYX_RFQ_HPKE_SUITE_ID,
+  bytesEqual,
   decodePrivateRfqQuoteRequest,
   decryptPrivateRfqRequest,
   encodePrivateRfqQuoteResponse,
@@ -315,7 +316,14 @@ export class PrivateRfqParticipant {
     if (quote.orderHash !== orderHash
       || !HASH.test(quote.quoteHash)
       || quote.quote.environment !== envelope.environment
-      || quote.quote.solverId !== this.#solverId) {
+      || quote.quote.solverId !== this.#solverId
+      || quote.quote.templateId !== envelope.templateId
+      || quote.quote.templateVersion !== envelope.templateVersion
+      || !bytesEqual(quote.quote.packageTemplateManifestHash, envelope.packageTemplateManifestHash)
+      || quote.quote.domains.length !== 1
+      || quote.quote.domains[0]?.domainId !== envelope.domain.domainId
+      || quote.quote.domains[0]?.domainManifestVersion !== envelope.domain.domainManifestVersion
+      || !bytesEqual(quote.quote.domains[0].domainManifestHash, envelope.domain.domainManifestHash)) {
       throw new Error('private RFQ quote does not match its envelope');
     }
     const encrypted = await encryptPrivateRfqResponse({
