@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { stringifyProtocolJson } from "@naryx/protocol-types";
-import { accountingCsv, reconciliationReport, type ReconciliationReport } from "./reconciliation-report.js";
+import { accountingCsv, asyncPackageReconciliationRecord, reconciliationReport, type ReconciliationReport } from "./reconciliation-report.js";
 import type { SqliteReceiptIndex } from "./receipt-index.js";
 
 export interface ReportExportOptions {
@@ -17,20 +17,31 @@ export interface ReportExportOptions {
 }
 
 /**
- * Exports the reconciliation report for every package with a canonical event in a height range:
+ * Exports the reconciliation report for every settlement or async coordinator package with a canonical event in a height range:
  * the shareable report with its hash, the accounting CSV, and the salts behind every field
  * commitment in a separate owner-only file, from which single rows are disclosed to an auditor.
  * Every field salt is fresh random bytes, so an undisclosed field cannot be guessed from its commitment.
  */
 const MAX_REPORT_PACKAGES = 10_000;
 
-export function exportReconciliationReport(index: Pick<SqliteReceiptIndex, "packageIdsInRange" | "packageRecord">, options: ReportExportOptions): ReconciliationReport {
+export function exportReconciliationReport(
+  index: Pick<SqliteReceiptIndex, "packageIdsInRange" | "packageRecord" | "asyncPackageRefsInRange" | "asyncPackage">,
+  options: ReportExportOptions,
+): ReconciliationReport {
   if (!isAbsolute(options.outDir)) throw new Error("The report directory must be an absolute path.");
   // A report claims every package in the range, so a range too large for one report fails
   // instead of silently leaving packages out.
   const packageIds = index.packageIdsInRange(options.domainId, options.fromHeight, options.toHeight, MAX_REPORT_PACKAGES + 1);
-  if (packageIds.length > MAX_REPORT_PACKAGES) throw new Error(`The range holds more than ${MAX_REPORT_PACKAGES} packages; export it in smaller ranges.`);
-  const records = packageIds.map((packageId) => index.packageRecord(packageId));
+  const asyncRefs = index.asyncPackageRefsInRange(options.domainId, options.fromHeight, options.toHeight, MAX_REPORT_PACKAGES + 1);
+  if (packageIds.length + asyncRefs.length > MAX_REPORT_PACKAGES) throw new Error(`The range holds more than ${MAX_REPORT_PACKAGES} packages; export it in smaller ranges.`);
+  const records = [
+    ...packageIds.map((packageId) => index.packageRecord(packageId)),
+    ...asyncRefs.map((ref) => {
+      const observed = index.asyncPackage(options.domainId, ref.coordinator, ref.packageIdHex);
+      if (observed === undefined) throw new Error("A canonical async package disappeared during report export.");
+      return asyncPackageReconciliationRecord(options.domainId, observed);
+    }),
+  ];
   const { report, disclosures } = reconciliationReport(records, {
     reportId: options.reportId,
     periodStartMs: options.periodStartMs,

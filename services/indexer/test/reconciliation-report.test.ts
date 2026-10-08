@@ -3,12 +3,14 @@ import test from "node:test";
 import { verifySelectiveDisclosure } from "@naryx/protocol-types";
 import {
   accountingCsv,
+  asyncPackageReconciliationRecord,
   buildPackageRecord,
   discloseReportRow,
   reconciliationReport,
   verifyReportHash,
   type IndexedEvent,
   type IndexedPackageRecord,
+  type ObservedAsyncPackage,
 } from "../src/index.js";
 
 const fields = "ab".repeat(32);
@@ -44,6 +46,26 @@ const options = {
   },
 };
 
+const asyncPackage = (state: ObservedAsyncPackage["state"], status: ObservedAsyncPackage["status"], packageByte: string): ObservedAsyncPackage => ({
+  coordinator: `0x${"11".repeat(20)}`,
+  packageIdHex: packageByte.repeat(32),
+  status,
+  state,
+  stateVersion: "2",
+  evidenceHash: "33".repeat(32),
+  observedFromReservation: true,
+  transitions: [
+    { locator: `0x${"44".repeat(32)}:0`, height: 10, state: "RESERVED", stateVersion: "1", evidenceHash: "00".repeat(32) },
+    { locator: `0x${"55".repeat(32)}:0`, height: 11, state: state ?? "RESERVED", stateVersion: "2", evidenceHash: "33".repeat(32) },
+  ],
+  slashedBondAtoms: null,
+  release: null,
+  lastHeight: 11,
+  finality: "CONFIRMED",
+  evidenceGrade: "CONSENSUS_VERIFIED",
+  violations: status === "INCONSISTENT" ? ["state evidence conflicts"] : [],
+});
+
 test("every package is kept and unresolved work is flagged, not dropped", () => {
   const { report } = reconciliationReport(records, options);
   assert.equal(report.rows.length, 6);
@@ -56,6 +78,15 @@ test("every package is kept and unresolved work is flagged, not dropped", () => 
   assert.deepEqual(report.provisional, ["pkg-provisional"]);
   assert.deepEqual(report.pending, ["pkg-pending"]);
   assert.ok(verifyReportHash(report));
+});
+
+test("async recovery and inconsistent coordinator evidence require operator attention", () => {
+  const recovering = asyncPackageReconciliationRecord("eip155:421614", asyncPackage("RECOVERY_PENDING", "OPEN", "22"));
+  const inconsistent = asyncPackageReconciliationRecord("eip155:421614", asyncPackage("MANUAL_INTERVENTION", "INCONSISTENT", "23"));
+  const { report } = reconciliationReport([recovering, inconsistent], options);
+  assert.equal(recovering.outcome, "IN_RECOVERY");
+  assert.equal(inconsistent.outcome, "CONFLICTING_EVIDENCE");
+  assert.deepEqual(report.requiresAttention, [inconsistent.packageId, recovering.packageId].sort());
 });
 
 test("the report hash depends on content, not input order, and detects tampering", () => {

@@ -71,6 +71,11 @@ export interface DomainIndexState {
   readonly reorgCount: number;
 }
 
+export interface AsyncPackageRef {
+  readonly coordinator: string;
+  readonly packageIdHex: string;
+}
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS domains (
   domain_id TEXT PRIMARY KEY,
@@ -593,8 +598,25 @@ export class SqliteReceiptIndex {
          JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
          WHERE e.domain_id = ? AND b.height BETWEEN ? AND ? ORDER BY e.package_id LIMIT ?`,
       )
-      .all(domainId, from, to, Math.min(Math.max(1, limit), 10_000)) as { package_id: string }[];
+      .all(domainId, from, to, Math.min(Math.max(1, limit), 10_001)) as { package_id: string }[];
     return rows.map((row) => row.package_id);
+  }
+
+  /** Async coordinator package identities with canonical events in the height range. */
+  asyncPackageRefsInRange(domainIdInput: string, fromHeight: number, toHeight: number, limit = 10_000): readonly AsyncPackageRef[] {
+    const domainId = id(domainIdInput, "domainId");
+    const from = height(fromHeight, "fromHeight");
+    const to = height(toHeight, "toHeight");
+    if (to < from) throw new ReceiptIndexError("INVALID_INPUT", "The height range is empty.");
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT e.coordinator, e.package_id FROM coordinator_events e
+         JOIN blocks b ON b.domain_id = e.domain_id AND b.block_hash = e.block_hash AND b.canonical = 1
+         WHERE e.domain_id = ? AND b.height BETWEEN ? AND ?
+         ORDER BY e.coordinator, e.package_id LIMIT ?`,
+      )
+      .all(domainId, from, to, Math.min(Math.max(1, limit), 10_001)) as { coordinator: string; package_id: string }[];
+    return Object.freeze(rows.map((row) => Object.freeze({ coordinator: row.coordinator, packageIdHex: row.package_id })));
   }
 
   /** The normalized package record from canonical chain events and committed venue fills only. */

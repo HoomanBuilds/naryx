@@ -12,6 +12,7 @@ import {
   type SelectiveDisclosure,
 } from "@naryx/protocol-types";
 import type { IndexedPackageRecord, PackageOutcome } from "./package-record.js";
+import type { CoordinatorState, ObservedAsyncPackage } from "./async-coordinator.js";
 
 export const REPORT_OUTCOMES: readonly PackageOutcome[] = Object.freeze([
   "UNKNOWN",
@@ -29,6 +30,7 @@ export type ReportRowField = (typeof REPORT_ROW_FIELDS)[number];
 
 const ATTENTION: ReadonlySet<PackageOutcome> = new Set(["PARTIAL_EXPOSURE", "IN_RECOVERY", "CONFLICTING_EVIDENCE"]);
 const TERMINAL: ReadonlySet<PackageOutcome> = new Set(["SETTLED", "FAILED_NO_EFFECT", "RECOVERED"]);
+const ASYNC_RECOVERY_STATES: ReadonlySet<CoordinatorState> = new Set(["FROZEN", "RECOVERY_PENDING", "RECOVERED", "MANUAL_INTERVENTION"]);
 const MAX_ROWS = 10_000;
 
 export interface ReportRow {
@@ -66,8 +68,96 @@ export interface ReportOptions {
   readonly salt: (packageId: string, field: ReportRowField) => Uint8Array;
 }
 
+export interface ReconciliationSourceRecord {
+  readonly packageId: string;
+  readonly outcome: PackageOutcome;
+  readonly finality: string;
+  readonly evidenceGrade: string | null;
+  readonly attemptCount: number;
+  readonly eventCount: number;
+  readonly recordHashHex: string;
+}
+
 function text(value: string | number): Uint8Array {
   return new TextEncoder().encode(String(value));
+}
+
+function asyncOutcome(observed: ObservedAsyncPackage): PackageOutcome {
+  if (observed.status === "INCONSISTENT") return "CONFLICTING_EVIDENCE";
+  const states = new Set(observed.transitions.map((transition) => transition.state));
+  if (observed.status === "RELEASED") {
+    if ([...states].some((state) => ASYNC_RECOVERY_STATES.has(state))) return "RECOVERED";
+    return states.has("EXECUTED") ? "SETTLED" : "FAILED_NO_EFFECT";
+  }
+  return observed.state !== null && ASYNC_RECOVERY_STATES.has(observed.state)
+    ? "IN_RECOVERY"
+    : "PENDING";
+}
+
+/** Normalizes one independently replayed async coordinator lifecycle without calling it atomic. */
+export function asyncPackageReconciliationRecord(
+  domainIdInput: string,
+  observed: ObservedAsyncPackage,
+): ReconciliationSourceRecord {
+  const domainId = protocolId(domainIdInput, "asyncPackageReconciliationRecord.domainId");
+  if (!/^0x[0-9a-f]{40}$/.test(observed.coordinator) || !/^[0-9a-f]{64}$/.test(observed.packageIdHex)) {
+    throw new Error("Async package identity is malformed.");
+  }
+  const packageId = protocolId(`async:${observed.coordinator.slice(2)}:${observed.packageIdHex}`, "asyncPackageReconciliationRecord.packageId");
+  const bytes = canonicalBytes((writer) => {
+    writer.writeString("ASYNC_COORDINATOR", "sourceKind");
+    encodeProtocolId(writer, domainId, "domainId");
+    writer.writeString(observed.coordinator, "coordinator");
+    writer.writeFixedBytes(fromHex(observed.packageIdHex), 32, "packageId");
+    writer.writeString(observed.status, "status");
+    writer.writeOptional(observed.state ?? undefined, (element, value) => element.writeString(value, "state"), "state");
+    writer.writeOptional(observed.stateVersion ?? undefined, (element, value) => element.writeU64(BigInt(value), "stateVersion"), "stateVersion");
+    writer.writeOptional(observed.evidenceHash ?? undefined, (element, value) => element.writeFixedBytes(fromHex(value), 32, "evidenceHash"), "evidenceHash");
+    writer.writeBool(observed.observedFromReservation, "observedFromReservation");
+    writer.writeArray(observed.transitions, (element, transition) => {
+      element.writeString(transition.locator, "locator");
+      element.writeU64(BigInt(transition.height), "height");
+      element.writeString(transition.state, "state");
+      element.writeU64(BigInt(transition.stateVersion), "stateVersion");
+      element.writeFixedBytes(fromHex(transition.evidenceHash), 32, "evidenceHash");
+    });
+    writer.writeOptional(observed.slashedBondAtoms ?? undefined, (element, value) => element.writeU256(BigInt(value), "slashedBondAtoms"), "slashedBondAtoms");
+    writer.writeOptional(observed.release ?? undefined, (element, release) => {
+      element.writeString(release.bondRecipient, "bondRecipient");
+      element.writeString(release.reserveRecipient, "reserveRecipient");
+      element.writeU256(BigInt(release.reserveAtoms), "reserveAtoms");
+      element.writeString(release.lossRecipient, "lossRecipient");
+      element.writeU256(BigInt(release.lossAtoms), "lossAtoms");
+    }, "release");
+    writer.writeU64(BigInt(observed.lastHeight), "lastHeight");
+    writer.writeString(observed.finality, "finality");
+    writer.writeString(observed.evidenceGrade, "evidenceGrade");
+    writer.writeArray(observed.violations, (element, violation) => element.writeString(violation, "violation"));
+  });
+  return Object.freeze({
+    packageId,
+    outcome: asyncOutcome(observed),
+    finality: observed.finality,
+    evidenceGrade: observed.evidenceGrade,
+    attemptCount: 1,
+    eventCount: observed.transitions.length + (observed.slashedBondAtoms === null ? 0 : 1) + (observed.release === null ? 0 : 1),
+    recordHashHex: toHex(domainHash(HASH_DOMAIN.INDEXED_PACKAGE_RECORD, bytes)),
+  });
+}
+
+function sourceRecord(record: IndexedPackageRecord | ReconciliationSourceRecord): ReconciliationSourceRecord {
+  if ("attempts" in record) {
+    return Object.freeze({
+      packageId: record.packageId,
+      outcome: record.outcome,
+      finality: record.finality,
+      evidenceGrade: record.weakestEvidenceGrade,
+      attemptCount: record.attempts.length,
+      eventCount: record.events.length,
+      recordHashHex: record.recordHashHex,
+    });
+  }
+  return record;
 }
 
 /**
@@ -77,7 +167,7 @@ function text(value: string | number): Uint8Array {
  * fields a disclosure reveals.
  */
 export function reconciliationReport(
-  records: readonly IndexedPackageRecord[],
+  records: readonly (IndexedPackageRecord | ReconciliationSourceRecord)[],
   options: ReportOptions,
 ): { readonly report: ReconciliationReport; readonly disclosures: ReadonlyMap<string, DisclosureRecord> } {
   const reportId = protocolId(options.reportId, "reconciliationReport.reportId");
@@ -86,9 +176,9 @@ export function reconciliationReport(
     throw new Error("Report period must be a nonempty interval of nonnegative milliseconds.");
   }
   if (!Array.isArray(records) || records.length > MAX_ROWS) throw new Error(`A report holds at most ${MAX_ROWS} packages.`);
-  const sorted = [...records].sort((a, b) => (a.packageId < b.packageId ? -1 : a.packageId > b.packageId ? 1 : 0));
+  const sorted = records.map(sourceRecord).sort((a, b) => (a.packageId < b.packageId ? -1 : a.packageId > b.packageId ? 1 : 0));
   for (let index = 1; index < sorted.length; index += 1) {
-    if ((sorted[index - 1] as IndexedPackageRecord).packageId === (sorted[index] as IndexedPackageRecord).packageId) {
+    if ((sorted[index - 1] as ReconciliationSourceRecord).packageId === (sorted[index] as ReconciliationSourceRecord).packageId) {
       throw new Error("A package appears twice in the report.");
     }
   }
@@ -97,9 +187,9 @@ export function reconciliationReport(
     const values: Record<ReportRowField, string | number> = {
       outcome: record.outcome,
       finality: record.finality,
-      evidenceGrade: record.weakestEvidenceGrade ?? "NONE",
-      attemptCount: record.attempts.length,
-      eventCount: record.events.length,
+      evidenceGrade: record.evidenceGrade ?? "NONE",
+      attemptCount: record.attemptCount,
+      eventCount: record.eventCount,
       recordHash: record.recordHashHex,
     };
     const committed = commitDisclosureRecord(
@@ -112,8 +202,8 @@ export function reconciliationReport(
       outcome: record.outcome,
       finality: record.finality,
       evidenceGrade: String(values.evidenceGrade),
-      attemptCount: record.attempts.length,
-      eventCount: record.events.length,
+      attemptCount: record.attemptCount,
+      eventCount: record.eventCount,
       recordHash: record.recordHashHex,
       rowRoot: toHex(committed.root),
     });
