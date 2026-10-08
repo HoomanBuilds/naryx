@@ -594,6 +594,7 @@ export {
   NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
   NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
   NETTING_SETTLEMENT_STATE_KIND,
+  nettingSettlementStateKind,
   nettingAllocationSettlementEvidence,
   verifyNettingAllocationSettlementEvidence,
   nettingSettlementCompletionReceipt,
@@ -603,6 +604,15 @@ export {
   type NettingAllocationSettlementEvidence,
   type NettingSettlementCompletionReceipt,
 } from './netting-asset-settlement.js';
+
+export {
+  NETTING_ALLOCATION_EXECUTION_AUTHORIZATION_VERSION,
+  nettingAllocationExecutionAuthorization,
+  nettingAllocationExecutionAuthorizationBytes,
+  verifyNettingAllocationExecutionAuthorization,
+  type NettingAllocationExecutionAuthorizationInput,
+  type NettingAllocationExecutionAuthorization,
+} from './netting-settlement-authorization.js';
 
 export {
   STRATEGY_STATE_VERSION,

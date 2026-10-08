@@ -110,7 +110,7 @@ function version(value: number, expected: number, context: string): 1 {
   return 1;
 }
 
-function settlementStateKind(legFamily: LegFamily): NettingSettlementStateKind {
+export function nettingSettlementStateKind(legFamily: LegFamily): NettingSettlementStateKind {
   if (legFamily === 'LEND' || legFamily === 'BORROW' || legFamily === 'REPAY' || legFamily === 'WITHDRAW') {
     return 'CREDIT_POSITION';
   }
@@ -209,7 +209,7 @@ function checkedEvidence(
     domain: instrument.domain,
     quantityAsset: instrument.quantityAsset,
     quoteAsset: instrument.quoteAsset,
-    stateKind: settlementStateKind(instrument.legFamily),
+    stateKind: nettingSettlementStateKind(instrument.legFamily),
     settledQuantityAtoms: checkedSigned(input.settledQuantityAtoms, I128_BITS, `${context}.settledQuantityAtoms`),
     settledQuoteDeltaAtoms: checkedSigned(input.settledQuoteDeltaAtoms, I256_BITS, `${context}.settledQuoteDeltaAtoms`),
     observedAtUnit: input.observedAtUnit,
