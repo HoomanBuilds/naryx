@@ -14,6 +14,7 @@ import {
 } from '@naryx/protocol-types';
 import {
   NettingExecutionCoordinator,
+  NettingExternalExecutionRouter,
   type NettingExternalExecutionStorePort,
   type PreparedNettingBatch,
 } from '../src/index.js';
@@ -123,4 +124,37 @@ test('executes each pending residual once under intent-hash idempotency', async 
   const replay = await coordinator.execute(result.proofHash);
   assert.deepEqual(replay.executedIntentHashes, []);
   assert.deepEqual(calls, [toHex(intent.intentHash)]);
+});
+
+test('routes residuals to exactly one domain executor and fails closed otherwise', async () => {
+  const evidence = nettingExternalExecutionEvidence({
+    version: 1,
+    intentHash: intent.intentHash,
+    outcome: 'EXACT_FILLED',
+    filledSignedQuantityAtoms: 10n,
+    grossQuoteAtoms: 12n,
+    feeQuoteAtoms: 1n,
+    submittedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    submittedAtValue: 1_999n,
+    observedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    observedAtValue: 2_001n,
+    executionReferenceHash: id(30),
+    authoritativeEvidenceHash: id(31),
+  }, intent);
+  const calls: string[] = [];
+  const router = new NettingExternalExecutionRouter([{
+    routeId: 'hypercore:testnet',
+    supports: (candidate) => candidate.domain.domainId === 'hypercore:testnet',
+    execute: async (input) => {
+      calls.push(input.idempotencyKey);
+      return evidence;
+    },
+  }]);
+  assert.equal(await router.execute({ intent, idempotencyKey: toHex(intent.intentHash) }), evidence);
+  assert.deepEqual(calls, [toHex(intent.intentHash)]);
+  const unsupported = { ...intent, domain: domainRef('svm:solana-devnet', 1, id(40)) };
+  await assert.rejects(
+    router.execute({ intent: unsupported, idempotencyKey: toHex(intent.intentHash) }),
+    /no registered execution route/,
+  );
 });

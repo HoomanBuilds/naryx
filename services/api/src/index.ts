@@ -630,8 +630,10 @@ export {
 } from "./testnet-execution-policy.js";
 export {
   NettingExecutionCoordinator,
+  NettingExternalExecutionRouter,
   type NettingExternalExecutionStorePort,
   type NettingExternalExecutionPort,
+  type RoutedNettingExternalExecutionPort,
   type NettingExecutionCoordinatorResult,
 } from "./netting-execution-coordinator.js";
 export {

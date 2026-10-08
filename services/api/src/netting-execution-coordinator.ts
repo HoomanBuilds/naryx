@@ -22,6 +22,38 @@ export interface NettingExternalExecutionPort {
   }>): Promise<NettingExternalExecutionEvidence>;
 }
 
+export interface RoutedNettingExternalExecutionPort extends NettingExternalExecutionPort {
+  readonly routeId: string;
+  supports(intent: NettingExternalExecutionIntent): boolean;
+}
+
+export class NettingExternalExecutionRouter implements NettingExternalExecutionPort {
+  readonly #routes: readonly RoutedNettingExternalExecutionPort[];
+
+  constructor(routes: readonly RoutedNettingExternalExecutionPort[]) {
+    if (!Array.isArray(routes) || routes.length === 0
+      || routes.some((route) => typeof route?.routeId !== 'string' || route.routeId.length === 0
+        || typeof route.supports !== 'function' || typeof route.execute !== 'function')
+      || new Set(routes.map((route) => route.routeId)).size !== routes.length) {
+      throw new Error('netting execution routes must be nonempty, unique, and complete');
+    }
+    this.#routes = Object.freeze([...routes]);
+  }
+
+  async execute(input: Readonly<{
+    intent: NettingExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<NettingExternalExecutionEvidence> {
+    const matches = this.#routes.filter((route) => route.supports(input.intent));
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0
+        ? 'netting residual has no registered execution route'
+        : 'netting residual matches multiple execution routes');
+    }
+    return matches[0]!.execute(input);
+  }
+}
+
 export interface NettingExecutionCoordinatorResult {
   readonly batch: PreparedNettingBatch;
   readonly executedIntentHashes: readonly string[];

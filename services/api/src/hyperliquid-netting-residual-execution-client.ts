@@ -5,7 +5,7 @@ import {
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
 } from '@naryx/protocol-types';
-import type { NettingExternalExecutionPort } from './netting-execution-coordinator.js';
+import type { RoutedNettingExternalExecutionPort } from './netting-execution-coordinator.js';
 
 export const API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH =
   '/internal/netting/hyperliquid-testnet/execute-residual';
@@ -145,13 +145,19 @@ function decodedEvidence(
 }
 
 export class HttpHyperliquidNettingResidualExecutionClient
-implements NettingExternalExecutionPort {
+implements RoutedNettingExternalExecutionPort {
+  readonly routeId = 'hypercore:testnet';
   readonly #origin: string;
   readonly #fetch: typeof fetch;
 
   constructor(endpoint: string, fetchImplementation: typeof fetch = fetch) {
     this.#origin = loopbackOrigin(endpoint);
     this.#fetch = fetchImplementation;
+  }
+
+  supports(intent: NettingExternalExecutionIntent): boolean {
+    return intent.domain.domainId === 'hypercore:testnet'
+      && intent.validUntilUnit === 'HYPERLIQUID_UNIX_MILLISECONDS';
   }
 
   async execute(input: Readonly<{

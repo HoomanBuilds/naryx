@@ -30,7 +30,10 @@ import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpHyperliquidNettingResidualExecutionClient } from "./hyperliquid-netting-residual-execution-client.js";
-import { NettingExecutionCoordinator } from "./netting-execution-coordinator.js";
+import {
+  NettingExecutionCoordinator,
+  NettingExternalExecutionRouter,
+} from "./netting-execution-coordinator.js";
 import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
 import {
   createStrategyOrderIntake,
@@ -468,9 +471,11 @@ export function loadPublicMarketRuntime(
     const nettingExecution = nettingExecutionSetting === "true"
       ? new NettingExecutionCoordinator(
         store,
-        new HttpHyperliquidNettingResidualExecutionClient(
-          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
-        ),
+        new NettingExternalExecutionRouter([
+          new HttpHyperliquidNettingResidualExecutionClient(
+            environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+          ),
+        ]),
       )
       : undefined;
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
