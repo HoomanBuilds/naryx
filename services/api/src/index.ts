@@ -12,6 +12,14 @@ export {
   type NettingAllocationObservationBinding,
 } from './netting-allocation-attempt-store.js';
 export {
+  EvmNettingAllocationObservationRoute,
+  SolanaNettingAllocationObservationRoute,
+  type NettingAllocationAttemptReadPort,
+  type NettingAllocationAttemptStore,
+  type SolanaFinalizedNettingTransaction,
+  type SolanaNettingAllocationReadPort,
+} from './netting-allocation-observation-routes.js';
+export {
   createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,
