@@ -20,6 +20,10 @@ export {
   type SolanaNettingAllocationReadPort,
 } from './netting-allocation-observation-routes.js';
 export {
+  createNettingAllocationAdminHandler,
+  type NettingAllocationAdminOptions,
+} from './netting-allocation-admin.js';
+export {
   createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,
