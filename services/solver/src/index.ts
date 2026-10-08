@@ -789,6 +789,10 @@ export {
   type BaseSepoliaNettingResidualLoadedRuntime,
 } from './base-sepolia-netting-residual-config.js';
 export {
+  BASE_SEPOLIA_NETTING_RESIDUAL_EXECUTION_PATH,
+  createBaseSepoliaNettingResidualExecutionInternalHandler,
+} from './base-sepolia-netting-residual-execution-http.js';
+export {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   createHyperliquidNettingResidualExecutionInternalHandler,
 } from './hyperliquid-netting-residual-execution-http.js';

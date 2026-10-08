@@ -642,3 +642,9 @@ export {
   HyperliquidNettingResidualExecutionClientError,
   type HyperliquidNettingResidualExecutionClientErrorCode,
 } from "./hyperliquid-netting-residual-execution-client.js";
+export {
+  API_BASE_SEPOLIA_NETTING_RESIDUAL_EXECUTION_PATH,
+  BaseSepoliaNettingResidualExecutionClientError,
+  HttpBaseSepoliaNettingResidualExecutionClient,
+  type BaseSepoliaNettingResidualExecutionClientErrorCode,
+} from "./base-sepolia-netting-residual-execution-client.js";

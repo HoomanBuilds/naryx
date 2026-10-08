@@ -30,6 +30,7 @@ import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpHyperliquidNettingResidualExecutionClient } from "./hyperliquid-netting-residual-execution-client.js";
+import { HttpBaseSepoliaNettingResidualExecutionClient } from "./base-sepolia-netting-residual-execution-client.js";
 import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
@@ -456,26 +457,40 @@ export function loadPublicMarketRuntime(
         environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
       )
       : undefined;
-    const nettingExecutionSetting = environment.NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED
+    const hyperliquidNettingExecutionSetting = environment.NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED
       ?? "false";
-    if (nettingExecutionSetting !== "true" && nettingExecutionSetting !== "false") {
+    if (hyperliquidNettingExecutionSetting !== "true" && hyperliquidNettingExecutionSetting !== "false") {
       throw new PublicMarketConfigError(
         "NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED must be true or false.",
       );
     }
-    if (nettingExecutionSetting === "true" && publicEnvironment !== "testnet") {
+    const baseNettingExecutionSetting = environment.NARYX_BASE_SEPOLIA_NETTING_EXECUTION_ENABLED
+      ?? "false";
+    if (baseNettingExecutionSetting !== "true" && baseNettingExecutionSetting !== "false") {
       throw new PublicMarketConfigError(
-        "Hyperliquid Testnet netting execution requires NARYX_PUBLIC_ENVIRONMENT=testnet.",
+        "NARYX_BASE_SEPOLIA_NETTING_EXECUTION_ENABLED must be true or false.",
       );
     }
-    const nettingExecution = nettingExecutionSetting === "true"
+    if ((hyperliquidNettingExecutionSetting === "true" || baseNettingExecutionSetting === "true")
+      && publicEnvironment !== "testnet") {
+      throw new PublicMarketConfigError(
+        "Testnet netting execution requires NARYX_PUBLIC_ENVIRONMENT=testnet.",
+      );
+    }
+    const nettingExecutionRoutes = [
+      ...(hyperliquidNettingExecutionSetting === "true"
+        ? [new HttpHyperliquidNettingResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+      ...(baseNettingExecutionSetting === "true"
+        ? [new HttpBaseSepoliaNettingResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+    ];
+    const nettingExecution = nettingExecutionRoutes.length > 0
       ? new NettingExecutionCoordinator(
         store,
-        new NettingExternalExecutionRouter([
-          new HttpHyperliquidNettingResidualExecutionClient(
-            environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
-          ),
-        ]),
+        new NettingExternalExecutionRouter(nettingExecutionRoutes),
       )
       : undefined;
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");

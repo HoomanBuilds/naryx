@@ -84,6 +84,8 @@ import {
   createHyperliquidNettingResidualExecutionInternalHandler,
   loadHyperliquidNettingResidualTestnetRuntime,
   type HyperliquidNettingResidualLoadedRuntime,
+  createBaseSepoliaNettingResidualExecutionInternalHandler,
+  loadBaseSepoliaNettingResidualRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -612,6 +614,10 @@ if (residualExecutionEnabled) {
 const residualExecutionHandler = residualRuntime === undefined
   ? undefined
   : createHyperliquidNettingResidualExecutionInternalHandler(residualRuntime.runtime);
+const baseResidualRuntime = await loadBaseSepoliaNettingResidualRuntime(process.env);
+const baseResidualExecutionHandler = baseResidualRuntime === undefined
+  ? undefined
+  : createBaseSepoliaNettingResidualExecutionInternalHandler(baseResidualRuntime.runtime);
 const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
@@ -623,6 +629,7 @@ const strategyRouteHandlers = [
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,
   residualExecutionHandler,
+  baseResidualExecutionHandler,
 ]
   .filter((handler) => handler !== undefined);
 const strategyRouteHandler = strategyRouteHandlers.length === 0
@@ -740,6 +747,7 @@ function shutdown(): void {
     solanaStrategyPackageIds?.close();
     sealedAuctionJournal?.close();
     residualRuntime?.close();
+    baseResidualRuntime?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {
@@ -785,6 +793,8 @@ try {
   evmStrategyPackageIds?.close();
   solanaStrategyPackageIds?.close();
   sealedAuctionJournal?.close();
+  residualRuntime?.close();
+  baseResidualRuntime?.close();
   authorizationStore?.close();
   throw error;
 }
@@ -795,10 +805,12 @@ const generalizedHyperliquid = generalizedStrategyLanes.length > 0
   : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 const sealedAuctions = config.sealedAuctions.kind;
 const privateRfqs = config.privateRfqs.kind;
+const baseResidualExecution = baseResidualRuntime === undefined ? 'DISABLED' : 'BASE_SEPOLIA';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
   + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid} `
-  + `sealedAuctions=${sealedAuctions} privateRfqs=${privateRfqs}\n`);
+  + `sealedAuctions=${sealedAuctions} privateRfqs=${privateRfqs} `
+  + `baseResidualExecution=${baseResidualExecution}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
     + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);
