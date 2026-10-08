@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { NaryxClient, type StrategyState } from "@naryx/sdk";
+import { NaryxApiError, NaryxClient, type StrategyState, type VerifiedRisk } from "@naryx/sdk";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -18,6 +18,16 @@ type SignedCollateral = Readonly<{
   withdrawalAllowed: boolean;
 }>;
 
+type SignedRisk = Readonly<{
+  assetId: string;
+  decimals: number;
+  netNotionalAtoms: bigint;
+  grossNotionalAtoms: bigint;
+  closeCostAtoms: bigint;
+  timeToUnwindMs: bigint;
+  fullyClosable: boolean;
+}>;
+
 export type PortfolioIntelligenceRow = Readonly<{
   strategyId: string;
   environment: string;
@@ -26,6 +36,7 @@ export type PortfolioIntelligenceRow = Readonly<{
   positionSources: number;
   positionCount: number;
   positionAgeMs: bigint | null;
+  risk: readonly SignedRisk[];
   collateral: readonly SignedCollateral[];
 }>;
 
@@ -108,21 +119,31 @@ function parseCollateral(value: Record<string, unknown> | null): readonly Signed
   }));
 }
 
-function parsePositions(value: Record<string, unknown> | null): Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs"> {
-  if (value === null) return { positionSources: 0, positionCount: 0, positionAgeMs: null };
-  if (!Array.isArray(value.sources)) throw new Error("Position sources are malformed.");
-  const sources = value.sources.map((raw, index) => {
-    const source = record(raw, `Position source ${index}`);
-    if (typeof source.positionCount !== "number" || !Number.isSafeInteger(source.positionCount) || source.positionCount < 0) {
-      throw new Error(`Position source ${index} count is malformed.`);
-    }
-    return { positionCount: source.positionCount, ageMs: integer(source.ageMs, `Position source ${index} age`) };
+function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs" | "risk"> {
+  if (value === null) return { positionSources: 0, positionCount: 0, positionAgeMs: null, risk: [] };
+  return Object.freeze({
+    positionSources: value.positions.sources.length,
+    positionCount: value.positions.positions.length,
+    positionAgeMs: largest(value.positions.sources.map((source) => source.ageMs)),
+    risk: Object.freeze(value.byAccountingAsset.map((group) => Object.freeze({
+      assetId: group.accountingAsset.assetId,
+      decimals: group.accountingAsset.decimals,
+      netNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.netNotional, BigInt(0)),
+      grossNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.grossNotional, BigInt(0)),
+      closeCostAtoms: group.closeCost.costQuoteAtoms,
+      timeToUnwindMs: group.closeCost.timeToUnwindMs,
+      fullyClosable: group.closeCost.complete,
+    }))),
   });
-  return {
-    positionSources: sources.length,
-    positionCount: sources.reduce((sum, source) => sum + source.positionCount, 0),
-    positionAgeMs: largest(sources.map((source) => source.ageMs)),
-  };
+}
+
+async function readRisk(client: NaryxClient, strategyId: string): Promise<VerifiedRisk | null> {
+  try {
+    return await client.getRisk(strategyId);
+  } catch (error) {
+    if (error instanceof NaryxApiError && error.status === 404) return null;
+    throw error;
+  }
 }
 
 export function usePortfolioIntelligence(baseUrl: string | null, owners: readonly (string | null)[]): PortfolioIntelligenceState {
@@ -149,9 +170,9 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
       }
       const rows = await Promise.all([...ids].sort().map(async (strategyId) => {
         const encoded = encodeURIComponent(strategyId);
-        const [strategy, positions, collateral] = await Promise.all([
+        const [strategy, risk, collateral] = await Promise.all([
           client.getStrategy(strategyId),
-          read(base, `/v1/positions/${encoded}`, signal, true),
+          readRisk(client, strategyId),
           read(base, `/v1/collateral/${encoded}`, signal, true),
         ]);
         return Object.freeze({
@@ -159,7 +180,7 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
           environment: environment as string,
           state: strategy.state,
           stateHash: strategy.stateHash,
-          ...parsePositions(positions),
+          ...summarizeRisk(risk),
           collateral: parseCollateral(collateral),
         });
       }));

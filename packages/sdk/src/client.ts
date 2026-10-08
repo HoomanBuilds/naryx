@@ -123,12 +123,15 @@ import {
   type PackageReopeningResult,
   type PackageReopeningSettlementHandoff,
   type PackageGraphInput,
+  type AssetRef,
+  type ExposureGraph,
   type NormalizedPosition,
   type NettingObligationInput,
   type NettingPolicyManifestInput,
   type NettingResult,
   type PositionSnapshotRecord,
   type PositionSnapshotRecordInput,
+  type PackageCloseCostIndex,
   type PrivateRfqEnvelopeInput,
   type QualificationObjectType,
   type QualificationRecord,
@@ -150,6 +153,7 @@ import {
   type TerminalOutcomeInput,
   type TerminalOutcomeRecord,
   type TerminalState,
+  type StressResult,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
 
@@ -500,6 +504,19 @@ export interface VerifiedPositions {
   readonly label: 'OBSERVED';
   readonly sources: readonly VerifiedPositionSource[];
   readonly positions: readonly NormalizedPosition[];
+}
+
+export interface VerifiedRiskGroup {
+  readonly accountingAsset: AssetRef;
+  readonly exposure: ExposureGraph;
+  readonly closeCost: PackageCloseCostIndex;
+  readonly stress: Readonly<{ readonly label: 'MODELED'; readonly results: readonly StressResult[] }>;
+}
+
+export interface VerifiedRisk {
+  readonly positions: VerifiedPositions;
+  readonly methodology: string;
+  readonly byAccountingAsset: readonly VerifiedRiskGroup[];
 }
 
 export interface VerifiedRouteDecision {
@@ -2131,7 +2148,10 @@ export class NaryxClient {
    * exposure and close cost are recomputed here from those positions and must equal the served
    * figures exactly. The stress rows are a server model labeled MODELED and are passed through.
    */
-  async getRisk(strategyAccount: string, options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {}) {
+  async getRisk(
+    strategyAccount: string,
+    options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {},
+  ): Promise<VerifiedRisk> {
     const positions = await this.getPositions(strategyAccount, options);
     const body = record(await this.#request('GET', `/v1/risk/${positions.strategyAccount}`), 'risk');
     if (body.strategyAccount !== positions.strategyAccount || typeof body.methodology !== 'string') throw new NaryxEvidenceError('risk is for another account or has no methodology');
@@ -2145,12 +2165,19 @@ export class NaryxClient {
       seenAssets.add(assetKey);
       const grouped = positions.positions.filter((position) => bytesEqual(position.markPrice.quoteAsset.assetManifestHash, asset.assetManifestHash) && position.markPrice.quoteAsset.assetId === asset.assetId);
       const same = (left: unknown, right: unknown) => JSON.stringify(toProtocolJson(left)) === JSON.stringify(toProtocolJson(right));
-      if (!same(buildExposureGraph(grouped, asset), served.exposure) || !same(packageCloseCostIndex(grouped), served.closeCost)) {
+      const exposure = served.exposure as ExposureGraph;
+      const closeCost = served.closeCost as PackageCloseCostIndex;
+      if (!same(buildExposureGraph(grouped, asset), exposure) || !same(packageCloseCostIndex(grouped), closeCost)) {
         throw new NaryxEvidenceError(`byAccountingAsset[${index}] exposure or close cost differs from the local computation`);
       }
       const stress = record(served.stress, `byAccountingAsset[${index}].stress`);
       if (stress.label !== 'MODELED') throw new NaryxEvidenceError('stress rows must be labeled MODELED');
-      return Object.freeze({ accountingAsset: asset, exposure: served.exposure, closeCost: served.closeCost, stress });
+      return Object.freeze({
+        accountingAsset: asset,
+        exposure,
+        closeCost,
+        stress: Object.freeze({ label: 'MODELED' as const, results: list(stress.results, `byAccountingAsset[${index}].stress.results`) as unknown as readonly StressResult[] }),
+      });
     });
     const covered = groups.reduce((sum, group) => sum + positions.positions.filter((position) => position.markPrice.quoteAsset.assetId === group.accountingAsset.assetId && bytesEqual(position.markPrice.quoteAsset.assetManifestHash, group.accountingAsset.assetManifestHash)).length, 0);
     if (covered !== positions.positions.length) throw new NaryxEvidenceError('risk leaves out positions it was built from');
