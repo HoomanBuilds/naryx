@@ -755,6 +755,16 @@ export {
   type HyperliquidNettingResidualSubmissionResult,
 } from './hyperliquid-netting-residual-testnet-submission.js';
 export {
+  HyperliquidNettingResidualRuntimeError,
+  HyperliquidNettingResidualTestnetRuntime,
+  type HyperliquidNettingResidualRuntimeErrorCode,
+  type HyperliquidNettingResidualRuntimeEvidencePort,
+  type HyperliquidNettingResidualRuntimeJournalPort,
+  type HyperliquidNettingResidualRuntimeLane,
+  type HyperliquidNettingResidualRuntimeLaneResolver,
+  type HyperliquidNettingResidualRuntimeOptions,
+} from './hyperliquid-netting-residual-runtime.js';
+export {
   HyperliquidStrategyTestnetRuntime,
   createHyperliquidStrategyTestnetRuntime,
   type HyperliquidStrategyEvidenceBinding,

@@ -131,7 +131,7 @@ function validateInput(input: HyperliquidNettingResidualSubmissionInput): Readon
   const plan = input.plan;
   if (plan.version !== 1 || plan.guarantee !== 'SINGLE_IOC_WITH_TERMINAL_EVIDENCE'
     || plan.domain.domainId !== 'hypercore:testnet'
-    || plan.requestExpiryMs <= input.nowMs || plan.requestExpiryMs <= input.nonce
+    || plan.requestExpiryMs <= input.nonce
     || plan.requestExpiryMs > MAX_SAFE_INTEGER || plan.action.type !== 'order'
     || plan.action.grouping !== 'na' || plan.action.orders.length !== 1
     || plan.action.orders[0]?.c.toLowerCase() !== plan.clientOrderId.toLowerCase()) {
@@ -286,6 +286,9 @@ export class HyperliquidNettingResidualTestnetSubmissionService {
       const existing = await this.#journal.readAttempt(input.attemptId);
       let current = existing;
       if (current === null) {
+        if (input.plan.requestExpiryMs <= input.nowMs) {
+          throw new Error('residual submission request is expired');
+        }
         current = await this.#journal.prepare({ ...input, ...validated });
         validateReceipt(current, input, 'PREPARED', input.expectedVersion);
       } else {
