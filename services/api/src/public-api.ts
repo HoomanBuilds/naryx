@@ -235,6 +235,26 @@ export function sealedAuctionAwardMatchesQuote(
     && quote.validUntilValue >= award.settlementDeadlineValue;
 }
 
+export function privateRfqResponseMatchesQuote(
+  quote: Readonly<{
+    environment: string;
+    orderHash: string;
+    solverId: string;
+    quoteHash: string;
+  }>,
+  response: Readonly<{
+    environment: string;
+    orderHash: string;
+    solverId: string;
+    quoteHash: string;
+  }>,
+): boolean {
+  return quote.environment === response.environment
+    && quote.orderHash === response.orderHash
+    && quote.solverId === response.solverId
+    && quote.quoteHash === response.quoteHash;
+}
+
 export interface PublicApiOptions {
   readonly exchange: PublicExchangeStore;
   /** Optional: registry routes answer 503 when no registry is configured. */
@@ -541,6 +561,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       timeUnit: string;
       settlementDeadlineValue: bigint;
     }>,
+    expectedPrivateRfqResponse?: Readonly<{
+      environment: string;
+      orderHash: string;
+      solverId: string;
+      quoteHash: string;
+    }>,
   ) {
     const store = requireStrategyPackages();
     if (store.order === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
@@ -615,6 +641,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         validUntilValue: admitted.quote.validUntilValue,
       }, expectedAuctionAward)) {
         throw new RequestError(409, "AUCTION_AWARD_MISMATCH", "The signed quote does not match the sealed auction award.");
+      }
+    }
+    if (expectedPrivateRfqResponse !== undefined) {
+      const admittedQuoteHash = toHex(strategyPackageQuoteHash(admitted.quote));
+      if (!privateRfqResponseMatchesQuote({
+        environment: admitted.quote.environment,
+        orderHash: result.orderHash,
+        solverId: admitted.quote.solverId,
+        quoteHash: admittedQuoteHash,
+      }, expectedPrivateRfqResponse)) {
+        throw new RequestError(409, "PRIVATE_RFQ_RESPONSE_MISMATCH", "The signed quote does not match the encrypted RFQ response.");
       }
     }
     if (packageExecution !== undefined) {
@@ -1377,6 +1414,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   async function computeRoutes(request: IncomingMessage, url: URL): Promise<unknown> {
     onlyParams(url, []);
     const path = url.pathname;
+    const privateRfqAcceptanceMatch = /^\/v1\/rfqs\/private\/([0-9a-f]{64})\/accept$/.exec(path);
     const sealedAuctionAwardMatch = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})\/award$/.exec(path);
     if (![
       "/v1/orders/validate",
@@ -1411,10 +1449,46 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategies/commands",
       "/v1/builders",
       "/v1/builders/attributions",
-    ].includes(path) && sealedAuctionAwardMatch === null) {
+    ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (privateRfqAcceptanceMatch !== null) {
+      if (Object.keys(body).length !== 0) {
+        throw new RequestError(400, "INVALID_REQUEST", "A private RFQ acceptance request has no caller-selected fields.");
+      }
+      const envelopeHash = privateRfqAcceptanceMatch[1] as string;
+      const stored = requireDelivery().getEnvelope(envelopeHash);
+      if (stored === undefined) throw new RequestError(404, "PRIVATE_RFQ_NOT_FOUND", "No such private RFQ envelope.");
+      if (stored.response === undefined) {
+        throw new RequestError(409, "PRIVATE_RFQ_RESPONSE_PENDING", "The addressed solver has not returned an encrypted quote.");
+      }
+      const responseMetadata = object(stored.response.response, "Private RFQ response metadata");
+      const quoteHash = toHex(commitmentHash(responseMetadata.quoteHash as Uint8Array | string, "privateRfq.response.quoteHash"));
+      const orderHash = toHex(commitmentHash(responseMetadata.quoteOrderHash as Uint8Array | string, "privateRfq.response.quoteOrderHash"));
+      const envelopeOrderHash = toHex(stored.envelope.orderHash);
+      if (orderHash !== envelopeOrderHash) {
+        throw new RequestError(409, "PRIVATE_RFQ_RESPONSE_MISMATCH", "The encrypted response names another strategy order.");
+      }
+      const quote = await requestAndStoreStrategyQuote(
+        orderHash,
+        `private-rfq.${envelopeHash}`,
+        undefined,
+        undefined,
+        {
+          environment: stored.envelope.environment,
+          orderHash,
+          solverId: stored.envelope.recipientSolverId,
+          quoteHash,
+        },
+      );
+      return Object.freeze({
+        ...quote,
+        envelopeHash,
+        privateRfqResponseHash: stored.response.responseHashHex,
+        responseSolverId: stored.envelope.recipientSolverId,
+      });
+    }
     if (sealedAuctionAwardMatch !== null) {
       if (Object.keys(body).length !== 0) {
         throw new RequestError(400, "INVALID_REQUEST", "A sealed auction award request has no caller-selected fields.");

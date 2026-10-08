@@ -40,7 +40,7 @@ import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } fr
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, signedOrder, terms } from "./evidence-fixtures.js";
 import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
-import { sealedAuctionAwardMatchesQuote } from "../src/public-api.js";
+import { privateRfqResponseMatchesQuote, sealedAuctionAwardMatchesQuote } from "../src/public-api.js";
 
 const NOW_MS = 1_900_000_000_000;
 /** Observed bond ledgers the harness's solver API reads by bond id. */
@@ -71,6 +71,20 @@ test("sealed auction awards bind the exact solver quote through the settlement d
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, solverId: "solver-b" }, award), false);
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, netOutcomeAtoms: 501n }, award), false);
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, validUntilValue: NOW_S + 29n }, award), false);
+});
+
+test("private RFQ acceptance binds the exact encrypted-response quote", () => {
+  const quote = {
+    environment: "testnet",
+    orderHash: "55".repeat(32),
+    solverId: "solver-a",
+    quoteHash: "77".repeat(32),
+  };
+  assert.equal(privateRfqResponseMatchesQuote(quote, quote), true);
+  assert.equal(privateRfqResponseMatchesQuote({ ...quote, environment: "mainnet" }, quote), false);
+  assert.equal(privateRfqResponseMatchesQuote({ ...quote, orderHash: "56".repeat(32) }, quote), false);
+  assert.equal(privateRfqResponseMatchesQuote({ ...quote, solverId: "solver-b" }, quote), false);
+  assert.equal(privateRfqResponseMatchesQuote({ ...quote, quoteHash: "78".repeat(32) }, quote), false);
 });
 
 function quoteKey(): { raw: Uint8Array; privateKey: KeyObject } {
@@ -575,6 +589,9 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
     assert.deepEqual(pending.envelopes.map((entry) => entry.envelopeHash), [hash]);
     assert.deepEqual([...(pending.envelopes[0]?.senderSignature ?? [])], [...taker.signEnvelope(envelope())]);
     assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, false);
+    const prematureAcceptance = await api.plain("POST", `/v1/rfqs/private/${hash}/accept`, {});
+    assert.equal(prematureAcceptance.status, 409);
+    assert.equal((prematureAcceptance.body.error as { code: string }).code, "PRIVATE_RFQ_RESPONSE_PENDING");
     assert.equal((await api.call("POST", `/v1/solver/private-rfqs/${hash}/ack`)).status, 200);
     assert.equal(((await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { acknowledged: boolean }).acknowledged, true);
     const response = (key: Uint8Array) => ({ quoteHash: "66".repeat(32), quoteOrderHash: "55".repeat(32), responseEncryptionKey: key, responseCiphertext: new Uint8Array([9, 9, 9]) });
@@ -583,6 +600,9 @@ test("the private RFQ relay stores ciphertext only, fails closed without a pinne
     assert.equal((await api.call("POST", `/v1/solver/private-rfqs/${hash}/response`, response(new Uint8Array(32).fill(7)))).status, 200);
     const status = (await api.plain("GET", `/v1/rfqs/private/${hash}`)).body as { response?: { responseCiphertext: Uint8Array } };
     assert.deepEqual([...(status.response?.responseCiphertext ?? [])], [9, 9, 9]);
+    const acceptance = await api.plain("POST", `/v1/rfqs/private/${hash}/accept`, {});
+    assert.equal(acceptance.status, 503);
+    assert.equal((acceptance.body.error as { code: string }).code, "STRATEGY_PACKAGE_STORE_UNAVAILABLE");
   });
 });
 
