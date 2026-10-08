@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
+import { privateKeyToAccount } from 'viem/accounts';
 import {
   adapterRef,
   versionedManifestRef,
@@ -885,6 +886,17 @@ describe('order intake and terminal evidence', () => {
     const ack = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: toHex(strategyCommandHash(assign)), states: [] } } }, seen);
     const submitted = await ack.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey)));
     assert.equal(submitted.commandHash, toHex(strategyCommandHash(assign)));
+    const evmOwner = privateKeyToAccount(`0x${'45'.repeat(32)}`);
+    const evmCommand: StrategyCommandInput = { ...assign, actorId: evmOwner.address.toLowerCase() };
+    const evmSeen: { method: string; path: string; body?: unknown }[] = [];
+    const evmAck = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: toHex(strategyCommandHash(evmCommand)), states: [] } } }, evmSeen);
+    const evmSubmitted = await evmAck.submitAuthorizedStrategyCommand(evmCommand, {
+      scheme: 'EIP712_SECP256K1',
+      signerId: evmOwner.address.toLowerCase(),
+      sign: (typedData) => evmOwner.signTypedData(typedData as never),
+    });
+    assert.equal(evmSubmitted.commandHash, toHex(strategyCommandHash(evmCommand)));
+    assert.equal((evmSeen[0]?.body as { authorization?: { scheme?: string } }).authorization?.scheme, 'EIP712_SECP256K1');
     const wrong = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: 'ef'.repeat(32), states: [] } } });
     await assert.rejects(wrong.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey))), /different strategy command/);
   });

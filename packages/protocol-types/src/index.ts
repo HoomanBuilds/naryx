@@ -1705,6 +1705,10 @@ export {
   type StrategyCommandOutcome,
   type StrategyCommandParameters,
 } from './strategy-command.js';
+export {
+  isEvmStrategyActor,
+  strategyCommandAuthorizationTypedData,
+} from './strategy-command-authorization.js';
 
 export {
   CROSS_DOMAIN_COMPENSATION_ACTION_VERSION,

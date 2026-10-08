@@ -52,6 +52,8 @@ import {
   positionSnapshotRecord,
   positionSnapshotRecordHash,
   strategyCommandHash,
+  strategyCommandAuthorizationTypedData,
+  isEvmStrategyActor,
   builderAttributionHash,
   builderManifestHash,
   type BuilderAttributionInput,
@@ -149,6 +151,7 @@ import {
   type TerminalOutcomeRecord,
   type TerminalState,
 } from '@naryx/protocol-types';
+import { verifyTypedData, type Hex } from 'viem';
 
 const MAX_RESPONSE_CHARS = 2_097_152;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -695,6 +698,33 @@ function sizesQuery(sizes: readonly bigint[]): string {
  */
 /** Signs a strategy command hash with the actor's own Ed25519 key; the key never enters the SDK. */
 export type StrategyCommandSigner = (commandHash: Uint8Array) => Promise<Uint8Array>;
+
+export type StrategyCommandAuthorizationSigner =
+  | {
+    readonly scheme: 'ED25519';
+    readonly signerId: string;
+    readonly sign: StrategyCommandSigner;
+  }
+  | {
+    readonly scheme: 'EIP712_SECP256K1';
+    readonly signerId: string;
+    readonly sign: (typedData: ReturnType<typeof strategyCommandAuthorizationTypedData>) => Promise<string>;
+  };
+
+async function createStrategyCommandAuthorization(
+  command: StrategyCommandInput,
+  signer: StrategyCommandAuthorizationSigner,
+) {
+  if (signer.scheme === 'ED25519') {
+    const signature = await signer.sign(strategyCommandHash(command));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the Ed25519 signer must return a 64-byte signature');
+    return Object.freeze({ scheme: signer.scheme, signature: base58Encode(signature) });
+  }
+  if (!isEvmStrategyActor(signer.signerId)) throw new TypeError('the EVM signer id must be a canonical lowercase address');
+  const signature = (await signer.sign(strategyCommandAuthorizationTypedData(command, signer.signerId))).toLowerCase();
+  if (!/^0x[0-9a-f]{130}$/.test(signature)) throw new TypeError('the EVM signer must return a 65-byte hex signature');
+  return Object.freeze({ scheme: signer.scheme, signature });
+}
 
 export interface VerifiedStrategyCommand {
   readonly commandHash: string;
@@ -1721,6 +1751,28 @@ export class NaryxClient {
     return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
   }
 
+  async submitAuthorizedStrategyCommand(
+    command: StrategyCommandInput,
+    signer: StrategyCommandAuthorizationSigner,
+    consents: readonly StrategyCommandAuthorizationSigner[] = [],
+  ) {
+    if (signer.signerId !== command.actorId) throw new TypeError('the primary signer must be the command actor');
+    if (!Array.isArray(consents) || consents.length > 3) throw new TypeError('at most three consents');
+    const commandHash = strategyCommandHash(command);
+    const authorization = await createStrategyCommandAuthorization(command, signer);
+    const consentBodies = [];
+    for (const consent of consents) {
+      consentBodies.push({ signerId: consent.signerId, ...await createStrategyCommandAuthorization(command, consent) });
+    }
+    const body = record(await this.#request('POST', '/v1/strategies/commands', {
+      command,
+      authorization,
+      ...(consentBodies.length === 0 ? {} : { consents: consentBodies }),
+    }), 'strategy command');
+    if (body.accepted !== true || body.commandHashHex !== toHex(commandHash)) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
+    return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
+  }
+
   /**
    * Attributes the caller's order to a builder. Only the attribution hash goes to the owner's
    * signer, and the server must acknowledge that exact hash.
@@ -1880,11 +1932,38 @@ export class NaryxClient {
       }
       if (served.commandHash !== toHex(commandHash)) throw new NaryxEvidenceError(`commands[${index}] does not match its hash`);
       const authorization = record(served.authorization, `commands[${index}].authorization`);
-      const signature = base58Decode(String(authorization.signature));
-      const key = base58Decode(command.actorId);
-      if (signature === undefined || key === undefined || key.length !== 32) throw new NaryxEvidenceError(`commands[${index}] has no usable actor key or signature`);
-      const verdict = await webCryptoEd25519(key, commandHash, signature);
-      if (verdict === false) throw new NaryxEvidenceError(`commands[${index}] is not signed by its actor`);
+      let signatureVerified = false;
+      if (authorization.scheme === 'ED25519') {
+        const signature = base58Decode(String(authorization.signature));
+        const key = base58Decode(command.actorId);
+        if (signature === undefined || key === undefined || key.length !== 32) throw new NaryxEvidenceError(`commands[${index}] has no usable actor key or signature`);
+        const verdict = await webCryptoEd25519(key, commandHash, signature);
+        if (verdict === false) throw new NaryxEvidenceError(`commands[${index}] is not signed by its actor`);
+        signatureVerified = verdict === true;
+      } else if (authorization.scheme === 'EIP712_SECP256K1' && isEvmStrategyActor(command.actorId)) {
+        const signature = typeof authorization.signature === 'string' ? authorization.signature.toLowerCase() : '';
+        if (!/^0x[0-9a-f]{130}$/.test(signature)) throw new NaryxEvidenceError(`commands[${index}] has no usable EVM signature`);
+        try {
+          const typedData = strategyCommandAuthorizationTypedData(command, command.actorId);
+          signatureVerified = await verifyTypedData({
+            address: command.actorId as Hex,
+            domain: typedData.domain,
+            types: { StrategyCommandAuthorization: [...typedData.types.StrategyCommandAuthorization] },
+            primaryType: typedData.primaryType,
+            message: {
+              ...typedData.message,
+              commandHash: typedData.message.commandHash as Hex,
+              signer: command.actorId as Hex,
+            },
+            signature: signature as Hex,
+          });
+        } catch {
+          signatureVerified = false;
+        }
+        if (!signatureVerified) throw new NaryxEvidenceError(`commands[${index}] is not signed by its actor`);
+      } else {
+        throw new NaryxEvidenceError(`commands[${index}] has an unsupported actor authorization`);
+      }
       const receipt = served.receipt as StrategyTransitionReceipt | undefined;
       const bound: string[] = [];
       if (command.parameters.kind === 'OPEN') {
@@ -1903,7 +1982,7 @@ export class NaryxClient {
       verified.push(Object.freeze({
         commandHash: toHex(commandHash),
         command,
-        signatureVerified: verdict === true,
+        signatureVerified,
         ...(receipt === undefined ? {} : { receipt }),
         recordedAtMs: typeof served.recordedAtMs === 'number' ? served.recordedAtMs : 0,
       }));

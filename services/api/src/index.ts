@@ -641,6 +641,7 @@ export {
 export { createMarketStream, type MarketStreamOptions } from "./market-stream.js";
 export { createOffchainShardSettlement, type OffchainShardFillRequest, type OffchainShardFillResult } from "./offchain-shard-settlement.js";
 export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StrategyCommandConsent, type TransferEvidenceVerifier, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";
+export { type StrategyCommandAuthorization } from "./strategy-command-authorization.js";
 export { createEvmBondReader, type EvmBondReaderOptions } from "./evm-bond-reader.js";
 export { BuilderStoreError, SqliteBuilderStore, type BuilderAttributionView } from "./builder-store.js";
 export {

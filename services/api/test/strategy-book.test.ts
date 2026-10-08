@@ -80,39 +80,39 @@ test("the strategy book opens from one settled entry, applies signed commands th
         expectedStateHash: "00".repeat(32),
         parameters: { kind: "OPEN", originReceiptHash, state: state({ strategyId, ...(legs === undefined ? {} : { legs }) }) },
       });
-    const submit = (entry: { command: StrategyCommandInput; signature: string }) => book.submit(entry.command, entry.signature);
+    const submit = (entry: { command: StrategyCommandInput; signature: string }) => book.submit(entry.command, { scheme: "ED25519", signature: entry.signature });
 
     const wrongLegs = state().legs.map((leg) => ({ ...leg, signedQuantityAtoms: leg.signedQuantityAtoms / 2n }));
-    assert.throws(() => submit(openCommand("carry-1", wrongLegs)), { code: "ORIGIN_MISMATCH" });
+    await assert.rejects(() => submit(openCommand("carry-1", wrongLegs)), { code: "ORIGIN_MISMATCH" });
     const opening = openCommand("carry-1");
-    const opened = submit(opening);
+    const opened = await submit(opening);
     assert.ok(opened.accepted && !opened.replayed);
     assert.equal(opened.states[0]?.stateHashHex, toHex(strategyStateHash(state())));
-    assert.ok(submit(opening).accepted, "a replayed command returns its first result");
-    assert.throws(() => submit(openCommand("carry-2")), { code: "ORIGIN_CLAIMED" });
+    assert.ok((await submit(opening)).accepted, "a replayed command returns its first result");
+    await assert.rejects(() => submit(openCommand("carry-2")), { code: "ORIGIN_CLAIMED" });
 
     // Signatures must come from the actor's own key, at the book's time.
-    assert.throws(() => book.submit(openCommand("carry-3").command, bs58.encode(new Uint8Array(64))), { code: "INVALID_SIGNATURE" });
+    await assert.rejects(() => book.submit(openCommand("carry-3").command, { scheme: "ED25519", signature: bs58.encode(new Uint8Array(64)) }), { code: "INVALID_SIGNATURE" });
     const current = () => book.strategy("carry-1")?.state as StrategyState;
     const bind = (value: StrategyState) => ({ strategyId: value.strategyId, expectedStateVersion: value.stateVersion, expectedStateHash: strategyStateHash(value) });
-    assert.throws(() => submit(signed(owner, { ...bind(current()), atValue: BigInt(NOW_MS - 600_000), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-2" } })), { code: "STALE_COMMAND" });
+    await assert.rejects(() => submit(signed(owner, { ...bind(current()), atValue: BigInt(NOW_MS - 600_000), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-2" } })), { code: "STALE_COMMAND" });
 
-    const delegated = submit(signed(owner, { ...bind(current()), parameters: { kind: "DELEGATE", delegateId: bot.id, authorities: ["REBALANCE", "EXIT"], expiresAtValue: BigInt(NOW_MS + 86_400_000) } }));
+    const delegated = await submit(signed(owner, { ...bind(current()), parameters: { kind: "DELEGATE", delegateId: bot.id, authorities: ["REBALANCE", "EXIT"], expiresAtValue: BigInt(NOW_MS + 86_400_000) } }));
     assert.ok(delegated.accepted && delegated.receipt?.externalPositionsMoved === false);
     // A delegate may not split: splitting is the owner's alone.
-    const botSplit = submit(signed(bot, { ...bind(current()), parameters: { kind: "SPLIT", childStrategyIds: ["carry-1a", "carry-1b"], firstShareBps: 5_000n } }));
+    const botSplit = await submit(signed(bot, { ...bind(current()), parameters: { kind: "SPLIT", childStrategyIds: ["carry-1a", "carry-1b"], firstShareBps: 5_000n } }));
     assert.deepEqual(botSplit, { accepted: false, rejection: "UNAUTHORIZED" });
-    const stale = submit(signed(owner, { strategyId: "carry-1", expectedStateVersion: 1n, expectedStateHash: strategyStateHash(state()), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-2" } }));
+    const stale = await submit(signed(owner, { strategyId: "carry-1", expectedStateVersion: 1n, expectedStateHash: strategyStateHash(state()), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-2" } }));
     assert.deepEqual(stale, { accepted: false, rejection: "STALE_STATE" });
 
-    const split = submit(signed(owner, { ...bind(current()), parameters: { kind: "SPLIT", childStrategyIds: ["carry-1a", "carry-1b"], firstShareBps: 5_000n } }));
+    const split = await submit(signed(owner, { ...bind(current()), parameters: { kind: "SPLIT", childStrategyIds: ["carry-1a", "carry-1b"], firstShareBps: 5_000n } }));
     assert.ok(split.accepted && split.states.length === 2);
     assert.ok(book.strategy("carry-1")?.retiredByCommandHashHex === split.commandHashHex);
-    assert.throws(() => submit(signed(owner, { ...bind(current()), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-9" } })), { code: "STRATEGY_RETIRED" });
+    await assert.rejects(() => submit(signed(owner, { ...bind(current()), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-9" } })), { code: "STRATEGY_RETIRED" });
 
     const first = book.strategy("carry-1a")?.state as StrategyState;
     const second = book.strategy("carry-1b")?.state as StrategyState;
-    const merged = submit(signed(owner, {
+    const merged = await submit(signed(owner, {
       ...bind(first),
       parameters: { kind: "MERGE", otherStrategyId: "carry-1b", otherExpectedStateVersion: second.stateVersion, otherExpectedStateHash: strategyStateHash(second), mergedStrategyId: "carry-1m" },
     }));
@@ -152,6 +152,10 @@ test("the strategy book opens from one settled entry, applies signed commands th
       assert.equal((history.body.commands as unknown[]).length, 3);
       const merged = book.strategy("carry-1m")?.state as StrategyState;
       const assign = signed(owner, { ...bind(merged), parameters: { kind: "ASSIGN_INTERNAL", subaccountId: "desk-2" } });
+      const challenge = await call("POST", "/v1/strategies/commands/authorization", { command: assign.command });
+      assert.equal(challenge.status, 200);
+      assert.equal(challenge.body.scheme, "ED25519");
+      assert.equal(challenge.body.commandHash, toHex(strategyCommandHash(assign.command)));
       const posted = await call("POST", "/v1/strategies/commands", { command: assign.command, authorization: { scheme: "ED25519", signature: assign.signature } });
       assert.equal(posted.status, 200);
       const rejected = await call("POST", "/v1/strategies/commands", { command: assign.command, authorization: { scheme: "ED25519", signature: bs58.encode(new Uint8Array(64)) } });
@@ -170,7 +174,7 @@ test("the strategy book opens from one settled entry, applies signed commands th
   }
 });
 
-test("position moves are accepted only with unclaimed settled receipts that account for the exact change, and novation needs consent and venue evidence", () => {
+test("position moves are accepted only with unclaimed settled receipts that account for the exact change, and novation needs consent and venue evidence", async () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-strategy-moves-"));
   const owner = actor();
   const buyer = actor();
@@ -204,40 +208,40 @@ test("position moves are accepted only with unclaimed settled receipts that acco
       };
     };
     const signature = (who: { key: KeyObject }, full: StrategyCommandInput) => bs58.encode(sign(null, strategyCommandHash(full), who.key));
-    const submit = (who: { id: string; key: KeyObject }, parameters: StrategyCommandInput["parameters"], consents: { signerId: string; signatureBase58: string }[] = []) => {
+    const submit = (who: { id: string; key: KeyObject }, parameters: StrategyCommandInput["parameters"], consents: { signerId: string; authorization: { scheme: "ED25519"; signature: string } }[] = []) => {
       const full = build(who, parameters);
-      return book.submit(full, signature(who, full), consents);
+      return book.submit(full, { scheme: "ED25519", signature: signature(who, full) }, consents);
     };
-    assert.ok(submit(owner, { kind: "OPEN", originReceiptHash: "aa".repeat(32), state: initial }).accepted);
+    assert.ok((await submit(owner, { kind: "OPEN", originReceiptHash: "aa".repeat(32), state: initial })).accepted);
 
     const decrease = (hashes: string[]) => submit(owner, { kind: "DECREASE", changeBps: 5_000n, executionReceiptHashes: hashes });
-    assert.throws(() => decrease(["b2".repeat(32)]), { code: "EXECUTION_MISMATCH" });
-    assert.throws(() => decrease(["b9".repeat(32)]), { code: "RECEIPT_NOT_FOUND" });
-    assert.throws(() => decrease(["aa".repeat(32)]), { code: "RECEIPT_CLAIMED" });
-    assert.throws(() => decrease(["b3".repeat(32)]), { code: "RECEIPT_OWNER_MISMATCH" });
-    const decreased = decrease(["b1".repeat(32)]);
+    await assert.rejects(() => decrease(["b2".repeat(32)]), { code: "EXECUTION_MISMATCH" });
+    await assert.rejects(() => decrease(["b9".repeat(32)]), { code: "RECEIPT_NOT_FOUND" });
+    await assert.rejects(() => decrease(["aa".repeat(32)]), { code: "RECEIPT_CLAIMED" });
+    await assert.rejects(() => decrease(["b3".repeat(32)]), { code: "RECEIPT_OWNER_MISMATCH" });
+    const decreased = await decrease(["b1".repeat(32)]);
     assert.ok(decreased.accepted && decreased.receipt?.externalPositionsMoved === true);
     assert.equal(book.strategy("carry-1")?.state.legs.find((leg) => leg.legId === "spot")?.signedQuantityAtoms, 500_000_000n);
     receipts.set("b4".repeat(32), exitReceipt(owner.id, 250_000_000n));
-    assert.throws(() => decrease(["b1".repeat(32)]), { code: "RECEIPT_CLAIMED" });
+    await assert.rejects(() => decrease(["b1".repeat(32)]), { code: "RECEIPT_CLAIMED" });
 
     // Novation: the signer's claim alone is not consent, and every venue's transfer must verify.
     const novation: StrategyCommandInput["parameters"] = { kind: "NOVATE", newOwnerId: buyer.id, venueConfirmations: [{ venueId: "phoenix", evidenceHash: "c1".repeat(32) }, { venueId: "drift", evidenceHash: "c2".repeat(32) }] };
-    assert.deepEqual(submit(owner, novation), { accepted: false, rejection: "CONSENT_MISSING" });
-    const consent = () => [{ signerId: buyer.id, signatureBase58: signature(buyer, build(owner, novation)) }];
-    assert.throws(() => submit(owner, novation, [{ signerId: buyer.id, signatureBase58: signature(owner, build(owner, novation)) }]), { code: "INVALID_SIGNATURE" });
+    assert.deepEqual(await submit(owner, novation), { accepted: false, rejection: "CONSENT_MISSING" });
+    const consent = () => [{ signerId: buyer.id, authorization: { scheme: "ED25519" as const, signature: signature(buyer, build(owner, novation)) } }];
+    await assert.rejects(() => submit(owner, novation, [{ signerId: buyer.id, authorization: { scheme: "ED25519", signature: signature(owner, build(owner, novation)) } }]), { code: "INVALID_SIGNATURE" });
     verified.add(`phoenix:${"c1".repeat(32)}:${buyer.id}`);
-    assert.deepEqual(submit(owner, novation, consent()), { accepted: false, rejection: "VENUE_CONFIRMATION_MISSING" });
+    assert.deepEqual(await submit(owner, novation, consent()), { accepted: false, rejection: "VENUE_CONFIRMATION_MISSING" });
     verified.add(`drift:${"c2".repeat(32)}:${buyer.id}`);
-    const novated = submit(owner, novation, consent());
+    const novated = await submit(owner, novation, consent());
     assert.ok(novated.accepted);
     assert.equal(book.strategy("carry-1")?.state.ownerId, buyer.id);
     assert.equal(book.ownerStrategies(buyer.id).length, 1);
     assert.deepEqual(book.history("carry-1").at(-1)?.consents.map((entry) => entry.signerId), [buyer.id]);
 
     // The new owner exits with its own settled receipt, and the strategy closes.
-    assert.deepEqual(submit(owner, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] }), { accepted: false, rejection: "UNAUTHORIZED" });
-    const exited = submit(buyer, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] });
+    assert.deepEqual(await submit(owner, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] }), { accepted: false, rejection: "UNAUTHORIZED" });
+    const exited = await submit(buyer, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] });
     assert.ok(exited.accepted);
     assert.equal(book.strategy("carry-1")?.state.open, false);
   } finally {

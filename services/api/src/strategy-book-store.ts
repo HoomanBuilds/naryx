@@ -1,5 +1,4 @@
 import type Database from "better-sqlite3";
-import bs58 from "bs58";
 import {
   applyStrategyCommand,
   parseProtocolJson,
@@ -17,7 +16,11 @@ import {
 } from "@naryx/protocol-types";
 import type { PackageReceiptInput, StrategyCommandInput, StrategyPackageReceiptInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
-import { verifyEd25519 } from "./ed25519.js";
+import {
+  storedStrategyCommandAuthorization,
+  verifyStrategyCommandAuthorization,
+  type StrategyCommandAuthorization,
+} from "./strategy-command-authorization.js";
 
 export class StrategyBookError extends Error {
   readonly code: string;
@@ -90,7 +93,7 @@ export interface StoredStrategy {
 export interface StoredStrategyCommand {
   readonly commandHashHex: string;
   readonly command: StrategyCommandInput;
-  readonly signatureBase58: string;
+  readonly authorization: StrategyCommandAuthorization;
   readonly receipt?: StrategyTransitionReceipt;
   /** Other owners' verified consents over the same command hash. */
   readonly consents: readonly StrategyCommandConsent[];
@@ -155,10 +158,10 @@ export type TransferEvidenceVerifier = (claim: {
   readonly toOwnerId: string;
 }) => boolean;
 
-/** Another owner's Ed25519 consent to a command, over the same command hash. */
+/** Another owner's wallet consent to a command, over the same command hash. */
 export interface StrategyCommandConsent {
   readonly signerId: string;
-  readonly signatureBase58: string;
+  readonly authorization: StrategyCommandAuthorization;
 }
 
 /**
@@ -187,7 +190,15 @@ export class SqliteStrategyBookStore {
     this.db.close();
   }
 
-  submit(command: StrategyCommandInput, signatureBase58: string, consents: readonly StrategyCommandConsent[] = []): StrategyCommandResult {
+  environmentName(): string {
+    return this.environment;
+  }
+
+  async submit(
+    command: StrategyCommandInput,
+    authorization: StrategyCommandAuthorization,
+    consents: readonly StrategyCommandConsent[] = [],
+  ): Promise<StrategyCommandResult> {
     let commandHash: Uint8Array;
     try {
       strategyCommandBytes(command);
@@ -196,30 +207,14 @@ export class SqliteStrategyBookStore {
       throw new StrategyBookError("INVALID_COMMAND", `The command failed validation: ${(error as Error).message}`);
     }
     if (command.environment !== this.environment) throw new StrategyBookError("WRONG_ENVIRONMENT", `This book serves ${this.environment}.`);
-    let actorKey: Uint8Array;
-    let signature: Uint8Array;
-    try {
-      actorKey = bs58.decode(command.actorId);
-      signature = bs58.decode(signatureBase58);
-    } catch {
-      throw new StrategyBookError("INVALID_SIGNATURE", "The actor id and signature must be base58.");
-    }
-    if (actorKey.length !== 32 || !verifyEd25519(actorKey, commandHash, signature)) {
-      throw new StrategyBookError("INVALID_SIGNATURE", "The command is not signed by the Ed25519 key its actor id names.");
-    }
+    const signature = await verifyStrategyCommandAuthorization(command, command.actorId, authorization);
+    if (signature === undefined) throw new StrategyBookError("INVALID_SIGNATURE", "The command is not signed by the actor identity it names.");
     // Consents are other owners' signatures over the same command hash; only verified ones count.
     if (!Array.isArray(consents) || consents.length > 3) throw new StrategyBookError("INVALID_SIGNATURE", "A command carries at most three consents.");
     const consented: { signerId: string; signature: Uint8Array }[] = [];
     for (const consent of consents) {
-      let key: Uint8Array;
-      let consentSignature: Uint8Array;
-      try {
-        key = bs58.decode(consent.signerId);
-        consentSignature = bs58.decode(consent.signatureBase58);
-      } catch {
-        throw new StrategyBookError("INVALID_SIGNATURE", "Consent signer ids and signatures must be base58.");
-      }
-      if (key.length !== 32 || !verifyEd25519(key, commandHash, consentSignature)) throw new StrategyBookError("INVALID_SIGNATURE", "A consent is not signed by the key its signer id names.");
+      const consentSignature = await verifyStrategyCommandAuthorization(command, consent.signerId, consent.authorization);
+      if (consentSignature === undefined) throw new StrategyBookError("INVALID_SIGNATURE", "A consent is not signed by the identity its signer id names.");
       if (!consented.some((entry) => entry.signerId === consent.signerId)) consented.push({ signerId: consent.signerId, signature: consentSignature });
     }
     const now = BigInt(this.clock());
@@ -310,8 +305,11 @@ export class SqliteStrategyBookStore {
       return Object.freeze({
         commandHashHex: toHex(row.command_hash),
         command,
-        signatureBase58: bs58.encode(row.signature),
-        consents: (consents.all(row.command_hash) as { signer_id: string; signature: Uint8Array }[]).map((entry) => Object.freeze({ signerId: entry.signer_id, signatureBase58: bs58.encode(entry.signature) })),
+        authorization: storedStrategyCommandAuthorization(command.actorId, row.signature),
+        consents: (consents.all(row.command_hash) as { signer_id: string; signature: Uint8Array }[]).map((entry) => Object.freeze({
+          signerId: entry.signer_id,
+          authorization: storedStrategyCommandAuthorization(entry.signer_id, entry.signature),
+        })),
         ...(row.receipt_json === null ? {} : { receipt: parseProtocolJson(row.receipt_json) as StrategyTransitionReceipt }),
         recordedAtMs: row.recorded_at_ms,
       });

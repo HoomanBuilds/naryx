@@ -29,7 +29,8 @@
     "node": ">=20.11.0"
   },
   "dependencies": {
-    "@naryx/protocol-types": "file:../protocol-types"
+    "@naryx/protocol-types": "file:../protocol-types",
+    "viem": "2.56.8"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

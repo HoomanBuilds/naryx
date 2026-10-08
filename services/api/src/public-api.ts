@@ -43,6 +43,9 @@ import {
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyCommandAuthorizationTypedData,
+  strategyCommandHash,
+  isEvmStrategyActor,
   strategyPackageQuoteHash,
   strategyTemplateDefinitions,
   simulatePackageGraphFailures,
@@ -102,6 +105,7 @@ import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
+import type { StrategyCommandAuthorization } from "./strategy-command-authorization.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
 import { CoordinationStoreError, type SqliteCoordinationStore } from "./coordination-store.js";
@@ -305,7 +309,7 @@ export interface PublicApiOptions {
   /** Optional: collateral reads answer 503 without it. Snapshots are accepted only from configured authorities. */
   readonly collateral?: Pick<SqliteCollateralSnapshotStore, "append" | "latest" | "now">;
   /** The signed strategy book; without it the strategy routes answer 503. */
-  readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
+  readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
     & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote" | "lockPackageExecution">>;
@@ -376,6 +380,17 @@ function id(value: string | undefined, name: string): string {
 function object(value: unknown, name: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RequestError(400, "INVALID_REQUEST", `${name} must be an object.`);
   return value as Record<string, unknown>;
+}
+
+function strategyCommandAuthorization(value: unknown, name: string): StrategyCommandAuthorization {
+  const authorization = object(value, name);
+  if (authorization.scheme !== "ED25519" && authorization.scheme !== "EIP712_SECP256K1") {
+    throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", `${name} has an unsupported signature scheme.`);
+  }
+  if (typeof authorization.signature !== "string") {
+    throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", `${name} has no signature.`);
+  }
+  return { scheme: authorization.scheme, signature: authorization.signature };
 }
 
 async function readProtocolBody(request: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
@@ -863,8 +878,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           commands: options.strategies.history(strategyId).map((entry) => ({
             command: entry.command,
             commandHash: entry.commandHashHex,
-            authorization: { scheme: "ED25519", signature: entry.signatureBase58 },
-            consents: entry.consents.map((consent) => ({ scheme: "ED25519", signerId: consent.signerId, signature: consent.signatureBase58 })),
+            authorization: entry.authorization,
+            consents: entry.consents.map((consent) => ({ signerId: consent.signerId, ...consent.authorization })),
             ...(entry.receipt === undefined ? {} : { receipt: entry.receipt }),
             recordedAtMs: entry.recordedAtMs,
           })),
@@ -884,6 +899,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
       const ownerId = id(match[1], "Owner id");
       return {
+        environment: options.strategies.environmentName(),
         ownerId,
         strategies: options.strategies.ownerStrategies(ownerId).map((stored) => ({
           strategyId: stored.state.strategyId,
@@ -1531,6 +1547,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/health-snapshots",
       "/v1/recovery/approvals",
       "/v1/strategies/commands",
+      "/v1/strategies/commands/authorization",
       "/v1/builders",
       "/v1/builders/attributions",
     ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
@@ -1964,25 +1981,43 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const result = requireEvidence().submitOrder(order, authorization.signature as string);
       return { ...result, status: "ACCEPTED_FOR_QUOTING" };
     }
+    if (path === "/v1/strategies/commands/authorization") {
+      const command = object(body.command, "command") as unknown as StrategyCommandInput;
+      const commandHash = strategyCommandHash(command);
+      if (isEvmStrategyActor(command.actorId)) {
+        return {
+          version: 1,
+          scheme: "EIP712_SECP256K1",
+          signerId: command.actorId,
+          commandHash: toHex(commandHash),
+          typedData: strategyCommandAuthorizationTypedData(command, command.actorId),
+        };
+      }
+      if (senderPublicKey(command.actorId) === undefined) {
+        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "The strategy actor has no supported wallet authorization.");
+      }
+      return {
+        version: 1,
+        scheme: "ED25519",
+        signerId: command.actorId,
+        commandHash: toHex(commandHash),
+        messageHex: toHex(commandHash),
+      };
+    }
     if (path === "/v1/strategies/commands") {
       // An owner or delegate's signed strategy command, applied through the kernel lifecycle rules
       // against the exact stored state. A position move is accepted only with the settled receipts
       // that executed it; a novation also needs the new owner's consent over the same hash.
-      const authorization = object(body.authorization, "authorization");
-      if (authorization.scheme !== "ED25519" || typeof authorization.signature !== "string") {
-        throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "Strategy commands carry an ED25519 signature in base58.");
-      }
+      const authorization = strategyCommandAuthorization(body.authorization, "authorization");
       if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
       const rawConsents = body.consents ?? [];
-      if (!Array.isArray(rawConsents) || rawConsents.length > 3) throw new RequestError(400, "INVALID_REQUEST", "consents lists at most three ED25519 signatures.");
+      if (!Array.isArray(rawConsents) || rawConsents.length > 3) throw new RequestError(400, "INVALID_REQUEST", "consents lists at most three wallet signatures.");
       const consents = rawConsents.map((entry) => {
         const consent = object(entry, "consent");
-        if (consent.scheme !== "ED25519" || typeof consent.signerId !== "string" || typeof consent.signature !== "string") {
-          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "A consent carries an ED25519 signer id and base58 signature.");
-        }
-        return { signerId: consent.signerId, signatureBase58: consent.signature };
+        if (typeof consent.signerId !== "string") throw new RequestError(400, "INVALID_REQUEST", "A consent must name its signer id.");
+        return { signerId: consent.signerId, authorization: strategyCommandAuthorization(consent, "consent") };
       });
-      const result = options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization.signature, consents);
+      const result = await options.strategies.submit(object(body.command, "command") as unknown as StrategyCommandInput, authorization, consents);
       if (!result.accepted) throw new RequestError(409, result.rejection, `The strategy command was rejected${result.remedy === undefined ? "" : `; remedy: ${result.remedy}`}.`);
       return result;
     }
