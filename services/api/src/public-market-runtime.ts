@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { createMarketStream } from "./market-stream.js";
-import { domainRefFromManifest, parseProtocolJson } from "@naryx/protocol-types";
+import { domainRefFromManifest, parseProtocolJson, protocolId } from "@naryx/protocol-types";
 import type {
   EconomicStrategySeriesSupportInput,
   SeriesExecutionClassSupportInput,
@@ -63,6 +63,7 @@ import {
 } from "./solana-devnet-runtime.js";
 import { HttpSolanaDevnetReadOnlyRpc } from "./solana-devnet-runtime-ports.js";
 import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
+import { createMakerOperationsHandler } from "./maker-operations.js";
 import {
   createStrategyOrderIntake,
   type StrategyOrderIntakePort,
@@ -667,6 +668,18 @@ export function loadPublicMarketRuntime(
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
       : () => BigInt(Math.floor(clockMs()));
+    const makerSolverIdValue = optional(environment.NARYX_MAKER_SOLVER_ID);
+    if (makerSolverIdValue !== undefined && solverState === undefined) {
+      throw new PublicMarketConfigError("NARYX_MAKER_SOLVER_ID requires NARYX_SOLVER_API_DB.");
+    }
+    let makerSolverId: string | undefined;
+    try {
+      makerSolverId = makerSolverIdValue === undefined
+        ? undefined
+        : protocolId(makerSolverIdValue, "NARYX_MAKER_SOLVER_ID");
+    } catch {
+      throw new PublicMarketConfigError("NARYX_MAKER_SOLVER_ID must be a valid protocol identifier.");
+    }
     const internalHandlers = [
       createPackageReopeningAdminHandler({ exchange: store, nowValue }),
       createCrossBatchClearingAdminHandler({
@@ -677,6 +690,11 @@ export function loadPublicMarketRuntime(
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
       ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
+      ...(solverState === undefined || makerSolverId === undefined ? [] : [createMakerOperationsHandler({
+        store: solverState,
+        solverId: makerSolverId,
+        nowValue,
+      })]),
     ];
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
     const catalogueSigner = loadCatalogueSigner(environment);

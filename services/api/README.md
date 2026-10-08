@@ -105,6 +105,8 @@ Query parameters are whitelisted, POST bodies are protocol JSON of at most 64 Ki
 
 `createSolverApiHandler` serves the authenticated solver API under `/v1/solver/`, enabled by `NARYX_SOLVER_API_DB` together with `NARYX_REGISTRY_DB`. Manifest registration (`PUT /v1/solver/capability-manifest`, `POST /v1/solver/register`) is authenticated by the operator signature inside the manifest. Every other request carries `X-Naryx-Solver`, `X-Naryx-Key`, `X-Naryx-Timestamp`, `X-Naryx-Nonce`, and `X-Naryx-Signature`: an Ed25519 signature by a registered, currently valid quote key over `solverRequestDigest`, which binds the method, path and query, body hash, solver, key, time, and a single-use nonce. Requests outside a 30-second skew, reused nonces, unknown or expired keys, and altered bodies are refused with 401.
 
+Setting `NARYX_MAKER_SOLVER_ID` adds a read-only private terminal snapshot for that solver at `/internal/terminal/maker/operations`. It reports current signed quote shards, exact-state fill totals, inventory utilization, and capacity status. It exposes no signing key and provides no mutation path.
+
 | Route | Rule |
 |---|---|
 | `PUT /v1/solver/quote-shards/{templateId.marketGroupId}`, `GET` the same | the shard must also be signed by a valid quote key over its hash, belong to the caller, and advance its sequence; an identical repeat is idempotent |

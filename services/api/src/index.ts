@@ -1,4 +1,10 @@
 export {
+  createMakerOperationsHandler,
+  makerOperationsSnapshot,
+  MAKER_OPERATIONS_PATH,
+  type MakerShardState,
+} from "./maker-operations.js";
+export {
   EvmStrategyExecutionObservationClientError,
   HttpEvmStrategyExecutionObservationClient,
   type EvmStrategyExecutionObservationPort,

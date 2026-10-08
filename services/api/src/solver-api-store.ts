@@ -282,6 +282,52 @@ export class SqliteSolverApiStore {
     );
   }
 
+  /** Every current quote shard owned by one solver, ordered by its stable shard identity. */
+  shardsForSolver(solverId: string): readonly { readonly shardId: string; readonly shard: PackageQuoteShard; readonly shardHashHex: string }[] {
+    const rows = this.db
+      .prepare("SELECT shard_id, shard_json FROM quote_shards WHERE solver_id = ? ORDER BY shard_id LIMIT 500")
+      .all(solverId) as { shard_id: string; shard_json: string }[];
+    return Object.freeze(
+      rows.map((row) => {
+        const shard = packageQuoteShard(parseProtocolJson(row.shard_json) as PackageQuoteShardInput);
+        return Object.freeze({ shardId: row.shard_id, shard, shardHashHex: toHex(packageQuoteShardHash(shard)) });
+      }),
+    );
+  }
+
+  /** Fill totals for one exact signed shard state. Historical shard states never contaminate it. */
+  shardFillSummary(
+    solverId: string,
+    shardId: string,
+    shardHashHex: string,
+  ): Readonly<{
+    fillCount: number;
+    filledSize: bigint;
+    latestFillCommitment: string | null;
+    latestSettledAtMs: number | null;
+  }> {
+    if (!/^[0-9a-f]{64}$/.test(shardHashHex)) {
+      throw new SolverApiStoreError("INVALID_SHARD_HASH", "A shard hash must be 32 bytes of lowercase hex.");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT fill_commitment, size, settled_at_ms FROM shard_fills
+         WHERE solver_id = ? AND shard_id = ? AND shard_hash = ?
+         ORDER BY settled_at_ms DESC, rowid DESC`,
+      )
+      .all(solverId, shardId, Buffer.from(shardHashHex, "hex")) as {
+        fill_commitment: Uint8Array;
+        size: string;
+        settled_at_ms: number;
+      }[];
+    return Object.freeze({
+      fillCount: rows.length,
+      filledSize: rows.reduce((sum, row) => sum + BigInt(row.size), 0n),
+      latestFillCommitment: rows[0] === undefined ? null : toHex(rows[0].fill_commitment),
+      latestSettledAtMs: rows[0]?.settled_at_ms ?? null,
+    });
+  }
+
   /**
    * Every commitment the solver holds in a capacity ledger that is healthy at `atValue`, keyed by
    * lowercase hex id. Commitments in expired or over-committed ledgers back nothing.
