@@ -65,7 +65,7 @@ export interface SolanaTestPerpNettingResidualObservation {
   readonly authority: PublicKey | string;
   readonly market: PublicKey | string;
   readonly position: PublicKey | string;
-  readonly terminalStatus: 'SUCCEEDED' | 'REVERTED';
+  readonly terminalStatus: 'SUCCEEDED' | 'REJECTED';
   readonly side: 'BUY' | 'SELL';
   readonly baseLots: bigint;
   readonly fillPricePerLot: bigint;

@@ -777,6 +777,22 @@ export {
 } from './evm-netting-residual-runtime.js';
 export { EvmNettingResidualSqliteJournal } from './evm-netting-residual-sqlite-journal.js';
 export {
+  SolanaNettingResidualRuntimeError,
+  SolanaTestPerpNettingResidualRuntime,
+  type SolanaNettingResidualAttempt,
+  type SolanaNettingResidualChainObservation,
+  type SolanaNettingResidualChainPort,
+  type SolanaNettingResidualIntentStatus,
+  type SolanaNettingResidualJournalPort,
+  type SolanaNettingResidualRuntimeErrorCode,
+  type SolanaNettingResidualRuntimeLane,
+  type SolanaNettingResidualRuntimeLaneResolver,
+  type SolanaNettingResidualSubmission,
+  type SolanaNettingResidualSubmissionStatus,
+} from './solana-netting-residual-runtime.js';
+export { SolanaNettingResidualSqliteJournal } from './solana-netting-residual-sqlite-journal.js';
+export { createSolanaDevnetNettingResidualChain } from './solana-devnet-netting-residual-chain.js';
+export {
   createViemBaseSepoliaResidualChain,
   observeBaseSepoliaResidualReceipt,
   type BaseSepoliaResidualReceipt,
