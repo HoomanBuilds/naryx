@@ -3,6 +3,7 @@ import {
   bytesEqual,
   commitmentHash,
   netObligations,
+  nettingExternalExecutionIntent,
   nettingInstrumentHash,
   nettingPolicyManifest,
   nettingPolicyManifestHash,
@@ -141,7 +142,12 @@ export async function prepareAuthoritativeNettingBatch(
     settlementReadinessHashHex: string;
     authorizedAtMs: number;
     fillSequence: bigint;
-    obligations: Omit<NettingObligationInput, "sequence">[];
+    validUntilUnit: ReturnType<typeof packageGraph>["expiryUnit"];
+    validUntilValue: bigint;
+    obligations: {
+      obligation: Omit<NettingObligationInput, "sequence">;
+      maximumFeeQuoteAtoms: bigint;
+    }[];
   }[] = [];
 
   for (const packageOrderIdHex of packageOrderIds) {
@@ -186,13 +192,20 @@ export async function prepareAuthoritativeNettingBatch(
       || graph.owner !== order.owner
       || commitment.settlementAccount !== order.settlementAccount
       || commitment.quantity !== order.economicQuantity.atoms
+      || commitment.validUntilUnit !== order.expiryUnit
+      || commitment.validUntilValue !== order.expiryValue
+      || graph.expiryUnit !== order.expiryUnit
+      || graph.packageExpiryValue !== order.expiryValue
       || !bytesEqual(progress.readiness.strategyOrderHash, commitment.strategyOrderHash)
       || !bytesEqual(progress.readiness.packageOrderId, commitment.packageOrderId)
     ) {
       fail("PACKAGE_MISMATCH", `Package ${packageOrderIdHex} differs from its admitted strategy graph or readiness evidence.`);
     }
 
-    const obligations: Omit<NettingObligationInput, "sequence">[] = [];
+    const obligations: {
+      obligation: Omit<NettingObligationInput, "sequence">;
+      maximumFeeQuoteAtoms: bigint;
+    }[] = [];
     for (const leg of graph.legs) {
       if (leg.side === "NONE") continue;
       const instrument = policy.instruments.find((candidate) => bytesEqual(
@@ -214,14 +227,17 @@ export async function prepareAuthoritativeNettingBatch(
         fail("UNSUPPORTED_LEG", `Package ${packageOrderIdHex} leg ${leg.legId} is outside the signed netting policy.`);
       }
       obligations.push(Object.freeze({
-        ownerId: commitment.participantId,
-        strategyOrderHash: commitment.strategyOrderHash,
-        packageOrderId: commitment.packageOrderId,
-        settlementReadinessHash: progress.readinessHashHex,
-        legId: leg.legId,
-        instrumentId: instrument.instrumentId,
-        signedQuantityAtoms: leg.side === "BUY" ? leg.quantityAtoms : -leg.quantityAtoms,
-        limitPriceTicks: priceTicks(leg, instrument, packageOrderIdHex),
+        obligation: Object.freeze({
+          ownerId: commitment.participantId,
+          strategyOrderHash: commitment.strategyOrderHash,
+          packageOrderId: commitment.packageOrderId,
+          settlementReadinessHash: progress.readinessHashHex,
+          legId: leg.legId,
+          instrumentId: instrument.instrumentId,
+          signedQuantityAtoms: leg.side === "BUY" ? leg.quantityAtoms : -leg.quantityAtoms,
+          limitPriceTicks: priceTicks(leg, instrument, packageOrderIdHex),
+        }),
+        maximumFeeQuoteAtoms: leg.maximumFeeQuoteAtoms,
       }));
     }
     if (obligations.length === 0) {
@@ -237,6 +253,8 @@ export async function prepareAuthoritativeNettingBatch(
       settlementReadinessHashHex: progress.readinessHashHex,
       authorizedAtMs: authorization.authorizedAtMs,
       fillSequence,
+      validUntilUnit: commitment.validUntilUnit,
+      validUntilValue: commitment.validUntilValue,
       obligations,
     });
   }
@@ -247,7 +265,7 @@ export async function prepareAuthoritativeNettingBatch(
     fail("BATCH_WINDOW_EXCEEDED", "Package authorizations exceed the signed netting batch window.");
   }
   const sequenced = sources
-    .flatMap((source) => source.obligations.map((obligation) => ({ source, obligation })))
+    .flatMap((source) => source.obligations.map((entry) => ({ source, ...entry })))
     .sort((left, right) => {
       if (left.source.fillSequence !== right.source.fillSequence) return left.source.fillSequence < right.source.fillSequence ? -1 : 1;
       const packageOrderComparison = left.source.packageOrderIdHex.localeCompare(right.source.packageOrderIdHex);
@@ -255,9 +273,42 @@ export async function prepareAuthoritativeNettingBatch(
     })
     .map(({ obligation }, index): NettingObligationInput => Object.freeze({ ...obligation, sequence: BigInt(index + 1) }));
   const result = netObligations(sequenced, policy);
+  const metadata = new Map(sources.flatMap((source) => source.obligations.map((entry) => [
+    `${source.packageOrderIdHex}:${entry.obligation.legId}`,
+    {
+      maximumFeeQuoteAtoms: entry.maximumFeeQuoteAtoms,
+      validUntilUnit: source.validUntilUnit,
+      validUntilValue: source.validUntilValue,
+    },
+  ] as const)));
+  const externalIntents = result.underlyings
+    .filter((summary) => summary.externalNetAtoms !== 0n)
+    .map((summary) => {
+      const contributors = result.allocations
+        .filter((allocation) => allocation.instrumentId === summary.instrumentId && allocation.externalQuantityAtoms !== 0n)
+        .map((allocation) => metadata.get(`${toHex(allocation.packageOrderId)}:${allocation.legId}`));
+      if (contributors.some((value) => value === undefined)) {
+        fail("INTERNAL_ERROR", `External residual ${summary.instrumentId} lost its source metadata.`);
+      }
+      const checked = contributors as {
+        maximumFeeQuoteAtoms: bigint;
+        validUntilUnit: ReturnType<typeof packageGraph>["expiryUnit"];
+        validUntilValue: bigint;
+      }[];
+      if (new Set(checked.map((value) => value.validUntilUnit)).size !== 1) {
+        fail("CLOCK_MISMATCH", `External residual ${summary.instrumentId} combines incompatible expiry clocks.`);
+      }
+      return nettingExternalExecutionIntent(result, policy, {
+        instrumentId: summary.instrumentId,
+        validUntilUnit: checked[0]!.validUntilUnit,
+        validUntilValue: checked.reduce((minimum, value) => value.validUntilValue < minimum ? value.validUntilValue : minimum, checked[0]!.validUntilValue),
+        maximumFeeQuoteAtoms: checked.reduce((total, value) => total + value.maximumFeeQuoteAtoms, 0n),
+      });
+    });
   return exchange.recordPreparedNettingBatch({
     policy,
     result,
+    externalIntents,
     packages: sources.map((source) => ({
       packageOrderIdHex: source.packageOrderIdHex,
       strategyOrderHashHex: source.strategyOrderHashHex,

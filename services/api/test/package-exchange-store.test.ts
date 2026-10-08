@@ -8,6 +8,8 @@ import {
   assetRef,
   domainRef,
   netObligations,
+  nettingExternalExecutionEvidence,
+  nettingExternalExecutionIntent,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
   packageReopeningSnapshotHash,
@@ -179,12 +181,65 @@ test("owner authorization and prepared netting evidence are immutable and replay
         settlementReadinessHashHex: takerProgress.readinessHashHex,
       },
     ];
-    const created = store.recordPreparedNettingBatch({ policy, result, packages });
+    const created = store.recordPreparedNettingBatch({ policy, result, externalIntents: [], packages });
     assert.equal(created.replayed, false);
     assert.equal(created.batch.status, "PREPARED");
     assert.equal(created.batch.result.underlyings[0]?.externalNetAtoms, 0n);
-    assert.equal(store.recordPreparedNettingBatch({ policy, result, packages }).replayed, true);
+    assert.equal(created.batch.externalExecutionStatus, "NOT_REQUIRED");
+    assert.equal(store.recordPreparedNettingBatch({ policy, result, externalIntents: [], packages }).replayed, true);
     assert.deepEqual(store.nettingBatch(created.batch.proofHashHex), created.batch);
+
+    const secondMaker = order(3);
+    const secondTaker = order(4, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, secondMaker, NOW, settlement(secondMaker), { scheme: "ED25519", signature });
+    store.submitOrder(CLASS, secondTaker, NOW, settlement(secondTaker), { scheme: "ED25519", signature });
+    const secondProgress = store.settlementProgress(secondMaker.orderId)!;
+    const residual = netObligations([{
+      ownerId: secondMaker.participantId,
+      strategyOrderHash: settlement(secondMaker).strategyOrderHash,
+      packageOrderId: secondMaker.orderId,
+      settlementReadinessHash: secondProgress.readinessHashHex,
+      legId: "spot-buy",
+      instrumentId: instrument.instrumentId,
+      signedQuantityAtoms: 10n,
+      limitPriceTicks: 12n,
+      sequence: 1n,
+    }], policy);
+    const intent = nettingExternalExecutionIntent(residual, policy, {
+      instrumentId: instrument.instrumentId,
+      validUntilUnit: "SOLANA_SLOT",
+      validUntilValue: 2_000n,
+      maximumFeeQuoteAtoms: 2n,
+    });
+    const residualPackage = [{
+      packageOrderIdHex: secondMaker.orderId as string,
+      strategyOrderHashHex: settlement(secondMaker).strategyOrderHash as string,
+      settlementReadinessHashHex: secondProgress.readinessHashHex,
+    }];
+    const residualBatch = store.recordPreparedNettingBatch({
+      policy,
+      result: residual,
+      externalIntents: [intent],
+      packages: residualPackage,
+    }).batch;
+    assert.equal(residualBatch.externalExecutionStatus, "PENDING");
+    const evidence = nettingExternalExecutionEvidence({
+      version: 1,
+      intentHash: intent.intentHash,
+      outcome: "EXACT_FILLED",
+      filledSignedQuantityAtoms: 10n,
+      grossQuoteAtoms: 12n,
+      feeQuoteAtoms: 1n,
+      submittedAtUnit: "SOLANA_SLOT",
+      submittedAtValue: 1_999n,
+      observedAtUnit: "SOLANA_SLOT",
+      observedAtValue: 2_001n,
+      executionReferenceHash: id(601),
+      authoritativeEvidenceHash: id(602),
+    }, intent);
+    assert.equal(store.recordVerifiedNettingExternalExecutionEvidence(evidence).replayed, false);
+    assert.equal(store.recordVerifiedNettingExternalExecutionEvidence(evidence).replayed, true);
+    assert.equal(store.nettingBatch(residual.proofHash)?.externalExecutionStatus, "EXACT_FILLED");
   });
 });
 

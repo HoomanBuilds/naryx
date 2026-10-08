@@ -44,6 +44,8 @@ import {
   nettingPolicyManifest,
   nettingPolicyManifestHash,
   nettingResultHash,
+  verifyNettingExternalExecutionEvidence,
+  verifyNettingExternalExecutionIntent,
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
@@ -84,6 +86,8 @@ import type {
   NettingPolicyManifest,
   NettingPolicyManifestInput,
   NettingResult,
+  NettingExternalExecutionIntent,
+  NettingExternalExecutionEvidence,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
   SeriesExecutionClassSupportInput,
@@ -210,6 +214,8 @@ export interface PreparedNettingBatch {
   readonly proofHashHex: string;
   readonly policy: NettingPolicyManifest;
   readonly result: NettingResult;
+  readonly externalExecutions: readonly NettingExternalExecutionRecord[];
+  readonly externalExecutionStatus: "NOT_REQUIRED" | "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
   readonly packages: readonly PreparedNettingBatchPackage[];
   readonly recordedAtMs: number;
 }
@@ -217,7 +223,23 @@ export interface PreparedNettingBatch {
 export interface PreparedNettingBatchRecordInput {
   readonly policy: NettingPolicyManifestInput | NettingPolicyManifest;
   readonly result: NettingResult;
+  readonly externalIntents: readonly NettingExternalExecutionIntent[];
   readonly packages: readonly PreparedNettingBatchPackage[];
+}
+
+export interface NettingExternalExecutionRecord {
+  readonly intent: NettingExternalExecutionIntent;
+  readonly evidence?: NettingExternalExecutionEvidence;
+}
+
+function nettingExternalExecutionStatus(
+  records: readonly NettingExternalExecutionRecord[],
+): PreparedNettingBatch["externalExecutionStatus"] {
+  if (records.length === 0) return "NOT_REQUIRED";
+  if (records.some((record) => record.evidence !== undefined && record.evidence.outcome !== "EXACT_FILLED")) {
+    return "RECOVERY_REQUIRED";
+  }
+  return records.every((record) => record.evidence?.outcome === "EXACT_FILLED") ? "EXACT_FILLED" : "PENDING";
 }
 
 export const MAX_TAPE_PAGE = 100;
@@ -388,6 +410,20 @@ CREATE TABLE IF NOT EXISTS netting_batch_packages (
   settlement_readiness_hash BLOB NOT NULL,
   PRIMARY KEY (proof_hash, package_order_id)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_external_execution_intents (
+  intent_hash BLOB PRIMARY KEY,
+  proof_hash BLOB NOT NULL REFERENCES netting_batches(proof_hash),
+  instrument_hash BLOB NOT NULL,
+  intent_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  UNIQUE (proof_hash, instrument_hash)
+) STRICT;
+CREATE TABLE IF NOT EXISTS netting_external_execution_evidence (
+  evidence_hash BLOB PRIMARY KEY,
+  intent_hash BLOB NOT NULL UNIQUE REFERENCES netting_external_execution_intents(intent_hash),
+  evidence_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_exchange_document_change
   BEFORE UPDATE ON exchange_documents
   BEGIN SELECT RAISE(ABORT, 'exchange documents are immutable'); END;
@@ -481,6 +517,18 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_batch_package_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_batch_package_delete
   BEFORE DELETE ON netting_batch_packages
   BEGIN SELECT RAISE(ABORT, 'netting batch packages are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_intent_change
+  BEFORE UPDATE ON netting_external_execution_intents
+  BEGIN SELECT RAISE(ABORT, 'netting external execution intents are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_intent_delete
+  BEFORE DELETE ON netting_external_execution_intents
+  BEGIN SELECT RAISE(ABORT, 'netting external execution intents are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_change
+  BEFORE UPDATE ON netting_external_execution_evidence
+  BEGIN SELECT RAISE(ABORT, 'netting external execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_delete
+  BEFORE DELETE ON netting_external_execution_evidence
+  BEGIN SELECT RAISE(ABORT, 'netting external execution evidence is append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
 CREATE TABLE IF NOT EXISTS package_book_trades (
@@ -1595,6 +1643,23 @@ export class SqlitePackageExchangeStore {
     return this.transaction(() => {
       const policy = guarded("INVALID_INPUT", "Netting policy is invalid.", () => nettingPolicyManifest(input.policy));
       guarded("INVALID_INPUT", "Netting result is invalid.", () => verifyNettingResultAgainstPolicy(input.result, policy));
+      const externalIntents = [...input.externalIntents]
+        .map((intent) => {
+          guarded("INVALID_INPUT", "Netting external execution intent is invalid.", () =>
+            verifyNettingExternalExecutionIntent(intent, input.result, policy));
+          return intent;
+        })
+        .sort((left, right) => left.instrumentId.localeCompare(right.instrumentId));
+      const expectedExternalInstruments = input.result.underlyings
+        .filter((summary) => summary.externalNetAtoms !== 0n)
+        .map((summary) => summary.instrumentId)
+        .sort();
+      if (
+        externalIntents.length !== expectedExternalInstruments.length
+        || externalIntents.some((intent, index) => intent.instrumentId !== expectedExternalInstruments[index])
+      ) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "External execution intents do not cover the exact net residuals.");
+      }
       const executionClass = this.getExecutionClassRecord(policy.executionClassId, policy.executionClassVersion);
       if (
         executionClass === undefined
@@ -1656,6 +1721,7 @@ export class SqlitePackageExchangeStore {
           stringifyProtocolJson(existing.policy) !== policyJson
           || stringifyProtocolJson(existing.result) !== resultJson
           || stringifyProtocolJson(existing.packages) !== stringifyProtocolJson(packages)
+          || stringifyProtocolJson(existing.externalExecutions.map((record) => record.intent)) !== stringifyProtocolJson(externalIntents)
         ) {
           throw new PackageExchangeStoreError("NETTING_BATCH_CONFLICT", "The proof hash is already bound to another netting batch.");
         }
@@ -1681,13 +1747,30 @@ export class SqlitePackageExchangeStore {
             commitmentHash(entry.settlementReadinessHashHex),
           );
         }
+        const insertIntent = this.db.prepare(`
+          INSERT INTO netting_external_execution_intents
+            (intent_hash, proof_hash, instrument_hash, intent_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+        for (const intent of externalIntents) {
+          insertIntent.run(
+            intent.intentHash,
+            proofHash,
+            intent.instrumentHash,
+            stringifyProtocolJson(intent),
+            recordedAtMs,
+          );
+        }
       });
+      const externalExecutions = Object.freeze(externalIntents.map((intent) => Object.freeze({ intent })));
       return Object.freeze({
         batch: Object.freeze({
           status: "PREPARED" as const,
           proofHashHex: toHex(proofHash),
           policy,
           result: input.result,
+          externalExecutions,
+          externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
           packages: Object.freeze(packages),
           recordedAtMs,
         }),
@@ -1747,13 +1830,98 @@ export class SqlitePackageExchangeStore {
     if (packages.length === 0 || allocatedPackages.size !== packages.length || packages.some((entry) => !allocatedPackages.has(entry.packageOrderIdHex))) {
       throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored netting package set differs from its result.");
     }
+    const executionRows = this.db.prepare(`
+      SELECT i.intent_hash, i.instrument_hash, i.intent_json,
+             e.evidence_hash, e.evidence_json
+      FROM netting_external_execution_intents i
+      LEFT JOIN netting_external_execution_evidence e ON e.intent_hash = i.intent_hash
+      WHERE i.proof_hash = ?
+      ORDER BY i.instrument_hash
+    `).all(proofHash) as {
+      intent_hash: unknown;
+      instrument_hash: unknown;
+      intent_json: unknown;
+      evidence_hash: unknown;
+      evidence_json: unknown;
+    }[];
+    const externalExecutions = Object.freeze(executionRows.map((entry) => {
+      const intent = parseProtocolJson(jsonText(entry.intent_json, "intent_json")) as NettingExternalExecutionIntent;
+      guarded("CORRUPT_ROW", "Stored external execution intent failed validation.", () =>
+        verifyNettingExternalExecutionIntent(intent, result, policy));
+      if (
+        !bytesEqual(intent.intentHash, hashBytes(entry.intent_hash, "intent_hash"))
+        || !bytesEqual(intent.instrumentHash, hashBytes(entry.instrument_hash, "instrument_hash"))
+      ) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution intent identity is inconsistent.");
+      }
+      if (entry.evidence_json === null && entry.evidence_hash === null) return Object.freeze({ intent });
+      if (entry.evidence_json === null || entry.evidence_hash === null) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution evidence is incomplete.");
+      }
+      const evidence = parseProtocolJson(jsonText(entry.evidence_json, "evidence_json")) as NettingExternalExecutionEvidence;
+      guarded("CORRUPT_ROW", "Stored external execution evidence failed validation.", () =>
+        verifyNettingExternalExecutionEvidence(evidence, intent));
+      if (!bytesEqual(evidence.evidenceHash, hashBytes(entry.evidence_hash, "evidence_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution evidence identity is inconsistent.");
+      }
+      return Object.freeze({ intent, evidence });
+    }));
+    const expectedExternalInstruments = result.underlyings.filter((summary) => summary.externalNetAtoms !== 0n);
+    if (
+      externalExecutions.length !== expectedExternalInstruments.length
+      || expectedExternalInstruments.some((summary) => !externalExecutions.some((record) => record.intent.instrumentId === summary.instrumentId))
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution intents do not cover the exact net residuals.");
+    }
     return Object.freeze({
       status: "PREPARED",
       proofHashHex: toHex(proofHash),
       policy,
       result,
+      externalExecutions,
+      externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
       packages,
       recordedAtMs,
+    });
+  }
+
+  recordVerifiedNettingExternalExecutionEvidence(
+    evidence: NettingExternalExecutionEvidence,
+  ): { readonly evidence: NettingExternalExecutionEvidence; readonly replayed: boolean } {
+    return this.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT proof_hash, intent_json
+        FROM netting_external_execution_intents
+        WHERE intent_hash = ?
+      `).get(commitmentHash(evidence.intentHash)) as { proof_hash: unknown; intent_json: unknown } | undefined;
+      if (row === undefined) throw new PackageExchangeStoreError("NETTING_INTENT_NOT_FOUND", "External execution intent is not stored.");
+      const proofHash = hashBytes(row.proof_hash, "proof_hash");
+      const batch = this.nettingBatch(proofHash);
+      if (batch === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "External execution intent lost its netting batch.");
+      const intent = parseProtocolJson(jsonText(row.intent_json, "intent_json")) as NettingExternalExecutionIntent;
+      guarded("INVALID_INPUT", "External execution evidence is invalid.", () =>
+        verifyNettingExternalExecutionEvidence(evidence, intent));
+      const existing = this.db.prepare(`
+        SELECT evidence_hash, evidence_json
+        FROM netting_external_execution_evidence
+        WHERE intent_hash = ?
+      `).get(intent.intentHash) as { evidence_hash: unknown; evidence_json: unknown } | undefined;
+      if (existing !== undefined) {
+        const existingHash = hashBytes(existing.evidence_hash, "evidence_hash");
+        if (
+          !bytesEqual(existingHash, evidence.evidenceHash)
+          || jsonText(existing.evidence_json, "evidence_json") !== stringifyProtocolJson(evidence)
+        ) {
+          throw new PackageExchangeStoreError("NETTING_EVIDENCE_CONFLICT", "External execution intent already has different terminal evidence.");
+        }
+        return Object.freeze({ evidence, replayed: true });
+      }
+      this.db.prepare(`
+        INSERT INTO netting_external_execution_evidence
+          (evidence_hash, intent_hash, evidence_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?)
+      `).run(evidence.evidenceHash, intent.intentHash, stringifyProtocolJson(evidence), this.clock());
+      return Object.freeze({ evidence, replayed: false });
     });
   }
 

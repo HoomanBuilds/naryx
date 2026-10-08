@@ -252,6 +252,7 @@ export {
   type PreparedNettingBatchPackage,
   type PreparedNettingBatch,
   type PreparedNettingBatchRecordInput,
+  type NettingExternalExecutionRecord,
   type PackageTapeRecord,
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";

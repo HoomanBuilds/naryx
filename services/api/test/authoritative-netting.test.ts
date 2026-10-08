@@ -272,6 +272,8 @@ test("authoritative netting derives opposite package legs from signed durable st
           proofHashHex: toHex(input.result.proofHash),
           policy,
           result: input.result,
+          externalExecutions: input.externalIntents.map((intent) => ({ intent })),
+          externalExecutionStatus: input.externalIntents.length === 0 ? "NOT_REQUIRED" : "PENDING",
           packages: input.packages,
           recordedAtMs: 1_100,
         },
