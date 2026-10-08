@@ -6,6 +6,7 @@ import {
   commitmentHash,
   fromProtocolJson,
   hash32,
+  packageSettlementCommitment,
   toHex,
   toProtocolJson,
   type NettingAllocationExecutionAuthorization,
@@ -32,8 +33,31 @@ test('registers, binds, and reconciles a netting allocation through loopback con
   let storedAuthorization: NettingAllocationExecutionAuthorization | undefined;
   let storedAttempt = attempt;
   let settled = false;
+  const packageOrderId = commitmentHash(hash32(new Uint8Array(32).fill(4)));
+  const allocationReceiptHash = commitmentHash(hash32(new Uint8Array(32).fill(5)));
+  const settlementCommitment = packageSettlementCommitment({
+    version: 1,
+    environment: 'testnet',
+    executionClassId: 'atomic-strategy-netting',
+    packageOrderId,
+    strategyOrderHash: hash32(new Uint8Array(32).fill(6)),
+    graphHash: hash32(new Uint8Array(32).fill(7)),
+    participantId: 'participant',
+    settlementAccount: 'settlement-account',
+    quantity: 1n,
+    validUntilUnit: 'EVM_UNIX_SECONDS',
+    validUntilValue: 1_000n,
+  });
   const handler = createNettingAllocationAdminHandler({
     exchange: {
+      nettingBatch: () => ({
+        proofHashHex: '03'.repeat(32),
+        policy: {},
+        result: {},
+        externalExecutions: [],
+        finalAllocationReceipt: { allocations: [{ allocationReceiptHash, packageOrderId }] },
+      }) as never,
+      settlementCommitment: () => settlementCommitment,
       recordNettingAllocationExecutionAuthorization: (value) => {
         storedAuthorization = value;
         return { replayed: false };
@@ -74,6 +98,10 @@ test('registers, binds, and reconciles a netting allocation through loopback con
     });
     return { status: response.status, body: fromProtocolJson(await response.json()) as Record<string, unknown> };
   };
+  const get = async (path: string) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`);
+    return { status: response.status, body: fromProtocolJson(await response.json()) as Record<string, unknown> };
+  };
   try {
     const created = await post('/internal/netting/allocation-attempts', {
       attemptId,
@@ -92,6 +120,11 @@ test('registers, binds, and reconciles a netting allocation through loopback con
     const reconciled = await post(`/internal/netting/batches/${'03'.repeat(32)}/settle`, {});
     assert.equal(reconciled.status, 200);
     assert.equal(settled, true);
+    const preparation = await get(`/internal/netting/batches/${'03'.repeat(32)}/preparation`);
+    assert.equal(preparation.status, 200);
+    const allocations = preparation.body.allocations as Record<string, unknown>[];
+    assert.equal(allocations[0]?.allocationReceiptHashHex, toHex(allocationReceiptHash));
+    assert.deepEqual(allocations[0]?.settlement, settlementCommitment);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   toHex,
   type NettingAllocationExecutionAuthorization,
+  type PackageSettlementCommitment,
 } from '@naryx/protocol-types';
 import {
   NettingAllocationAttemptStoreError,
@@ -9,7 +10,10 @@ import {
   type NettingAllocationObservationBinding,
 } from './netting-allocation-attempt-store.js';
 import { internalCaller, readInternalBody, sendError, sendJson } from './internal-http.js';
-import { PackageExchangeStoreError } from './package-exchange-store.js';
+import {
+  PackageExchangeStoreError,
+  type PreparedNettingBatch,
+} from './package-exchange-store.js';
 import type { NettingAllocationSettlementResult } from './netting-allocation-settlement-coordinator.js';
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -17,6 +21,8 @@ const ATTEMPT = /^[A-Za-z0-9_-]{16,96}$/;
 
 export interface NettingAllocationAdminOptions {
   readonly exchange: Readonly<{
+    nettingBatch(proofHash: Uint8Array | string): PreparedNettingBatch | undefined;
+    settlementCommitment(packageOrderId: Uint8Array | string): PackageSettlementCommitment | undefined;
     recordNettingAllocationExecutionAuthorization(
       authorization: NettingAllocationExecutionAuthorization,
     ): { readonly replayed: boolean };
@@ -71,11 +77,46 @@ export function createNettingAllocationAdminHandler(
     const createAttempt = url.pathname === '/internal/netting/allocation-attempts';
     const referenceMatch = /^\/internal\/netting\/allocation-attempts\/([A-Za-z0-9_-]{16,96})\/reference$/.exec(url.pathname);
     const settlementMatch = /^\/internal\/netting\/batches\/([0-9a-f]{64})\/settle$/.exec(url.pathname);
-    if (!createAttempt && referenceMatch === null && settlementMatch === null) return false;
+    const preparationMatch = /^\/internal\/netting\/batches\/([0-9a-f]{64})\/preparation$/.exec(url.pathname);
+    if (!createAttempt && referenceMatch === null && settlementMatch === null && preparationMatch === null) return false;
     if (!internalCaller(request)) {
       return sendError(response, 403, 'FORBIDDEN', 'Netting allocation controls answer loopback callers only.');
     }
     if (url.search !== '') return sendError(response, 400, 'INVALID_REQUEST', 'Query parameters are not accepted.');
+    if (preparationMatch !== null) {
+      if (request.method !== 'GET') return sendError(response, 405, 'METHOD_NOT_ALLOWED', 'Only GET is allowed.');
+      try {
+        const batch = options.exchange.nettingBatch(preparationMatch[1]!);
+        if (batch === undefined) return sendError(response, 404, 'NETTING_BATCH_NOT_FOUND', 'Prepared netting batch was not found.');
+        if (batch.finalAllocationReceipt === undefined) {
+          return sendError(response, 409, 'FINAL_ALLOCATION_PENDING', 'Netting batch has no final allocation receipt.');
+        }
+        const allocations = batch.finalAllocationReceipt.allocations.map((allocation) => {
+          const settlement = options.exchange.settlementCommitment(allocation.packageOrderId);
+          if (settlement === undefined) {
+            throw new PackageExchangeStoreError(
+              'CORRUPT_ROW',
+              'Final netting allocation lost its settlement commitment.',
+            );
+          }
+          return Object.freeze({
+            allocationReceiptHashHex: toHex(allocation.allocationReceiptHash),
+            settlement,
+          });
+        });
+        return sendJson(response, 200, {
+          version: 1,
+          proofHashHex: batch.proofHashHex,
+          policy: batch.policy,
+          result: batch.result,
+          externalExecutions: batch.externalExecutions,
+          finalAllocationReceipt: batch.finalAllocationReceipt,
+          allocations,
+        });
+      } catch (error) {
+        return errorResponse(response, error);
+      }
+    }
     if (request.method !== 'POST') return sendError(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
     if (request.headers['content-type']?.split(';', 1)[0]?.trim() !== 'application/json') {
       return sendError(response, 415, 'INVALID_CONTENT_TYPE', 'Content-Type must be application/json.');

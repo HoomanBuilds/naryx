@@ -30,6 +30,7 @@ export {
 export {
   HttpNettingAllocationAdminClient,
   NettingAllocationAdminClientError,
+  type NettingAllocationPreparation,
   type NettingAllocationObservationBinding,
   type RegisteredNettingAllocationAttempt,
 } from './netting-allocation-admin-client.js';

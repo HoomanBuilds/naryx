@@ -22,10 +22,22 @@ test('registers and binds an exact netting allocation attempt through loopback',
   globalThis.fetch = (async (input, init) => {
     const url = new URL(String(input));
     paths.push(url.pathname);
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    const payload = url.pathname.endsWith('/reference')
-      ? { version: 1, attempt: { ...attempt, executionReference: body.executionReference } }
-      : { version: 1, authorizationReplayed: false, attempt };
+    const body = init?.body === undefined
+      ? {}
+      : JSON.parse(String(init.body)) as Record<string, unknown>;
+    const payload = url.pathname.endsWith('/preparation')
+      ? {
+          version: 1,
+          proofHashHex: '03'.repeat(32),
+          policy: {},
+          result: {},
+          externalExecutions: [],
+          finalAllocationReceipt: {},
+          allocations: [{ allocationReceiptHashHex: '04'.repeat(32), settlement: {} }],
+        }
+      : url.pathname.endsWith('/reference')
+        ? { version: 1, attempt: { ...attempt, executionReference: body.executionReference } }
+        : { version: 1, authorizationReplayed: false, attempt };
     return new Response(JSON.stringify(toProtocolJson(payload)), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -33,6 +45,8 @@ test('registers and binds an exact netting allocation attempt through loopback',
   }) as typeof fetch;
   try {
     const client = new HttpNettingAllocationAdminClient('http://127.0.0.1:8787');
+    const preparation = await client.preparation('03'.repeat(32));
+    assert.equal(preparation.allocations[0]?.allocationReceiptHashHex, '04'.repeat(32));
     const registered = await client.register({
       attemptId: attempt.attemptId,
       idempotencyKey: attempt.idempotencyKey,
@@ -47,6 +61,7 @@ test('registers and binds an exact netting allocation attempt through loopback',
     });
     assert.equal(referenced.executionReference, `0x${'02'.repeat(32)}`);
     assert.deepEqual(paths, [
+      `/internal/netting/batches/${'03'.repeat(32)}/preparation`,
       '/internal/netting/allocation-attempts',
       `/internal/netting/allocation-attempts/${attempt.attemptId}/reference`,
     ]);
