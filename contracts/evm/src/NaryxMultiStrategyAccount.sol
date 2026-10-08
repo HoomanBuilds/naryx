@@ -32,6 +32,10 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         keccak256("OwnerExecution(bytes32 executionHash,bytes32 callsHash)");
     bytes32 private constant SOLVER_EXECUTION_TYPEHASH =
         keccak256("SolverExecution(bytes32 executionHash,bytes32 callsHash)");
+    bytes32 private constant NETTING_OWNER_EXECUTION_TYPEHASH =
+        keccak256("NettingOwnerExecution(bytes32 authorizationHash,bytes32 executionHash,bytes32 callsHash)");
+    bytes32 private constant NETTING_SOLVER_EXECUTION_TYPEHASH =
+        keccak256("NettingSolverExecution(bytes32 authorizationHash,bytes32 executionHash,bytes32 callsHash)");
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant EIP712_NAME_HASH = keccak256("Naryx Multi Strategy Account");
@@ -161,6 +165,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         uint256 protocolFeeAtoms,
         uint256 solverFeeAtoms
     );
+    event NettingAllocationExecuted(bytes32 indexed receiptHash, bytes32 indexed authorizationHash);
     event PackageCollateralManaged(
         bytes32 indexed packageId,
         bytes32 indexed intentHash,
@@ -189,6 +194,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     uint256 public nextCollateralNonce;
     mapping(bytes32 packageId => PackageState state) private _packages;
     mapping(bytes32 receiptHash => Receipt receipt) private _receipts;
+    mapping(bytes32 receiptHash => bytes32 authorizationHash) public nettingAuthorizationOf;
 
     constructor(
         address owner_,
@@ -248,6 +254,22 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
             );
     }
 
+    function nettingOwnerDigest(Execution calldata execution, AdapterCall[] calldata calls, bytes32 authorizationHash)
+        external
+        view
+        returns (bytes32)
+    {
+        return _nettingDigest(NETTING_OWNER_EXECUTION_TYPEHASH, authorizationHash, execution, callsHash(calls));
+    }
+
+    function nettingSolverDigest(Execution calldata execution, AdapterCall[] calldata calls, bytes32 authorizationHash)
+        external
+        view
+        returns (bytes32)
+    {
+        return _nettingDigest(NETTING_SOLVER_EXECUTION_TYPEHASH, authorizationHash, execution, callsHash(calls));
+    }
+
     function execute(
         Execution calldata execution,
         AdapterCall[] calldata calls,
@@ -255,12 +277,37 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         bytes calldata solverSignature
     ) external nonReentrant returns (bytes32 receiptHash) {
         bytes32 callCommitment = callsHash(calls);
-        _validate(execution, calls, callCommitment, ownerSignature, true);
+        _validate(execution, calls, true);
+        bytes32 ownerHash = _hashTypedDataV4(
+            keccak256(abi.encode(OWNER_EXECUTION_TYPEHASH, _executionHash(execution), callCommitment))
+        );
+        if (!OwnerSignature.isValidNow(owner, ownerHash, ownerSignature)) revert InvalidOwnerSignature();
         bytes32 solverHash = _hashTypedDataV4(
             keccak256(abi.encode(SOLVER_EXECUTION_TYPEHASH, _executionHash(execution), callCommitment))
         );
         if (ECDSA.recover(solverHash, solverSignature) != execution.solver) revert InvalidSolverSignature();
         return _settle(execution, calls, callCommitment);
+    }
+
+    function executeNettingAllocation(
+        Execution calldata execution,
+        AdapterCall[] calldata calls,
+        bytes32 authorizationHash,
+        bytes calldata ownerSignature,
+        bytes calldata solverSignature
+    ) external nonReentrant returns (bytes32 receiptHash) {
+        if (authorizationHash == bytes32(0)) revert InvalidExecution();
+        bytes32 callCommitment = callsHash(calls);
+        _validate(execution, calls, true);
+        bytes32 ownerHash =
+            _nettingDigest(NETTING_OWNER_EXECUTION_TYPEHASH, authorizationHash, execution, callCommitment);
+        if (!OwnerSignature.isValidNow(owner, ownerHash, ownerSignature)) revert InvalidOwnerSignature();
+        bytes32 solverHash =
+            _nettingDigest(NETTING_SOLVER_EXECUTION_TYPEHASH, authorizationHash, execution, callCommitment);
+        if (ECDSA.recover(solverHash, solverSignature) != execution.solver) revert InvalidSolverSignature();
+        receiptHash = _settle(execution, calls, callCommitment);
+        nettingAuthorizationOf[receiptHash] = authorizationHash;
+        emit NettingAllocationExecuted(receiptHash, authorizationHash);
     }
 
     function executeRecovery(Execution calldata execution, AdapterCall[] calldata calls, bytes calldata ownerSignature)
@@ -269,7 +316,11 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         returns (bytes32 receiptHash)
     {
         bytes32 callCommitment = callsHash(calls);
-        _validate(execution, calls, callCommitment, ownerSignature, false);
+        _validate(execution, calls, false);
+        bytes32 ownerHash = _hashTypedDataV4(
+            keccak256(abi.encode(OWNER_EXECUTION_TYPEHASH, _executionHash(execution), callCommitment))
+        );
+        if (!OwnerSignature.isValidNow(owner, ownerHash, ownerSignature)) revert InvalidOwnerSignature();
         return _settle(execution, calls, callCommitment);
     }
 
@@ -502,13 +553,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         if (evidenceHash == bytes32(0)) revert AdapterEvidenceInvalid(callIndex);
     }
 
-    function _validate(
-        Execution calldata execution,
-        AdapterCall[] calldata calls,
-        bytes32 callCommitment,
-        bytes calldata ownerSignature,
-        bool requiresSolver
-    ) private view {
+    function _validate(Execution calldata execution, AdapterCall[] calldata calls, bool requiresSolver) private view {
         if (
             block.chainid != deploymentChainId || address(config).codehash != configCodeHash
                 || address(solverRegistry).codehash != solverRegistryCodeHash
@@ -568,10 +613,19 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         }
         if (grossNotionalAtoms != execution.totalGrossNotionalAtoms) revert InvalidExecution();
         if (hasRiskIncreasingCall && config.entryPaused()) revert EntryPaused();
-        bytes32 executionHash = _executionHash(execution);
-        bytes32 ownerHash =
-            _hashTypedDataV4(keccak256(abi.encode(OWNER_EXECUTION_TYPEHASH, executionHash, callCommitment)));
-        if (!OwnerSignature.isValidNow(owner, ownerHash, ownerSignature)) revert InvalidOwnerSignature();
+    }
+
+    function _nettingDigest(
+        bytes32 typeHash,
+        bytes32 authorizationHash,
+        Execution calldata execution,
+        bytes32 callCommitment
+    ) private view returns (bytes32) {
+        if (authorizationHash == bytes32(0)) revert InvalidExecution();
+        return
+            _hashTypedDataV4(
+                keccak256(abi.encode(typeHash, authorizationHash, _executionHash(execution), callCommitment))
+            );
     }
 
     function _validateState(PackageState storage state, Execution calldata execution) private view {

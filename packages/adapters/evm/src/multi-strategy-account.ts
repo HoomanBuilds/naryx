@@ -1,5 +1,9 @@
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
-import type { DomainRef } from '@naryx/protocol-types';
+import {
+  toHex,
+  type DomainRef,
+  type NettingAllocationExecutionAuthorization,
+} from '@naryx/protocol-types';
 import {
   encodeAbiParameters,
   encodeFunctionData,
@@ -16,6 +20,7 @@ import type { EvmStrategyExecutionPlan, EvmStrategyLegCall } from './strategy-pl
 
 const ACCOUNT_ABI = parseAbi([
   'function execute((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
+  'function executeNettingAllocation((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes32 authorizationHash,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
   'function executeRecovery((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature) returns (bytes32 receiptHash)',
 ]);
 
@@ -120,6 +125,15 @@ export interface EvmMultiStrategyAccountEnvelope {
   readonly solverDigest: Hex;
 }
 
+export interface EvmNettingAllocationEnvelope {
+  readonly envelope: EvmMultiStrategyAccountEnvelope;
+  readonly authorizationHash: Hex;
+  readonly ownerTypedData: EvmNettingOwnerTypedData;
+  readonly solverTypedData: EvmNettingSolverTypedData;
+  readonly ownerDigest: Hex;
+  readonly solverDigest: Hex;
+}
+
 export interface EvmMultiStrategyOwnerTypedData {
   readonly domain: Readonly<{
     name: 'Naryx Multi Strategy Account';
@@ -141,6 +155,43 @@ export interface EvmMultiStrategySolverTypedData {
   }>;
   readonly primaryType: 'SolverExecution';
   readonly message: Readonly<{ executionHash: Hex; callsHash: Hex }>;
+}
+
+interface EvmNettingTypedDataDomain {
+  readonly name: 'Naryx Multi Strategy Account';
+  readonly version: '1';
+  readonly chainId: number;
+  readonly verifyingContract: Address;
+}
+
+interface EvmNettingTypedDataMessage {
+  readonly authorizationHash: Hex;
+  readonly executionHash: Hex;
+  readonly callsHash: Hex;
+}
+
+export interface EvmNettingOwnerTypedData {
+  readonly domain: EvmNettingTypedDataDomain;
+  readonly types: Readonly<{
+    NettingOwnerExecution: readonly Readonly<{
+      name: 'authorizationHash' | 'executionHash' | 'callsHash';
+      type: 'bytes32';
+    }>[];
+  }>;
+  readonly primaryType: 'NettingOwnerExecution';
+  readonly message: EvmNettingTypedDataMessage;
+}
+
+export interface EvmNettingSolverTypedData {
+  readonly domain: EvmNettingTypedDataDomain;
+  readonly types: Readonly<{
+    NettingSolverExecution: readonly Readonly<{
+      name: 'authorizationHash' | 'executionHash' | 'callsHash';
+      type: 'bytes32';
+    }>[];
+  }>;
+  readonly primaryType: 'NettingSolverExecution';
+  readonly message: EvmNettingTypedDataMessage;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -327,6 +378,119 @@ export function encodeEvmMultiStrategyAccountExecution(input: Readonly<{
     abi: ACCOUNT_ABI,
     functionName: 'execute',
     args: [input.envelope.execution, [...input.envelope.calls], input.ownerSignature, input.solverSignature],
+  });
+}
+
+export function compileEvmNettingAllocationEnvelope(input: Readonly<{
+  envelope: EvmMultiStrategyAccountEnvelope;
+  authorization: NettingAllocationExecutionAuthorization;
+}>): EvmNettingAllocationEnvelope {
+  const { envelope, authorization } = input;
+  const authorizationHash = hash32(
+    `0x${toHex(authorization.authorizationHash)}`,
+    'netting authorization hash',
+  );
+  requireCondition(
+    getAddress(authorization.settlementAccount) === envelope.account,
+    'netting settlement account mismatch',
+  );
+  requireCondition(
+    authorization.domain.domainId === `eip155:${envelope.ownerTypedData.domain.chainId}`
+      && authorization.domain.domainManifestVersion === envelope.execution.domainManifestVersion
+      && `0x${toHex(authorization.domain.domainManifestHash)}` === envelope.execution.domainManifestHash,
+    'netting execution domain mismatch',
+  );
+  requireCondition(
+    domainHash(authorization.domain) === envelope.execution.domainIdHash,
+    'netting execution domain identity mismatch',
+  );
+  requireCondition(
+    `0x${toHex(authorization.strategyOrderHash)}` === envelope.execution.orderHash,
+    'netting strategy order mismatch',
+  );
+  requireCondition(
+    `0x${toHex(authorization.executionPlanHash)}` === envelope.callsHash,
+    'netting execution plan mismatch',
+  );
+  requireCondition(
+    getAddress(authorization.solverId) === envelope.execution.solver,
+    'netting solver mismatch',
+  );
+  requireCondition(
+    authorization.protocolFeeAtoms === envelope.execution.fees.protocolFeeAtoms
+      && authorization.solverFeeAtoms === envelope.execution.fees.solverFeeAtoms,
+    'netting fee mismatch',
+  );
+  requireCondition(authorization.nonce === envelope.execution.nonce, 'netting nonce mismatch');
+  requireCondition(
+    authorization.validUntilUnit === 'EVM_UNIX_SECONDS'
+      && envelope.execution.deadline <= authorization.validUntilValue,
+    'netting execution outlives its authorization',
+  );
+  const domain: EvmNettingTypedDataDomain = Object.freeze({
+    name: 'Naryx Multi Strategy Account',
+    version: '1',
+    chainId: envelope.ownerTypedData.domain.chainId,
+    verifyingContract: envelope.account,
+  });
+  const message: EvmNettingTypedDataMessage = Object.freeze({
+    authorizationHash,
+    executionHash: envelope.executionHash,
+    callsHash: envelope.callsHash,
+  });
+  const ownerTypedData: EvmNettingOwnerTypedData = Object.freeze({
+    domain,
+    primaryType: 'NettingOwnerExecution',
+    types: Object.freeze({
+      NettingOwnerExecution: Object.freeze([
+        { name: 'authorizationHash', type: 'bytes32' },
+        { name: 'executionHash', type: 'bytes32' },
+        { name: 'callsHash', type: 'bytes32' },
+      ] as const),
+    }),
+    message,
+  });
+  const solverTypedData: EvmNettingSolverTypedData = Object.freeze({
+    domain,
+    primaryType: 'NettingSolverExecution',
+    types: Object.freeze({
+      NettingSolverExecution: Object.freeze([
+        { name: 'authorizationHash', type: 'bytes32' },
+        { name: 'executionHash', type: 'bytes32' },
+        { name: 'callsHash', type: 'bytes32' },
+      ] as const),
+    }),
+    message,
+  });
+  return Object.freeze({
+    envelope,
+    authorizationHash,
+    ownerTypedData,
+    solverTypedData,
+    ownerDigest: hashTypedData(ownerTypedData),
+    solverDigest: hashTypedData(solverTypedData),
+  });
+}
+
+export function encodeEvmNettingAllocationExecution(input: Readonly<{
+  netting: EvmNettingAllocationEnvelope;
+  ownerSignature: Hex;
+  solverSignature: Hex;
+}>): Hex {
+  requireCondition(
+    /^0x[0-9a-fA-F]+$/.test(input.ownerSignature) && /^0x[0-9a-fA-F]+$/.test(input.solverSignature),
+    'execution signatures must be hex bytes',
+  );
+  return encodeFunctionData({
+    abi: ACCOUNT_ABI,
+    functionName: 'executeNettingAllocation',
+    args: [
+      input.netting.envelope.execution,
+      [...input.netting.envelope.calls],
+      input.netting.authorizationHash,
+      input.ownerSignature,
+      input.solverSignature,
+    ],
   });
 }
 

@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
+  assetRef,
+  commitmentHash,
   domainRef,
   hash32,
+  protocolId,
   type DomainRef,
   type Hash32,
+  type NettingAllocationExecutionAuthorization,
 } from '@naryx/protocol-types';
 import {
   decodeFunctionData,
@@ -17,7 +21,9 @@ import {
   type Hex,
 } from 'viem';
 import {
+  compileEvmNettingAllocationEnvelope,
   compileEvmMultiStrategyAccountEnvelope,
+  encodeEvmNettingAllocationExecution,
   encodeEvmMultiStrategyAccountExecution,
   encodeEvmMultiStrategyAccountRecovery,
 } from '../src/multi-strategy-account.js';
@@ -38,6 +44,8 @@ const ZERO_HASH = `0x${'00'.repeat(32)}` as Hex;
 function bytes(value: Hex): Hash32 {
   return hash32(hexToBytes(value));
 }
+
+const commitment = (value: Hex) => commitmentHash(value);
 
 function domain(): DomainRef {
   return domainRef('eip155:84532', 3, HASH_A);
@@ -118,6 +126,41 @@ function input() {
   };
 }
 
+function nettingAuthorization(
+  envelope: ReturnType<typeof compileEvmMultiStrategyAccountEnvelope>,
+): NettingAllocationExecutionAuthorization {
+  return Object.freeze({
+    version: 1,
+    authorizationHash: commitment(HASH_A),
+    environment: protocolId('testnet'),
+    executionClassId: protocolId('spot-netting'),
+    finalAllocationReceiptHash: commitment(HASH_B),
+    allocationReceiptHash: commitment(HASH_C),
+    nettingProofHash: commitment(HASH_D),
+    settlementCommitmentHash: commitment(HASH_E),
+    obligationId: commitment(HASH_F),
+    packageOrderId: commitment(HASH_A),
+    strategyOrderHash: commitment(envelope.execution.orderHash),
+    ownerId: protocolId('0x5555555555555555555555555555555555555555'),
+    settlementAccount: protocolId(ACCOUNT),
+    domain: domain(),
+    instrumentId: protocolId('sol-spot'),
+    instrumentHash: commitment(HASH_B),
+    quantityAsset: assetRef('sol', HASH_C, 9),
+    quoteAsset: assetRef('usdc', HASH_D, 6),
+    stateKind: 'ASSET_BALANCE',
+    settledQuantityAtoms: 1_000_000_000n,
+    settledQuoteDeltaAtoms: -100_000_000n,
+    executionPlanHash: commitment(envelope.callsHash),
+    solverId: protocolId(SOLVER),
+    protocolFeeAtoms: envelope.execution.fees.protocolFeeAtoms,
+    solverFeeAtoms: envelope.execution.fees.solverFeeAtoms,
+    nonce: envelope.execution.nonce,
+    validUntilUnit: 'EVM_UNIX_SECONDS',
+    validUntilValue: envelope.execution.deadline,
+  });
+}
+
 test('binds a compiled atomic strategy plan to the multi-strategy account signatures and calldata', () => {
   const envelope = compileEvmMultiStrategyAccountEnvelope(input());
   assert.equal(envelope.execution.domainIdHash, keccak256(stringToHex('eip155:84532')));
@@ -187,6 +230,35 @@ test('rejects an adapter identity policy that does not match the compiled call',
     }),
     /adapter address mismatch/,
   );
+});
+
+test('binds a final allocation authorization to exact EVM execution calldata', () => {
+  const envelope = compileEvmMultiStrategyAccountEnvelope(input());
+  const netting = compileEvmNettingAllocationEnvelope({
+    envelope,
+    authorization: nettingAuthorization(envelope),
+  });
+  assert.equal(netting.authorizationHash, HASH_A);
+  assert.equal(netting.ownerDigest, hashTypedData(netting.ownerTypedData));
+  assert.equal(netting.solverDigest, hashTypedData(netting.solverTypedData));
+  assert.notEqual(netting.ownerDigest, netting.solverDigest);
+  const encoded = encodeEvmNettingAllocationExecution({
+    netting,
+    ownerSignature: '0x0102',
+    solverSignature: '0x0304',
+  });
+  assert.equal(
+    encoded.slice(0, 10),
+    keccak256(stringToHex('executeNettingAllocation((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),address,uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes32,bytes,bytes)')).slice(0, 10),
+  );
+});
+
+test('rejects a netting authorization for another call plan', () => {
+  const envelope = compileEvmMultiStrategyAccountEnvelope(input());
+  assert.throws(() => compileEvmNettingAllocationEnvelope({
+    envelope,
+    authorization: { ...nettingAuthorization(envelope), executionPlanHash: commitment(HASH_F) },
+  }), /execution plan mismatch/);
 });
 
 test('rejects a package identity that differs from the compiled leg payloads', () => {

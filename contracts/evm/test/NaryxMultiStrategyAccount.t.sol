@@ -195,6 +195,47 @@ contract NaryxMultiStrategyAccountTest is Test {
         assertEq(account.nextNonce(), 2);
     }
 
+    function testExecutesOnlyTheSignedNettingAllocation() public {
+        bytes32 authorizationHash = keccak256("netting-allocation-authorization");
+        NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            25 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_ONE)
+        );
+
+        bytes32 receiptHash = account.executeNettingAllocation(
+            execution,
+            calls,
+            authorizationHash,
+            _sign(ownerKey, account.nettingOwnerDigest(execution, calls, authorizationHash)),
+            _sign(solverKey, account.nettingSolverDigest(execution, calls, authorizationHash))
+        );
+
+        assertEq(account.nettingAuthorizationOf(receiptHash), authorizationHash);
+        assertEq(quote.balanceOf(RECIPIENT), 25 ether);
+        assertEq(account.nextNonce(), 1);
+    }
+
+    function testRejectsNettingExecutionSignedForAnotherAuthorization() public {
+        bytes32 authorizationHash = keccak256("netting-allocation-authorization");
+        NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            25 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_ONE)
+        );
+        bytes32 anotherAuthorizationHash = keccak256("another-netting-allocation-authorization");
+        bytes memory ownerSignature = _sign(ownerKey, account.nettingOwnerDigest(execution, calls, authorizationHash));
+        bytes memory solverSignature =
+            _sign(solverKey, account.nettingSolverDigest(execution, calls, anotherAuthorizationHash));
+
+        vm.expectRevert(NaryxMultiStrategyAccount.InvalidOwnerSignature.selector);
+        account.executeNettingAllocation(execution, calls, anotherAuthorizationHash, ownerSignature, solverSignature);
+    }
+
     function testAdapterFailureRollsBackTransferNonceAndPackageState() public {
         NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
         NaryxMultiStrategyAccount.AdapterCall[] memory calls = new NaryxMultiStrategyAccount.AdapterCall[](2);
