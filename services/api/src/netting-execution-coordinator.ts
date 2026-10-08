@@ -84,7 +84,7 @@ export class NettingExecutionCoordinator {
       return Object.freeze({ batch, executedIntentHashes: Object.freeze(executedIntentHashes) });
     }
     for (const record of batch.externalExecutions) {
-      if (record.evidence !== undefined) continue;
+      if (record.evidence !== undefined || record.crossBatchClearingPlanHashHex !== undefined) continue;
       const idempotencyKey = toHex(record.intent.intentHash);
       const evidence = await this.#executor.execute({ intent: record.intent, idempotencyKey });
       verifyNettingExternalExecutionEvidence(evidence, record.intent);

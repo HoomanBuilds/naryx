@@ -7,6 +7,7 @@ import {
   adapterRef,
   assetRef,
   commitmentHash,
+  crossBatchExternalExecutionEvidence,
   domainRef,
   netObligations,
   nettingAllocationExecutionAuthorization,
@@ -333,6 +334,178 @@ test("owner authorization and prepared netting evidence are immutable and replay
     const finalized = store.nettingBatch(residual.proofHash);
     assert.equal(finalized?.externalExecutionStatus, "EXACT_FILLED");
     assert.ok(finalized?.finalAllocationReceipt);
+  });
+});
+
+test("cross-batch clearing durably settles source batches without direct double execution", () => {
+  withStore((store) => {
+    registerAll(store);
+    const signature = bs58.encode(new Uint8Array(64).fill(9));
+    const instrument = {
+      instrumentId: "sol-spot",
+      domain: domainRef("svm:solana-devnet", 1, id(701)),
+      adapter: adapterRef({ adapterId: "spot-adapter", adapterManifestVersion: 1, adapterManifestHash: id(702) }),
+      venue: versionedManifestRef("spot-venue", 1, id(703)),
+      market: versionedManifestRef("sol-usdc", 1, id(704)),
+      quantityAsset: assetRef("sol", id(705), 9),
+      quoteAsset: assetRef("usdc", id(706), 6),
+      legFamily: "SPOT_SWAP" as const,
+      quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
+    };
+    const policy: NettingPolicyManifestInput = {
+      schemaVersion: 1,
+      manifestVersion: 1,
+      nettingPolicyVersion: 2,
+      environment: "local",
+      executionClassId: CLASS,
+      executionClassVersion: 1,
+      executionClassManifestHash: seriesExecutionClassHash(executionClass(), CLASS_SUPPORT),
+      settlementClass: "ATOMIC_POSTCONDITION",
+      allocationRule: "PRO_RATA_SEQUENCE",
+      externalExecutionMode: "EXACT_NET_ONLY",
+      clearingRule: "LIMIT_MIDPOINT_BUYER_FAVOR",
+      maximumObligations: 4,
+      maximumBatchWindowMilliseconds: 1_000n,
+      instruments: [instrument],
+    };
+    const selected = [5, 7, 9].map((orderId) => {
+      const maker = order(orderId);
+      const taker = order(orderId + 1, { side: "BID", timeInForce: "IOC" });
+      store.submitOrder(CLASS, maker, NOW, settlement(maker), { scheme: "ED25519", signature });
+      store.submitOrder(CLASS, taker, NOW, settlement(taker), { scheme: "ED25519", signature });
+      return { maker, progress: store.settlementProgress(maker.orderId)! };
+    });
+    const signedQuantities = [10n, 10n, -10n];
+    const limits = [12n, 12n, 8n];
+    const prepared = selected.map(({ maker, progress }, index) => {
+      const result = netObligations([{
+        ownerId: maker.participantId,
+        strategyOrderHash: settlement(maker).strategyOrderHash,
+        packageOrderId: maker.orderId,
+        settlementReadinessHash: progress.readinessHashHex,
+        legId: `spot-${index}`,
+        instrumentId: instrument.instrumentId,
+        signedQuantityAtoms: signedQuantities[index]!,
+        limitPriceTicks: limits[index]!,
+        sequence: BigInt(index + 1),
+      }], policy);
+      const intent = nettingExternalExecutionIntent(result, policy, {
+        instrumentId: instrument.instrumentId,
+        validUntilUnit: "SOLANA_SLOT",
+        validUntilValue: 2_000n,
+        sourceFeeCaps: [{
+          obligationId: result.allocations[0]!.obligationId,
+          maximumFeeQuoteAtoms: 2n,
+        }],
+      });
+      const batch = store.recordPreparedNettingBatch({
+        policy,
+        result,
+        externalIntents: [intent],
+        packages: [{
+          packageOrderIdHex: maker.orderId as string,
+          strategyOrderHashHex: settlement(maker).strategyOrderHash as string,
+          settlementReadinessHashHex: progress.readinessHashHex,
+        }],
+      }).batch;
+      return { result, intent, batch };
+    });
+    const created = store.recordPreparedCrossBatchClearing({
+      policy: {
+        version: 1,
+        policyId: "solana-devnet-cross-batch-v1",
+        domain: instrument.domain,
+        adapter: instrument.adapter,
+        expiryUnit: "SOLANA_SLOT",
+        maximumSourceIntents: 8,
+        maximumSourceBatches: 8,
+        maximumExpirySpread: 10n,
+      },
+      sourceIntentHashes: prepared.map(({ intent }) => intent.intentHash),
+    });
+    assert.equal(created.replayed, false);
+    assert.equal(created.clearing.status, "PENDING");
+    assert.ok(created.clearing.intent);
+    for (const { batch } of prepared) {
+      const pooled = store.nettingBatch(batch.result.proofHash)!;
+      assert.equal(pooled.externalExecutionStatus, "PENDING");
+      assert.equal(pooled.externalExecutions[0]!.crossBatchClearingPlanHashHex, toHex(created.clearing.plan.planHash));
+    }
+    const directEvidence = nettingExternalExecutionEvidence({
+      version: 1,
+      intentHash: prepared[0]!.intent.intentHash,
+      outcome: "EXACT_FILLED",
+      filledSignedQuantityAtoms: 10n,
+      grossQuoteAtoms: 12n,
+      feeQuoteAtoms: 1n,
+      submittedAtUnit: "SOLANA_SLOT",
+      submittedAtValue: 1_999n,
+      observedAtUnit: "SOLANA_SLOT",
+      observedAtValue: 2_001n,
+      executionReferenceHash: id(710),
+      authoritativeEvidenceHash: id(711),
+    }, prepared[0]!.intent);
+    assert.throws(
+      () => store.recordVerifiedNettingExternalExecutionEvidence(directEvidence),
+      { code: "NETTING_INTENT_POOLED" },
+    );
+    const pooledIntent = created.clearing.intent!;
+    const evidence = crossBatchExternalExecutionEvidence({
+      version: 1,
+      intentHash: pooledIntent.intentHash,
+      outcome: "EXACT_FILLED",
+      filledSignedQuantityAtoms: 10n,
+      grossQuoteAtoms: 12n,
+      feeQuoteAtoms: 1n,
+      submittedAtUnit: "SOLANA_SLOT",
+      submittedAtValue: 1_999n,
+      observedAtUnit: "SOLANA_SLOT",
+      observedAtValue: 2_001n,
+      executionReferenceHash: id(712),
+      authoritativeEvidenceHash: id(713),
+    }, pooledIntent);
+    assert.equal(store.recordVerifiedCrossBatchExternalExecutionEvidence(evidence).replayed, false);
+    assert.equal(store.recordVerifiedCrossBatchExternalExecutionEvidence(evidence).replayed, true);
+    const clearing = store.crossBatchClearing(created.clearing.plan.planHash)!;
+    assert.equal(clearing.status, "EXACT_FILLED");
+    for (const { batch } of prepared) {
+      const settled = store.nettingBatch(batch.result.proofHash)!;
+      assert.equal(settled.externalExecutionStatus, "EXACT_FILLED");
+      assert.ok(settled.finalAllocationReceipt);
+    }
+    const firstBatch = store.nettingBatch(prepared[0]!.result.proofHash)!;
+    const firstAllocation = firstBatch.finalAllocationReceipt!.allocations[0]!;
+    const firstSettlement = settlement(selected[0]!.maker);
+    const authorization = nettingAllocationExecutionAuthorization({
+      version: 1,
+      finalAllocationReceiptHash: firstBatch.finalAllocationReceipt!.receiptHash,
+      allocationReceiptHash: firstAllocation.allocationReceiptHash,
+      settlementCommitmentHash: packageSettlementCommitmentHash(firstSettlement),
+      executionPlanHash: id(714),
+      solverId: "solver",
+      protocolFeeAtoms: 1n,
+      solverFeeAtoms: 1n,
+      nonce: 1n,
+      validUntilUnit: "SOLANA_SLOT",
+      validUntilValue: 1_900n,
+    }, firstBatch.finalAllocationReceipt!, prepared[0]!.result, policy, [prepared[0]!.intent], [], firstSettlement, [{
+      policy: clearing.policy,
+      sourceIntents: clearing.sourceIntents,
+      plan: clearing.plan,
+      intent: clearing.intent!,
+      evidence: clearing.evidence!,
+      receipt: clearing.receipt!,
+    }]);
+    store.recordNettingAllocationExecutionAuthorization(authorization);
+    store.recordNettingAllocationExecutionObservation({
+      authorizationHash: authorization.authorizationHash,
+      observedAtUnit: "SOLANA_SLOT",
+      observedAtValue: 1_850n,
+      settlementReferenceHash: id(715),
+      authoritativeEvidenceHash: id(716),
+    });
+    assert.equal(store.nettingBatch(prepared[0]!.result.proofHash)?.settlementStatus, "SETTLED");
   });
 });
 

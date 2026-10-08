@@ -272,6 +272,7 @@ export {
   type PreparedNettingBatch,
   type PreparedNettingBatchRecordInput,
   type NettingExternalExecutionRecord,
+  type PreparedCrossBatchClearing,
   type NettingAllocationExecutionObservation,
   type PackageTapeRecord,
   type RegisteredExchangeDocument,
@@ -656,6 +657,12 @@ export {
   type RoutedNettingExternalExecutionPort,
   type NettingExecutionCoordinatorResult,
 } from "./netting-execution-coordinator.js";
+export {
+  CrossBatchClearingCoordinator,
+  type CrossBatchClearingCoordinatorResult,
+  type CrossBatchClearingStorePort,
+  type CrossBatchExternalExecutionPort,
+} from "./cross-batch-clearing-coordinator.js";
 export {
   NettingAllocationObservationRouter,
   NettingAllocationSettlementCoordinator,

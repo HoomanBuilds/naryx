@@ -12,6 +12,10 @@ import {
   cancelPackageBookEntry,
   clearPackageReopeningAuction,
   commitmentHash,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchClearingReceipt,
+  crossBatchExternalExecutionIntent,
   economicStrategySeries,
   economicStrategySeriesBytes,
   economicStrategySeriesHash,
@@ -54,6 +58,10 @@ import {
   verifyNettingExternalExecutionIntent,
   verifyNettingFinalAllocationReceipt,
   verifyNettingSettlementCompletionReceipt,
+  verifyCrossBatchClearingPlan,
+  verifyCrossBatchClearingReceipt,
+  verifyCrossBatchExternalExecutionEvidence,
+  verifyCrossBatchExternalExecutionIntent,
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
@@ -70,6 +78,13 @@ import {
 } from "@naryx/protocol-types";
 import type {
   CommitmentHash,
+  CrossBatchClearingPlan,
+  CrossBatchClearingPolicy,
+  CrossBatchClearingPolicyInput,
+  CrossBatchClearingReceipt,
+  CrossBatchExternalExecutionEvidence,
+  CrossBatchExternalExecutionIntent,
+  CrossBatchNettingResolution,
   EconomicStrategySeries,
   EconomicStrategySeriesInput,
   EconomicStrategySeriesSupportInput,
@@ -247,6 +262,19 @@ export interface PreparedNettingBatchRecordInput {
 export interface NettingExternalExecutionRecord {
   readonly intent: NettingExternalExecutionIntent;
   readonly evidence?: NettingExternalExecutionEvidence;
+  readonly crossBatchClearingPlanHashHex?: string;
+  readonly crossBatchStatus?: "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
+}
+
+export interface PreparedCrossBatchClearing {
+  readonly status: "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
+  readonly policy: CrossBatchClearingPolicy;
+  readonly sourceIntents: readonly NettingExternalExecutionIntent[];
+  readonly plan: CrossBatchClearingPlan;
+  readonly intent?: CrossBatchExternalExecutionIntent;
+  readonly evidence?: CrossBatchExternalExecutionEvidence;
+  readonly receipt?: CrossBatchClearingReceipt;
+  readonly recordedAtMs: number;
 }
 
 export interface NettingAllocationExecutionObservation {
@@ -261,10 +289,14 @@ function nettingExternalExecutionStatus(
   records: readonly NettingExternalExecutionRecord[],
 ): PreparedNettingBatch["externalExecutionStatus"] {
   if (records.length === 0) return "NOT_REQUIRED";
+  if (records.some((record) => record.crossBatchStatus === "RECOVERY_REQUIRED")) {
+    return "RECOVERY_REQUIRED";
+  }
   if (records.some((record) => record.evidence !== undefined && record.evidence.outcome !== "EXACT_FILLED")) {
     return "RECOVERY_REQUIRED";
   }
-  return records.every((record) => record.evidence?.outcome === "EXACT_FILLED") ? "EXACT_FILLED" : "PENDING";
+  return records.every((record) => record.evidence?.outcome === "EXACT_FILLED"
+    || record.crossBatchStatus === "EXACT_FILLED") ? "EXACT_FILLED" : "PENDING";
 }
 
 function nettingSettlementStatus(
@@ -457,6 +489,33 @@ CREATE TABLE IF NOT EXISTS netting_external_execution_evidence (
   evidence_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS cross_batch_clearing_plans (
+  plan_hash BLOB PRIMARY KEY,
+  policy_hash BLOB NOT NULL,
+  policy_json TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  external_intent_hash BLOB UNIQUE,
+  external_intent_json TEXT,
+  recorded_at_ms INTEGER NOT NULL,
+  CHECK ((external_intent_hash IS NULL) = (external_intent_json IS NULL))
+) STRICT;
+CREATE TABLE IF NOT EXISTS cross_batch_clearing_sources (
+  plan_hash BLOB NOT NULL REFERENCES cross_batch_clearing_plans(plan_hash),
+  source_intent_hash BLOB NOT NULL UNIQUE REFERENCES netting_external_execution_intents(intent_hash),
+  PRIMARY KEY (plan_hash, source_intent_hash)
+) STRICT;
+CREATE TABLE IF NOT EXISTS cross_batch_execution_evidence (
+  evidence_hash BLOB PRIMARY KEY,
+  plan_hash BLOB NOT NULL UNIQUE REFERENCES cross_batch_clearing_plans(plan_hash),
+  evidence_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS cross_batch_clearing_receipts (
+  receipt_hash BLOB PRIMARY KEY,
+  plan_hash BLOB NOT NULL UNIQUE REFERENCES cross_batch_clearing_plans(plan_hash),
+  receipt_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS netting_final_allocation_receipts (
   proof_hash BLOB PRIMARY KEY REFERENCES netting_batches(proof_hash),
   receipt_hash BLOB NOT NULL UNIQUE,
@@ -591,6 +650,30 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_delete
   BEFORE DELETE ON netting_external_execution_evidence
   BEGIN SELECT RAISE(ABORT, 'netting external execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_plan_change
+  BEFORE UPDATE ON cross_batch_clearing_plans
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing plans are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_plan_delete
+  BEFORE DELETE ON cross_batch_clearing_plans
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing plans are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_source_change
+  BEFORE UPDATE ON cross_batch_clearing_sources
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing sources are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_source_delete
+  BEFORE DELETE ON cross_batch_clearing_sources
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing sources are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_execution_evidence_change
+  BEFORE UPDATE ON cross_batch_execution_evidence
+  BEGIN SELECT RAISE(ABORT, 'cross batch execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_execution_evidence_delete
+  BEFORE DELETE ON cross_batch_execution_evidence
+  BEGIN SELECT RAISE(ABORT, 'cross batch execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_receipt_change
+  BEFORE UPDATE ON cross_batch_clearing_receipts
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing receipts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_receipt_delete
+  BEFORE DELETE ON cross_batch_clearing_receipts
+  BEGIN SELECT RAISE(ABORT, 'cross batch clearing receipts are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_change
   BEFORE UPDATE ON netting_final_allocation_receipts
   BEGIN SELECT RAISE(ABORT, 'netting final allocation receipts are append-only'); END;
@@ -1984,7 +2067,17 @@ export class SqlitePackageExchangeStore {
       ) {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution intent identity is inconsistent.");
       }
-      if (entry.evidence_json === null && entry.evidence_hash === null) return Object.freeze({ intent });
+      const crossBatch = this.crossBatchClearingForSourceIntent(intent.intentHash);
+      const crossBatchFields = crossBatch === undefined ? {} : {
+        crossBatchClearingPlanHashHex: toHex(crossBatch.plan.planHash),
+        crossBatchStatus: crossBatch.status,
+      } as const;
+      if (entry.evidence_json === null && entry.evidence_hash === null) {
+        return Object.freeze({ intent, ...crossBatchFields });
+      }
+      if (crossBatch !== undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Netting intent has both direct and cross-batch execution.");
+      }
       if (entry.evidence_json === null || entry.evidence_hash === null) {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution evidence is incomplete.");
       }
@@ -1994,7 +2087,7 @@ export class SqlitePackageExchangeStore {
       if (!bytesEqual(evidence.evidenceHash, hashBytes(entry.evidence_hash, "evidence_hash"))) {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution evidence identity is inconsistent.");
       }
-      return Object.freeze({ intent, evidence });
+      return Object.freeze({ intent, evidence, ...crossBatchFields });
     }));
     const expectedExternalInstruments = result.underlyings.filter((summary) => summary.externalNetAtoms !== 0n);
     if (
@@ -2003,6 +2096,7 @@ export class SqlitePackageExchangeStore {
     ) {
       throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution intents do not cover the exact net residuals.");
     }
+    const crossBatchResolutions = this.crossBatchResolutionsForProof(proofHash);
     const finalAllocationRow = this.db.prepare(`
       SELECT receipt_hash, receipt_json
       FROM netting_final_allocation_receipts
@@ -2020,6 +2114,7 @@ export class SqlitePackageExchangeStore {
           policy,
           externalExecutions.map((record) => record.intent),
           externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+          crossBatchResolutions,
         ));
       if (!bytesEqual(finalAllocationReceipt.receiptHash, hashBytes(finalAllocationRow.receipt_hash, "receipt_hash"))) {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored final allocation receipt identity is inconsistent.");
@@ -2050,6 +2145,7 @@ export class SqlitePackageExchangeStore {
           policy,
           externalExecutions.map((record) => record.intent),
           externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+          crossBatchResolutions,
         ));
       const allocation = finalAllocationReceipt.allocations.find((candidate) =>
         bytesEqual(candidate.allocationReceiptHash, evidence.allocationReceiptHash));
@@ -2088,6 +2184,7 @@ export class SqlitePackageExchangeStore {
           policy,
           externalExecutions.map((record) => record.intent),
           externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+          crossBatchResolutions,
         ));
       if (!bytesEqual(settlementCompletionReceipt.receiptHash, hashBytes(completionRow.receipt_hash, "receipt_hash"))) {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement completion receipt identity is inconsistent.");
@@ -2119,6 +2216,15 @@ export class SqlitePackageExchangeStore {
         WHERE intent_hash = ?
       `).get(commitmentHash(evidence.intentHash)) as { proof_hash: unknown; intent_json: unknown } | undefined;
       if (row === undefined) throw new PackageExchangeStoreError("NETTING_INTENT_NOT_FOUND", "External execution intent is not stored.");
+      const pooled = this.db.prepare(`
+        SELECT plan_hash FROM cross_batch_clearing_sources WHERE source_intent_hash = ?
+      `).get(commitmentHash(evidence.intentHash)) as { plan_hash: unknown } | undefined;
+      if (pooled !== undefined) {
+        throw new PackageExchangeStoreError(
+          "NETTING_INTENT_POOLED",
+          "External execution intent is committed to cross-batch clearing.",
+        );
+      }
       const proofHash = hashBytes(row.proof_hash, "proof_hash");
       const batch = this.nettingBatch(proofHash);
       if (batch === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "External execution intent lost its netting batch.");
@@ -2147,6 +2253,258 @@ export class SqlitePackageExchangeStore {
         VALUES (?, ?, ?, ?)
       `).run(evidence.evidenceHash, intent.intentHash, stringifyProtocolJson(evidence), this.clock());
       this.ensureNettingFinalAllocationReceipt(proofHash);
+      return Object.freeze({ evidence, replayed: false });
+    });
+  }
+
+  recordPreparedCrossBatchClearing(input: Readonly<{
+    policy: CrossBatchClearingPolicyInput | CrossBatchClearingPolicy;
+    sourceIntentHashes: readonly (Uint8Array | string)[];
+  }>): { readonly clearing: PreparedCrossBatchClearing; readonly replayed: boolean } {
+    return this.transaction(() => {
+      if (!Array.isArray(input.sourceIntentHashes) || input.sourceIntentHashes.length < 2) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Cross-batch clearing requires at least two source intents.");
+      }
+      const sourceHashes = input.sourceIntentHashes.map((value) => commitmentHash(value));
+      if (new Set(sourceHashes.map(toHex)).size !== sourceHashes.length) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Cross-batch clearing source intents repeat.");
+      }
+      const sourceRows = sourceHashes.map((sourceIntentHash) => {
+        const row = this.db.prepare(`
+          SELECT i.proof_hash, i.intent_json, e.evidence_hash, s.plan_hash
+          FROM netting_external_execution_intents i
+          LEFT JOIN netting_external_execution_evidence e ON e.intent_hash = i.intent_hash
+          LEFT JOIN cross_batch_clearing_sources s ON s.source_intent_hash = i.intent_hash
+          WHERE i.intent_hash = ?
+        `).get(sourceIntentHash) as {
+          proof_hash: unknown;
+          intent_json: unknown;
+          evidence_hash: unknown;
+          plan_hash: unknown;
+        } | undefined;
+        if (row === undefined) {
+          throw new PackageExchangeStoreError("NETTING_INTENT_NOT_FOUND", "Cross-batch source intent is not stored.");
+        }
+        if (row.evidence_hash !== null) {
+          throw new PackageExchangeStoreError("NETTING_INTENT_ALREADY_EXECUTED", "Cross-batch source intent already has direct evidence.");
+        }
+        return row;
+      });
+      const sourceIntents = Object.freeze(sourceRows.map((row) =>
+        parseProtocolJson(jsonText(row.intent_json, "intent_json")) as NettingExternalExecutionIntent));
+      const policy = guarded("INVALID_INPUT", "Cross-batch clearing policy is invalid.", () =>
+        crossBatchClearingPolicy(input.policy));
+      const plan = guarded("INVALID_INPUT", "Cross-batch clearing plan is invalid.", () =>
+        crossBatchClearingPlan(sourceIntents, policy));
+      const conflictingPlan = sourceRows.find((row) => row.plan_hash !== null
+        && !bytesEqual(hashBytes(row.plan_hash, "plan_hash"), plan.planHash));
+      if (conflictingPlan !== undefined) {
+        throw new PackageExchangeStoreError(
+          "CROSS_BATCH_SOURCE_CONFLICT",
+          "A source intent is already committed to another cross-batch clearing plan.",
+        );
+      }
+      const existing = this.crossBatchClearing(plan.planHash);
+      if (existing !== undefined) {
+        return Object.freeze({ clearing: existing, replayed: true });
+      }
+      const intent = plan.externalQuantityAtoms === 0n
+        ? undefined
+        : crossBatchExternalExecutionIntent(plan);
+      const receipt = plan.externalQuantityAtoms === 0n
+        ? crossBatchClearingReceipt(plan)
+        : undefined;
+      const recordedAtMs = this.clock();
+      this.db.prepare(`
+        INSERT INTO cross_batch_clearing_plans
+          (plan_hash, policy_hash, policy_json, plan_json, external_intent_hash,
+           external_intent_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        plan.planHash,
+        policy.policyHash,
+        stringifyProtocolJson(policy),
+        stringifyProtocolJson(plan),
+        intent?.intentHash ?? null,
+        intent === undefined ? null : stringifyProtocolJson(intent),
+        recordedAtMs,
+      );
+      const insertSource = this.db.prepare(`
+        INSERT INTO cross_batch_clearing_sources (plan_hash, source_intent_hash) VALUES (?, ?)
+      `);
+      for (const source of plan.sources) insertSource.run(plan.planHash, source.sourceIntentHash);
+      if (receipt !== undefined) {
+        this.db.prepare(`
+          INSERT INTO cross_batch_clearing_receipts
+            (receipt_hash, plan_hash, receipt_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?)
+        `).run(receipt.receiptHash, plan.planHash, stringifyProtocolJson(receipt), recordedAtMs);
+      }
+      const clearing = this.crossBatchClearing(plan.planHash);
+      if (clearing === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "Cross-batch clearing disappeared.");
+      if (receipt !== undefined) {
+        for (const row of sourceRows) this.ensureNettingFinalAllocationReceipt(hashBytes(row.proof_hash, "proof_hash"));
+      }
+      return Object.freeze({ clearing, replayed: false });
+    });
+  }
+
+  crossBatchClearing(planHashInput: Uint8Array | string): PreparedCrossBatchClearing | undefined {
+    const planHash = commitmentHash(planHashInput);
+    const row = this.db.prepare(`
+      SELECT policy_hash, policy_json, plan_json, external_intent_hash, external_intent_json, recorded_at_ms
+      FROM cross_batch_clearing_plans
+      WHERE plan_hash = ?
+    `).get(planHash) as {
+      policy_hash: unknown;
+      policy_json: unknown;
+      plan_json: unknown;
+      external_intent_hash: unknown;
+      external_intent_json: unknown;
+      recorded_at_ms: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const policy = guarded("CORRUPT_ROW", "Stored cross-batch policy failed validation.", () =>
+      crossBatchClearingPolicy(
+        parseProtocolJson(jsonText(row.policy_json, "policy_json")) as CrossBatchClearingPolicy,
+      ));
+    if (!bytesEqual(policy.policyHash, hashBytes(row.policy_hash, "policy_hash"))) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch policy identity is inconsistent.");
+    }
+    const sourceRows = this.db.prepare(`
+      SELECT i.intent_hash, i.intent_json
+      FROM cross_batch_clearing_sources s
+      JOIN netting_external_execution_intents i ON i.intent_hash = s.source_intent_hash
+      WHERE s.plan_hash = ?
+      ORDER BY i.intent_hash
+    `).all(planHash) as { intent_hash: unknown; intent_json: unknown }[];
+    const sourceIntents = Object.freeze(sourceRows.map((source) => {
+      const intent = parseProtocolJson(jsonText(source.intent_json, "intent_json")) as NettingExternalExecutionIntent;
+      if (!bytesEqual(intent.intentHash, hashBytes(source.intent_hash, "intent_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch source identity is inconsistent.");
+      }
+      return intent;
+    }));
+    const plan = parseProtocolJson(jsonText(row.plan_json, "plan_json")) as CrossBatchClearingPlan;
+    guarded("CORRUPT_ROW", "Stored cross-batch plan failed validation.", () =>
+      verifyCrossBatchClearingPlan(plan, sourceIntents, policy));
+    if (!bytesEqual(plan.planHash, planHash)) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch plan identity is inconsistent.");
+    }
+    let intent: CrossBatchExternalExecutionIntent | undefined;
+    if (row.external_intent_json !== null || row.external_intent_hash !== null) {
+      if (row.external_intent_json === null || row.external_intent_hash === null) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch external intent is incomplete.");
+      }
+      intent = parseProtocolJson(jsonText(row.external_intent_json, "external_intent_json")) as CrossBatchExternalExecutionIntent;
+      guarded("CORRUPT_ROW", "Stored cross-batch external intent failed validation.", () =>
+        verifyCrossBatchExternalExecutionIntent(intent!, plan));
+      if (!bytesEqual(intent.intentHash, hashBytes(row.external_intent_hash, "external_intent_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch external intent identity is inconsistent.");
+      }
+    }
+    const evidenceRow = this.db.prepare(`
+      SELECT evidence_hash, evidence_json FROM cross_batch_execution_evidence WHERE plan_hash = ?
+    `).get(planHash) as { evidence_hash: unknown; evidence_json: unknown } | undefined;
+    let evidence: CrossBatchExternalExecutionEvidence | undefined;
+    if (evidenceRow !== undefined) {
+      if (intent === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "Cross-batch evidence lacks an external intent.");
+      evidence = parseProtocolJson(jsonText(evidenceRow.evidence_json, "evidence_json")) as CrossBatchExternalExecutionEvidence;
+      guarded("CORRUPT_ROW", "Stored cross-batch evidence failed validation.", () =>
+        verifyCrossBatchExternalExecutionEvidence(evidence!, intent!));
+      if (!bytesEqual(evidence.evidenceHash, hashBytes(evidenceRow.evidence_hash, "evidence_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch evidence identity is inconsistent.");
+      }
+    }
+    const receiptRow = this.db.prepare(`
+      SELECT receipt_hash, receipt_json FROM cross_batch_clearing_receipts WHERE plan_hash = ?
+    `).get(planHash) as { receipt_hash: unknown; receipt_json: unknown } | undefined;
+    let receipt: CrossBatchClearingReceipt | undefined;
+    if (receiptRow !== undefined) {
+      receipt = parseProtocolJson(jsonText(receiptRow.receipt_json, "receipt_json")) as CrossBatchClearingReceipt;
+      guarded("CORRUPT_ROW", "Stored cross-batch receipt failed validation.", () =>
+        verifyCrossBatchClearingReceipt(receipt!, plan, intent, evidence));
+      if (!bytesEqual(receipt.receiptHash, hashBytes(receiptRow.receipt_hash, "receipt_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch receipt identity is inconsistent.");
+      }
+    }
+    const recordedAtMs = row.recorded_at_ms;
+    if (typeof recordedAtMs !== "number" || !Number.isSafeInteger(recordedAtMs) || recordedAtMs < 0) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch timestamp is invalid.");
+    }
+    const status = receipt !== undefined
+      ? "EXACT_FILLED"
+      : evidence !== undefined && evidence.outcome !== "EXACT_FILLED"
+        ? "RECOVERY_REQUIRED"
+        : "PENDING";
+    return Object.freeze({
+      status,
+      policy,
+      sourceIntents,
+      plan,
+      ...(intent === undefined ? {} : { intent }),
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(receipt === undefined ? {} : { receipt }),
+      recordedAtMs,
+    });
+  }
+
+  crossBatchClearingForSourceIntent(
+    sourceIntentHashInput: Uint8Array | string,
+  ): PreparedCrossBatchClearing | undefined {
+    const row = this.db.prepare(`
+      SELECT plan_hash FROM cross_batch_clearing_sources WHERE source_intent_hash = ?
+    `).get(commitmentHash(sourceIntentHashInput)) as { plan_hash: unknown } | undefined;
+    return row === undefined ? undefined : this.crossBatchClearing(hashBytes(row.plan_hash, "plan_hash"));
+  }
+
+  recordVerifiedCrossBatchExternalExecutionEvidence(
+    evidence: CrossBatchExternalExecutionEvidence,
+  ): { readonly evidence: CrossBatchExternalExecutionEvidence; readonly replayed: boolean } {
+    return this.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT plan_hash FROM cross_batch_clearing_plans WHERE external_intent_hash = ?
+      `).get(commitmentHash(evidence.intentHash)) as { plan_hash: unknown } | undefined;
+      if (row === undefined) {
+        throw new PackageExchangeStoreError("CROSS_BATCH_INTENT_NOT_FOUND", "Cross-batch external intent is not stored.");
+      }
+      const planHash = hashBytes(row.plan_hash, "plan_hash");
+      const clearing = this.crossBatchClearing(planHash);
+      if (clearing?.intent === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Cross-batch external intent lost its plan.");
+      }
+      guarded("INVALID_INPUT", "Cross-batch execution evidence is invalid.", () =>
+        verifyCrossBatchExternalExecutionEvidence(evidence, clearing.intent!));
+      const existing = this.db.prepare(`
+        SELECT evidence_hash, evidence_json FROM cross_batch_execution_evidence WHERE plan_hash = ?
+      `).get(planHash) as { evidence_hash: unknown; evidence_json: unknown } | undefined;
+      if (existing !== undefined) {
+        if (!bytesEqual(hashBytes(existing.evidence_hash, "evidence_hash"), evidence.evidenceHash)
+          || jsonText(existing.evidence_json, "evidence_json") !== stringifyProtocolJson(evidence)) {
+          throw new PackageExchangeStoreError(
+            "CROSS_BATCH_EVIDENCE_CONFLICT",
+            "Cross-batch intent already has different terminal evidence.",
+          );
+        }
+        return Object.freeze({ evidence, replayed: true });
+      }
+      const recordedAtMs = this.clock();
+      this.db.prepare(`
+        INSERT INTO cross_batch_execution_evidence
+          (evidence_hash, plan_hash, evidence_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?)
+      `).run(evidence.evidenceHash, planHash, stringifyProtocolJson(evidence), recordedAtMs);
+      if (evidence.outcome === "EXACT_FILLED") {
+        const receipt = crossBatchClearingReceipt(clearing.plan, clearing.intent, evidence);
+        this.db.prepare(`
+          INSERT INTO cross_batch_clearing_receipts
+            (receipt_hash, plan_hash, receipt_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?)
+        `).run(receipt.receiptHash, planHash, stringifyProtocolJson(receipt), recordedAtMs);
+        for (const source of clearing.plan.sources) {
+          this.ensureNettingFinalAllocationReceipt(source.nettingProofHash);
+        }
+      }
       return Object.freeze({ evidence, replayed: false });
     });
   }
@@ -2189,6 +2547,7 @@ export class SqlitePackageExchangeStore {
         batch.externalExecutions.map((record) => record.intent),
         batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
         settlement,
+        this.crossBatchResolutionsForProof(proofHash),
       ));
     if (
       !bytesEqual(authorization.authorizationHash, authorizationHash)
@@ -2266,6 +2625,7 @@ export class SqlitePackageExchangeStore {
           batch.externalExecutions.map((record) => record.intent),
           batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
           settlement,
+          this.crossBatchResolutionsForProof(proofHash),
         ));
       const authorizationHash = commitmentHash(authorization.authorizationHash);
       const allocationReceiptHash = commitmentHash(authorization.allocationReceiptHash);
@@ -2342,6 +2702,7 @@ export class SqlitePackageExchangeStore {
       batch.policy,
       batch.externalExecutions.map((record) => record.intent),
       batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+      this.crossBatchResolutionsForProof(authorization.nettingProofHash),
       ));
     return this.recordVerifiedNettingAllocationSettlementEvidence(evidence);
   }
@@ -2371,6 +2732,7 @@ export class SqlitePackageExchangeStore {
           batch.policy,
           batch.externalExecutions.map((record) => record.intent),
           batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+          this.crossBatchResolutionsForProof(proofHash),
         ));
       const allocation = batch.finalAllocationReceipt.allocations.find((candidate) =>
         bytesEqual(candidate.allocationReceiptHash, evidence.allocationReceiptHash));
@@ -2421,6 +2783,33 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  private crossBatchResolutionsForProof(
+    proofHashInput: Uint8Array | string,
+  ): readonly CrossBatchNettingResolution[] {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT s.plan_hash
+      FROM cross_batch_clearing_sources s
+      JOIN netting_external_execution_intents i ON i.intent_hash = s.source_intent_hash
+      WHERE i.proof_hash = ?
+      ORDER BY s.plan_hash
+    `).all(commitmentHash(proofHashInput)) as { plan_hash: unknown }[];
+    return Object.freeze(rows.flatMap((row) => {
+      const clearing = this.crossBatchClearing(hashBytes(row.plan_hash, "plan_hash"));
+      if (clearing === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Cross-batch source lost its clearing plan.");
+      }
+      if (clearing.receipt === undefined) return [];
+      return [Object.freeze({
+        policy: clearing.policy,
+        sourceIntents: clearing.sourceIntents,
+        plan: clearing.plan,
+        ...(clearing.intent === undefined ? {} : { intent: clearing.intent }),
+        ...(clearing.evidence === undefined ? {} : { evidence: clearing.evidence }),
+        receipt: clearing.receipt,
+      })];
+    }));
+  }
+
   private ensureNettingFinalAllocationReceipt(
     proofHashInput: Uint8Array | string,
   ): NettingFinalAllocationReceipt | undefined {
@@ -2437,6 +2826,7 @@ export class SqlitePackageExchangeStore {
         batch.policy,
         batch.externalExecutions.map((record) => record.intent),
         batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        this.crossBatchResolutionsForProof(proofHash),
       ));
     this.db.prepare(`
       INSERT INTO netting_final_allocation_receipts
@@ -2467,6 +2857,7 @@ export class SqlitePackageExchangeStore {
         batch.policy,
         batch.externalExecutions.map((record) => record.intent),
         batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        this.crossBatchResolutionsForProof(proofHash),
       ));
     this.db.prepare(`
       INSERT INTO netting_settlement_completion_receipts
