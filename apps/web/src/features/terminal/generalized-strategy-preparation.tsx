@@ -9,6 +9,7 @@ import {
   waitForSolanaDevnetFinality,
   type SolanaWalletInstructionBatch,
 } from "./solana-devnet-onboarding";
+import { packageOrdersOf, usePackageOrderIndex } from "./shell/package-order-index";
 import type { DomainId } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
 
@@ -150,6 +151,11 @@ type PreparedPackageBookOrder = Readonly<{
   order: Json;
   settlementCommitment: Json;
 }>;
+
+type ManagedPackageBookOrder = Pick<
+  PreparedPackageBookOrder,
+  "strategyOrderHash" | "packageOrderId" | "participantId"
+>;
 
 export type PackageBookAuthorizationChallenge = Readonly<{
   scheme: "ED25519" | "EIP712_SECP256K1";
@@ -1978,7 +1984,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [packageSide, setPackageSide] = useState<"BID" | "ASK">("BID");
   const [packageLimitTicks, setPackageLimitTicks] = useState("");
-  const [preparedPackageOrder, setPreparedPackageOrder] = useState<PreparedPackageBookOrder | null>(null);
+  const [managedPackageOrder, setManagedPackageOrder] = useState<ManagedPackageBookOrder | null>(null);
   const [packageSubmission, setPackageSubmission] = useState<PackageBookSubmission | null>(null);
   const [settlementReadiness, setSettlementReadiness] = useState<PackageSettlementReadiness | null>(null);
   const [packageAmendQuantity, setPackageAmendQuantity] = useState("");
@@ -2059,10 +2065,15 @@ export function GeneralizedStrategyPreparationPanel({
   const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recordedPackageOrders, recordPackageOrder] = usePackageOrderIndex();
+  const recentPackageOrders = packageOrdersOf(
+    recordedPackageOrders,
+    [strategyOwner, solanaOwner].filter((owner): owner is string => owner !== null),
+  );
 
   function setOrderHash(value: string) {
     setOrderHashValue(value);
-    setPreparedPackageOrder(null);
+    setManagedPackageOrder(null);
     setPackageSubmission(null);
     setSettlementReadiness(null);
     setPackageAmendQuantity("");
@@ -3086,9 +3097,18 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function restoreNativePackageOrder(packageOrderId: string) {
+    const stored = recentPackageOrders.find((record) => record.packageOrderId === packageOrderId);
+    if (stored === undefined) return;
+    setOrderHash(stored.strategyOrderHash);
+    setManagedPackageOrder(stored);
+    setPackageSubmission({ packageOrderId: stored.packageOrderId, replayed: false });
+    await refreshPackageSettlement(stored.packageOrderId, stored.strategyOrderHash);
+  }
+
   async function refreshPackageSettlement(packageOrderId?: string, strategyOrderHash?: string) {
     const expectedPackageOrderId = packageOrderId ?? packageSubmission?.packageOrderId;
-    const expectedStrategyOrderHash = strategyOrderHash ?? preparedPackageOrder?.strategyOrderHash;
+    const expectedStrategyOrderHash = strategyOrderHash ?? managedPackageOrder?.strategyOrderHash;
     if (publicApiBaseUrl === null || expectedPackageOrderId === undefined || expectedStrategyOrderHash === undefined) return;
     setPackageRefreshBusy(true);
     setError(null);
@@ -3158,8 +3178,14 @@ export function GeneralizedStrategyPreparationPanel({
       });
       if (!submissionResponse.ok) throw new Error(await failureMessage(submissionResponse));
       const submission = parsePackageBookSubmission(await submissionResponse.json(), prepared);
-      setPreparedPackageOrder(prepared);
+      setManagedPackageOrder(prepared);
       setPackageSubmission(submission);
+      recordPackageOrder({
+        strategyOrderHash: prepared.strategyOrderHash,
+        packageOrderId: submission.packageOrderId,
+        participantId: prepared.participantId,
+        createdAt: Date.now(),
+      });
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3193,7 +3219,7 @@ export function GeneralizedStrategyPreparationPanel({
 
   async function amendNativePackageOrder() {
     const restingOrder = settlementReadiness?.restingOrder;
-    if (publicApiBaseUrl === null || preparedPackageOrder === null || packageSubmission === null
+    if (publicApiBaseUrl === null || managedPackageOrder === null || packageSubmission === null
       || settlementReadiness === null || restingOrder === null || restingOrder === undefined
       || signPackageBookOrder === undefined) return;
     setPackageMutationBusy("AMENDMENT");
@@ -3215,7 +3241,7 @@ export function GeneralizedStrategyPreparationPanel({
         version: 1,
         executionClassId: settlementReadiness.executionClassId,
         entryId: packageSubmission.packageOrderId,
-        participantId: preparedPackageOrder.participantId,
+        participantId: managedPackageOrder.participantId,
         expectedQuantity: protocolInteger(restingOrder.quantity),
         expectedPriceTicks: protocolInteger(restingOrder.priceTicks),
         ...(quantityChanged ? { quantity: protocolInteger(packageAmendQuantity) } : {}),
@@ -3233,7 +3259,7 @@ export function GeneralizedStrategyPreparationPanel({
       const challenge = parsePackageBookMutationAuthorization(
         await challengeResponse.json(),
         "AMENDMENT",
-        preparedPackageOrder.participantId,
+        managedPackageOrder.participantId,
       );
       const signature = await signPackageBookOrder(challenge);
       const amendmentResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/amendments`, {
@@ -3255,7 +3281,7 @@ export function GeneralizedStrategyPreparationPanel({
         || decimalInteger(entry.priceTicks, "Amended package price") !== packageAmendPriceTicks) {
         throw new Error("Package book amendment response is inconsistent.");
       }
-      await refreshPackageSettlement(packageSubmission.packageOrderId, preparedPackageOrder.strategyOrderHash);
+      await refreshPackageSettlement(packageSubmission.packageOrderId, managedPackageOrder.strategyOrderHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Package book amendment failed closed.");
     } finally {
@@ -3264,7 +3290,7 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   async function cancelNativePackageOrder() {
-    if (publicApiBaseUrl === null || preparedPackageOrder === null || packageSubmission === null
+    if (publicApiBaseUrl === null || managedPackageOrder === null || packageSubmission === null
       || settlementReadiness?.restingOrder === null || settlementReadiness === null || signPackageBookOrder === undefined) return;
     setPackageMutationBusy("CANCELLATION");
     setError(null);
@@ -3273,7 +3299,7 @@ export function GeneralizedStrategyPreparationPanel({
         version: 1,
         executionClassId: settlementReadiness.executionClassId,
         entryId: packageSubmission.packageOrderId,
-        participantId: preparedPackageOrder.participantId,
+        participantId: managedPackageOrder.participantId,
       };
       const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/cancellations/authorization`, {
         method: "POST",
@@ -3287,7 +3313,7 @@ export function GeneralizedStrategyPreparationPanel({
       const challenge = parsePackageBookMutationAuthorization(
         await challengeResponse.json(),
         "CANCELLATION",
-        preparedPackageOrder.participantId,
+        managedPackageOrder.participantId,
       );
       const signature = await signPackageBookOrder(challenge);
       const cancellationResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/cancellations`, {
@@ -3306,7 +3332,7 @@ export function GeneralizedStrategyPreparationPanel({
         || hash(result.cancellationHash, "Package book cancellation hash") !== challenge.authorizationHash) {
         throw new Error("Package book cancellation response is inconsistent.");
       }
-      await refreshPackageSettlement(packageSubmission.packageOrderId, preparedPackageOrder.strategyOrderHash);
+      await refreshPackageSettlement(packageSubmission.packageOrderId, managedPackageOrder.strategyOrderHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Package book cancellation failed closed.");
     } finally {
@@ -4461,13 +4487,36 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
+        {recentPackageOrders.length > 0 ? (
+          <>
+            <label htmlFor="recent-native-package-order">Recent package order</label>
+            <select
+              id="recent-native-package-order"
+              value={packageSubmission?.packageOrderId ?? ""}
+              disabled={packageRefreshBusy || packageMutationBusy !== null}
+              onChange={(event) => void restoreNativePackageOrder(event.target.value)}
+            >
+              <option value="">Select an order to restore</option>
+              {recentPackageOrders.map((record) => (
+                <option key={record.packageOrderId} value={record.packageOrderId}>
+                  {compact(record.packageOrderId, 10, 6)} / {new Date(record.createdAt).toLocaleString("en-US", {
+                    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+                  })}
+                </option>
+              ))}
+            </select>
+            <p className={styles.fieldContext}>
+              This browser stores identifiers only. Price, quantity, fills, and settlement state reload from the service.
+            </p>
+          </>
+        ) : null}
         <label htmlFor="native-package-side">Native package side</label>
         <select
           id="native-package-side"
           value={packageSide}
           onChange={(event) => {
             setPackageSide(event.target.value as "BID" | "ASK");
-            setPreparedPackageOrder(null);
+            setManagedPackageOrder(null);
             setPackageSubmission(null);
             setSettlementReadiness(null);
             setPackageAmendQuantity("");
@@ -4489,7 +4538,7 @@ export function GeneralizedStrategyPreparationPanel({
             const value = event.target.value.trim();
             const sign = value.startsWith("-") ? "-" : "";
             setPackageLimitTicks(`${sign}${value.replace(/[^0-9]/g, "")}`);
-            setPreparedPackageOrder(null);
+            setManagedPackageOrder(null);
             setPackageSubmission(null);
             setSettlementReadiness(null);
             setPackageAmendQuantity("");
