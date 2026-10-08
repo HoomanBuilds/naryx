@@ -5,6 +5,13 @@ export {
   type ObservedEvmStrategyExecution,
 } from './evm-strategy-execution-observation-client.js';
 export {
+  NettingAllocationAttemptStoreError,
+  SqliteNettingAllocationAttemptStore,
+  type NettingAllocationAttemptRuntime,
+  type NettingAllocationExecutionAttempt,
+  type NettingAllocationObservationBinding,
+} from './netting-allocation-attempt-store.js';
+export {
   createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,
