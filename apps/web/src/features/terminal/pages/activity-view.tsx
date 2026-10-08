@@ -54,6 +54,18 @@ type StrategyReceiptHistoryRow = Readonly<{
   finalityStatus: string;
   domainIds: readonly string[];
   portfolioEligible: boolean;
+  executionEconomics: Readonly<{
+    quoteAssetId: string;
+    quoteAssetDecimals: number;
+    grossLegNotionalAtoms: bigint;
+    serviceFeeAtoms: bigint;
+    solverFeeAtoms: bigint;
+    venueFeeAtoms: bigint;
+    networkCostAtoms: bigint;
+    recoveryCostAtoms: bigint;
+    explicitCostAtoms: bigint;
+    terminalResidualValueAtoms: bigint;
+  }>;
   recordedAtMs: number;
 }>;
 
@@ -62,8 +74,53 @@ function object(value: unknown, context: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function decode(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(decode);
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (record.$naryxType === "bigint" && typeof record.value === "string") return BigInt(record.value);
+    if (record.$naryxType === "bytes" && typeof record.value === "string") return record.value;
+    return Object.fromEntries(Object.entries(record).map(([key, entry]) => [key, decode(entry)]));
+  }
+  return value;
+}
+
+function exactAtoms(value: unknown, context: string): bigint {
+  if (typeof value !== "bigint" || value < BigInt(0)) throw new Error(`${context} is malformed.`);
+  return value;
+}
+
+function receiptEconomics(value: unknown, context: string): StrategyReceiptHistoryRow["executionEconomics"] {
+  const economics = object(value, context);
+  if (typeof economics.quoteAssetId !== "string"
+    || !/^[\x20-\x7E]{1,128}$/.test(economics.quoteAssetId)
+    || typeof economics.quoteAssetDecimals !== "number"
+    || !Number.isSafeInteger(economics.quoteAssetDecimals)
+    || economics.quoteAssetDecimals < 0
+    || economics.quoteAssetDecimals > 255) {
+    throw new Error(`${context} quote asset is malformed.`);
+  }
+  const parsed = Object.freeze({
+    quoteAssetId: economics.quoteAssetId,
+    quoteAssetDecimals: economics.quoteAssetDecimals,
+    grossLegNotionalAtoms: exactAtoms(economics.grossLegNotionalAtoms, `${context} gross leg notional`),
+    serviceFeeAtoms: exactAtoms(economics.serviceFeeAtoms, `${context} service fee`),
+    solverFeeAtoms: exactAtoms(economics.solverFeeAtoms, `${context} solver fee`),
+    venueFeeAtoms: exactAtoms(economics.venueFeeAtoms, `${context} venue fee`),
+    networkCostAtoms: exactAtoms(economics.networkCostAtoms, `${context} network cost`),
+    recoveryCostAtoms: exactAtoms(economics.recoveryCostAtoms, `${context} recovery cost`),
+    explicitCostAtoms: exactAtoms(economics.explicitCostAtoms, `${context} explicit cost`),
+    terminalResidualValueAtoms: exactAtoms(economics.terminalResidualValueAtoms, `${context} residual value`),
+  });
+  if (parsed.explicitCostAtoms !== parsed.serviceFeeAtoms + parsed.solverFeeAtoms + parsed.venueFeeAtoms
+    + parsed.networkCostAtoms + parsed.recoveryCostAtoms) {
+    throw new Error(`${context} explicit cost does not equal its components.`);
+  }
+  return parsed;
+}
+
 function strategyReceiptHistory(value: unknown, owner: string): readonly StrategyReceiptHistoryRow[] {
-  const root = object(value, "Strategy receipt history");
+  const root = object(decode(value), "Strategy receipt history");
   const expectedOwner = owner.startsWith("0x") ? owner.toLowerCase() : owner;
   if (root.version !== 1 || root.ownerId !== expectedOwner || !Array.isArray(root.receipts)) {
     throw new Error("Strategy receipt history is bound to another owner.");
@@ -95,6 +152,7 @@ function strategyReceiptHistory(value: unknown, owner: string): readonly Strateg
       finalityStatus: receipt.finalityStatus,
       domainIds: Object.freeze(receipt.domainIds as string[]),
       portfolioEligible: receipt.portfolioEligible,
+      executionEconomics: receiptEconomics(receipt.executionEconomics, `Strategy receipt ${index} economics`),
       recordedAtMs: receipt.recordedAtMs,
     });
   }));
@@ -134,6 +192,14 @@ function decimalSize(atoms: string, decimals: number): string {
   const whole = padded.slice(0, padded.length - decimals);
   const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "").slice(0, 6);
   return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function exactAmount(atoms: bigint, decimals: number, symbol: string): string {
+  const negative = atoms < BigInt(0);
+  const digits = (negative ? -atoms : atoms).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const fraction = decimals === 0 ? "" : digits.slice(digits.length - decimals).replace(/0+$/, "").slice(0, 6);
+  return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""} ${symbol.toUpperCase()}`;
 }
 
 /** A package the service recorded for a connected wallet, as an Activity row with its service state and evidence. */
@@ -266,6 +332,8 @@ export function ActivityView() {
                 <th scope="col">Template</th>
                 <th scope="col">Action</th>
                 <th scope="col">Domains</th>
+                <th scope="col" className={styles.num}>Leg notional</th>
+                <th scope="col" className={styles.num}>Explicit cost</th>
                 <th scope="col">Outcome</th>
                 <th scope="col">Receipt</th>
                 <th scope="col"><span className="sr-only">Portfolio action</span></th>
@@ -274,7 +342,7 @@ export function ActivityView() {
             <tbody>
               {strategyReceipts.length === 0 ? (
                 <tr>
-                  <td colSpan={7}>
+                  <td colSpan={9}>
                     <div className={styles.empty}>
                       <strong>{owners.length === 0
                         ? "Connect a wallet"
@@ -305,6 +373,15 @@ export function ActivityView() {
                     <td>{receipt.templateId}</td>
                     <td>{stateText(receipt.lifecycleAction)}</td>
                     <td className={styles.dim}>{receipt.domainIds.join(", ")}</td>
+                    <td className={styles.num} title="Sum of every execution leg's observed gross notional. This is not package notional or PnL.">
+                      {exactAmount(receipt.executionEconomics.grossLegNotionalAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}
+                    </td>
+                    <td
+                      className={styles.num}
+                      title={`Service ${exactAmount(receipt.executionEconomics.serviceFeeAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}; solver ${exactAmount(receipt.executionEconomics.solverFeeAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}; venue ${exactAmount(receipt.executionEconomics.venueFeeAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}; network ${exactAmount(receipt.executionEconomics.networkCostAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}; recovery ${exactAmount(receipt.executionEconomics.recoveryCostAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}; residual ${exactAmount(receipt.executionEconomics.terminalResidualValueAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}`}
+                    >
+                      {exactAmount(receipt.executionEconomics.explicitCostAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}
+                    </td>
                     <td><span className={statePill(receipt.terminalState)}>{stateText(receipt.terminalState)}</span></td>
                     <td className={styles.mono} title={receipt.receiptHash}>{compact(receipt.receiptHash, 12, 8)}</td>
                     <td>{portfolioHref ? <Link href={portfolioHref}>{receipt.lifecycleAction === "ENTRY" ? "Record" : "Apply"}</Link> : "-"}</td>

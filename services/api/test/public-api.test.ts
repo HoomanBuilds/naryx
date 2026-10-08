@@ -762,6 +762,18 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     finalityStatus: "FINALIZED" as const,
     domainIds: ["hypercore:testnet"],
     portfolioEligible: true,
+    executionEconomics: {
+      quoteAssetId: "usdc",
+      quoteAssetDecimals: 6,
+      grossLegNotionalAtoms: 2_000_000n,
+      serviceFeeAtoms: 1_000n,
+      solverFeeAtoms: 2_000n,
+      venueFeeAtoms: 3_000n,
+      networkCostAtoms: 4_000n,
+      recoveryCostAtoms: 0n,
+      explicitCostAtoms: 10_000n,
+      terminalResidualValueAtoms: 0n,
+    },
     recordedAtMs: 120_001,
   };
   await withMarket(async (get) => {

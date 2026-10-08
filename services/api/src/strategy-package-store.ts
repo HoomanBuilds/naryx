@@ -329,6 +329,18 @@ export interface OwnerStrategyPackageReceipt {
   readonly finalityStatus: StrategyPackageReceipt["finalityStatus"];
   readonly domainIds: readonly string[];
   readonly portfolioEligible: boolean;
+  readonly executionEconomics: Readonly<{
+    readonly quoteAssetId: string;
+    readonly quoteAssetDecimals: number;
+    readonly grossLegNotionalAtoms: bigint;
+    readonly serviceFeeAtoms: bigint;
+    readonly solverFeeAtoms: bigint;
+    readonly venueFeeAtoms: bigint;
+    readonly networkCostAtoms: bigint;
+    readonly recoveryCostAtoms: bigint;
+    readonly explicitCostAtoms: bigint;
+    readonly terminalResidualValueAtoms: bigint;
+  }>;
   readonly recordedAtMs: number;
 }
 
@@ -2093,6 +2105,15 @@ export class SqliteStrategyPackageStore {
         "CORRUPT_ROW",
         "A stored owner strategy receipt does not match its order, quote, or owner.",
       );
+      const grossLegNotionalAtoms = receipt.legOutcomes.reduce(
+        (sum, outcome) => sum + outcome.grossNotional.atoms,
+        0n,
+      );
+      const explicitCostAtoms = receipt.serviceFee.atoms
+        + receipt.solverFee.atoms
+        + receipt.venueFees.atoms
+        + receipt.networkCost.atoms
+        + receipt.recoveryCost.atoms;
       return Object.freeze({
         receiptHashHex,
         orderHashHex,
@@ -2106,6 +2127,18 @@ export class SqliteStrategyPackageStore {
         finalityStatus: receipt.finalityStatus,
         domainIds: Object.freeze([...new Set(receipt.legOutcomes.map((outcome) => outcome.domain.domainId))].sort()),
         portfolioEligible: receipt.finalityStatus === "FINALIZED" && requiresSuccessfulReceipt(receipt.terminalState),
+        executionEconomics: Object.freeze({
+          quoteAssetId: receipt.quoteAsset.assetId,
+          quoteAssetDecimals: receipt.quoteAsset.decimals,
+          grossLegNotionalAtoms,
+          serviceFeeAtoms: receipt.serviceFee.atoms,
+          solverFeeAtoms: receipt.solverFee.atoms,
+          venueFeeAtoms: receipt.venueFees.atoms,
+          networkCostAtoms: receipt.networkCost.atoms,
+          recoveryCostAtoms: receipt.recoveryCost.atoms,
+          explicitCostAtoms,
+          terminalResidualValueAtoms: receipt.terminalResidualValue.atoms,
+        }),
         recordedAtMs: row.recorded_at_ms,
       });
     }));
