@@ -522,6 +522,44 @@ type AuthorizedEvmExecution = Readonly<{
   expectedNextStateHash: string;
 }>;
 
+type NettingAllocationSelection = Readonly<{
+  proofHash: string;
+  allocationReceiptHashes: readonly string[];
+}>;
+
+type EvmNettingAllocationChallenge = Readonly<{
+  attemptId: string;
+  authorizationHash: string;
+  chainId: number;
+  owner: string;
+  to: string;
+  ownerTypedData: unknown;
+}>;
+
+type AuthorizedEvmNettingAllocation = Readonly<{
+  attemptId: string;
+  authorizationHash: string;
+  chainId: number;
+  owner: string;
+  to: string;
+  data: string;
+  value: "0";
+}>;
+
+type AuthorizedSolanaNettingAllocation = Readonly<{
+  attemptId: string;
+  authorizationHash: string;
+  owner: string;
+  transactionBytes: Uint8Array;
+  lastValidBlockHeight: number;
+}>;
+
+type NettingAllocationReconciliation = Readonly<{
+  settled: boolean;
+  observedAuthorizationHashes: readonly string[];
+  pendingAllocationReceiptHashes: readonly string[];
+}>;
+
 type SelectedStrategyExecution = Readonly<{
   attemptId: string;
   orderHash: string;
@@ -1993,6 +2031,245 @@ function parseAuthorizedEvmExecution(payload: unknown, review: StrategyPreparati
   return Object.freeze({ chainId, to, data, value: "0", quoteHash, expectedNextStateHash });
 }
 
+function parseNettingAllocationSelection(
+  payload: unknown,
+  expectedProofHash: string,
+  expectedPackageOrderId: string,
+  expectedStrategyOrderHash: string,
+  expectedDomainId: string,
+): NettingAllocationSelection {
+  const root = record(decode(payload as Json), "Netting batch");
+  if (root.status !== "PREPARED" || hash(root.proofHashHex, "Netting proof hash") !== expectedProofHash) {
+    throw new Error("Netting batch identity differs from the requested proof.");
+  }
+  const packages = list(root.packages, "Netting batch packages").map((candidate, index) => {
+    const item = record(candidate, `Netting batch package ${index}`);
+    return Object.freeze({
+      packageOrderId: hash(item.packageOrderIdHex, `Netting batch package ${index} order`),
+      strategyOrderHash: hash(item.strategyOrderHashHex, `Netting batch package ${index} strategy order`),
+    });
+  });
+  if (!packages.some((item) => item.packageOrderId === expectedPackageOrderId
+    && item.strategyOrderHash === expectedStrategyOrderHash)) {
+    throw new Error("Netting batch does not contain the selected package order.");
+  }
+  const policy = record(root.policy, "Netting policy");
+  const domainInstrumentIds = new Set(list(policy.instruments, "Netting policy instruments")
+    .flatMap((candidate, index) => {
+      const instrument = record(candidate, `Netting policy instrument ${index}`);
+      const domain = record(instrument.domain, `Netting policy instrument ${index} domain`);
+      return domain.domainId === expectedDomainId
+        ? [text(instrument.instrumentId, `Netting policy instrument ${index} id`)]
+        : [];
+    }));
+  if (domainInstrumentIds.size === 0) {
+    throw new Error("Netting batch has no instrument for the selected execution domain.");
+  }
+  const receipt = record(root.finalAllocationReceipt, "Netting final allocation receipt");
+  if (receipt.version !== 1
+    || hash(receipt.nettingProofHash, "Final allocation proof hash") !== expectedProofHash) {
+    throw new Error("Netting batch has no bound final allocation receipt.");
+  }
+  hash(receipt.receiptHash, "Final allocation receipt hash");
+  const allocationReceiptHashes = list(receipt.allocations, "Netting final allocations")
+    .map((candidate, index) => {
+      const allocation = record(candidate, `Netting final allocation ${index}`);
+      return Object.freeze({
+        packageOrderId: hash(allocation.packageOrderId, `Netting final allocation ${index} package`),
+        strategyOrderHash: hash(allocation.strategyOrderHash, `Netting final allocation ${index} order`),
+        instrumentId: text(allocation.instrumentId, `Netting final allocation ${index} instrument`),
+        allocationReceiptHash: hash(
+          allocation.allocationReceiptHash,
+          `Netting final allocation ${index} receipt`,
+        ),
+      });
+    })
+    .filter((allocation) => allocation.packageOrderId === expectedPackageOrderId
+      && allocation.strategyOrderHash === expectedStrategyOrderHash
+      && domainInstrumentIds.has(allocation.instrumentId))
+    .map((allocation) => allocation.allocationReceiptHash);
+  if (allocationReceiptHashes.length === 0 || new Set(allocationReceiptHashes).size !== allocationReceiptHashes.length) {
+    throw new Error("Netting batch has no unique final allocations for the selected package.");
+  }
+  return Object.freeze({
+    proofHash: expectedProofHash,
+    allocationReceiptHashes: Object.freeze(allocationReceiptHashes),
+  });
+}
+
+function parseNettingOwnerTypedData(
+  value: unknown,
+  expectedChainId: number,
+  expectedTarget: string,
+  expectedAuthorizationHash: string,
+): unknown {
+  const typedData = record(value, "Netting owner typed data");
+  const domain = record(typedData.domain, "Netting owner typed data domain");
+  const types = record(typedData.types, "Netting owner typed data types");
+  const message = record(typedData.message, "Netting owner typed data message");
+  const fields = list(types.NettingOwnerExecution, "Netting owner typed data fields");
+  const expectedFields = [
+    { name: "authorizationHash", type: "bytes32" },
+    { name: "executionHash", type: "bytes32" },
+    { name: "callsHash", type: "bytes32" },
+  ];
+  if (typedData.primaryType !== "NettingOwnerExecution"
+    || domain.name !== "Naryx Multi Strategy Account"
+    || domain.version !== "1"
+    || domain.chainId !== expectedChainId
+    || text(domain.verifyingContract, "Netting verifier").toLowerCase() !== expectedTarget.toLowerCase()
+    || JSON.stringify(fields) !== JSON.stringify(expectedFields)
+    || text(message.authorizationHash, "Netting typed authorization hash") !== expectedAuthorizationHash
+    || !EVM_HASH.test(text(message.executionHash, "Netting typed execution hash"))
+    || !EVM_HASH.test(text(message.callsHash, "Netting typed calls hash"))) {
+    throw new Error("Netting owner typed data is invalid.");
+  }
+  return value;
+}
+
+function parseEvmNettingAllocationChallenge(
+  payload: unknown,
+  expectedAttemptId: string,
+  expectedDomainId: string,
+  expectedOwner: string,
+): EvmNettingAllocationChallenge {
+  const root = record(decode(payload as Json), "EVM netting allocation challenge");
+  const challenge = record(root.challenge, "EVM netting allocation challenge");
+  const chainId = integer(challenge.chainId, "EVM netting challenge chain");
+  const owner = text(challenge.owner, "EVM netting challenge owner");
+  const to = text(challenge.to, "EVM netting challenge target");
+  const authorizationHash = text(challenge.authorizationHash, "EVM netting authorization hash");
+  if (root.status !== "OWNER_SIGNATURE_REQUIRED" || challenge.version !== 1
+    || challenge.attemptId !== expectedAttemptId || expectedDomainId !== `eip155:${chainId}`
+    || owner.toLowerCase() !== expectedOwner.toLowerCase() || !EVM_ADDRESS.test(owner)
+    || !EVM_ADDRESS.test(to) || !EVM_HASH.test(authorizationHash)) {
+    throw new Error("EVM netting allocation challenge changed the selected execution.");
+  }
+  return Object.freeze({
+    attemptId: expectedAttemptId,
+    authorizationHash,
+    chainId,
+    owner,
+    to,
+    ownerTypedData: parseNettingOwnerTypedData(
+      challenge.ownerTypedData,
+      chainId,
+      to,
+      authorizationHash,
+    ),
+  });
+}
+
+function parseAuthorizedEvmNettingAllocation(
+  payload: unknown,
+  challenge: EvmNettingAllocationChallenge,
+  expectedQuoteHash: string,
+  expectedOwnerSignature: string,
+): AuthorizedEvmNettingAllocation {
+  const root = record(decode(payload as Json), "EVM netting allocation authorization");
+  const authorization = record(root.authorization, "EVM netting allocation authorization");
+  const owner = text(authorization.owner, "EVM netting authorization owner");
+  const to = text(authorization.to, "EVM netting authorization target");
+  const data = text(authorization.data, "EVM netting authorization calldata");
+  if (root.status !== "READY_FOR_WALLET_SUBMISSION" || authorization.version !== 1
+    || authorization.attemptId !== challenge.attemptId
+    || authorization.authorizationHash !== challenge.authorizationHash
+    || authorization.chainId !== challenge.chainId
+    || owner.toLowerCase() !== challenge.owner.toLowerCase()
+    || to.toLowerCase() !== challenge.to.toLowerCase()
+    || authorization.quoteHash !== `0x${expectedQuoteHash}`
+    || String(authorization.ownerSignature).toLowerCase() !== expectedOwnerSignature.toLowerCase()
+    || decimalInteger(authorization.value, "EVM netting authorization value") !== "0"
+    || !/^0x(?:[0-9a-f]{2})+$/i.test(data)) {
+    throw new Error("EVM netting allocation authorization changed the signed execution.");
+  }
+  return Object.freeze({
+    attemptId: challenge.attemptId,
+    authorizationHash: challenge.authorizationHash.slice(2),
+    chainId: challenge.chainId,
+    owner,
+    to,
+    data,
+    value: "0",
+  });
+}
+
+function parseAuthorizedSolanaNettingAllocation(
+  payload: unknown,
+  expectedAttemptId: string,
+  expectedOwner: string,
+  expectedQuoteHash: string,
+): AuthorizedSolanaNettingAllocation {
+  const root = record(decode(payload as Json), "Solana netting allocation authorization");
+  const authorization = record(root.authorization, "Solana netting allocation authorization");
+  const domain = record(authorization.domain, "Solana netting authorization domain");
+  const owner = solanaAddress(authorization.owner, "Solana netting authorization owner");
+  const solver = solanaAddress(authorization.solver, "Solana netting authorization solver");
+  const transactionBytes = base64Bytes(
+    authorization.transactionBase64,
+    "Solana netting authorized transaction",
+  );
+  const requiredSigners = list(authorization.requiredSignerPubkeys, "Solana netting authorization signers")
+    .map((value, index) => solanaAddress(value, `Solana netting authorization signer ${index}`));
+  const authorizationHash = hash(authorization.authorizationHash, "Solana netting authorization hash");
+  if (root.status !== "OWNER_SIGNATURE_REQUIRED" || authorization.version !== 1
+    || authorization.attemptId !== expectedAttemptId || domain.domainId !== "svm:devnet"
+    || owner !== expectedOwner || solver === owner
+    || hash(authorization.quoteHash, "Solana netting authorization quote") !== expectedQuoteHash
+    || transactionBytes.length === 0 || transactionBytes.length > SOLANA_PACKET_LIMIT
+    || requiredSigners.length !== 2 || new Set(requiredSigners).size !== 2
+    || !requiredSigners.includes(owner) || !requiredSigners.includes(solver)) {
+    throw new Error("Solana netting allocation authorization changed the selected execution.");
+  }
+  return Object.freeze({
+    attemptId: expectedAttemptId,
+    authorizationHash,
+    owner,
+    transactionBytes,
+    lastValidBlockHeight: integer(
+      authorization.lastValidBlockHeight,
+      "Solana netting authorization block height",
+    ),
+  });
+}
+
+function parseBoundNettingExecutionReference(
+  payload: unknown,
+  expectedAttemptId: string,
+  expectedAuthorizationHash: string,
+  expectedExecutionReference: string,
+): void {
+  const root = record(decode(payload as Json), "Netting execution reference");
+  const reference = record(root.reference, "Netting execution reference");
+  if (root.status !== "EXECUTION_REFERENCE_BOUND"
+    || reference.attemptId !== expectedAttemptId
+    || reference.authorizationHash !== expectedAuthorizationHash
+    || reference.executionReference !== expectedExecutionReference) {
+    throw new Error("Bound netting execution reference differs from the submitted transaction.");
+  }
+}
+
+function parseNettingAllocationReconciliation(payload: unknown): NettingAllocationReconciliation {
+  const root = record(decode(payload as Json), "Netting allocation reconciliation");
+  const reconciliation = record(root.reconciliation, "Netting allocation reconciliation");
+  const observedAuthorizationHashes = list(
+    reconciliation.observedAuthorizationHashes,
+    "Observed netting authorizations",
+  ).map((value, index) => hash(value, `Observed netting authorization ${index}`));
+  const pendingAllocationReceiptHashes = list(
+    reconciliation.pendingAllocationReceiptHashes,
+    "Pending netting allocations",
+  ).map((value, index) => hash(value, `Pending netting allocation ${index}`));
+  if (reconciliation.version !== 1 || (root.status !== "SETTLED" && root.status !== "PENDING_FINALITY")) {
+    throw new Error("Netting allocation reconciliation is invalid.");
+  }
+  return Object.freeze({
+    settled: root.status === "SETTLED",
+    observedAuthorizationHashes: Object.freeze(observedAuthorizationHashes),
+    pendingAllocationReceiptHashes: Object.freeze(pendingAllocationReceiptHashes),
+  });
+}
+
 function nativePositionQuantityAtoms(position: NativeStrategyPositionReview): bigint {
   const quantities = position.legs.map((leg) => {
     const value = BigInt(leg.signedQuantityAtoms);
@@ -2324,6 +2601,14 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
   const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | null>(null);
+  const [nettingProofHash, setNettingProofHash] = useState("");
+  const [nettingSelection, setNettingSelection] = useState<NettingAllocationSelection | null>(null);
+  const [nettingCurrentAllocationHash, setNettingCurrentAllocationHash] = useState("");
+  const [nettingAttemptId, setNettingAttemptId] = useState("");
+  const [nettingAuthorizationHash, setNettingAuthorizationHash] = useState("");
+  const [nettingExecutionReference, setNettingExecutionReference] = useState("");
+  const [nettingReconciliation, setNettingReconciliation] = useState<NettingAllocationReconciliation | null>(null);
+  const [nettingBusy, setNettingBusy] = useState<"LOAD" | "EXECUTE" | "RECONCILE" | null>(null);
   const [privateRfqOrderContext, setPrivateRfqOrderContext] = useState<PrivateRfqOrderContext | null>(null);
   const [selectedPrivateRfqSolverId, setSelectedPrivateRfqSolverId] = useState("");
   const [privateRfqSession, setPrivateRfqSession] = useState<PrivateRfqSession | null>(null);
@@ -2441,6 +2726,26 @@ export function GeneralizedStrategyPreparationPanel({
   const activeAuctionRevealDeadline = sealedAuction?.revealDeadlineValue ?? "";
   const activeAuctionSettlementDeadline = sealedAuction?.settlementDeadlineValue ?? "";
   const activeAuctionPhase = sealedAuction?.phase ?? null;
+  const pendingNettingAllocationHashes = nettingSelection === null
+    ? []
+    : nettingReconciliation === null
+      ? nettingSelection.allocationReceiptHashes
+      : nettingSelection.allocationReceiptHashes.filter((allocationHash) =>
+          nettingReconciliation.pendingAllocationReceiptHashes.includes(allocationHash));
+  const nettingPackageSettled = nettingSelection !== null
+    && nettingReconciliation !== null
+    && pendingNettingAllocationHashes.length === 0;
+
+  function resetNettingAllocation() {
+    setNettingProofHash("");
+    setNettingSelection(null);
+    setNettingCurrentAllocationHash("");
+    setNettingAttemptId("");
+    setNettingAuthorizationHash("");
+    setNettingExecutionReference("");
+    setNettingReconciliation(null);
+    setNettingBusy(null);
+  }
 
   function setOrderHash(value: string) {
     setOrderHashValue(value);
@@ -2457,6 +2762,7 @@ export function GeneralizedStrategyPreparationPanel({
     setSealedAuction(null);
     setSealedAuctionAwardAttempt("");
     setSealedAuctionAwardedQuote("");
+    resetNettingAllocation();
   }
 
   function acceptQuote(parsed: PackageQuoteReview, origin: "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ") {
@@ -2467,6 +2773,7 @@ export function GeneralizedStrategyPreparationPanel({
     setSolanaObservation(null);
     setEvmCollateral(null);
     setEvmCollateralCompletionKey("");
+    resetNettingAllocation();
     setReview(null);
     setExecutionAttempt(null);
     setAuthorizedOrderHash(null);
@@ -4216,14 +4523,215 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function loadNettingAllocation() {
+    if (publicApiBaseUrl === null || packageSubmission === null || !HASH.test(nettingProofHash)) return;
+    setNettingBusy("LOAD");
+    setError(null);
+    try {
+      const response = await fetch(`${publicApiBaseUrl}/v1/netting/batches/${nettingProofHash}`, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const selection = parseNettingAllocationSelection(
+        await response.json(),
+        nettingProofHash,
+        packageSubmission.packageOrderId,
+        orderHash,
+        expectedDomainId,
+      );
+      setNettingSelection(selection);
+      setNettingCurrentAllocationHash("");
+      setNettingAttemptId("");
+      setNettingAuthorizationHash("");
+      setNettingExecutionReference("");
+      setNettingReconciliation(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Netting allocation loading failed closed.");
+    } finally {
+      setNettingBusy(null);
+    }
+  }
+
+  async function bindNettingExecutionReference(
+    attemptId: string,
+    authorizationHash: string,
+    executionReference: string,
+  ) {
+    if (privateApiBaseUrl === null) throw new Error("The private terminal API is unavailable.");
+    const response = await fetch(`${privateApiBaseUrl}/internal/terminal/netting/allocation-executions/reference`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId, authorizationHash, executionReference }),
+    });
+    if (!response.ok) throw new Error(await failureMessage(response));
+    parseBoundNettingExecutionReference(
+      await response.json(),
+      attemptId,
+      authorizationHash,
+      executionReference,
+    );
+  }
+
+  async function fetchNettingReconciliation(proofHash: string): Promise<NettingAllocationReconciliation> {
+    if (privateApiBaseUrl === null) throw new Error("The private terminal API is unavailable.");
+    const response = await fetch(`${privateApiBaseUrl}/internal/terminal/netting/allocation-executions/reconcile`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proofHash }),
+    });
+    if (!response.ok) throw new Error(await failureMessage(response));
+    return parseNettingAllocationReconciliation(await response.json());
+  }
+
+  async function refreshNettingReconciliation() {
+    if (nettingSelection === null) return;
+    setNettingBusy("RECONCILE");
+    setError(null);
+    try {
+      const reconciliation = await fetchNettingReconciliation(nettingSelection.proofHash);
+      setNettingReconciliation(reconciliation);
+      if (nettingCurrentAllocationHash !== ""
+        && !reconciliation.pendingAllocationReceiptHashes.includes(nettingCurrentAllocationHash)) {
+        setNettingCurrentAllocationHash("");
+        setNettingAttemptId("");
+        setNettingAuthorizationHash("");
+        setNettingExecutionReference("");
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Netting allocation reconciliation failed closed.");
+    } finally {
+      setNettingBusy(null);
+    }
+  }
+
+  async function executeNettingAllocation() {
+    if (privateApiBaseUrl === null || nettingSelection === null || quoteOrigin !== "POST_MATCH") return;
+    const allocationReceiptHash = pendingNettingAllocationHashes[0];
+    if (allocationReceiptHash === undefined) return;
+    setNettingBusy("EXECUTE");
+    setError(null);
+    const attemptId = `allocation-${crypto.randomUUID().replaceAll("-", "")}`;
+    const request = {
+      proofHash: nettingSelection.proofHash,
+      allocationReceiptHash,
+      quoteHash,
+      domainId: expectedDomainId,
+      attemptId,
+    };
+    setNettingCurrentAllocationHash(allocationReceiptHash);
+    setNettingAttemptId(attemptId);
+    setNettingAuthorizationHash("");
+    setNettingExecutionReference("");
+    try {
+      if (evmLane) {
+        if (strategyOwner === null || signEvmStrategyExecution === undefined
+          || sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
+          throw new Error("Connect the EVM wallet on the selected strategy testnet.");
+        }
+        const challengeResponse = await fetch(
+          `${privateApiBaseUrl}/internal/terminal/netting/allocation-executions/evm/challenge`,
+          {
+            method: "POST",
+            cache: "no-store",
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request),
+          },
+        );
+        if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
+        const challenge = parseEvmNettingAllocationChallenge(
+          await challengeResponse.json(),
+          attemptId,
+          expectedDomainId,
+          strategyOwner,
+        );
+        const ownerSignature = await signEvmStrategyExecution(challenge.chainId, challenge.ownerTypedData);
+        const authorizationResponse = await fetch(
+          `${privateApiBaseUrl}/internal/terminal/netting/allocation-executions/evm/authorize`,
+          {
+            method: "POST",
+            cache: "no-store",
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...request, ownerSignature }),
+          },
+        );
+        if (!authorizationResponse.ok) throw new Error(await failureMessage(authorizationResponse));
+        const authorization = parseAuthorizedEvmNettingAllocation(
+          await authorizationResponse.json(),
+          challenge,
+          quoteHash,
+          ownerSignature,
+        );
+        const transactionHash = await sendEvmTransaction(authorization.chainId, authorization);
+        setNettingAuthorizationHash(authorization.authorizationHash);
+        setNettingExecutionReference(transactionHash);
+        await bindNettingExecutionReference(attemptId, authorization.authorizationHash, transactionHash);
+        if (!await waitForEvmReceipt(authorization.chainId, transactionHash)) {
+          throw new Error("The netting allocation transaction reverted on the testnet.");
+        }
+      } else if (solanaLane) {
+        if (solanaOwner === null || sendSolanaTransaction === undefined) {
+          throw new Error("Connect a Wallet Standard account with Solana Devnet v0 transaction support.");
+        }
+        const authorizationResponse = await fetch(
+          `${privateApiBaseUrl}/internal/terminal/netting/allocation-executions/solana/authorize`,
+          {
+            method: "POST",
+            cache: "no-store",
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request),
+          },
+        );
+        if (!authorizationResponse.ok) throw new Error(await failureMessage(authorizationResponse));
+        const authorization = parseAuthorizedSolanaNettingAllocation(
+          await authorizationResponse.json(),
+          attemptId,
+          solanaOwner,
+          quoteHash,
+        );
+        const signature = await sendSolanaTransaction(authorization.transactionBytes);
+        if (!SOLANA_SIGNATURE.test(signature)) throw new Error("The Solana wallet returned an invalid signature.");
+        setNettingAuthorizationHash(authorization.authorizationHash);
+        setNettingExecutionReference(signature);
+        await bindNettingExecutionReference(attemptId, authorization.authorizationHash, signature);
+        await waitForSolanaDevnetFinality(signature, authorization.lastValidBlockHeight);
+      } else {
+        throw new Error("This post-match allocation is settled by its testnet execution service, not a browser wallet.");
+      }
+      const reconciliation = await fetchNettingReconciliation(nettingSelection.proofHash);
+      setNettingReconciliation(reconciliation);
+      if (!reconciliation.pendingAllocationReceiptHashes.includes(allocationReceiptHash)) {
+        setNettingCurrentAllocationHash("");
+        setNettingAttemptId("");
+        setNettingAuthorizationHash("");
+        setNettingExecutionReference("");
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Netting allocation execution failed closed.");
+    } finally {
+      setNettingBusy(null);
+    }
+  }
+
   async function prepare() {
     if (privateApiBaseUrl === null || !HASH.test(quoteHash)) return;
     setPrepareBusy(true);
     setError(null);
     try {
-      if (quoteOrigin === "POST_MATCH") {
-        throw new Error("Post-match execution remains disabled until the allocation and route quote are cryptographically bound.");
-      }
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/prepare`, {
         method: "POST",
         cache: "no-store",
@@ -5717,6 +6225,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setSolanaObservation(null);
                 setEvmCollateral(null);
                 setEvmCollateralCompletionKey("");
+                resetNettingAllocation();
                 setError(null);
               }}
             >
@@ -5752,6 +6261,7 @@ export function GeneralizedStrategyPreparationPanel({
             setSolanaObservation(null);
             setEvmCollateral(null);
             setEvmCollateralCompletionKey("");
+            resetNettingAllocation();
             setError(null);
           }}
         />
@@ -5769,11 +6279,102 @@ export function GeneralizedStrategyPreparationPanel({
           {prepareBusy ? "Preparing unsigned plan" : "Prepare unsigned plan"}
         </button>
       </div>
+      {quoteOrigin === "POST_MATCH" ? (
+        <div className={styles.strategyDomainReview}>
+          <div className={styles.evidenceHeading}>
+            <h3>Netting settlement</h3>
+            <span>{expectedDomainId}</span>
+          </div>
+          <div className={styles.strategyPrepareForm}>
+            <label htmlFor="generalized-strategy-netting-proof">Netting proof hash</label>
+            <input
+              id="generalized-strategy-netting-proof"
+              value={nettingProofHash}
+              inputMode="text"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="64 lowercase hex characters"
+              onChange={(event) => {
+                setNettingProofHash(event.target.value.trim());
+                setNettingSelection(null);
+                setNettingCurrentAllocationHash("");
+                setNettingAttemptId("");
+                setNettingAuthorizationHash("");
+                setNettingExecutionReference("");
+                setNettingReconciliation(null);
+                setError(null);
+              }}
+            />
+            <button
+              type="button"
+              className={styles.secondaryAction}
+              disabled={publicApiBaseUrl === null || packageSubmission === null
+                || nettingBusy !== null || !HASH.test(nettingProofHash)}
+              onClick={() => void loadNettingAllocation()}
+            >
+              {nettingBusy === "LOAD" ? "Loading final allocations" : "Load final allocations"}
+            </button>
+          </div>
+          {nettingSelection !== null ? (
+            <>
+              <div className={styles.reviewGrid}>
+                <span>Domain allocations</span><strong>{nettingSelection.allocationReceiptHashes.length}</strong>
+                <span>Pending in this domain</span><strong>{pendingNettingAllocationHashes.length}</strong>
+                <span>Current allocation</span>
+                <strong title={nettingCurrentAllocationHash || pendingNettingAllocationHashes[0]}>
+                  {compact(nettingCurrentAllocationHash || pendingNettingAllocationHashes[0] || "none")}
+                </strong>
+                <span>Attempt</span>
+                <strong title={nettingAttemptId || undefined}>
+                  {nettingAttemptId === "" ? "Not started" : compact(nettingAttemptId, 12, 8)}
+                </strong>
+                <span>Authorization</span>
+                <strong title={nettingAuthorizationHash || undefined}>
+                  {nettingAuthorizationHash === "" ? "Not signed" : compact(nettingAuthorizationHash)}
+                </strong>
+                <span>Execution reference</span>
+                <strong title={nettingExecutionReference || undefined}>
+                  {nettingExecutionReference === "" ? "Not submitted" : compact(nettingExecutionReference, 10, 8)}
+                </strong>
+              </div>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                disabled={privateApiBaseUrl === null || nettingBusy !== null || nettingPackageSettled
+                  || pendingNettingAllocationHashes.length === 0 || nettingExecutionReference !== ""
+                  || (!evmLane && !solanaLane)}
+                onClick={() => void executeNettingAllocation()}
+              >
+                {nettingBusy === "EXECUTE" ? "Submitting bound allocation"
+                  : nettingPackageSettled ? "Package allocations settled"
+                    : `Sign next allocation (${pendingNettingAllocationHashes.length} pending)`}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                disabled={privateApiBaseUrl === null || nettingBusy !== null}
+                onClick={() => void refreshNettingReconciliation()}
+              >
+                {nettingBusy === "RECONCILE" ? "Checking finality" : "Refresh allocation finality"}
+              </button>
+              <p className={styles.fieldContext} role="status">
+                {nettingPackageSettled
+                  ? "Every final allocation for this package domain has authoritative settlement evidence."
+                  : nettingExecutionReference !== ""
+                    ? "The submitted testnet transaction is durably bound. Refresh finality before signing the next allocation."
+                    : "Each final allocation is independently wallet-authorized against the batch proof and settlement-bound quote."}
+              </p>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <p className={styles.fieldContext} role="status">
         {error ?? (privateApiBaseUrl === null
           ? "Configure the private terminal API to prepare an admitted package."
           : quoteOrigin === "POST_MATCH"
-            ? "The post-match route quote is review-only until its allocation and readiness evidence are cryptographically bound for execution."
+            ? nettingSelection === null
+              ? "Load the final netting allocations before authorizing post-match settlement."
+              : "The post-match quote, batch proof, and final allocation receipts are bound before wallet submission."
           : review ? "Compilation passed. Nothing has been signed or submitted."
             : quoteReview ? "The signed quote is admitted and ready for unsigned execution preparation."
             : admissionError ?? (publicApiBaseUrl === null
