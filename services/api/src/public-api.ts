@@ -1243,7 +1243,21 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (progress === undefined) {
         throw new RequestError(404, "SETTLEMENT_NOT_FOUND", "No settlement commitment exists for this package order.");
       }
-      return progress;
+      const state = exchange.getBook(progress.readiness.executionClassId);
+      if (state === undefined) {
+        throw new RequestError(500, "INTERNAL_ERROR", "The settlement commitment refers to a missing package book.");
+      }
+      const restingEntry = state.entries.find((entry) => bytesEqual(entry.entryId, progress.readiness.packageOrderId));
+      if ((restingEntry !== undefined) !== progress.readiness.acceptsFurtherMatches
+        || (restingEntry !== undefined && restingEntry.source !== "DIRECT")) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Package settlement readiness and resting state disagree.");
+      }
+      return {
+        ...progress,
+        restingOrder: restingEntry === undefined
+          ? null
+          : { quantity: restingEntry.quantity, priceTicks: restingEntry.priceTicks },
+      };
     }
     if ((match = /^\/v1\/package-book\/reopenings\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);

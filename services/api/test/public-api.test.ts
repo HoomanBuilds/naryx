@@ -586,6 +586,13 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
     assert.equal(submitted.status, 200, submitted.text);
     assert.equal((submitted.body as { accepted: boolean }).accepted, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 1);
+    const openState = await get(`/v1/package-book/orders/${orderId}/settlement-readiness`);
+    assert.equal(openState.status, 200, openState.text);
+    assert.deepEqual((openState.body as { restingOrder: unknown }).restingOrder, {
+      quantity: packageOrder.quantity,
+      priceTicks: packageOrder.limitPriceTicks,
+    });
+    assert.equal(openState.text.includes(participantId), false);
 
     const amendment = {
       version: 1,
@@ -606,6 +613,11 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
     }));
     assert.equal(amended.status, 200, amended.text);
     assert.equal((amended.body as { entry: { priceTicks: bigint } }).entry.priceTicks, 102n);
+    const amendedState = await get(`/v1/package-book/orders/${orderId}/settlement-readiness`);
+    assert.deepEqual((amendedState.body as { restingOrder: unknown }).restingOrder, {
+      quantity: packageOrder.quantity,
+      priceTicks: 102n,
+    });
 
     const cancellation = { version: 1, executionClassId: CLASS, entryId: orderId, participantId };
     const cancellationChallengeResponse = await get("/v1/package-book/cancellations/authorization", post({ cancellation }));
@@ -619,6 +631,8 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
     assert.equal(cancelled.status, 200, cancelled.text);
     assert.equal((cancelled.body as { cancelled: boolean }).cancelled, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+    const cancelledState = await get(`/v1/package-book/orders/${orderId}/settlement-readiness`);
+    assert.equal((cancelledState.body as { restingOrder: unknown }).restingOrder, null);
   }, {
     strategyPackages: {
       order: (orderHashHex: string) => strategies.get(orderHashHex),

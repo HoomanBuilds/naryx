@@ -19,6 +19,7 @@ const EVM_HASH = /^0x[0-9a-f]{64}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const SOLANA_SIGNATURE = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
 const SIGNED_TICKS = /^-?(?:0|[1-9][0-9]{0,38})$/;
+const POSITIVE_INTEGER = /^[1-9][0-9]{0,38}$/;
 const SOLANA_PACKET_LIMIT = 1232;
 const STRATEGY_AUTHORIZATION_FIELDS = [
   ["orderHash", "bytes32"],
@@ -153,8 +154,8 @@ type PreparedPackageBookOrder = Readonly<{
 export type PackageBookAuthorizationChallenge = Readonly<{
   scheme: "ED25519" | "EIP712_SECP256K1";
   participantId: string;
-  packageOrderId: string;
-  settlementCommitmentHash: string;
+  operation: "ORDER" | "AMENDMENT" | "CANCELLATION";
+  authorizationHash: string;
   typedData: unknown | null;
   message: Uint8Array | null;
 }>;
@@ -167,11 +168,13 @@ type PackageBookSubmission = Readonly<{
 type PackageSettlementReadiness = Readonly<{
   packageOrderId: string;
   strategyOrderHash: string;
+  executionClassId: string;
   status: "AWAITING_MATCH" | "PARTIALLY_ALLOCATED" | "PARTIAL_AUTHORIZATION_REQUIRED" | "READY_FOR_OWNER_AUTHORIZATION" | "CANCELLED_UNFILLED";
   committedQuantity: string;
   allocatedQuantity: string;
   remainingQuantity: string;
   acceptsFurtherMatches: boolean;
+  restingOrder: Readonly<{ quantity: string; priceTicks: string }> | null;
   readinessHash: string;
   obligationCount: number;
 }>;
@@ -537,6 +540,10 @@ function decode(value: Json): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, decode(entry)]));
   }
   return value;
+}
+
+function protocolInteger(value: string): Json {
+  return { $naryxType: "bigint", value };
 }
 
 function solanaAddress(value: unknown, context: string): string {
@@ -1051,8 +1058,8 @@ function parsePackageBookAuthorization(
     return Object.freeze({
       scheme: root.scheme,
       participantId: prepared.participantId,
-      packageOrderId: prepared.packageOrderId,
-      settlementCommitmentHash: prepared.settlementCommitmentHash,
+      operation: "ORDER",
+      authorizationHash: prepared.settlementCommitmentHash,
       typedData: record(root.typedData, "Package book typed data"),
       message: null,
     });
@@ -1061,13 +1068,49 @@ function parsePackageBookAuthorization(
     return Object.freeze({
       scheme: root.scheme,
       participantId: prepared.participantId,
-      packageOrderId: prepared.packageOrderId,
-      settlementCommitmentHash: prepared.settlementCommitmentHash,
+      operation: "ORDER",
+      authorizationHash: prepared.settlementCommitmentHash,
       typedData: null,
       message: hexBytes(root.messageHex, "Package book signing message"),
     });
   }
   throw new Error("Package book authorization scheme is unsupported.");
+}
+
+function parsePackageBookMutationAuthorization(
+  payload: unknown,
+  operation: "AMENDMENT" | "CANCELLATION",
+  participantId: string,
+): PackageBookAuthorizationChallenge {
+  const root = record(decode(payload as Json), `Package book ${operation.toLowerCase()} authorization`);
+  const authorizationHash = hash(
+    operation === "AMENDMENT" ? root.amendmentHash : root.cancellationHash,
+    `Package book ${operation.toLowerCase()} hash`,
+  );
+  if (root.version !== 1 || root.participantId !== participantId) {
+    throw new Error(`Package book ${operation.toLowerCase()} authorization does not bind the participant.`);
+  }
+  if (root.scheme === "EIP712_SECP256K1") {
+    return Object.freeze({
+      scheme: root.scheme,
+      participantId,
+      operation,
+      authorizationHash,
+      typedData: record(root.typedData, `Package book ${operation.toLowerCase()} typed data`),
+      message: null,
+    });
+  }
+  if (root.scheme === "ED25519") {
+    return Object.freeze({
+      scheme: root.scheme,
+      participantId,
+      operation,
+      authorizationHash,
+      typedData: null,
+      message: hexBytes(root.messageHex, `Package book ${operation.toLowerCase()} signing message`),
+    });
+  }
+  throw new Error(`Package book ${operation.toLowerCase()} authorization scheme is unsupported.`);
 }
 
 function parsePackageBookSubmission(payload: unknown, prepared: PreparedPackageBookOrder): PackageBookSubmission {
@@ -1106,14 +1149,34 @@ function parsePackageSettlementReadiness(
   if (!statuses.has(status) || typeof readiness.acceptsFurtherMatches !== "boolean") {
     throw new Error("Settlement readiness state is invalid.");
   }
+  const executionClassId = text(readiness.executionClassId, "Settlement execution class");
+  const committedQuantity = decimalInteger(readiness.committedQuantity, "Committed package quantity");
+  const allocatedQuantity = decimalInteger(readiness.allocatedQuantity, "Allocated package quantity");
+  const remainingQuantity = decimalInteger(readiness.remainingQuantity, "Remaining package quantity");
+  const restingOrder = root.restingOrder === null
+    ? null
+    : (() => {
+        const entry = record(root.restingOrder, "Resting package order");
+        return Object.freeze({
+          quantity: decimalInteger(entry.quantity, "Resting package quantity"),
+          priceTicks: decimalInteger(entry.priceTicks, "Resting package price"),
+        });
+      })();
+  if ((restingOrder !== null) !== readiness.acceptsFurtherMatches
+    || (restingOrder !== null && (BigInt(restingOrder.quantity) <= BigInt(0)
+      || BigInt(restingOrder.quantity) > BigInt(remainingQuantity)))) {
+    throw new Error("Resting package order and settlement readiness disagree.");
+  }
   return Object.freeze({
     packageOrderId,
     strategyOrderHash,
+    executionClassId,
     status: status as PackageSettlementReadiness["status"],
-    committedQuantity: decimalInteger(readiness.committedQuantity, "Committed package quantity"),
-    allocatedQuantity: decimalInteger(readiness.allocatedQuantity, "Allocated package quantity"),
-    remainingQuantity: decimalInteger(readiness.remainingQuantity, "Remaining package quantity"),
+    committedQuantity,
+    allocatedQuantity,
+    remainingQuantity,
     acceptsFurtherMatches: readiness.acceptsFurtherMatches,
+    restingOrder,
     readinessHash: hash(root.readinessHashHex, "Settlement readiness hash"),
     obligationCount: list(root.obligations, "Settlement obligations").length,
   });
@@ -1918,6 +1981,8 @@ export function GeneralizedStrategyPreparationPanel({
   const [preparedPackageOrder, setPreparedPackageOrder] = useState<PreparedPackageBookOrder | null>(null);
   const [packageSubmission, setPackageSubmission] = useState<PackageBookSubmission | null>(null);
   const [settlementReadiness, setSettlementReadiness] = useState<PackageSettlementReadiness | null>(null);
+  const [packageAmendQuantity, setPackageAmendQuantity] = useState("");
+  const [packageAmendPriceTicks, setPackageAmendPriceTicks] = useState("");
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
@@ -1987,6 +2052,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [stageBusy, setStageBusy] = useState(false);
   const [packageSubmitBusy, setPackageSubmitBusy] = useState(false);
   const [packageRefreshBusy, setPackageRefreshBusy] = useState(false);
+  const [packageMutationBusy, setPackageMutationBusy] = useState<"AMENDMENT" | "CANCELLATION" | null>(null);
   const [quoteBusyMode, setQuoteBusyMode] = useState<"DIRECT" | "SETTLEMENT" | null>(null);
   const [prepareBusy, setPrepareBusy] = useState(false);
   const [selectionBusy, setSelectionBusy] = useState(false);
@@ -1999,7 +2065,15 @@ export function GeneralizedStrategyPreparationPanel({
     setPreparedPackageOrder(null);
     setPackageSubmission(null);
     setSettlementReadiness(null);
+    setPackageAmendQuantity("");
+    setPackageAmendPriceTicks("");
     setQuoteOrigin(null);
+  }
+
+  function recordPackageSettlementReadiness(readiness: PackageSettlementReadiness) {
+    setSettlementReadiness(readiness);
+    setPackageAmendQuantity(readiness.restingOrder?.quantity ?? "");
+    setPackageAmendPriceTicks(readiness.restingOrder?.priceTicks ?? "");
   }
 
   useEffect(() => {
@@ -3026,7 +3100,7 @@ export function GeneralizedStrategyPreparationPanel({
         referrerPolicy: "no-referrer",
       });
       if (!response.ok) throw new Error(await failureMessage(response));
-      setSettlementReadiness(parsePackageSettlementReadiness(
+      recordPackageSettlementReadiness(parsePackageSettlementReadiness(
         await response.json(),
         expectedPackageOrderId,
         expectedStrategyOrderHash,
@@ -3105,7 +3179,7 @@ export function GeneralizedStrategyPreparationPanel({
         referrerPolicy: "no-referrer",
       });
       if (!readinessResponse.ok) throw new Error(await failureMessage(readinessResponse));
-      setSettlementReadiness(parsePackageSettlementReadiness(
+      recordPackageSettlementReadiness(parsePackageSettlementReadiness(
         await readinessResponse.json(),
         submission.packageOrderId,
         prepared.strategyOrderHash,
@@ -3114,6 +3188,129 @@ export function GeneralizedStrategyPreparationPanel({
       setError(cause instanceof Error ? cause.message : "Native package order submission failed closed.");
     } finally {
       setPackageSubmitBusy(false);
+    }
+  }
+
+  async function amendNativePackageOrder() {
+    const restingOrder = settlementReadiness?.restingOrder;
+    if (publicApiBaseUrl === null || preparedPackageOrder === null || packageSubmission === null
+      || settlementReadiness === null || restingOrder === null || restingOrder === undefined
+      || signPackageBookOrder === undefined) return;
+    setPackageMutationBusy("AMENDMENT");
+    setError(null);
+    try {
+      if (!POSITIVE_INTEGER.test(packageAmendQuantity)) {
+        throw new Error("Enter a positive resting quantity.");
+      }
+      if (!SIGNED_TICKS.test(packageAmendPriceTicks)) {
+        throw new Error("Enter a signed integer package-market limit in ticks.");
+      }
+      if (BigInt(packageAmendQuantity) > BigInt(settlementReadiness.remainingQuantity)) {
+        throw new Error("Resting quantity cannot exceed the unmatched settlement commitment.");
+      }
+      const quantityChanged = packageAmendQuantity !== restingOrder.quantity;
+      const priceChanged = packageAmendPriceTicks !== restingOrder.priceTicks;
+      if (!quantityChanged && !priceChanged) throw new Error("Change the resting quantity or package limit first.");
+      const amendment: Json = {
+        version: 1,
+        executionClassId: settlementReadiness.executionClassId,
+        entryId: packageSubmission.packageOrderId,
+        participantId: preparedPackageOrder.participantId,
+        expectedQuantity: protocolInteger(restingOrder.quantity),
+        expectedPriceTicks: protocolInteger(restingOrder.priceTicks),
+        ...(quantityChanged ? { quantity: protocolInteger(packageAmendQuantity) } : {}),
+        ...(priceChanged ? { priceTicks: protocolInteger(packageAmendPriceTicks) } : {}),
+      };
+      const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/amendments/authorization`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amendment }),
+      });
+      if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
+      const challenge = parsePackageBookMutationAuthorization(
+        await challengeResponse.json(),
+        "AMENDMENT",
+        preparedPackageOrder.participantId,
+      );
+      const signature = await signPackageBookOrder(challenge);
+      const amendmentResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/amendments`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amendment, authorization: { scheme: challenge.scheme, signature } }),
+      });
+      if (!amendmentResponse.ok) throw new Error(await failureMessage(amendmentResponse));
+      const result = record(decode(await amendmentResponse.json() as Json), "Package book amendment");
+      const entry = record(result.entry, "Amended package order");
+      if (result.amended !== true
+        || result.packageMarketId !== settlementReadiness.executionClassId
+        || hash(result.entryId, "Amended package order id") !== packageSubmission.packageOrderId
+        || hash(result.amendmentHash, "Package book amendment hash") !== challenge.authorizationHash
+        || decimalInteger(entry.quantity, "Amended package quantity") !== packageAmendQuantity
+        || decimalInteger(entry.priceTicks, "Amended package price") !== packageAmendPriceTicks) {
+        throw new Error("Package book amendment response is inconsistent.");
+      }
+      await refreshPackageSettlement(packageSubmission.packageOrderId, preparedPackageOrder.strategyOrderHash);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Package book amendment failed closed.");
+    } finally {
+      setPackageMutationBusy(null);
+    }
+  }
+
+  async function cancelNativePackageOrder() {
+    if (publicApiBaseUrl === null || preparedPackageOrder === null || packageSubmission === null
+      || settlementReadiness?.restingOrder === null || settlementReadiness === null || signPackageBookOrder === undefined) return;
+    setPackageMutationBusy("CANCELLATION");
+    setError(null);
+    try {
+      const cancellation: Json = {
+        version: 1,
+        executionClassId: settlementReadiness.executionClassId,
+        entryId: packageSubmission.packageOrderId,
+        participantId: preparedPackageOrder.participantId,
+      };
+      const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/cancellations/authorization`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cancellation }),
+      });
+      if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
+      const challenge = parsePackageBookMutationAuthorization(
+        await challengeResponse.json(),
+        "CANCELLATION",
+        preparedPackageOrder.participantId,
+      );
+      const signature = await signPackageBookOrder(challenge);
+      const cancellationResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/cancellations`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cancellation, authorization: { scheme: challenge.scheme, signature } }),
+      });
+      if (!cancellationResponse.ok) throw new Error(await failureMessage(cancellationResponse));
+      const result = record(decode(await cancellationResponse.json() as Json), "Package book cancellation");
+      if (result.cancelled !== true
+        || result.packageMarketId !== settlementReadiness.executionClassId
+        || hash(result.entryId, "Cancelled package order id") !== packageSubmission.packageOrderId
+        || hash(result.cancellationHash, "Package book cancellation hash") !== challenge.authorizationHash) {
+        throw new Error("Package book cancellation response is inconsistent.");
+      }
+      await refreshPackageSettlement(packageSubmission.packageOrderId, preparedPackageOrder.strategyOrderHash);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Package book cancellation failed closed.");
+    } finally {
+      setPackageMutationBusy(null);
     }
   }
 
@@ -3424,6 +3621,10 @@ export function GeneralizedStrategyPreparationPanel({
     ? review.domains[0]
     : null;
   const packageStatusLabel = settlementReadiness?.status.replaceAll("_", " ") ?? null;
+  const restingPackageOrder = settlementReadiness?.restingOrder ?? null;
+  const packageAmendmentChanged = restingPackageOrder !== null
+    && (packageAmendQuantity !== restingPackageOrder.quantity
+      || packageAmendPriceTicks !== restingPackageOrder.priceTicks);
 
   if (!laneSupportsTemplate) {
     return (
@@ -4269,6 +4470,8 @@ export function GeneralizedStrategyPreparationPanel({
             setPreparedPackageOrder(null);
             setPackageSubmission(null);
             setSettlementReadiness(null);
+            setPackageAmendQuantity("");
+            setPackageAmendPriceTicks("");
             setError(null);
           }}
         >
@@ -4289,6 +4492,8 @@ export function GeneralizedStrategyPreparationPanel({
             setPreparedPackageOrder(null);
             setPackageSubmission(null);
             setSettlementReadiness(null);
+            setPackageAmendQuantity("");
+            setPackageAmendPriceTicks("");
             setError(null);
           }}
         />
@@ -4318,11 +4523,65 @@ export function GeneralizedStrategyPreparationPanel({
           <button
             type="button"
             className={styles.secondaryAction}
-            disabled={publicApiBaseUrl === null || packageRefreshBusy || packageSubmitBusy}
+            disabled={publicApiBaseUrl === null || packageRefreshBusy || packageSubmitBusy || packageMutationBusy !== null}
             onClick={() => void refreshPackageSettlement()}
           >
             {packageRefreshBusy ? "Refreshing package settlement" : "Refresh matching state"}
           </button>
+        ) : null}
+        {restingPackageOrder !== null ? (
+          <>
+            <label htmlFor="native-package-amend-quantity">Resting quantity</label>
+            <input
+              id="native-package-amend-quantity"
+              value={packageAmendQuantity}
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder={restingPackageOrder.quantity}
+              onChange={(event) => {
+                setPackageAmendQuantity(event.target.value.replace(/[^0-9]/g, ""));
+                setError(null);
+              }}
+            />
+            <label htmlFor="native-package-amend-limit">Resting package limit in market ticks</label>
+            <input
+              id="native-package-amend-limit"
+              value={packageAmendPriceTicks}
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder={restingPackageOrder.priceTicks}
+              onChange={(event) => {
+                const value = event.target.value.trim();
+                const sign = value.startsWith("-") ? "-" : "";
+                setPackageAmendPriceTicks(`${sign}${value.replace(/[^0-9]/g, "")}`);
+                setError(null);
+              }}
+            />
+            <button
+              type="button"
+              className={styles.primaryAction}
+              disabled={publicApiBaseUrl === null || signPackageBookOrder === undefined
+                || packageMutationBusy !== null || packageRefreshBusy || !packageAmendmentChanged
+                || !POSITIVE_INTEGER.test(packageAmendQuantity) || !SIGNED_TICKS.test(packageAmendPriceTicks)
+                || settlementReadiness === null
+                || BigInt(packageAmendQuantity || "0") > BigInt(settlementReadiness.remainingQuantity)}
+              onClick={() => void amendNativePackageOrder()}
+            >
+              {packageMutationBusy === "AMENDMENT" ? "Signing package amendment" : "Sign package amendment"}
+            </button>
+            <button
+              type="button"
+              className={styles.secondaryAction}
+              disabled={publicApiBaseUrl === null || signPackageBookOrder === undefined
+                || packageMutationBusy !== null || packageRefreshBusy}
+              onClick={() => void cancelNativePackageOrder()}
+            >
+              {packageMutationBusy === "CANCELLATION" ? "Signing cancellation" : "Cancel unmatched remainder"}
+            </button>
+            <p className={styles.fieldContext}>
+              A size reduction keeps queue priority. Repricing or increasing size receives a new sequence. Filled settlement obligations are never cancelled.
+            </p>
+          </>
         ) : null}
         {settlementReadiness?.status === "READY_FOR_OWNER_AUTHORIZATION" ? (
           <button
