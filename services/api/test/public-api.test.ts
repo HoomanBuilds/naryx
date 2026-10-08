@@ -287,6 +287,14 @@ test("the runtime is off by default and validates its configuration", () => {
     assert.throws(() => loadPublicMarketRuntime(env), /version 1 with clockUnit/);
     writeFileSync(manifest, JSON.stringify({ version: 1, clockUnit: "UNIX_SECONDS", seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT }));
     assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE: "0" }), /between 1 and 10000/);
+    assert.throws(() => loadPublicMarketRuntime({
+      ...env,
+      NARYX_SOLANA_DEVNET_NETTING_SETTLEMENT_ENABLED: "true",
+    }), /require NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED=true/);
+    assert.throws(() => loadPublicMarketRuntime({
+      ...env,
+      NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED: "true",
+    }), /restricted to NARYX_PUBLIC_ENVIRONMENT=testnet/);
     const runtime = loadPublicMarketRuntime(env);
     assert.ok(runtime);
     assert.equal(runtime.clockUnit, "UNIX_SECONDS");

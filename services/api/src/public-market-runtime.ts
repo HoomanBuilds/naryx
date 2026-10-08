@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { createMarketStream } from "./market-stream.js";
-import { parseProtocolJson } from "@naryx/protocol-types";
+import { domainRefFromManifest, parseProtocolJson } from "@naryx/protocol-types";
 import type {
   EconomicStrategySeriesSupportInput,
   SeriesExecutionClassSupportInput,
@@ -36,6 +36,24 @@ import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
 } from "./netting-execution-coordinator.js";
+import { SqliteNettingAllocationAttemptStore } from "./netting-allocation-attempt-store.js";
+import {
+  EvmNettingAllocationObservationRoute,
+  SolanaNettingAllocationObservationRoute,
+} from "./netting-allocation-observation-routes.js";
+import {
+  NettingAllocationObservationRouter,
+  NettingAllocationSettlementCoordinator,
+} from "./netting-allocation-settlement-coordinator.js";
+import { createNettingAllocationAdminHandler } from "./netting-allocation-admin.js";
+import {
+  createViemBaseSepoliaReadClient,
+  loadBaseSepoliaRuntimeManifest,
+} from "./base-sepolia-runtime.js";
+import {
+  loadSolanaDevnetRuntimeManifest,
+} from "./solana-devnet-runtime.js";
+import { HttpSolanaDevnetReadOnlyRpc } from "./solana-devnet-runtime-ports.js";
 import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
 import {
   createStrategyOrderIntake,
@@ -506,6 +524,78 @@ export function loadPublicMarketRuntime(
         new NettingExternalExecutionRouter(nettingExecutionRoutes),
       )
       : undefined;
+    const allocationSettlementSetting = environment.NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED ?? "false";
+    if (allocationSettlementSetting !== "true" && allocationSettlementSetting !== "false") {
+      throw new PublicMarketConfigError("NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED must be true or false.");
+    }
+    const baseAllocationSettlementSetting = environment.NARYX_BASE_SEPOLIA_NETTING_SETTLEMENT_ENABLED ?? "false";
+    const solanaAllocationSettlementSetting = environment.NARYX_SOLANA_DEVNET_NETTING_SETTLEMENT_ENABLED ?? "false";
+    for (const [name, value] of [
+      ["NARYX_BASE_SEPOLIA_NETTING_SETTLEMENT_ENABLED", baseAllocationSettlementSetting],
+      ["NARYX_SOLANA_DEVNET_NETTING_SETTLEMENT_ENABLED", solanaAllocationSettlementSetting],
+    ] as const) {
+      if (value !== "true" && value !== "false") throw new PublicMarketConfigError(`${name} must be true or false.`);
+    }
+    if (allocationSettlementSetting === "false"
+      && (baseAllocationSettlementSetting === "true" || solanaAllocationSettlementSetting === "true")) {
+      throw new PublicMarketConfigError(
+        "Domain netting settlement routes require NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED=true.",
+      );
+    }
+    let nettingAllocationAdmin: ReturnType<typeof createNettingAllocationAdminHandler> | undefined;
+    if (allocationSettlementSetting === "true") {
+      if (publicEnvironment !== "testnet") {
+        throw new PublicMarketConfigError("Netting allocation settlement is restricted to NARYX_PUBLIC_ENVIRONMENT=testnet.");
+      }
+      const attempts = new SqliteNettingAllocationAttemptStore(absolute(
+        environment.NARYX_NETTING_ALLOCATION_ATTEMPT_DB,
+        "NARYX_NETTING_ALLOCATION_ATTEMPT_DB",
+      ));
+      opened.push(attempts);
+      const routes = [];
+      if (baseAllocationSettlementSetting === "true") {
+        const manifest = loadBaseSepoliaRuntimeManifest(absolute(
+          environment.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST,
+          "NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST",
+        ));
+        const reads = createViemBaseSepoliaReadClient(
+          environment.NARYX_BASE_SEPOLIA_RPC_URL ?? "",
+        );
+        if (reads.blockTimestamp === undefined) {
+          throw new PublicMarketConfigError("Base Sepolia netting settlement requires historical block timestamps.");
+        }
+        routes.push(new EvmNettingAllocationObservationRoute({
+          routeId: "base-sepolia-netting-settlement",
+          domain: domainRefFromManifest(manifest.deployment.deployment.domainManifest),
+          attempts,
+          reads,
+          finality: manifest.deployment.finality.policy,
+          blockTimestamp: reads.blockTimestamp,
+        }));
+      }
+      if (solanaAllocationSettlementSetting === "true") {
+        const manifest = loadSolanaDevnetRuntimeManifest(absolute(
+          environment.NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST,
+          "NARYX_SOLANA_DEVNET_RUNTIME_MANIFEST",
+        ));
+        const reads = new HttpSolanaDevnetReadOnlyRpc(environment.NARYX_SOLANA_DEVNET_RPC_URL ?? "");
+        routes.push(new SolanaNettingAllocationObservationRoute({
+          routeId: "solana-devnet-netting-settlement",
+          domain: manifest.domain,
+          expectedGenesisHash: manifest.expectedGenesisHash,
+          attempts,
+          reads,
+        }));
+      }
+      if (routes.length === 0) {
+        throw new PublicMarketConfigError("Netting allocation settlement requires at least one enabled domain route.");
+      }
+      const settlement = new NettingAllocationSettlementCoordinator(
+        store,
+        new NettingAllocationObservationRouter(routes),
+      );
+      nettingAllocationAdmin = createNettingAllocationAdminHandler({ exchange: store, attempts, settlement });
+    }
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -515,6 +605,7 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
+      ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
     ];
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
     const catalogueSigner = loadCatalogueSigner(environment);
