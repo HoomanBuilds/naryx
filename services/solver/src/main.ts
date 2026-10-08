@@ -74,6 +74,7 @@ import {
   createSolanaNettingAllocationAuthorizationInternalHandler,
   HttpNettingAllocationAdminClient,
   NettingAllocationLifecycleService,
+  createNettingAllocationLifecycleInternalHandler,
   EvmStrategyExecutionObservationService,
   createEvmOptionSpreadObservationInternalHandler,
   loadSolanaTreasuryHedgeRuntime,
@@ -622,6 +623,9 @@ const solanaNettingAllocationAuthorizationHandler = nettingAllocationLifecycle =
         signer: solanaDevnetSolver.strategySigner,
       }),
     );
+const nettingAllocationLifecycleHandler = nettingAllocationLifecycle === undefined
+  ? undefined
+  : createNettingAllocationLifecycleInternalHandler(nettingAllocationLifecycle);
 const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
   ...(evmCalendarRuntime?.observationLanes ?? []),
@@ -680,6 +684,7 @@ const strategyRouteHandlers = [
   evmStrategyAuthorizationHandler,
   evmNettingAllocationAuthorizationHandler,
   solanaNettingAllocationAuthorizationHandler,
+  nettingAllocationLifecycleHandler,
   evmOptionObservationHandler,
   residualExecutionHandler,
   baseResidualExecutionHandler,

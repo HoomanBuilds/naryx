@@ -666,11 +666,13 @@ export {
 export {
   HttpNettingAllocationAuthorizationClient,
   NettingAllocationAuthorizationClientError,
+  type BoundNettingAllocationReference,
   type AuthorizedEvmNettingAllocation,
   type AuthorizedSolanaNettingAllocation,
   type EvmNettingAllocationChallenge,
   type NettingAllocationAuthorizationPort,
   type NettingAllocationAuthorizationRequest,
+  type NettingAllocationReconciliation,
 } from './netting-allocation-authorization-client.js';
 export {
   API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,

@@ -54,6 +54,7 @@ export {
   type AuthorizedSolanaNettingAllocation,
 } from './solana-netting-allocation-authorization.js';
 export { createSolanaNettingAllocationAuthorizationInternalHandler } from './solana-netting-allocation-authorization-server.js';
+export { createNettingAllocationLifecycleInternalHandler } from './netting-allocation-lifecycle-server.js';
 export {
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,

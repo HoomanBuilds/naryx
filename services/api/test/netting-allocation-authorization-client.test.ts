@@ -68,3 +68,39 @@ test('refuses mainnet and malformed allocation authorization requests before net
       && error.code === 'INVALID_REQUEST',
   );
 });
+
+test('binds the submitted transaction and returns finalized reconciliation state', async () => {
+  const authorizationHashValue = '77'.repeat(32);
+  const executionReference = `0x${'88'.repeat(32)}`;
+  const client = new HttpNettingAllocationAuthorizationClient('http://127.0.0.1:8788', async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/reference')) {
+      return new Response(JSON.stringify({
+        version: 1,
+        attempt: {
+          attemptId: request.attemptId,
+          authorizationHashHex: authorizationHashValue,
+          executionReference,
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      version: 1,
+      reconciliation: {
+        version: 1,
+        observedAuthorizationHashes: [authorizationHashValue],
+        pendingAllocationReceiptHashes: [],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+
+  const bound = await client.bindReference({
+    attemptId: request.attemptId,
+    authorizationHash: authorizationHashValue,
+    executionReference,
+  });
+  const reconciliation = await client.reconcile(request.proofHash);
+  assert.equal(bound.executionReference, executionReference);
+  assert.deepEqual(reconciliation.observedAuthorizationHashes, [authorizationHashValue]);
+  assert.deepEqual(reconciliation.pendingAllocationReceiptHashes, []);
+});

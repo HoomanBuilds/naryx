@@ -69,6 +69,17 @@ export type AuthorizedSolanaNettingAllocation = AuthorizedSolanaStrategyExecutio
   authorizationHash: string;
 }>;
 
+export interface BoundNettingAllocationReference {
+  readonly attemptId: string;
+  readonly authorizationHash: string;
+  readonly executionReference: string;
+}
+
+export interface NettingAllocationReconciliation {
+  readonly observedAuthorizationHashes: readonly string[];
+  readonly pendingAllocationReceiptHashes: readonly string[];
+}
+
 export interface NettingAllocationAuthorizationPort {
   challengeEvm(request: NettingAllocationAuthorizationRequest): Promise<EvmNettingAllocationChallenge>;
   authorizeEvm(
@@ -78,6 +89,8 @@ export interface NettingAllocationAuthorizationPort {
   authorizeSolana(
     request: NettingAllocationAuthorizationRequest,
   ): Promise<AuthorizedSolanaNettingAllocation>;
+  bindReference(input: BoundNettingAllocationReference): Promise<BoundNettingAllocationReference>;
+  reconcile(proofHash: string): Promise<NettingAllocationReconciliation>;
 }
 
 export class NettingAllocationAuthorizationClientError extends Error {
@@ -315,6 +328,51 @@ export class HttpNettingAllocationAuthorizationClient implements NettingAllocati
     }
     return this.#request('/internal/netting/allocation-executions/solana/authorize', request)
       .then((value) => solanaAuthorization(value, request));
+  }
+
+  bindReference(input: BoundNettingAllocationReference): Promise<BoundNettingAllocationReference> {
+    if (!ATTEMPT_ID.test(input.attemptId) || !HASH.test(input.authorizationHash)
+      || (!/^0x[0-9a-f]{64}$/.test(input.executionReference)
+        && !/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(input.executionReference))) {
+      throw new NettingAllocationAuthorizationClientError('INVALID_REQUEST', 'allocation execution reference is invalid');
+    }
+    return this.#request('/internal/netting/allocation-executions/reference', input).then((value) => {
+      const root = record(value, 'reference response');
+      const attempt = record(root.attempt, 'reference attempt');
+      if (root.version !== 1 || attempt.attemptId !== input.attemptId
+        || attempt.authorizationHashHex !== input.authorizationHash
+        || attempt.executionReference !== input.executionReference) {
+        return fail('bound execution reference differs from the request');
+      }
+      return Object.freeze({ ...input });
+    });
+  }
+
+  reconcile(proofHash: string): Promise<NettingAllocationReconciliation> {
+    let normalized: string;
+    try {
+      normalized = toHex(commitmentHash(proofHash));
+    } catch {
+      throw new NettingAllocationAuthorizationClientError('INVALID_REQUEST', 'proofHash must be 32-byte hex');
+    }
+    if (normalized !== proofHash) {
+      throw new NettingAllocationAuthorizationClientError('INVALID_REQUEST', 'proofHash must be lowercase hex');
+    }
+    return this.#request('/internal/netting/allocation-executions/reconcile', { proofHash }).then((value) => {
+      const root = record(value, 'reconciliation response');
+      const reconciliation = record(root.reconciliation, 'reconciliation');
+      if (root.version !== 1 || reconciliation.version !== 1
+        || !Array.isArray(reconciliation.observedAuthorizationHashes)
+        || !Array.isArray(reconciliation.pendingAllocationReceiptHashes)
+        || [...reconciliation.observedAuthorizationHashes, ...reconciliation.pendingAllocationReceiptHashes]
+          .some((item) => typeof item !== 'string' || !HASH.test(item))) {
+        return fail('reconciliation response is invalid');
+      }
+      return Object.freeze({
+        observedAuthorizationHashes: Object.freeze([...reconciliation.observedAuthorizationHashes] as string[]),
+        pendingAllocationReceiptHashes: Object.freeze([...reconciliation.pendingAllocationReceiptHashes] as string[]),
+      });
+    });
   }
 
   async #request(path: string, body: unknown): Promise<unknown> {

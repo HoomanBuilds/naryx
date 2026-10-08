@@ -1919,6 +1919,67 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const nettingReference = url.pathname === '/internal/terminal/netting/allocation-executions/reference';
+    const nettingReconciliation = url.pathname === '/internal/terminal/netting/allocation-executions/reconcile';
+    if (nettingReference || nettingReconciliation) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (nettingAllocationAuthorization === undefined) {
+        reject(response, 503, 'NETTING_ALLOCATION_AUTHORIZATION_UNAVAILABLE',
+          'Netting allocation authorization is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)) {
+          throw new NettingAllocationAuthorizationClientError('INVALID_REQUEST', 'Request body must be an object.');
+        }
+        const values = requestBody as Record<string, unknown>;
+        if (nettingReference) {
+          if (Object.keys(values).sort().join(',') !== 'attemptId,authorizationHash,executionReference'
+            || typeof values.attemptId !== 'string'
+            || typeof values.authorizationHash !== 'string'
+            || typeof values.executionReference !== 'string') {
+            throw new NettingAllocationAuthorizationClientError(
+              'INVALID_REQUEST',
+              'Request must contain exactly attemptId, authorizationHash, and executionReference.',
+            );
+          }
+          sendJson(response, 200, {
+            status: 'EXECUTION_REFERENCE_BOUND',
+            reference: await nettingAllocationAuthorization.bindReference({
+              attemptId: values.attemptId,
+              authorizationHash: values.authorizationHash,
+              executionReference: values.executionReference,
+            }),
+          });
+        } else {
+          if (Object.keys(values).join(',') !== 'proofHash' || typeof values.proofHash !== 'string') {
+            throw new NettingAllocationAuthorizationClientError(
+              'INVALID_REQUEST',
+              'Request must contain only proofHash.',
+            );
+          }
+          const reconciliation = await nettingAllocationAuthorization.reconcile(values.proofHash);
+          sendJson(response, reconciliation.pendingAllocationReceiptHashes.length === 0 ? 200 : 202, {
+            status: reconciliation.pendingAllocationReceiptHashes.length === 0 ? 'SETTLED' : 'PENDING_FINALITY',
+            reconciliation,
+          });
+        }
+      } catch (error) {
+        if (error instanceof NettingAllocationAuthorizationClientError) {
+          reject(response, error.code === 'INVALID_REQUEST' ? 400 : 502, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'NETTING_ALLOCATION_LIFECYCLE_FAILED',
+          'Netting allocation lifecycle failed closed.');
+      }
+      return;
+    }
+
     if (url.pathname === '/internal/terminal/strategy-executions/observe-evm') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS');
