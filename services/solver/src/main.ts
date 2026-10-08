@@ -68,6 +68,10 @@ import {
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
   loadEvmStrategySolverKey,
+  EvmNettingAllocationAuthorizationService,
+  createEvmNettingAllocationAuthorizationInternalHandler,
+  HttpNettingAllocationAdminClient,
+  NettingAllocationLifecycleService,
   EvmStrategyExecutionObservationService,
   createEvmOptionSpreadObservationInternalHandler,
   loadSolanaTreasuryHedgeRuntime,
@@ -567,16 +571,40 @@ const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
       strategyPackageProvider,
       evmReverseBasisRuntime.preparationLanes,
     ));
+const evmStrategySolver = !evmRuntimeConfigured
+  ? undefined
+  : loadEvmStrategySolverKey(
+      process.env.NARYX_EVM_STRATEGY_SOLVER_KEY_PATH,
+      process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
+    );
 const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPreparationService === undefined
   ? undefined
   : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
       packages: strategyPackageProvider,
       preparations: strategyPreparationService,
-      solver: loadEvmStrategySolverKey(
-        process.env.NARYX_EVM_STRATEGY_SOLVER_KEY_PATH,
-        process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
-      ),
+      solver: evmStrategySolver!,
     }));
+const nettingAllocationAuthorizationEnabled = explicitBoolean(
+  process.env.NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED,
+  'NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED',
+);
+if (nettingAllocationAuthorizationEnabled
+  && (strategyPreparationService === undefined || evmStrategySolver === undefined)) {
+  throw new Error('netting allocation authorization requires an EVM strategy runtime and solver key');
+}
+const nettingAllocationLifecycle = !nettingAllocationAuthorizationEnabled
+    || strategyPreparationService === undefined
+  ? undefined
+  : new NettingAllocationLifecycleService(
+      new HttpNettingAllocationAdminClient(apiOrigin),
+      strategyPreparationService,
+    );
+const evmNettingAllocationAuthorizationHandler = nettingAllocationLifecycle === undefined
+    || evmStrategySolver === undefined
+  ? undefined
+  : createEvmNettingAllocationAuthorizationInternalHandler(
+      new EvmNettingAllocationAuthorizationService(nettingAllocationLifecycle, evmStrategySolver),
+    );
 const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
   ...(evmCalendarRuntime?.observationLanes ?? []),
@@ -633,6 +661,7 @@ const strategyRouteHandlers = [
   solanaStrategyObservationHandler,
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
+  evmNettingAllocationAuthorizationHandler,
   evmOptionObservationHandler,
   residualExecutionHandler,
   baseResidualExecutionHandler,
