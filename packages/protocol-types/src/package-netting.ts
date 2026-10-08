@@ -7,6 +7,7 @@ import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './pac
 import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 
 export const NETTING_MAX_OBLIGATIONS = 512;
+export const NETTING_RESULT_VERSION = 2;
 const U64_BITS = 64;
 const U128_BITS = 128;
 const I128_BITS = 128;
@@ -78,13 +79,20 @@ export interface NettingObligation {
   readonly sequence: bigint;
 }
 
+export interface NettingQuantityIncrement {
+  readonly underlyingId: string;
+  readonly quantityIncrementAtoms: bigint;
+}
+
 export interface NettingAllocation {
   readonly obligationId: CommitmentHash;
   readonly userId: ProtocolId;
+  readonly packageId: ProtocolId;
   readonly underlyingId: ProtocolId;
   readonly signedQuantityAtoms: bigint;
   readonly internalQuantityAtoms: bigint;
   readonly externalQuantityAtoms: bigint;
+  readonly sequence: bigint;
 }
 
 export interface NettingUnderlyingSummary {
@@ -93,13 +101,17 @@ export interface NettingUnderlyingSummary {
   readonly grossSellAtoms: bigint;
   readonly internalMatchedAtoms: bigint;
   readonly externalNetAtoms: bigint;
+  readonly quantityIncrementAtoms: bigint;
 }
 
 export interface NettingResult {
+  readonly version: 2;
   readonly allocations: readonly NettingAllocation[];
   readonly underlyings: readonly NettingUnderlyingSummary[];
   readonly proofHash: CommitmentHash;
 }
+
+export type NettingResultInput = Omit<NettingResult, 'proofHash'>;
 
 type Checked = {
   obligationId: CommitmentHash;
@@ -147,20 +159,40 @@ function allocateSide(side: readonly Checked[], matched: bigint, increment: bigi
  * Each obligation keeps its own identity, sign, and bound: its internal share never exceeds it,
  * and `gross = internal + external` holds per obligation, per side, and per underlying.
  */
-export function netObligations(obligations: readonly NettingObligation[], quantityIncrement: bigint): NettingResult {
+export function netObligations(
+  obligations: readonly NettingObligation[],
+  quantityIncrements: readonly NettingQuantityIncrement[],
+): NettingResult {
   requireArray(obligations, 'netObligations.obligations');
-  const increment = unsigned(quantityIncrement, U128_BITS, 'netObligations.quantityIncrement');
-  if (increment === 0n) throw new MalformedInputError('netObligations.quantityIncrement', 'increment is zero');
+  if (obligations.length === 0) throw new MalformedInputError('netObligations.obligations', 'netting batch is empty');
+  requireArray(quantityIncrements, 'netObligations.quantityIncrements');
+  const increments = quantityIncrements.map((entry, index) => {
+    const at = `netObligations.quantityIncrements[${index}]`;
+    object(entry, at);
+    const increment = unsigned(entry.quantityIncrementAtoms, U128_BITS, `${at}.quantityIncrementAtoms`);
+    if (increment === 0n) throw new MalformedInputError(`${at}.quantityIncrementAtoms`, 'increment is zero');
+    return Object.freeze({
+      underlyingId: protocolId(entry.underlyingId, `${at}.underlyingId`),
+      quantityIncrementAtoms: increment,
+    });
+  }).sort((left, right) => left.underlyingId < right.underlyingId ? -1 : left.underlyingId > right.underlyingId ? 1 : 0);
+  if (new Set(increments.map((entry) => entry.underlyingId)).size !== increments.length) {
+    throw new DuplicateElementError('netObligations.quantityIncrements', 'underlying ids repeat');
+  }
+  const incrementByUnderlying = new Map(increments.map((entry) => [entry.underlyingId, entry.quantityIncrementAtoms]));
   const checked: Checked[] = obligations.map((obligation, index) => {
     const at = `netObligations.obligations[${index}]`;
     object(obligation, at);
     const signedQuantityAtoms = signedNonzero(obligation.signedQuantityAtoms, `${at}.signedQuantityAtoms`);
+    const underlyingId = protocolId(obligation.underlyingId, `${at}.underlyingId`);
+    const increment = incrementByUnderlying.get(underlyingId);
+    if (increment === undefined) throw new MalformedInputError(`${at}.underlyingId`, 'underlying has no quantity increment');
     if (signedQuantityAtoms % increment !== 0n) throw new MalformedInputError(`${at}.signedQuantityAtoms`, 'quantity is off the increment lattice');
     return {
       obligationId: commitmentHash(obligation.obligationId, `${at}.obligationId`),
       userId: protocolId(obligation.userId, `${at}.userId`),
       packageId: protocolId(obligation.packageId, `${at}.packageId`),
-      underlyingId: protocolId(obligation.underlyingId, `${at}.underlyingId`),
+      underlyingId,
       signedQuantityAtoms,
       sequence: unsigned(obligation.sequence, U64_BITS, `${at}.sequence`),
     };
@@ -173,8 +205,12 @@ export function netObligations(obligations: readonly NettingObligation[], quanti
   }
 
   const underlyings = [...new Set(checked.map((item) => item.underlyingId))].sort();
+  if (underlyings.length !== increments.length || underlyings.some((underlyingId, index) => underlyingId !== increments[index]?.underlyingId)) {
+    throw new MalformedInputError('netObligations.quantityIncrements', 'increments must name every netted underlying exactly once');
+  }
   const internal = new Map<string, bigint>();
   const summaries = underlyings.map((underlyingId) => {
+    const increment = incrementByUnderlying.get(underlyingId) as bigint;
     const buys = checked.filter((item) => item.underlyingId === underlyingId && item.signedQuantityAtoms > 0n);
     const sells = checked.filter((item) => item.underlyingId === underlyingId && item.signedQuantityAtoms < 0n);
     const grossBuy = buys.reduce((sum, item) => sum + item.signedQuantityAtoms, 0n);
@@ -188,6 +224,7 @@ export function netObligations(obligations: readonly NettingObligation[], quanti
       grossSellAtoms: grossSell,
       internalMatchedAtoms: matched,
       externalNetAtoms: grossBuy - grossSell,
+      quantityIncrementAtoms: increment,
     });
   });
   const allocations = checked.map((item) => {
@@ -195,35 +232,57 @@ export function netObligations(obligations: readonly NettingObligation[], quanti
     return Object.freeze({
       obligationId: item.obligationId,
       userId: item.userId,
+      packageId: item.packageId,
       underlyingId: item.underlyingId,
       signedQuantityAtoms: item.signedQuantityAtoms,
       internalQuantityAtoms: inside,
       externalQuantityAtoms: item.signedQuantityAtoms - inside,
+      sequence: item.sequence,
     });
   });
-  verifyNetting(allocations, summaries);
+  const result = Object.freeze({
+    version: NETTING_RESULT_VERSION,
+    allocations: Object.freeze(allocations),
+    underlyings: Object.freeze(summaries),
+  });
+  verifyNetting(result.allocations, result.underlyings);
+  return Object.freeze({ ...result, proofHash: nettingResultHash(result) });
+}
+
+export function nettingResultHash(input: NettingResultInput): CommitmentHash {
+  if (input.version !== NETTING_RESULT_VERSION) {
+    throw new MalformedInputError('nettingResult.version', `version must equal ${NETTING_RESULT_VERSION}`);
+  }
+  verifyNetting(input.allocations, input.underlyings);
   const payload = canonicalBytes((writer) => {
-    writer.writeArray(allocations, (element, allocation) => {
+    writer.writeU32(NETTING_RESULT_VERSION, 'version');
+    writer.writeArray(input.allocations, (element, allocation) => {
       encodeCommitmentHash(element, allocation.obligationId, 'obligationId');
       encodeProtocolId(element, allocation.userId);
+      encodeProtocolId(element, allocation.packageId);
       encodeProtocolId(element, allocation.underlyingId);
       element.writeI128(allocation.signedQuantityAtoms, 'signedQuantityAtoms');
       element.writeI128(allocation.internalQuantityAtoms, 'internalQuantityAtoms');
       element.writeI128(allocation.externalQuantityAtoms, 'externalQuantityAtoms');
+      element.writeU64(allocation.sequence, 'sequence');
     });
-    writer.writeArray(summaries, (element, summary) => {
+    writer.writeArray(input.underlyings, (element, summary) => {
       encodeProtocolId(element, summary.underlyingId);
       element.writeU128(summary.grossBuyAtoms, 'grossBuyAtoms');
       element.writeU128(summary.grossSellAtoms, 'grossSellAtoms');
       element.writeU128(summary.internalMatchedAtoms, 'internalMatchedAtoms');
       element.writeI128(summary.externalNetAtoms, 'externalNetAtoms');
+      element.writeU128(summary.quantityIncrementAtoms, 'quantityIncrementAtoms');
     });
   });
-  return Object.freeze({
-    allocations: Object.freeze(allocations),
-    underlyings: Object.freeze(summaries),
-    proofHash: commitmentHash(domainHash(HASH_DOMAIN.NETTING_PROOF, payload), 'nettingProofHash'),
-  });
+  return commitmentHash(domainHash(HASH_DOMAIN.NETTING_PROOF, payload), 'nettingProofHash');
+}
+
+export function verifyNettingResult(input: NettingResult): void {
+  const expected = nettingResultHash(input);
+  if (compareBytes(expected, commitmentHash(input.proofHash, 'nettingResult.proofHash')) !== 0) {
+    throw new MalformedInputError('nettingResult.proofHash', 'proof hash does not match the netting result');
+  }
 }
 
 /**
@@ -232,15 +291,63 @@ export function netObligations(obligations: readonly NettingObligation[], quanti
  * and matched figures are recomputed from the allocations rather than trusted.
  */
 export function verifyNetting(allocations: readonly NettingAllocation[], summaries: readonly NettingUnderlyingSummary[]): void {
-  for (const allocation of allocations) {
+  requireArray(allocations, 'verifyNetting.allocations');
+  requireArray(summaries, 'verifyNetting.underlyings');
+  if (allocations.length === 0) throw new MalformedInputError('verifyNetting.allocations', 'netting batch is empty');
+  const checkedAllocations = allocations.map((allocation, index): NettingAllocation => {
+    const at = `verifyNetting.allocations[${index}]`;
+    object(allocation, at);
+    return Object.freeze({
+      obligationId: commitmentHash(allocation.obligationId, `${at}.obligationId`),
+      userId: protocolId(allocation.userId, `${at}.userId`),
+      packageId: protocolId(allocation.packageId, `${at}.packageId`),
+      underlyingId: protocolId(allocation.underlyingId, `${at}.underlyingId`),
+      signedQuantityAtoms: signedNonzero(allocation.signedQuantityAtoms, `${at}.signedQuantityAtoms`),
+      internalQuantityAtoms: checkedSigned(allocation.internalQuantityAtoms, I128_BITS, `${at}.internalQuantityAtoms`),
+      externalQuantityAtoms: checkedSigned(allocation.externalQuantityAtoms, I128_BITS, `${at}.externalQuantityAtoms`),
+      sequence: unsigned(allocation.sequence, U64_BITS, `${at}.sequence`),
+    });
+  });
+  const sortedAllocations = [...checkedAllocations].sort((left, right) => left.sequence !== right.sequence
+    ? left.sequence < right.sequence ? -1 : 1
+    : compareBytes(left.obligationId, right.obligationId));
+  if (checkedAllocations.some((allocation, index) => allocation.sequence !== sortedAllocations[index]?.sequence
+    || compareBytes(allocation.obligationId, sortedAllocations[index]!.obligationId) !== 0)) {
+    throw new MalformedInputError('verifyNetting.allocations', 'allocations are not in canonical sequence order');
+  }
+  if (new Set(checkedAllocations.map((allocation) => toHex(allocation.obligationId))).size !== checkedAllocations.length) {
+    throw new DuplicateElementError('verifyNetting.allocations', 'obligation ids repeat');
+  }
+  if (new Set(checkedAllocations.map((allocation) => allocation.sequence)).size !== checkedAllocations.length) {
+    throw new DuplicateElementError('verifyNetting.allocations', 'sequences repeat');
+  }
+  const checkedSummaries = summaries.map((summary, index): NettingUnderlyingSummary => {
+    const at = `verifyNetting.underlyings[${index}]`;
+    object(summary, at);
+    const quantityIncrementAtoms = unsigned(summary.quantityIncrementAtoms, U128_BITS, `${at}.quantityIncrementAtoms`);
+    if (quantityIncrementAtoms === 0n) throw new MalformedInputError(`${at}.quantityIncrementAtoms`, 'increment is zero');
+    return Object.freeze({
+      underlyingId: protocolId(summary.underlyingId, `${at}.underlyingId`),
+      grossBuyAtoms: unsigned(summary.grossBuyAtoms, U128_BITS, `${at}.grossBuyAtoms`),
+      grossSellAtoms: unsigned(summary.grossSellAtoms, U128_BITS, `${at}.grossSellAtoms`),
+      internalMatchedAtoms: unsigned(summary.internalMatchedAtoms, U128_BITS, `${at}.internalMatchedAtoms`),
+      externalNetAtoms: checkedSigned(summary.externalNetAtoms, I128_BITS, `${at}.externalNetAtoms`),
+      quantityIncrementAtoms,
+    });
+  });
+  if (checkedSummaries.some((summary, index) => index > 0
+    && checkedSummaries[index - 1]!.underlyingId >= summary.underlyingId)) {
+    throw new MalformedInputError('verifyNetting.underlyings', 'underlying summaries are not canonically ordered');
+  }
+  for (const allocation of checkedAllocations) {
     const { signedQuantityAtoms: gross, internalQuantityAtoms: inside, externalQuantityAtoms: outside } = allocation;
     if (inside + outside !== gross) throw new MalformedInputError('verifyNetting', 'an obligation is not conserved');
     if (inside !== 0n && (inside > 0n) !== (gross > 0n)) throw new MalformedInputError('verifyNetting', 'an internal share flips direction');
     if (absBigInt(inside) > absBigInt(gross)) throw new MalformedInputError('verifyNetting', 'an internal share exceeds its obligation');
   }
-  const underlyings = new Set<string>(allocations.map((allocation) => allocation.underlyingId));
+  const underlyings = new Set<string>(checkedAllocations.map((allocation) => allocation.underlyingId));
   const summarized = new Set<string>();
-  for (const summary of summaries) {
+  for (const summary of checkedSummaries) {
     if (summarized.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} is summarized twice`);
     summarized.add(summary.underlyingId);
     if (!underlyings.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} has no allocations`);
@@ -248,8 +355,13 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
   for (const underlyingId of underlyings) {
     if (!summarized.has(underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${underlyingId} has no summary`);
   }
-  for (const summary of summaries) {
-    const lines = allocations.filter((allocation) => allocation.underlyingId === summary.underlyingId);
+  for (const summary of checkedSummaries) {
+    const lines = checkedAllocations.filter((allocation) => allocation.underlyingId === summary.underlyingId);
+    if (lines.some((line) => line.signedQuantityAtoms % summary.quantityIncrementAtoms !== 0n
+      || line.internalQuantityAtoms % summary.quantityIncrementAtoms !== 0n
+      || line.externalQuantityAtoms % summary.quantityIncrementAtoms !== 0n)) {
+      throw new MalformedInputError('verifyNetting', 'an allocation is off the underlying increment lattice');
+    }
     const grossBuy = lines.filter((line) => line.signedQuantityAtoms > 0n).reduce((sum, line) => sum + line.signedQuantityAtoms, 0n);
     const grossSell = lines.filter((line) => line.signedQuantityAtoms < 0n).reduce((sum, line) => sum - line.signedQuantityAtoms, 0n);
     const matched = grossBuy < grossSell ? grossBuy : grossSell;
@@ -261,6 +373,15 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
     const external = lines.reduce((sum, line) => sum + line.externalQuantityAtoms, 0n);
     if (buyInside !== matched || sellInside !== matched) {
       throw new MalformedInputError('verifyNetting', 'internal crossing is unbalanced');
+    }
+    const buys = lines.filter((line) => line.signedQuantityAtoms > 0n) as readonly Checked[];
+    const sells = lines.filter((line) => line.signedQuantityAtoms < 0n) as readonly Checked[];
+    const expected = new Map<string, bigint>([
+      ...allocateSide(buys, matched, summary.quantityIncrementAtoms),
+      ...[...allocateSide(sells, matched, summary.quantityIncrementAtoms)].map(([key, value]) => [key, -value] as const),
+    ]);
+    if (lines.some((line) => line.internalQuantityAtoms !== (expected.get(toHex(line.obligationId)) ?? 0n))) {
+      throw new MalformedInputError('verifyNetting', 'internal crossing does not follow deterministic pro-rata allocation');
     }
     if (external !== summary.externalNetAtoms || grossBuy - grossSell !== summary.externalNetAtoms) {
       throw new MalformedInputError('verifyNetting', 'external net does not equal the gross imbalance');

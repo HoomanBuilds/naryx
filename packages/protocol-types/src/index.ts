@@ -516,10 +516,13 @@ export {
 
 export {
   NETTING_MAX_OBLIGATIONS,
+  NETTING_RESULT_VERSION,
   EMPTY_RECOVERY_RESERVE,
   compressPackageLegs,
   netObligations,
+  nettingResultHash,
   verifyNetting,
+  verifyNettingResult,
   fundRecoveryReserve,
   reserveRecoveryCapital,
   settleRecoveryClaim,
@@ -527,9 +530,11 @@ export {
   type PackageLegQuantity,
   type CompressedPackage,
   type NettingObligation,
+  type NettingQuantityIncrement,
   type NettingAllocation,
   type NettingUnderlyingSummary,
   type NettingResult,
+  type NettingResultInput,
   type RecoveryReserveDomain,
   type RecoveryReserveLedger,
 } from './package-netting.js';
