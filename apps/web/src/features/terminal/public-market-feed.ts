@@ -39,15 +39,148 @@ function decode(value: Json): unknown {
   return value;
 }
 
-class PublicApiError extends Error {}
+class PublicApiError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+  }
+}
 
 async function read(baseUrl: string, path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const response = await fetch(`${baseUrl}${path}`, { headers: { Accept: "application/json" }, signal, cache: "no-store" });
   const text = await response.text();
-  if (!response.ok) throw new PublicApiError(`${path} answered ${response.status}`);
+  if (!response.ok) throw new PublicApiError(`${path} answered ${response.status}`, response.status);
   const body = decode(JSON.parse(text) as Json);
   if (body === null || typeof body !== "object" || Array.isArray(body)) throw new PublicApiError(`${path} is not an object`);
   return body as Record<string, unknown>;
+}
+
+export interface PublicPackageMarket {
+  readonly packageMarketId: string;
+  readonly seriesId: string | null;
+  readonly templateId: string | null;
+  readonly underlyingRefs: readonly string[];
+  readonly quoteAsset: string | null;
+  readonly settlementClass: string | null;
+  readonly domainIds: readonly string[];
+  readonly halted: boolean;
+}
+
+export interface PublicMarketCatalogueStatus {
+  readonly state: "loading" | "live" | "stale" | "unavailable";
+  readonly detail: string;
+}
+
+function requiredText(value: unknown, context: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new PublicApiError(`${context} is not a nonempty string`);
+  return value;
+}
+
+function textList(value: unknown, context: string): readonly string[] {
+  if (!Array.isArray(value)) throw new PublicApiError(`${context} is not a list`);
+  const entries = value.map((entry, index) => requiredText(entry, `${context}[${index}]`));
+  if (new Set(entries).size !== entries.length) throw new PublicApiError(`${context} contains duplicates`);
+  return Object.freeze(entries);
+}
+
+function catalogueMarkets(body: Record<string, unknown>): readonly PublicPackageMarket[] {
+  const catalogue = body.catalogue;
+  if (catalogue === null || typeof catalogue !== "object" || Array.isArray(catalogue)) {
+    throw new PublicApiError("catalogue is malformed");
+  }
+  const value = catalogue as Record<string, unknown>;
+  if (exact(value.expiresAtMs, "catalogue.expiresAtMs") <= BigInt(Date.now())) {
+    throw new PublicApiError("catalogue is expired");
+  }
+  if (!Array.isArray(value.entries)) throw new PublicApiError("catalogue entries are malformed");
+  const markets = value.entries.map((candidate, index): PublicPackageMarket => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new PublicApiError(`catalogue.entries[${index}] is malformed`);
+    }
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.halted !== "boolean") throw new PublicApiError(`catalogue.entries[${index}].halted is malformed`);
+    return Object.freeze({
+      packageMarketId: requiredText(entry.packageMarketId, `catalogue.entries[${index}].packageMarketId`),
+      seriesId: requiredText(entry.seriesId, `catalogue.entries[${index}].seriesId`),
+      templateId: requiredText(entry.templateId, `catalogue.entries[${index}].templateId`),
+      underlyingRefs: textList(entry.underlyingRefs, `catalogue.entries[${index}].underlyingRefs`),
+      quoteAsset: requiredText(entry.quoteAsset, `catalogue.entries[${index}].quoteAsset`),
+      settlementClass: requiredText(entry.settlementClass, `catalogue.entries[${index}].settlementClass`),
+      domainIds: textList(entry.domainIds, `catalogue.entries[${index}].domainIds`),
+      halted: entry.halted,
+    });
+  });
+  if (new Set(markets.map((market) => market.packageMarketId)).size !== markets.length) {
+    throw new PublicApiError("catalogue repeats a package market");
+  }
+  return Object.freeze(markets.sort((left, right) => left.packageMarketId.localeCompare(right.packageMarketId)));
+}
+
+function openMarkets(body: Record<string, unknown>): readonly PublicPackageMarket[] {
+  if (!Array.isArray(body.markets)) throw new PublicApiError("markets are malformed");
+  const markets = body.markets.map((candidate, index): PublicPackageMarket => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new PublicApiError(`markets[${index}] is malformed`);
+    }
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.halted !== "boolean") throw new PublicApiError(`markets[${index}].halted is malformed`);
+    return Object.freeze({
+      packageMarketId: requiredText(entry.packageMarketId, `markets[${index}].packageMarketId`),
+      seriesId: null,
+      templateId: null,
+      underlyingRefs: Object.freeze([]),
+      quoteAsset: null,
+      settlementClass: null,
+      domainIds: Object.freeze([]),
+      halted: entry.halted,
+    });
+  });
+  if (new Set(markets.map((market) => market.packageMarketId)).size !== markets.length) {
+    throw new PublicApiError("market list repeats a package market");
+  }
+  return Object.freeze(markets.sort((left, right) => left.packageMarketId.localeCompare(right.packageMarketId)));
+}
+
+/** Discovers the exchange's package markets without sending a search query or trading intent. */
+export function usePublicPackageMarkets(baseUrl: string | null): {
+  readonly markets: readonly PublicPackageMarket[];
+  readonly status: PublicMarketCatalogueStatus | null;
+} {
+  const [markets, setMarkets] = useState<readonly PublicPackageMarket[]>([]);
+  const [status, setStatus] = useState<PublicMarketCatalogueStatus>({ state: "loading", detail: "Loading package markets." });
+
+  useEffect(() => {
+    if (baseUrl === null) return;
+    const base = baseUrl.replace(/\/+$/, "");
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        let next: readonly PublicPackageMarket[];
+        try {
+          next = catalogueMarkets(await read(base, "/v1/catalogue", controller.signal));
+        } catch (error) {
+          if (!(error instanceof PublicApiError) || error.status !== 503) throw error;
+          next = openMarkets(await read(base, "/v1/markets", controller.signal));
+        }
+        setMarkets(next);
+        setStatus({ state: "live", detail: `${next.length} package market${next.length === 1 ? "" : "s"} available.` });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const detail = error instanceof Error ? error.message : "request failed";
+        setStatus((current) => current.state === "live" || current.state === "stale"
+          ? { state: "stale", detail: `Market refresh failed (${detail}); showing the last catalogue.` }
+          : { state: "unavailable", detail: `Package markets unavailable (${detail}).` });
+      }
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 15_000);
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [baseUrl]);
+
+  return { markets, status: baseUrl === null ? null : status };
 }
 
 function exact(value: unknown, context: string): bigint {

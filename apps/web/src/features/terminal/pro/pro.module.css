@@ -294,6 +294,33 @@
   line-height: 1.2;
 }
 
+.instrumentMarketSelect {
+  display: block;
+  max-width: 340px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 0 18px 0 0;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.instrumentMarketSelect:focus-visible {
+  border-radius: 2px;
+  outline: 1px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+.instrumentMarketSelect option {
+  background: var(--panel);
+  color: var(--text-primary);
+}
+
 .instrumentSub {
   display: block;
   color: var(--text-dim);

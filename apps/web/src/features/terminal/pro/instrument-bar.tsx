@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { MarketFeed } from "../market-feed";
+import type { PublicPackageMarket } from "../public-market-feed";
 import type { TerminalViewModel } from "../terminal-view-model";
 import { ChainIcon, PairIcon } from "@/features/brand/chain-icons";
 import styles from "./pro.module.css";
@@ -20,7 +21,21 @@ const SHORT_LABELS: Readonly<Record<string, string>> = {
  * The instrument header: the package identity, last basis with its 24-hour change, range, and
  * the snapshot's reference metrics. Every value keeps its source label.
  */
-export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel; feed: MarketFeed }) {
+export function InstrumentBar({
+  snapshot,
+  feed,
+  packageMarketId,
+  packageMarkets,
+  marketStatus,
+  onPackageMarketChange,
+}: {
+  snapshot: TerminalViewModel;
+  feed: MarketFeed;
+  packageMarketId: string | null;
+  packageMarkets: readonly PublicPackageMarket[];
+  marketStatus: string | null;
+  onPackageMarketChange(packageMarketId: string): void;
+}) {
   // Windows are by time, not candle count, so a gap in the history never stretches "24h".
   const stats = useMemo(() => {
     const hourly = feed.candles("basis", "1h");
@@ -39,7 +54,18 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
   const tone = stats === null || stats.change === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
   const { unit, precision, volume: hasVolume } = feed.seriesMeta("basis");
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
-  const metrics = snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
+  const selectedMarket = packageMarkets.find((market) => market.packageMarketId === packageMarketId) ?? null;
+  const marketIdentity = packageMarketId ?? snapshot.market.packageId;
+  const marketBase = selectedMarket?.underlyingRefs[0] ?? snapshot.market.base;
+  const marketQuote = selectedMarket?.quoteAsset ?? snapshot.market.quote;
+  const marketStrategy = selectedMarket?.templateId ?? snapshot.market.strategy;
+  const underlyings = selectedMarket === null
+    ? `${snapshot.market.base}/${snapshot.market.quote}`
+    : `${[...new Set(selectedMarket.underlyingRefs)].join(" + ")}/${selectedMarket.quoteAsset ?? snapshot.market.quote}`;
+  const metrics = selectedMarket?.templateId !== null && selectedMarket?.templateId !== undefined
+    && selectedMarket.templateId !== "cash-and-carry-v1"
+    ? []
+    : snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
   // Reference metrics carry the snapshot's evidence grade on screen, and a modeled return is never
   // emphasized as if it were a promised yield.
   const grade = snapshot.environment.evidenceGrade;
@@ -53,16 +79,30 @@ export function InstrumentBar({ snapshot, feed }: { snapshot: TerminalViewModel;
     <section className={styles.instrumentBar} aria-label="Instrument">
       <div className={styles.instrumentIdentity}>
         <span className={styles.instrumentBadge} aria-hidden="true">
-          <PairIcon base={snapshot.market.base} quote={snapshot.market.quote} size={24} />
+          <PairIcon base={marketBase} quote={marketQuote} size={24} />
           <ChainIcon chain={snapshot.selectedDomain} size={13} className={styles.instrumentChain} />
         </span>
         <div>
-          <strong>{snapshot.market.packageId}</strong>
+          {packageMarkets.length > 0 ? (
+            <select
+              className={styles.instrumentMarketSelect}
+              aria-label="Package market"
+              value={marketIdentity}
+              title={marketStatus ?? "Select a package market"}
+              onChange={(event) => onPackageMarketChange(event.target.value)}
+            >
+              {packageMarkets.map((market) => (
+                <option key={market.packageMarketId} value={market.packageMarketId}>
+                  {market.packageMarketId}{market.halted ? " (halted)" : ""}
+                </option>
+              ))}
+            </select>
+          ) : <strong title={marketStatus ?? undefined}>{marketIdentity}</strong>}
           <span className={styles.instrumentSub}>
-            {snapshot.market.strategy} <b>{snapshot.market.base}/{snapshot.market.quote}</b>
+            {marketStrategy} <b>{underlyings}</b>
           </span>
         </div>
-        <span className={styles.instrumentKind}>Package</span>
+        <span className={styles.instrumentKind}>{selectedMarket?.halted ? "Halted" : "Package"}</span>
       </div>
       <div className={styles.instrumentPrice}>
         <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(precision)}</strong>

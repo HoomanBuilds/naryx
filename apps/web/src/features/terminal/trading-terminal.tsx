@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { fixtureMarketFeed } from "./market-feed";
-import { usePublicMarketFeed } from "./public-market-feed";
+import { usePublicMarketFeed, usePublicPackageMarkets } from "./public-market-feed";
 import { useReferenceMarketFeed } from "./reference-market-feed";
 import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
@@ -71,6 +71,7 @@ import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
+const PACKAGE_MARKET_STORAGE_KEY = "naryx.packageMarket";
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
   templateId: "cash-and-carry-v1",
@@ -1748,9 +1749,27 @@ export function TradingTerminal({
   // local terminal without one.
   const reference = useReferenceMarketFeed(privateApiBaseUrl, selectedDomain, snapshot.market);
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
+  const { markets: packageMarkets, status: packageMarketStatus } = usePublicPackageMarkets(publicApiBaseUrl);
+  const [activePackageMarketId, setActivePackageMarketId] = useState<string | null>(packageMarketId);
+  useEffect(() => {
+    if (publicApiBaseUrl === null) {
+      setActivePackageMarketId(packageMarketId);
+      return;
+    }
+    if (packageMarkets.length === 0) return;
+    setActivePackageMarketId((current) => {
+      const stored = window.localStorage.getItem(PACKAGE_MARKET_STORAGE_KEY);
+      const candidates = [current, stored, packageMarketId, packageMarkets[0]?.packageMarketId];
+      return candidates.find((candidate) => candidate !== null && candidate !== undefined
+        && packageMarkets.some((market) => market.packageMarketId === candidate)) ?? null;
+    });
+  }, [packageMarketId, packageMarkets, publicApiBaseUrl]);
+  const resolvedPackageMarketId = packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)
+    ? activePackageMarketId
+    : packageMarkets[0]?.packageMarketId ?? activePackageMarketId;
   const { feed, status: publicFeedStatus } = usePublicMarketFeed(
     publicApiBaseUrl,
-    packageMarketId,
+    resolvedPackageMarketId,
     reference.feed ?? fixtureFeed,
     reference.feed,
   );
@@ -3421,7 +3440,17 @@ export function TradingTerminal({
     <div className={styles.terminalShell}>
       <main className={styles.terminalGrid}>
         <div className={styles.areaInstrument}>
-          <InstrumentBar snapshot={snapshot} feed={feed} />
+          <InstrumentBar
+            snapshot={snapshot}
+            feed={feed}
+            packageMarketId={resolvedPackageMarketId}
+            packageMarkets={packageMarkets}
+            marketStatus={packageMarketStatus?.detail ?? null}
+            onPackageMarketChange={(nextMarketId) => {
+              setActivePackageMarketId(nextMarketId);
+              window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, nextMarketId);
+            }}
+          />
         </div>
         <div className={styles.areaChart}>
           <ChartWorkspace
