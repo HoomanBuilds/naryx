@@ -209,6 +209,32 @@ export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest" | 
 
 export type PublicSolverState = Pick<SqliteSolverApiStore, "shardsForMarket" | "capacityStatus">;
 
+export function sealedAuctionAwardMatchesQuote(
+  quote: Readonly<{
+    environment: string;
+    solverId: string;
+    quoteHash: string;
+    netOutcomeAtoms: bigint;
+    validUntilUnit: string;
+    validUntilValue: bigint;
+  }>,
+  award: Readonly<{
+    environment: string;
+    solverId: string;
+    quoteHash: string;
+    netOutcomeAtoms: bigint;
+    timeUnit: string;
+    settlementDeadlineValue: bigint;
+  }>,
+): boolean {
+  return quote.environment === award.environment
+    && quote.solverId === award.solverId
+    && quote.quoteHash === award.quoteHash
+    && quote.netOutcomeAtoms === award.netOutcomeAtoms
+    && quote.validUntilUnit === award.timeUnit
+    && quote.validUntilValue >= award.settlementDeadlineValue;
+}
+
 export interface PublicApiOptions {
   readonly exchange: PublicExchangeStore;
   /** Optional: registry routes answer 503 when no registry is configured. */
@@ -507,6 +533,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       packageOrderId: string;
       settlement: ReturnType<SqlitePackageExchangeStore["settlementProgress"]> & {};
     }>,
+    expectedAuctionAward?: Readonly<{
+      environment: string;
+      solverId: string;
+      quoteHash: string;
+      netOutcomeAtoms: bigint;
+      timeUnit: string;
+      settlementDeadlineValue: bigint;
+    }>,
   ) {
     const store = requireStrategyPackages();
     if (store.order === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
@@ -569,6 +603,19 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (admitted.quote.solverSignatureScheme !== "ED25519"
       || !verifyEd25519(admitted.quote.solverVerificationKey, strategyPackageQuoteHash(admitted.quote), admitted.quote.signature)) {
       throw new RequestError(400, "INVALID_SIGNATURE", "The strategy quote signature is invalid.");
+    }
+    if (expectedAuctionAward !== undefined) {
+      const admittedQuoteHash = toHex(strategyPackageQuoteHash(admitted.quote));
+      if (!sealedAuctionAwardMatchesQuote({
+        environment: admitted.quote.environment,
+        solverId: admitted.quote.solverId,
+        quoteHash: admittedQuoteHash,
+        netOutcomeAtoms: admitted.quote.netPackageOutcome.atoms,
+        validUntilUnit: admitted.quote.validUntilUnit,
+        validUntilValue: admitted.quote.validUntilValue,
+      }, expectedAuctionAward)) {
+        throw new RequestError(409, "AUCTION_AWARD_MISMATCH", "The signed quote does not match the sealed auction award.");
+      }
     }
     if (packageExecution !== undefined) {
       if (result.executionBinding === undefined) {
@@ -1330,6 +1377,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   async function computeRoutes(request: IncomingMessage, url: URL): Promise<unknown> {
     onlyParams(url, []);
     const path = url.pathname;
+    const sealedAuctionAwardMatch = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})\/award$/.exec(path);
     if (![
       "/v1/orders/validate",
       "/v1/routes/replay-decision",
@@ -1363,10 +1411,49 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategies/commands",
       "/v1/builders",
       "/v1/builders/attributions",
-    ].includes(path)) {
+    ].includes(path) && sealedAuctionAwardMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (sealedAuctionAwardMatch !== null) {
+      if (Object.keys(body).length !== 0) {
+        throw new RequestError(400, "INVALID_REQUEST", "A sealed auction award request has no caller-selected fields.");
+      }
+      const auctionHash = sealedAuctionAwardMatch[1] as string;
+      const deliveryStore = requireDelivery();
+      const definition = deliveryStore.auctionDefinition(auctionHash);
+      const now = wallClockIn(definition.timeUnit);
+      const view = deliveryStore.auctionView(auctionHash, now);
+      if (view.phase !== "CLOSED") {
+        throw new RequestError(409, "AUCTION_NOT_CLOSED", "The sealed auction has not closed.");
+      }
+      if (view.result.outcome !== "AWARDED" || view.result.winner === undefined) {
+        throw new RequestError(409, "AUCTION_NO_FILL", "The sealed auction produced no executable award.");
+      }
+      if (now >= definition.settlementDeadlineValue) {
+        throw new RequestError(409, "AUCTION_SETTLEMENT_CLOSED", "The sealed auction settlement window has closed.");
+      }
+      const winner = view.result.winner;
+      const quote = await requestAndStoreStrategyQuote(
+        toHex(definition.orderHash),
+        `sealed-auction.${auctionHash}`,
+        undefined,
+        {
+          environment: definition.environment,
+          solverId: winner.solverId,
+          quoteHash: toHex(winner.quoteHash),
+          netOutcomeAtoms: winner.netOutcomeAtoms,
+          timeUnit: definition.timeUnit,
+          settlementDeadlineValue: definition.settlementDeadlineValue,
+        },
+      );
+      return Object.freeze({
+        ...quote,
+        auctionHash,
+        auctionResultHash: toHex(view.result.resultHash),
+        awardSolverId: winner.solverId,
+      });
+    }
     if (path === "/v1/package-book/orders/prepare") {
       const keys = Object.keys(body).sort();
       if (keys.length !== 3 || keys[0] !== "limitPriceTicks" || keys[1] !== "side" || keys[2] !== "strategyOrderHash"

@@ -40,6 +40,7 @@ import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } fr
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, signedOrder, terms } from "./evidence-fixtures.js";
 import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
+import { sealedAuctionAwardMatchesQuote } from "../src/public-api.js";
 
 const NOW_MS = 1_900_000_000_000;
 /** Observed bond ledgers the harness's solver API reads by bond id. */
@@ -47,6 +48,30 @@ const OBSERVED_BONDS = new Map<string, PerformanceBondLedger>();
 const RFQ_SUITE = "hpke-x25519-sha256-aes256gcm";
 const NOW_S = BigInt(NOW_MS / 1_000);
 const FAR = NOW_S + 86_400n;
+
+test("sealed auction awards bind the exact solver quote through the settlement deadline", () => {
+  const quote = {
+    environment: "testnet",
+    solverId: "solver-a",
+    quoteHash: "77".repeat(32),
+    netOutcomeAtoms: 500n,
+    validUntilUnit: "EVM_UNIX_SECONDS",
+    validUntilValue: NOW_S + 30n,
+  };
+  const award = {
+    environment: "testnet",
+    solverId: "solver-a",
+    quoteHash: "77".repeat(32),
+    netOutcomeAtoms: 500n,
+    timeUnit: "EVM_UNIX_SECONDS",
+    settlementDeadlineValue: NOW_S + 30n,
+  };
+  assert.equal(sealedAuctionAwardMatchesQuote(quote, award), true);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, quoteHash: "78".repeat(32) }, award), false);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, solverId: "solver-b" }, award), false);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, netOutcomeAtoms: 501n }, award), false);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, validUntilValue: NOW_S + 29n }, award), false);
+});
 
 function quoteKey(): { raw: Uint8Array; privateKey: KeyObject } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -636,6 +661,9 @@ test("a sealed auction accepts commits before its deadline, reveals after, and p
     const commitment = sealedQuoteCommitment(hash, opening);
     assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/commit`, { commitment: toHex(commitment) })).status, 200);
     assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/commit`, { commitment: toHex(commitment) })).status, 200);
+    const prematureAward = await api.plain("POST", `/v1/auctions/sealed/${hash}/award`, {});
+    assert.equal(prematureAward.status, 409);
+    assert.equal((prematureAward.body.error as { code: string }).code, "AUCTION_NOT_CLOSED");
     const early = await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt });
     assert.equal((early.body.error as { code: string }).code, "EARLY_REVEAL");
     assert.deepEqual(((await api.plain("GET", `/v1/auctions/sealed/${hash}`)).body as { phase: string; commitmentCount: number }).commitmentCount, 1);

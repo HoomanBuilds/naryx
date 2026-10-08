@@ -15,7 +15,7 @@ import {
 const START_MS = 1_900_000_000_000;
 const START_S = BigInt(START_MS / 1_000);
 
-test('persists an opening before commit and resumes commit and reveal across restarts', async () => {
+test('persists an opening and resumes through award finalization across restarts', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-sealed-auction-'));
   const path = join(directory, 'journal.sqlite');
   let nowMs = START_MS;
@@ -38,6 +38,7 @@ test('persists an opening before commit and resumes commit and reveal across res
   };
   const commitments: string[] = [];
   const reveals: { quoteHash: string; netOutcomeAtoms: bigint; salt: Uint8Array }[] = [];
+  const finalized: string[] = [];
   let failFirstCommit = true;
   const relay: SealedAuctionRelayPort = {
     poll: async (after) => after === 0 ? page : { auctions: [], nextCursor: after },
@@ -49,6 +50,12 @@ test('persists an opening before commit and resumes commit and reveal across res
       }
     },
     reveal: async (_hash, opening) => { reveals.push(opening); },
+    view: async () => ({
+      phase: 'CLOSED',
+      outcome: 'AWARDED',
+      winner: { solverId: 'solver-a', quoteHash: '77'.repeat(32) },
+    }),
+    finalizeAward: async (_hash, quoteHash) => { finalized.push(quoteHash); },
   };
   let quoteCalls = 0;
   const quotes: SealedAuctionQuotePort = {
@@ -91,7 +98,9 @@ test('persists an opening before commit and resumes commit and reveal across res
     const thirdJournal = new SqliteSealedAuctionJournal(path);
     await build(thirdJournal).tick();
     assert.equal(thirdJournal.get(auctionHash)?.status, 'REVEALED');
-    assert.equal(quoteCalls, 1);
+    assert.equal(thirdJournal.get(auctionHash)?.awardState, 'FINALIZED');
+    assert.equal(quoteCalls, 2);
+    assert.deepEqual(finalized, ['77'.repeat(32)]);
     assert.deepEqual(reveals.map((opening) => [opening.quoteHash, opening.netOutcomeAtoms, [...opening.salt]]), [
       ['77'.repeat(32), 500n, [...new Uint8Array(32).fill(9)]],
     ]);
@@ -126,6 +135,8 @@ test('records a discovered auction as missed without creating an opening after c
           : { auctions: [], nextCursor: after },
         commit: async () => undefined,
         reveal: async () => undefined,
+        view: async () => { throw new Error('view must not be requested'); },
+        finalizeAward: async () => { throw new Error('award must not be finalized'); },
       },
       quotes: { quote: async () => { throw new Error('quote must not be requested'); } },
       journal,

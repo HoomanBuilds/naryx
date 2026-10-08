@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import {
+  commitmentHash,
   fromProtocolJson,
   parseProtocolJson,
   sealedAuctionDefinition,
@@ -42,6 +43,12 @@ export interface SealedAuctionRelayPort {
     netOutcomeAtoms: bigint;
     salt: Uint8Array;
   }>): Promise<void>;
+  view(auctionHash: string): Promise<Readonly<{
+    phase: 'COMMIT' | 'REVEAL' | 'CLOSED';
+    outcome?: 'AWARDED' | 'NO_FILL';
+    winner?: Readonly<{ solverId: string; quoteHash: string }>;
+  }>>;
+  finalizeAward(auctionHash: string, quoteHash: string): Promise<void>;
 }
 
 export interface SealedAuctionQuoteTerms {
@@ -208,6 +215,52 @@ export class HttpSealedAuctionRelay implements SealedAuctionRelayPort {
     }
     await this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
   }
+
+  async view(auctionHash: string): Promise<Readonly<{
+    phase: 'COMMIT' | 'REVEAL' | 'CLOSED';
+    outcome?: 'AWARDED' | 'NO_FILL';
+    winner?: Readonly<{ solverId: string; quoteHash: string }>;
+  }>> {
+    if (!HASH.test(auctionHash)) throw new Error('sealed auction hash is invalid');
+    const body = await this.#call('GET', `/v1/auctions/sealed/${auctionHash}`);
+    if (body.phase !== 'COMMIT' && body.phase !== 'REVEAL' && body.phase !== 'CLOSED') {
+      throw new Error('sealed auction view phase is invalid');
+    }
+    const definition = sealedAuctionDefinition(body.definition as SealedAuctionDefinitionInput);
+    if (toHex(sealedAuctionHash(definition)) !== auctionHash) throw new Error('sealed auction view binding is invalid');
+    if (body.phase !== 'CLOSED') return Object.freeze({ phase: body.phase });
+    if (typeof body.result !== 'object' || body.result === null || Array.isArray(body.result)) {
+      throw new Error('sealed auction result is invalid');
+    }
+    const result = body.result as Record<string, unknown>;
+    if (result.outcome === 'NO_FILL') return Object.freeze({ phase: 'CLOSED' as const, outcome: 'NO_FILL' as const });
+    if (result.outcome !== 'AWARDED' || typeof result.winner !== 'object' || result.winner === null || Array.isArray(result.winner)) {
+      throw new Error('sealed auction award is invalid');
+    }
+    const winner = result.winner as Record<string, unknown>;
+    let winnerQuoteHash: string;
+    try {
+      winnerQuoteHash = toHex(commitmentHash(winner.quoteHash as Uint8Array | string, 'sealedAuction.winner.quoteHash'));
+    } catch {
+      throw new Error('sealed auction winner is invalid');
+    }
+    if (typeof winner.solverId !== 'string' || !IDENTIFIER.test(winner.solverId) || !HASH.test(winnerQuoteHash)) {
+      throw new Error('sealed auction winner is invalid');
+    }
+    return Object.freeze({
+      phase: 'CLOSED' as const,
+      outcome: 'AWARDED' as const,
+      winner: Object.freeze({ solverId: winner.solverId, quoteHash: winnerQuoteHash }),
+    });
+  }
+
+  async finalizeAward(auctionHash: string, quoteHash: string): Promise<void> {
+    if (!HASH.test(auctionHash) || !HASH.test(quoteHash)) throw new Error('sealed auction award is invalid');
+    const body = await this.#call('POST', `/v1/auctions/sealed/${auctionHash}/award`, {});
+    if (body.auctionHash !== auctionHash || body.quoteHash !== quoteHash || body.awardSolverId !== this.#solverId) {
+      throw new Error('sealed auction finalized another award');
+    }
+  }
 }
 
 type AuctionStatus = 'DISCOVERED' | 'OPENING_READY' | 'COMMITTED' | 'REVEALED' | 'MISSED_COMMIT' | 'MISSED_REVEAL';
@@ -220,6 +273,7 @@ interface AuctionRow {
   readonly net_outcome_atoms: string | null;
   readonly salt: Uint8Array | null;
   readonly status: AuctionStatus;
+  readonly award_state: 'PENDING' | 'FINALIZED' | 'NOT_AWARDED';
   readonly last_error: string | null;
 }
 
@@ -231,6 +285,7 @@ export interface SealedAuctionJournalRecord {
   readonly netOutcomeAtoms?: bigint;
   readonly salt?: Uint8Array;
   readonly status: AuctionStatus;
+  readonly awardState: 'PENDING' | 'FINALIZED' | 'NOT_AWARDED';
   readonly lastError?: string;
 }
 
@@ -276,6 +331,7 @@ function decodeRow(row: AuctionRow): SealedAuctionJournalRecord {
       salt: Uint8Array.from(row.salt as Uint8Array),
     }),
     status: row.status,
+    awardState: row.award_state,
     ...(row.last_error === null ? {} : { lastError: row.last_error }),
   });
 }
@@ -304,10 +360,15 @@ export class SqliteSealedAuctionJournal {
         net_outcome_atoms TEXT,
         salt BLOB,
         status TEXT NOT NULL CHECK (status IN ('DISCOVERED','OPENING_READY','COMMITTED','REVEALED','MISSED_COMMIT','MISSED_REVEAL')),
+        award_state TEXT NOT NULL DEFAULT 'PENDING' CHECK (award_state IN ('PENDING','FINALIZED','NOT_AWARDED')),
         last_error TEXT,
         updated_at_ms INTEGER NOT NULL
       ) STRICT;
     `);
+    const columns = this.#db.prepare('PRAGMA table_info(sealed_auction_participation)').all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'award_state')) {
+      this.#db.exec("ALTER TABLE sealed_auction_participation ADD COLUMN award_state TEXT NOT NULL DEFAULT 'PENDING' CHECK (award_state IN ('PENDING','FINALIZED','NOT_AWARDED'))");
+    }
   }
 
   cursor(): number {
@@ -342,7 +403,7 @@ export class SqliteSealedAuctionJournal {
 
   active(): readonly SealedAuctionJournalRecord[] {
     const rows = this.#db.prepare(
-      "SELECT * FROM sealed_auction_participation WHERE status IN ('DISCOVERED','OPENING_READY','COMMITTED') ORDER BY cursor",
+      "SELECT * FROM sealed_auction_participation WHERE status IN ('DISCOVERED','OPENING_READY','COMMITTED') OR (status = 'REVEALED' AND award_state = 'PENDING') ORDER BY cursor",
     ).all() as AuctionRow[];
     return Object.freeze(rows.map(decodeRow));
   }
@@ -368,6 +429,15 @@ export class SqliteSealedAuctionJournal {
       'UPDATE sealed_auction_participation SET status = ?, last_error = NULL, updated_at_ms = ? WHERE auction_hash = ? AND status = ?',
     ).run(to, nowMs, auctionHash, from);
     if (result.changes !== 1 && this.get(auctionHash)?.status !== to) throw new Error('sealed auction journal transition failed');
+  }
+
+  markAward(auctionHash: string, state: 'FINALIZED' | 'NOT_AWARDED', nowMs: number): void {
+    const result = this.#db.prepare(
+      "UPDATE sealed_auction_participation SET award_state = ?, last_error = NULL, updated_at_ms = ? WHERE auction_hash = ? AND status = 'REVEALED' AND award_state = 'PENDING'",
+    ).run(state, nowMs, auctionHash);
+    if (result.changes !== 1 && this.get(auctionHash)?.awardState !== state) {
+      throw new Error('sealed auction award transition failed');
+    }
   }
 
   recordError(auctionHash: string, error: unknown, nowMs: number): void {
@@ -485,20 +555,37 @@ export class SealedAuctionParticipant {
         this.#journal.mark(record.auctionHash, 'OPENING_READY', 'COMMITTED', this.#clockMs());
         record = this.#journal.get(record.auctionHash) as SealedAuctionJournalRecord;
       }
-      if (record.status !== 'COMMITTED') return;
-      const revealNowMs = this.#clockMs();
-      const revealNow = currentValue(record.definition.timeUnit, revealNowMs);
-      if (revealNow < record.definition.commitDeadlineValue) return;
-      if (revealNow >= record.definition.revealDeadlineValue) {
-        this.#journal.mark(record.auctionHash, 'COMMITTED', 'MISSED_REVEAL', revealNowMs);
+      if (record.status === 'COMMITTED') {
+        const revealNowMs = this.#clockMs();
+        const revealNow = currentValue(record.definition.timeUnit, revealNowMs);
+        if (revealNow < record.definition.commitDeadlineValue) return;
+        if (revealNow >= record.definition.revealDeadlineValue) {
+          this.#journal.mark(record.auctionHash, 'COMMITTED', 'MISSED_REVEAL', revealNowMs);
+          return;
+        }
+        await this.#relay.reveal(record.auctionHash, {
+          quoteHash: record.quoteHash as string,
+          netOutcomeAtoms: record.netOutcomeAtoms as bigint,
+          salt: record.salt as Uint8Array,
+        });
+        this.#journal.mark(record.auctionHash, 'COMMITTED', 'REVEALED', this.#clockMs());
+        record = this.#journal.get(record.auctionHash) as SealedAuctionJournalRecord;
+      }
+      if (record.status !== 'REVEALED' || record.awardState !== 'PENDING') return;
+      const view = await this.#relay.view(record.auctionHash);
+      if (view.phase !== 'CLOSED') return;
+      if (view.outcome !== 'AWARDED' || view.winner?.solverId !== this.#solverId) {
+        this.#journal.markAward(record.auctionHash, 'NOT_AWARDED', this.#clockMs());
         return;
       }
-      await this.#relay.reveal(record.auctionHash, {
-        quoteHash: record.quoteHash as string,
-        netOutcomeAtoms: record.netOutcomeAtoms as bigint,
-        salt: record.salt as Uint8Array,
+      if (view.winner.quoteHash !== record.quoteHash) throw new Error('sealed auction award changed the committed quote');
+      const quote = await this.#quotes.quote({
+        orderHash: toHex(record.definition.orderHash),
+        idempotencyKey: `sealed-auction.${record.auctionHash}`,
       });
-      this.#journal.mark(record.auctionHash, 'COMMITTED', 'REVEALED', this.#clockMs());
+      if (quote.quoteHash !== record.quoteHash) throw new Error('sealed auction quote replay changed');
+      await this.#relay.finalizeAward(record.auctionHash, quote.quoteHash);
+      this.#journal.markAward(record.auctionHash, 'FINALIZED', this.#clockMs());
     } catch (error) {
       this.#journal.recordError(record.auctionHash, error, this.#clockMs());
     }
