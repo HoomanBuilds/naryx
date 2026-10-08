@@ -609,6 +609,7 @@ export {
   verifyNettingFinalAllocationReceipt,
   type NettingFinalAllocation,
   type NettingFinalAllocationReceipt,
+  type CrossBatchNettingResolution,
 } from './netting-settlement.js';
 
 export {

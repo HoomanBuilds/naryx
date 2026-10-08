@@ -4,6 +4,16 @@ import { canonicalBytes } from './encoding.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import {
+  verifyCrossBatchClearingPlan,
+  verifyCrossBatchClearingReceipt,
+  type CrossBatchClearingPlan,
+  type CrossBatchClearingPolicy,
+  type CrossBatchClearingPolicyInput,
+  type CrossBatchClearingReceipt,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
+} from './cross-batch-clearing.js';
+import {
   verifyNettingExternalExecutionEvidence,
   verifyNettingExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
@@ -70,6 +80,15 @@ export interface NettingFinalAllocationReceipt {
   readonly nettingPolicyHash: CommitmentHash;
   readonly executionEvidenceHashes: readonly CommitmentHash[];
   readonly allocations: readonly NettingFinalAllocation[];
+}
+
+export interface CrossBatchNettingResolution {
+  readonly policy: CrossBatchClearingPolicyInput | CrossBatchClearingPolicy;
+  readonly sourceIntents: readonly NettingExternalExecutionIntent[];
+  readonly plan: CrossBatchClearingPlan;
+  readonly intent?: CrossBatchExternalExecutionIntent;
+  readonly evidence?: CrossBatchExternalExecutionEvidence;
+  readonly receipt: CrossBatchClearingReceipt;
 }
 
 type AllocationPayload = Omit<NettingFinalAllocation, 'allocationReceiptHash'>;
@@ -230,11 +249,16 @@ export function nettingFinalAllocationReceipt(
   policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   evidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): NettingFinalAllocationReceipt {
   const policy = nettingPolicyManifest(policyInput, 'nettingSettlementReceipt.policy');
   verifyNettingResultAgainstPolicy(result, policy);
   const intentByInstrument = new Map<string, NettingExternalExecutionIntent>();
-  const evidenceByIntent = new Map<string, NettingExternalExecutionEvidence>();
+  const resolutionByIntent = new Map<string, Readonly<{
+    grossQuoteAtoms: bigint;
+    feeQuoteAtoms: bigint;
+    resolutionHash: CommitmentHash;
+  }>>();
   for (const intent of intents) {
     verifyNettingExternalExecutionIntent(intent, result, policy);
     if (intentByInstrument.has(intent.instrumentId)) {
@@ -244,13 +268,47 @@ export function nettingFinalAllocationReceipt(
   }
   for (const item of evidence) {
     const key = toHex(item.intentHash);
-    if (evidenceByIntent.has(key)) {
+    if (resolutionByIntent.has(key)) {
       throw new DuplicateElementError('nettingSettlementReceipt.evidence', 'intent repeats');
     }
-    evidenceByIntent.set(key, item);
+    const intent = intents.find((candidate) => toHex(candidate.intentHash) === key);
+    if (intent === undefined) {
+      throw new MalformedInputError('nettingSettlementReceipt.evidence', 'evidence cites an unknown intent');
+    }
+    verifyNettingExternalExecutionEvidence(item, intent);
+    if (item.outcome !== 'EXACT_FILLED') {
+      throw new MalformedInputError('nettingSettlementReceipt.evidence', 'external execution is not exactly filled');
+    }
+    resolutionByIntent.set(key, Object.freeze({
+      grossQuoteAtoms: item.grossQuoteAtoms,
+      feeQuoteAtoms: item.feeQuoteAtoms,
+      resolutionHash: item.evidenceHash,
+    }));
+  }
+  for (const resolution of crossBatchResolutions) {
+    verifyCrossBatchClearingPlan(resolution.plan, resolution.sourceIntents, resolution.policy);
+    verifyCrossBatchClearingReceipt(
+      resolution.receipt,
+      resolution.plan,
+      resolution.intent,
+      resolution.evidence,
+    );
+    for (const source of resolution.receipt.sources) {
+      const key = toHex(source.sourceIntentHash);
+      if (!intents.some((candidate) => toHex(candidate.intentHash) === key)) continue;
+      if (resolutionByIntent.has(key)) {
+        throw new DuplicateElementError('nettingSettlementReceipt.crossBatchResolutions', 'intent repeats');
+      }
+      resolutionByIntent.set(key, Object.freeze({
+        grossQuoteAtoms: absBigInt(source.internalQuoteDeltaAtoms)
+          + absBigInt(source.externalGrossQuoteDeltaAtoms),
+        feeQuoteAtoms: source.externalFeeQuoteAtoms,
+        resolutionHash: resolution.receipt.receiptHash,
+      }));
+    }
   }
   const externalSummaries = result.underlyings.filter((summary) => summary.externalNetAtoms !== 0n);
-  if (intents.length !== externalSummaries.length || evidence.length !== externalSummaries.length) {
+  if (intents.length !== externalSummaries.length || resolutionByIntent.size !== externalSummaries.length) {
     throw new MalformedInputError('nettingSettlementReceipt', 'external intent or evidence coverage is incomplete');
   }
   const allocationsById = new Map<string, NettingFinalAllocation>();
@@ -288,12 +346,8 @@ export function nettingFinalAllocationReceipt(
     }
     const intent = intentByInstrument.get(summary.instrumentId);
     if (intent === undefined) throw new MalformedInputError('nettingSettlementReceipt.intents', 'external intent is missing');
-    const item = evidenceByIntent.get(toHex(intent.intentHash));
-    if (item === undefined) throw new MalformedInputError('nettingSettlementReceipt.evidence', 'external evidence is missing');
-    verifyNettingExternalExecutionEvidence(item, intent);
-    if (item.outcome !== 'EXACT_FILLED') {
-      throw new MalformedInputError('nettingSettlementReceipt.evidence', 'external execution is not exactly filled');
-    }
+    const item = resolutionByIntent.get(toHex(intent.intentHash));
+    if (item === undefined) throw new MalformedInputError('nettingSettlementReceipt.evidence', 'external resolution is missing');
     const externalLines = lines.filter((line) => line.externalQuantityAtoms !== 0n);
     const weights = externalLines.map((line) => absBigInt(line.externalQuantityAtoms));
     const sourceCaps = new Map(intent.sourceFeeCaps.map((source) => [toHex(source.obligationId), source.maximumFeeQuoteAtoms]));
@@ -354,7 +408,7 @@ export function nettingFinalAllocationReceipt(
           I256_BITS,
           'nettingSettlementReceipt.totalQuoteDeltaAtoms',
         ),
-        ...(externalIndex < 0 ? {} : { externalExecutionEvidenceHash: item.evidenceHash }),
+        ...(externalIndex < 0 ? {} : { externalExecutionEvidenceHash: item.resolutionHash }),
       }));
     }
   }
@@ -362,7 +416,10 @@ export function nettingFinalAllocationReceipt(
   if (allocations.some((value) => value === undefined)) {
     throw new MalformedInputError('nettingSettlementReceipt.allocations', 'allocation receipt is missing');
   }
-  const executionEvidenceHashes = Object.freeze(evidence.map((value) => value.evidenceHash).sort(compareBytes));
+  const executionEvidenceHashes = Object.freeze(
+    [...new Map([...resolutionByIntent.values()].map((value) => [toHex(value.resolutionHash), value.resolutionHash])).values()]
+      .sort(compareBytes),
+  );
   const payload = Object.freeze({
     version: NETTING_FINAL_ALLOCATION_RECEIPT_VERSION as 1,
     nettingProofHash: result.proofHash,
@@ -383,9 +440,10 @@ export function verifyNettingFinalAllocationReceipt(
   policy: NettingPolicyManifestInput | NettingPolicyManifest,
   intents: readonly NettingExternalExecutionIntent[],
   evidence: readonly NettingExternalExecutionEvidence[],
+  crossBatchResolutions: readonly CrossBatchNettingResolution[] = [],
 ): void {
   version(receipt.version, NETTING_FINAL_ALLOCATION_RECEIPT_VERSION, 'nettingFinalAllocationReceipt.version');
-  const expected = nettingFinalAllocationReceipt(result, policy, intents, evidence);
+  const expected = nettingFinalAllocationReceipt(result, policy, intents, evidence, crossBatchResolutions);
   if (compareBytes(receipt.receiptHash, expected.receiptHash) !== 0
     || compareBytes(commitmentHash(domainHash(HASH_DOMAIN.NETTING_FINAL_ALLOCATION_RECEIPT, receiptBytes(receipt)), 'nettingFinalAllocationReceipt.receiptHash'), expected.receiptHash) !== 0) {
     throw new MalformedInputError('nettingFinalAllocationReceipt', 'receipt does not follow the netting result and execution evidence');

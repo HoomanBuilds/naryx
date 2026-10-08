@@ -10,11 +10,13 @@ import {
   domainRef,
   netObligations,
   nettingExternalExecutionIntent,
+  nettingFinalAllocationReceipt,
   verifyCrossBatchClearingPlan,
   verifyCrossBatchClearingReceipt,
   versionedManifestRef,
   type NettingExternalExecutionIntent,
   type NettingPolicyManifestInput,
+  type NettingResult,
 } from '../src/index.js';
 
 const id = (value: number): string => value.toString(16).padStart(64, '0');
@@ -59,6 +61,19 @@ function residual(
   limitPriceTicks: bigint,
   policyInput = policy(),
 ): NettingExternalExecutionIntent {
+  return batch(number, quantity, limitPriceTicks, policyInput).intent;
+}
+
+function batch(
+  number: number,
+  quantity: bigint,
+  limitPriceTicks: bigint,
+  policyInput = policy(),
+): Readonly<{
+  policy: NettingPolicyManifestInput;
+  result: NettingResult;
+  intent: NettingExternalExecutionIntent;
+}> {
   const result = netObligations([{
     ownerId: `owner-${number}`,
     strategyOrderHash: id(number * 10),
@@ -71,12 +86,13 @@ function residual(
     sequence: 1n,
   }], policyInput);
   const allocation = result.allocations[0]!;
-  return nettingExternalExecutionIntent(result, policyInput, {
+  const intent = nettingExternalExecutionIntent(result, policyInput, {
     instrumentId: 'sol-perp',
     validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
     validUntilValue: 10_000n + BigInt(number),
     sourceFeeCaps: [{ obligationId: allocation.obligationId, maximumFeeQuoteAtoms: 2n }],
   });
+  return Object.freeze({ policy: policyInput, result, intent });
 }
 
 const clearingPolicy = crossBatchClearingPolicy({
@@ -91,8 +107,10 @@ const clearingPolicy = crossBatchClearingPolicy({
 });
 
 test('cross-batch clearing nets compatible residuals and routes the remainder once', () => {
-  const buy = residual(1, 30n, 12n);
-  const sell = residual(2, -20n, 8n);
+  const buyBatch = batch(1, 30n, 12n);
+  const sellBatch = batch(2, -20n, 8n);
+  const buy = buyBatch.intent;
+  const sell = sellBatch.intent;
   const plan = crossBatchClearingPlan([buy, sell], clearingPolicy);
   verifyCrossBatchClearingPlan(plan, [buy, sell], clearingPolicy);
   assert.equal(plan.internalMatchedQuantityAtoms, 20n);
@@ -127,6 +145,35 @@ test('cross-batch clearing nets compatible residuals and routes the remainder on
   assert.equal(seller.externalQuantityAtoms, 0n);
   assert.equal(seller.totalQuoteDeltaAtoms, 20n);
   assert.equal(receipt.sources.reduce((sum, source) => sum + source.externalFeeQuoteAtoms, 0n), 1n);
+
+  const resolution = Object.freeze({
+    policy: clearingPolicy,
+    sourceIntents: Object.freeze([buy, sell]),
+    plan,
+    intent,
+    evidence,
+    receipt,
+  });
+  const buyerSettlement = nettingFinalAllocationReceipt(
+    buyBatch.result,
+    buyBatch.policy,
+    [buy],
+    [],
+    [resolution],
+  );
+  const sellerSettlement = nettingFinalAllocationReceipt(
+    sellBatch.result,
+    sellBatch.policy,
+    [sell],
+    [],
+    [resolution],
+  );
+  assert.equal(buyerSettlement.executionEvidenceHashes.length, 1);
+  assert.deepEqual(buyerSettlement.executionEvidenceHashes[0], receipt.receiptHash);
+  assert.equal(buyerSettlement.allocations[0]!.externalGrossQuoteDeltaAtoms, -31n);
+  assert.equal(buyerSettlement.allocations[0]!.externalFeeQuoteAtoms, 1n);
+  assert.equal(sellerSettlement.allocations[0]!.externalGrossQuoteDeltaAtoms, 20n);
+  assert.equal(sellerSettlement.allocations[0]!.externalFeeQuoteAtoms, 0n);
 });
 
 test('fully crossed residuals settle without an external intent', () => {
