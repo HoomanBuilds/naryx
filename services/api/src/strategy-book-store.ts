@@ -14,7 +14,7 @@ import {
   toHex,
   requiresSuccessfulReceipt,
 } from "@naryx/protocol-types";
-import type { PackageReceiptInput, StrategyCommandInput, StrategyPackageReceiptInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
+import type { PackageReceiptInput, StrategyCommandInput, StrategyPackageOrderInput, StrategyPackageReceiptInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
 import {
   storedStrategyCommandAuthorization,
@@ -116,6 +116,7 @@ export type StrategyCommandResult =
  */
 export type StrategyExecutionReceiptInput = PackageReceiptInput | StrategyPackageReceiptInput;
 export type OriginReceiptReader = (receiptHashHex: string) => StrategyExecutionReceiptInput | undefined;
+export type StrategyPackageOrderReader = (orderHashHex: string) => StrategyPackageOrderInput | undefined;
 
 function isStrategyPackageReceipt(receipt: StrategyExecutionReceiptInput): receipt is StrategyPackageReceiptInput {
   return "legOutcomes" in receipt;
@@ -176,12 +177,14 @@ export class SqliteStrategyBookStore {
   private readonly clock: () => number;
   private readonly environment: string;
   private readonly originReceipt: OriginReceiptReader;
+  private readonly packageOrder: StrategyPackageOrderReader | undefined;
   private readonly transferEvidence: TransferEvidenceVerifier | undefined;
 
-  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly transferEvidence?: TransferEvidenceVerifier; readonly clock?: () => number }) {
+  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly packageOrder?: StrategyPackageOrderReader; readonly transferEvidence?: TransferEvidenceVerifier; readonly clock?: () => number }) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new StrategyBookError(code, message));
     this.environment = options.environment;
     this.originReceipt = options.originReceipt;
+    this.packageOrder = options.packageOrder;
     this.transferEvidence = options.transferEvidence;
     this.clock = options.clock ?? Date.now;
   }
@@ -360,12 +363,24 @@ export class SqliteStrategyBookStore {
       return receipt;
     });
     const prior = states.get(command.strategyId) as StrategyState;
+    const packageOrders = command.parameters.kind === "APPLY_PACKAGE"
+      ? receipts.map((receipt) => {
+        if (!isStrategyPackageReceipt(receipt)) {
+          throw new StrategyBookError("EXECUTION_AMBIGUOUS", "A generalized package transition requires generalized receipts.");
+        }
+        const orderHashHex = toHex(strategyPackageReceipt(receipt).orderHash);
+        const order = this.packageOrder?.(orderHashHex);
+        if (order === undefined) throw new StrategyBookError("ORDER_NOT_FOUND", `No package order has hash ${orderHashHex}.`);
+        return order;
+      })
+      : [];
     const check = strategyExecutionMatches(
       command.parameters.kind,
       prior,
       next[0] as StrategyState,
       receipts,
       command.parameters.kind === "APPLY_PACKAGE" ? command.parameters.operation : undefined,
+      packageOrders,
     );
     if (!check.matches) throw new StrategyBookError(check.mismatch, "The bound receipts do not account for this exact position change.");
     return hashes;

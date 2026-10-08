@@ -1,5 +1,5 @@
 import { checkedSigned, checkedUnsigned } from './arithmetic.js';
-import { toHex } from './bytes.js';
+import { bytesEqual, toHex } from './bytes.js';
 import { canonicalBytes, type CanonicalWriter } from './encoding.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
@@ -24,6 +24,7 @@ import {
   splitStrategy,
   STRATEGY_OPERATION,
   strategyState,
+  strategyStateHash,
   type DelegableAuthority,
   type StrategyState,
   type StrategyPackageTransitionOperation,
@@ -31,6 +32,11 @@ import {
   type StrategyTransitionResult,
 } from './strategy-lifecycle.js';
 import { requiresSuccessfulReceipt, type PackageReceiptInput } from './terminal-outcome.js';
+import {
+  strategyPackageOrder,
+  strategyPackageOrderHash,
+  type StrategyPackageOrderInput,
+} from './strategy-package-order.js';
 import { strategyPackageReceipt, type StrategyPackageReceiptInput } from './strategy-package-receipt.js';
 
 export const STRATEGY_COMMAND_VERSION = 1;
@@ -459,24 +465,50 @@ function sameLiabilityTotals(left: Map<string, LiabilityDelta>, right: Map<strin
 }
 
 function genericExecutionMatches(
-  kind: StrategyCommandKind | StrategyPackageTransitionOperation,
+  commandKind: StrategyCommandKind,
+  packageOperation: StrategyPackageTransitionOperation | undefined,
   prior: StrategyState,
   next: StrategyState,
   receipts: readonly StrategyPackageReceiptInput[],
+  packageOrders: readonly StrategyPackageOrderInput[],
 ): { readonly matches: true } | { readonly matches: false; readonly mismatch: StrategyExecutionMismatch } {
   const fail = (mismatch: StrategyExecutionMismatch) => Object.freeze({ matches: false as const, mismatch });
-  const expectedAction = kind === 'ROLL_PACKAGE'
+  const action = packageOperation ?? commandKind;
+  const expectedAction = action === 'ROLL_PACKAGE'
     ? 'roll'
-    : kind === 'MIGRATE_PACKAGE'
+    : action === 'MIGRATE_PACKAGE'
       ? 'migrate'
-      : kind.toLowerCase().replaceAll('_', '-');
+      : action.toLowerCase().replaceAll('_', '-');
   const executed: (readonly [string, bigint])[] = [];
   const liabilities = new Map<string, LiabilityDelta>();
   for (const input of receipts) {
     const receipt = strategyPackageReceipt(input);
     if (!requiresSuccessfulReceipt(receipt.terminalState)) return fail('RECEIPT_NOT_SETTLED');
     if (receipt.owner !== prior.ownerId) return fail('RECEIPT_OWNER_MISMATCH');
-    if (receipt.seriesId !== prior.seriesId || receipt.executionClassId !== prior.executionClassId) return fail('RECEIPT_MARKET_MISMATCH');
+    if (commandKind === 'APPLY_PACKAGE') {
+      const matchingOrders = packageOrders
+        .map((candidate) => strategyPackageOrder(candidate))
+        .filter((candidate) => bytesEqual(strategyPackageOrderHash(candidate), receipt.orderHash));
+      if (matchingOrders.length !== 1) return fail('EXECUTION_AMBIGUOUS');
+      const order = matchingOrders[0] as ReturnType<typeof strategyPackageOrder>;
+      if (order.expectedStrategyStateHash === undefined
+        || !bytesEqual(order.expectedStrategyStateHash, strategyStateHash(prior))
+        || order.owner !== prior.ownerId
+        || order.lifecycleAction.toLowerCase().replaceAll('_', '-') !== receipt.lifecycleAction
+        || order.environment !== receipt.environment
+        || order.templateId !== receipt.templateId
+        || order.templateVersion !== receipt.templateVersion
+        || !bytesEqual(order.packageTemplateManifestHash, receipt.packageTemplateManifestHash)
+        || order.seriesId !== receipt.seriesId
+        || order.seriesVersion !== receipt.seriesVersion
+        || !bytesEqual(order.seriesManifestHash, receipt.seriesManifestHash)
+        || order.executionClassId !== receipt.executionClassId
+        || order.executionClassVersion !== receipt.executionClassVersion
+        || !bytesEqual(order.executionClassManifestHash, receipt.executionClassManifestHash)
+        || order.settlementClass !== receipt.settlementClass) return fail('RECEIPT_MARKET_MISMATCH');
+    } else if (receipt.seriesId !== prior.seriesId || receipt.executionClassId !== prior.executionClassId) {
+      return fail('RECEIPT_MARKET_MISMATCH');
+    }
     if (receipt.lifecycleAction !== expectedAction) return fail('RECEIPT_ACTION_MISMATCH');
     for (const outcome of receipt.legOutcomes) {
       if (outcome.positionLegId !== undefined && outcome.settledQuantity.atoms !== 0n) {
@@ -514,13 +546,14 @@ export function strategyExecutionMatches(
   next: StrategyState,
   receipts: readonly StrategyExecutionReceiptInput[],
   packageOperation?: StrategyPackageTransitionOperation,
+  packageOrders: readonly StrategyPackageOrderInput[] = [],
 ): { readonly matches: true } | { readonly matches: false; readonly mismatch: StrategyExecutionMismatch } {
   const fail = (mismatch: StrategyExecutionMismatch) => Object.freeze({ matches: false as const, mismatch });
   if (receipts.length === 0) return fail('EXECUTION_MISMATCH');
   const genericCount = receipts.filter(isStrategyPackageReceipt).length;
   if (genericCount !== 0 && genericCount !== receipts.length) return fail('EXECUTION_AMBIGUOUS');
   if (genericCount === receipts.length) {
-    return genericExecutionMatches(packageOperation ?? kind, prior, next, receipts as readonly StrategyPackageReceiptInput[]);
+    return genericExecutionMatches(kind, packageOperation, prior, next, receipts as readonly StrategyPackageReceiptInput[], packageOrders);
   }
   if (kind === 'APPLY_PACKAGE' || kind === 'ROLL_PACKAGE' || kind === 'MIGRATE_PACKAGE' || kind === 'EMERGENCY_UNWIND') {
     return fail('EXECUTION_AMBIGUOUS');

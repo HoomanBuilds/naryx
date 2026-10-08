@@ -212,7 +212,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   strategyAttempts?: StrategyAttemptLookup;
   strategyReceipts?: Pick<
     SqliteStrategyPackageStore,
-    "anyStrategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt"
+    "anyStrategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionByStateHash"
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
@@ -313,10 +313,22 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
             "The selected strategy admission was not found.",
           );
         }
+        const priorPosition = admission.order.lifecycleAction === "ENTRY"
+          ? undefined
+          : admission.order.expectedStrategyStateHash === undefined
+            ? undefined
+            : options.strategyReceipts?.nativeStrategyPositionByStateHash(hex(admission.order.expectedStrategyStateHash));
+        if (admission.order.lifecycleAction !== "ENTRY" && priorPosition === undefined) {
+          throw new HyperliquidTestnetTerminalValidationError(
+            "STALE_STRATEGY_STATE",
+            "The strategy state committed by the lifecycle order is no longer current.",
+          );
+        }
         strategyReceipt = buildHyperliquidStrategyPackageReceipt({
           attemptId: request.attemptId,
           admission,
           result,
+          ...(priorPosition === undefined ? {} : { priorState: priorPosition.state }),
         });
         if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
         return;

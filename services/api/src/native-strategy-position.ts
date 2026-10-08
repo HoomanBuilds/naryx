@@ -60,12 +60,19 @@ function completeTerminalState(state: StrategyPackageReceipt["terminalState"]): 
 function checkedPositionDeltas(
   graphInput: PackageGraphInput,
   receipt: StrategyPackageReceipt,
+  priorState?: StrategyState,
 ): ReadonlyMap<string, bigint> {
   const graph = packageGraph(graphInput);
   const deltas = new Map<string, bigint>();
   for (const leg of graph.legs) {
     const outcome = receipt.legOutcomes.find((candidate) => candidate.legId === leg.legId);
-    requireCondition(outcome !== undefined && outcome.positionLegId === leg.legId,
+    const matchingPositions = priorState?.legs.filter((position) => position.underlyingId === leg.quantityAsset.assetId
+      && position.instrumentId === leg.market.subjectId
+      && position.venueId === leg.venue.subjectId) ?? [];
+    requireCondition(matchingPositions.length <= 1, "POSITION_IDENTITY_AMBIGUOUS",
+      `Graph leg ${leg.legId} matches multiple strategy positions.`);
+    const expectedPositionLegId = matchingPositions[0]?.legId ?? leg.legId;
+    requireCondition(outcome !== undefined && outcome.positionLegId === expectedPositionLegId,
       "POSITION_EVIDENCE_MISSING", `Receipt leg ${leg.legId} does not identify its strategy position.`);
     const delta = outcome.settledQuantity.atoms;
     requireCondition(delta === 0n || (delta > 0n) === (leg.side === "BUY"),
@@ -244,7 +251,7 @@ export function applyNativeStrategyTransitionReceipt(
   requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
     "A native strategy transition requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
-  const deltas = checkedPositionDeltas(graph, receipt);
+  const deltas = checkedPositionDeltas(graph, receipt, position.state);
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
     requireCondition([...deltas.values()].every((delta) => delta === 0n),
       "POSITION_NOT_FLAT", "A flat transition receipt cannot change native strategy exposure.");
@@ -346,7 +353,7 @@ export function applyNativeStrategyMigrationReceipt(
   requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
     "A native hedge migration requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
-  const deltas = checkedPositionDeltas(graph, receipt);
+  const deltas = checkedPositionDeltas(graph, receipt, position.state);
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
     requireCondition([...deltas.values()].every((delta) => delta === 0n),
       "POSITION_NOT_FLAT", "A no-effect migration receipt cannot change hedge exposure.");
@@ -463,7 +470,7 @@ export function applyNativeStrategyRebalanceReceipt(
   requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
     "A native delta rebalance requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
-  const deltas = checkedPositionDeltas(graph, receipt);
+  const deltas = checkedPositionDeltas(graph, receipt, position.state);
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
     requireCondition([...deltas.values()].every((delta) => delta === 0n),
       "POSITION_NOT_FLAT", "A no-effect rebalance receipt cannot change hedge exposure.");
@@ -513,7 +520,7 @@ export function applyNativeStrategyExitReceipt(
   requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
     "A native strategy transition requires finalized execution evidence.");
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
-    const deltas = checkedPositionDeltas(graph, receipt);
+    const deltas = checkedPositionDeltas(graph, receipt, position.state);
     requireCondition([...deltas.values()].every((delta) => delta === 0n),
       "POSITION_NOT_FLAT", "A no-effect exit receipt cannot change native strategy exposure.");
     return Object.freeze({
@@ -529,7 +536,7 @@ export function applyNativeStrategyExitReceipt(
       exitReceiptHashHex: receiptHashHex,
     });
   }
-  const deltas = checkedPositionDeltas(graph, receipt);
+  const deltas = checkedPositionDeltas(graph, receipt, position.state);
   const remaining = position.state.legs.map((leg) => {
     const delta = deltas.get(leg.legId) ?? 0n;
     requireCondition(delta === 0n || delta > 0n !== leg.signedQuantityAtoms > 0n,

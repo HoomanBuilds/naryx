@@ -15,6 +15,7 @@ import {
   strategyPackageOrderHash,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
+  strategyExecutionMatches,
   stringifyProtocolJson,
   toHex,
   validateStrategyTemplateGraph,
@@ -342,7 +343,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     quoteAsset: rebalanceProfile.quoteAsset,
     legOutcomes: [{
       legId: "perp-adjustment",
-      positionLegId: "perp-adjustment",
+      positionLegId: opened.state.legs[0]!.legId,
       domain: rebalanceProfile.domain,
       status: "EXECUTED",
       requestedQuantity: assetAmount(rebalanceProfile.baseAsset, 100_000n),
@@ -370,6 +371,16 @@ test("rebalances and migrates an authoritative native hedge", () => {
     rebalance.graph,
     rebalanceReceipt,
   );
+  const preparedRebalance = prepareStrategyTransition({
+    environment: "testnet",
+    atValue: BigInt(NOW_MS),
+    receiptHashHex: toHex(strategyPackageReceiptHash(rebalanceReceipt)),
+    current: opened.state,
+    order: rebalance.order,
+    graph: rebalance.graph,
+    receipt: rebalanceReceipt,
+  });
+  assert.equal(preparedRebalance.stateHashHex, rebalanced.stateHashHex);
   assert.equal(rebalanced.economicQuantityAtoms, 200_000n);
   assert.equal(rebalanced.state.legs[0]?.signedQuantityAtoms, -200_000n);
   const riskIncreasing = port.create({
@@ -433,7 +444,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     quoteAsset: migrationProfile.quoteAsset,
     legOutcomes: migration.graph.legs.map((leg) => ({
       legId: leg.legId,
-      positionLegId: leg.legId,
+      positionLegId: leg.legId === "source-hedge" ? opened.state.legs[0]!.legId : leg.legId,
       domain: migrationProfile.domain,
       status: "EXECUTED" as const,
       requestedQuantity: assetAmount(migrationProfile.baseAsset, 100_000n),
@@ -464,6 +475,28 @@ test("rebalances and migrates an authoritative native hedge", () => {
     migration.graph,
     migrationReceipt,
   );
+  const preparedMigration = prepareStrategyTransition({
+    environment: "testnet",
+    atValue: BigInt(NOW_MS),
+    receiptHashHex: toHex(strategyPackageReceiptHash(migrationReceipt)),
+    current: opened.state,
+    order: migration.order,
+    graph: migration.graph,
+    receipt: migrationReceipt,
+  });
+  assert.equal(preparedMigration.stateHashHex, migrated.stateHashHex);
+  if (preparedMigration.command.parameters.kind === "APPLY_PACKAGE") {
+    assert.deepEqual(
+      strategyExecutionMatches(
+        "APPLY_PACKAGE",
+        opened.state,
+        preparedMigration.command.parameters.nextState,
+        [migrationReceipt],
+        "MIGRATE",
+      ),
+      { matches: false, mismatch: "EXECUTION_AMBIGUOUS" },
+    );
+  }
   assert.equal(migrated.status, "OPEN");
   assert.equal(migrated.templateId, "treasury-inventory-hedge-v1");
   assert.equal(migrated.state.legs.length, 1);

@@ -97,7 +97,7 @@ export interface PublicMarketRuntime {
     SqliteStrategyPackageStore,
     "selectHyperliquidExecution" | "selectNativeHyperliquidExecution"
       | "strategyExecutionAttempt" | "nativeStrategyExecutionAttempt" | "anyStrategyExecutionAttempt" | "admissionByQuote"
-      | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionsByOwner" | "quotes"
+      | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionByStateHash" | "nativeStrategyPositionsByOwner" | "quotes"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
@@ -464,6 +464,7 @@ export function loadPublicMarketRuntime(
       : new SqliteStrategyBookStore(absolute(strategyPath, "NARYX_STRATEGY_DB"), {
         environment: publicEnvironment as string,
         originReceipt: (receiptHashHex) => strategyPackages?.receipt(receiptHashHex) ?? evidence.outcomeByReceipt(receiptHashHex)?.receipt,
+        packageOrder: (orderHashHex) => strategyPackages?.order(orderHashHex)?.order,
         clock: clockMs,
       });
     if (strategies !== undefined) opened.push(strategies);

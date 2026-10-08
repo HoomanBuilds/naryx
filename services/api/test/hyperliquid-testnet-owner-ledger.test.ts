@@ -183,6 +183,7 @@ test("a generalized strategy attempt requires its own authorization and bypasses
       }) as never,
       ownerAuthorization: () => generalizedAuthorized
         ? { owner: ALICE } as never : undefined,
+      nativeStrategyPositionByStateHash: () => undefined,
       recordReceipt: () => { throw new Error("must not record during admission"); },
     },
     tradingAccount: TRADING,

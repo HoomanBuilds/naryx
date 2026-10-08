@@ -226,15 +226,25 @@ export function prepareStrategyTransition(input: Readonly<{
     && bytesEqual(receipt.graphHash, packageGraphHash(graph))
     && bytesEqual(order.graphHash, packageGraphHash(graph)),
   "BINDING_MISMATCH", "The transition order, graph, and receipt do not share one commitment.");
-  requireCondition(order.lifecycleAction.toLowerCase().replaceAll("_", "-") === receipt.lifecycleAction
-    && graph.lifecycleAction === order.lifecycleAction,
-  "BINDING_MISMATCH", "The transition action differs across its order, graph, and receipt.");
+  requireCondition(sameIdentity(order, graph)
+    && order.lifecycleAction.toLowerCase().replaceAll("_", "-") === receipt.lifecycleAction
+    && graph.lifecycleAction === order.lifecycleAction
+    && receipt.environment === order.environment
+    && receipt.templateId === order.templateId
+    && receipt.templateVersion === order.templateVersion
+    && bytesEqual(receipt.packageTemplateManifestHash, order.packageTemplateManifestHash)
+    && receipt.seriesId === order.seriesId
+    && receipt.seriesVersion === order.seriesVersion
+    && bytesEqual(receipt.seriesManifestHash, order.seriesManifestHash)
+    && receipt.executionClassId === order.executionClassId
+    && receipt.executionClassVersion === order.executionClassVersion
+    && bytesEqual(receipt.executionClassManifestHash, order.executionClassManifestHash)
+    && receipt.owner === order.owner
+    && receipt.settlementClass === order.settlementClass,
+  "BINDING_MISMATCH", "The transition order, graph, and receipt identify different execution terms.");
   requireCondition(receipt.finalityStatus === "FINALIZED" && requiresSuccessfulReceipt(receipt.terminalState),
     "RECEIPT_NOT_FINAL", "The transition needs a successful finalized receipt.");
-  requireCondition(order.owner === current.ownerId && receipt.owner === current.ownerId
-    && order.seriesId === current.seriesId && receipt.seriesId === current.seriesId
-    && order.executionClassId === current.executionClassId && receipt.executionClassId === current.executionClassId
-    && order.settlementAccount === current.subaccountId,
+  requireCondition(order.owner === current.ownerId && order.settlementAccount === current.subaccountId,
   "STRATEGY_IDENTITY_MISMATCH", "The transition receipt does not belong to the selected strategy.");
   requireCondition(order.expectedStrategyStateHash !== undefined
     && bytesEqual(order.expectedStrategyStateHash, strategyStateHash(current)),
@@ -332,7 +342,7 @@ export function prepareStrategyTransition(input: Readonly<{
   if (!transition.accepted) {
     throw new StrategyOpenPreparationError("INVALID_TRANSITION", `The lifecycle kernel rejected the transition: ${transition.rejection}.`);
   }
-  const execution = strategyExecutionMatches("APPLY_PACKAGE", current, next, [receipt], operation);
+  const execution = strategyExecutionMatches("APPLY_PACKAGE", current, next, [receipt], operation, [order]);
   if (!execution.matches) {
     throw new StrategyOpenPreparationError(execution.mismatch, "The receipt does not exactly account for the derived state change.");
   }

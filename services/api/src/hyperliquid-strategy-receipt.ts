@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import {
   assetAmount,
+  bytesEqual,
   strategyPackageReceipt,
+  strategyState,
+  strategyStateHash,
+  type PackageGraphInput,
   type StrategyPackageReceipt,
+  type StrategyState,
 } from "@naryx/protocol-types";
 import type { StoredStrategyPackageAdmission } from "./strategy-package-store.js";
 import type {
@@ -86,11 +91,25 @@ function signedRequestedQuantity(side: "BUY" | "SELL" | "NONE", atoms: bigint): 
   return side === "BUY" ? atoms : -atoms;
 }
 
+function canonicalPositionLegId(
+  leg: PackageGraphInput["legs"][number],
+  priorState: StrategyState | undefined,
+): string {
+  if (priorState === undefined) return leg.legId;
+  const matches = priorState.legs.filter((position) => position.underlyingId === leg.quantityAsset.assetId
+    && position.instrumentId === leg.market.subjectId
+    && position.venueId === leg.venue.subjectId);
+  requireCondition(matches.length <= 1, "POSITION_IDENTITY_AMBIGUOUS",
+    `Graph leg ${leg.legId} matches multiple strategy positions.`);
+  return matches[0]?.legId ?? leg.legId;
+}
+
 function checkedLegOutcome(
   admission: StoredStrategyPackageAdmission,
   evidence: HyperliquidTestnetExecutionEvidence,
   legId: string,
   residualValueAtoms: bigint,
+  priorState: StrategyState | undefined,
 ) {
   const leg = admission.graph.legs.find((candidate) => candidate.legId === legId);
   requireCondition(leg !== undefined, "UNSUPPORTED_GRAPH", `The strategy graph does not contain leg ${legId}.`);
@@ -119,7 +138,7 @@ function checkedLegOutcome(
     "INVALID_EVIDENCE", `${role} evidence contains a negative cost.`);
   return Object.freeze({
     legId: leg.legId,
-    positionLegId: leg.legId,
+    positionLegId: canonicalPositionLegId(leg, priorState),
     domain: leg.domain,
     status: filled === 0n ? "NO_EFFECT" as const : "EXECUTED" as const,
     requestedQuantity: assetAmount(leg.quantityAsset, leg.quantityAtoms),
@@ -137,6 +156,7 @@ function checkedGenericLegOutcome(
   admission: StoredStrategyPackageAdmission,
   observed: HyperliquidTestnetStrategyLegEvidence,
   completed: boolean,
+  priorState: StrategyState | undefined,
 ) {
   const leg = admission.graph.legs.find((candidate) => candidate.legId === observed.legId);
   requireCondition(leg !== undefined, "INVALID_EVIDENCE",
@@ -172,7 +192,7 @@ function checkedGenericLegOutcome(
   }
   return Object.freeze({
     legId: leg.legId,
-    positionLegId: leg.legId,
+    positionLegId: canonicalPositionLegId(leg, priorState),
     domain: leg.domain,
     status: completed ? "EXECUTED" as const : "NO_EFFECT" as const,
     requestedQuantity: assetAmount(leg.quantityAsset, leg.quantityAtoms),
@@ -190,6 +210,7 @@ function buildGeneralizedReceipt(
   attemptId: string,
   admission: StoredStrategyPackageAdmission,
   result: Extract<HyperliquidTestnetTerminalExecutionResult, { readonly status: "STRATEGY_EXECUTION" }>,
+  priorState: StrategyState | undefined,
 ): StrategyPackageReceipt | undefined {
   if (result.packageStatus !== "COMPLETED" && result.packageStatus !== "NO_EFFECT") return undefined;
   const completed = result.packageStatus === "COMPLETED";
@@ -205,7 +226,7 @@ function buildGeneralizedReceipt(
     && new Set(legs.map((leg) => leg.legId)).size === legs.length
     && admission.graph.legs.every((leg) => legs.some((observed) => observed.legId === leg.legId)),
   "INVALID_EVIDENCE", "Execution evidence must contain every graph leg exactly once.");
-  const legOutcomes = legs.map((leg) => checkedGenericLegOutcome(admission, leg, completed));
+  const legOutcomes = legs.map((leg) => checkedGenericLegOutcome(admission, leg, completed, priorState));
   const venueFeeAtoms = legOutcomes.reduce((sum, outcome) => sum + outcome.venueFee.atoms, 0n);
   const quotedVenueFeeAtoms = admission.quote.passThroughCosts
     .find((cost) => cost.category === "VENUE")?.amount.atoms ?? 0n;
@@ -258,12 +279,21 @@ export function buildHyperliquidStrategyPackageReceipt(input: Readonly<{
   attemptId: string;
   admission: StoredStrategyPackageAdmission;
   result: HyperliquidTestnetTerminalExecutionResult;
+  priorState?: StrategyState;
 }>): StrategyPackageReceipt | undefined {
   const { admission, result } = input;
+  const priorState = input.priorState === undefined ? undefined : strategyState(input.priorState);
   requireCondition(result.attemptId === input.attemptId,
     "ATTEMPT_MISMATCH", "Execution evidence belongs to another strategy attempt.");
+  if (admission.order.lifecycleAction === "ENTRY") {
+    requireCondition(priorState === undefined, "UNEXPECTED_PRIOR_STATE", "A strategy entry cannot consume prior position state.");
+  } else {
+    requireCondition(admission.order.expectedStrategyStateHash !== undefined && priorState !== undefined
+      && bytesEqual(admission.order.expectedStrategyStateHash, strategyStateHash(priorState)),
+    "STALE_STRATEGY_STATE", "A lifecycle receipt requires the exact state committed by its order.");
+  }
   if (result.status === "STRATEGY_EXECUTION") {
-    return buildGeneralizedReceipt(input.attemptId, admission, result);
+    return buildGeneralizedReceipt(input.attemptId, admission, result, priorState);
   }
   if (result.status !== "RECONCILED"
     || result.packageStatus === "RECOVERY_REQUIRED"
@@ -298,6 +328,7 @@ export function buildHyperliquidStrategyPackageReceipt(input: Readonly<{
     evidence,
     leg.legId,
     leg.legId === residualLegId ? terminalResidualQuoteAtoms : 0n,
+    priorState,
   ));
   const venueFeeAtoms = legOutcomes.reduce((sum, outcome) => sum + outcome.venueFee.atoms, 0n);
   const quotedVenueFeeAtoms = admission.quote.passThroughCosts

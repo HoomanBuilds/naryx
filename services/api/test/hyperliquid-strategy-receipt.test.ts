@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assetAmount, assetRef, domainRef } from "@naryx/protocol-types";
+import {
+  assetAmount,
+  assetRef,
+  domainRef,
+  strategyState,
+  strategyStateHash,
+  versionedManifestRef,
+} from "@naryx/protocol-types";
 import {
   buildHyperliquidStrategyPackageReceipt,
   type StoredStrategyPackageAdmission,
@@ -154,6 +161,59 @@ test("receipt construction fails closed on missing or mismatched evidence", () =
       },
     },
   }), { code: "QUANTITY_MISMATCH" });
+});
+
+test("lifecycle receipts preserve the canonical identity of an existing position", () => {
+  const priorState = strategyState({
+    version: 1,
+    strategyId: "strategy-1",
+    ownerId: "0x1111111111111111111111111111111111111111",
+    subaccountId: "hypercore-testnet-account",
+    seriesId: "btc-cash-carry-usdc",
+    executionClassId: "hyperliquid-testnet-batched-ioc",
+    open: true,
+    stateVersion: 1n,
+    legs: [{
+      legId: "canonical-spot-position",
+      underlyingId: base.assetId,
+      instrumentId: "btc-spot-market",
+      venueId: "hypercore-spot",
+      signedQuantityAtoms: 100n,
+      lotAtoms: 1n,
+      ratioNumerator: 1n,
+      ratioDenominator: 1n,
+    }],
+    liabilities: [],
+    delegations: [],
+    venuePositionsTransferable: false,
+    legalTransferRestricted: false,
+  });
+  const source = admission();
+  const lifecycleAdmission = {
+    ...source,
+    order: {
+      ...source.order,
+      lifecycleAction: "MIGRATE",
+      expectedStrategyStateHash: strategyStateHash(priorState),
+    },
+    graph: {
+      ...source.graph,
+      legs: source.graph.legs.map((leg) => ({
+        ...leg,
+        venue: versionedManifestRef(leg.legId === "spot" ? "hypercore-spot" : "hypercore-perps", 1, leg.legId === "spot" ? "61".repeat(32) : "62".repeat(32)),
+        market: versionedManifestRef(leg.legId === "spot" ? "btc-spot-market" : "btc-perp-market", 1, leg.legId === "spot" ? "63".repeat(32) : "64".repeat(32)),
+      })),
+    },
+  } as unknown as StoredStrategyPackageAdmission;
+  const result = completed();
+  const receipt = buildHyperliquidStrategyPackageReceipt({
+    attemptId: result.attemptId,
+    admission: lifecycleAdmission,
+    result,
+    priorState,
+  })!;
+  assert.equal(receipt.legOutcomes.find((leg) => leg.legId === "spot")?.positionLegId, "canonical-spot-position");
+  assert.equal(receipt.legOutcomes.find((leg) => leg.legId === "perp")?.positionLegId, "perp");
 });
 
 test("multi-stage generalized evidence builds one deterministic N-leg receipt", () => {
