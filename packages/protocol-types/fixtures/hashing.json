@@ -79,6 +79,7 @@
     { "name": "cross-batch-execution-intent-shared-payload", "domain": "CON/v1/cross-batch-execution-intent", "payloadHex": "deadbeef", "digestHex": "a3cc67870372315855f0ba5c8be7960277a216a57242a3139b533de599041510" },
     { "name": "cross-batch-execution-evidence-shared-payload", "domain": "CON/v1/cross-batch-execution-evidence", "payloadHex": "deadbeef", "digestHex": "f5ec3ea120da55720b29364d7eb14a2362b531de0d2027afaf8b81fe07482f9d" },
     { "name": "cross-batch-clearing-receipt-shared-payload", "domain": "CON/v1/cross-batch-clearing-receipt", "payloadHex": "deadbeef", "digestHex": "5ad2af1c674af9fcc08a5da02927559f67e3ebfd5c66b0ccaaee1be6852c9216" },
+    { "name": "risk-domain-manifest-shared-payload", "domain": "CON/v1/risk-domain-manifest", "payloadHex": "deadbeef", "digestHex": "fcbbd52f17b1ea57a179d29932fd86a8bb6b678d5207516590046a3f73b994fe" },
     { "name": "strategy-state-shared-payload", "domain": "CON/v1/strategy-state", "payloadHex": "deadbeef", "digestHex": "80a3e838b55dde1b5c9542e3f1a357c9d25cc9698be1c8bbcb21d5836282cd90" },
     { "name": "strategy-transition-shared-payload", "domain": "CON/v1/strategy-transition", "payloadHex": "deadbeef", "digestHex": "f8ee8e9ec7f7a4563be24a206fd4d882af63b5f214dbee314cae61bdf14d93a1" },
     { "name": "private-rfq-response-shared-payload", "domain": "CON/v1/private-rfq-response", "payloadHex": "deadbeef", "digestHex": "ab062b9896c77c124a3bea49acf5db3a0117c9b8e42fe520a3e334032514c33f" },

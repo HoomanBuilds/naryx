@@ -136,6 +136,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/cross-batch-execution-intent',
         'CON/v1/cross-batch-execution-evidence',
         'CON/v1/cross-batch-clearing-receipt',
+        'CON/v1/risk-domain-manifest',
         'CON/v1/strategy-state',
         'CON/v1/strategy-transition',
         'CON/v1/private-rfq-response',

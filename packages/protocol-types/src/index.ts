@@ -1631,6 +1631,21 @@ export {
   type StrategyRiskStressResult,
 } from './strategy-risk.js';
 export {
+  RISK_DOMAIN_MANIFEST_SCHEMA_VERSION,
+  RISK_DOMAIN_MAX_ELIGIBLE_DOMAINS,
+  RISK_DOMAIN_MAX_ELIGIBLE_SERIES,
+  RISK_DOMAIN_MAX_DEPENDENCY_LIMITS,
+  riskDomainManifest,
+  encodeRiskDomainManifest,
+  riskDomainManifestBytes,
+  riskDomainManifestHash,
+  type RiskDomainHaircutsInput,
+  type RiskDomainDependencyLimitInput,
+  type RiskDomainDependencyLimit,
+  type RiskDomainManifestInput,
+  type RiskDomainManifest,
+} from './risk-domain-manifest.js';
+export {
   MARKET_CATALOGUE_VERSION,
   MAX_CATALOGUE_ENTRIES,
   marketCatalogue,

@@ -82,6 +82,7 @@ export const HASH_DOMAIN = Object.freeze({
   CROSS_BATCH_EXECUTION_INTENT: 'CON/v1/cross-batch-execution-intent',
   CROSS_BATCH_EXECUTION_EVIDENCE: 'CON/v1/cross-batch-execution-evidence',
   CROSS_BATCH_CLEARING_RECEIPT: 'CON/v1/cross-batch-clearing-receipt',
+  RISK_DOMAIN_MANIFEST: 'CON/v1/risk-domain-manifest',
   STRATEGY_STATE: 'CON/v1/strategy-state',
   STRATEGY_TRANSITION: 'CON/v1/strategy-transition',
   PRIVATE_RFQ_RESPONSE: 'CON/v1/private-rfq-response',
