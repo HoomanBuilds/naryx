@@ -5,6 +5,7 @@ pub const POSITION_SEED: &[u8] = b"test-perp-position";
 pub const COLLATERAL_VAULT_SEED: &[u8] = b"test-perp-collateral-vault";
 pub const FEE_VAULT_SEED: &[u8] = b"test-perp-fee-vault";
 pub const INSURANCE_VAULT_SEED: &[u8] = b"test-perp-insurance-vault";
+pub const NETTING_RESIDUAL_RECEIPT_SEED: &[u8] = b"netting-residual-receipt";
 pub const TEST_COLLATERAL_FAUCET_SEED: &[u8] = b"test-collateral-faucet";
 
 // Test USDC: six decimals, 10,000 per claim, 10,000,000 per token account through the faucet.

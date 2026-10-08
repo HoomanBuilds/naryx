@@ -19,6 +19,21 @@ pub struct OrderFilled {
 }
 
 #[event]
+pub struct BoundedResidualFilled {
+    pub receipt: Pubkey,
+    pub intent_hash: [u8; 32],
+    pub authority: Pubkey,
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub side: OrderSide,
+    pub base_lots: u64,
+    pub fill_price_per_lot: u64,
+    pub gross_quote_atoms: u64,
+    pub fee_atoms: u64,
+    pub execution_slot: u64,
+}
+
+#[event]
 pub struct PositionLiquidated {
     pub market: Pubkey,
     pub position: Pubkey,

@@ -51,7 +51,28 @@ pub struct TestPerpPosition {
     pub bump: u8,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[account]
+#[derive(InitSpace)]
+pub struct NettingResidualReceipt {
+    pub version: u8,
+    pub intent_hash: [u8; 32],
+    pub authority: Pubkey,
+    pub market: Pubkey,
+    pub position: Pubkey,
+    pub side: OrderSide,
+    pub base_lots: u64,
+    pub limit_price_in_ticks: u64,
+    pub maximum_fee_atoms: u64,
+    pub fill_price_per_lot: u64,
+    pub gross_quote_atoms: u64,
+    pub fee_atoms: u64,
+    pub post_base_lots: i64,
+    pub post_collateral_atoms: u64,
+    pub execution_slot: u64,
+    pub bump: u8,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
 pub enum OrderSide {
     Bid,
     Ask,

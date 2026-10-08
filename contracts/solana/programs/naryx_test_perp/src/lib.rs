@@ -50,6 +50,13 @@ pub mod naryx_test_perp {
         trade::place_market_order_handler(ctx, args)
     }
 
+    pub fn place_bounded_residual_order(
+        ctx: Context<TradeBoundedResidual>,
+        args: PlaceBoundedResidualArgs,
+    ) -> Result<()> {
+        trade::place_bounded_residual_order_handler(ctx, args)
+    }
+
     pub fn liquidate(ctx: Context<TradePosition>) -> Result<()> {
         trade::liquidate_handler(ctx)
     }

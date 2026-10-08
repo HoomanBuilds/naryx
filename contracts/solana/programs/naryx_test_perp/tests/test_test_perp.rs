@@ -13,8 +13,9 @@ use {
         LiteSVM,
     },
     naryx_test_perp::{
-        error::TestPerpError, InitializeMarketArgs, OrderSide, PlaceMarketOrderArgs,
-        TestPerpPosition, COLLATERAL_VAULT_SEED, FEE_VAULT_SEED, INSURANCE_VAULT_SEED, MARKET_SEED,
+        error::TestPerpError, InitializeMarketArgs, NettingResidualReceipt, OrderSide,
+        PlaceBoundedResidualArgs, PlaceMarketOrderArgs, TestPerpPosition, COLLATERAL_VAULT_SEED,
+        FEE_VAULT_SEED, INSURANCE_VAULT_SEED, MARKET_SEED, NETTING_RESIDUAL_RECEIPT_SEED,
         POSITION_SEED, PRICE_UPDATE_V2_DISCRIMINATOR, PYTH_RECEIVER_PROGRAM_ID,
         TEST_COLLATERAL_FAUCET_SEED, TEST_COLLATERAL_MAX_BALANCE_ATOMS,
         TEST_COLLATERAL_MAX_CLAIM_ATOMS,
@@ -348,6 +349,46 @@ fn order(
     send(&mut env.svm, signer, &[], &[order])
 }
 
+fn bounded_order(
+    env: &mut Env,
+    signer: &Keypair,
+    intent_hash: [u8; 32],
+    maximum_fee_atoms: u64,
+) -> TransactionResult {
+    let receipt = pda(&[
+        NETTING_RESIDUAL_RECEIPT_SEED,
+        env.position.as_ref(),
+        intent_hash.as_ref(),
+    ]);
+    let order = ix(
+        naryx_test_perp::id(),
+        naryx_test_perp::accounts::TradeBoundedResidual {
+            authority: signer.pubkey(),
+            market: env.market,
+            position: env.position,
+            oracle: env.oracle,
+            collateral_vault: env.collateral_vault,
+            fee_vault: env.fee_vault,
+            insurance_vault: env.insurance_vault,
+            receipt,
+            token_program: TOKEN_PROGRAM_ID,
+            system_program: anchor_lang::system_program::ID,
+        },
+        naryx_test_perp::instruction::PlaceBoundedResidualOrder {
+            args: PlaceBoundedResidualArgs {
+                intent_hash,
+                side: OrderSide::Ask,
+                base_lots: 1_000,
+                limit_price_in_ticks: 1,
+                last_valid_slot: u64::MAX,
+                reduce_only: false,
+                maximum_fee_atoms,
+            },
+        },
+    );
+    send(&mut env.svm, signer, &[], &[order])
+}
+
 fn withdraw(env: &mut Env, signer: &Keypair, amount: u64) -> TransactionResult {
     let withdraw = ix(
         naryx_test_perp::id(),
@@ -429,6 +470,37 @@ fn oracle_fill_fee_margin_and_delegate_withdraw_boundary() {
     assert_eq!(balance(&env, env.insurance_vault), 1_000_000_000 + loss);
     assert_eq!(balance(&env, env.fee_vault), fee + cover_fee);
     assert_eq!(balance(&env, env.collateral_vault), flat.collateral_atoms);
+}
+
+#[test]
+fn bounded_residual_enforces_fee_cap_and_intent_replay() {
+    let mut env = setup();
+    let intent_hash = [9u8; 32];
+    let trader = env.trader.insecure_clone();
+    let fill = ORACLE_PER_LOT_AT_100 * 9_997 / 10_000;
+    let fee = (fill * 1_000 * 5).div_ceil(10_000);
+    assert_error(
+        bounded_order(&mut env, &trader, intent_hash, fee - 1),
+        TestPerpError::ResidualFeeExceeded,
+    );
+    assert_eq!(position(&env).base_lots, 0);
+    bounded_order(&mut env, &trader, intent_hash, fee).unwrap();
+    let receipt_address = pda(&[
+        NETTING_RESIDUAL_RECEIPT_SEED,
+        env.position.as_ref(),
+        intent_hash.as_ref(),
+    ]);
+    let account = env.svm.get_account(&receipt_address).unwrap();
+    let receipt = NettingResidualReceipt::try_deserialize(&mut account.data.as_slice()).unwrap();
+    assert_eq!(receipt.intent_hash, intent_hash);
+    assert_eq!(receipt.authority, env.trader.pubkey());
+    assert_eq!(receipt.base_lots, 1_000);
+    assert_eq!(receipt.fill_price_per_lot, fill);
+    assert_eq!(receipt.gross_quote_atoms, fill * 1_000);
+    assert_eq!(receipt.fee_atoms, fee);
+    assert_eq!(position(&env).base_lots, -1_000);
+    assert!(bounded_order(&mut env, &trader, intent_hash, fee).is_err());
+    assert_eq!(position(&env).base_lots, -1_000);
 }
 
 #[test]

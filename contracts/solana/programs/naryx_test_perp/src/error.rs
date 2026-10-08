@@ -58,4 +58,8 @@ pub enum TestPerpError {
     FaucetLimitExceeded,
     #[msg("Mint is not a faucet test collateral mint")]
     InvalidFaucetMint,
+    #[msg("Netting residual intent hash is zero")]
+    InvalidResidualIntent,
+    #[msg("Netting residual fee exceeds the signed maximum")]
+    ResidualFeeExceeded,
 }
