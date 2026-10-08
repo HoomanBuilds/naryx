@@ -491,6 +491,21 @@ export function ActivityView() {
                   <dt>Route expiry</dt><dd className={styles.mono}>{strategyProof.data.route.routeExpiryValue.toString()} {stateText(strategyProof.data.route.routeExpiryUnit)}</dd>
                   <dt>Domain plans</dt>
                   <dd>{strategyProof.data.route.domainPlans.map((plan) => `${plan.domain.domainId}: ${stateText(plan.executionPlanKind)} (${plan.legIds.length} legs, ${plan.stageCount} stages)`).join("; ")}</dd>
+                  {strategyProof.data.executionIntelligence ? (
+                    <>
+                      <dt>Delivery path</dt><dd>{strategyProof.data.executionIntelligence.intelligence.delivery.actualPath === null
+                        ? "Not included"
+                        : stateText(strategyProof.data.executionIntelligence.intelligence.delivery.actualPath)}</dd>
+                      <dt>MEV protection</dt><dd>{stateText(strategyProof.data.executionIntelligence.intelligence.delivery.mevProtectionLabel)}</dd>
+                      <dt>Pre-inclusion move</dt><dd className={styles.mono}>{strategyProof.data.executionIntelligence.intelligence.quality.preInclusionMoveBps.toString()} bps</dd>
+                      <dt>Package slippage</dt><dd className={styles.mono}>{strategyProof.data.executionIntelligence.intelligence.quality.slippageBps.toString()} bps</dd>
+                      <dt>Outcome shortfall</dt><dd className={styles.mono}>{strategyProof.data.executionIntelligence.intelligence.quality.shortfallAtoms.toString()} quote atoms</dd>
+                      <dt>Inclusion latency</dt><dd className={styles.mono}>{strategyProof.data.executionIntelligence.intelligence.quality.inclusionLatencyValue.toString()} {strategyProof.data.executionIntelligence.intelligence.clockUnit}</dd>
+                      <dt>Time unhedged</dt><dd className={styles.mono}>{strategyProof.data.executionIntelligence.intelligence.quality.timeUnhedgedValue.toString()} {strategyProof.data.executionIntelligence.intelligence.clockUnit}</dd>
+                      <dt>MEV attribution</dt><dd>{stateText(strategyProof.data.executionIntelligence.intelligence.quality.attribution)} ({strategyProof.data.executionIntelligence.intelligence.quality.attributionIsFact ? "evidenced fact" : "not asserted as fact"})</dd>
+                      <dt>Observer</dt><dd>{strategyProof.data.executionIntelligence.intelligence.observerId}</dd>
+                    </>
+                  ) : null}
                 </dl>
               </>
             ) : null}

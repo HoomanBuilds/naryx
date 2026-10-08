@@ -33,6 +33,7 @@ import {
   requireStrategyTemplateDefinition,
   domainRef,
   evidenceManifestHash,
+  executionIntelligence,
   fromProtocolJson,
   manualRecoveryApprovalHash,
   manualRecoveryIncidentHash,
@@ -986,15 +987,69 @@ describe('order intake and terminal evidence', () => {
     };
     const receipt = strategyPackageReceipt(receiptInput);
     const receiptHash = toHex(strategyPackageReceiptHash(receipt));
+    const intelligence = executionIntelligence({
+      version: 1,
+      receiptHash,
+      orderHash: strategyPackageOrderHash(order),
+      observerId: 'observer-a',
+      clockUnit: 'milliseconds',
+      observerEvidenceHash: hash(70),
+      observation: {
+        orderHash: strategyPackageOrderHash(order),
+        side: 'BUY',
+        quotedPrice: 10_000n,
+        inclusionReferencePrice: 10_010n,
+        executionPrice: 10_005n,
+        markouts: [{ horizonValue: 60_000n, referencePrice: 10_020n }],
+        expectedNetOutcomeAtoms: quote.netPackageOutcome.atoms,
+        realizedNetOutcomeAtoms: quote.netPackageOutcome.atoms - 5n,
+        submittedAtValue: 100n,
+        includedAtValue: 110n,
+        legCompletedAtValues: graph.legs.map((_, index) => 110n + BigInt(index)),
+        ordering: { sameActorBefore: false, sameActorAfter: false },
+        adverseMoveThresholdBps: 5n,
+      },
+      deliveryPolicy: {
+        requestedPath: 'PRIVATE_RELAY',
+        permittedFallbacks: ['PROTECTED_BUNDLE'],
+        maximumInclusionDelayValue: 20n,
+        provenProtectedPaths: ['PROTECTED_BUNDLE'],
+      },
+      deliveryAttempts: [{ attemptId: 'delivery-1', path: 'PRIVATE_RELAY', submittedAtValue: 100n, outcome: 'INCLUDED', includedAtValue: 110n }],
+      observedAtValue: 60_110n,
+    });
     const receiptPath = `GET /v1/strategy-receipts/${receiptHash}/proof`;
-    const receiptProof = { version: 1, receiptHash, receipt, recordedAtMs: 12_400, quoteProof: proof };
+    const receiptProof = {
+      version: 1,
+      receiptHash,
+      receipt,
+      recordedAtMs: 12_400,
+      quoteProof: proof,
+      executionIntelligence: { intelligence, recordedAtMs: 12_500 },
+    };
     const verifiedReceipt = await client({ [receiptPath]: { body: receiptProof } }).getStrategyReceiptProof(receiptHash);
     assert.equal(verifiedReceipt.receiptHash, receiptHash);
     assert.equal(verifiedReceipt.receipt.terminalState, 'FINALIZED_COMPLETE');
     assert.equal(verifiedReceipt.signatureVerified, true);
+    assert.equal(verifiedReceipt.executionIntelligence?.intelligence.quality.slippageBps, 5n);
+    assert.equal(verifiedReceipt.executionIntelligence?.intelligence.delivery.mevProtectionLabel, 'REDUCED_PUBLIC_EXPOSURE');
     await assert.rejects(
       client({ [receiptPath]: { body: { ...receiptProof, receipt: { ...receipt, solverId: 'solver-b' } } } }).getStrategyReceiptProof(receiptHash),
       /strategy receipt does not hash to the requested hash/,
+    );
+    await assert.rejects(
+      client({
+        [receiptPath]: {
+          body: {
+            ...receiptProof,
+            executionIntelligence: {
+              intelligence: { ...intelligence, observerEvidenceHash: hash(71) },
+              recordedAtMs: 12_500,
+            },
+          },
+        },
+      }).getStrategyReceiptProof(receiptHash),
+      /does not hash to its served record hash/,
     );
   });
 

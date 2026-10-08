@@ -25,6 +25,7 @@ export {
   type VerifiedRiskGroup,
   type VerifiedStrategyQuoteProof,
   type VerifiedStrategyReceiptProof,
+  type VerifiedStrategyExecutionIntelligence,
   type VerifiedMarketCatalogue,
   type VerifiedStrategyCommand,
   type StrategyCommandSigner,

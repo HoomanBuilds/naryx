@@ -18,6 +18,7 @@ import {
   commitmentHash,
   evidenceManifest,
   evidenceManifestHash,
+  executionIntelligence,
   fromHex,
   fromProtocolJson,
   packageAllocation,
@@ -114,6 +115,8 @@ import {
   type CandleSeries,
   type EvidenceManifest,
   type EvidenceManifestInput,
+  type ExecutionIntelligence,
+  type ExecutionIntelligenceInput,
   type ExecutablePackageIndex,
   type PackageAllocation,
   type PackageMatchingPolicy,
@@ -555,6 +558,12 @@ export interface VerifiedStrategyReceiptProof extends VerifiedStrategyQuoteProof
   readonly receiptHash: string;
   readonly receipt: StrategyPackageReceipt;
   readonly receiptRecordedAtMs: number;
+  readonly executionIntelligence?: VerifiedStrategyExecutionIntelligence;
+}
+
+export interface VerifiedStrategyExecutionIntelligence {
+  readonly intelligence: ExecutionIntelligence;
+  readonly recordedAtMs: number;
 }
 
 export interface VerifiedRouteDecision {
@@ -896,11 +905,39 @@ export async function verifyStrategyReceiptProof(expectedReceiptHash: string, va
     'strategy receipt recovery cost exceeds the signed cap');
   requireStrategyProof(receipt.terminalResidualValue.atoms <= quoteProof.order.maximumResidualValue.atoms,
     'strategy receipt residual exceeds the signed cap');
+  let verifiedIntelligence: VerifiedStrategyExecutionIntelligence | undefined;
+  if (body.executionIntelligence !== undefined) {
+    const served = record(body.executionIntelligence, 'execution intelligence');
+    const raw = record(served.intelligence, 'execution intelligence record');
+    let intelligence: ExecutionIntelligence;
+    try {
+      intelligence = executionIntelligence(raw as unknown as ExecutionIntelligenceInput);
+    } catch (error) {
+      throw new NaryxEvidenceError(`execution intelligence is malformed: ${(error as Error).message}`);
+    }
+    requireStrategyProof(toHex(intelligence.receiptHash) === receiptHash && toHex(intelligence.orderHash) === quoteProof.orderHash,
+      'execution intelligence is for another receipt or order');
+    requireStrategyProof(intelligence.observation.expectedNetOutcomeAtoms === quoteProof.quote.netPackageOutcome.atoms,
+      'execution intelligence does not use the selected quote outcome');
+    requireStrategyProof(intelligence.observation.legCompletedAtValues.length === receipt.legOutcomes.length,
+      'execution intelligence does not report every receipt leg');
+    requireStrategyProof(requiresSuccessfulReceipt(receipt.terminalState) && intelligence.delivery.included,
+      'execution intelligence requires a successful receipt and an included delivery attempt');
+    if (raw.recordHash !== undefined) {
+      requireStrategyProof(toHex(commitmentHash(raw.recordHash as Uint8Array | string, 'execution intelligence record hash')) === toHex(intelligence.recordHash),
+        'execution intelligence does not hash to its served record hash');
+    }
+    verifiedIntelligence = Object.freeze({
+      intelligence,
+      recordedAtMs: count(served.recordedAtMs, 'executionIntelligence.recordedAtMs'),
+    });
+  }
   return Object.freeze({
     ...quoteProof,
     receiptHash,
     receipt,
     receiptRecordedAtMs: count(body.recordedAtMs, 'receiptRecordedAtMs'),
+    ...(verifiedIntelligence === undefined ? {} : { executionIntelligence: verifiedIntelligence }),
   });
 }
 
