@@ -12,10 +12,11 @@ import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainLive, domainQuoting, useTerminal } from "./terminal-context";
 import styles from "./shell.module.css";
 
-const NAV: readonly { href: "/trade" | "/portfolio" | "/activity" | "/network"; label: string }[] = [
+const NAV: readonly { href: "/trade" | "/portfolio" | "/activity" | "/liquidity" | "/network"; label: string }[] = [
   { href: "/trade", label: "Trade" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/activity", label: "Activity" },
+  { href: "/liquidity", label: "Liquidity" },
   { href: "/network", label: "Network" },
 ];
 

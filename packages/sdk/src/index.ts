@@ -56,6 +56,7 @@ export {
   aggregateCandles,
   evidenceManifestHash,
   executablePackageIndex,
+  fromProtocolJson,
   packageAllocationHash,
   packageOrderBytes,
   packageOrderHash,

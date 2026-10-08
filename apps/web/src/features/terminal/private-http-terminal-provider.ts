@@ -8,6 +8,7 @@ import type {
   TerminalViewModelProvider,
 } from "./terminal-view-model";
 import { getTransactionDecoder } from "@solana/transactions";
+import { fromProtocolJson } from "@naryx/sdk";
 import bs58 from "bs58";
 import { decodeFunctionData, hashTypedData, parseAbi } from "viem";
 import { parseSolanaDevnetAccountStatus, type SolanaDevnetAccountStatus } from "./solana-devnet-onboarding";
@@ -66,6 +67,73 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
     localExecutionAvailable: boolean;
     solanaLocalExecutionAvailable: boolean;
   }>;
+}>;
+
+export type MakerQuoteLevel = Readonly<{
+  levelId: bigint;
+  direction: "BID" | "ASK";
+  size: bigint;
+  referenceOffset: bigint;
+  maximumFee: bigint;
+  settlementClass: string;
+  quoteMode: string;
+  validUntilUnit: string;
+  validUntilValue: bigint;
+  reservationPolicy: string;
+}>;
+
+export type MakerShardView = Readonly<{
+  shardId: string;
+  shardHash: string;
+  state: "LIVE" | "EMPTY" | "QUOTES_EXPIRED" | "CAPACITY_EXHAUSTED" | "HEARTBEAT_EXPIRED" | "KILLED";
+  environment: string;
+  domainId: string;
+  templateId: string;
+  marketGroupId: string;
+  referenceSequence: bigint;
+  quoteLevels: readonly MakerQuoteLevel[];
+  activeQuoteLevelCount: number;
+  inventoryCap: bigint;
+  reservedCapacity: bigint;
+  availableCapacity: bigint;
+  utilizationBps: bigint;
+  heartbeatExpiry: bigint;
+  shardSequence: bigint;
+  fillCount: number;
+  filledSize: bigint;
+  latestFillCommitment: string | null;
+  latestSettledAtMs: number | null;
+}>;
+
+export type MakerCapacityView = Readonly<{
+  scope: string;
+  environment: string;
+  domainId: string;
+  assetId: string;
+  decimals: number;
+  evidenceGrade: string;
+  expiresAtValue: bigint;
+  state: "ACTIVE" | "REDUCE_ONLY";
+  availableAtoms: bigint;
+  committedAtoms: bigint;
+  committedRecoveryAtoms: bigint;
+  remainingAtoms: bigint;
+}>;
+
+export type MakerOperationsSnapshot = Readonly<{
+  version: 1;
+  solverId: string;
+  asOfValue: bigint;
+  summary: Readonly<{
+    shardCount: number;
+    liveShardCount: number;
+    quotedLevelCount: number;
+    capacityScopeCount: number;
+    activeCapacityScopeCount: number;
+    alertCount: number;
+  }>;
+  shards: readonly MakerShardView[];
+  capacities: readonly MakerCapacityView[];
 }>;
 
 export type SolanaExecutionObservation =
@@ -1476,6 +1544,149 @@ function requireCanonicalUnsigned(value: unknown, name: string, positive: boolea
     throw new Error(`${name} is invalid.`);
   }
   return value;
+}
+
+function requireBigint(value: unknown, name: string, nonnegative = true): bigint {
+  if (typeof value !== "bigint" || (nonnegative && value < BigInt(0))) throw new Error(`${name} is invalid.`);
+  return value;
+}
+
+function requireMakerDomain(value: unknown, name: string): string {
+  if (!isRecord(value)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, ["domainId", "domainManifestVersion", "domainManifestHash"], name);
+  requireInteger(value.domainManifestVersion, `${name} manifest version`);
+  requireHex32(value.domainManifestHash, `${name} manifest hash`);
+  return requireProtocolId(value.domainId, `${name} id`);
+}
+
+function requireMakerQuoteLevel(value: unknown, index: number): MakerQuoteLevel {
+  const name = `Maker quote level ${index}`;
+  if (!isRecord(value)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, [
+    "direction", "levelId", "maximumFee", "quoteMode", "referenceOffset", "reservationPolicy",
+    "settlementClass", "size", "validUntilUnit", "validUntilValue",
+  ], name);
+  if (value.direction !== "BID" && value.direction !== "ASK") throw new Error(`${name} direction is invalid.`);
+  return Object.freeze({
+    levelId: requireBigint(value.levelId, `${name} id`),
+    direction: value.direction,
+    size: requireBigint(value.size, `${name} size`),
+    referenceOffset: requireBigint(value.referenceOffset, `${name} reference offset`, false),
+    maximumFee: requireBigint(value.maximumFee, `${name} maximum fee`),
+    settlementClass: requireProtocolId(value.settlementClass, `${name} settlement class`),
+    quoteMode: requireProtocolId(value.quoteMode, `${name} quote mode`),
+    validUntilUnit: requireProtocolId(value.validUntilUnit, `${name} validity unit`),
+    validUntilValue: requireBigint(value.validUntilValue, `${name} validity`),
+    reservationPolicy: requireProtocolId(value.reservationPolicy, `${name} reservation policy`),
+  });
+}
+
+function requireMakerShard(value: unknown, index: number): MakerShardView {
+  const name = `Maker shard ${index}`;
+  if (!isRecord(value)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, [
+    "activeQuoteLevelCount", "availableCapacity", "domain", "environment", "fillCount", "filledSize", "heartbeatExpiry",
+    "inventoryCap", "latestFillCommitment", "latestSettledAtMs", "marketGroupId", "quoteLevels",
+    "referenceSequence", "referenceStateHash", "reservedCapacity", "shardHash", "shardId",
+    "shardSequence", "state", "templateId", "utilizationBps",
+  ], name);
+  const states = new Set(["LIVE", "EMPTY", "QUOTES_EXPIRED", "CAPACITY_EXHAUSTED", "HEARTBEAT_EXPIRED", "KILLED"]);
+  if (typeof value.state !== "string" || !states.has(value.state)) throw new Error(`${name} state is invalid.`);
+  if (!Array.isArray(value.quoteLevels) || value.quoteLevels.length > 64) throw new Error(`${name} quote levels are invalid.`);
+  const latestFillCommitment = value.latestFillCommitment === null
+    ? null
+    : requireHex32(value.latestFillCommitment, `${name} latest fill commitment`);
+  const latestSettledAtMs = value.latestSettledAtMs === null
+    ? null
+    : requireInteger(value.latestSettledAtMs, `${name} latest settlement time`);
+  requireHex32(value.referenceStateHash, `${name} reference state hash`);
+  return Object.freeze({
+    shardId: requireProtocolId(value.shardId, `${name} id`),
+    shardHash: requireHex32(value.shardHash, `${name} hash`),
+    state: value.state as MakerShardView["state"],
+    environment: requireProtocolId(value.environment, `${name} environment`),
+    domainId: requireMakerDomain(value.domain, `${name} domain`),
+    templateId: requireProtocolId(value.templateId, `${name} template`),
+    marketGroupId: requireProtocolId(value.marketGroupId, `${name} market group`),
+    referenceSequence: requireBigint(value.referenceSequence, `${name} reference sequence`),
+    quoteLevels: Object.freeze(value.quoteLevels.map(requireMakerQuoteLevel)),
+    activeQuoteLevelCount: requireInteger(value.activeQuoteLevelCount, `${name} active quote level count`, 64),
+    inventoryCap: requireBigint(value.inventoryCap, `${name} inventory cap`),
+    reservedCapacity: requireBigint(value.reservedCapacity, `${name} reserved capacity`),
+    availableCapacity: requireBigint(value.availableCapacity, `${name} available capacity`),
+    utilizationBps: requireBigint(value.utilizationBps, `${name} utilization`),
+    heartbeatExpiry: requireBigint(value.heartbeatExpiry, `${name} heartbeat expiry`),
+    shardSequence: requireBigint(value.shardSequence, `${name} sequence`),
+    fillCount: requireInteger(value.fillCount, `${name} fill count`),
+    filledSize: requireBigint(value.filledSize, `${name} filled size`),
+    latestFillCommitment,
+    latestSettledAtMs,
+  });
+}
+
+function requireMakerCapacity(value: unknown, index: number): MakerCapacityView {
+  const name = `Maker capacity ${index}`;
+  if (!isRecord(value) || !isRecord(value.asset)) throw new Error(`${name} is invalid.`);
+  requireExactKeys(value, [
+    "asset", "availableAtoms", "committedAtoms", "committedRecoveryAtoms", "domain", "environment",
+    "evidenceGrade", "expiresAtValue", "maximumConcurrentRecoveryAtoms", "observedAtValue",
+    "outstandingCommitmentRoot", "remainingAtoms", "scope", "state",
+  ], name);
+  requireExactKeys(value.asset, ["assetId", "assetManifestHash", "decimals"], `${name} asset`);
+  if (value.state !== "ACTIVE" && value.state !== "REDUCE_ONLY") throw new Error(`${name} state is invalid.`);
+  requireMakerDomain(value.domain, `${name} domain`);
+  requireHex32(value.asset.assetManifestHash, `${name} asset manifest hash`);
+  requireHex32(value.outstandingCommitmentRoot, `${name} commitment root`);
+  requireBigint(value.maximumConcurrentRecoveryAtoms, `${name} maximum recovery`);
+  requireBigint(value.observedAtValue, `${name} observed time`);
+  return Object.freeze({
+    scope: requireString(value.scope, `${name} scope`),
+    environment: requireProtocolId(value.environment, `${name} environment`),
+    domainId: requireMakerDomain(value.domain, `${name} domain`),
+    assetId: requireProtocolId(value.asset.assetId, `${name} asset id`),
+    decimals: requireInteger(value.asset.decimals, `${name} asset decimals`, 255),
+    evidenceGrade: requireProtocolId(value.evidenceGrade, `${name} evidence grade`),
+    expiresAtValue: requireBigint(value.expiresAtValue, `${name} expiry`),
+    state: value.state,
+    availableAtoms: requireBigint(value.availableAtoms, `${name} available atoms`),
+    committedAtoms: requireBigint(value.committedAtoms, `${name} committed atoms`),
+    committedRecoveryAtoms: requireBigint(value.committedRecoveryAtoms, `${name} recovery atoms`),
+    remainingAtoms: requireBigint(value.remainingAtoms, `${name} remaining atoms`),
+  });
+}
+
+function requireMakerOperations(value: unknown): MakerOperationsSnapshot {
+  if (!isRecord(value) || !isRecord(value.summary) || !Array.isArray(value.shards) || !Array.isArray(value.capacities)) {
+    throw new Error("Maker operations response is invalid.");
+  }
+  requireExactKeys(value, ["asOfValue", "capacities", "shards", "solverId", "summary", "version"], "Maker operations");
+  requireExactKeys(value.summary, [
+    "activeCapacityScopeCount", "alertCount", "capacityScopeCount", "liveShardCount", "quotedLevelCount", "shardCount",
+  ], "Maker operations summary");
+  if (value.version !== 1 || value.shards.length > 500 || value.capacities.length > 500) {
+    throw new Error("Maker operations response is invalid.");
+  }
+  const summary = Object.freeze({
+    shardCount: requireInteger(value.summary.shardCount, "Maker shard count"),
+    liveShardCount: requireInteger(value.summary.liveShardCount, "Maker live shard count"),
+    quotedLevelCount: requireInteger(value.summary.quotedLevelCount, "Maker quoted level count"),
+    capacityScopeCount: requireInteger(value.summary.capacityScopeCount, "Maker capacity scope count"),
+    activeCapacityScopeCount: requireInteger(value.summary.activeCapacityScopeCount, "Maker active capacity scope count"),
+    alertCount: requireInteger(value.summary.alertCount, "Maker alert count"),
+  });
+  const shards = Object.freeze(value.shards.map(requireMakerShard));
+  const capacities = Object.freeze(value.capacities.map(requireMakerCapacity));
+  if (summary.shardCount !== shards.length || summary.capacityScopeCount !== capacities.length) {
+    throw new Error("Maker operations summary is inconsistent.");
+  }
+  return Object.freeze({
+    version: 1,
+    solverId: requireProtocolId(value.solverId, "Maker solver id"),
+    asOfValue: requireBigint(value.asOfValue, "Maker operations time"),
+    summary,
+    shards,
+    capacities,
+  });
 }
 
 function requireLifecycleState(value: unknown, name: string): PackageLifecycleState {
@@ -3528,6 +3739,24 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       markets: requireMarketStates(payload.markets),
       controls: requireRuntimeControls(payload),
     });
+  }
+
+  async getMakerOperations(signal?: AbortSignal): Promise<MakerOperationsSnapshot> {
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/maker/operations`, {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal,
+    });
+    if (!response.ok) throw new Error("Maker operations are unavailable.");
+    let payload: unknown;
+    try {
+      payload = fromProtocolJson(await response.json() as unknown);
+    } catch {
+      throw new Error("Maker operations response is invalid.");
+    }
+    return requireMakerOperations(payload);
   }
 
   async prepareBaseAtomicAuthorization(

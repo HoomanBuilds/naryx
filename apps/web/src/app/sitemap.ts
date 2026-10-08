@@ -3,7 +3,7 @@ import { siteUrl } from "./site-url";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const base = siteUrl();
-  return ["/", "/trade", "/portfolio", "/activity", "/network"].map((path) => ({
+  return ["/", "/trade", "/portfolio", "/activity", "/liquidity", "/network"].map((path) => ({
     url: new URL(path, base).href,
     changeFrequency: path === "/" ? "weekly" : "daily",
     priority: path === "/" ? 1 : 0.6,
